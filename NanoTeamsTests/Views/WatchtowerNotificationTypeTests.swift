@@ -8,41 +8,41 @@ final class WatchtowerNotificationTypeTests: XCTestCase {
     // MARK: - supervisorInput color
 
     func testSupervisorInput_chatMode_returnsInfoColor() {
-        let sut = WatchtowerNotificationType.supervisorInput(stepID: stepID, question: "What next?", role: .softwareEngineer)
+        let sut = WatchtowerNotificationType.supervisorInput(stepID: stepID, question: "What next?", role: .softwareEngineer, toolCallID: nil)
         XCTAssertSameColor(sut.color(isChatMode: true), Colors.info)
     }
 
     func testSupervisorInput_taskMode_returnsGoldColor() {
-        let sut = WatchtowerNotificationType.supervisorInput(stepID: stepID, question: "What next?", role: .softwareEngineer)
+        let sut = WatchtowerNotificationType.supervisorInput(stepID: stepID, question: "What next?", role: .softwareEngineer, toolCallID: nil)
         XCTAssertSameColor(sut.color(isChatMode: false), Colors.gold)
     }
 
     func testSupervisorInput_defaultColor_returnsGold() {
-        let sut = WatchtowerNotificationType.supervisorInput(stepID: stepID, question: "Q", role: .productManager)
+        let sut = WatchtowerNotificationType.supervisorInput(stepID: stepID, question: "Q", role: .productManager, toolCallID: nil)
         XCTAssertSameColor(sut.color(isChatMode: false), Colors.gold)
     }
 
     // MARK: - supervisorInput icon
 
     func testSupervisorInput_chatMode_returnsChatBubbleIcon() {
-        let sut = WatchtowerNotificationType.supervisorInput(stepID: stepID, question: "Q", role: .softwareEngineer)
+        let sut = WatchtowerNotificationType.supervisorInput(stepID: stepID, question: "Q", role: .softwareEngineer, toolCallID: nil)
         XCTAssertEqual(sut.icon(isChatMode: true), "bubble.left.and.bubble.right")
     }
 
     func testSupervisorInput_taskMode_returnsQuestionBubbleIcon() {
-        let sut = WatchtowerNotificationType.supervisorInput(stepID: stepID, question: "Q", role: .softwareEngineer)
+        let sut = WatchtowerNotificationType.supervisorInput(stepID: stepID, question: "Q", role: .softwareEngineer, toolCallID: nil)
         XCTAssertEqual(sut.icon(isChatMode: false), "questionmark.bubble")
     }
 
     // MARK: - supervisorInput title
 
     func testSupervisorInput_chatMode_returnsRepliedTitle() {
-        let sut = WatchtowerNotificationType.supervisorInput(stepID: stepID, question: "Q", role: .softwareEngineer)
+        let sut = WatchtowerNotificationType.supervisorInput(stepID: stepID, question: "Q", role: .softwareEngineer, toolCallID: nil)
         XCTAssertTrue(sut.title(isChatMode: true).contains("replied"))
     }
 
     func testSupervisorInput_taskMode_returnsNeedsInputTitle() {
-        let sut = WatchtowerNotificationType.supervisorInput(stepID: stepID, question: "Q", role: .softwareEngineer)
+        let sut = WatchtowerNotificationType.supervisorInput(stepID: stepID, question: "Q", role: .softwareEngineer, toolCallID: nil)
         XCTAssertTrue(sut.title(isChatMode: false).contains("needs your input"))
     }
 
@@ -68,7 +68,7 @@ final class WatchtowerNotificationTypeTests: XCTestCase {
     // MARK: - requiresAction
 
     func testSupervisorInput_requiresAction() {
-        let sut = WatchtowerNotificationType.supervisorInput(stepID: stepID, question: "Q", role: .productManager)
+        let sut = WatchtowerNotificationType.supervisorInput(stepID: stepID, question: "Q", role: .productManager, toolCallID: nil)
         XCTAssertTrue(sut.requiresAction)
     }
 
@@ -79,14 +79,34 @@ final class WatchtowerNotificationTypeTests: XCTestCase {
 
     // MARK: - dismissID
 
-    func testDismissID_supervisorInput_includesStepIDAndQuestion() {
-        let sut = WatchtowerNotificationType.supervisorInput(stepID: stepID, question: "Q", role: .softwareEngineer)
+    /// Escalation path only: the engine flips the waiting flag with no tool call to
+    /// name, so the question text is all there is to discriminate rounds by.
+    func testDismissID_supervisorInput_escalationPath_fallsBackToQuestionText() {
+        let sut = WatchtowerNotificationType.supervisorInput(stepID: stepID, question: "Q", role: .softwareEngineer, toolCallID: nil)
         XCTAssertEqual(sut.dismissID, "\(stepID)::Q")
     }
 
+    func testDismissID_supervisorInput_namesTheAskingCall() {
+        let callID = UUID()
+        let sut = WatchtowerNotificationType.supervisorInput(
+            stepID: stepID, question: "Q", role: .softwareEngineer, toolCallID: callID)
+        XCTAssertEqual(sut.dismissID, "\(stepID)::\(callID.uuidString)")
+    }
+
+    /// In chat mode every turn is an `ask_supervisor` call, so byte-identical text
+    /// across rounds is ordinary. The per-call `UUID` keeps the rounds distinct where
+    /// the old text-based key collided and suppressed the second one.
+    func testDismissID_supervisorInput_identicalTextDistinctCalls_differ() {
+        let a = WatchtowerNotificationType.supervisorInput(
+            stepID: stepID, question: "Continue?", role: .softwareEngineer, toolCallID: UUID())
+        let b = WatchtowerNotificationType.supervisorInput(
+            stepID: stepID, question: "Continue?", role: .softwareEngineer, toolCallID: UUID())
+        XCTAssertNotEqual(a.dismissID, b.dismissID)
+    }
+
     func testDismissID_supervisorInput_differsAcrossQuestionsOnSameStep() {
-        let q1 = WatchtowerNotificationType.supervisorInput(stepID: stepID, question: "First?", role: .softwareEngineer)
-        let q2 = WatchtowerNotificationType.supervisorInput(stepID: stepID, question: "Second?", role: .softwareEngineer)
+        let q1 = WatchtowerNotificationType.supervisorInput(stepID: stepID, question: "First?", role: .softwareEngineer, toolCallID: nil)
+        let q2 = WatchtowerNotificationType.supervisorInput(stepID: stepID, question: "Second?", role: .softwareEngineer, toolCallID: nil)
         XCTAssertNotEqual(q1.dismissID, q2.dismissID)
     }
 
@@ -176,7 +196,7 @@ final class WatchtowerNotificationTypeTests: XCTestCase {
 
     func testBashApprovalNeeded_dismissID_distinctFromSupervisorInputOnSameStep() {
         let bash = bashNotif(stepID: "eng", taskID: 7)
-        let input = WatchtowerNotificationType.supervisorInput(stepID: "eng", question: "Q", role: .softwareEngineer)
+        let input = WatchtowerNotificationType.supervisorInput(stepID: "eng", question: "Q", role: .softwareEngineer, toolCallID: nil)
         XCTAssertNotEqual(bash.dismissID, input.dismissID)
     }
 }

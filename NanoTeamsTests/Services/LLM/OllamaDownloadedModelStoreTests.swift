@@ -11,13 +11,13 @@ final class OllamaDownloadedModelStoreTests: XCTestCase {
     }
 
     private static let tagsBody = """
-        {"models":[
-          {"name":"llama3.1:8b","size":4661224676,"modified_at":"2026-07-01T22:00:00Z",
-           "details":{"format":"gguf","parameter_size":"8.0B","quantization_level":"Q4_K_M"}},
-          {"name":"qwen3.6:35b","size":21910000000,
-           "details":{"format":"gguf","parameter_size":"35B","quantization_level":"NVFP4"}}
-        ]}
-        """
+    {"models":[
+      {"name":"llama3.1:8b","size":4661224676,"modified_at":"2026-07-01T22:00:00Z",
+       "details":{"format":"gguf","parameter_size":"8.0B","quantization_level":"Q4_K_M"}},
+      {"name":"qwen3.6:35b","size":21910000000,
+       "details":{"format":"gguf","parameter_size":"35B","quantization_level":"NVFP4"}}
+    ]}
+    """
 
     // MARK: - Listing
 

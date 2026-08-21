@@ -273,7 +273,7 @@ final class ResumeTeamGenerationTests: NTMSOrchestratorTestBase, @unchecked Send
                         StepToolCall(
                             name: ToolNames.createTeam, argumentsJSON: "{}",
                             resultJSON:
-                                #"{"ok":false,"error":{"code":"GENERATION_FAILED","message":"\#(message)"}}"#,
+                            #"{"ok":false,"error":{"code":"GENERATION_FAILED","message":"\#(message)"}}"#,
                             isError: true)
                     ]))
         }

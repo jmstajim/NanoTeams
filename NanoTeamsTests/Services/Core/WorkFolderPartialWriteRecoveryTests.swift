@@ -378,10 +378,6 @@ final class SelectivelyFailingRepository: NTMSRepositoryProtocol, @unchecked Sen
         try inner.deleteTask(at: workFolderRoot, taskID: taskID)
     }
 
-    func updateTask(at workFolderRoot: URL, task: NTMSTask) throws -> WorkFolderContext {
-        try inner.updateTask(at: workFolderRoot, task: task)
-    }
-
     func loadTask(at workFolderRoot: URL, taskID: Int) throws -> NTMSTask {
         try inner.loadTask(at: workFolderRoot, taskID: taskID)
     }

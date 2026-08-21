@@ -325,20 +325,29 @@ extension NTMSOrchestrator {
     /// Internal (not `private`) — also called by the startup status sweep
     /// (`recoverStaleStatusesAcrossIndex`).
     @discardableResult
-    func evictIfReclaimable(_ taskID: Int) -> Task<Void, Never>? {
+    func evictIfReclaimable(
+        _ taskID: Int, protectedDescendants: Set<Int>? = nil
+    ) -> Task<Void, Never>? {
         guard taskID != activeTaskID else { return nil }
-        if isTaskEngineActive(taskID) { return nil }
-        if isGeneratingTeam(taskID: taskID) { return nil }
-        if let activeID = activeTaskID,
-           snapshot?.tasksIndex.descendantIDs(of: activeID).contains(taskID) == true {
-            return nil
-        }
         // Only sweep if this call ACTUALLY evicted something. `evictLoadedTask`
         // is an unconditional `removeValue`, so a call for a task not in
         // `loadedTasks` (already evicted, or never loaded — the startup status
         // sweep hits both) would otherwise spawn a full reconcile for a no-op,
         // making the documented "nil when nothing was evicted" contract false.
+        // Checked FIRST: it is a dictionary probe, while the descendant walk
+        // below is O(index) — the startup sweep calls this once per stale row,
+        // mostly for never-loaded tasks the walk would be pure waste on.
         guard snapshot?.loadedTasks[taskID] != nil else { return nil }
+        if isTaskEngineActive(taskID) { return nil }
+        if isGeneratingTeam(taskID: taskID) { return nil }
+        // The active task's delegation subtree must stay resident. Per-call the
+        // walk is one childLinks build; loops (the startup sweep) precompute the
+        // set once and pass it in.
+        if let activeID = activeTaskID {
+            let protected: Set<Int> = protectedDescendants
+                ?? Set(snapshot?.tasksIndex.descendantIDs(of: activeID) ?? [])
+            if protected.contains(taskID) { return nil }
+        }
         evictLoadedTask(taskID)
         return Task { [weak self] in
             guard let self else { return }

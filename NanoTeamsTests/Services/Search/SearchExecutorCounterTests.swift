@@ -165,12 +165,12 @@ final class SearchExecutorCounterTests: XCTestCase {
     /// down the slow path over a single accented character in a comment.
     func testMixedFile_onlyNonASCIILinesReachICU() throws {
         try write("mixed.swift", content: """
-            let a = 1
-            let b = 2
-            // комментарий
-            let c = 3
-            NEEDLE
-            """)
+        let a = 1
+        let b = 2
+        // комментарий
+        let c = 3
+        NEEDLE
+        """)
 
         let out = try run(["NEEDLE"])
         XCTAssertEqual(out.stats.icuComparisons, 1, "exactly the one Cyrillic line")

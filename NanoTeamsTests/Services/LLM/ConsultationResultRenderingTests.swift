@@ -66,14 +66,14 @@ final class ConsultationResultRenderingTests: XCTestCase {
         let card = mockDelegate.taskToMutate?.runs[0].steps[0].toolCalls.first { $0.id == toolCallID }
         XCTAssertEqual(card?.isError, false, "A successful consultation card must stay green.")
         XCTAssertTrue(card?.resultJSON?.contains("Use a debounce.") ?? false,
-            "Card must show the answer, not the pending placeholder. got: \(card?.resultJSON ?? "nil")")
+                      "Card must show the answer, not the pending placeholder. got: \(card?.resultJSON ?? "nil")")
         XCTAssertFalse(card?.resultJSON?.contains("\"pending\"") ?? true,
-            "The pending placeholder must no longer be the persisted card result.")
+                       "The pending placeholder must no longer be the persisted card result.")
 
         let bubble = mockDelegate.taskToMutate?.runs[0].steps[0].llmConversation
             .last { $0.sourceContext == .consultation }
         XCTAssertEqual(bubble?.content, "Use a debounce.",
-            "The answer must also surface as a (consultation) attribution bubble.")
+                       "The answer must also surface as a (consultation) attribution bubble.")
     }
 
     // MARK: - Failure (unknown teammate): red card + bubble + single atomic commit
@@ -107,9 +107,9 @@ final class ConsultationResultRenderingTests: XCTestCase {
         let card = mockDelegate.taskToMutate?.runs[0].steps[0].toolCalls.first { $0.id == toolCallID }
         XCTAssertEqual(card?.isError, true, "A failed consultation must render red.")
         XCTAssertTrue(card?.resultJSON?.contains("\"ok\":false") ?? false,
-            "Card must carry the real error envelope. got: \(card?.resultJSON ?? "nil")")
+                      "Card must carry the real error envelope. got: \(card?.resultJSON ?? "nil")")
         XCTAssertTrue(card?.resultJSON?.contains("Unknown teammate") ?? false,
-            "Error envelope must surface the reason for diagnostics.")
+                      "Error envelope must surface the reason for diagnostics.")
 
         let bubble = mockDelegate.taskToMutate?.runs[0].steps[0].llmConversation
             .last { $0.sourceContext == .consultation }
@@ -117,7 +117,7 @@ final class ConsultationResultRenderingTests: XCTestCase {
 
         let commits = mockDelegate.eventLog.filter { $0 == "mutate-begin:\(task.id)" }.count
         XCTAssertEqual(commits, 1,
-            "Card + tool message + bubble must commit in ONE atomic mutateTask (no partial-persist window).")
+                       "Card + tool message + bubble must commit in ONE atomic mutateTask (no partial-persist window).")
     }
 
     // MARK: - Same reflect path for meeting / change-request failures
@@ -154,7 +154,7 @@ final class ConsultationResultRenderingTests: XCTestCase {
         let card = mockDelegate.taskToMutate?.runs[0].steps[0].toolCalls.first { $0.id == toolCallID }
         XCTAssertEqual(card?.isError, true, "A failed meeting must render red, not stay at the pending placeholder.")
         XCTAssertTrue(card?.resultJSON?.contains("\"ok\":false") ?? false,
-            "got: \(card?.resultJSON ?? "nil")")
+                      "got: \(card?.resultJSON ?? "nil")")
         let bubble = mockDelegate.taskToMutate?.runs[0].steps[0].llmConversation
             .last { $0.sourceContext == .meeting }
         XCTAssertNotNil(bubble, "A failed meeting surfaces its reason as a (meeting) bubble.")
@@ -186,7 +186,7 @@ final class ConsultationResultRenderingTests: XCTestCase {
         let card = mockDelegate.taskToMutate?.runs[0].steps[0].toolCalls.first { $0.id == toolCallID }
         XCTAssertEqual(card?.isError, true, "A failed change request must render red, not green ✓.")
         XCTAssertTrue(card?.resultJSON?.contains("\"ok\":false") ?? false,
-            "got: \(card?.resultJSON ?? "nil")")
+                      "got: \(card?.resultJSON ?? "nil")")
         let bubble = mockDelegate.taskToMutate?.runs[0].steps[0].llmConversation
             .last { $0.sourceContext == .changeRequest }
         XCTAssertNotNil(bubble, "A failed change request surfaces its reason as a (change request) bubble.")
@@ -236,7 +236,7 @@ final class ConsultationResultRenderingTests: XCTestCase {
         let record = mockDelegate.taskToMutate?.runs[0].steps[0].consultations.last
         XCTAssertEqual(record?.status, .failed)
         XCTAssertEqual(record?.response, reply.text,
-            "The empty-answer reason must persist on the record so the structured panel shows it.")
+                       "The empty-answer reason must persist on the record so the structured panel shows it.")
     }
 
     // MARK: - Delegation LLM tool message is a single envelope (not double-wrapped)
@@ -266,9 +266,9 @@ final class ConsultationResultRenderingTests: XCTestCase {
         let toolContent = conversation.last { $0.role == .tool }?.content ?? ""
         XCTAssertFalse(toolContent.isEmpty, "Expected a tool result in the conversation.")
         XCTAssertTrue(toolContent.contains("INVALID_ARGS"),
-            "LLM must see the real envelope. got: \(toolContent)")
+                      "LLM must see the real envelope. got: \(toolContent)")
         XCTAssertFalse(toolContent.contains("\"response\":"),
-            "Delegation result must NOT be double-wrapped in {ok:true,response:\"…\"} for the LLM.")
+                       "Delegation result must NOT be double-wrapped in {ok:true,response:\"…\"} for the LLM.")
     }
 
     // MARK: - Not-live dispatch: in-memory tool result still appended, nothing persisted
@@ -303,10 +303,10 @@ final class ConsultationResultRenderingTests: XCTestCase {
 
         let toolContent = conversation.last { $0.role == .tool }?.content ?? ""
         XCTAssertFalse(toolContent.isEmpty,
-            "Chain protocol: the live iteration must still get a non-empty matching tool result even when not live.")
+                       "Chain protocol: the live iteration must still get a non-empty matching tool result even when not live.")
 
         XCTAssertFalse(mockDelegate.eventLog.contains { $0.hasPrefix("mutate-begin") },
-            "Nothing may be persisted when the step is no longer live (commit is isExecutionLive-gated).")
+                       "Nothing may be persisted when the step is no longer live (commit is isExecutionLive-gated).")
     }
 
     // MARK: - Helpers
@@ -396,8 +396,8 @@ private final class ScriptedLLMClient: LLMClient, @unchecked Sendable {
         }
     }
 
-    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
-    func loadModel(modelName _: String, baseURLString _: String) async throws -> String { "" }
-    func unloadModel(instanceID _: String, baseURLString _: String) async throws {}
-    func listLoadedInstances(baseURLString _: String) async throws -> [LoadedModelInstance] { [] }
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
+    func loadModel(provider _: LLMProvider, modelName _: String, baseURLString _: String) async throws -> String { "" }
+    func unloadModel(provider _: LLMProvider, instanceID _: String, baseURLString _: String) async throws {}
+    func listLoadedInstances(provider _: LLMProvider, baseURLString _: String) async throws -> LoadedInstanceListing { .listed([]) }
 }

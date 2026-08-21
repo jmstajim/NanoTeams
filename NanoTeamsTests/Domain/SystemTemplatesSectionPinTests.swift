@@ -269,7 +269,7 @@ final class SystemTemplatesSectionPinTests: XCTestCase {
             XCTAssertEqual(
                 lastH2HeaderText, "## Final reminder",
                 "[\(name)] last `## ` section must be `## Final reminder` (Liu2024 §0.3 attention-sink). "
-                + "Actual last `## ` header: \(lastH2HeaderText ?? "<none>")"
+                    + "Actual last `## ` header: \(lastH2HeaderText ?? "<none>")"
             )
         }
     }
@@ -346,7 +346,7 @@ final class SystemTemplatesSectionPinTests: XCTestCase {
             if let guidanceIdx = h2Sections.firstIndex(of: "## Guidance") {
                 XCTAssertTrue(cmIdx < guidanceIdx,
                               "[\(name)] `## Conversation mechanics` must precede `## Guidance` "
-                              + "(attention-sink opening slot — Xiao2023streamingllm)")
+                                  + "(attention-sink opening slot — Xiao2023streamingllm)")
             }
             // 3. CM in opening-third — `cmIdx` must be ≤ floor(count/3).
             //    Templates carry 7-11 `##` sections; floor/3 = 2-3. CM at position 2 or 3 is fine.
@@ -354,8 +354,8 @@ final class SystemTemplatesSectionPinTests: XCTestCase {
             XCTAssertLessThan(
                 cmIdx, openingBudget,
                 "[\(name)] `## Conversation mechanics` at index \(cmIdx) of \(h2Sections.count) sections "
-                + "exceeds opening-third budget (\(openingBudget)). "
-                + "Liu2024: critical info in first ~20-30% — Xiao2023 attention-sinks."
+                    + "exceeds opening-third budget (\(openingBudget)). "
+                    + "Liu2024: critical info in first ~20-30% — Xiao2023 attention-sinks."
             )
             // 4. If `## Team` is expected, it must sit between `## Role` and `## CM`.
             if expectsTeam, let teamIdx = h2Sections.firstIndex(of: "## Team") {
@@ -393,7 +393,7 @@ final class SystemTemplatesSectionPinTests: XCTestCase {
             XCTAssertTrue(
                 frBody.contains("ask_supervisor`"),
                 "[\(name)] chat-mode FR must restate output contract (reply via `ask_supervisor`). "
-                + "Liu2024 §0.3 — critical constraint at tail. Got FR body:\n\(frBody)"
+                    + "Liu2024 §0.3 — critical constraint at tail. Got FR body:\n\(frBody)"
             )
         }
     }
@@ -439,8 +439,8 @@ final class SystemTemplatesSectionPinTests: XCTestCase {
                 XCTAssertFalse(
                     text.contains("`\(tool)."),
                     "[\(surfaceName)] references `\(tool).<param>` in dotted form — reference tools "
-                    + "by NAME only (house rule). The dotted token is copied "
-                    + "verbatim as the tool-call name by some models (tool_not_authorized loop)."
+                        + "by NAME only (house rule). The dotted token is copied "
+                        + "verbatim as the tool-call name by some models (tool_not_authorized loop)."
                 )
             }
         }
@@ -525,7 +525,7 @@ final class SystemTemplatesSectionPinTests: XCTestCase {
                 XCTAssertFalse(
                     prompt.contains("{\(chip)}"),
                     "[\(roleID)] role guidance embeds `{\(chip)}` — values are never re-resolved; "
-                    + "the model would receive the literal token"
+                        + "the model would receive the literal token"
                 )
             }
         }
@@ -539,7 +539,7 @@ final class SystemTemplatesSectionPinTests: XCTestCase {
             XCTAssertFalse(
                 prompt.localizedCaseInsensitiveContains("final reminder"),
                 "[\(roleID)] role guidance carries its own 'Final reminder' — rename the section; "
-                + "the template's tail `## Final reminder` must stay the single final block"
+                    + "the template's tail `## Final reminder` must stay the single final block"
             )
         }
     }

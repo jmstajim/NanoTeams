@@ -123,8 +123,8 @@ final class QuickCapturePanelStalenessCoverageTests: XCTestCase {
         c._testPresentPanelSync()
 
         XCTAssertGreaterThan(contentSets, baseline,
-            "A second question is different content even though both are `.answer`. "
-            + "Leaving the old hosting view up shows a question the user is not answering.")
+                             "A second question is different content even though both are `.answer`. "
+                                 + "Leaving the old hosting view up shows a question the user is not answering.")
     }
 
     /// The negative control that keeps the fix from degenerating into "rebuild always":
@@ -142,8 +142,8 @@ final class QuickCapturePanelStalenessCoverageTests: XCTestCase {
         c._testPresentPanelSync()
 
         XCTAssertEqual(contentSets, baseline,
-            "Nothing the view renders changed — rebuilding would drop the first responder "
-            + "and reset the composer's measured height for no reason.")
+                       "Nothing the view renders changed — rebuilding would drop the first responder "
+                           + "and reset the composer's measured height for no reason.")
     }
 
     // MARK: - In-place refresh
@@ -162,7 +162,7 @@ final class QuickCapturePanelStalenessCoverageTests: XCTestCase {
         c.refreshPanelIfVisible()
 
         XCTAssertGreaterThan(contentSets, baseline,
-            "Same task, same visual mode, different question — the panel must follow.")
+                             "Same task, same visual mode, different question — the panel must follow.")
     }
 
     /// `DefaultQuickCaptureModeCoordinator` documents a lockstep: *"Role displayed in the
@@ -183,8 +183,8 @@ final class QuickCapturePanelStalenessCoverageTests: XCTestCase {
         c.refreshPanelIfVisible()
 
         XCTAssertGreaterThan(contentSets, baseline,
-            "`QuickCaptureVisualMode` collapses both to `.working` and discards the role "
-            + "name, which is exactly the value the header renders.")
+                             "`QuickCaptureVisualMode` collapses both to `.working` and discards the role "
+                                 + "name, which is exactly the value the header renders.")
     }
 
     /// The other half of the ratchet: a passive refresh that resolves to the same content
@@ -202,7 +202,7 @@ final class QuickCapturePanelStalenessCoverageTests: XCTestCase {
         c.refreshPanelIfVisible()
 
         XCTAssertEqual(contentSets, baseline,
-            "Two no-op refreshes must cost nothing.")
+                       "Two no-op refreshes must cost nothing.")
     }
 }
 
@@ -265,7 +265,7 @@ final class QuickCaptureRenderIdentityTests: XCTestCase {
         ]
         for (name, p) in variants {
             XCTAssertNotEqual(P.renderIdentity(of: .supervisorAnswer(payload: p)), base,
-                "`\(name)` is rendered by the form view, so it must move the render identity")
+                              "`\(name)` is rendered by the form view, so it must move the render identity")
         }
     }
 

@@ -211,7 +211,7 @@ extension NTMSOrchestrator {
         // which also doesn't match its `.paused` filter. No double-processing either way.
         if let failedRun = loadedTask(taskID)?.runs.last {
             for step in failedRun.steps
-            where step.status == .failed && step.activeDelegationChildID == nil {
+                where step.status == .failed && step.activeDelegationChildID == nil {
                 let roleID = step.effectiveRoleID
                 let stepID = step.id
                 // Only revive a genuinely in-play role: a .failed step's role is normally
@@ -242,6 +242,9 @@ extension NTMSOrchestrator {
                     lastErrorMessage = "Couldn't revive failed step after retry: task state changed concurrently"
                     continue
                 }
+                // The failure this banner reported is being retried — a stored
+                // dismissal must not survive into the retry's outcome.
+                retireRoleBannerDismissals(taskID: taskID, roleIDs: [roleID])
                 await runStep(stepID: stepID, taskID: taskID)
             }
         }

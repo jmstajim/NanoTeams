@@ -41,7 +41,7 @@ extension TeammateConsultationService {
         let normalizedQuestion = question.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         return consultations.contains { consultation in
             consultation.consultedRole == targetTeammate &&
-            consultation.question.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) == normalizedQuestion
+                consultation.question.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) == normalizedQuestion
         }
     }
 

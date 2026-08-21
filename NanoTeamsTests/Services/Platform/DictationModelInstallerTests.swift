@@ -187,7 +187,7 @@ final class DictationModelInstallerTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(request.cancelCount, 0, "nothing cancelled it")
         XCTAssertTrue(inventory.released.isEmpty,
                       "a completed install must survive — releasing here uninstalls the "
-                      + "model the user just waited for")
+                          + "model the user just waited for")
     }
 
     /// A genuine download failure (no disk space, network drop) must reach the caller as
@@ -253,7 +253,7 @@ final class DictationModelInstallerTests: XCTestCase, @unchecked Sendable {
                        "onCancel must signal the underlying Progress")
         XCTAssertEqual(inventory.released, [locale],
                        "the reservation must be dropped exactly once — Progress.cancel() "
-                       + "is a request, not a guarantee")
+                           + "is a request, not a guarantee")
     }
 
     /// The narrow race the post-hoc check exists for: the download FINISHES despite the
@@ -291,7 +291,7 @@ final class DictationModelInstallerTests: XCTestCase, @unchecked Sendable {
 
         XCTAssertEqual(inventory.released, [locale],
                        "a model installed after the user cancelled must be uninstalled, "
-                       + "or the settings row offers to download what is already there")
+                           + "or the settings row offers to download what is already there")
     }
 
     /// Anti-vacuity: the rollback must be driven by CANCELLATION, not by suspension. A

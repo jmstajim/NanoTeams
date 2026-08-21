@@ -220,8 +220,8 @@ extension NTMSOrchestrator {
             let started = (loadedTask(taskID)?.runs.count ?? 0) > runsBefore
                 || managerTaskEngineActive(taskID) || isGeneratingTeam(taskID: taskID)
             return started ? .success("Started task #\(taskID).")
-                           : .failure(errorSurfaced(since: errorsBefore)
-                                        ?? "Task #\(taskID) could not start.")
+                : .failure(errorSurfaced(since: errorsBefore)
+                    ?? "Task #\(taskID) could not start.")
         case .pause:
             return await reportingError("Paused task #\(taskID).") { await self.pauseRun(taskID: taskID) }
         case .resume:
@@ -250,8 +250,8 @@ extension NTMSOrchestrator {
             let errorsBefore = errorSurfaceCount
             let ok = await closeTask(taskID: taskID)
             return ok ? .success("Closed task #\(taskID).")
-                      : .failure(errorSurfaced(since: errorsBefore)
-                                   ?? "Failed to close task #\(taskID).")
+                : .failure(errorSurfaced(since: errorsBefore)
+                    ?? "Failed to close task #\(taskID).")
         case .delete:
             return await reportingError("Deleted task #\(taskID).") { await self.removeTask(taskID) }
         case .rename(let title):
@@ -391,8 +391,8 @@ extension NTMSOrchestrator {
             let errorsBefore = errorSurfaceCount
             let ok = await acceptRole(taskID: taskID, roleID: roleID)
             return ok ? .success("Accepted role \(roleID) on task #\(taskID).")
-                      : .failure(errorSurfaced(since: errorsBefore)
-                                   ?? "Could not accept role \(roleID).")
+                : .failure(errorSurfaced(since: errorsBefore)
+                    ?? "Could not accept role \(roleID).")
         case .reject(let reason):
             // APPEND the manager-facing remedy, never replace: the table string is the
             // pinned fact ("Role already completed"), the suffix is the way out — the

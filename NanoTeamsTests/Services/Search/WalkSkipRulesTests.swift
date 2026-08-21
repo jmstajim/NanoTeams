@@ -66,7 +66,7 @@ final class WalkSkipRulesTests: XCTestCase {
             XCTAssertFalse(
                 WalkSkipRules.skipped.contains(name),
                 "'\(name)' is a plausible source directory name; skipping it by bare name at any "
-                + "depth would silently hide real files"
+                    + "depth would silently hide real files"
             )
         }
     }

@@ -244,7 +244,7 @@ nonisolated extension ToolExecutionResult {
 nonisolated private func encodeToJSON<T: Encodable>(_ value: T) -> String {
     let encoder = JSONCoderFactory.makeWireEncoder()
     guard let data = try? encoder.encode(value),
-        let str = String(data: data, encoding: .utf8)
+          let str = String(data: data, encoding: .utf8)
     else {
         return "{}"
     }
@@ -263,8 +263,8 @@ nonisolated private func encodeToJSON<T: Encodable>(_ value: T) -> String {
 /// shape advertises a safety it did not have. `stableJSONString` already guards this way.
 nonisolated func encodeArgsToJSON(_ args: [String: Any]) -> String {
     guard JSONSerialization.isValidJSONObject(args),
-        let data = try? JSONSerialization.data(withJSONObject: args, options: [.sortedKeys]),
-        let str = String(data: data, encoding: .utf8)
+          let data = try? JSONSerialization.data(withJSONObject: args, options: [.sortedKeys]),
+          let str = String(data: data, encoding: .utf8)
     else {
         return "{}"
     }

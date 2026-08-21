@@ -31,7 +31,7 @@ final class TeamGenerationDiagnosticsTests: XCTestCase {
             }
         }
 
-        func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [String] { [] }
+        func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [LLMModelInfo] { [] }
     }
 
     private func validConfigJSON() -> String {
@@ -181,11 +181,11 @@ final class TeamGenerationDiagnosticsTests: XCTestCase {
     private func fencedPlusHarmony(fenced: String, harmonyArgs: String) -> String {
         let envelope = "{\"name\":\"\(ToolNames.createTeam)\",\"arguments\":\(harmonyArgs)}"
         return """
-            ```json
-            \(fenced)
-            ```
-            <|call|>\(envelope)<|end|>
-            """
+        ```json
+        \(fenced)
+        ```
+        <|call|>\(envelope)<|end|>
+        """
     }
 
     /// A payload path 2 extracts but cannot decode must not END the cascade: it records the error

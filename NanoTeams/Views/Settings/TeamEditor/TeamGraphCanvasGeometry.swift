@@ -36,7 +36,7 @@ enum TeamGraphCanvasGeometry {
             for requiredArtifact in roleDef.dependencies.requiredArtifacts {
                 let producers = roleDefinitions.filter { producerDef in
                     teamMembers.contains(producerDef.id) &&
-                    producerDef.dependencies.producesArtifacts.contains(requiredArtifact)
+                        producerDef.dependencies.producesArtifacts.contains(requiredArtifact)
                 }
                 for producer in producers {
                     guard let fromPos = nodePositions.first(where: { $0.roleID == producer.id }) else { continue }

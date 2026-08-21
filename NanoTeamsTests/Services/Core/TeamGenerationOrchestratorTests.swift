@@ -716,7 +716,7 @@ final class TeamGenerationOrchestratorTests: NTMSOrchestratorTestBase, @unchecke
         await seedGeneratedTemplate()
         guard let placeholder = sut.workFolder?.teams.first(where: { $0.isGeneratedPlaceholder }),
               let taskID = await sut.createTask(
-                title: "Gen", supervisorTask: "chat with me", preferredTeamID: placeholder.id)
+                  title: "Gen", supervisorTask: "chat with me", preferredTeamID: placeholder.id)
         else { XCTFail("setup failed"); return }
         XCTAssertEqual(sut.loadedTask(taskID)?.isChatMode, false, "precondition")
 

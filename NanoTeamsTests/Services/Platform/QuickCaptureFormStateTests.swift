@@ -38,6 +38,63 @@ final class QuickCaptureFormStateTests: XCTestCase {
         )
     }
 
+    // MARK: - Batch pop (popQueuedMessages)
+
+    private func queuedMsg(
+        _ text: String, target: String? = nil, id: UUID = UUID()
+    ) -> QuickCaptureFormState.QueuedChatMessage {
+        QuickCaptureFormState.QueuedChatMessage(
+            text: text, attachments: [], clippedTexts: [],
+            targetRoleID: target, id: id)!
+    }
+
+    /// The result feeds `bodies.joined` — it must carry the CALLER's tier order
+    /// (targeted then untargeted), not the queue's arrival order.
+    ///
+    /// RED: implement the pop as `queue.filter { ids.contains($0.id) }` → the
+    /// result comes back in arrival order and the join is reordered.
+    func testPopQueuedMessages_returnsInIdsOrder_notQueueOrder() {
+        let u1 = queuedMsg("u1"), t1 = queuedMsg("t1", target: "pm")
+        let u2 = queuedMsg("u2"), t2 = queuedMsg("t2", target: "pm")
+        for m in [u1, t1, u2, t2] { sut.appendQueuedMessage(m, for: 7) }
+
+        let popped = sut.popQueuedMessages(withIDs: [t1.id, t2.id, u1.id, u2.id], for: 7)
+
+        XCTAssertEqual(popped.map(\.text), ["t1", "t2", "u1", "u2"])
+    }
+
+    /// `taskIDsWithQueuedMessages` iterates KEYS — a lingering empty array under
+    /// the key would wake the backstop on every engine-state change, forever.
+    ///
+    /// RED: write the survivors back unconditionally (`queuedChatMessages[taskID]
+    /// = queue`) → the key survives empty and the assertion fails.
+    func testPopQueuedMessages_removesTheDictionaryKeyWhenTheQueueEmpties() {
+        let m1 = queuedMsg("a")
+        sut.appendQueuedMessage(m1, for: 7)
+        _ = sut.popQueuedMessages(withIDs: [m1.id], for: 7)
+        XCTAssertFalse(sut.taskIDsWithQueuedMessages.contains(7))
+    }
+
+    func testPopQueuedMessages_survivorsKeepRelativeOrder_andUnknownIDsAreSkipped() {
+        let a = queuedMsg("a"), b = queuedMsg("b"), c = queuedMsg("c")
+        for m in [a, b, c] { sut.appendQueuedMessage(m, for: 7) }
+        let popped = sut.popQueuedMessages(withIDs: [b.id, UUID()], for: 7)
+        XCTAssertEqual(popped.map(\.text), ["b"])
+        XCTAssertEqual(sut.queuedMessages(for: 7).map(\.text), ["a", "c"])
+    }
+
+    /// The consumption pipeline's re-queue-on-failure contract, round-tripped
+    /// through the batch pop: prepend restores the exact head-of-queue position
+    /// ahead of anything that arrived during the failed delivery's await.
+    func testPopQueuedMessages_prependRoundTrip_restoresHeadPosition() {
+        let a = queuedMsg("a"), b = queuedMsg("b"), late = queuedMsg("late")
+        for m in [a, b] { sut.appendQueuedMessage(m, for: 7) }
+        let popped = sut.popQueuedMessages(withIDs: [a.id, b.id], for: 7)
+        sut.appendQueuedMessage(late, for: 7)
+        sut.prependQueuedMessages(popped, for: 7)
+        XCTAssertEqual(sut.queuedMessages(for: 7).map(\.text), ["a", "b", "late"])
+    }
+
     // MARK: - Answer Mode Transitions
 
     /// The answer field starts empty, and the task draft is left exactly where it is. Both

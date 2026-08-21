@@ -55,8 +55,8 @@ final class SecureTokenStorageAttributesTests: XCTestCase {
             try sut.setToken("attr-test-token", forKey: key)
         } catch KeychainError.unhandled(let status)
             where status == errSecMissingEntitlement
-                || status == errSecInteractionNotAllowed
-                || status == errSecAuthFailed
+            || status == errSecInteractionNotAllowed
+            || status == errSecAuthFailed
         {
             throw XCTSkip("Keychain unavailable on this runner (status \(status)).")
         }
@@ -83,8 +83,8 @@ final class SecureTokenStorageAttributesTests: XCTestCase {
             try sut.setToken("v1", forKey: key)
         } catch KeychainError.unhandled(let status)
             where status == errSecMissingEntitlement
-                || status == errSecInteractionNotAllowed
-                || status == errSecAuthFailed
+            || status == errSecInteractionNotAllowed
+            || status == errSecAuthFailed
         {
             throw XCTSkip("Keychain unavailable on this runner (status \(status)).")
         }

@@ -40,10 +40,10 @@ final class DelegateToTeamPeerLevelRuleTests: XCTestCase {
         let agentDef = team.nonSupervisorRoles[0]
         let resolved = Role.fromDefinition(agentDef)
         XCTAssertEqual(resolved, .codingAgent,
-            "Coding Agent must resolve to its built-in case; .custom fallback is the bug.")
+                       "Coding Agent must resolve to its built-in case; .custom fallback is the bug.")
         XCTAssertFalse(resolved.isCustom)
         XCTAssertEqual(resolved.baseID, "codingAgent",
-            "Built-in Role.baseID is the systemRoleID — stable, not the display name.")
+                       "Built-in Role.baseID is the systemRoleID — stable, not the display name.")
     }
 
     /// Sanity: the resolver path the handler actually takes (`Role.baseID` →
@@ -58,7 +58,7 @@ final class DelegateToTeamPeerLevelRuleTests: XCTestCase {
         let resolved = team.findRole(byIdentifier: baseID)
         XCTAssertNotNil(resolved)
         XCTAssertEqual(resolved?.id, agentDef.id,
-            "findRole(byIdentifier:) must reach the same def via systemRoleID lookup.")
+                       "findRole(byIdentifier:) must reach the same def via systemRoleID lookup.")
     }
 
     // MARK: - Bug B: eligibility rule (peer, not subordinate)
@@ -71,9 +71,9 @@ final class DelegateToTeamPeerLevelRuleTests: XCTestCase {
         let pm = faang.roles.first { $0.systemRoleID == "productManager" }!
         XCTAssertEqual(faang.settings.hierarchy.reportsTo[pm.id],
                        faang.roles.first(where: \.isSupervisor)?.id,
-            "PM is wired as a Supervisor subordinate in FAANG — sanity.")
+                       "PM is wired as a Supervisor subordinate in FAANG — sanity.")
         XCTAssertFalse(faang.roleIsTopLevelDelegator(pm),
-            "Subordinate roles must not be eligible — the rule is peer-level, not direct-report.")
+                       "Subordinate roles must not be eligible — the rule is peer-level, not direct-report.")
     }
 
     /// Supervisor itself is never a delegator regardless of how the hierarchy
@@ -102,9 +102,9 @@ final class DelegateToTeamPeerLevelRuleTests: XCTestCase {
         let team = TeamTemplateFactory.codingAgent()
         let agent = team.nonSupervisorRoles[0]
         XCTAssertTrue(agent.hasDelegationConfigured,
-            "Sanity: codingAgent template configures delegation (whitelist + generated).")
+                      "Sanity: codingAgent template configures delegation (whitelist + generated).")
         XCTAssertNil(team.settings.hierarchy.reportsTo[agent.id],
-            "buildSettings must omit reportsTo for any role with delegation enabled.")
+                     "buildSettings must omit reportsTo for any role with delegation enabled.")
     }
 
     /// FAANG roles do NOT carry `delegate_to_team`, so the auto-wiring still
@@ -116,7 +116,7 @@ final class DelegateToTeamPeerLevelRuleTests: XCTestCase {
         for role in faang.nonSupervisorRoles {
             XCTAssertFalse(role.hasDelegationConfigured)
             XCTAssertEqual(faang.settings.hierarchy.reportsTo[role.id], supID,
-                "FAANG roles don't delegate, so they keep their default Supervisor wiring.")
+                           "FAANG roles don't delegate, so they keep their default Supervisor wiring.")
         }
     }
 
@@ -152,7 +152,7 @@ final class DelegateToTeamPeerLevelRuleTests: XCTestCase {
         let captain = team.roles[captainIdx]
         XCTAssertTrue(captain.hasDelegationConfigured)
         XCTAssertNil(team.settings.hierarchy.reportsTo[captain.id],
-            "Roles with delegation settings populated must not be wired as subordinates.")
+                     "Roles with delegation settings populated must not be wired as subordinates.")
         XCTAssertTrue(team.roleIsTopLevelDelegator(captain))
     }
 
@@ -180,12 +180,12 @@ final class DelegateToTeamPeerLevelRuleTests: XCTestCase {
         let resolvedDef = team.findRole(byIdentifier: runtimeRole.baseID)
         XCTAssertNotNil(resolvedDef)
         XCTAssertNotEqual(resolvedDef!.id, runtimeRole.baseID,
-            "Sanity: seeded def.id and baseID are different shapes — that's why the bug existed.")
+                          "Sanity: seeded def.id and baseID are different shapes — that's why the bug existed.")
 
         // Build a step the way the engine does (StepExecution.id = roleID = def.id).
         let step = StepExecution(id: resolvedDef!.id, role: runtimeRole, title: "Step")
         XCTAssertEqual(step.id, resolvedDef!.id,
-            "step.id contract: it must equal the seeded def.id. parentRoleID has to match this shape.")
+                       "step.id contract: it must equal the seeded def.id. parentRoleID has to match this shape.")
     }
 
     // MARK: - createTask return shape
@@ -207,7 +207,7 @@ final class DelegateToTeamPeerLevelRuleTests: XCTestCase {
             preferredTeamID: nil, parentTaskID: nil, parentRoleID: nil, delegationDepth: 0
         )
         XCTAssertEqual(snapshot1.activeTaskID, id1,
-            "Top-level task: returned id must match the new active task.")
+                       "Top-level task: returned id must match the new active task.")
 
         // Delegated child: activeTaskID stays on parent, but the returned id
         // is still the freshly allocated child id.
@@ -216,7 +216,7 @@ final class DelegateToTeamPeerLevelRuleTests: XCTestCase {
             preferredTeamID: nil, parentTaskID: id1, parentRoleID: "pm", delegationDepth: 1
         )
         XCTAssertEqual(snapshot2.activeTaskID, id1,
-            "Child task creation must NOT change activeTaskID (supervisor stays on parent).")
+                       "Child task creation must NOT change activeTaskID (supervisor stays on parent).")
         XCTAssertNotEqual(id2, id1)
         XCTAssertGreaterThan(id2, id1)
     }
@@ -239,16 +239,16 @@ final class DelegateToTeamPeerLevelRuleTests: XCTestCase {
         team.settings.hierarchy.reportsTo[agentDef.id] = supID
 
         XCTAssertFalse(team.roleIsTopLevelDelegator(agentDef),
-            "Legacy state — eligibility check correctly rejects it. Without normalization, delegation breaks.")
+                       "Legacy state — eligibility check correctly rejects it. Without normalization, delegation breaks.")
 
         let repo = NTMSRepository()
         var teams = [team]
         let didChange = repo.normalizeDelegatorPeerStatus(teams: &teams)
         XCTAssertTrue(didChange, "Normalizer must report a write-back was needed.")
         XCTAssertNil(teams[0].settings.hierarchy.reportsTo[agentDef.id],
-            "Stale upstream entry must be removed for the delegating role.")
+                     "Stale upstream entry must be removed for the delegating role.")
         XCTAssertTrue(teams[0].roleIsTopLevelDelegator(agentDef),
-            "After normalization, eligibility passes — the user can delegate again.")
+                      "After normalization, eligibility passes — the user can delegate again.")
 
         // Idempotent — second call is a no-op.
         let didChangeAgain = repo.normalizeDelegatorPeerStatus(teams: &teams)
@@ -265,7 +265,7 @@ final class DelegateToTeamPeerLevelRuleTests: XCTestCase {
         let supID = teams[0].roles.first(where: \.isSupervisor)!.id
         for role in teams[0].nonSupervisorRoles {
             XCTAssertEqual(teams[0].settings.hierarchy.reportsTo[role.id], supID,
-                "Subordinate wiring intact for non-delegating roles.")
+                           "Subordinate wiring intact for non-delegating roles.")
         }
     }
 

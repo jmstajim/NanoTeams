@@ -26,7 +26,7 @@ final class BashExecutionModeTests: XCTestCase {
 
     func testUnknownRawValue_isNil() {
         XCTAssertNil(BashExecutionMode(rawValue: "semiAutomatic"),
-            "the case name is NOT the raw value — semi-automatic persists as legacy \"manual\"")
+                     "the case name is NOT the raw value — semi-automatic persists as legacy \"manual\"")
         XCTAssertNil(BashExecutionMode(rawValue: "bogus"))
         XCTAssertNil(BashExecutionMode(rawValue: ""))
     }

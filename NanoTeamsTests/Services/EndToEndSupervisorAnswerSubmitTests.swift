@@ -16,7 +16,7 @@ import XCTest
 final class EndToEndSupervisorAnswerSubmitTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     private func seedStepNeedingInput(taskID: Int, stepID: String = "pm",
-                                       question: String = "Should I use Redis?") async
+                                      question: String = "Should I use Redis?") async
     {
         await sut.mutateTask(taskID: taskID) { task in
             let step = StepExecution(
@@ -244,7 +244,7 @@ final class EndToEndSupervisorAnswerSubmitTests: NTMSOrchestratorTestBase, @unch
 
         XCTAssertFalse(ok, "Submitting against a non-existent step must report failure")
         XCTAssertNotNil(sut.lastErrorMessage,
-                       "Failure must surface a user-visible banner, not be swallowed")
+                        "Failure must surface a user-visible banner, not be swallowed")
         // The other step's answer must not be touched.
         let pmStep = sut.loadedTask(id)?.runs.last?.steps.first
         XCTAssertNil(pmStep?.supervisorAnswer,
@@ -259,7 +259,7 @@ final class EndToEndSupervisorAnswerSubmitTests: NTMSOrchestratorTestBase, @unch
         await sut.openWorkFolder(tempDir)
         let id = await sut.createTask(title: "T", supervisorTask: "x")!
         await seedStepNeedingInput(taskID: id, stepID: "pm",
-                                    question: "Q?")
+                                   question: "Q?")
 
         _ = await sut.answerSupervisorQuestion(
             stepID: "pm", taskID: id,

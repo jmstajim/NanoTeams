@@ -46,11 +46,11 @@ nonisolated enum SystemTemplates {
 
         return
             roleIDs
-            .filter { !existingSystemRoleIDs.contains($0) }
-            .compactMap { id in
-                guard let template = roles[id] else { return nil }
-                return (id: id, template: template)
-            }
+                .filter { !existingSystemRoleIDs.contains($0) }
+                .compactMap { id in
+                    guard let template = roles[id] else { return nil }
+                    return (id: id, template: template)
+                }
     }
 
     // MARK: - Prompt Templates

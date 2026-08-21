@@ -268,7 +268,7 @@ final class QuickCaptureFormViewLogicTests: XCTestCase {
         XCTAssertTrue(
             thinking!.contains("<|"),
             "appendThinking must NOT clean tokens — the view relies on raw storage " +
-            "so it can call ModelTokenCleaner.stripTokens at display time"
+                "so it can call ModelTokenCleaner.stripTokens at display time"
         )
     }
 }

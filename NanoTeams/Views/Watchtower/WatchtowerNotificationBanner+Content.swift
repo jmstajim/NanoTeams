@@ -7,7 +7,7 @@ extension WatchtowerNotificationBanner {
     @ViewBuilder
     var notificationContent: some View {
         switch notification {
-        case .supervisorInput(let stepID, let question, _):
+        case .supervisorInput(let stepID, let question, _, _):
             supervisorInputContent(stepID: stepID, question: question)
 
         case .acceptance(_, let roleID, _):

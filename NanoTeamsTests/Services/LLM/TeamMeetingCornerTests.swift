@@ -215,7 +215,7 @@ final class TeamMeetingCornerTests: XCTestCase {
         let summaries = meeting?.messages.compactMap(\.toolSummaries).flatMap { $0 } ?? []
         XCTAssertTrue(summaries.contains { $0.toolName == ToolNames.readFile },
                       "the rejected call must still be recorded as a tool summary — silently dropping it "
-                        + "is what stalled meetings before; got \(summaries.map(\.toolName))")
+                          + "is what stalled meetings before; got \(summaries.map(\.toolName))")
         XCTAssertTrue(summaries.contains { $0.isError },
                       "the rejection must be visible as an error, not a green no-op")
     }
@@ -287,7 +287,7 @@ private final class ThrowingMeetingClient: LLMClient, @unchecked Sendable {
         return AsyncThrowingStream { $0.finish(throwing: e) }
     }
 
-    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
 }
 
 /// Counts calls so a test can assert the model was never consulted.
@@ -310,7 +310,7 @@ private final class CountingMeetingClient: LLMClient, @unchecked Sendable {
         }
     }
 
-    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
 }
 
 /// Records every message array it was handed, so a test can assert what actually
@@ -334,7 +334,7 @@ private final class CapturingMeetingClient: LLMClient, @unchecked Sendable {
         }
     }
 
-    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
 }
 
 /// Emits one tool call on the first stream, then plain text — the minimum shape
@@ -368,5 +368,5 @@ private final class ToolCallThenTextClient: LLMClient, @unchecked Sendable {
         }
     }
 
-    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
 }

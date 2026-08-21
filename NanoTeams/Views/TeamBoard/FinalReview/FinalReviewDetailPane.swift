@@ -216,15 +216,15 @@ struct FinalReviewDetailPane: View {
         contentCache: [
             "Product Requirements": """
             # Product Requirements
-
+            
             ## Overview
             Build a **notification system** for real-time alerts across the platform.
-
+            
             ## Goals
             1. Push notification support (APNs + FCM)
             2. Email fallback for offline users
             3. User preferences per notification channel
-
+            
             ## Acceptance Criteria
             - Users can toggle notification types in Settings
             - Delivery latency < 500ms for push notifications

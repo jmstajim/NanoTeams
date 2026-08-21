@@ -177,4 +177,26 @@ final class HarmonySentinelNormalizerTests: XCTestCase {
             XCTAssertEqual(HarmonySentinelNormalizer.normalize(text), text, text)
         }
     }
+
+    // MARK: - Fast-path arms (2026-08-21, post-windowing)
+
+    /// Since detection moved into `StreamMarkerWindow`, `normalize` runs on full
+    /// buffers only after a needle was seen — but its no-op guard is still the
+    /// contract for the parser's one-shot callers, where the sentinel can be absent.
+    func testPlainProse_returnsTheExactSameString() {
+        let prose = "no sentinel anywhere in this reply, just prose"
+        XCTAssertEqual(HarmonySentinelNormalizer.normalize(prose), prose)
+    }
+
+    /// A buffer carrying BOTH a non-normalizable occurrence (prose about the
+    /// token, no payload) and a genuine one: the first must be emitted verbatim,
+    /// the second rewritten — the emit-and-continue arm of the rebuild loop.
+    func testMixedOccurrences_verbatimThenRewritten() {
+        let text = "talking about <|tool_call tokens and then <|tool_call>call|>{\"a\":1}"
+        let normalized = HarmonySentinelNormalizer.normalize(text)
+        XCTAssertTrue(normalized.contains("talking about <|tool_call tokens"),
+                      "the payload-less occurrence must survive verbatim")
+        XCTAssertTrue(normalized.contains("<|call|>{\"a\":1}"),
+                      "the genuine occurrence must be rewritten")
+    }
 }

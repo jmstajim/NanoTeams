@@ -804,9 +804,9 @@ final class TeamEngineTests: XCTestCase {
         let aStatusCalls = mockStore.updateRoleStatusCalls.filter { $0.roleID == "a" }
         let lastAStatus = aStatusCalls.last?.status
         XCTAssertEqual(lastAStatus, .done,
-                        "Intermediate role should be .done in .finalOnly mode, not .needsAcceptance")
+                       "Intermediate role should be .done in .finalOnly mode, not .needsAcceptance")
         XCTAssertFalse(aStatusCalls.contains(where: { $0.status == .needsAcceptance }),
-                        "Role A should never have been set to .needsAcceptance")
+                       "Role A should never have been set to .needsAcceptance")
     }
 
     /// Verifies that handleRoleCompleted is a no-op when the role's status is already .done.
@@ -858,7 +858,7 @@ final class TeamEngineTests: XCTestCase {
         // because its roleStatus is .done (not .working). Verify no re-update.
         let aStatusCalls = mockStore.updateRoleStatusCalls.filter { $0.roleID == "a" }
         XCTAssertTrue(aStatusCalls.isEmpty,
-                       "Role A was already .done — handleRoleCompleted should not have updated it")
+                      "Role A was already .done — handleRoleCompleted should not have updated it")
     }
 
     /// Fix B load-bearing invariant: a role flagged `.revisionRequested` (the held
@@ -945,7 +945,7 @@ final class TeamEngineTests: XCTestCase {
         XCTAssertEqual(aStatusCalls.last?.status, .done,
                        "The only (last) role should get .done in .finalOnly mode")
         XCTAssertFalse(aStatusCalls.contains(where: { $0.status == .needsAcceptance }),
-                        "finalOnly must NOT gate the last role with .needsAcceptance")
+                       "finalOnly must NOT gate the last role with .needsAcceptance")
     }
 
     /// Three-role chain A → B → C with .finalOnly: NO role is gated per-role; C goes to .done
@@ -997,7 +997,7 @@ final class TeamEngineTests: XCTestCase {
         let cCalls = mockStore.updateRoleStatusCalls.filter { $0.roleID == "c" }
         XCTAssertEqual(cCalls.last?.status, .done, "Last role C should get .done in .finalOnly")
         XCTAssertFalse(cCalls.contains(where: { $0.status == .needsAcceptance }),
-                        "No role should be gated with .needsAcceptance in .finalOnly")
+                       "No role should be gated with .needsAcceptance in .finalOnly")
 
         // A and B should NOT have been touched (already .done, guard prevents re-entry)
         let aCalls = mockStore.updateRoleStatusCalls.filter { $0.roleID == "a" }
@@ -1068,12 +1068,12 @@ final class TeamEngineTests: XCTestCase {
         XCTAssertEqual(workerCalls.last?.status, .done,
                        "Worker should get .done — observer must not block completion")
         XCTAssertFalse(workerCalls.contains(where: { $0.status == .needsAcceptance }),
-                        "finalOnly must not gate the worker with .needsAcceptance")
+                       "finalOnly must not gate the worker with .needsAcceptance")
 
         // Observer is never gated with .needsAcceptance (it's marked .done at completion).
         let observerCalls = mockStore.updateRoleStatusCalls.filter { $0.roleID == "observer" }
         XCTAssertFalse(observerCalls.contains(where: { $0.status == .needsAcceptance }),
-                        "Observer should not get .needsAcceptance")
+                       "Observer should not get .needsAcceptance")
     }
 
     // MARK: - finalOnly / customCheckpoints routing corner cases

@@ -60,7 +60,7 @@ final class TeamEditorValidationTests: XCTestCase {
 
         let errors = issues.filter(\.isError)
         XCTAssertTrue(errors.contains { $0.message.contains("Coding Agent") },
-            "A non-peer delegator must surface an error-severity issue naming the role.")
+                      "A non-peer delegator must surface an error-severity issue naming the role.")
     }
 
     func testDelegationWarning_rendersAsWarningIssue() {
@@ -78,7 +78,7 @@ final class TeamEditorValidationTests: XCTestCase {
 
         XCTAssertFalse(issues.isEmpty, "An unknown delegation target must surface something.")
         XCTAssertTrue(issues.allSatisfy { !$0.isError },
-            "unknownDelegationTeam / noDelegationTargets are warnings — severity must be forwarded, not forced to error.")
+                      "unknownDelegationTeam / noDelegationTargets are warnings — severity must be forwarded, not forced to error.")
     }
 
     // MARK: - Scope: dependency/orphan checks are NOT surfaced
@@ -96,12 +96,12 @@ final class TeamEditorValidationTests: XCTestCase {
 
         let bannerIssues = TeamEditorValidation.issues(team: team, allTeams: [team])
         XCTAssertTrue(bannerIssues.isEmpty,
-            "Dependency/orphan issues must NOT appear in the editor banner.")
+                      "Dependency/orphan issues must NOT appear in the editor banner.")
 
         // Sanity: the dependency issue genuinely exists — it's deliberately excluded,
         // not absent. (missingProducer is an error in the full validator.)
         let full = TeamValidationService.validate(roleDefinitions: team.roles)
         XCTAssertFalse(full.errors.isEmpty,
-            "Precondition: the team really does have a dependency error that the banner suppresses.")
+                       "Precondition: the team really does have a dependency error that the banner suppresses.")
     }
 }

@@ -123,7 +123,7 @@ extension LLMExecutionService {
                 Role \(roleForMessage.displayName) emitted \(count) consecutive refusal messages without \
                 calling any tools. The model appears stuck — please advise how to proceed (answer the \
                 underlying need, provide explicit instructions, or mark the step failed).
-
+                
                 Last message excerpt:
                 \(snippet)
                 """
@@ -328,11 +328,11 @@ extension LLMExecutionService {
             // leaving `scratchpad` nil keeps the phase open for a real plan.
             if BareToolCallSalvage.looksLikeToolCallAttempt(cleanedContent) {
                 let nudge = """
-                    That looked like a tool call, but it did not parse as one, so nothing ran \
-                    and nothing was recorded. Emit it as a single envelope on its own line:
-                    `<|call|>{"name":"TOOL_NAME","arguments":{"param":"value"}}<|end|>`
-                    Nothing before the `<|call|>` and nothing after the `<|end|>`.
-                    """
+                That looked like a tool call, but it did not parse as one, so nothing ran \
+                and nothing was recorded. Emit it as a single envelope on its own line:
+                `<|call|>{"name":"TOOL_NAME","arguments":{"param":"value"}}<|end|>`
+                Nothing before the `<|call|>` and nothing after the `<|end|>`.
+                """
                 conversationMessages.append(ChatMessage(role: .user, content: nudge))
                 await appendLLMMessage(
                     stepID: stepID, taskID: task.id, role: .user, content: nudge,

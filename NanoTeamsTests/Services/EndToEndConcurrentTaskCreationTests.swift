@@ -195,9 +195,9 @@ final class EndToEndConcurrentTaskCreationTests: NTMSOrchestratorTestBase, @unch
         let inMemoryActive = sut.activeTaskID
         let store = AtomicJSONStore()
         let state = try store.read(WorkFolderState.self,
-                                    from: NTMSPaths(workFolderRoot: tempDir).workFolderJSON)
+                                   from: NTMSPaths(workFolderRoot: tempDir).workFolderJSON)
         XCTAssertEqual(state.activeTaskID, inMemoryActive,
                        "Persisted activeTaskID must match the last-applied in-memory snapshot — "
-                        + "no cooperative-pool ordering may invert it.")
+                           + "no cooperative-pool ordering may invert it.")
     }
 }

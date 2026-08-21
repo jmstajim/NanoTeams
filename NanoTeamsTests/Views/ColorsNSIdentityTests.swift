@@ -13,17 +13,17 @@ final class ColorsNSIdentityTests: XCTestCase {
 
     func testNSTextPrimary_isStableInstance() {
         XCTAssertTrue(Colors.nsTextPrimary === Colors.nsTextPrimary,
-            "Colors.nsTextPrimary must be a memoized singleton — a fresh instance per access breaks NSAttributedString equality and NSTextView short-circuits (CLAUDE.md #50).")
+                      "Colors.nsTextPrimary must be a memoized singleton — a fresh instance per access breaks NSAttributedString equality and NSTextView short-circuits (CLAUDE.md #50).")
     }
 
     func testNSTextSecondary_isStableInstance() {
         XCTAssertTrue(Colors.nsTextSecondary === Colors.nsTextSecondary,
-            "Colors.nsTextSecondary must be a memoized singleton.")
+                      "Colors.nsTextSecondary must be a memoized singleton.")
     }
 
     func testNSSurfaceCard_isStableInstance() {
         XCTAssertTrue(Colors.nsSurfaceCard === Colors.nsSurfaceCard,
-            "Colors.nsSurfaceCard must be a memoized singleton.")
+                      "Colors.nsSurfaceCard must be a memoized singleton.")
     }
 
     /// Two `PlaceholderParser` builds of the same template must produce equal

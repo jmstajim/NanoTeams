@@ -69,16 +69,16 @@ final class EditFileRewriteReindentTests: XCTestCase {
     /// exactly and miss only on leading whitespace, which is what routes them past
     /// tiers 1–2 into the indentation tier.
     private static let cardFile = """
-        struct Card {
-            var body: Row {
-                Row {
-                    leading()
-                    trailing()
-                }
+    struct Card {
+        var body: Row {
+            Row {
+                leading()
+                trailing()
             }
         }
-
-        """
+    }
+    
+    """
 
     // MARK: - Helpers (mirrors EditFileIndentationToleranceTests)
 
@@ -98,14 +98,6 @@ final class EditFileRewriteReindentTests: XCTestCase {
 
     private func envelope(_ result: ToolExecutionResult) -> [String: Any] {
         (try? JSONSerialization.jsonObject(with: Data(result.outputJSON.utf8)) as? [String: Any]) ?? [:]
-    }
-
-    private func message(_ result: ToolExecutionResult) -> String {
-        (envelope(result)["error"] as? [String: Any])?["message"] as? String ?? ""
-    }
-
-    private func diagnosis(_ result: ToolExecutionResult) -> String? {
-        ((envelope(result)["error"] as? [String: Any])?["details"] as? [String: String])?["diagnosis"]
     }
 
     private func dataField(_ result: ToolExecutionResult, _ key: String) -> Any? {
@@ -418,7 +410,7 @@ final class EditFileRewriteReindentTests: XCTestCase {
                     }
                 }
             }
-
+            
             """,
             "paired head at the file's depth; the unpaired tail keeps the model's bytes")
         // Nothing's leading whitespace changed (the paired head already matched the
@@ -448,7 +440,7 @@ final class EditFileRewriteReindentTests: XCTestCase {
                     }
                 }
             }
-
+            
             """)
     }
 
@@ -488,7 +480,7 @@ final class EditFileRewriteReindentTests: XCTestCase {
                     }
                 }
             }
-
+            
             """)
     }
 
@@ -524,7 +516,7 @@ final class EditFileRewriteReindentTests: XCTestCase {
                     }
                 }
             }
-
+            
             """,
             "reproduced lines at the file's depths, the unmapped modifier at the model's 14")
         XCTAssertTrue(warnings(result).contains { $0.contains("kept your own indentation") },

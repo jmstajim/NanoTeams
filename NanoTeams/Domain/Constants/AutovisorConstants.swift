@@ -14,6 +14,16 @@ nonisolated enum AutovisorConstants {
     /// picker (same as the `"generated"` placeholder).
     static let teamTemplateID = "autovisor"
 
+    /// The single SF Symbol for the Autovisor on EVERY surface: the role
+    /// template's icon (→ chat/feed avatar via `ActivityFeedRoleAvatar`, plus
+    /// the role-context banner and Watchtower timeline), the sidebar row, the
+    /// Settings tab + Autovisor settings card, the setup views, and the
+    /// "Autovisor" tool category. One glyph — one constant; the literal lives
+    /// nowhere else. Stored teams pick a change up automatically:
+    /// `syncAutovisorTeamToTemplate` overwrites the persisted role's icon from
+    /// the template on every folder open.
+    static let symbolName = "bolt.badge.automatic"
+
     /// The management tools that DEFINE the manager — always present. In the role
     /// editor they render as locked/"Required" (non-removable, never offered for
     /// removal); on every folder open they are union-enforced onto the persisted
@@ -167,11 +177,11 @@ nonisolated enum AutovisorConstants {
     /// human sets a real goal, it directs the manager to just build context and go
     /// idle (via `wait_for_events`) instead of inventing work.
     static let defaultGoal = """
-        No goal set yet. For now, don't create or run any tasks — first explore and \
-        understand this work folder: read its files, its structure, and any existing \
-        tasks to build context, record what you find in memory, then call \
-        wait_for_events. I'll set a concrete goal here when I'm ready.
-        """
+    No goal set yet. For now, don't create or run any tasks — first explore and \
+    understand this work folder: read its files, its structure, and any existing \
+    tasks to build context, record what you find in memory, then call \
+    wait_for_events. I'll set a concrete goal here when I'm ready.
+    """
 
     /// Seeded into `ProjectSettings.autovisorMemory` at first creation so the
     /// Memory field starts non-empty. The manager overwrites this on its first

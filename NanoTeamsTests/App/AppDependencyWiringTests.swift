@@ -70,7 +70,7 @@ final class AppDependencyWiringTests: XCTestCase {
         store.configuration.dictationLocaleIdentifiers = ["en-US", "ru-RU"]
         XCTAssertEqual(provider().map(\.identifier), ["en-US", "ru-RU"],
                        "the provider must re-read — a snapshot freezes at launch-time "
-                       + "locales and a language added in Settings never arrives")
+                           + "locales and a language added in Settings never arrives")
     }
 
     /// An empty selection is a real state, and the one the mic button branches on
@@ -104,7 +104,7 @@ final class AppDependencyWiringTests: XCTestCase {
         endpoint = provider()
         XCTAssertEqual(endpoint.provider, .ollama,
                        "the provider must travel with the URL — a stale provider probes "
-                       + "the wrong reachability path (api/v1/models vs api/tags)")
+                           + "the wrong reachability path (api/v1/models vs api/tags)")
         XCTAssertEqual(endpoint.baseURL, "http://127.0.0.1:11434")
     }
 
@@ -122,7 +122,7 @@ final class AppDependencyWiringTests: XCTestCase {
 
         XCTAssertTrue(store.quickCaptureFormState === quickCapture.formState,
                       "the orchestrator must hold the SAME form state the panel writes "
-                      + "into, not a second instance")
+                          + "into, not a second instance")
     }
 
     /// RED: delete the `dictation.userSelectedLocalesProvider = ...` line → this fails and

@@ -82,7 +82,7 @@ private func toolsTailNaiveEOCDScan(in data: Data) -> Int? {
     let sig: [UInt8] = [0x50, 0x4B, 0x05, 0x06]
     guard data.count >= 22 else { return nil }
     for offset in stride(from: data.count - 22, through: 0, by: -1)
-    where toolsTailMatches(data, at: offset, sig) {
+        where toolsTailMatches(data, at: offset, sig) {
         return offset
     }
     return nil
@@ -94,7 +94,7 @@ private func toolsTailRealEOCD(in data: Data) -> Int? {
     let sig: [UInt8] = [0x50, 0x4B, 0x05, 0x06]
     guard data.count >= 22 else { return nil }
     for offset in stride(from: data.count - 22, through: 0, by: -1)
-    where toolsTailMatches(data, at: offset, sig) {
+        where toolsTailMatches(data, at: offset, sig) {
         let commentLength = Int(UInt16(data[offset + 20]) | (UInt16(data[offset + 21]) << 8))
         if offset + 22 + commentLength == data.count { return offset }
     }
@@ -1320,8 +1320,8 @@ final class ToolsTailBashHandlerTests: XCTestCase {
             context: context(), args: ["command": "echo hinted", "run_in_background": true])
         XCTAssertFalse(start.isError)
         guard let obj = try JSONSerialization.jsonObject(with: Data(start.outputJSON.utf8))
-                as? [String: Any],
-              let next = obj["next"] as? [String: Any]
+            as? [String: Any],
+            let next = obj["next"] as? [String: Any]
         else { return XCTFail("background start must carry a `next` hint: \(start.outputJSON)") }
         XCTAssertEqual(next["suggested_cmd"] as? String, ToolNames.bashOutput)
         let suggestedArgs = next["suggested_args"] as? [String: String]

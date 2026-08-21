@@ -64,12 +64,12 @@ final class PlanningBoundaryStateResetCoverageTests: XCTestCase {
     func testTheBoundaryClearsTheServerTokenDeltaBaseline() async {
         await confirm(appended: 0, server: 9_000)
         XCTAssertEqual(sut._testLastServerPromptTokens(stepID: stepID, taskID: taskID), 9_000,
-            "precondition: a request that reports nothing still leaves its baseline")
+                       "precondition: a request that reports nothing still leaves its baseline")
 
         sut._testResetConversationScopedState(stepID: stepID, taskID: taskID)
 
         XCTAssertNil(sut._testLastServerPromptTokens(stepID: stepID, taskID: taskID),
-            "the array that count described no longer exists")
+                     "the array that count described no longer exists")
     }
 
     /// The consequence the rule prevents. After the slice the prompt is legitimately far smaller
@@ -84,7 +84,7 @@ final class PlanningBoundaryStateResetCoverageTests: XCTestCase {
         await confirm(appended: 3_000, server: 1_500)  // first implementation-phase request
 
         XCTAssertFalse(didWarn,
-            "the prompt shrank because we replaced it, not because the server dropped its head")
+                       "the prompt shrank because we replaced it, not because the server dropped its head")
         XCTAssertNil(delegate.lastErrorMessages.last)
     }
 
@@ -99,8 +99,8 @@ final class PlanningBoundaryStateResetCoverageTests: XCTestCase {
 
         XCTAssertTrue(didWarn, "a real stall in the implementation phase is still reported")
         XCTAssertEqual(delegate.lastErrorMessages.last,
-            ContextBudgetPolicy.truncationMessage(
-                modelName: config.modelName, serverPromptTokens: 1_500, provider: .ollama))
+                       ContextBudgetPolicy.truncationMessage(
+                           modelName: config.modelName, serverPromptTokens: 1_500, provider: .ollama))
     }
 
     // MARK: - The non-local protection that made the omission inert
@@ -140,7 +140,7 @@ final class PlanningBoundaryStateResetCoverageTests: XCTestCase {
 
         XCTAssertNotNil(observation.structural.diagnosis, "the slice diverges at the brief")
         XCTAssertEqual(observation.appendedTokens, 0,
-            "a miss prices the discarded prefix, never the appended tail")
+                       "a miss prices the discarded prefix, never the appended tail")
     }
 
     /// The other half of the same statement: on a reuse the tail IS priced, so the material gate

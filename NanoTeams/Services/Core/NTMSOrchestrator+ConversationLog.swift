@@ -10,6 +10,47 @@ private enum ConversationLogGeneration {
     static func next() -> Int { counter += 1; return counter }
 }
 
+/// Render coalescing: at most ONE render in flight per task, plus one pending.
+///
+/// The per-turn cadence re-renders the WHOLE run — every step, every message,
+/// every artifact — so turn k used to pay O(run-so-far) even when a render was
+/// already running: N commits during one slow render queued N more full renders,
+/// each building a timeline the stale-drop below would then discard. Now a turn
+/// that lands mid-render just marks the task dirty, and the finishing render
+/// triggers exactly ONE follow-up (which snapshots FRESH state, so nothing the
+/// discarded renders would have shown is lost). O(turns²) becomes O(renders x
+/// run) with renders ~= "turns that landed while idle".
+@MainActor
+enum ConversationLogRenderCoalescer {
+    private static var inFlight: Set<Int> = []
+    private static var dirty: Set<Int> = []
+
+    /// True → the caller owns the render slot. False → a render is already in
+    /// flight; the task is marked dirty and the caller must NOT render.
+    static func begin(_ taskID: Int) -> Bool {
+        if inFlight.contains(taskID) {
+            dirty.insert(taskID)
+            return false
+        }
+        inFlight.insert(taskID)
+        return true
+    }
+
+    /// Releases the slot; true → a turn landed mid-render and one follow-up
+    /// render is owed.
+    static func finish(_ taskID: Int) -> Bool {
+        inFlight.remove(taskID)
+        return dirty.remove(taskID) != nil
+    }
+
+    #if DEBUG
+    static func _testReset() {
+        inFlight.removeAll()
+        dirty.removeAll()
+    }
+    #endif
+}
+
 /// Pure stale-drop decision for `conversation_log.md` writes. A render's generation stamp
 /// is monotonic (assigned at render START on the main actor), so a write should land only
 /// when it is at least as new as the last write recorded for that task. Extracted for unit
@@ -65,7 +106,13 @@ extension NTMSOrchestrator {
     func renderConversationLog(taskID: Int) {
         guard loggingEnabled else { return }
         guard let task = loadedTask(taskID), let run = task.runs.last else { return }
+        // Defense-in-depth: every path into `loadedTasks` hydrates, but a
+        // metadata-only task here would overwrite the on-disk log with an
+        // empty "_No activity recorded._" transcript — refuse rather than clobber.
+        guard task.streamsHydrated else { return }
         guard let logURL = conversationLogURL(taskID: taskID, runID: run.id) else { return }
+        // After the cheap guards, so a task that cannot render never occupies the slot.
+        guard ConversationLogRenderCoalescer.begin(taskID) else { return }
 
         let generation = ConversationLogGeneration.next()
         let teamRoles = resolvedTeam(for: task).roles
@@ -128,6 +175,13 @@ extension NTMSOrchestrator {
             await ConversationLogWriter.shared.write(
                 markdown, to: logURL, taskID: taskID, generation: generation
             )
+            // Release the slot; if turns landed mid-render, run ONE follow-up that
+            // snapshots the now-current state (self is the long-lived orchestrator).
+            await MainActor.run {
+                if ConversationLogRenderCoalescer.finish(taskID) {
+                    self.renderConversationLog(taskID: taskID)
+                }
+            }
         }
     }
 }

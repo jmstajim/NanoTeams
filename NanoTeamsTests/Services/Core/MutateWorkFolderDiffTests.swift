@@ -58,7 +58,7 @@ final class MutateWorkFolderDiffTests: NTMSOrchestratorTestBase, @unchecked Send
         let after = try? Data(contentsOf: paths.teamsJSON)
         XCTAssertNotNil(after)
         XCTAssertNotEqual(before, after,
-            "teams.json MUST be rewritten when a role prompt changes, even if Team.updatedAt was not bumped")
+                          "teams.json MUST be rewritten when a role prompt changes, even if Team.updatedAt was not bumped")
 
         // Verify the marker actually landed on disk (not just a touched file).
         if let after,
@@ -84,7 +84,7 @@ final class MutateWorkFolderDiffTests: NTMSOrchestratorTestBase, @unchecked Send
 
         let after = snapshotHashes()
         XCTAssertEqual(before, after,
-            "A no-op closure must not rewrite any file")
+                       "A no-op closure must not rewrite any file")
     }
 
     func testMutateWorkFolder_onlyContextChange_writesOnlySettingsFile() async {
@@ -135,7 +135,7 @@ final class MutateWorkFolderDiffTests: NTMSOrchestratorTestBase, @unchecked Send
 
         let after = snapshotHashes()
         XCTAssertEqual(before.wf, after.wf,
-            "workfolder.json must not change when only settings + teams were touched")
+                       "workfolder.json must not change when only settings + teams were touched")
         XCTAssertNotEqual(before.settings, after.settings)
         XCTAssertNotEqual(before.teams, after.teams)
     }
@@ -171,6 +171,6 @@ final class MutateWorkFolderDiffTests: NTMSOrchestratorTestBase, @unchecked Send
         }
 
         XCTAssertEqual(sut.workFolder?.settings.context, "in-memory check",
-            "After mutateWorkFolder, the in-memory projection must reflect the change")
+                       "After mutateWorkFolder, the in-memory projection must reflect the change")
     }
 }

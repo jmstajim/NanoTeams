@@ -34,7 +34,7 @@ final class PlanningScratchpadCardTests: XCTestCase {
                 continuation.finish()
             }
         }
-        func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [String] { [] }
+        func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [LLMModelInfo] { [] }
     }
 
     private var service: LLMExecutionService!
@@ -81,7 +81,7 @@ final class PlanningScratchpadCardTests: XCTestCase {
         )
 
         XCTAssertEqual(result.resolvedToolCalls.count, 1,
-            "Malformed (trailing-junk, no <|end|>) update_scratchpad envelope must still resolve to a tool call — it executes in production (ok:true)")
+                       "Malformed (trailing-junk, no <|end|>) update_scratchpad envelope must still resolve to a tool call — it executes in production (ok:true)")
         XCTAssertEqual(result.resolvedToolCalls.first?.name, ToolNames.updateScratchpad)
     }
 
@@ -120,7 +120,7 @@ final class PlanningScratchpadCardTests: XCTestCase {
         )
 
         XCTAssertTrue(toolCallNames(items).contains(ToolNames.updateScratchpad),
-            "TeamActivity feed must render a tool-call card for update_scratchpad in step.toolCalls")
+                      "TeamActivity feed must render a tool-call card for update_scratchpad in step.toolCalls")
     }
 
     // MARK: - Builder corner cases

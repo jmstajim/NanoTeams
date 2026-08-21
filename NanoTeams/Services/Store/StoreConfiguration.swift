@@ -126,6 +126,32 @@ final class StoreConfiguration {
         providerEndpointMemory[provider.rawValue]
     }
 
+    /// Every endpoint this app KNOWS for `provider` — most-recently-intended first, blanks
+    /// dropped, de-duplicated on `normalizedBaseURL`.
+    ///
+    /// Neither half of the pair can answer alone, which is why this lives here rather than at the
+    /// caller: the ACTIVE provider's endpoint is in `llmBaseURLString`, and
+    /// `providerEndpointMemory` only ever holds the endpoint of a provider the user has switched
+    /// AWAY from (`llmProvider.didSet` remembers `oldValue`). This type owns both, so it is the
+    /// Information Expert for "where have we been told this provider lives".
+    ///
+    /// Deliberately does NOT fall back to `provider.defaultBaseURL`. The question is what we know,
+    /// and a default is not knowledge — it is a proposal. A caller that wants to propose one must
+    /// do it on screen, where the user can see the address and change it before anything is sent
+    /// there; merging it in here would make a guess indistinguishable from a fact at every call
+    /// site, which is the shape `DEBTS.md` D-B1 §2 refused.
+    func knownLLMEndpoints(for provider: LLMProvider) -> [String] {
+        let candidates = [
+            provider == llmProvider ? llmBaseURLString : nil,
+            rememberedEndpoint(for: provider)?.url,
+            benchmarkTarget?.provider == provider ? benchmarkTarget?.baseURLString : nil,
+        ]
+        var seen: Set<String> = []
+        return candidates
+            .compactMap { Self.nonBlank($0) }
+            .filter { seen.insert($0.normalizedBaseURL).inserted }
+    }
+
     /// `nil` for nil/empty/whitespace-only — restore-time filter so a blank
     /// remembered field falls through to the provider default.
     private static func nonBlank(_ value: String?) -> String? {
@@ -172,18 +198,60 @@ final class StoreConfiguration {
         }
     }
 
-    var dismissedNotificationIDs: Set<String> {
+    /// Persisted Watchtower inbox dismissals. Each entry is
+    /// `"<workFolderUUID>:<WatchtowerDismissKey.storageKey>"` — the same namespacing
+    /// `seenSupervisorInputKeys` uses, and for the same reason (task IDs are
+    /// per-folder sequential ints). Mutated only through the typed helpers below;
+    /// `private(set)` so no caller can hand-roll an un-namespaced entry.
+    private(set) var dismissedNotificationKeys: Set<String> {
         didSet {
-            storage.set(Array(dismissedNotificationIDs), forKey: Keys.dismissedNotificationIDs)
+            storage.set(Array(dismissedNotificationKeys), forKey: Keys.dismissedNotificationIDs)
         }
     }
 
-    func dismissNotification(id: String) {
-        dismissedNotificationIDs.insert(id)
+    func dismissNotification(workFolderID: UUID, key: WatchtowerDismissKey) {
+        dismissedNotificationKeys.insert(Self.dismissEntry(workFolderID: workFolderID, key: key))
     }
 
-    func undismissNotification(id: String) {
-        dismissedNotificationIDs.remove(id)
+    func undismissNotification(workFolderID: UUID, key: WatchtowerDismissKey) {
+        dismissedNotificationKeys.remove(Self.dismissEntry(workFolderID: workFolderID, key: key))
+    }
+
+    /// Batch form — one `didSet`, therefore one `UserDefaults` write and one
+    /// observation tick, for a garbage-collection sweep that expires several keys.
+    func undismissNotifications(workFolderID: UUID, keys: Set<WatchtowerDismissKey>) {
+        guard !keys.isEmpty else { return }
+        let entries = Set(keys.map { Self.dismissEntry(workFolderID: workFolderID, key: $0) })
+        dismissedNotificationKeys.subtract(entries)
+    }
+
+    func isDismissed(workFolderID: UUID, key: WatchtowerDismissKey) -> Bool {
+        dismissedNotificationKeys.contains(Self.dismissEntry(workFolderID: workFolderID, key: key))
+    }
+
+    /// Every dismissal recorded for one work folder, decoded back into keys.
+    /// Entries that no longer parse (a format that predates `WatchtowerDismissKey`)
+    /// are skipped rather than guessed at.
+    func dismissedKeys(forWorkFolder workFolderID: UUID) -> Set<WatchtowerDismissKey> {
+        let prefix = "\(workFolderID.uuidString):"
+        var result: Set<WatchtowerDismissKey> = []
+        for entry in dismissedNotificationKeys where entry.hasPrefix(prefix) {
+            if let key = WatchtowerDismissKey(storageKey: String(entry.dropFirst(prefix.count))) {
+                result.insert(key)
+            }
+        }
+        return result
+    }
+
+    /// Drops every dismissal belonging to one task — called when the task is deleted,
+    /// so a reused row can never inherit a stale suppression.
+    func forgetDismissals(workFolderID: UUID, taskID: Int) {
+        let prefix = "\(workFolderID.uuidString):t\(taskID)::"
+        dismissedNotificationKeys = dismissedNotificationKeys.filter { !$0.hasPrefix(prefix) }
+    }
+
+    private static func dismissEntry(workFolderID: UUID, key: WatchtowerDismissKey) -> String {
+        "\(workFolderID.uuidString):\(key.storageKey)"
     }
 
     /// Persisted sidebar "read" markers. Each entry is `"<workFolderUUID>:<taskID>"`.
@@ -314,6 +382,53 @@ final class StoreConfiguration {
     }
 
     /// Maximum consecutive LLM server error retries before failing the step. 0 = unlimited.
+    /// The benchmark screen's own target. `nil` until the user first opens the screen, which
+    /// seeds it from the active LLM settings; from then on the two are independent, so measuring
+    /// a model never switches the app onto it.
+    var benchmarkTarget: BenchmarkTarget? {
+        didSet {
+            guard let benchmarkTarget,
+                  let data = try? JSONCoderFactory.makePersistenceEncoder().encode(benchmarkTarget)
+            else {
+                storage.removeObject(forKey: Keys.benchmarkTarget)
+                return
+            }
+            storage.set(data, forKey: Keys.benchmarkTarget)
+        }
+    }
+
+    /// Measured samples per benchmark run, excluding the warm-up.
+    ///
+    /// Clamped to the range the UI offers rather than trusted: a hand-edited default of 0 would
+    /// make every run fail with "no usable samples", and a huge one would hold the machine for
+    /// minutes with no way to tell that from a hang.
+    /// Providers the user has switched OFF for the sweep.
+    ///
+    /// Persisted, unlike the rest of the sweep's screen state, because it is the one part that is
+    /// a safety statement rather than a view: "measure what you like, but do not unload my
+    /// Ollama". A preference that evaporated on relaunch would silently re-arm the unloads it was
+    /// set to prevent, and the user would have no reason to look.
+    var benchmarkExcludedProviders: Set<LLMProvider> {
+        didSet {
+            guard benchmarkExcludedProviders != oldValue else { return }
+            storage.set(
+                benchmarkExcludedProviders.map(\.rawValue).sorted(),
+                forKey: Keys.benchmarkExcludedProviders)
+        }
+    }
+
+    var benchmarkRepeats: Int {
+        didSet {
+            let clamped = min(max(benchmarkRepeats, AppDefaults.benchmarkRepeatsRange.lowerBound),
+                              AppDefaults.benchmarkRepeatsRange.upperBound)
+            if clamped != benchmarkRepeats {
+                benchmarkRepeats = clamped
+                return
+            }
+            storage.set(benchmarkRepeats, forKey: Keys.benchmarkRepeats)
+        }
+    }
+
     var maxLLMRetries: Int {
         didSet {
             let clamped = max(0, maxLLMRetries)
@@ -792,11 +907,11 @@ final class StoreConfiguration {
     }
 
     private static var defaultLoggingEnabled: Bool {
-#if DEBUG
+        #if DEBUG
         return true
-#else
+        #else
         return false
-#endif
+        #endif
     }
 
     /// Vision is ON out of the box: with an empty `visionModelName` the
@@ -825,6 +940,13 @@ final class StoreConfiguration {
         self.loggingEnabled = (storage.object(forKey: Keys.loggingEnabled) as? Bool) ?? Self.defaultLoggingEnabled
         self.sidebarTaskFilter = storage.string(forKey: Keys.sidebarTaskFilter)
             .flatMap(TaskFilter.init(rawValue:)) ?? .all
+        self.benchmarkRepeats = (storage.object(forKey: Keys.benchmarkRepeats) as? Int)
+            ?? AppDefaults.benchmarkRepeats
+        self.benchmarkTarget = storage.data(forKey: Keys.benchmarkTarget)
+            .flatMap { try? JSONCoderFactory.makeDateDecoder().decode(BenchmarkTarget.self, from: $0) }
+        self.benchmarkExcludedProviders = Set(
+            (storage.object(forKey: Keys.benchmarkExcludedProviders) as? [String] ?? [])
+                .compactMap(LLMProvider.init(rawValue:)))
         self.maxLLMRetries = (storage.object(forKey: Keys.maxLLMRetries) as? Int) ?? LLMConstants.defaultMaxLLMRetries
         self.llmRequestTimeoutSeconds = (storage.object(forKey: Keys.llmRequestTimeoutSeconds) as? Int) ?? LLMConstants.defaultLLMRequestTimeoutSeconds
         self.ollamaKeepAliveSeconds = (storage.object(forKey: Keys.ollamaKeepAliveSeconds) as? Int) ?? LLMConstants.defaultOllamaKeepAliveSeconds
@@ -840,7 +962,13 @@ final class StoreConfiguration {
         self.visionEnabled = (storage.object(forKey: Keys.visionEnabled) as? Bool)
             ?? Self.defaultVisionEnabled
         let rawIDs = (storage.object(forKey: Keys.dismissedNotificationIDs) as? [String]) ?? []
-        self.dismissedNotificationIDs = Set(rawIDs)
+        self.dismissedNotificationKeys = Set(rawIDs)
+        // One-shot: `.v1` held bare `dismissID` strings with no task scope, so they
+        // can neither be matched nor expired under the new format. Delete rather than
+        // leave permanent garbage; the visible cost is that a handful of pre-upgrade
+        // dismissals reappear once, which is the safe direction (a banner returning
+        // beats a banner suppressed forever).
+        storage.removeObject(forKey: Keys.legacyDismissedNotificationIDsV1)
         let rawTipIDs = (storage.object(forKey: Keys.dismissedFeatureTipIDs) as? [String]) ?? []
         self.dismissedFeatureTipIDs = Set(rawTipIDs)
         let rawSeenKeys = (storage.object(forKey: Keys.seenSupervisorInputKeys) as? [String]) ?? []
@@ -1074,6 +1202,9 @@ final class StoreConfiguration {
         storage.removeObject(forKey: Keys.embedFilesInPrompt)
         storage.removeObject(forKey: Keys.debugModeEnabled)
         storage.removeObject(forKey: Keys.loggingEnabled)
+        storage.removeObject(forKey: Keys.benchmarkRepeats)
+        storage.removeObject(forKey: Keys.benchmarkTarget)
+        storage.removeObject(forKey: Keys.benchmarkExcludedProviders)
         storage.removeObject(forKey: Keys.maxLLMRetries)
         storage.removeObject(forKey: Keys.llmRequestTimeoutSeconds)
         storage.removeObject(forKey: Keys.ollamaKeepAliveSeconds)
@@ -1138,6 +1269,9 @@ final class StoreConfiguration {
         embedFilesInPrompt = false
         debugModeEnabled = false
         loggingEnabled = Self.defaultLoggingEnabled
+        benchmarkRepeats = AppDefaults.benchmarkRepeats
+        benchmarkTarget = nil
+        benchmarkExcludedProviders = []
         maxLLMRetries = LLMConstants.defaultMaxLLMRetries
         llmRequestTimeoutSeconds = LLMConstants.defaultLLMRequestTimeoutSeconds
         ollamaKeepAliveSeconds = LLMConstants.defaultOllamaKeepAliveSeconds
@@ -1145,7 +1279,7 @@ final class StoreConfiguration {
         visionProvider = nil
         visionModelName = ""
         visionBaseURLString = ""
-        dismissedNotificationIDs = []
+        dismissedNotificationKeys = []
         dismissedFeatureTipIDs = []
         seenSupervisorInputKeys = []
         sidebarTaskFilter = .all

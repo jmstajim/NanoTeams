@@ -53,13 +53,10 @@ extension NTMSOrchestrator {
         guard !ids.isEmpty else { return nil }
 
         // ATOMIC RESERVE — pop every eligible entry synchronously before any
-        // `await`. Preserves tier order by popping in the collected id sequence.
-        var popped: [QuickCaptureFormState.QueuedChatMessage] = []
-        for id in ids {
-            if let msg = formState.popFirstQueuedMessage(for: taskID, matching: { $0.id == id }) {
-                popped.append(msg)
-            }
-        }
+        // `await`, in one pass; the returned batch carries the collected id
+        // sequence's tier order. (The per-id loop this replaces was
+        // O(batch × queue) — and this path runs on every tool-loop iteration.)
+        let popped = formState.popQueuedMessages(withIDs: ids, for: taskID)
         guard !popped.isEmpty else { return nil }
 
         // Finalize attachments for every popped message. On ANY failure: re-queue

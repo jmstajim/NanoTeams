@@ -4,7 +4,13 @@ import SwiftUI
 
 /// Type of watchtower notification requiring Supervisor attention
 nonisolated enum WatchtowerNotificationType {
-    case supervisorInput(stepID: String, question: String, role: Role)
+    /// `toolCallID` is the identity of the `ask_supervisor` call that asked, taken
+    /// from `StepToolCall.id` — a persisted `UUID`, so it survives a relaunch. It is
+    /// what makes a dismissal target ONE question instead of "whatever this step is
+    /// currently asking", which matters most in chat mode, where every assistant turn
+    /// is another `ask_supervisor` call. Nil only on the escalation path, where the
+    /// engine flips the waiting flag without appending a call.
+    case supervisorInput(stepID: String, question: String, role: Role, toolCallID: UUID?)
     case acceptance(stepID: String, roleID: String, roleName: String)
     case failed(stepID: String, role: Role, errorMessage: String?)
     case taskDone(taskID: Int, taskTitle: String)
@@ -40,7 +46,7 @@ nonisolated enum WatchtowerNotificationType {
 
     func title(isChatMode: Bool) -> String {
         switch self {
-        case .supervisorInput(_, _, let role):
+        case .supervisorInput(_, _, let role, _):
             return isChatMode ? "\(role.displayName) replied" : "\(role.displayName) needs your input"
         case .acceptance(_, _, let roleName):
             return "\(roleName) needs your review"
@@ -79,18 +85,24 @@ nonisolated enum WatchtowerNotificationType {
         }
     }
 
-    /// Dismiss-set key. For `.supervisorInput`, includes question text so a
-    /// fresh question on the same step gets a fresh ID — dismissals must not
-    /// bleed across rounds. `::` separator: step IDs never contain it.
+    /// Dismiss-set key WITHIN a task. `WatchtowerDismissKey` adds the task scope —
+    /// this string alone is not a dismissal identity, because `stepID == roleID` and
+    /// is therefore shared by every task on the same team.
     ///
-    /// Known limitation: byte-identical question text across rounds (e.g.
-    /// hardcoded refusal-loop nudges) collides. Acceptable today — switching
-    /// to a per-call UUID would require widening the enum case.
+    /// For `.supervisorInput` the discriminator is the asking call's `UUID`, so a
+    /// fresh question on the same step always gets a fresh key even when its text
+    /// repeats byte-for-byte (hardcoded refusal-loop nudges used to collide here).
+    /// The escalation path has no call to name, so it falls back to the question
+    /// text and keeps the old, collision-prone behaviour for that one case.
+    /// `::` separator: step IDs never contain it.
     var dismissID: String {
         switch self {
-        case .supervisorInput(let stepID, let question, _): return "\(stepID)::\(question)"
-        case .acceptance(let stepID, _, _): return stepID
-        case .failed(let stepID, _, _): return stepID
+        case .supervisorInput(let stepID, let question, _, let toolCallID):
+            return "\(stepID)::\(toolCallID?.uuidString ?? question)"
+        case .acceptance(let stepID, _, _):
+            return WatchtowerDismissKey.acceptanceTypeID(stepID: stepID)
+        case .failed(let stepID, _, _):
+            return WatchtowerDismissKey.failedTypeID(stepID: stepID)
         case .taskDone(let taskID, _): return String(taskID)
         case .timedOut(let taskID, _): return "timeout::\(taskID)"
         // `createdAt` discriminates hold instances: a re-held command (new createdAt)
@@ -114,7 +126,13 @@ nonisolated struct WatchtowerNotification: Identifiable {
     let isChatMode: Bool
     let type: WatchtowerNotificationType
 
-    var id: String { type.dismissID }
+    /// Task-scoped dismissal identity. `type.dismissID` alone is NOT an identity —
+    /// see `WatchtowerDismissKey`.
+    var dismissKey: WatchtowerDismissKey {
+        WatchtowerDismissKey(taskID: taskID, typeID: type.dismissID)
+    }
+
+    var id: String { dismissKey.storageKey }
 
     /// Count for the "{N} tasks need you" headline — notifications needing the
     /// Supervisor's attention, INCLUDING failed / timed-out (see
@@ -126,7 +144,7 @@ nonisolated struct WatchtowerNotification: Identifiable {
 
 // MARK: - Run + All Watchtower Notifications
 
-extension Run {
+nonisolated extension Run {
     /// Returns ALL Watchtower notifications for this run (not just highest-priority).
     /// Dismissal filtering is handled by the caller (view state concern).
     func allWatchtowerNotifications(
@@ -158,12 +176,14 @@ extension Run {
         // set, text not yet copied), so fall back to parsing the trailing ask
         // call's args — same chain `activeSupervisorQuestions` uses for the
         // composer chip. Without the fallback the banner is silently skipped.
-        for step in steps where ActivityFeedBuilder.stepHasActiveSupervisorInput(step) {
+        for step in steps where step.hasActiveSupervisorInput {
             let question = step.supervisorQuestion
                 ?? step.toolCalls.last(where: { $0.name == ToolNames.askSupervisor })
-                    .flatMap { ActivityFeedBuilder.parseAskSupervisorQuestion(from: $0.argumentsJSON) }
+                .flatMap { $0.parsedSupervisorQuestion }
             if let question {
-                notifications.append(.supervisorInput(stepID: step.id, question: question, role: step.role))
+                notifications.append(.supervisorInput(
+                    stepID: step.id, question: question, role: step.role,
+                    toolCallID: step.activeSupervisorQuestionID))
                 seenStepIDs.insert(step.id)
             }
         }

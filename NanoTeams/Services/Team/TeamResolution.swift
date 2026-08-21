@@ -109,15 +109,15 @@ nonisolated enum TeamResolution {
         case .pinnedMissing(let id, let runID):
             return .failed(reason:
                 "Run \(runID) of task \(task.id) is pinned to team '\(id)' which no longer exists. "
-                + "Refusing to swap rosters mid-run."
+                    + "Refusing to swap rosters mid-run."
             )
         case .preferred(let team):
             return .resolved(team)
         case .childOrphan:
             return .failed(reason:
                 "Child task \(task.id) has no resolvable team (generatedTeam=nil, "
-                + "preferredTeamID=\(task.preferredTeamID ?? "nil") not in workFolder). "
-                + "Refusing to fall back to parent's active team to avoid Coding Agent self-recursion."
+                    + "preferredTeamID=\(task.preferredTeamID ?? "nil") not in workFolder). "
+                    + "Refusing to fall back to parent's active team to avoid Coding Agent self-recursion."
             )
         case .active(let team):
             return .resolved(team)

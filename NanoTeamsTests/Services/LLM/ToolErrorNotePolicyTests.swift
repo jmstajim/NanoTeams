@@ -79,7 +79,7 @@ final class ToolErrorNotePolicyTests: XCTestCase {
         XCTAssertEqual(
             meetingDirection, roleDirection,
             "the direction must not depend on a scope it no longer quotes — that independence "
-            + "is what makes copying the envelope's sentence unnecessary")
+                + "is what makes copying the envelope's sentence unnecessary")
     }
 
     /// Defensive: a `tool_not_authorized` envelope with no `message` at all. The direction
@@ -547,14 +547,14 @@ final class ToolErrorNotePolicyTests: XCTestCase {
             XCTAssertFalse(
                 direction.contains(message),
                 "\(row.label): the direction restates the envelope's message, which the model "
-                + "read one turn earlier.\nmessage:   \(message)\ndirection: \(direction)")
+                    + "read one turn earlier.\nmessage:   \(message)\ndirection: \(direction)")
         }
 
         XCTAssertGreaterThanOrEqual(
             directionsEmitted, 5,
             "anti-vacuity: only \(directionsEmitted) of \(table.count) rows produced a direction "
-            + "— a policy that always returns nil would pass the loop above without checking "
-            + "anything")
+                + "— a policy that always returns nil would pass the loop above without checking "
+                + "anything")
     }
 
     /// The three arms that add nothing must KEEP adding nothing. Named separately from the

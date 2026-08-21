@@ -66,7 +66,7 @@ final class LoadOrRecoverFileCoverageTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(loaded, Model(value: 42))
         XCTAssertTrue(FileManager.default.fileExists(atPath: target.path),
                       "the default must be persisted, not merely returned — otherwise the file "
-                      + "stays absent and each open re-derives it")
+                          + "stays absent and each open re-derives it")
         let reread: Model = try repository.loadOrRecoverFile(at: target, default: Model(value: -1))
         XCTAssertEqual(reread, Model(value: 42), "the second open must read what the first wrote")
         XCTAssertTrue(try backups().isEmpty, "a missing file is not a corrupt one — no .bak")
@@ -92,7 +92,7 @@ final class LoadOrRecoverFileCoverageTests: XCTestCase, @unchecked Sendable {
         let preserved = try Data(contentsOf: tempDir.appendingPathComponent(found[0]))
         XCTAssertEqual(String(decoding: preserved, as: UTF8.self), "{ this is not json",
                        "the backup must be the ORIGINAL bytes — a re-encoded or truncated copy is "
-                       + "useless for recovering what the user lost")
+                           + "useless for recovering what the user lost")
 
         let reread: Model = try repository.loadOrRecoverFile(at: target, default: Model(value: -1))
         XCTAssertEqual(reread, Model(value: 7), "the reset defaults are now the file's content")
@@ -113,7 +113,7 @@ final class LoadOrRecoverFileCoverageTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(found.count, 1)
         XCTAssertFalse(found[0].contains(":"),
                        "a colon is legal on APFS and breaks on exFAT — a work folder copied to a "
-                       + "USB stick must keep its forensic backup: \(found[0])")
+                           + "USB stick must keep its forensic backup: \(found[0])")
     }
 
     // MARK: - Rung 3: the file is corrupt AND cannot be preserved
@@ -136,7 +136,7 @@ final class LoadOrRecoverFileCoverageTests: XCTestCase, @unchecked Sendable {
 
         XCTAssertEqual(refusing.moveAttempts, ["teams.json"],
                        "the back-up must be ATTEMPTED before the file is overwritten — losing the "
-                       + "original without trying is the failure this rung exists to bound")
+                           + "original without trying is the failure this rung exists to bound")
         XCTAssertEqual(loaded, Model(value: 99),
                        "an un-backupable corrupt file must not stop the work folder from opening")
         XCTAssertTrue(try backups().isEmpty, "the move was refused, so no backup exists")
@@ -144,7 +144,7 @@ final class LoadOrRecoverFileCoverageTests: XCTestCase, @unchecked Sendable {
         let reread: Model = try repository.loadOrRecoverFile(at: target, default: Model(value: -1))
         XCTAssertEqual(reread, Model(value: 99),
                        "the defaults must have replaced the corrupt bytes on disk, or the next "
-                       + "open repeats the whole recovery")
+                           + "open repeats the whole recovery")
     }
 
     // MARK: - The composite: cross-file invariants after recovery
@@ -170,7 +170,7 @@ final class LoadOrRecoverFileCoverageTests: XCTestCase, @unchecked Sendable {
 
         XCTAssertFalse(teamsFile.teams.isEmpty,
                        "an empty teams array must be re-bootstrapped — a zero-team work folder "
-                       + "makes every role an orphan and the app has nothing to execute")
+                           + "makes every role an orphan and the app has nothing to execute")
         XCTAssertEqual(teamsFile.teams.count, Team.defaultTeams.count)
 
         // Persisted, not just returned: otherwise every open repeats the repair.
@@ -181,7 +181,7 @@ final class LoadOrRecoverFileCoverageTests: XCTestCase, @unchecked Sendable {
         // …and the cross-file invariant: activeTeamID has to resolve to a real team.
         XCTAssertNotNil(state.activeTeamID,
                         "a folder with teams must have a resolvable active team, or the UI shows "
-                        + "teams.first while stored state disagrees")
+                            + "teams.first while stored state disagrees")
         XCTAssertTrue(teamsFile.teams.contains { $0.id == state.activeTeamID },
                       "activeTeamID must name a team that exists")
     }

@@ -153,7 +153,7 @@ nonisolated struct GitCommitTool: ToolHandler {
             let hashResult = try ProcessRunner.runGit(["rev-parse", "HEAD"], in: workFolderRoot)
             let hash =
                 hashResult.success
-                ? hashResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines) : ""
+                    ? hashResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines) : ""
 
             struct CommitData: Codable {
                 var hash: String

@@ -520,7 +520,7 @@ final class GeneratedTeamBuilderTests: XCTestCase {
                 roles: [makeRoleConfig()], acceptanceMode: mode
             ))
             XCTAssertEqual(team.settings.defaultAcceptanceMode, mode,
-                          "Acceptance mode \(mode) should pass through")
+                           "Acceptance mode \(mode) should pass through")
         }
     }
 

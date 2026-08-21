@@ -17,14 +17,14 @@ final class ModelCatalogTests: XCTestCase {
         var fetchCount: Int = 0
         var lastConfig: LLMConfig?
         var lastVisionOnly: Bool = false
-        var modelsToReturn: [String] = ["model-a", "model-b"]
-        var visionModelsToReturn: [String] = ["vision-model-a"]
+        var modelsToReturn: [LLMModelInfo] = [.init(name: "model-a"), .init(name: "model-b")]
+        var visionModelsToReturn: [LLMModelInfo] = [.init(name: "vision-model-a")]
         var errorToThrow: Error?
         /// Used to artificially extend a fetch so two concurrent calls
         /// can race the in-flight dedup check.
         var fetchDelayNanos: UInt64 = 0
 
-        func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [String] {
+        func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [LLMModelInfo] {
             fetchCount += 1
             lastVisionOnly = visionOnly
             lastConfig = config
@@ -81,6 +81,83 @@ final class ModelCatalogTests: XCTestCase {
         XCTAssertEqual(catalog.models(for: "http://x:1234", provider: .lmStudio), ["model-a", "model-b"])
     }
 
+    // MARK: - Descriptors
+
+    /// The catalog caches what the SERVER said about each model, not just its name. This is the
+    /// half that used not to exist: `fetchModels` returned `[String]`, so format and quantization
+    /// were decoded off the wire and dropped before anything could read them.
+    /// RED: store `list.map(\.name)` and rebuild descriptors on read → both fields come back nil.
+    func testInfos_cachesFormatAndQuantizationAlongsideNames() async {
+        let stub = StubClient()
+        stub.modelsToReturn = [
+            .init(name: "qwen3.8-4b", format: "gguf", quantization: "Q4_K_M"),
+            .init(name: "google/gemma-4-e2b", format: "mlx", quantization: "4bit"),
+        ]
+        let catalog = ModelCatalog(clientFactory: { stub })
+
+        await catalog.loadIfNeeded(url: "http://x:1234", provider: .lmStudio)
+
+        let infos = catalog.infos(for: "http://x:1234", provider: .lmStudio)
+        XCTAssertEqual(infos.map(\.format), ["gguf", "mlx"])
+        XCTAssertEqual(infos.map(\.quantization), ["Q4_K_M", "4bit"])
+    }
+
+    /// `models(for:)` is what every picker reads and must keep returning bare names in the SAME
+    /// order the descriptors are held in — the pickers were not touched by the widening, and an
+    /// order that moved would be a silent regression in six unrelated surfaces.
+    func testModels_returnsTheDescriptorNamesInOrder() async {
+        let stub = StubClient()
+        stub.modelsToReturn = [
+            .init(name: "alpha", format: "gguf"),
+            .init(name: "beta", format: "mlx"),
+        ]
+        let catalog = ModelCatalog(clientFactory: { stub })
+
+        await catalog.loadIfNeeded(url: "http://x:1234", provider: .lmStudio)
+
+        XCTAssertEqual(catalog.models(for: "http://x:1234", provider: .lmStudio), ["alpha", "beta"])
+    }
+
+    /// One model, by name — what the Run tab's picker asks for the model it is about to measure.
+    func testInfo_matchesByName_andTrimsTheQuery() async {
+        let stub = StubClient()
+        stub.modelsToReturn = [.init(name: "qwen3.8-4b", format: "gguf", quantization: "Q4_K_M")]
+        let catalog = ModelCatalog(clientFactory: { stub })
+
+        await catalog.loadIfNeeded(url: "http://x:1234", provider: .lmStudio)
+
+        XCTAssertEqual(
+            catalog.info(for: "http://x:1234", provider: .lmStudio, modelName: "  qwen3.8-4b ")?
+                .quantization,
+            "Q4_K_M")
+    }
+
+    /// Nil is "nobody asked, or nobody answered" — never "this model has no format". A model the
+    /// server did not list, an empty selection, and a server that was never fetched are all nil.
+    func testInfo_nilForUnlistedModelEmptyNameAndUnfetchedServer() async {
+        let stub = StubClient()
+        stub.modelsToReturn = [.init(name: "listed", format: "gguf")]
+        let catalog = ModelCatalog(clientFactory: { stub })
+
+        await catalog.loadIfNeeded(url: "http://x:1234", provider: .lmStudio)
+
+        XCTAssertNil(catalog.info(for: "http://x:1234", provider: .lmStudio, modelName: "absent"))
+        XCTAssertNil(catalog.info(for: "http://x:1234", provider: .lmStudio, modelName: "   "))
+        XCTAssertNil(catalog.info(for: "http://other:1234", provider: .lmStudio, modelName: "listed"))
+    }
+
+    /// A failed fetch writes nothing, so neither view of the cache invents a row.
+    func testInfos_emptyAfterFailedFetch() async {
+        let stub = StubClient()
+        stub.errorToThrow = NSError(domain: "test", code: 1)
+        let catalog = ModelCatalog(clientFactory: { stub })
+
+        await catalog.loadIfNeeded(url: "http://x:1234", provider: .lmStudio)
+
+        XCTAssertTrue(catalog.infos(for: "http://x:1234", provider: .lmStudio).isEmpty)
+        XCTAssertTrue(catalog.models(for: "http://x:1234", provider: .lmStudio).isEmpty)
+    }
+
     func testLoadIfNeeded_normalizesURLBeforeCacheLookup() async {
         let stub = StubClient()
         let catalog = ModelCatalog(clientFactory: { stub })
@@ -113,7 +190,7 @@ final class ModelCatalogTests: XCTestCase {
         await catalog.loadIfNeeded(url: "http://x:1234", provider: .lmStudio)
         XCTAssertEqual(stub.fetchCount, 1)
 
-        stub.modelsToReturn = ["model-c"]
+        stub.modelsToReturn = [.init(name: "model-c")]
         await catalog.refresh(url: "http://x:1234", provider: .lmStudio)
 
         XCTAssertEqual(stub.fetchCount, 2,
@@ -254,9 +331,9 @@ final class ModelCatalogTests: XCTestCase {
         // surface's list.
         let stub = StubClient()
         let catalog = ModelCatalog(clientFactory: { stub })
-        stub.modelsToReturn = ["lm-model"]
+        stub.modelsToReturn = [.init(name: "lm-model")]
         await catalog.loadIfNeeded(url: "http://x:1234", provider: .lmStudio)
-        stub.modelsToReturn = ["ollama-model"]
+        stub.modelsToReturn = [.init(name: "ollama-model")]
         await catalog.loadIfNeeded(url: "http://x:1234", provider: .ollama)
 
         XCTAssertEqual(stub.fetchCount, 2, "different provider = different cache entry = second fetch")

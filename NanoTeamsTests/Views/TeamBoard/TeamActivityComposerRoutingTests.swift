@@ -695,6 +695,44 @@ final class TeamActivityComposerRoutingTests: XCTestCase {
         XCTAssertEqual(q.askingRoleID, "role-42")
     }
 
+    // MARK: - cardThinking (which surface owns the reasoning row)
+
+    /// A contentless turn is fully covered by the card, so the card renders its
+    /// reasoning — the feed bubble is suppressed and would otherwise show none.
+    /// RED: invert the predicate to `content != nil` → the card yields a turn it owns
+    /// and `cardThinking` is nil, so the reasoning row disappears from both surfaces.
+    func testCardThinking_contentlessPairedTurn_cardOwnsTheReasoning() {
+        let q = TeamActivityActiveQuestion(
+            stepID: "pm", role: .productManager, question: "?",
+            paired: PairedAssistantMessage(id: UUID(), thinking: "Reasoning.", content: nil)
+        )
+        XCTAssertEqual(q.cardThinking, "Reasoning.")
+    }
+
+    /// A prose-carrying turn keeps its feed bubble, and that bubble renders the
+    /// reasoning via `MessageThinkingSection`. The card must yield, or the same
+    /// reasoning appears twice — once in a height-constrained card.
+    /// RED: force `isFullyRenderedByQuestionCard` to `true` → the card claims a turn the
+    /// feed bubble also renders, and `XCTAssertNil` fails on the duplicated reasoning.
+    func testCardThinking_prosePairedTurn_yieldsToTheFeedBubble() {
+        let q = TeamActivityActiveQuestion(
+            stepID: "pm", role: .productManager, question: "?",
+            paired: PairedAssistantMessage(
+                id: UUID(), thinking: "Reasoning.", content: "Looked into it. Answering."
+            )
+        )
+        XCTAssertNil(q.cardThinking,
+                     "The visible bubble owns the reasoning row when the turn carried prose")
+    }
+
+    /// No preamble turn at all — nothing to render, nothing to suppress.
+    func testCardThinking_nilPaired_isNil() {
+        let q = TeamActivityActiveQuestion(
+            stepID: "pm", role: .productManager, question: "?", paired: nil
+        )
+        XCTAssertNil(q.cardThinking)
+    }
+
     /// Symmetry: `paired == nil` vs `paired != nil` are unequal (the Optional
     /// shape alone distinguishes them, independent of any `paired` field).
     func testActiveQuestion_equatable_nilPairedVsNonNil_areNotEqual() {
@@ -703,7 +741,7 @@ final class TeamActivityComposerRoutingTests: XCTestCase {
         )
         let b = TeamActivityActiveQuestion(
             stepID: "s", role: .productManager, question: "?",
-            paired: PairedAssistantMessage(id: UUID(), thinking: nil)
+            paired: PairedAssistantMessage(id: UUID(), thinking: nil, content: nil)
         )
         XCTAssertNotEqual(a, b)
     }

@@ -61,8 +61,8 @@ final class PlatformSmallChangeCoverageTests: XCTestCase, @unchecked Sendable {
             .unexpectedContentType("text/html").errorDescription)
         XCTAssertTrue(message.contains("text/html"), message)
         XCTAssertTrue(message.localizedCaseInsensitiveContains("captive portal")
-                      || message.localizedCaseInsensitiveContains("proxy"),
-                      "the actionable half is naming the likely cause: \(message)")
+            || message.localizedCaseInsensitiveContains("proxy"),
+            "the actionable half is naming the likely cause: \(message)")
     }
 
     /// RED: swallow `underlying` → the message loses the only clue about which field
@@ -188,9 +188,9 @@ final class PlatformSmallChangeCoverageTests: XCTestCase, @unchecked Sendable {
         let second = "\u{200B}// Source: Parser.swift:3-4\nlet b = 2"
 
         let built = AnswerTextBuilder.build(text: "please look",
-                                           clips: [first, second],
-                                           attachments: [],
-                                           embedFiles: false)
+                                            clips: [first, second],
+                                            attachments: [],
+                                            embedFiles: false)
         let lines = built.answer.components(separatedBy: "\n")
 
         XCTAssertTrue(lines.contains("## Clipped Text — 1 of 2, Calculator.swift:10-12"),
@@ -199,8 +199,8 @@ final class PlatformSmallChangeCoverageTests: XCTestCase, @unchecked Sendable {
                       built.answer)
         XCTAssertFalse(lines.contains { $0.hasPrefix("// Source:") },
                        "the attribution belongs in the header — left in the body the model "
-                       + "reads it as the first line of the code it was asked to change:"
-                       + "\n\(built.answer)")
+                           + "reads it as the first line of the code it was asked to change:"
+                           + "\n\(built.answer)")
         XCTAssertTrue(lines.contains("let a = 1"), "the body must survive: \(built.answer)")
         XCTAssertFalse(built.answer.contains("\u{200B}"),
                        "the zero-width sentinel is a transport marker and must not ship")
@@ -214,7 +214,7 @@ final class PlatformSmallChangeCoverageTests: XCTestCase, @unchecked Sendable {
     func testBuild_singleSourcedClip_namesTheFileAndOmitsTheOrdinal() {
         let clip = "\u{200B}// Source: Calculator.swift:10-12\nlet a = 1"
         let built = AnswerTextBuilder.build(text: "look", clips: [clip],
-                                           attachments: [], embedFiles: false)
+                                            attachments: [], embedFiles: false)
         let lines = built.answer.components(separatedBy: "\n")
 
         XCTAssertTrue(lines.contains("## Clipped Text — Calculator.swift:10-12"), built.answer)
@@ -228,7 +228,7 @@ final class PlatformSmallChangeCoverageTests: XCTestCase, @unchecked Sendable {
     @MainActor
     func testBuild_plainClip_getsNoSourceHeader() {
         let built = AnswerTextBuilder.build(text: "look", clips: ["just some text"],
-                                           attachments: [], embedFiles: false)
+                                            attachments: [], embedFiles: false)
         let lines = built.answer.components(separatedBy: "\n")
 
         XCTAssertTrue(lines.contains("## Clipped Text"),

@@ -59,7 +59,7 @@ final class AutovisorGoalLintCopyTests: XCTestCase {
         let halves = copy.components(separatedBy: "it has no")
         guard halves.count == 2 else {
             return XCTFail("`capability` must state absences as \"it has no …\" — that hinge is "
-                           + "what lets this test tell a capability from a denial:\n\(copy)")
+                + "what lets this test tell a capability from a denial:\n\(copy)")
         }
         let can = halves[0], cannot = halves[1]
 
@@ -101,7 +101,7 @@ final class AutovisorGoalLintCopyTests: XCTestCase {
     func testOnlyBuildClaims_usesTheProseBranchAndNamesNoToken() {
         let detail = AutovisorGoalLintCopy.detail(for: [buildClaim(), buildClaim("compile", line: 2)])
         XCTAssertEqual(detail, "This goal tells it to build or run something itself. "
-                       + "If that's meant for the teams it delegates to, say so in the goal.")
+            + "If that's meant for the teams it delegates to, say so in the goal.")
     }
 
     /// One offender named on three lines is still ONE name in a 240pt popover.
@@ -112,7 +112,7 @@ final class AutovisorGoalLintCopyTests: XCTestCase {
             tool("write_file", line: 3),
         ])
         XCTAssertEqual(detail, "This goal names bash, write_file. "
-                       + "If that's meant for the teams it delegates to, you can ignore this.")
+            + "If that's meant for the teams it delegates to, you can ignore this.")
     }
 
     /// The truncation branch: first three SORTED names, then the overflow marker.
@@ -122,7 +122,7 @@ final class AutovisorGoalLintCopyTests: XCTestCase {
             tool("delete_file"), tool("run_xcodebuild"),
         ])
         XCTAssertEqual(detail, "This goal names bash, delete_file, git_commit, …. "
-                       + "If that's meant for the teams it delegates to, you can ignore this.")
+            + "If that's meant for the teams it delegates to, you can ignore this.")
     }
 
     /// Exactly three must NOT get the overflow marker (the off-by-one either way).
@@ -131,7 +131,7 @@ final class AutovisorGoalLintCopyTests: XCTestCase {
             tool("write_file"), tool("bash"), tool("git_commit"),
         ])
         XCTAssertEqual(detail, "This goal names bash, git_commit, write_file. "
-                       + "If that's meant for the teams it delegates to, you can ignore this.")
+            + "If that's meant for the teams it delegates to, you can ignore this.")
     }
 
     /// Precedence: a concrete tool name is more actionable than the prose rule,
@@ -139,7 +139,7 @@ final class AutovisorGoalLintCopyTests: XCTestCase {
     func testMixedFindings_preferTheTokenBranch() {
         let detail = AutovisorGoalLintCopy.detail(for: [buildClaim(), tool("bash", line: 2)])
         XCTAssertEqual(detail, "This goal names bash. "
-                       + "If that's meant for the teams it delegates to, you can ignore this.")
+            + "If that's meant for the teams it delegates to, you can ignore this.")
     }
 
     // MARK: - Accessibility

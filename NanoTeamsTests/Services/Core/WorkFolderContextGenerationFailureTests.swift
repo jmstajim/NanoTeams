@@ -55,8 +55,8 @@ final class WorkFolderContextGenerationFailureTests: XCTestCase {
         XCTAssertFalse(sut.isGeneratingWorkFolderContext)
         XCTAssertNotNil(sut.lastInfoMessage,
                         "Empty LLM response must surface a user-visible info message — " +
-                        "otherwise the spinner just disappears with no insertion and " +
-                        "looks broken.")
+                            "otherwise the spinner just disappears with no insertion and " +
+                            "looks broken.")
         XCTAssertNil(sut.lastErrorMessage,
                      "Empty response is not an error — must NOT use the red error banner")
     }
@@ -73,7 +73,7 @@ final class WorkFolderContextGenerationFailureTests: XCTestCase {
         XCTAssertFalse(sut.isGeneratingWorkFolderContext)
         XCTAssertNotNil(sut.lastInfoMessage,
                         "Whitespace-only stream must trip the same info path " +
-                        "as a fully empty one")
+                            "as a fully empty one")
     }
 
     // MARK: - Real failure → error banner (NOT the generic info banner)
@@ -152,7 +152,7 @@ final class WorkFolderContextGenerationFailureTests: XCTestCase {
 
         XCTAssertEqual(sut.workFolderContextGenerationGeneration, before + 1,
                        "Each successful start must bump the generation counter so " +
-                       "the spawned lambda captures a unique token.")
+                           "the spawned lambda captures a unique token.")
 
         sut.cancelWorkFolderContextGeneration()
     }
@@ -166,8 +166,8 @@ final class WorkFolderContextGenerationFailureTests: XCTestCase {
 
         XCTAssertGreaterThan(sut.workFolderContextGenerationGeneration, mid,
                              "Cancel must bump the counter so any in-flight lambda " +
-                             "from the cancelled run finds its captured token stale " +
-                             "and bails before clobbering a fresh start's state.")
+                                 "from the cancelled run finds its captured token stale " +
+                                 "and bails before clobbering a fresh start's state.")
     }
 
     func testCounter_cancelThenStart_yieldsDistinctToken() async {
@@ -186,7 +186,7 @@ final class WorkFolderContextGenerationFailureTests: XCTestCase {
 
         XCTAssertNotEqual(t1Token, t2Token,
                           "T2 must capture a token distinct from T1's — otherwise " +
-                          "T1's late lambda would match the guard and clobber state.")
+                              "T1's late lambda would match the guard and clobber state.")
 
         sut.cancelWorkFolderContextGeneration()
     }
@@ -227,5 +227,5 @@ private final class ControllableStubLLMClient: LLMClient, @unchecked Sendable {
         }
     }
 
-    func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [String] { [] }
+    func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [LLMModelInfo] { [] }
 }

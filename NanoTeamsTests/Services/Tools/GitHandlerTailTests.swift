@@ -274,7 +274,7 @@ final class GitHandlerTailTests: XCTestCase {
             FileManager.default.fileExists(
                 atPath: tempDir.appendingPathComponent("CONFLICT.md").path),
             "precondition: the pull must actually have brought the file down, or this test "
-            + "passes without exercising the diffstat at all")
+                + "passes without exercising the diffstat at all")
         // Stronger anti-vacuity than the line above, which proves the pull ran and not that
         // the marker word reached the handler. `merge.stat` is pinned in `initRepo` for the
         // same reason; this asserts the consequence rather than trusting the setting.

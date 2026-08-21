@@ -30,7 +30,7 @@ final class AutovisorLoopParkRedeliveryTests: NTMSOrchestratorTestBase, @uncheck
             step.needsSupervisorInput = true
             step.supervisorQuestion =
                 "Role Autovisor \(LoopRecoveryPolicy.stuckQuestionMarker) (within-message): "
-                + "substring \"x\" repeated 4 times consecutively. Please advise how to proceed."
+                    + "substring \"x\" repeated 4 times consecutively. Please advise how to proceed."
             task.runs = [Run(id: 0, steps: [step], roleStatuses: ["autovisor_autovisor": .working])]
         }
     }
@@ -61,9 +61,9 @@ final class AutovisorLoopParkRedeliveryTests: NTMSOrchestratorTestBase, @uncheck
         sut.noteAutovisorLoopPark(mgrID)
 
         XCTAssertFalse(sut.autovisorLastPassAttentionKeys.contains(key(42)),
-            "a pass that died mid-thought reviewed nothing — its baseline must not claim otherwise")
+                       "a pass that died mid-thought reviewed nothing — its baseline must not claim otherwise")
         XCTAssertTrue(sut.autovisorLoopParkRedelivered.contains(key(42)),
-            "the rolled-back key must be recorded as spent, or the bound is unenforceable")
+                      "the rolled-back key must be recorded as spent, or the bound is unenforceable")
     }
 
     /// **The guard on the deliver-once invariant.** A manager that loops on every pass
@@ -79,7 +79,7 @@ final class AutovisorLoopParkRedeliveryTests: NTMSOrchestratorTestBase, @uncheck
         sut.noteAutovisorLoopPark(mgrID)                    // episode 2 — must be a no-op
 
         XCTAssertTrue(sut.autovisorLastPassAttentionKeys.contains(key(42)),
-            "the second consecutive loop park must re-deliver nothing and fall through to the recurrence")
+                      "the second consecutive loop park must re-deliver nothing and fall through to the recurrence")
     }
 
     /// A healthy terminal means a pass really completed, so the one free re-delivery
@@ -97,7 +97,7 @@ final class AutovisorLoopParkRedeliveryTests: NTMSOrchestratorTestBase, @uncheck
         sut.autovisorLastPassAttentionKeys = [key(42)]
         sut.noteAutovisorLoopPark(mgrID)
         XCTAssertFalse(sut.autovisorLastPassAttentionKeys.contains(key(42)),
-            "after a completed pass the next loop park gets its re-delivery back")
+                       "after a completed pass the next loop park gets its re-delivery back")
     }
 
     // MARK: - Scope
@@ -113,7 +113,7 @@ final class AutovisorLoopParkRedeliveryTests: NTMSOrchestratorTestBase, @uncheck
         sut.noteAutovisorLoopPark(mgrID)
 
         XCTAssertTrue(sut.autovisorLastPassAttentionKeys.contains(key(42)),
-            "an idle park reviewed its conditions — the baseline is honest and must stand")
+                      "an idle park reviewed its conditions — the baseline is honest and must stand")
         XCTAssertTrue(sut.autovisorLoopParkRedelivered.isEmpty)
     }
 

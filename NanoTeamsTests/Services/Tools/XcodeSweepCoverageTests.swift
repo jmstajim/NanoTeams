@@ -270,16 +270,16 @@ final class XcodeSweepCoverageTests: XCTestCase {
     func testDetectSchemes_parsesTheSchemesBlockAndStopsAtTheNextSection() throws {
         let ref = try makeProject()
         let runner = RecordingXcodebuildRunner(responses: [.ok("""
-            Information about project "App":
-                Targets:
-                    AppTarget
-
-                Schemes:
-                    Alpha
-                    Beta
-                Build Configurations:
-                    Debug
-            """)])
+        Information about project "App":
+            Targets:
+                AppTarget
+        
+            Schemes:
+                Alpha
+                Beta
+            Build Configurations:
+                Debug
+        """)])
 
         let schemes = XcodeBuildRunner.detectSchemes(
             xcodeRef: ref, workFolderRoot: root, runner: runner)
@@ -303,11 +303,11 @@ final class XcodeSweepCoverageTests: XCTestCase {
     func testDetectSchemes_blankLineEndsTheBlock() throws {
         let ref = try makeProject()
         let runner = RecordingXcodebuildRunner(responses: [.ok("""
-            Schemes:
-                Only
-
-            trailing noise that is not a scheme
-            """)])
+        Schemes:
+            Only
+        
+        trailing noise that is not a scheme
+        """)])
 
         XCTAssertEqual(
             XcodeBuildRunner.detectSchemes(xcodeRef: ref, workFolderRoot: root, runner: runner),
@@ -323,24 +323,24 @@ final class XcodeSweepCoverageTests: XCTestCase {
     func testDetectSchemes_agreesWithTheSettingsPickerParser() throws {
         let ref = try makeProject()
         let listOutput = """
-            Command line invocation:
-                /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild -list
-
-            Information about project "App":
-                Targets:
-                    App
-                    AppTests
-
-                Build Configurations:
-                    Debug
-                    Release
-
-                If no build configuration is specified and -scheme is not passed then "Release" is used.
-
-                Schemes:
-                    App
-
-            """
+        Command line invocation:
+            /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild -list
+        
+        Information about project "App":
+            Targets:
+                App
+                AppTests
+        
+            Build Configurations:
+                Debug
+                Release
+        
+            If no build configuration is specified and -scheme is not passed then "Release" is used.
+        
+            Schemes:
+                App
+        
+        """
         let runner = RecordingXcodebuildRunner(responses: [.ok(listOutput)])
 
         XCTAssertEqual(

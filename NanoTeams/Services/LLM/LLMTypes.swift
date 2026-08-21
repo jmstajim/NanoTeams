@@ -75,6 +75,19 @@ nonisolated struct LLMConfig: Hashable {
     /// user-facing generation settings were removed — LM Studio is the single
     /// source of truth for sampling.
     var temperature: Double?
+    /// Hard ceiling on generated tokens. `nil` = don't send the key at all, which is the setting
+    /// for every role step: an agent turn cut off mid-thought produces a truncated tool call and a
+    /// step that can never complete.
+    ///
+    /// The ONLY production writer is the generation benchmark (`BenchmarkPrompt.maxOutputTokens`)
+    /// — same shape as `temperature`, and for the same reason: a measurement is allowed to demand
+    /// determinism that real work is not. There it replaces an UNCONTROLLED variable with a
+    /// controlled one. Measured on LM Studio 0.4.21 / qwen3.5-9b: one uncapped sample of this
+    /// benchmark's prompt produced 12 040 tokens, 96 % of them reasoning, over 233 s — while
+    /// another model on another day might answer the same prompt in 400. Comparing two rates
+    /// measured over sequences that differ by an order of magnitude compares two different things,
+    /// because per-token decode cost grows with the sequence being attended to.
+    var maxOutputTokens: Int?
     /// Streaming HTTP request timeout in seconds. `0` = no timeout (wait indefinitely).
     /// Minimum effective value is 1s; values below 1 other than 0 are clamped up.
     var requestTimeoutSeconds: Int
@@ -98,6 +111,7 @@ nonisolated struct LLMConfig: Hashable {
         baseURLString: String? = nil,
         modelName: String? = nil,
         temperature: Double? = nil,
+        maxOutputTokens: Int? = nil,
         requestTimeoutSeconds: Int? = nil,
         keepAliveSeconds: Int? = nil
     ) {
@@ -105,6 +119,7 @@ nonisolated struct LLMConfig: Hashable {
         self.baseURLString = baseURLString ?? provider.defaultBaseURL
         self.modelName = modelName ?? provider.defaultModel
         self.temperature = temperature
+        self.maxOutputTokens = maxOutputTokens
         self.requestTimeoutSeconds = requestTimeoutSeconds ?? LLMConstants.defaultLLMRequestTimeoutSeconds
         self.keepAliveSeconds = keepAliveSeconds
     }
@@ -140,6 +155,53 @@ nonisolated struct StreamEvent: Hashable {
     /// What THIS APP did to the model's residency for this request. The complement of
     /// `serverPrefill` — see `ClientResidencyFacts`.
     var clientResidency: ClientResidencyFacts?
+    /// Nanoseconds the server says it spent GENERATING, decode only — Ollama `eval_duration`.
+    /// Stays nil on LM Studio, which reports the same fact as a RATE rather than a window; see
+    /// `serverGenerationTokensPerSecond`.
+    ///
+    /// Terminal, emitted alongside `tokenUsage`. Deliberately NOT folded into `serverPrefill`:
+    /// that report describes what happened BEFORE the first token, and its `isEmpty` counts only
+    /// `modelLoadMs` and `prefillNs` — a report carrying nothing but this would be dropped on the
+    /// way out of the parser.
+    ///
+    /// A bare `Double?` rather than a new wrapper type, matching `processingProgress`: one
+    /// number with one meaning does not earn a struct.
+    var serverGenerationNs: Double?
+    /// Tokens per second the server measured over its decode window — LM Studio
+    /// `stats.tokens_per_second`, verbatim. Stays nil on Ollama, which reports the window.
+    ///
+    /// Kept as a RATE rather than converted into `serverGenerationNs`, and the reason is #80: a
+    /// duration derived as `tokens / rate` fabricates a window whose endpoints the server never
+    /// disclosed, and silently adopts whatever fence-post convention the server used. Measured
+    /// on LM Studio 0.4.21 (2026-08-19), that convention is
+    /// `completion_tokens / (generation_time − time_to_first_token)` to 0.00 % — decode only,
+    /// numerator uncorrected, i.e. identical to Ollama's — but that is a fact about one build,
+    /// and recording the rate as sent is what lets it be re-derived from a log instead of
+    /// re-assumed.
+    var serverGenerationTokensPerSecond: Double?
+    /// How much of `tokenUsage.outputTokens` the server attributes to reasoning — LM Studio
+    /// `stats.reasoning_output_tokens`. Nil on Ollama, which reports thinking as content without
+    /// counting it separately.
+    ///
+    /// Not folded into `TokenUsage`: that type is accumulated across tool-loop iterations, and
+    /// giving it an optional third term would introduce optional arithmetic on the app's hottest
+    /// value type for the benefit of one reader.
+    var serverReasoningOutputTokens: Int?
+    /// Nanoseconds the server says the WHOLE request took, its own clock — Ollama
+    /// `total_duration`. Nil on LM Studio, which reports no equivalent over the streaming API.
+    ///
+    /// The app measures the same span itself and always has, so this is not a replacement but the
+    /// only second opinion that span has ever had. Where the two disagree, the difference is
+    /// transport and scheduling — which is the difference between "the model is slow" and "this
+    /// machine is busy", and neither number can say that alone.
+    var serverTotalNs: Double?
+    /// Why the server stopped generating — Ollama `done_reason`: `"stop"` when the model finished
+    /// on its own, `"length"` when it hit the requested ceiling. Nil on LM Studio.
+    ///
+    /// Recorded verbatim rather than mapped onto a Bool. `"stop"` and `"length"` are today's two
+    /// values; a server that adds a third would be flattened into "not length" by a Bool, and the
+    /// string costs nothing to keep.
+    var serverDoneReason: String?
 
     init(
         contentDelta: String = "",
@@ -148,7 +210,12 @@ nonisolated struct StreamEvent: Hashable {
         tokenUsage: TokenUsage? = nil,
         processingProgress: Double? = nil,
         serverPrefill: ServerPrefillReport? = nil,
-        clientResidency: ClientResidencyFacts? = nil
+        clientResidency: ClientResidencyFacts? = nil,
+        serverGenerationNs: Double? = nil,
+        serverGenerationTokensPerSecond: Double? = nil,
+        serverReasoningOutputTokens: Int? = nil,
+        serverTotalNs: Double? = nil,
+        serverDoneReason: String? = nil
     ) {
         self.contentDelta = contentDelta
         self.thinkingDelta = thinkingDelta
@@ -157,12 +224,19 @@ nonisolated struct StreamEvent: Hashable {
         self.processingProgress = processingProgress
         self.serverPrefill = serverPrefill
         self.clientResidency = clientResidency
+        self.serverGenerationNs = serverGenerationNs
+        self.serverGenerationTokensPerSecond = serverGenerationTokensPerSecond
+        self.serverReasoningOutputTokens = serverReasoningOutputTokens
+        self.serverTotalNs = serverTotalNs
+        self.serverDoneReason = serverDoneReason
     }
 
     var isEmpty: Bool {
         contentDelta.isEmpty && thinkingDelta.isEmpty && toolCallDeltas.isEmpty
             && tokenUsage == nil && processingProgress == nil && serverPrefill == nil
-            && clientResidency == nil
+            && clientResidency == nil && serverGenerationNs == nil
+            && serverGenerationTokensPerSecond == nil && serverReasoningOutputTokens == nil
+            && serverTotalNs == nil && serverDoneReason == nil
     }
 
     struct ToolCallDelta: Hashable {

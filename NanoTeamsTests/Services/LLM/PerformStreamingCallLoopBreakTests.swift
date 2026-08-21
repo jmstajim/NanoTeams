@@ -28,7 +28,7 @@ final class PerformStreamingCallLoopBreakTests: XCTestCase {
     private func loopThinking() -> String { String(repeating: "Wait, let me reconsider.", count: 25) }
     private func cleanThinking() -> String {
         "I will read the config, validate the schema, then write the result. " +
-        "Each step builds on the previous; nothing repeats pathologically here at all."
+            "Each step builds on the previous; nothing repeats pathologically here at all."
     }
 
     /// Builds a task (top-level or child) with one running step whose id is `stepID`,
@@ -55,6 +55,40 @@ final class PerformStreamingCallLoopBreakTests: XCTestCase {
             stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
             client: ScriptedClient(events: events), config: stubConfig(),
             tools: [], conversationMessages: [], networkLogger: nil)
+    }
+
+    // MARK: - Cadence-gated canonical duplicate break (2026-08-21)
+
+    /// The canonical (whitespace/key-order) duplicate probe runs behind
+    /// `toolDeltaScanGate`, not per delta — this pins that the gated path FIRES:
+    /// two canonically-equal-but-byte-different calls whose deltas exceed the
+    /// cadence must break the stream, so the trailing content never lands.
+    /// The per-delta raw probe must NOT fire here (different bytes), which is
+    /// exactly what makes this the canonical branch's test and not its sibling's.
+    ///
+    /// RED: delete the gated `containsDuplicateToolCalls` call from the
+    /// `toolCallDeltas` branch → the stream runs to completion and the
+    /// trailing-content assertion below fails on "AFTER-BREAK".
+    /// (The other half — the probe being GATED rather than per-delta — is
+    /// pinned by `testStreamingWiring_canonicalProbeIsCadenceGated`.)
+    func testCanonicalDuplicateToolCalls_breakTheStream_behindTheCadenceGate() async throws {
+        setUpStep(stepID: "dup", taskID: 41)
+        let filler = String(repeating: "x", count: 180)
+        let argsA = "{\"path\":\"a.txt\",\"content\":\"\(filler)\"}"
+        let argsB = "{ \"content\" : \"\(filler)\", \"path\" : \"a.txt\" }"  // same JSON, different bytes
+        let events = [
+            StreamEvent(toolCallDeltas: [
+                StreamEvent.ToolCallDelta(index: 0, id: "a", name: "write_file", argumentsDelta: argsA),
+            ]),
+            StreamEvent(toolCallDeltas: [
+                StreamEvent.ToolCallDelta(index: 1, id: "b", name: "write_file", argumentsDelta: argsB),
+            ]),
+            StreamEvent(contentDelta: "AFTER-BREAK prose that must never arrive"),
+        ]
+        let result = try await run(events, stepID: "dup", taskID: 41)
+
+        XCTAssertFalse(result.assistantContent.contains("AFTER-BREAK"),
+                       "the canonical duplicate must break the stream before the trailing content")
     }
 
     // MARK: - Top-level
@@ -172,6 +206,6 @@ final class PerformStreamingCallLoopBreakTests: XCTestCase {
                 continuation.finish()
             }
         }
-        func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
+        func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
     }
 }

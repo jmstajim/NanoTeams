@@ -80,9 +80,9 @@ final class ReconcileDeferralEquivalenceTests: XCTestCase {
                     XCTAssertTrue(
                         Self.sweepable.contains(derived),
                         "pinsTeamAsBusy(role: \(role), step: \(String(describing: step)), "
-                        + "task.status: \(taskStatus)) is true but derives \(derived), which "
-                        + "recoverStaleStatusesAcrossIndex does NOT sweep — this deferral "
-                        + "would be PERMANENT"
+                            + "task.status: \(taskStatus)) is true but derives \(derived), which "
+                            + "recoverStaleStatusesAcrossIndex does NOT sweep — this deferral "
+                            + "would be PERMANENT"
                     )
                 }
             }

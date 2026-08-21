@@ -138,8 +138,8 @@ nonisolated extension TeammateConsultation {
     /// Check if this is a duplicate question to the same teammate
     func isDuplicateOf(_ other: TeammateConsultation) -> Bool {
         return consultedRole == other.consultedRole &&
-               question.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) ==
-               other.question.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+            question.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) ==
+            other.question.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 

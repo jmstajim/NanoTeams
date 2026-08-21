@@ -157,6 +157,8 @@ nonisolated struct NativeLMStudioClient: LLMClient {
                     var accumulatedThinking = ""
                     var capturedUsage: TokenUsage?
                     var capturedPrefill: ServerPrefillReport?
+                    var capturedGenerationRate: Double?
+                    var capturedReasoningTokens: Int?
 
                     var sseParser = SSEEventParser()
 
@@ -171,9 +173,11 @@ nonisolated struct NativeLMStudioClient: LLMClient {
                         case .thinkingDelta(let content):
                             accumulatedThinking += content
                             continuation.yield(StreamEvent(thinkingDelta: content))
-                        case .chatEnd(let usage, let prefill):
+                        case .chatEnd(let usage, let prefill, let rate, let reasoningTokens):
                             capturedUsage = usage
                             capturedPrefill = prefill
+                            capturedGenerationRate = rate
+                            capturedReasoningTokens = reasoningTokens
                         case .error(let message):
                             throw LLMClientError.providerError(message)
                         case .processingProgress(let progress):
@@ -183,10 +187,14 @@ nonisolated struct NativeLMStudioClient: LLMClient {
                         }
                     }
 
-                    // Emit final event with usage + the server's account of how it prefilled.
-                    if capturedUsage != nil || capturedPrefill != nil {
+                    // Emit final event with usage + the server's account of how it prefilled and
+                    // how fast it decoded.
+                    if capturedUsage != nil || capturedPrefill != nil
+                        || capturedGenerationRate != nil || capturedReasoningTokens != nil {
                         continuation.yield(StreamEvent(
-                            tokenUsage: capturedUsage, serverPrefill: capturedPrefill))
+                            tokenUsage: capturedUsage, serverPrefill: capturedPrefill,
+                            serverGenerationTokensPerSecond: capturedGenerationRate,
+                            serverReasoningOutputTokens: capturedReasoningTokens))
                     }
 
                     // Log response
@@ -237,7 +245,7 @@ nonisolated struct NativeLMStudioClient: LLMClient {
         }
     }
 
-    func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [String] {
+    func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [LLMModelInfo] {
         try await fetchModelsMatching(
             config: config,
             nativeFilter: { info in
@@ -351,7 +359,7 @@ nonisolated struct NativeLMStudioClient: LLMClient {
             fields.append(.init(label: "Max context length", value: String(maxCtx)))
         }
         if let quant = entry.quantization, !quant.isEmpty {
-            fields.append(.init(label: "Quantization", value: quant))
+            fields.append(.init(label: ModelLoadDetails.quantizationLabel, value: quant))
         }
         if let arch = entry.arch, !arch.isEmpty {
             fields.append(.init(label: "Architecture", value: arch))
@@ -360,7 +368,7 @@ nonisolated struct NativeLMStudioClient: LLMClient {
             fields.append(.init(label: "Type", value: type))
         }
         if let compat = entry.compatibilityType, !compat.isEmpty {
-            fields.append(.init(label: "Format", value: compat))
+            fields.append(.init(label: ModelLoadDetails.formatLabel, value: compat))
         }
         if let publisher = entry.publisher, !publisher.isEmpty {
             fields.append(.init(label: "Publisher", value: publisher))
@@ -374,10 +382,13 @@ nonisolated struct NativeLMStudioClient: LLMClient {
         // so match both. OpenAI-compatible fallback has no type metadata and
         // returns the full list — acceptable degraded behavior there because
         // the user can still type a known embedding model name manually.
+        // Names only: the Embeddings card renders no format/quantization chips, and widening the
+        // protocol here would be a change with no reader (ISP). The metadata is decoded either way
+        // — this call site just does not ask for it.
         try await fetchModelsMatching(
             config: config,
             nativeFilter: { info in info.type == "embeddings" || info.type == "embedding" }
-        )
+        ).map(\.name)
     }
 
     /// Shared GET `/api/v1/models` + decode. `nativeFilter` runs against the
@@ -385,7 +396,7 @@ nonisolated struct NativeLMStudioClient: LLMClient {
     private func fetchModelsMatching(
         config: LLMConfig,
         nativeFilter: (NativeModelListResponse.NativeModelInfo) -> Bool
-    ) async throws -> [String] {
+    ) async throws -> [LLMModelInfo] {
         guard let baseURL = URL(string: config.baseURLString) else {
             throw LLMClientError.invalidBaseURL(config.baseURLString)
         }
@@ -416,8 +427,11 @@ nonisolated struct NativeLMStudioClient: LLMClient {
             let native = try decoder.decode(NativeModelListResponse.self, from: data)
             return native.models
                 .filter(nativeFilter)
-                .map(\.key)
-                .normalizedUnique()
+                .map {
+                    LLMModelInfo(
+                        name: $0.key, format: $0.format, quantization: $0.quantization?.name)
+                }
+                .normalizedUnique(name: \.name)
         } catch {
             // Native decode failed — likely an LM Studio version mismatch or a
             // genuine OpenAI-compatible endpoint. Log so future API regressions
@@ -427,9 +441,12 @@ nonisolated struct NativeLMStudioClient: LLMClient {
             #endif
         }
 
-        // Fallback: OpenAI-compatible format — no capability metadata, return all
+        // Fallback: OpenAI-compatible format — no capability metadata, return all. Format and
+        // quantization stay nil for the same reason `modelSupportsVision` returns nil on this
+        // branch: the shape carries neither, and a guessed one would be indistinguishable from a
+        // reported one at every render site.
         let openAI = try decoder.decode(OpenAIModelListResponse.self, from: data)
-        return openAI.data.map(\.id).normalizedUnique()
+        return openAI.data.map { LLMModelInfo(name: $0.id) }.normalizedUnique(name: \.name)
     }
 
     // MARK: - Model Lifecycle (load / unload)
@@ -447,7 +464,9 @@ nonisolated struct NativeLMStudioClient: LLMClient {
     ///
     /// Timeout: 600s — first-time loads can include a model download for
     /// users who picked something they don't have on disk yet.
-    func loadModel(modelName: String, baseURLString: String) async throws -> String {
+    func loadModel(
+        provider _: LLMProvider, modelName: String, baseURLString: String
+    ) async throws -> String {
         guard let baseURL = URL(string: baseURLString) else {
             throw LLMClientError.invalidBaseURL(baseURLString)
         }
@@ -495,7 +514,9 @@ nonisolated struct NativeLMStudioClient: LLMClient {
     /// substrings appear in `error.message` — NOT in the raw body. Real
     /// error strings (e.g. LoRA's "the requested adapter is not loaded into
     /// the base model") would otherwise collide with our success substrings.
-    func unloadModel(instanceID: String, baseURLString: String) async throws {
+    func unloadModel(
+        provider _: LLMProvider, instanceID: String, baseURLString: String
+    ) async throws {
         guard let baseURL = URL(string: baseURLString) else {
             throw LLMClientError.invalidBaseURL(baseURLString)
         }
@@ -546,14 +567,16 @@ nonisolated struct NativeLMStudioClient: LLMClient {
     /// `GET {base}/api/v0/models` — LM Studio's per-instance model listing
     /// with a `state: "loaded" | "not-loaded"` field. The OpenAI-shaped
     /// `/api/v1/models` endpoint does NOT carry per-instance state, so this
-    /// uses the `v0` route exclusively and degrades to `[]` on any failure
-    /// (the caller will then fall through to `loadModel`).
+    /// uses the `v0` route exclusively; a server without that route reports
+    /// `.unsupported`, and a transport failure still throws.
     ///
     /// Returns one entry per loaded instance. `LoadedModelInstance.modelName`
     /// is the canonical name (LM Studio's `:N` dedup suffix stripped) for
     /// matching against `EmbeddingConfig.modelName`. `instanceID` is the raw
     /// `id` to pass to `unloadModel`.
-    func listLoadedInstances(baseURLString: String) async throws -> [LoadedModelInstance] {
+    func listLoadedInstances(
+        provider _: LLMProvider, baseURLString: String
+    ) async throws -> LoadedInstanceListing {
         guard let baseURL = URL(string: baseURLString) else {
             throw LLMClientError.invalidBaseURL(baseURLString)
         }
@@ -568,23 +591,27 @@ nonisolated struct NativeLMStudioClient: LLMClient {
             throw LLMClientError.missingResponse
         }
         guard (200..<300).contains(http.statusCode) else {
-            // 404 here means LM Studio doesn't have v0 (older build). Treat
-            // as "no info" so caller falls through to `loadModel` rather than
-            // crashing the lifecycle.
-            if http.statusCode == 404 { return [] }
+            // 404 means this LM Studio has no v0 route (older build) — the
+            // server is fine, the question simply has no answer here. Reported
+            // as `.unsupported` rather than as an empty list: adoption callers
+            // treat the two identically via `adoptable`, but the benchmark's
+            // residency check does not, and used to stamp "already alone" on a
+            // machine that had answered nothing.
+            if http.statusCode == 404 { return .unsupported }
             let bodyText = String(data: data, encoding: .utf8) ?? ""
             throw LLMClientError.badHTTPStatus(http.statusCode, bodyText)
         }
 
         let decoded = try JSONCoderFactory.makeWireDecoder().decode(V0ModelListResponse.self, from: data)
-        return decoded.data
-            .filter { $0.state == "loaded" }
-            .map { entry in
-                LoadedModelInstance(
-                    modelName: Self.canonicalModelName(entry.id),
-                    instanceID: entry.id
-                )
-            }
+        return .listed(
+            decoded.data
+                .filter { $0.state == "loaded" }
+                .map { entry in
+                    LoadedModelInstance(
+                        modelName: Self.canonicalModelName(entry.id),
+                        instanceID: entry.id
+                    )
+                })
     }
 
     /// LM Studio appends `:N` (N >= 2) to disambiguate duplicate-load

@@ -13,6 +13,15 @@ nonisolated struct NTMSTask: Codable, Identifiable, Hashable {
     var updatedAt: Date
     var runs: [Run]
 
+    /// NOT persisted (no CodingKey). `false` ⇔ some step carries a `logCommit`
+    /// but its stream arrays are the stripped-on-write empties — i.e. this value
+    /// came off disk RAW and its conversations live in `step_log.jsonl`,
+    /// unloaded. `updateTaskOnly` refuses such a task (`unhydratedTask`): its
+    /// empty arrays would diff as a rollback and truncate the logs. Computed on
+    /// decode; `true` for legacy tasks, step-less tasks and every hand-built
+    /// value; set back to `true` by the repository's hydration.
+    var streamsHydrated: Bool = true
+
     /// When the Supervisor explicitly closed/accepted the task. nil = not yet closed.
     var closedAt: Date?
 
@@ -216,6 +225,15 @@ nonisolated struct NTMSTask: Codable, Identifiable, Hashable {
         self.createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? MonotonicClock.shared.now()
         self.updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? MonotonicClock.shared.now()
         self.runs = try container.decodeIfPresent([Run].self, forKey: .runs) ?? []
+        self.streamsHydrated = !self.runs.contains { run in
+            run.steps.contains { step in
+                step.logCommit.map { commit in
+                    commit.seq > 0
+                        && step.llmConversation.isEmpty && step.wireTranscript.isEmpty
+                        && step.toolCalls.isEmpty && step.messages.isEmpty
+                } ?? false
+            }
+        }
         self.closedAt = try container.decodeIfPresent(Date.self, forKey: .closedAt)
         self.acceptanceMode = try container.decodeIfPresent(AcceptanceMode.self, forKey: .acceptanceMode)
         self.acceptanceCheckpoints = try container.decodeIfPresent(Set<String>.self, forKey: .acceptanceCheckpoints)
@@ -405,9 +423,33 @@ nonisolated extension TasksIndex {
     /// already in the chain). Real chains never exceed `maxDelegationDepth`;
     /// anything beyond is corruption — we bail rather than truncate silently.
     func ancestorIDs(of taskID: Int) -> [Int] {
+        ancestorIDs(of: taskID, links: parentLinks())
+    }
+
+    /// One pass over the index → id-keyed parent links. On a duplicate id the
+    /// FIRST row wins — including a first row whose parent is nil — matching
+    /// `tasks.first(where:)` exactly, so the two spellings of the walk can
+    /// never nest one task's storage at two different paths.
+    func parentLinks() -> [Int: Int] {
+        var links: [Int: Int] = [:]
+        var seen = Set<Int>()
+        links.reserveCapacity(tasks.count)
+        seen.reserveCapacity(tasks.count)
+        for s in tasks {
+            guard seen.insert(s.id).inserted else { continue }
+            if let pid = s.parentTaskID { links[s.id] = pid }
+        }
+        return links
+    }
+
+    /// `ancestorIDs(of:)` with the hop map precomputed — callers that walk the
+    /// chain for EVERY index row (the reconcile sweeps) build `parentLinks()`
+    /// once and turn an O(tasks²) loop into O(tasks). Same body as the wrapper:
+    /// visited set, safety cap, root-first insert.
+    func ancestorIDs(of taskID: Int, links: [Int: Int]) -> [Int] {
         var ancestors: [Int] = []
         var visited: Set<Int> = [taskID]
-        var current: Int? = tasks.first(where: { $0.id == taskID })?.parentTaskID
+        var current: Int? = links[taskID]
         var safety = 0
         let cap = DelegationConstants.treeTraversalSafetyCap
         while let pid = current, safety < cap {
@@ -417,7 +459,7 @@ nonisolated extension TasksIndex {
             if visited.contains(pid) { break }
             visited.insert(pid)
             ancestors.insert(pid, at: 0)
-            current = tasks.first(where: { $0.id == pid })?.parentTaskID
+            current = links[pid]
             safety += 1
         }
         return ancestors
@@ -432,6 +474,27 @@ nonisolated extension TasksIndex {
     /// set, a corrupted child→parent self-link would produce duplicates in
     /// `result` until the cap was hit.
     func descendantIDs(of taskID: Int) -> [Int] {
+        descendantIDs(of: taskID, children: childLinks())
+    }
+
+    /// One pass over the index → children keyed by parent id, preserving index
+    /// order within each bucket. Duplicate-id rows appear once per ROW (as the
+    /// legacy per-frontier scan saw them); the BFS's visited set dedups them
+    /// identically in both spellings.
+    func childLinks() -> [Int: [Int]] {
+        var children: [Int: [Int]] = [:]
+        for s in tasks {
+            guard let pid = s.parentTaskID else { continue }
+            children[pid, default: []].append(s.id)
+        }
+        return children
+    }
+
+    /// `descendantIDs(of:)` with the child map precomputed — the open-time
+    /// stale-status sweep calls this once per stale row, and the legacy
+    /// per-frontier `for summary in tasks` scan made that O(rows × depth ×
+    /// tasks) on the MainActor before the UI settled.
+    func descendantIDs(of taskID: Int, children: [Int: [Int]]) -> [Int] {
         var result: [Int] = []
         var visited: Set<Int> = [taskID]
         var frontier: [Int] = [taskID]
@@ -440,11 +503,11 @@ nonisolated extension TasksIndex {
         while !frontier.isEmpty && safety < cap {
             var next: [Int] = []
             for parentID in frontier {
-                for summary in tasks where summary.parentTaskID == parentID {
-                    if visited.contains(summary.id) { continue }
-                    visited.insert(summary.id)
-                    result.append(summary.id)
-                    next.append(summary.id)
+                for childID in children[parentID] ?? [] {
+                    if visited.contains(childID) { continue }
+                    visited.insert(childID)
+                    result.append(childID)
+                    next.append(childID)
                 }
             }
             frontier = next
@@ -474,7 +537,37 @@ nonisolated struct TaskSummary: Codable, Identifiable, Hashable {
     /// `loadedTasks` — without loading every task blob.
     var pinnedTeamID: NTMSID?
 
-    init(id: Int, title: String, status: TaskStatus, updatedAt: Date = MonotonicClock.shared.now(), isChatMode: Bool = false, parentTaskID: Int? = nil, nextRecurrenceFireAt: Date? = nil, pinnedTeamID: NTMSID? = nil) {
+    /// Whether the task's active run is still owed a Supervisor answer — the
+    /// durable twin of `NTMSTask.hasPendingSupervisorInput`, mirrored here so the
+    /// sidebar and the seen-set sweep can read it without loading every task blob.
+    ///
+    /// **Tri-state on purpose.** `nil` means "this index row was written before the
+    /// field existed", which is NOT the same as `false`: a sweep that reads unknown
+    /// as "answered" would wipe every persisted `seen` flag on the first launch
+    /// after the upgrade — reproducing the very bug this field exists to fix. Read
+    /// it through `isWaitingForSupervisor` / `supervisorInputStateIsKnown`
+    /// (`TaskSummary+Queries.swift`), never as a raw `== false`.
+    var hasPendingSupervisorInput: Bool?
+
+    /// Whether the task carries an adopted generated team (`generatedTeam != nil`),
+    /// mirrored here so `placeholderChatCandidacy` can replicate
+    /// `TeamResolution.resolveTeamID`'s FIRST rung without loading the blob — an
+    /// adopted team is never the roleless placeholder, so `true` rules the row out.
+    ///
+    /// **Tri-state on purpose** (CLAUDE.md #91, same contract as
+    /// `hasPendingSupervisorInput`): `nil` means "row predates the field" and the
+    /// sweep must pay the read, never assume `false`. No `schemaVersion` bump —
+    /// `TasksIndex` has no version-gated legacy decode branch that could re-fire
+    /// (#48 does not apply); rows converge per-row via the sweep's refresh write.
+    var hasGeneratedTeam: Bool?
+
+    /// Raw `NTMSTask.preferredTeamID`, mirrored for the same candidacy check —
+    /// deliberately NOT pre-resolved: `TeamResolution`'s preferred rung falls
+    /// through when the team no longer resolves, so resolvability must be tested
+    /// against the LIVE teams at sweep time, not baked in here.
+    var preferredTeamID: NTMSID?
+
+    init(id: Int, title: String, status: TaskStatus, updatedAt: Date = MonotonicClock.shared.now(), isChatMode: Bool = false, parentTaskID: Int? = nil, nextRecurrenceFireAt: Date? = nil, pinnedTeamID: NTMSID? = nil, hasPendingSupervisorInput: Bool? = nil, hasGeneratedTeam: Bool? = nil, preferredTeamID: NTMSID? = nil) {
         self.id = id
         self.title = title
         self.status = status
@@ -483,6 +576,9 @@ nonisolated struct TaskSummary: Codable, Identifiable, Hashable {
         self.parentTaskID = parentTaskID
         self.nextRecurrenceFireAt = nextRecurrenceFireAt
         self.pinnedTeamID = pinnedTeamID
+        self.hasPendingSupervisorInput = hasPendingSupervisorInput
+        self.hasGeneratedTeam = hasGeneratedTeam
+        self.preferredTeamID = preferredTeamID
     }
 
     init(from decoder: Decoder) throws {
@@ -495,6 +591,9 @@ nonisolated struct TaskSummary: Codable, Identifiable, Hashable {
         self.parentTaskID = try container.decodeIfPresent(Int.self, forKey: .parentTaskID)
         self.nextRecurrenceFireAt = try container.decodeIfPresent(Date.self, forKey: .nextRecurrenceFireAt)
         self.pinnedTeamID = try container.decodeIfPresent(String.self, forKey: .pinnedTeamID)
+        self.hasPendingSupervisorInput = try container.decodeIfPresent(Bool.self, forKey: .hasPendingSupervisorInput)
+        self.hasGeneratedTeam = try container.decodeIfPresent(Bool.self, forKey: .hasGeneratedTeam)
+        self.preferredTeamID = try container.decodeIfPresent(String.self, forKey: .preferredTeamID)
     }
 }
 
@@ -630,7 +729,10 @@ nonisolated extension NTMSTask {
             isChatMode: isChatMode,
             parentTaskID: parentTaskID,
             nextRecurrenceFireAt: recurrence.flatMap { $0.isEnabled ? $0.nextFireAt : nil },
-            pinnedTeamID: runs.last?.teamID
+            pinnedTeamID: runs.last?.teamID,
+            hasPendingSupervisorInput: hasPendingSupervisorInput,
+            hasGeneratedTeam: generatedTeam != nil,
+            preferredTeamID: preferredTeamID
         )
     }
 }

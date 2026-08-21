@@ -80,11 +80,11 @@ final class CollaborationToolCallErrorRenderingTests: XCTestCase {
 
         let updatedCall = mockDelegate.taskToMutate?.runs[0].steps[0].toolCalls.first { $0.id == toolCallID }
         XCTAssertEqual(updatedCall?.isError, false,
-            "Success envelope must leave the placeholder isError=false untouched.")
+                       "Success envelope must leave the placeholder isError=false untouched.")
         XCTAssertFalse(updatedCall?.resultJSON?.contains("\"status\":\"pending\"") ?? true,
-            "The card is the only durable record of a resolved delegation — the graph layers are torn down by the same path — so it must carry the real envelope, not the placeholder. Got: \(updatedCall?.resultJSON ?? "nil")")
+                       "The card is the only durable record of a resolved delegation — the graph layers are torn down by the same path — so it must carry the real envelope, not the placeholder. Got: \(updatedCall?.resultJSON ?? "nil")")
         XCTAssertEqual(updatedCall?.resultJSON, conversation.first?.content,
-            "the model and the card must see the SAME envelope — no double-wrapping")
+                       "the model and the card must see the SAME envelope — no double-wrapping")
     }
 
     // MARK: - Failure-path: ok:false envelope flips isError + outputJSON
@@ -129,11 +129,11 @@ final class CollaborationToolCallErrorRenderingTests: XCTestCase {
 
         let updatedCall = mockDelegate.taskToMutate?.runs[0].steps[0].toolCalls.first { $0.id == toolCallID }
         XCTAssertEqual(updatedCall?.isError, true,
-            "Failure envelope must flip StepToolCall.isError=true so the activity-feed card renders red.")
+                       "Failure envelope must flip StepToolCall.isError=true so the activity-feed card renders red.")
         XCTAssertTrue(updatedCall?.resultJSON?.contains("\"ok\":false") ?? false,
-            "Persisted resultJSON must be the actual error envelope, not the original 'pending' placeholder.")
+                      "Persisted resultJSON must be the actual error envelope, not the original 'pending' placeholder.")
         XCTAssertTrue(updatedCall?.resultJSON?.contains("INVALID_ARGS") ?? false,
-            "Persisted resultJSON must surface the handler's error message for diagnostics.")
+                      "Persisted resultJSON must surface the handler's error message for diagnostics.")
     }
 
     // MARK: - wait_for_events dispatch (GAP2 — the shipped-bug class)
@@ -178,9 +178,9 @@ final class CollaborationToolCallErrorRenderingTests: XCTestCase {
         )
 
         XCTAssertEqual(service.executionStates[TaskStepKey(taskID: task.id, stepID: stepID)]?.parkForEventsRequested, true,
-            "wait_for_events dispatched via appendCollaborationResult must arm parkForEventsRequested (parks the review pass)")
+                       "wait_for_events dispatched via appendCollaborationResult must arm parkForEventsRequested (parks the review pass)")
         XCTAssertEqual(service.executionStates[TaskStepKey(taskID: task.id, stepID: stepID)]?.finishRequested, false,
-            "wait_for_events must park, not complete — finishRequested stays unset")
+                       "wait_for_events must park, not complete — finishRequested stays unset")
     }
 
     // MARK: - Helpers
@@ -225,8 +225,8 @@ private final class StubLLMClient: LLMClient, @unchecked Sendable {
         AsyncThrowingStream { $0.finish() }
     }
 
-    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
-    func loadModel(modelName _: String, baseURLString _: String) async throws -> String { "" }
-    func unloadModel(instanceID _: String, baseURLString _: String) async throws {}
-    func listLoadedInstances(baseURLString _: String) async throws -> [LoadedModelInstance] { [] }
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
+    func loadModel(provider _: LLMProvider, modelName _: String, baseURLString _: String) async throws -> String { "" }
+    func unloadModel(provider _: LLMProvider, instanceID _: String, baseURLString _: String) async throws {}
+    func listLoadedInstances(provider _: LLMProvider, baseURLString _: String) async throws -> LoadedInstanceListing { .listed([]) }
 }

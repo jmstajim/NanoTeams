@@ -157,7 +157,7 @@ final class EndToEndNetworkErrorTests: XCTestCase {
         let event = parser.parse(line: #"data: {"response_id": "resp-123", "stats": {"input_tokens": 500, "total_output_tokens": 200}}"#)
 
         // `response_id` is deliberately ignored — no chain resumes it.
-        if case .chatEnd(let usage, _) = event {
+        if case .chatEnd(let usage, _, _, _) = event {
             XCTAssertEqual(usage?.inputTokens, 500)
             XCTAssertEqual(usage?.outputTokens, 200)
         } else {

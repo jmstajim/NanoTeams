@@ -135,7 +135,7 @@ final class ToolArgumentCoercionHandlerTests: XCTestCase {
                        "default depth must stop at the direct contents")
         XCTAssertEqual(entryPaths(stringDepth.outputJSON), ["tree/lvl1", "tree/lvl1/lvl2"],
                        "depth:\"1\" must traverse one level deeper than the default; a rejected "
-                       + "string silently falls back to the default")
+                           + "string silently falls back to the default")
     }
 
     /// A coercion that parses but off-by-ones (or truncates) would pass the
@@ -176,7 +176,7 @@ final class ToolArgumentCoercionHandlerTests: XCTestCase {
                        "sanity: all six needles are findable without a cap")
         XCTAssertEqual(searchMatches(capped.outputJSON).count, 2,
                        "max_results:\"2\" must cap the result list; a rejected string falls back "
-                       + "to the default cap and returns everything")
+                           + "to the default cap and returns everything")
     }
 
     /// `context_before` defaults to 2. Requesting 4 as a string must widen the
@@ -195,7 +195,7 @@ final class ToolArgumentCoercionHandlerTests: XCTestCase {
         let before = match["context_before"] as? [[String: Any]] ?? []
         XCTAssertEqual(before.count, 4,
                        "context_before:\"4\" must emit four preceding lines (default is "
-                       + "\(AppDefaults.searchContextBefore)); got \(before.count)")
+                           + "\(AppDefaults.searchContextBefore)); got \(before.count)")
     }
 
     /// Zero is the value most likely to be lost: a coercer that treats "0" as
@@ -220,7 +220,7 @@ final class ToolArgumentCoercionHandlerTests: XCTestCase {
                         "control: an explicit context_before must be populated")
         XCTAssertNil(match["context_after"],
                      "context_after:\"0\" must suppress trailing context entirely; a rejected "
-                     + "zero would fall back to a non-zero default")
+                         + "zero would fall back to a non-zero default")
     }
 
     // MARK: - search: paths scoping
@@ -238,7 +238,7 @@ final class ToolArgumentCoercionHandlerTests: XCTestCase {
         XCTAssertFalse(scoped.isError, "got: \(scoped.outputJSON)")
         XCTAssertEqual(searchMatchPaths(scoped.outputJSON), ["inside/hit.txt"],
                        "paths:\"inside\" must exclude the identical needle under outside/; "
-                       + "a rejected bare string widens the search to the whole tree")
+                           + "a rejected bare string widens the search to the whole tree")
     }
 
     /// The `[Any]` branch: JSON `null` inside the list makes the array fail to
@@ -253,7 +253,7 @@ final class ToolArgumentCoercionHandlerTests: XCTestCase {
 
         XCTAssertFalse(scoped.isError,
                        "a null element must be dropped, not turned into an unresolvable path; "
-                       + "got: \(scoped.outputJSON)")
+                           + "got: \(scoped.outputJSON)")
         XCTAssertEqual(searchMatchPaths(scoped.outputJSON), ["inside/hit.txt"],
                        "the surviving element must still scope the walk")
     }
@@ -285,7 +285,7 @@ final class ToolArgumentCoercionHandlerTests: XCTestCase {
 
         XCTAssertFalse(r.isError,
                        "an uncoercible bool must fall back to the default (true), not to false; "
-                       + "got: \(r.outputJSON)")
+                           + "got: \(r.outputJSON)")
         XCTAssertTrue(fm.fileExists(atPath: tempDir.appendingPathComponent("yesdir/f.txt").path),
                       "the file must have been written through a created parent directory")
     }
@@ -302,12 +302,12 @@ final class ToolArgumentCoercionHandlerTests: XCTestCase {
 
         let r = run("edit_file",
                     "{\"path\": \"edit/target.swift\", \"old_text\": \"OLD\", "
-                    + "\"new_text\": \"NEW\", \"replace_all\": \"true\"}")
+                        + "\"new_text\": \"NEW\", \"replace_all\": \"true\"}")
 
         XCTAssertFalse(r.isError, "got: \(r.outputJSON)")
         XCTAssertEqual(payload(r.outputJSON)?["replacements_made"] as? Int, 3,
                        "replace_all:\"true\" must report three replacements; a rejected string "
-                       + "falls back to false and reports one")
+                           + "falls back to false and reports one")
 
         let after = try String(contentsOf: url, encoding: .utf8)
         XCTAssertFalse(after.contains("OLD"),
@@ -357,12 +357,12 @@ final class ToolArgumentCoercionHandlerTests: XCTestCase {
 
         XCTAssertFalse(uncoercibleMessage.contains("Missing"),
                        "a present-but-wrong-type argument must not be reported as missing; "
-                       + "got: \(uncoercibleMessage)")
+                           + "got: \(uncoercibleMessage)")
         XCTAssertTrue(uncoercibleMessage.contains("start_line"),
                       "the type error must name the offending key; got: \(uncoercibleMessage)")
         XCTAssertTrue(absentMessage.contains("Missing"),
                       "a genuinely absent required argument must still be reported as missing; "
-                      + "got: \(absentMessage)")
+                          + "got: \(absentMessage)")
         XCTAssertNotEqual(uncoercibleMessage, absentMessage,
                           "the two failure modes must be distinguishable by the model")
     }

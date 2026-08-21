@@ -199,7 +199,7 @@ final class ComputerUseCoercionTests: XCTestCase {
     /// executed one.
     func testQuotedScrollDeltas_areHonoredOnBothSides() async {
         guard case .scroll(let gx, let gy, let gdx, let gdy, _)? =
-                gateAction(ToolNames.uiScroll, #"{"x":"5","y":"6","dx":"-120","dy":"40"}"#) else {
+            gateAction(ToolNames.uiScroll, #"{"x":"5","y":"6","dx":"-120","dy":"40"}"#) else {
             return XCTFail("gate must parse quoted scroll arguments")
         }
         XCTAssertEqual([gx, gy, gdx, gdy], [5, 6, -120, 40], "gate scroll x/y/dx/dy")
@@ -365,5 +365,5 @@ private final class UnusedJudgeClient: LLMClient, @unchecked Sendable {
         }
     }
 
-    func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [String] { [] }
+    func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [LLMModelInfo] { [] }
 }

@@ -59,7 +59,7 @@ final class ConsultationChatTemplateTests: XCTestCase {
         XCTAssertEqual(chat.messages.first?.role, .system)
         XCTAssertEqual(chat.messages.first?.content, expected,
                        "live consultation system prompt must be the resolved team template, "
-                       + "byte-identical to what the Settings preview reconstructs")
+                           + "byte-identical to what the Settings preview reconstructs")
         XCTAssertTrue(chat.messages.first?.content.contains("## Role") ?? false,
                       "template is `##`-sectioned; the old prose prompt was not")
         XCTAssertFalse(chat.messages.first?.content.contains("Be concise and professional") ?? true,

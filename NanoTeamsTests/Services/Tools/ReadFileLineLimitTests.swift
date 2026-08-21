@@ -229,12 +229,12 @@ final class ReadFileLineLimitTests: XCTestCase {
         XCTAssertTrue(r.isError)
         let json = r.outputJSON
         XCTAssertTrue(json.contains("\"suggested_cmd\" : \"read_lines\"")
-                      || json.contains("\"suggested_cmd\":\"read_lines\""))
+            || json.contains("\"suggested_cmd\":\"read_lines\""))
         XCTAssertTrue(json.contains("\"path\" : \"hint.txt\"")
-                      || json.contains("\"path\":\"hint.txt\""),
-                      "next-hint args must echo the rejected path")
+            || json.contains("\"path\":\"hint.txt\""),
+            "next-hint args must echo the rejected path")
         XCTAssertTrue(json.contains("\"end_line\" : \"\(limit)\"")
-                      || json.contains("\"end_line\":\"\(limit)\""),
-                      "next-hint must bound end_line to the cap")
+            || json.contains("\"end_line\":\"\(limit)\""),
+            "next-hint must bound end_line to the cap")
     }
 }

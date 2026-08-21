@@ -65,14 +65,14 @@ final class QuickCaptureChatComposerBucketCoverageTests: XCTestCase {
     /// RED: return `true` for `.overlay`, or `false` for chat `.taskWorking` → one row fails.
     func testComposerBucketBinding_isAPropertyOfTheMode() {
         XCTAssertFalse(QuickCaptureMode.overlay.composerBindsAnswerBuckets,
-            "the new-task composer binds `attachments` / `clippedTexts`")
+                       "the new-task composer binds `attachments` / `clippedTexts`")
         XCTAssertTrue(answerMode().composerBindsAnswerBuckets)
         XCTAssertTrue(chatWorking.composerBindsAnswerBuckets,
-            "chat-mode working docks the SAME composer as answer mode, against the same "
-            + "two buckets — that is why queueing a message and answering a question can "
-            + "hand off content to each other")
+                      "chat-mode working docks the SAME composer as answer mode, against the same "
+                          + "two buckets — that is why queueing a message and answering a question can "
+                          + "hand off content to each other")
         XCTAssertFalse(loaderWorking.composerBindsAnswerBuckets,
-            "non-chat working renders a loader and no composer at all")
+                       "non-chat working renders a loader and no composer at all")
     }
 
     // MARK: - ⌃⌥⌘K routing
@@ -91,11 +91,11 @@ final class QuickCaptureChatComposerBucketCoverageTests: XCTestCase {
         await sut.captureClipboardContent(mode: chatWorking)
 
         XCTAssertEqual(sut.formState.answerClippedTexts, ["stack trace"],
-            "the chat-working composer binds the answer buckets, so that is where a "
-            + "capture has to land to be visible at all")
+                       "the chat-working composer binds the answer buckets, so that is where a "
+                           + "capture has to land to be visible at all")
         XCTAssertTrue(sut.formState.clippedTexts.isEmpty,
-            "the task bucket is invisible in this mode — a clip filed there surfaces "
-            + "later, attached to an unrelated new-task draft")
+                      "the task bucket is invisible in this mode — a clip filed there surfaces "
+                          + "later, attached to an unrelated new-task draft")
     }
 
     /// The user-visible consequence, and the reason the two ends have to agree: the Send
@@ -111,8 +111,8 @@ final class QuickCaptureChatComposerBucketCoverageTests: XCTestCase {
         await sut.captureClipboardContent(mode: chatWorking)
 
         XCTAssertTrue(sut.formState.canSubmit(mode: chatWorking),
-            "a capture the composer renders must also satisfy the submit gate — the gate "
-            + "reads exactly the buckets the composer is bound to")
+                      "a capture the composer renders must also satisfy the submit gate — the gate "
+                          + "reads exactly the buckets the composer is bound to")
     }
 
     /// RED: make the router unconditional (always answer buckets) → this fails. The
@@ -174,10 +174,10 @@ final class QuickCaptureChatComposerBucketCoverageTests: XCTestCase {
         sut.dismissPanel()
 
         XCTAssertEqual(sut.formState.answerText, "have a look at this",
-            "unchanged — the text was never the half that got dropped")
+                       "unchanged — the text was never the half that got dropped")
         XCTAssertEqual(sut.formState.answerClippedTexts, ["the failing assertion"],
-            "a dismiss is not a submit and not a task switch; the composer content "
-            + "belongs to a task the panel will reopen onto")
+                       "a dismiss is not a submit and not a task switch; the composer content "
+                           + "belongs to a task the panel will reopen onto")
     }
 
     /// The answer fork is untouched: it still saves the draft and restores the stashed
@@ -197,10 +197,10 @@ final class QuickCaptureChatComposerBucketCoverageTests: XCTestCase {
         sut.dismissPanel()
 
         XCTAssertEqual(sut.formState._testAnswerDrafts[7]?.text, "half an answer",
-            "the answer is preserved per task, so reopening the panel restores it")
+                       "the answer is preserved per task, so reopening the panel restores it")
         XCTAssertEqual(sut.formState._testAnswerDrafts[7]?.clippedTexts, ["clip"])
         XCTAssertEqual(sut.formState.supervisorTask, "a task draft",
-            "and the stashed new-task draft comes back")
+                       "and the stashed new-task draft comes back")
         XCTAssertFalse(sut.formState.isInAnswerMode)
     }
 }

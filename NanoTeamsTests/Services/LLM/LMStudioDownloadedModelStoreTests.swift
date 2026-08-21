@@ -77,6 +77,36 @@ final class LMStudioDownloadedModelStoreTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(size, 1750)
     }
 
+    /// A multimodal GGUF repo ships its vision projector as a second `.gguf` beside the weights.
+    /// Observed on a real LM Studio models folder: `Qwythos-9B-Claude-Mythos-5-1M-Q4_K_M.gguf`
+    /// next to `mmproj-Qwythos-9B-Claude-Mythos-5-1M-F16.gguf` — ONE quantization plus its
+    /// projector, which the card announced as "2 quantizations".
+    /// RED: drop the `mmproj-` exclusion from `ggufCount` → the detail line reappears and tells the
+    /// user this folder holds an alternative quantization they could keep, when it holds none.
+    func testList_doesNotCountTheVisionProjectorAsASecondQuantization() async throws {
+        try makeModel(
+            publisher: "pub", repo: "vlm-GGUF",
+            files: [("m-Q4_K_M.gguf", 10), ("mmproj-m-F16.gguf", 10)])
+
+        let models = try await makeStore().listDownloaded(config: localConfig())
+
+        XCTAssertNil(
+            models.first?.detail,
+            "one quantization plus a projector is one quantization")
+    }
+
+    /// …and the exclusion must not swallow a genuine second quantization that merely sits beside a
+    /// projector — the multimodal repo with two quants is still a two-quant folder.
+    func testList_countsRealQuantizationsEvenWhenAProjectorIsPresent() async throws {
+        try makeModel(
+            publisher: "pub", repo: "vlm-multi-GGUF",
+            files: [("m-Q4_K_M.gguf", 10), ("m-Q8_0.gguf", 10), ("mmproj-m-F16.gguf", 10)])
+
+        let models = try await makeStore().listDownloaded(config: localConfig())
+
+        XCTAssertEqual(models.first?.detail, "2 quantizations")
+    }
+
     /// A GGUF folder holding several quantizations is ONE delete target — the
     /// picker shows them as separate models, but they share a directory. Saying
     /// so is the only honest framing of what Remove will do.

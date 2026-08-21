@@ -22,7 +22,7 @@ struct ArtifactListView: View {
         let query = searchText.lowercased()
         return team.artifacts.filter { artifact in
             artifact.name.lowercased().contains(query) ||
-            artifact.description.lowercased().contains(query)
+                artifact.description.lowercased().contains(query)
         }
     }
 

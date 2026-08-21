@@ -13,8 +13,8 @@ final class HeadlessConfigTests: XCTestCase {
     }
 
     private let minimal = """
-        {"projectPath":"/p","taskTitle":"T","supervisorTask":"S"}
-        """
+    {"projectPath":"/p","taskTitle":"T","supervisorTask":"S"}
+    """
 
     // MARK: - Provider
 
@@ -28,8 +28,8 @@ final class HeadlessConfigTests: XCTestCase {
 
     func testProvider_ollama_decodesAndDrivesTheResolvedDefaults() throws {
         let c = try decode("""
-            {"projectPath":"/p","taskTitle":"T","supervisorTask":"S","provider":"ollama"}
-            """)
+        {"projectPath":"/p","taskTitle":"T","supervisorTask":"S","provider":"ollama"}
+        """)
         XCTAssertEqual(c.resolvedProvider, .ollama)
         XCTAssertEqual(c.resolvedBaseURL, LLMProvider.ollama.defaultBaseURL)
         XCTAssertEqual(c.resolvedModel, LLMProvider.ollama.defaultModel)
@@ -40,8 +40,8 @@ final class HeadlessConfigTests: XCTestCase {
     /// the legal set, or the operator cannot act on it.
     func testProvider_unknownValue_failsLoudlyNamingTheLegalValues() {
         XCTAssertThrowsError(try decode("""
-            {"projectPath":"/p","taskTitle":"T","supervisorTask":"S","provider":"lmstdio"}
-            """)) { error in
+        {"projectPath":"/p","taskTitle":"T","supervisorTask":"S","provider":"lmstdio"}
+        """)) { error in
             let text = "\(error)"
             XCTAssertTrue(text.contains("lmstdio"), "must quote the offending value: \(text)")
             for provider in LLMProvider.allCases {
@@ -55,14 +55,14 @@ final class HeadlessConfigTests: XCTestCase {
     /// `"Ollama"` here would diverge from every other provider decode site.
     func testProvider_wrongCase_isRejectedRatherThanSilentlyDegraded() {
         XCTAssertThrowsError(try decode("""
-            {"projectPath":"/p","taskTitle":"T","supervisorTask":"S","provider":"Ollama"}
-            """))
+        {"projectPath":"/p","taskTitle":"T","supervisorTask":"S","provider":"Ollama"}
+        """))
     }
 
     func testProvider_roundTripsThroughEncode() throws {
         let c = try decode("""
-            {"projectPath":"/p","taskTitle":"T","supervisorTask":"S","provider":"ollama"}
-            """)
+        {"projectPath":"/p","taskTitle":"T","supervisorTask":"S","provider":"ollama"}
+        """)
         let data = try JSONCoderFactory.makeWireEncoder().encode(c)
         XCTAssertEqual(try decode(String(decoding: data, as: UTF8.self)).provider, .ollama)
     }
@@ -71,16 +71,16 @@ final class HeadlessConfigTests: XCTestCase {
 
     func testMissingRequiredField_throws() {
         XCTAssertThrowsError(try decode("""
-            {"taskTitle":"T","supervisorTask":"S"}
-            """))
+        {"taskTitle":"T","supervisorTask":"S"}
+        """))
     }
 
     /// Pre-rename configs used `projectDescription`; re-encoding completes the
     /// migration in place rather than round-tripping the dead key forever.
     func testLegacyProjectDescription_isAcceptedAndNotReWritten() throws {
         let c = try decode("""
-            {"projectPath":"/p","taskTitle":"T","supervisorTask":"S","projectDescription":"legacy"}
-            """)
+        {"projectPath":"/p","taskTitle":"T","supervisorTask":"S","projectDescription":"legacy"}
+        """)
         XCTAssertEqual(c.workFolderContext, "legacy")
 
         let json = String(decoding: try JSONCoderFactory.makeWireEncoder().encode(c), as: UTF8.self)

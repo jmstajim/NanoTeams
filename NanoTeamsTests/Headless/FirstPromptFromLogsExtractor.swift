@@ -46,10 +46,26 @@ enum FirstPromptFromLogsExtractor {
         let data = try Data(contentsOf: logURL)
         let decoder = JSONCoderFactory.makeDateDecoder()
         let records: [NetworkLogRecord]
-        do {
-            records = try decoder.decode([NetworkLogRecord].self, from: data)
-        } catch {
-            throw ExtractError.malformedLog(underlying: error)
+        // Dual-format, mirroring the bash: current runs write JSONL (one record
+        // per line); pre-2026-08-21 runs wrote a JSON ARRAY, and log artifacts
+        // die with their run, so nothing converts them — the reader carries both.
+        // Discriminated by the first non-whitespace byte, not the extension, so
+        // a legacy file fed directly still parses.
+        let firstByte = data.first(where: { $0 != 0x20 && $0 != 0x0A && $0 != 0x0D && $0 != 0x09 })
+        if firstByte == UInt8(ascii: "[") {
+            do {
+                records = try decoder.decode([NetworkLogRecord].self, from: data)
+            } catch {
+                throw ExtractError.malformedLog(underlying: error)
+            }
+        } else {
+            guard let text = String(data: data, encoding: .utf8) else {
+                throw ExtractError.malformedLog(
+                    underlying: CocoaError(.fileReadInapplicableStringEncoding))
+            }
+            records = text.split(separator: "\n", omittingEmptySubsequences: true).compactMap {
+                try? decoder.decode(NetworkLogRecord.self, from: Data($0.utf8))
+            }
         }
 
         let needle = roleSubstring.lowercased()

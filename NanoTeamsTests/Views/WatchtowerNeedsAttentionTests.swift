@@ -13,7 +13,7 @@ final class WatchtowerNeedsAttentionTests: XCTestCase {
 
     func testNeedsAttention_everyTypeCounts() {
         XCTAssertTrue(WatchtowerNotificationType
-            .supervisorInput(stepID: "s", question: "q", role: .softwareEngineer).needsAttention)
+            .supervisorInput(stepID: "s", question: "q", role: .softwareEngineer, toolCallID: nil).needsAttention)
         XCTAssertTrue(WatchtowerNotificationType
             .acceptance(stepID: "s", roleID: "r", roleName: "R").needsAttention)
         XCTAssertTrue(WatchtowerNotificationType.taskDone(taskID: 0, taskTitle: "t").needsAttention)
@@ -32,7 +32,7 @@ final class WatchtowerNeedsAttentionTests: XCTestCase {
         let notifs = [
             notif(.failed(stepID: "s1", role: .softwareEngineer, errorMessage: nil), taskID: 1),
             notif(.timedOut(taskID: 2, taskTitle: "b"), taskID: 2),
-            notif(.supervisorInput(stepID: "s3", question: "q", role: .productManager), taskID: 3),
+            notif(.supervisorInput(stepID: "s3", question: "q", role: .productManager, toolCallID: nil), taskID: 3),
         ]
         XCTAssertEqual(WatchtowerNotification.needsYouCount(notifs), 3)
         // Regression contrast — the old predicate would have counted only 1.

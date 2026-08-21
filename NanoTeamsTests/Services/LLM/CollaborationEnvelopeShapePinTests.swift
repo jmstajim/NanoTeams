@@ -93,7 +93,7 @@ final class CollaborationEnvelopeShapePinTests: XCTestCase {
                        "the manager's card and the model's tool result must be one envelope")
         XCTAssertEqual(card?.isError, true,
                        "a failed manager action must flip the card red — a non-envelope string "
-                        + "would parse as indeterminate and leave it green")
+                           + "would parse as indeterminate and leave it green")
     }
 
     // MARK: - Assertion
@@ -103,17 +103,19 @@ final class CollaborationEnvelopeShapePinTests: XCTestCase {
         guard let data = envelope.data(using: .utf8),
               let dict = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         else {
-            return XCTFail("\(label): handler returned a non-JSON envelope: \(envelope)")
+            return XCTFail("\(label): handler returned a non-JSON envelope: \(envelope)", line: line)
         }
         guard let ok = dict["ok"] as? Bool else {
             return XCTFail(
                 "\(label): envelope has no top-level `ok` — it parses as indeterminate, which "
-                    + "reflectEnvelope treats as NOT-a-failure. Got: \(envelope)")
+                    + "reflectEnvelope treats as NOT-a-failure. Got: \(envelope)",
+                line: line)
         }
         if !ok {
             XCTAssertNotNil(dict["error"],
                             "\(label): a failing envelope must carry `error` so ToolErrorNotePolicy.direction "
-                                + "can pick a recovery direction; got: \(envelope)")
+                                + "can pick a recovery direction; got: \(envelope)",
+                            line: line)
         }
     }
 
@@ -204,5 +206,5 @@ private final class NoStreamClient: LLMClient, @unchecked Sendable {
         AsyncThrowingStream { $0.finish() }
     }
 
-    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
 }

@@ -14,11 +14,9 @@ import XCTest
 /// dimensions".
 private final class ESearchWidthEmbedClient: EmbeddingClient, @unchecked Sendable {
     private let lock = NSLock()
-    private var _callCount = 0
     private var _dims = 3
     private var _throwCancellation = false
 
-    var callCount: Int { lock.withLock { _callCount } }
     var dims: Int {
         get { lock.withLock { _dims } }
         set { lock.withLock { _dims = newValue } }
@@ -31,8 +29,7 @@ private final class ESearchWidthEmbedClient: EmbeddingClient, @unchecked Sendabl
 
     func embed(texts: [String], config: EmbeddingConfig) async throws -> [[Float]] {
         let (width, cancel): (Int, Bool) = lock.withLock {
-            _callCount += 1
-            return (_dims, _throwCancellation)
+            (_dims, _throwCancellation)
         }
         if cancel { throw CancellationError() }
         // Identical unit vectors: every token is maximally similar to every
@@ -49,8 +46,6 @@ private final class ESearchWidthEmbedClient: EmbeddingClient, @unchecked Sendabl
 /// Deterministic slow client — one batch per call, each parked long enough that
 /// a test can observe a build IN FLIGHT and poke the coordinator while it is.
 private final class ESearchSlowEmbedClient: EmbeddingClient, @unchecked Sendable {
-    private let lock = NSLock()
-    private var _callCount = 0
     /// `let`, set at construction: a mutable field read from the embed task
     /// while the test writes it would be the data race `@unchecked` waives.
     private let delay: Duration
@@ -59,10 +54,7 @@ private final class ESearchSlowEmbedClient: EmbeddingClient, @unchecked Sendable
         self.delay = delay
     }
 
-    var callCount: Int { lock.withLock { _callCount } }
-
     func embed(texts: [String], config: EmbeddingConfig) async throws -> [[Float]] {
-        lock.withLock { _callCount += 1 }
         try await Task.sleep(for: delay)
         return texts.map { _ in [1, 0, 0] }
     }
@@ -210,7 +202,7 @@ final class ESearchCoordinatorTailTests: XCTestCase {
         try Data("{}".utf8).write(to: meta)
         XCTAssertFalse(fm.fileExists(atPath:
             internalDir.appendingPathComponent("search_index.json").path),
-            "arrange: the token index must be absent so its clear cannot fail")
+        "arrange: the token index must be absent so its clear cannot fail")
 
         chmod(internalDir.path, 0o500)
         if (try? Data("probe".utf8).write(to: internalDir.appendingPathComponent("w.tmp"))) != nil {
@@ -224,7 +216,7 @@ final class ESearchCoordinatorTailTests: XCTestCase {
         XCTAssertNotNil(error, "surviving vector files must not be reported as a clean clear")
         XCTAssertTrue(error?.hasPrefix("Failed to clear vector index") ?? false,
                       "the message must name the VECTOR index — the token index cleared fine, "
-                      + "and the two have different remedies: \(error ?? "nil")")
+                          + "and the two have different remedies: \(error ?? "nil")")
         XCTAssertTrue(error?.contains("vocab_vectors") ?? false,
                       "and name the file that survived: \(error ?? "nil")")
         XCTAssertEqual(c.vectorIndexState, .missing)
@@ -257,7 +249,7 @@ final class ESearchCoordinatorTailTests: XCTestCase {
 
         XCTAssertEqual(c.lastError, persistError,
                        "the coordinator must surface the persist failure verbatim — got: "
-                       + "\(c.lastError ?? "nil")")
+                           + "\(c.lastError ?? "nil")")
     }
 
     /// A corrupt on-disk index is regenerated silently unless the reason is
@@ -288,7 +280,7 @@ final class ESearchCoordinatorTailTests: XCTestCase {
                       "the message names the file: \(error ?? "nil")")
         XCTAssertTrue(error?.localizedCaseInsensitiveContains("corrupt") ?? false,
                       "'corrupt' is the decode-failure vocabulary, distinct from 'unreadable' "
-                      + "and from a version mismatch: \(error ?? "nil")")
+                          + "and from a version mismatch: \(error ?? "nil")")
     }
 
     /// DEFECT REGRESSION. The corrupt-index message must not outlive the
@@ -334,7 +326,7 @@ final class ESearchCoordinatorTailTests: XCTestCase {
                      "a cache that still matches the folder proves the load problem is over")
         XCTAssertNil(c.lastError,
                      "a healthy index must not keep reporting a corruption that was already "
-                     + "repaired — got: \(c.lastError ?? "nil")")
+                         + "repaired — got: \(c.lastError ?? "nil")")
     }
 
     /// FS events must COALESCE into at most one follow-up vector build, not
@@ -394,7 +386,7 @@ final class ESearchCoordinatorTailTests: XCTestCase {
 
         XCTAssertEqual(probe.count, 2,
                        "three refresh requests during one build must produce exactly one "
-                       + "follow-up build — got \(probe.count) builds in total")
+                           + "follow-up build — got \(probe.count) builds in total")
     }
 }
 
@@ -456,7 +448,7 @@ final class ESearchIndexServiceTailTests: XCTestCase, @unchecked Sendable {
         let warnings = await service.lastIndexWarnings
         XCTAssertTrue(warnings.isEmpty,
                       "a missing/!directory root is a caller precondition, not a partial walk — "
-                      + "got: \(warnings)")
+                          + "got: \(warnings)")
 
         // Replace the file with a real folder holding one file.
         try FileManager.default.removeItem(at: root)
@@ -466,7 +458,7 @@ final class ESearchIndexServiceTailTests: XCTestCase, @unchecked Sendable {
         let rebuilt = await service.loadOrBuild(force: false)
         XCTAssertEqual(rebuilt.files.count, 1,
                        "the empty-root result must not pin the cache — a folder appearing at "
-                       + "that path has to invalidate it")
+                           + "that path has to invalidate it")
         XCTAssertFalse(rebuilt.tokens.isEmpty)
     }
 }
@@ -532,11 +524,11 @@ final class ESearchFileScannerTailTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(results.skipped.first?.path, "notes.txt")
         XCTAssertTrue(results.skipped.first?.reason.contains("could not open") ?? false,
                       "the reason must name the failing syscall so 'could not open' stays "
-                      + "distinguishable from a mid-read failure: "
-                      + "\(results.skipped.first?.reason ?? "nil")")
+                          + "distinguishable from a mid-read failure: "
+                          + "\(results.skipped.first?.reason ?? "nil")")
         XCTAssertEqual(results.skippedBinaryCount, 0,
                        "an I/O failure is not a binary file — collapsing them is what the "
-                       + "four-case outcome exists to prevent")
+                           + "four-case outcome exists to prevent")
         XCTAssertEqual(results.totalMatchCount, 0)
     }
 
@@ -592,7 +584,7 @@ final class ESearchFileScannerTailTests: XCTestCase, @unchecked Sendable {
         let outcome = await task.value
         XCTAssertEqual(outcome, "cancelled",
                        "a cancelled read must be its own outcome — 'binary' would inflate "
-                       + "skipped_binary_count once per file the cancel walked past")
+                           + "skipped_binary_count once per file the cancel walked past")
     }
 
     // NOTE — `scanFile`'s "document extractor could not open file" arm is NOT
@@ -747,7 +739,7 @@ final class ESearchVectorServiceTailTests: XCTestCase, @unchecked Sendable {
 
         XCTAssertEqual(result, .expanded(terms: ["gamma"]),
                        "a cancelled phrase call keeps the per-token result and stays a clean "
-                       + "success — got \(result)")
+                           + "success — got \(result)")
         XCTAssertNil(result.errorReason,
                      "cancellation must not surface as a retryable transient error")
         XCTAssertNil(result.unavailableReason)
@@ -924,7 +916,7 @@ final class ESearchFilenameMatcherTailTests: XCTestCase, @unchecked Sendable {
         let pattern = escaped.replacingOccurrences(of: "\\*", with: ".*")
         XCTAssertNoThrow(try NSRegularExpression(pattern: "^\(pattern)$", options: []),
                          "if this ever starts throwing, the sentinel's rejection has a second "
-                         + "source and the doc comment can be relaxed again")
+                             + "source and the doc comment can be relaxed again")
     }
 
     /// A well-formed glob still compiles and still discriminates — otherwise the
@@ -985,13 +977,13 @@ final class ESearchAgentInstructionsTailTests: XCTestCase, @unchecked Sendable {
 
         XCTAssertEqual(snapshot.items.count, 2,
                        "arrange: both namesakes must be discovered — got "
-                       + "\(snapshot.items.map(\.relativePath))")
+                           + "\(snapshot.items.map(\.relativePath))")
         for item in snapshot.items {
             XCTAssertEqual(item.id, item.relativePath,
                            "the grid's identity must be the path, not the file name")
         }
         XCTAssertEqual(Set(snapshot.items.map(\.id)).count, snapshot.items.count,
                        "duplicate ids are undefined behaviour in a SwiftUI ForEach: "
-                       + "\(snapshot.items.map(\.id))")
+                           + "\(snapshot.items.map(\.id))")
     }
 }

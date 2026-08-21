@@ -31,7 +31,7 @@ final class LLMExecutionServiceParseFailureCapTests: XCTestCase {
     [reasoning]
     Creating the calculator HTML.
     [/reasoning]
-
+    
     <|call|>{"name":"create_artifact","arguments":{"content":"<button onclick=\\"appendOperator('-')">-</button>","name":"index.html"}}<|end|>
     """
 
@@ -147,8 +147,8 @@ final class LLMExecutionServiceParseFailureCapTests: XCTestCase {
         )
         XCTAssertTrue(
             question.contains("restart the role with a different model")
-            || question.contains("simplify the brief")
-            || question.contains("mark the step failed"),
+                || question.contains("simplify the brief")
+                || question.contains("mark the step failed"),
             "Escalation should give actionable options, got: \(question)"
         )
         // Counter reset so a post-supervisor restart starts clean (matches drift pattern).

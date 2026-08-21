@@ -46,7 +46,7 @@ final class SystemNoticeWiringTests: XCTestCase {
         _ = MessageBubbleView.headerSourceLabel(for: message, isSystemNotice: true)
         XCTAssertEqual(message.sourceContextDisplayLabel, "retry",
                        "`sourceContextDisplayLabel` is shared with the transcript renderer and "
-                       + "must not be narrowed for a feed concern")
+                           + "must not be narrowed for a feed concern")
     }
 
     // MARK: - Source scan
@@ -108,7 +108,7 @@ final class SystemNoticeWiringTests: XCTestCase {
         for site in argumentSites {
             XCTAssertTrue(site.contains("systemNotice"),
                           "the header's suppression must be driven by the resolved notice, not by "
-                          + "a literal — found `isSystemNotice:\(site)`")
+                              + "a literal — found `isSystemNotice:\(site)`")
         }
     }
 
@@ -132,11 +132,11 @@ final class SystemNoticeWiringTests: XCTestCase {
         let code = strippingLineComments(droppingPreviews(full))
         XCTAssertLessThan(code.count, full.count,
                           "the preview block was not found — the scan is reading a file shape it "
-                          + "does not understand")
+                              + "does not understand")
         for context in [".serverError", ".retryNudge", ".loopCorrection"] {
             XCTAssertFalse(code.contains(context),
                            "\(context) is classified by SystemNoticePresentation; a branch here "
-                           + "would be a second, drifting copy of that decision")
+                               + "would be a second, drifting copy of that decision")
         }
         // Anti-vacuum: the scan is looking at the right file.
         XCTAssertTrue(code.contains(".supervisorMessage"),

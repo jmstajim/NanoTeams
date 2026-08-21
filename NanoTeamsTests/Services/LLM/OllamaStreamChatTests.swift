@@ -165,7 +165,7 @@ final class OllamaStreamChatTests: XCTestCase {
     func testBlankAndMalformedLinesInterspersed_ignored() async {
         let ndjson = """
         {"message":{"content":"a"},"done":false}
-
+        
         not json at all
         {"message":{"content":"b"},"done":false}
         {"done":true,"prompt_eval_count":3,"eval_count":4}

@@ -51,15 +51,13 @@ final class ToolCallLoggingCornerTests: XCTestCase {
 
     private func networkToolCallRecords() throws -> [NetworkLogRecord] {
         guard fileManager.fileExists(atPath: netURL.path) else { return [] }
-        let all = try JSONCoderFactory.makeDateDecoder()
-            .decode([NetworkLogRecord].self, from: Data(contentsOf: netURL))
+        let all = try NetworkLogTestReading.strictRecords(at: netURL)
         return all.filter { $0.direction == .toolCall }
     }
 
     private func networkRecords() throws -> [NetworkLogRecord] {
         guard fileManager.fileExists(atPath: netURL.path) else { return [] }
-        return try JSONCoderFactory.makeDateDecoder()
-            .decode([NetworkLogRecord].self, from: Data(contentsOf: netURL))
+        return try NetworkLogTestReading.strictRecords(at: netURL)
     }
 
     private func jsonlLines() -> [String] {

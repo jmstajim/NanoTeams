@@ -17,7 +17,12 @@ final class MeetingMessageItemEquatableTests: XCTestCase {
 
     private static let messageID = UUID()
     private static let baselineCreatedAt = Date(timeIntervalSince1970: 1_000)
-    private static let toolSummaryID = UUID()
+    /// `nonisolated` because it is reached from a DEFAULT ARGUMENT below
+    /// (`id: UUID = toolSummaryID`). A default-argument expression inherits the enclosing
+    /// isolation only under the Swift 6 language mode (SE-0411); the mirror's CI still
+    /// compiles this target with `-swift-version 5`, where it is evaluated nonisolated.
+    /// Safe: the value is a `Sendable` constant. Pinned by `DefaultArgumentIsolationPinTests`.
+    nonisolated private static let toolSummaryID = UUID()
     private static let toolSummaryCreatedAt = Date(timeIntervalSince1970: 1_100)
 
     private static func toolSummary(

@@ -25,7 +25,7 @@ final class SettingsSidebarSectionsTests: XCTestCase {
     func testSectionTitles_andOrder() {
         XCTAssertEqual(
             SettingsView.sidebarSections.map(\.title),
-            [nil, "Workspace", "Models", "Agent Tools", "Application", "Support"]
+            [nil, "Workspace", "Capabilities", "Agent Tools", "Application", "Support"]
         )
     }
 
@@ -36,19 +36,19 @@ final class SettingsSidebarSectionsTests: XCTestCase {
         XCTAssertEqual(sections.count, 6)
         guard sections.count == 6 else { return }
 
-        XCTAssertEqual(sections[0].tabs, [.updates]) // pinned, header-less, at the very top
-        XCTAssertEqual(sections[1].tabs, [.workFolder, .autovisor, .teams, .generateTeam])
-        XCTAssertEqual(sections[2].tabs, [.llm, .vision, .exploratorySearch])
+        XCTAssertEqual(sections[0].tabs, [.updates, .llm]) // pinned, header-less, at the very top
+        XCTAssertEqual(sections[1].tabs, [.workFolder, .teams, .autovisor])
+        XCTAssertEqual(sections[2].tabs, [.vision, .exploratorySearch, .generateTeam])
         XCTAssertEqual(sections[3].tabs, [.bash, .computerUse, .toolBehavior, .tools])
         XCTAssertEqual(sections[4].tabs, [.general, .theme, .dictation])
-        XCTAssertEqual(sections[5].tabs, [.debug, .help])
+        XCTAssertEqual(sections[5].tabs, [.benchmark, .debug, .help])
     }
 
-    /// Updates is a pinned, header-less section at the top.
-    func testPinnedSection_isFirst_headerLess_updatesOnly() {
+    /// Updates + LLM are pinned, header-less, at the top.
+    func testPinnedSection_isFirst_headerLess_updatesThenLLM() {
         let first = SettingsView.sidebarSections.first
         XCTAssertNil(first?.title, "The pinned top section must have no header")
-        XCTAssertEqual(first?.tabs, [.updates])
+        XCTAssertEqual(first?.tabs, [.updates, .llm])
     }
 
     // MARK: - Corner cases
@@ -60,7 +60,8 @@ final class SettingsSidebarSectionsTests: XCTestCase {
     }
 
     /// Anti-grab-bag guard: titled sections stay 2–5 tabs (the old "Advanced" was 7).
-    /// The header-less pinned section is exempt (it's a single quick-access row by design).
+    /// The header-less pinned section is exempt by design — its own cap lives in
+    /// `testPinnedSection_staysAtMostTwoTabs`.
     func testTitledSectionSizes_betweenTwoAndFive() {
         for section in SettingsView.sidebarSections where section.title != nil {
             XCTAssertTrue(
@@ -68,6 +69,25 @@ final class SettingsSidebarSectionsTests: XCTestCase {
                 "Titled section \(section.title ?? "") has \(section.tabs.count) tabs — must stay between 2 and 5"
             )
         }
+    }
+
+    /// The pinned group is EXEMPT from `testTitledSectionSizes_betweenTwoAndFive` (that guard
+    /// filters on `title != nil`), so without this it is the one section that could grow without
+    /// limit — which is exactly how it would stop reading as "pinned quick access".
+    func testPinnedSection_staysAtMostTwoTabs() {
+        let first = SettingsView.sidebarSections.first
+        XCTAssertLessThanOrEqual(
+            first?.tabs.count ?? 0, 2,
+            "The pinned header-less group must stay at most 2 tabs — anything more is a section and needs a header"
+        )
+    }
+
+    /// A header-less section renders with no `MonoLabel` separator, so a second one would visually
+    /// merge into its predecessor's list. Exactly one may exist, and it must be the pinned first.
+    func testExactlyOneSection_isHeaderLess() {
+        let headerLess = SettingsView.sidebarSections.filter { $0.title == nil }
+        XCTAssertEqual(headerLess.count, 1, "Only the pinned top group may be header-less — a second one merges into the section above it")
+        XCTAssertEqual(headerLess.first?.id, SettingsView.sidebarSections.first?.id, "The header-less section must be the first one")
     }
 
     /// No section may be empty.
@@ -83,5 +103,28 @@ final class SettingsSidebarSectionsTests: XCTestCase {
             XCTAssertFalse(title.isEmpty)
             XCTAssertEqual(title, title.trimmingCharacters(in: .whitespacesAndNewlines))
         }
+    }
+
+    // MARK: - LLM hero row subtitle
+
+    /// The hero row's second line shows the configured model when one is set.
+    func testHeroSubtitle_showsModelName_whenConfigured() {
+        XCTAssertEqual(SettingsLLMHeroRow.subtitle(modelName: "qwen3-30b", provider: .ollama), "qwen3-30b")
+    }
+
+    /// Before any model is picked the line falls back to the provider — never a blank line.
+    func testHeroSubtitle_fallsBackToProviderDisplayName_whenModelNameEmpty() {
+        XCTAssertEqual(SettingsLLMHeroRow.subtitle(modelName: "", provider: .lmStudio), "LM Studio")
+        XCTAssertEqual(SettingsLLMHeroRow.subtitle(modelName: "", provider: .ollama), "Ollama")
+    }
+
+    /// Whitespace-only is "absent", not a model name — it would render as a blank line.
+    func testHeroSubtitle_treatsWhitespaceOnlyModelNameAsAbsent() {
+        XCTAssertEqual(SettingsLLMHeroRow.subtitle(modelName: "  \n\t", provider: .lmStudio), "LM Studio")
+    }
+
+    /// Edge whitespace on a real name is trimmed rather than rendered.
+    func testHeroSubtitle_trimsModelNameEdges() {
+        XCTAssertEqual(SettingsLLMHeroRow.subtitle(modelName: "  qwen3  ", provider: .ollama), "qwen3")
     }
 }

@@ -264,23 +264,23 @@ final class SearchExecutorCharacterizationTests: XCTestCase {
         // grapheme is "é", not "e".
         try write("combining.txt", content: "cafe\u{0301}\n")
         XCTAssertTrue(try run(["cafe"]).matches.isEmpty,
-            "'cafe' + combining acute is not a match for 'cafe' under ICU")
+                      "'cafe' + combining acute is not a match for 'cafe' under ICU")
 
         // Byte scan would say NO, ICU says YES because full case folding maps ß to ss.
         try write("eszett.txt", content: "stra\u{00DF}e\n")
         XCTAssertEqual(try run(["strasse"]).matches.count, 1,
-            "ICU full case folding expands ß to ss")
+                       "ICU full case folding expands ß to ss")
 
         // Byte scan would say NO, ICU says YES: U+212A KELVIN SIGN folds to 'k'.
         try write("kelvin.txt", content: "\u{212A}elvin\n")
         XCTAssertEqual(try run(["kelvin"]).matches.count, 1,
-            "U+212A folds to 'k' under ICU")
+                       "U+212A folds to 'k' under ICU")
 
         // A non-ASCII needle legitimately matches ASCII content, so a non-ASCII query can never
         // take the byte fast path.
         try write("plain.txt", content: "kelvin\n")
         XCTAssertEqual(try run(["\u{212A}elvin"]).matches.count, 2,
-            "matches both the ASCII file and the U+212A one")
+                       "matches both the ASCII file and the U+212A one")
     }
 
     /// The ASCII fold must be `A-Z -> a-z` only. A naive `| 0x20` also maps `[`->`{`, `@`->backtick,
@@ -296,11 +296,11 @@ final class SearchExecutorCharacterizationTests: XCTestCase {
         try write("brackets.swift", content: "let a = arr[0]\n")
 
         XCTAssertTrue(try run(["arr{0}"]).matches.isEmpty,
-            "'[' and '{' differ by 0x20 but are distinct characters")
+                      "'[' and '{' differ by 0x20 but are distinct characters")
         XCTAssertTrue(try run(["@"]).matches.isEmpty)
         XCTAssertTrue(try run(["^"]).matches.isEmpty)
         XCTAssertEqual(try run(["ARR[0]"]).matches.count, 1,
-            "letters DO fold, so the query matches case-insensitively")
+                       "letters DO fold, so the query matches case-insensitively")
     }
 
     /// An empty needle matches nothing — `NSString` returns `NSNotFound` for an empty search

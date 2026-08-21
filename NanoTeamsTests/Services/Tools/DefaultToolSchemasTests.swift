@@ -29,15 +29,15 @@ final class DefaultToolSchemasTests: XCTestCase {
 
     private func propertyNames(for name: String) -> Set<String> {
         guard let t = tool(named: name),
-            let props = t.parameters.properties
+              let props = t.parameters.properties
         else { return [] }
         return Set(props.keys)
     }
 
     private func enumValues(for toolName: String, property: String) -> [String]? {
         guard let t = tool(named: toolName),
-            let props = t.parameters.properties,
-            let prop = props[property]
+              let props = t.parameters.properties,
+              let prop = props[property]
         else { return nil }
         return prop.enumValues
     }

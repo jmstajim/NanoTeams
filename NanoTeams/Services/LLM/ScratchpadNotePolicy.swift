@@ -133,5 +133,5 @@ nonisolated enum ScratchpadNotePolicy {
     /// see the same thing the model was told.
     private static let memoryUnchanged =
         "Scratchpad cleared, but your standing memory is unchanged — a blank update never "
-        + "overwrites it. Send the new state to replace it."
+            + "overwrites it. Send the new state to replace it."
 }

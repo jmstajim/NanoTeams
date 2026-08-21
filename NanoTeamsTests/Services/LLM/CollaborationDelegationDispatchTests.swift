@@ -289,5 +289,5 @@ private final class InertLLMClient: LLMClient, @unchecked Sendable {
         AsyncThrowingStream { $0.finish() }
     }
 
-    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
 }

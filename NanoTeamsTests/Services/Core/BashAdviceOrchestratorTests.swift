@@ -87,7 +87,7 @@ final class BashAdviceOrchestratorTests: NTMSOrchestratorTestBase, @unchecked Se
 
         sut.bashApprovalDidEnd(taskID: 1, stepID: "role", commandKey: "key:ls", createdAt: firstCreatedAt)
         XCTAssertEqual(sut.bashApprovalRequests[key]?.createdAt, secondCreatedAt,
-            "a stale didEnd from a prior hold must not clear the freshly-republished card")
+                       "a stale didEnd from a prior hold must not clear the freshly-republished card")
 
         sut.bashApprovalDidEnd(taskID: 1, stepID: "role", commandKey: "key:ls", createdAt: secondCreatedAt)
         XCTAssertNil(sut.bashApprovalRequests[key], "the matching didEnd clears the card")
@@ -132,7 +132,7 @@ final class BashAdviceOrchestratorTests: NTMSOrchestratorTestBase, @unchecked Se
         beginRequest(command: "rm foo", offerAlways: true)   // request.commandKey == "key:rm foo"
         sut.resolveBashApproval(taskID: 1, stepID: "role", commandKey: "key:stale", choice: .alwaysAllow)
         XCTAssertFalse(sut.configuration.bashAllowRules.contains("rm foo"),
-            "a commandKey that doesn't match the held request must not persist its command")
+                       "a commandKey that doesn't match the held request must not persist its command")
     }
 }
 
@@ -157,5 +157,5 @@ private final class FixedVerdictClient: LLMClient, @unchecked Sendable {
             continuation.finish()
         }
     }
-    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
 }

@@ -96,7 +96,7 @@ final class GPlatAnswerModeTransitionTests: XCTestCase {
         XCTAssertEqual(sut.formState.pendingAnswer?.question, "B asks?")
         XCTAssertEqual(sut.formState.answerText, "",
                        "task B has no draft — its answer box must open empty, not carrying "
-                       + "the text the user was writing to task A")
+                           + "the text the user was writing to task A")
     }
 
     /// The other half of the same contract: the draft parked by the switch must come
@@ -200,7 +200,7 @@ final class GPlatPanelCallbackWiringTests: XCTestCase {
 
         XCTAssertFalse(sut._testIsPanelVisible,
                        "an externally-ordered-out panel must leave the controller "
-                       + "believing it is hidden, or the next hotkey press is a no-op")
+                           + "believing it is hidden, or the next hotkey press is a no-op")
     }
 
     /// Escape must route to `cancelDraft` — which discards the staged draft and CLEARS
@@ -220,7 +220,7 @@ final class GPlatPanelCallbackWiringTests: XCTestCase {
 
         XCTAssertEqual(sut.formState.supervisorTask, "",
                        "Escape is a cancel: the task draft must be cleared, which only "
-                       + "`cancelDraft` does — `dismissPanel` deliberately preserves it")
+                           + "`cancelDraft` does — `dismissPanel` deliberately preserves it")
         XCTAssertTrue(sut.formState.clippedTexts.isEmpty,
                       "clips are part of the discarded draft")
         XCTAssertFalse(sut._testIsPanelVisible, "cancelling also dismisses the overlay")
@@ -289,8 +289,8 @@ final class GPlatQueueStartWakeTests: NTMSOrchestratorTestBase, @unchecked Senda
 
         XCTAssertEqual(sut.loadedTask(taskID)?.runs.count, before + 1,
                        "the chat wake's whole purpose is a FRESH run — a fresh run's step "
-                       + "has no session, which is what lets the queued message drain on "
-                       + "iteration 1")
+                           + "has no session, which is what lets the queued message drain on "
+                           + "iteration 1")
         XCTAssertNil(sut.loadedTask(taskID)?.closedAt)
 
         await sut.pauseRun(taskID: taskID)
@@ -324,10 +324,10 @@ final class GPlatQueueStartWakeTests: NTMSOrchestratorTestBase, @unchecked Senda
 
         XCTAssertEqual(sut.loadedTask(taskID)?.runs.count, before + 1,
                        "a chat task at `.done` is an ended turn, not a finished pipeline — "
-                       + "a queued message must continue it with a new run")
+                           + "a queued message must continue it with a new run")
         XCTAssertNotEqual(sut.loadedTask(taskID)?.runs.last?.id, beforeLastRunID,
                           "`.start` must APPEND a run, not re-enter the all-terminal one — "
-                          + "`resumeRun` there executes no step and bounces back to `.done`")
+                              + "`resumeRun` there executes no step and bounces back to `.done`")
 
         await sut.pauseRun(taskID: taskID)
         sut.stopEngineForTask(taskID)
@@ -417,7 +417,7 @@ final class GPlatBackstopFlushFailureTests: NTMSOrchestratorTestBase, @unchecked
                       "the user must be told how many messages survived the failure; got: \(banner)")
         XCTAssertEqual(controller.formState.queuedMessages(for: taskID).map(\.id), [queued.id],
                        "an undelivered batch must go BACK to the queue — it was popped "
-                       + "synchronously before the await and is otherwise lost")
+                           + "synchronously before the await and is otherwise lost")
         XCTAssertNil(sut.loadedTask(taskID)?.runs.last?.steps.first?.supervisorAnswer,
                      "nothing was delivered, so no answer may be recorded against the step")
         XCTAssertTrue(sut.loadedTask(taskID)?.runs.last?.steps.first?.needsSupervisorInput ?? false,
@@ -493,14 +493,14 @@ final class GPlatSubmitAnswerEmbedFailureTests: NTMSOrchestratorTestBase, @unche
         let banner = sut.lastErrorMessage ?? ""
         XCTAssertTrue(banner.contains("Could not embed 1 file(s)"),
                       "the count must be reported so the user knows the prompt is short "
-                      + "one file; got: \(banner)")
+                          + "one file; got: \(banner)")
         XCTAssertTrue(banner.contains("bad.bin"),
                       "and it must name the file, or there is nothing actionable; got: \(banner)")
 
         let step = sut.loadedTask(taskID)?.runs.last?.steps.first
         XCTAssertEqual(step?.supervisorAnswer, "the attached one",
                        "an unembeddable attachment must not block the answer — the typed "
-                       + "text is independent of it")
+                           + "text is independent of it")
         XCTAssertFalse(step?.needsSupervisorInput ?? true)
     }
 }
@@ -569,7 +569,7 @@ final class GPlatInertSelectionCapturerTests: XCTestCase {
         XCTAssertTrue(first.fileURLs.isEmpty)
         XCTAssertFalse(first.restoreFailed,
                        "an inert capturer never touches the pasteboard, so it can never "
-                       + "report a failed restore — that banner would be a lie")
+                           + "report a failed restore — that banner would be a lie")
         XCTAssertNil(second.text, "a work-folder root must not switch it on")
         XCTAssertTrue(second.fileURLs.isEmpty)
     }
@@ -614,7 +614,7 @@ final class GPlatDictationInstallSeamTests: XCTestCase {
         let installed = await SystemDictationAssetInventory().isInstalled(locale: locale)
         XCTAssertFalse(installed,
                        "a locale with no model must never be reported as installed — the "
-                       + "installer treats `true` as 'the nil request meant already done'")
+                           + "installer treats `true` as 'the nil request meant already done'")
     }
 
     /// The adapter must be a faithful projection of `status(for:)`, not an independent
@@ -637,7 +637,7 @@ final class GPlatDictationInstallSeamTests: XCTestCase {
             let adapter = await inventory.isInstalled(locale: info.locale)
             XCTAssertEqual(adapter, info.status == .installed,
                            "\(info.locale.identifier): the install seam and the Settings "
-                           + "row must never disagree about whether a model is on disk")
+                               + "row must never disagree about whether a model is on disk")
         }
     }
 
@@ -655,7 +655,7 @@ final class GPlatDictationInstallSeamTests: XCTestCase {
             .release(reservedLocale: Locale(identifier: "xx_ZZ"))
         XCTAssertFalse(released,
                        "releasing a reservation that was never taken must be a no-op that "
-                       + "says so, or the settings row claims an uninstall that never ran")
+                           + "says so, or the settings row claims an uninstall that never ran")
     }
 
     /// The adapter and the catalogue's own `uninstall` are the same operation reached by
@@ -673,7 +673,7 @@ final class GPlatDictationInstallSeamTests: XCTestCase {
         let viaSeam = await SystemDictationAssetInventory().release(reservedLocale: locale)
         XCTAssertEqual(viaSeam, viaCatalog,
                        "the installer's rollback and the settings row's uninstall must be "
-                       + "the same operation")
+                           + "the same operation")
     }
 }
 
@@ -712,13 +712,13 @@ final class GPlatAppUpdateLastCheckedTests: XCTestCase {
         config.lastAppUpdateCheckAt = first
         XCTAssertEqual(sut.lastCheckedAt, first,
                        "a check recorded after construction must be visible — the value is "
-                       + "owned by the configuration, not snapshotted at init")
+                           + "owned by the configuration, not snapshotted at init")
 
         let second = Date(timeIntervalSince1970: 1_800_000_000)
         config.lastAppUpdateCheckAt = second
         XCTAssertEqual(sut.lastCheckedAt, second,
                        "and every subsequent check must move it, or the Updates tab shows "
-                       + "a timestamp that stopped advancing")
+                           + "a timestamp that stopped advancing")
     }
 
     /// The read-through must survive a relaunch, which is the reason it lives on
@@ -742,6 +742,6 @@ final class GPlatAppUpdateLastCheckedTests: XCTestCase {
 
         XCTAssertEqual(sut.lastCheckedAt, stamp,
                        "the 'last checked' line must persist across launches, or every "
-                       + "restart re-arms a background probe that just ran")
+                           + "restart re-arms a background probe that just ran")
     }
 }

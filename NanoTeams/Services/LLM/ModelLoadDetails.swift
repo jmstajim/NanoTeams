@@ -21,4 +21,34 @@ nonisolated struct ModelLoadDetails: Sendable, Equatable {
     }
 
     let fields: [Field]
+
+    // MARK: - Well-known labels
+
+    /// The labels BOTH provider clients report these facts under — the single spelling shared by
+    /// the writers (`NativeLMStudioClient.modelLoadDetails`, `OllamaClient.parseShowLoadFields`)
+    /// and every typed reader. They are also persistence-frozen: historical benchmark rows carry
+    /// them verbatim as `GenerationBenchmarkRun.serverFields` keys, so renaming one here without
+    /// keeping the legacy-decode fallback in `GenerationBenchmarkRun` on the OLD spelling would
+    /// orphan every row already on disk.
+    static let formatLabel = "Format"
+    static let quantizationLabel = "Quantization"
+    /// Ollama's `/api/show` sampling block (`temperature 1\ntop_k 20\n…`), parsed by
+    /// `BenchmarkProvenance.samplingParameters`.
+    static let modelfileParametersLabel = "Modelfile parameters"
+
+    // MARK: - Typed access
+
+    /// The model's file format as the server reports it, verbatim — `gguf`, `mlx`, `safetensors`.
+    /// LM Studio: `compatibility_type` from `/api/v0/models`; Ollama: `details.format` from
+    /// `/api/show`. What the benchmark promotes into `GenerationBenchmarkRun.modelFormat`.
+    var format: String? { value(for: Self.formatLabel) }
+
+    /// The quantization as the server reports it, verbatim — `Q4_K_M`, `4bit`, `MXFP4`.
+    /// LM Studio: `quantization`; Ollama: `details.quantization_level`. What the benchmark
+    /// promotes into `GenerationBenchmarkRun.quantization`.
+    var quantization: String? { value(for: Self.quantizationLabel) }
+
+    func value(for label: String) -> String? {
+        fields.first(where: { $0.label == label })?.value
+    }
 }

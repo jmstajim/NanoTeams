@@ -21,12 +21,141 @@ final class OllamaClientTests: XCTestCase {
         )
     }
 
+    // MARK: - Residency (/api/ps, keep_alive: 0)
+
+    /// The benchmark needs to SEE what else is resident — a co-resident model competes for memory
+    /// and poisons every timing. Observing residency is not managing it.
+    func testListLoadedInstances_decodesRunningModels() async throws {
+        let client = makeClient(body: #"""
+        {"models":[{"name":"qwen3.8:27b-mlx","size_vram":33785093136},{"name":"gpt-oss:20b"}]}
+        """#)
+        let instances = try await client.listLoadedInstances(
+            provider: .ollama, baseURLString: "http://127.0.0.1:11434").adoptable
+
+        XCTAssertEqual(instances.map(\.modelName), ["qwen3.8:27b-mlx", "gpt-oss:20b"])
+        // Ollama has no per-instance identity — eviction is addressed by name.
+        XCTAssertEqual(instances.map(\.instanceID), ["qwen3.8:27b-mlx", "gpt-oss:20b"])
+    }
+
+    /// RED: emit an entry for a nameless row → the preparer would try to evict "" and record a
+    /// failure for a model that does not exist.
+    func testListLoadedInstances_skipsNamelessEntries() async throws {
+        let client = makeClient(body: #"{"models":[{"size_vram":1},{"model":"only-model"}]}"#)
+        let instances = try await client.listLoadedInstances(
+            provider: .ollama, baseURLString: "http://127.0.0.1:11434").adoptable
+        XCTAssertEqual(instances.map(\.modelName), ["only-model"])
+    }
+
+    /// `.listed([])`, never `.unsupported`: `/api/ps` answered, and it said the machine is idle.
+    /// Ollama has had that route since 0.1.x and this client throws on any non-2xx, so there is no
+    /// state in which it should claim the question is unanswerable.
+    ///
+    /// RED: return `.unsupported` here → the benchmark stops preparing a genuinely clean Ollama
+    /// box and every run on it reads "not verified".
+    func testListLoadedInstances_nothingResident_isAnEmptyAnswerNotAnUnanswerableOne() async throws {
+        let client = makeClient(body: #"{"models":[]}"#)
+        let listing = try await client.listLoadedInstances(
+            provider: .ollama, baseURLString: "http://127.0.0.1:11434")
+        XCTAssertEqual(listing, .listed([]))
+    }
+
+    /// `keep_alive: 0` is Ollama's documented unload and the only one it offers — there is no
+    /// unload endpoint. RED: send any other keep-alive → the model stays resident and the next
+    /// sample is measured beside it.
+    func testUnloadModel_asksWithKeepAliveZeroAndNoMessages() async throws {
+        let session = CapturingOllamaSession()
+        let client = OllamaClient(session: session, tokenResolver: StubLLMTokenResolver())
+        try await client.unloadModel(
+            provider: .ollama, instanceID: "gpt-oss:20b", baseURLString: "http://127.0.0.1:11434")
+
+        let body = try XCTUnwrap(session.lastBody)
+        let json = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: body) as? [String: Any])
+        XCTAssertEqual(json["model"] as? String, "gpt-oss:20b")
+        XCTAssertEqual(json["keep_alive"] as? Int, 0)
+        XCTAssertEqual((json["messages"] as? [Any])?.count, 0,
+                       "an empty turn makes this a pure residency instruction with no generation "
+                           + "to pay for")
+        XCTAssertEqual(session.lastPath, "/api/chat")
+    }
+
+    func testUnloadModel_nonSuccessStatus_throws() async {
+        let client = makeClient(status: 500, body: "boom")
+        do {
+            try await client.unloadModel(provider: .ollama, instanceID: "m", baseURLString: "http://127.0.0.1:11434")
+            XCTFail("expected a throw on a non-2xx unload")
+        } catch {
+            // expected
+        }
+    }
+
+    /// RED: swallow the failure → the preparer reads "nothing else is resident" from a server it
+    /// could not reach, and reports the machine as verified clean when it was never checked.
+    func testListLoadedInstances_nonSuccessStatus_throws() async {
+        let client = makeClient(status: 503, body: "busy")
+        do {
+            _ = try await client.listLoadedInstances(provider: .ollama, baseURLString: "http://127.0.0.1:11434")
+            XCTFail("expected a throw so the caller can report that nothing was verified")
+        } catch {
+            // expected
+        }
+    }
+
+    func testListLoadedInstances_invalidBaseURL_throws() async {
+        let client = makeClient(body: #"{"models":[]}"#)
+        do {
+            _ = try await client.listLoadedInstances(provider: .ollama, baseURLString: "")
+            XCTFail("expected a throw for an unusable endpoint")
+        } catch {
+            // expected
+        }
+    }
+
+    func testUnloadModel_invalidBaseURL_throws() async {
+        let client = makeClient(body: "{}")
+        do {
+            try await client.unloadModel(provider: .ollama, instanceID: "m", baseURLString: "")
+            XCTFail("expected a throw for an unusable endpoint")
+        } catch {
+            // expected
+        }
+    }
+
     // MARK: - fetchModels (/api/tags)
 
     func testFetchModels_decodesTagsShape() async throws {
         let client = makeClient(body: #"{"models":[{"name":"llama3.1:8b"},{"name":"gpt-oss:20b"}]}"#)
-        let models = try await client.fetchModels(config: makeConfig(), visionOnly: false)
+        let models = try await client.fetchModels(config: makeConfig(), visionOnly: false).map(\.name)
         XCTAssertEqual(Set(models), ["llama3.1:8b", "gpt-oss:20b"])
+    }
+
+    /// `details.format` and `details.quantization_level` ride `/api/tags` — the very response that
+    /// yields the names — and were decoded and thrown away for as long as this returned `[String]`.
+    /// Measured against a live Ollama 0.32: `"format":"safetensors"`, `"quantization_level":"nvfp4"`.
+    /// RED: stop reading `details` in `fetchModels` → every Ollama row loses its chips.
+    func testFetchModels_carriesFormatAndQuantizationFromTagDetails() async throws {
+        let client = makeClient(body: #"""
+        {"models":[
+          {"name":"qwen3.6:35b","details":{"format":"safetensors","quantization_level":"nvfp4"}},
+          {"name":"llama3.1:8b","details":{"format":"gguf","quantization_level":"Q4_K_M"}}
+        ]}
+        """#)
+        let models = try await client.fetchModels(config: makeConfig(), visionOnly: false)
+
+        XCTAssertEqual(models.map(\.name), ["llama3.1:8b", "qwen3.6:35b"])
+        XCTAssertEqual(models.map(\.format), ["gguf", "safetensors"])
+        XCTAssertEqual(models.map(\.quantization), ["Q4_K_M", "nvfp4"])
+    }
+
+    /// An entry with no `details` is still a model. Fail-open, exactly as the capability probe is:
+    /// a missing label must never hide a model from the picker.
+    func testFetchModels_tagWithoutDetails_stillListedWithNoChips() async throws {
+        let client = makeClient(body: #"{"models":[{"name":"bare:latest"}]}"#)
+        let models = try await client.fetchModels(config: makeConfig(), visionOnly: false)
+
+        XCTAssertEqual(models.map(\.name), ["bare:latest"])
+        XCTAssertNil(models.first?.format)
+        XCTAssertNil(models.first?.quantization)
     }
 
     func testFetchModels_emptyBaseURL_throwsInvalidBaseURL() async {
@@ -72,7 +201,7 @@ final class OllamaClientTests: XCTestCase {
             },
         ])
         let client = OllamaClient(session: session, tokenResolver: StubLLMTokenResolver())
-        let models = try await client.fetchModels(config: makeConfig(), visionOnly: false)
+        let models = try await client.fetchModels(config: makeConfig(), visionOnly: false).map(\.name)
         XCTAssertEqual(models, ["gpt-oss:20b"])
     }
 
@@ -83,7 +212,7 @@ final class OllamaClientTests: XCTestCase {
             "/api/show": .byBody { _ in #"{"modelfile":"FROM …"}"# },
         ])
         let client = OllamaClient(session: session, tokenResolver: StubLLMTokenResolver())
-        let models = try await client.fetchModels(config: makeConfig(), visionOnly: false)
+        let models = try await client.fetchModels(config: makeConfig(), visionOnly: false).map(\.name)
         XCTAssertEqual(Set(models), ["a", "b"])
     }
 
@@ -99,7 +228,7 @@ final class OllamaClientTests: XCTestCase {
             },
         ])
         let client = OllamaClient(session: session, tokenResolver: StubLLMTokenResolver())
-        let models = try await client.fetchModels(config: makeConfig(), visionOnly: true)
+        let models = try await client.fetchModels(config: makeConfig(), visionOnly: true).map(\.name)
         XCTAssertEqual(models, ["llava:13b"])
     }
 
@@ -373,7 +502,7 @@ final class OllamaClientTests: XCTestCase {
 
     func testFetchTags_emptyModelList_returnsEmpty() async throws {
         let client = makeClient(body: #"{"models":[]}"#)
-        let models = try await client.fetchModels(config: makeConfig(), visionOnly: false)
+        let models = try await client.fetchModels(config: makeConfig(), visionOnly: false).map(\.name)
         XCTAssertEqual(models, [])
     }
 
@@ -383,7 +512,7 @@ final class OllamaClientTests: XCTestCase {
             "/api/show": .byBody { _ in #"{"capabilities":["completion"]}"# },
         ])
         let client = OllamaClient(session: session, tokenResolver: StubLLMTokenResolver())
-        let models = try await client.fetchModels(config: makeConfig(), visionOnly: false)
+        let models = try await client.fetchModels(config: makeConfig(), visionOnly: false).map(\.name)
         XCTAssertEqual(models, ["a:1b", "b"], "trim + dedupe + case-insensitive sort")
     }
 
@@ -395,7 +524,7 @@ final class OllamaClientTests: XCTestCase {
             "/api/show": .byBody { _ in "not json" },
         ])
         let client = OllamaClient(session: session, tokenResolver: StubLLMTokenResolver())
-        let models = (try? await client.fetchModels(config: makeConfig(), visionOnly: true)) ?? []
+        let models = ((try? await client.fetchModels(config: makeConfig(), visionOnly: true)) ?? []).map(\.name)
         XCTAssertEqual(models, [])
     }
 
@@ -480,6 +609,22 @@ final class OllamaClientTests: XCTestCase {
         XCTAssertEqual(OllamaClient.formatBytes(999_000_000), "1.0 GB")
     }
 
+    /// Measured on a live Ollama 0.32.14: `/api/show` reports the minimum server version a model
+    /// needs. RED: drop the row → the one field that explains "this model will not run here",
+    /// read beside `serverVersion`, is gone.
+    func testParseShowLoadFields_carriesTheRequiredOllamaVersion() {
+        let body = #"{"requires":"0.32.12","details":{"family":"qwen3_5"}}"#
+        let fields = OllamaClient.parseShowLoadFields(Data(body.utf8))
+        XCTAssertEqual(fields.first { $0.label == "Requires Ollama" }?.value, "0.32.12")
+    }
+
+    /// A server that does not report it must not render an empty row.
+    func testParseShowLoadFields_absentRequires_rendersNoRow() {
+        let body = #"{"details":{"family":"qwen3_5"}}"#
+        let fields = OllamaClient.parseShowLoadFields(Data(body.utf8))
+        XCTAssertNil(fields.first { $0.label == "Requires Ollama" })
+    }
+
     func testParseShowLoadFields_orderingPin() {
         let body = #"""
         {"capabilities":["completion","tools"],
@@ -513,6 +658,30 @@ private final class StubOllamaNetworkSession: NetworkSession, @unchecked Sendabl
 
     func sessionBytes(for _: URLRequest) async throws -> (URLSession.AsyncBytes, URLResponse) {
         fatalError("StubOllamaNetworkSession.sessionBytes not supported")
+    }
+}
+
+/// Records the last request so a test can assert what was actually sent.
+private final class CapturingOllamaSession: NetworkSession, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _lastBody: Data?
+    private var _lastPath: String?
+
+    var lastBody: Data? { lock.withLock { _lastBody } }
+    var lastPath: String? { lock.withLock { _lastPath } }
+
+    func sessionData(for request: URLRequest) async throws -> (Data, URLResponse) {
+        lock.withLock {
+            _lastBody = request.httpBody
+            _lastPath = request.url?.path
+        }
+        let response = HTTPURLResponse(
+            url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+        return (Data("{}".utf8), response)
+    }
+
+    func sessionBytes(for _: URLRequest) async throws -> (URLSession.AsyncBytes, URLResponse) {
+        fatalError("CapturingOllamaSession.sessionBytes not supported")
     }
 }
 

@@ -118,7 +118,7 @@ private struct ClipCell: View {
 
             Text(label(kind: kind))
                 .font(Typography.term2xs)
-                .foregroundStyle(isPlain(kind) ? .secondary : .primary)
+                .foregroundStyle(isPlain(kind) ? Colors.textSecondary : Colors.textPrimary)
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .frame(width: 64)

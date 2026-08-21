@@ -629,6 +629,114 @@ final class NativeLMStudioClientTests: XCTestCase {
         )
     }
 
+    // MARK: - Format / quantization on the model list
+
+    private func modelListClient(_ body: String) -> NativeLMStudioClient {
+        NativeLMStudioClient(
+            session: StubNetworkSession(
+                response: HTTPURLResponse(
+                    url: URL(string: "http://localhost:1234/api/v1/models")!,
+                    statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                data: Data(body.utf8)))
+    }
+
+    /// The shape a live LM Studio 0.4.x actually sends (measured): `format` at the top level,
+    /// `quantization` as an OBJECT. Both ride the list call every picker already makes, and until
+    /// `LLMModelInfo` existed both were decoded and dropped — which is why the benchmark's model
+    /// list could only label a model AFTER measuring it.
+    /// RED: drop `format` from `NativeModelInfo` → the chips vanish from every unmeasured row.
+    func testFetchModels_carriesFormatAndObjectQuantization() async throws {
+        let body = #"""
+        {
+          "models": [
+            { "key": "qwen3.8-4b", "type": "llm", "format": "gguf",
+              "quantization": { "name": "Q4_K_M", "bits_per_weight": 4 } },
+            { "key": "google/gemma-4-e2b", "type": "llm", "format": "mlx",
+              "quantization": { "name": "4bit", "bits_per_weight": 4 } }
+          ]
+        }
+        """#
+        let models = try await modelListClient(body)
+            .fetchModels(config: makeConfig(), visionOnly: false)
+
+        XCTAssertEqual(models.map(\.name), ["google/gemma-4-e2b", "qwen3.8-4b"])
+        XCTAssertEqual(models.map(\.format), ["mlx", "gguf"])
+        XCTAssertEqual(models.map(\.quantization), ["4bit", "Q4_K_M"])
+    }
+
+    /// The same field as a BARE STRING, which is how the sibling `/api/v0/models` route spells it.
+    ///
+    /// The pin is not really about the string: `decodeIfPresent` THROWS on a type mismatch rather
+    /// than returning nil (CLAUDE.md #83), and one throw fails the whole `NativeModelListResponse`
+    /// and drops the client onto the OpenAI-compatible branch — which carries no `type`, so an
+    /// unexpected quantization shape on ONE model would stop every picker in the app from filtering
+    /// embedders out. Hence the assertion on `type` filtering, not just on the value.
+    /// RED: delete `Quantization.init(from:)`'s `singleValueContainer` branch → the embedder comes
+    /// back and the quantization is nil.
+    func testFetchModels_bareStringQuantization_decodesWithoutFallingBackToOpenAIShape() async throws {
+        let body = #"""
+        {
+          "models": [
+            { "key": "legacy-model", "type": "llm", "format": "gguf", "quantization": "Q8_0" },
+            { "key": "text-embedding-nomic-embed-text-v1.5", "type": "embeddings" }
+          ]
+        }
+        """#
+        let models = try await modelListClient(body)
+            .fetchModels(config: makeConfig(), visionOnly: false)
+
+        XCTAssertEqual(models.map(\.name), ["legacy-model"], "the native branch must still be the one that answered")
+        XCTAssertEqual(models.first?.quantization, "Q8_0")
+        XCTAssertEqual(models.first?.format, "gguf")
+    }
+
+    /// A quantization of an unexpected TYPE is decoration failing, not a list failing. Same
+    /// reasoning as above, one step further: the field is read with `try?` so the model survives
+    /// without its chip rather than taking the whole response down with it.
+    /// RED: decode `quantization` with a plain `decodeIfPresent` → the embedder reappears.
+    func testFetchModels_unexpectedQuantizationType_dropsTheChipNotTheList() async throws {
+        let body = #"""
+        {
+          "models": [
+            { "key": "odd-model", "type": "llm", "format": "mlx", "quantization": 4 },
+            { "key": "text-embedding-nomic-embed-text-v1.5", "type": "embeddings" }
+          ]
+        }
+        """#
+        let models = try await modelListClient(body)
+            .fetchModels(config: makeConfig(), visionOnly: false)
+
+        XCTAssertEqual(models.map(\.name), ["odd-model"])
+        XCTAssertNil(models.first?.quantization, "an unreadable value is not a value")
+        XCTAssertEqual(models.first?.format, "mlx", "the readable half still reports")
+    }
+
+    /// A server that reports neither leaves both nil — never inferred from the other, and never an
+    /// empty string, which would render as a blank capsule.
+    func testFetchModels_serverReportsNeither_bothNilAndModelStillListed() async throws {
+        let body = #"""
+        { "models": [ { "key": "plain", "type": "llm", "format": "", "quantization": { } } ] }
+        """#
+        let models = try await modelListClient(body)
+            .fetchModels(config: makeConfig(), visionOnly: false)
+
+        XCTAssertEqual(models.map(\.name), ["plain"])
+        XCTAssertNil(models.first?.format)
+        XCTAssertNil(models.first?.quantization)
+    }
+
+    /// The OpenAI-compatible fallback carries no metadata at all, so it reports none — the same
+    /// no-guessing rule `modelSupportsVision` follows on that branch.
+    func testFetchModels_openAIFallback_reportsNoFormatRatherThanGuessing() async throws {
+        let body = #"{"object":"list","data":[{"id":"some-model"}]}"#
+        let models = try await modelListClient(body)
+            .fetchModels(config: makeConfig(), visionOnly: false)
+
+        XCTAssertEqual(models.map(\.name), ["some-model"])
+        XCTAssertNil(models.first?.format)
+        XCTAssertNil(models.first?.quantization)
+    }
+
     /// Symmetric pin: `fetchModels(visionOnly: false)` must NOT return
     /// embedding models — chat-model pickers shouldn't show them.
     func testFetchModels_excludesEmbeddingModels() async throws {
@@ -650,7 +758,7 @@ final class NativeLMStudioClientTests: XCTestCase {
         let client = NativeLMStudioClient(session: stubSession)
         let config = makeConfig()
 
-        let llms = try await client.fetchModels(config: config, visionOnly: false)
+        let llms = try await client.fetchModels(config: config, visionOnly: false).map(\.name)
         XCTAssertEqual(llms, ["openai/gpt-oss-20b"])
     }
 
@@ -683,7 +791,7 @@ final class NativeLMStudioClientTests: XCTestCase {
         let result = try await client.fetchEmbeddingModels(config: config)
 
         XCTAssertEqual(result.count, 2,
-            "OpenAI-format duplicates must be collapsed before reaching the picker.")
+                       "OpenAI-format duplicates must be collapsed before reaching the picker.")
         XCTAssertEqual(
             Set(result),
             ["text-embedding-3-small", "text-embedding-3-large"]
@@ -715,7 +823,7 @@ final class NativeLMStudioClientTests: XCTestCase {
         let client = NativeLMStudioClient(session: stubSession)
         let config = makeConfig()
 
-        let result = try await client.fetchModels(config: config, visionOnly: false)
+        let result = try await client.fetchModels(config: config, visionOnly: false).map(\.name)
 
         XCTAssertEqual(result.count, 2)
         XCTAssertEqual(

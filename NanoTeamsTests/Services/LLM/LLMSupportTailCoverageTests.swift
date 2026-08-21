@@ -72,7 +72,7 @@ private final class DLLMThrowingChatClient: LLMClient, @unchecked Sendable {
         }
     }
 
-    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
 }
 
 /// `LLMClient` that returns a scripted model list, frozen on a gate so a test
@@ -97,9 +97,9 @@ private final class DLLMModelListClient: LLMClient, @unchecked Sendable {
         AsyncThrowingStream { $0.finish() }
     }
 
-    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] {
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] {
         await gate.hold()
-        return models
+        return models.map { LLMModelInfo(name: $0) }
     }
 }
 
@@ -131,19 +131,22 @@ private final class DLLMSettleClient: LLMClient, @unchecked Sendable {
         AsyncThrowingStream { $0.finish() }
     }
 
-    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
 
-    func unloadModel(instanceID _: String, baseURLString _: String) async throws {
+    func unloadModel(provider _: LLMProvider, instanceID _: String, baseURLString _: String) async throws {
         lock.withLock { _unloadCallCount += 1 }
     }
 
-    func listLoadedInstances(baseURLString _: String) async throws -> [LoadedModelInstance] {
-        lock.withLock { () -> [LoadedModelInstance] in
-            let index = _listCallCount
-            _listCallCount += 1
-            guard !script.isEmpty else { return [] }
-            return index < script.count ? script[index] : script[script.count - 1]
-        }
+    func listLoadedInstances(
+        provider _: LLMProvider, baseURLString _: String
+    ) async throws -> LoadedInstanceListing {
+        .listed(
+            lock.withLock { () -> [LoadedModelInstance] in
+                let index = _listCallCount
+                _listCallCount += 1
+                guard !script.isEmpty else { return [] }
+                return index < script.count ? script[index] : script[script.count - 1]
+            })
     }
 }
 
@@ -545,8 +548,7 @@ final class DLLMOllamaStreamTailTests: XCTestCase {
             failure is CancellationError,
             "Cancellation must propagate as CancellationError, got \(String(describing: failure))")
 
-        let data = try Data(contentsOf: logURL)
-        let records = try JSONCoderFactory.makeDateDecoder().decode([NetworkLogRecord].self, from: data)
+        let records = try NetworkLogTestReading.strictRecords(at: logURL)
         XCTAssertEqual(
             records.count, 1,
             "Only the request record belongs in the log; a cancel is not a failed response")
@@ -1182,8 +1184,7 @@ final class DLLMNetworkLoggerFailureTests: XCTestCase {
             at: logURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         logger.append(record("http://127.0.0.1:1234/kept"))
 
-        let data = try Data(contentsOf: logURL)
-        let records = try JSONCoderFactory.makeDateDecoder().decode([NetworkLogRecord].self, from: data)
+        let records = try NetworkLogTestReading.strictRecords(at: logURL)
         XCTAssertEqual(records.count, 1, "The dropped record must not be replayed after recovery")
         XCTAssertEqual(records.first?.url, "http://127.0.0.1:1234/kept")
     }

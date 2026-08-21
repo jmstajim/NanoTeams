@@ -351,7 +351,7 @@ final class ToolsGitTests: XCTestCase {
         XCTAssertTrue(results[0].isError)
         XCTAssertTrue(
             results[0].outputJSON.contains("CONFLICT") ||
-            results[0].outputJSON.contains("nothing to commit")
+                results[0].outputJSON.contains("nothing to commit")
         )
     }
 

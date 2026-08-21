@@ -168,10 +168,10 @@ final class PromptImprovementSession {
         finalText = nil
     }
 
-    /// Host signal from `.onChange(of: text)`. Comparisons run against the
-    /// LIVE field value (`read()`), not the delivered onChange payload, so
+    /// Host signal from `.onChange(of: text)`. Takes no payload on purpose:
+    /// comparisons run against the LIVE field value (`read()`), so
     /// coalesced/stale SwiftUI deliveries can't trigger a false cancel.
-    func noteFieldTextChanged(_ newText: String) {
+    func noteFieldTextChanged() {
         guard let read else { return }
         switch phase {
         case .waitingForFirstDelta, .streaming:

@@ -134,7 +134,7 @@ final class ToolFailureFeedbackTests: XCTestCase {
             toolName: ToolNames.editFile,
             argumentsJSON: #"{"path":"f.swift"}"#,
             outputJSON:
-                #"{"ok":true,"data":{"path":"f.swift","replacements_made":3,"matched_ignoring_trailing_whitespace":true}}"#,
+            #"{"ok":true,"data":{"path":"f.swift","replacements_made":3,"matched_ignoring_trailing_whitespace":true}}"#,
             isError: false)
 
         guard case .tagged(let content, _) = store.processEdit(result) else {

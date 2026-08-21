@@ -184,8 +184,8 @@ final class AcceptanceServiceTests: XCTestCase {
 
     func testEffectiveAcceptanceMode_TaskOverridePresent() {
         let task = NTMSTask(id: 0, title: "Test Task",
-            supervisorTask: "Test goal",
-            acceptanceMode: .finalOnly
+                            supervisorTask: "Test goal",
+                            acceptanceMode: .finalOnly
         )
         let teamSettings = TeamSettings(defaultAcceptanceMode: .afterEachRole)
 
@@ -199,8 +199,8 @@ final class AcceptanceServiceTests: XCTestCase {
 
     func testEffectiveAcceptanceMode_NoTaskOverride() {
         let task = NTMSTask(id: 0, title: "Test Task",
-            supervisorTask: "Test goal",
-            acceptanceMode: nil
+                            supervisorTask: "Test goal",
+                            acceptanceMode: nil
         )
         let teamSettings = TeamSettings(defaultAcceptanceMode: .afterEachArtifact)
 
@@ -228,8 +228,8 @@ final class AcceptanceServiceTests: XCTestCase {
 
     func testEffectiveCheckpoints_TaskOverridePresent() {
         let task = NTMSTask(id: 0, title: "Test Task",
-            supervisorTask: "Test goal",
-            acceptanceCheckpoints: [Role.builtInID(.softwareEngineer)]
+                            supervisorTask: "Test goal",
+                            acceptanceCheckpoints: [Role.builtInID(.softwareEngineer)]
         )
         let teamSettings = TeamSettings(
             acceptanceCheckpoints: [Role.builtInID(.uxDesigner)]
@@ -245,8 +245,8 @@ final class AcceptanceServiceTests: XCTestCase {
 
     func testEffectiveCheckpoints_NoTaskOverride() {
         let task = NTMSTask(id: 0, title: "Test Task",
-            supervisorTask: "Test goal",
-            acceptanceCheckpoints: nil
+                            supervisorTask: "Test goal",
+                            acceptanceCheckpoints: nil
         )
         let teamSettings = TeamSettings(
             acceptanceCheckpoints: [

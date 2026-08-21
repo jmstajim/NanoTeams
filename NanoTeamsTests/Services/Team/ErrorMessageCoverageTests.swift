@@ -34,7 +34,7 @@ final class ErrorMessageCoverageTests: XCTestCase {
         for error in [ImportExportError.invalidData, .fileAccessError, .unsupportedVersion(1)] {
             XCTAssertEqual(error.localizedDescription, error.errorDescription,
                            "\(error): localizedDescription must surface errorDescription, or the "
-                           + "banner shows a type name instead of the message")
+                               + "banner shows a type name instead of the message")
         }
     }
 
@@ -51,7 +51,7 @@ final class ErrorMessageCoverageTests: XCTestCase {
         ]
         XCTAssertEqual(Set(messages).count, messages.count,
                        "two validation errors share a message, so the user cannot tell which rule "
-                       + "they broke: \(messages)")
+                           + "they broke: \(messages)")
         XCTAssertTrue(messages.allSatisfy { !$0.isEmpty })
     }
 
@@ -81,6 +81,6 @@ final class ErrorMessageCoverageTests: XCTestCase {
         XCTAssertTrue(write.errorDescription?.contains(folder.path) == true)
         XCTAssertTrue(write.errorDescription?.contains("disk is full") == true,
                       "the underlying cause is the actionable half; swallowing it leaves the user "
-                      + "with 'unable to write' and nothing to do about it")
+                          + "with 'unable to write' and nothing to do about it")
     }
 }

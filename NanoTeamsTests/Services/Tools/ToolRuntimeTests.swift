@@ -370,7 +370,7 @@ final class ToolRuntimeTests: XCTestCase, @unchecked Sendable {
 
         // Should indicate tool not found
         XCTAssertTrue(result.outputJSON.contains("tool_not_found") || result.outputJSON.contains("not_found"),
-                       "Should contain tool_not_found error")
+                      "Should contain tool_not_found error")
         XCTAssertTrue(result.isError)
     }
 }

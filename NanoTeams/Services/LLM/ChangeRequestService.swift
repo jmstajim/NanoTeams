@@ -121,18 +121,18 @@ enum ChangeRequestService {
     ) -> (topic: String, context: String) {
         let topic = "Change Request: \(requestingRole.displayName) requests changes to \(targetRoleDef.name)'s work"
         let context = """
-            CHANGE REQUEST DETAILS:
-            Requested by: \(requestingRole.displayName)
-            Target: \(targetRoleDef.name)
-            Changes requested: \(changes)
-            Reasoning: \(reasoning)
-
-            INSTRUCTIONS FOR ALL PARTICIPANTS:
-            Discuss whether these changes should be made. Consider impact on your own work.
-            Each participant MUST end their final message with exactly one of:
-            VOTE: APPROVE
-            VOTE: REJECT
-            """
+        CHANGE REQUEST DETAILS:
+        Requested by: \(requestingRole.displayName)
+        Target: \(targetRoleDef.name)
+        Changes requested: \(changes)
+        Reasoning: \(reasoning)
+        
+        INSTRUCTIONS FOR ALL PARTICIPANTS:
+        Discuss whether these changes should be made. Consider impact on your own work.
+        Each participant MUST end their final message with exactly one of:
+        VOTE: APPROVE
+        VOTE: REJECT
+        """
         return (topic, context)
     }
 }

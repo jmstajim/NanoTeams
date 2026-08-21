@@ -16,7 +16,7 @@ final class TeamAssignPromptTemplateTests: XCTestCase {
 
         XCTAssertEqual(team.systemPromptTemplate, "completely new template body")
         XCTAssertGreaterThan(team.updatedAt, before,
-            "Template assignment must bump updatedAt so SwiftUI's `(id, updatedAt)` diff fires")
+                             "Template assignment must bump updatedAt so SwiftUI's `(id, updatedAt)` diff fires")
     }
 
     func testAssignPromptTemplate_breaksTeamEquality() {
@@ -26,7 +26,7 @@ final class TeamAssignPromptTemplateTests: XCTestCase {
         team.assignPromptTemplate(.system, value: "new body")
 
         XCTAssertNotEqual(before, team,
-            "Post-mutation Team must compare unequal to pre-mutation Team — that's what makes SwiftUI re-render the editor.")
+                          "Post-mutation Team must compare unequal to pre-mutation Team — that's what makes SwiftUI re-render the editor.")
     }
 
     func testAssignPromptTemplate_noOpWrite_doesNotBumpUpdatedAt() {
@@ -37,7 +37,7 @@ final class TeamAssignPromptTemplateTests: XCTestCase {
         team.assignPromptTemplate(.system, value: originalTemplate)
 
         XCTAssertEqual(team.updatedAt, before,
-            "Identical-value write must be a no-op — otherwise every keystroke that round-trips through the binding setter would burn a fresh timestamp and force the editor to re-render itself.")
+                       "Identical-value write must be a no-op — otherwise every keystroke that round-trips through the binding setter would burn a fresh timestamp and force the editor to re-render itself.")
     }
 
     func testAssignPromptTemplate_allThreeFields_bumpUpdatedAt() {
@@ -48,7 +48,7 @@ final class TeamAssignPromptTemplateTests: XCTestCase {
             let before = team.updatedAt
             team.assignPromptTemplate(field, value: "edited via PromptField")
             XCTAssertGreaterThan(team.updatedAt, before,
-                "Field \(field) must bump updatedAt")
+                                 "Field \(field) must bump updatedAt")
         }
     }
 
@@ -74,8 +74,8 @@ final class TeamAssignPromptTemplateTests: XCTestCase {
         team.assignPromptTemplate(.system, value: defaultBody)
 
         XCTAssertEqual(team.systemPromptTemplate, defaultBody,
-            "Reset must restore the system template to the resolver's default for the team's templateID")
+                       "Reset must restore the system template to the resolver's default for the team's templateID")
         XCTAssertNotEqual(before, team,
-            "Post-Reset Team must compare unequal to pre-Reset Team — otherwise the editor view shows stale content until navigation refreshes makeNSView")
+                          "Post-Reset Team must compare unequal to pre-Reset Team — otherwise the editor view shows stale content until navigation refreshes makeNSView")
     }
 }

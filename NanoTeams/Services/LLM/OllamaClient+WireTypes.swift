@@ -32,6 +32,27 @@ nonisolated extension OllamaClient {
 
         struct Options: Encodable {
             var temperature: Double?
+            /// Hard ceiling on generated tokens. Absent for every role step; only the benchmark
+            /// sets it (`LLMConfig.maxOutputTokens`).
+            ///
+            /// The name is corroborated by this project's own shell harness, which has been
+            /// posting `options.num_predict` to this same `/api/chat` endpoint since it was
+            /// written (`benchmark_prompt_processing.sh:214`, with `CAP_TOK=8` at :53) and reads
+            /// `prompt_eval_*` back off the capped runs — so the terminal statistics survive a
+            /// ceiling here, which is the property the whole measurement depends on.
+            ///
+            /// Still weaker evidence than its LM Studio counterpart, which was measured against a
+            /// live server key by key. The asymmetry is worth knowing because the two servers
+            /// disagree about a wrong name: `/api/v1/chat` answers HTTP 400
+            /// `unrecognized_keys`, while Ollama silently ignores an option it does not know. A
+            /// silent miss is caught downstream — `BenchmarkProvenance.outputCapField` reads the
+            /// recorded token counts back and reports a ceiling that did not hold.
+            var numPredict: Int?
+
+            enum CodingKeys: String, CodingKey {
+                case temperature
+                case numPredict = "num_predict"
+            }
         }
     }
 
@@ -68,6 +89,32 @@ nonisolated extension OllamaClient {
         /// `bench_baseline`: 20.6-25.1 ms on all 26 warm rows against 2236.6 ms for the one real
         /// load. Decoded verbatim; `PrefixCachePolicy.minimumLoadMsForReload` owns the threshold.
         var loadDurationNs: Double?
+        /// Nanoseconds Ollama spent DECODING — the window the `eval_count` tokens were produced
+        /// in, and the counterpart of `promptEvalDurationNs` on the other side of the first token.
+        /// `eval_count / eval_duration` is a tokens-per-second figure with no client clock in it,
+        /// so it carries neither queue time nor transport jitter.
+        ///
+        /// The only generation WINDOW either provider reports — but not the only generation fact:
+        /// LM Studio states the same thing as a finished rate (`stats.tokens_per_second`), which
+        /// this codebase kept discarding until 2026-08-19. Measured that day, its rate is
+        /// `completion_tokens / (generation_time − TTFT)`, i.e. this exact convention, which is
+        /// why `BenchmarkMetricsPolicy.generationRate` may put the two in one column.
+        ///
+        /// Not routed into `ServerPrefillReport`: that type is about what happened BEFORE the
+        /// first token, and its `isEmpty` (which counts only `modelLoadMs` and `prefillNs`) would
+        /// silently discard a report carrying nothing but this.
+        var evalDurationNs: Double?
+        /// Nanoseconds Ollama says the WHOLE request took, its own clock, end to end. The benchmark
+        /// times the same span itself, so this is a second opinion on a number that otherwise has
+        /// none — and the gap between them is transport and scheduling, which is exactly what a
+        /// reader wondering "is it the model or my machine" needs to see.
+        var totalDurationNs: Double?
+        /// Why generation stopped: `"stop"` when the model finished, `"length"` when it hit the
+        /// requested ceiling. The benchmark asks for a fixed 512-token cap, and until this was
+        /// decoded nothing could say whether a run had been cut off at it — `outputCapField` could
+        /// only catch the opposite case, a server returning MORE than it was asked for, by reading
+        /// the token counts back.
+        var doneReason: String?
         var error: String?
 
         enum CodingKeys: String, CodingKey {
@@ -76,6 +123,42 @@ nonisolated extension OllamaClient {
             case evalCount = "eval_count"
             case promptEvalDurationNs = "prompt_eval_duration"
             case loadDurationNs = "load_duration"
+            case evalDurationNs = "eval_duration"
+            case totalDurationNs = "total_duration"
+            case doneReason = "done_reason"
+        }
+
+        /// Decodes the DIAGNOSTIC numbers leniently, and the content strictly.
+        ///
+        /// `Optional` is not enough on its own, which is the trap this initializer exists for:
+        /// `decodeIfPresent` returns nil only for an ABSENT or null key — on a type mismatch it
+        /// THROWS. And `OllamaChatStreamParser.parse` does one `try? decode(ChatChunk.self)` per
+        /// line and returns `[]` on any failure, so a single mistyped telemetry field would
+        /// discard the ENTIRE terminal chunk: `eval_count`, `prompt_eval_count`,
+        /// `prompt_eval_duration`, `done` — taking the prompt-prefix cache signal with it, for a
+        /// number nothing routes on. Measured: a `"eval_duration":"fast"` chunk decoded to
+        /// nothing at all before this.
+        ///
+        /// The cut is deliberate. `message` / `done` / `error` stay strict: they carry the
+        /// response and the terminal signal, and silently reading a malformed one as nil would
+        /// drop content rather than a diagnostic. Everything below is telemetry, and telemetry
+        /// must never cost content.
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            message = try c.decodeIfPresent(Message.self, forKey: .message)
+            done = try c.decodeIfPresent(Bool.self, forKey: .done)
+            error = try c.decodeIfPresent(String.self, forKey: .error)
+            promptEvalCount = (try? c.decodeIfPresent(Int.self, forKey: .promptEvalCount)) ?? nil
+            evalCount = (try? c.decodeIfPresent(Int.self, forKey: .evalCount)) ?? nil
+            promptEvalDurationNs =
+                (try? c.decodeIfPresent(Double.self, forKey: .promptEvalDurationNs)) ?? nil
+            loadDurationNs = (try? c.decodeIfPresent(Double.self, forKey: .loadDurationNs)) ?? nil
+            evalDurationNs = (try? c.decodeIfPresent(Double.self, forKey: .evalDurationNs)) ?? nil
+            totalDurationNs = (try? c.decodeIfPresent(Double.self, forKey: .totalDurationNs)) ?? nil
+            // Lenient like every other diagnostic here, and `done_reason` being a String rather
+            // than a number changes nothing about that: `error` above is strict because it carries
+            // the failure, this one carries telemetry, and telemetry must never cost content.
+            doneReason = (try? c.decodeIfPresent(String.self, forKey: .doneReason)) ?? nil
         }
     }
 
@@ -142,6 +225,9 @@ nonisolated extension OllamaClient {
         }
         var models: [Entry]
     }
+
+    // Server-version decoding moved to `OllamaServerProvenanceProbe` with the request that uses
+    // it: it describes the server process, not a model, and this file is the model wire.
 
     // MARK: - Model Metadata (`/api/show`)
 

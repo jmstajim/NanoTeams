@@ -51,7 +51,7 @@ final class NativeLMStudioModelLifecycleTests: XCTestCase {
         let client = NativeLMStudioClient(session: session)
 
         let id = try await client.loadModel(
-            modelName: "openai/gpt-oss-20b",
+            provider: .lmStudio, modelName: "openai/gpt-oss-20b",
             baseURLString: "http://127.0.0.1:1234"
         )
 
@@ -77,7 +77,7 @@ final class NativeLMStudioModelLifecycleTests: XCTestCase {
         let client = NativeLMStudioClient(session: session)
 
         let id = try await client.loadModel(
-            modelName: "model-a",
+            provider: .lmStudio, modelName: "model-a",
             baseURLString: "http://127.0.0.1:1234"
         )
         XCTAssertEqual(id, "existing-id")
@@ -97,7 +97,7 @@ final class NativeLMStudioModelLifecycleTests: XCTestCase {
 
         do {
             _ = try await client.loadModel(
-                modelName: "model-a",
+                provider: .lmStudio, modelName: "model-a",
                 baseURLString: "http://127.0.0.1:1234"
             )
             XCTFail("Expected throw — fabricated ids would orphan instances")
@@ -120,7 +120,7 @@ final class NativeLMStudioModelLifecycleTests: XCTestCase {
 
         do {
             _ = try await client.loadModel(
-                modelName: "model-a",
+                provider: .lmStudio, modelName: "model-a",
                 baseURLString: "http://127.0.0.1:1234"
             )
             XCTFail("Expected throw")
@@ -140,7 +140,7 @@ final class NativeLMStudioModelLifecycleTests: XCTestCase {
         let client = NativeLMStudioClient(session: session)
 
         do {
-            _ = try await client.loadModel(modelName: "m", baseURLString: "")
+            _ = try await client.loadModel(provider: .lmStudio, modelName: "m", baseURLString: "")
             XCTFail("Expected throw")
         } catch let error as LLMClientError {
             if case .invalidBaseURL = error { /* ok */ } else {
@@ -159,7 +159,7 @@ final class NativeLMStudioModelLifecycleTests: XCTestCase {
         let client = NativeLMStudioClient(session: session)
 
         try await client.unloadModel(
-            instanceID: "openai/gpt-oss-20b",
+            provider: .lmStudio, instanceID: "openai/gpt-oss-20b",
             baseURLString: "http://127.0.0.1:1234"
         )
 
@@ -179,7 +179,7 @@ final class NativeLMStudioModelLifecycleTests: XCTestCase {
 
         // Must not throw — instance is already gone, desired state holds.
         try await client.unloadModel(
-            instanceID: "stale-id",
+            provider: .lmStudio, instanceID: "stale-id",
             baseURLString: "http://127.0.0.1:1234"
         )
     }
@@ -192,7 +192,7 @@ final class NativeLMStudioModelLifecycleTests: XCTestCase {
         let client = NativeLMStudioClient(session: session)
 
         try await client.unloadModel(
-            instanceID: "x",
+            provider: .lmStudio, instanceID: "x",
             baseURLString: "http://127.0.0.1:1234"
         )
     }
@@ -213,7 +213,7 @@ final class NativeLMStudioModelLifecycleTests: XCTestCase {
             let client = NativeLMStudioClient(session: session)
 
             try await client.unloadModel(
-                instanceID: "x",
+                provider: .lmStudio, instanceID: "x",
                 baseURLString: "http://127.0.0.1:1234"
             )
         }
@@ -230,7 +230,7 @@ final class NativeLMStudioModelLifecycleTests: XCTestCase {
         let client = NativeLMStudioClient(session: session)
 
         do {
-            try await client.unloadModel(instanceID: "x", baseURLString: "http://127.0.0.1:1234")
+            try await client.unloadModel(provider: .lmStudio, instanceID: "x", baseURLString: "http://127.0.0.1:1234")
             XCTFail("Expected throw — LoRA error must not be classified as 'already unloaded'")
         } catch let error as LLMClientError {
             if case .badHTTPStatus(let code, _) = error {
@@ -251,7 +251,7 @@ final class NativeLMStudioModelLifecycleTests: XCTestCase {
         session.responseBody = Data(#"{"error":"instance not found"}"#.utf8)
         let client = NativeLMStudioClient(session: session)
 
-        try await client.unloadModel(instanceID: "x", baseURLString: "http://127.0.0.1:1234")
+        try await client.unloadModel(provider: .lmStudio, instanceID: "x", baseURLString: "http://127.0.0.1:1234")
     }
 
     // MARK: - listLoadedInstances (C1 wire test)
@@ -276,7 +276,8 @@ final class NativeLMStudioModelLifecycleTests: XCTestCase {
         """#.utf8)
         let client = NativeLMStudioClient(session: session)
 
-        let loaded = try await client.listLoadedInstances(baseURLString: "http://127.0.0.1:1234")
+        let loaded = try await client.listLoadedInstances(
+            provider: .lmStudio, baseURLString: "http://127.0.0.1:1234").adoptable
 
         XCTAssertEqual(session.capturedURL?.absoluteString,
                        "http://127.0.0.1:1234/api/v0/models",
@@ -302,17 +303,45 @@ final class NativeLMStudioModelLifecycleTests: XCTestCase {
         ], "Raw ids preserved so unload can target each instance individually")
     }
 
-    /// 404 from /api/v0/models means LM Studio is older than the v0 listing
-    /// endpoint. Must degrade to `[]` so the lifecycle service's adoption
-    /// path falls through to `loadModel` instead of crashing.
-    func testListLoadedInstances_404_returnsEmpty_notThrows() async throws {
+    /// 404 from /api/v0/models means LM Studio is older than the v0 listing endpoint: the server
+    /// is fine, the question has no answer here. It must NOT throw — adoption callers fall through
+    /// to `loadModel` — and it must NOT claim an empty server either.
+    ///
+    /// This test asserted `XCTAssertEqual(loaded, [])` until 2026-08-19, which is what a server
+    /// with nothing loaded returns. It was written for the adoption callers, for whom the two are
+    /// the same; it then travelled to the benchmark's residency check, for whom they are not, and
+    /// recorded "already alone" about servers that had answered nothing.
+    ///
+    /// RED: return `.listed([])` for the 404 → the empty case below stops distinguishing it, and
+    /// `BenchmarkResidencyPreparer` reports a verification it never made.
+    func testListLoadedInstances_404_reportsUnsupported_notAnEmptyServer() async throws {
         let session = RecordingSession()
         session.statusCode = 404
         session.responseBody = Data(#"{"error":"unknown route"}"#.utf8)
         let client = NativeLMStudioClient(session: session)
 
-        let loaded = try await client.listLoadedInstances(baseURLString: "http://127.0.0.1:1234")
-        XCTAssertEqual(loaded, [])
+        let listing = try await client.listLoadedInstances(
+            provider: .lmStudio, baseURLString: "http://127.0.0.1:1234")
+
+        XCTAssertEqual(listing, .unsupported)
+        XCTAssertNotEqual(listing, .listed([]), "an unanswered question is not an empty answer")
+        XCTAssertTrue(listing.adoptable.isEmpty, "adoption callers still see nothing to adopt")
+    }
+
+    /// The complement: a 200 whose `data` holds no loaded entry IS an answer, and must stay
+    /// distinguishable from the 404 above.
+    ///
+    /// RED: return `.unsupported` when the parsed list comes out empty → a genuinely idle server
+    /// reads as one that cannot be inspected, and the benchmark stops preparing it.
+    func testListLoadedInstances_emptyButAnswered_isListedNotUnsupported() async throws {
+        let session = RecordingSession()
+        session.responseBody = Data(#"{"data":[{"id":"a","state":"not-loaded","type":"llm"}]}"#.utf8)
+        let client = NativeLMStudioClient(session: session)
+
+        let listing = try await client.listLoadedInstances(
+            provider: .lmStudio, baseURLString: "http://127.0.0.1:1234")
+
+        XCTAssertEqual(listing, .listed([]))
     }
 
     func testCanonicalModelName_stripsNumericSuffixOnly() {
@@ -334,7 +363,7 @@ final class NativeLMStudioModelLifecycleTests: XCTestCase {
         let client = NativeLMStudioClient(session: session)
 
         do {
-            try await client.unloadModel(instanceID: "x", baseURLString: "http://127.0.0.1:1234")
+            try await client.unloadModel(provider: .lmStudio, instanceID: "x", baseURLString: "http://127.0.0.1:1234")
             XCTFail("Expected throw")
         } catch let error as LLMClientError {
             if case .badHTTPStatus(let code, _) = error {
@@ -415,7 +444,7 @@ final class NativeLMStudioTransportGuardTests: XCTestCase {
     func testLoadModel_nonHTTPResponse_throwsMissingResponse() async {
         let client = NativeLMStudioClient(session: NonHTTPSession())
         await assertThrows(LLMClientError.missingResponse) {
-            _ = try await client.loadModel(modelName: "m", baseURLString: base)
+            _ = try await client.loadModel(provider: .lmStudio, modelName: "m", baseURLString: base)
         }
     }
 
@@ -424,23 +453,24 @@ final class NativeLMStudioTransportGuardTests: XCTestCase {
     func testUnloadModel_nonHTTPResponse_throwsMissingResponse() async {
         let client = NativeLMStudioClient(session: NonHTTPSession())
         await assertThrows(LLMClientError.missingResponse) {
-            try await client.unloadModel(instanceID: "i", baseURLString: base)
+            try await client.unloadModel(provider: .lmStudio, instanceID: "i", baseURLString: base)
         }
     }
 
     func testListLoadedInstances_nonHTTPResponse_throwsMissingResponse() async {
         let client = NativeLMStudioClient(session: NonHTTPSession())
         await assertThrows(LLMClientError.missingResponse) {
-            _ = try await client.listLoadedInstances(baseURLString: base)
+            _ = try await client.listLoadedInstances(provider: .lmStudio, baseURLString: base)
         }
     }
 
-    /// `listLoadedInstances` degrades to `[]` on a 404 and on decode failures, but a base URL
-    /// that is not a URL at all is a settings error, not "no info" — it must name itself.
+    /// `listLoadedInstances` reports `.unsupported` on a 404, but a base URL that is not a URL at
+    /// all is a settings error, not "this server cannot list" — it must name itself. (The old
+    /// wording here also claimed a decode failure degrades; it throws, and always has.)
     func testListLoadedInstances_unparseableBaseURL_throwsInvalidBaseURL() async {
         let client = NativeLMStudioClient(session: NonHTTPSession())
         do {
-            _ = try await client.listLoadedInstances(baseURLString: "")
+            _ = try await client.listLoadedInstances(provider: .lmStudio, baseURLString: "")
             XCTFail("an empty base URL must not read as a reachable server")
         } catch let LLMClientError.invalidBaseURL(value) {
             XCTAssertEqual(value, "", "the offending value must ride along for the banner")

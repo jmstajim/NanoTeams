@@ -92,15 +92,15 @@ final class PromptBuilderRoleSkillsTests: XCTestCase {
     // MARK: - Section lifecycle through the resolver
 
     private let template = """
-        ## Guidance
-        {roleGuidance}
-
-        ## Skills
-        {roleSkills}
-
-        ## Final reminder
-        Ship it.
-        """
+    ## Guidance
+    {roleGuidance}
+    
+    ## Skills
+    {roleSkills}
+    
+    ## Final reminder
+    Ship it.
+    """
 
     /// The zero-skills contract: the header goes with the empty chip, so the
     /// prompt is byte-identical to one built from a template with no Skills
@@ -145,7 +145,7 @@ final class PromptBuilderRoleSkillsTests: XCTestCase {
 
         XCTAssertFalse(out.contains("## Skills"),
                        "Confirms the hazard the ### level avoids — an h2 skill header "
-                       + "makes `## Skills` look like an empty section")
+                           + "makes `## Skills` look like an empty section")
     }
 
     // MARK: - buildChatMessages

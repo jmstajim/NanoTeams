@@ -159,7 +159,7 @@ extension LLMExecutionService {
             if ToolHandlerRegistry.computerUseTools.contains(tool) {
                 directive = allowedToolNames.contains(ToolNames.screenCapture)
                     ? "Take a fresh screen_capture to see the current UI, then aim at an "
-                        + "element's cx/cy."
+                    + "element's cx/cy."
                     : "Aim at a different element — the one you are clicking is not responding."
             } else {
                 directive = "Change the arguments or move on to the next step of your plan."

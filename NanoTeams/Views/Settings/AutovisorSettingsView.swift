@@ -106,7 +106,7 @@ struct AutovisorSettingsView: View {
     private var powerCard: some View {
         SettingsCard(
             header: "Autovisor",
-            systemImage: "folder.badge.person.crop"
+            systemImage: AutovisorConstants.symbolName
         ) {
             VStack(spacing: 0) {
                 HStack(spacing: Spacing.standard) {

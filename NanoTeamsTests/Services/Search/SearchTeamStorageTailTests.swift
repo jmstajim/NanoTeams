@@ -16,7 +16,6 @@ import XCTest
 private final class TailEmbedClient: EmbeddingClient, @unchecked Sendable {
     private let lock = NSLock()
     private var _callCount = 0
-    private var _capturedTexts: [[String]] = []
 
     /// A batch containing a text whose SUFFIX is one of these throws `.timeout`
     /// (a transient classification, so the builder retries then gives up on the
@@ -28,13 +27,11 @@ private final class TailEmbedClient: EmbeddingClient, @unchecked Sendable {
     var dims: Int = 3
 
     var callCount: Int { lock.withLock { _callCount } }
-    var capturedTexts: [[String]] { lock.withLock { _capturedTexts } }
 
     func embed(texts: [String], config: EmbeddingConfig) async throws -> [[Float]] {
         let (idx, shouldFail, always): (Int, Bool, Error?) = lock.withLock {
             let i = _callCount
             _callCount += 1
-            _capturedTexts.append(texts)
             let fail = texts.contains { text in failTokens.contains { text.hasSuffix($0) } }
             return (i, fail, alwaysThrow)
         }
@@ -2009,11 +2006,11 @@ final class SearchTeamStorageTeamTailTests: XCTestCase {
     func testExtractJSONObject_prefersFencedBlockOverSurroundingProse() {
         let text = """
         Sure! Here is the team {not: this one}
-
+        
         ```json
         {"name": "Real Team"}
         ```
-
+        
         Let me know if you want changes.
         """
         let extracted = TeamConfigParser.extractJSONObject(from: text)

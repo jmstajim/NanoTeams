@@ -67,7 +67,7 @@ final class PlaceholderAttachmentEqualityTests: XCTestCase {
             let a = PlaceholderAttachment.color(for: category)
             let b = PlaceholderAttachment.color(for: category)
             XCTAssertTrue(a === b,
-                "color(for: \(category)) must be a memoized singleton; got two distinct instances")
+                          "color(for: \(category)) must be a memoized singleton; got two distinct instances")
         }
     }
 
@@ -130,6 +130,6 @@ final class PlaceholderAttachmentEqualityTests: XCTestCase {
         )
 
         XCTAssertEqual(first, second,
-            "Two builds of the same template must compare equal; otherwise ResolvedPromptView re-runs setAttributedString on every SwiftUI body invocation")
+                       "Two builds of the same template must compare equal; otherwise ResolvedPromptView re-runs setAttributedString on every SwiftUI body invocation")
     }
 }

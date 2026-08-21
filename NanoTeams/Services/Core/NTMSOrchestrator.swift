@@ -159,6 +159,7 @@ final class NTMSOrchestrator {
         configuration.visionLLMConfig
     }
 
+    // periphery:ignore - protocol conformance (LLMStateDelegate)
     var bashPolicy: BashPolicy {
         configuration.bashPolicy
     }
@@ -863,7 +864,7 @@ final class NTMSOrchestrator {
 
         if let previousSelectedRunID, runIDs.contains(previousSelectedRunID) {
             if let previousActiveRunID, previousSelectedRunID == previousActiveRunID,
-                previousActiveRunID != newActiveRunID
+               previousActiveRunID != newActiveRunID
             {
                 selectedRunID = newActiveRunID
             } else {
@@ -892,20 +893,20 @@ final class NTMSOrchestrator {
 extension NTMSOrchestrator: LLMExecutionDelegate {}
 
 #if DEBUG
-    extension NTMSOrchestrator {
-        func _testRegisterStepTask(stepID: String, taskID: Int) {
-            llmExecutionService._testRegisterStepTask(stepID: stepID, taskID: taskID)
-        }
+extension NTMSOrchestrator {
+    func _testRegisterStepTask(stepID: String, taskID: Int) {
+        llmExecutionService._testRegisterStepTask(stepID: stepID, taskID: taskID)
+    }
 
-        func _testFinishStepWithWarning(stepID: String, taskID: Int, warning: String) async {
-            await llmExecutionService._testFinishStepWithWarning(
-                stepID: stepID, taskID: taskID, warning: warning)
-        }
+    func _testFinishStepWithWarning(stepID: String, taskID: Int, warning: String) async {
+        await llmExecutionService._testFinishStepWithWarning(
+            stepID: stepID, taskID: taskID, warning: warning)
+    }
 
-        // periphery:ignore - used in #if DEBUG inside SidebarView.swift #Preview at line 477
-        func _setActiveTaskID(_ id: Int?) {
-            activeTaskID = id
-        }
+    // periphery:ignore - used in #Preview helpers (SidebarView, TeamBoardView+Previews, QuickCapturePanel+Previews)
+    func _setActiveTaskID(_ id: Int?) {
+        activeTaskID = id
+    }
 }
 #endif
 

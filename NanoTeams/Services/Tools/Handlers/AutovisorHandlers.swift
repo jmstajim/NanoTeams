@@ -95,10 +95,10 @@ nonisolated struct CreateManagedTaskTool: ToolHandler {
     static let excludedInMeetings = true
 
     private static let baseDescription = """
-        Create and start a new top-level task in this folder. It runs independently \
-        — you do NOT block waiting for it; check back on its status later. The team \
-        has no other context, so put everything they need into `brief`.
-        """
+    Create and start a new top-level task in this folder. It runs independently \
+    — you do NOT block waiting for it; check back on its status later. The team \
+    has no other context, so put everything they need into `brief`.
+    """
 
     private static let parameterSchema = parameters(allowGeneration: true, omitIsViable: true)
 
@@ -219,15 +219,15 @@ nonisolated struct ControlTaskTool: ToolHandler {
     static let schema = ToolSchema(
         name: TN.controlTask,
         description: """
-            Control a task's lifecycle. `action`:
-            - start / pause / resume — run control
-            - stop — hard-stop the engine (cascades to any delegated subtasks)
-            - close — accept all the task's roles and close it
-            - delete — permanently remove it (irreversible; prefer stop/close)
-            - rename — set a new title (pass it in `arg`)
-            - set_timeout — set per-run timeout in seconds (pass seconds in `arg`; 0 clears)
-            You cannot control your own manager task.
-            """,
+        Control a task's lifecycle. `action`:
+        - start / pause / resume — run control
+        - stop — hard-stop the engine (cascades to any delegated subtasks)
+        - close — accept all the task's roles and close it
+        - delete — permanently remove it (irreversible; prefer stop/close)
+        - rename — set a new title (pass it in `arg`)
+        - set_timeout — set per-run timeout in seconds (pass seconds in `arg`; 0 clears)
+        You cannot control your own manager task.
+        """,
         parameters: JS.object(
             properties: [
                 "task_id": JS.integer("The task's id."),
@@ -272,13 +272,13 @@ nonisolated struct ManageRoleTool: ToolHandler {
     static let schema = ToolSchema(
         name: TN.manageRole,
         description: """
-            Act on a specific role within a task. `action`:
-            - restart — re-runs the role and its downstream dependents from zero, discarding their messages, tool calls and artifacts; `comment` is the only text that survives into the re-run
-            - accept — accept a role awaiting acceptance; on a chat-mode task's advisory role this finishes the role and closes the task once no other role is active
-            - request_changes — send a role that finished its work back for revision; `comment` = what to change
-            - correct — feed mid-run correction to a paused role; `comment` = the correction
-            - finish_advisory — finish an advisory (chat) role
-            """,
+        Act on a specific role within a task. `action`:
+        - restart — re-runs the role and its downstream dependents from zero, discarding their messages, tool calls and artifacts; `comment` is the only text that survives into the re-run
+        - accept — accept a role awaiting acceptance; on a chat-mode task's advisory role this finishes the role and closes the task once no other role is active
+        - request_changes — send a role that finished its work back for revision; `comment` = what to change
+        - correct — feed mid-run correction to a paused role; `comment` = the correction
+        - finish_advisory — finish an advisory (chat) role
+        """,
         parameters: JS.object(
             properties: [
                 "task_id": JS.integer("The task's id."),

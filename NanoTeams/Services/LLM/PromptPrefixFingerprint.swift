@@ -22,11 +22,13 @@ nonisolated enum PromptPrefixFingerprint {
 
     // MARK: - FNV-1a (64-bit)
 
-    private static let fnvOffsetBasis: UInt64 = 14_695_981_039_346_656_037
+    static let fnvOffsetBasis: UInt64 = 14_695_981_039_346_656_037
     private static let fnvPrime: UInt64 = 1_099_511_628_211
 
     /// Folds `string`'s UTF-8 into `seed`. `&*` / `^` wrap by definition of the algorithm.
-    private static func fold(_ seed: UInt64, _ string: String) -> UInt64 {
+    /// Internal (not private): `ToolCallAccumulator` folds argument deltas through the
+    /// SAME function for its raw-duplicate signature — one hash, one home.
+    static func fold(_ seed: UInt64, _ string: String) -> UInt64 {
         var hash = seed
         for byte in string.utf8 {
             hash ^= UInt64(byte)
@@ -117,5 +119,116 @@ nonisolated enum PromptPrefixFingerprint {
             index += 1
         }
         return index
+    }
+
+    // MARK: - Fused chain + pricing
+
+    /// `chain` and `ContextBudgetPolicy.estimateTokens` in ONE traversal of the
+    /// conversation.
+    ///
+    /// `PromptPrefixLedger.record` needs both on every request, and
+    /// `warnIfContextBudgetExceeded` needed the estimate again — three full
+    /// scalar-by-scalar walks of a conversation that grows two messages per tool
+    /// iteration, on EVERY iteration (the fingerprint walk itself is the
+    /// detector's contract — it exists to catch prefix rewrites, so it can never
+    /// trust "append-only" and skip bytes — but walking the same bytes three
+    /// times bought nothing). Here the FNV fold counts scalar classes as it goes:
+    /// an ASCII scalar is a byte under 0x80, any other scalar is exactly one
+    /// non-continuation lead byte, so the counts equal
+    /// `WorkFolderContextPromptPlanner.estimateTokens`'s per-scalar classes.
+    ///
+    /// Parity is pinned two ways (`PromptPrefixFingerprintTests`): `.chain` must
+    /// equal `chain(messages:toolSchemaText:)` element-for-element, and
+    /// `.totalPromptTokens` must equal
+    /// `ContextBudgetPolicy.estimateTokens(messages:toolSchemaText:)` — including
+    /// the per-string rounding granularity, which is why each priced part is
+    /// ceiled separately below. Hash-only bytes (role labels, separators, image
+    /// shape) are folded without pricing; price-only bytes (image base64, which
+    /// `segmentText` deliberately folds by SHAPE) are counted without folding.
+    struct ChainWithTokens {
+        let chain: [UInt64]
+        let totalPromptTokens: Int
+    }
+
+    static func chainAndTokens(messages: [ChatMessage],
+                               toolSchemaText: String = "") -> ChainWithTokens {
+        var total = WorkFolderContextPromptPlanner.estimateTokens(toolSchemaText)
+
+        // Segment 0: hash folds the JOINED system prompt + schema text (identical
+        // byte sequence to `chain`, since folding concatenated parts in order is
+        // folding the concatenation); pricing ceils each system content and the
+        // schema text separately, exactly as `estimateTokens` does.
+        var result: [UInt64] = []
+        result.reserveCapacity(messages.count + 1)
+        var running = fnvOffsetBasis
+        var first = true
+        for message in messages where message.role == .system {
+            guard let content = message.content else { continue }
+            if !first { running = fold(running, "\n\n") }
+            running = fold(running, content)
+            first = false
+            total += WorkFolderContextPromptPlanner.estimateTokens(content)
+        }
+        running = fold(running, toolSchemaText)
+        result.append(running)
+        // `estimateTokens` prices wire text and images for system messages too
+        // (both are "" / empty in practice — priced here so the parity is exact
+        // by construction, not by an assumption about system turns).
+        for message in messages where message.role == .system {
+            total += WorkFolderContextPromptPlanner.estimateTokens(
+                HarmonyToolCallEnvelope.appendedWireText(for: message))
+            for image in message.imageContent ?? [] {
+                total += WorkFolderContextPromptPlanner.estimateTokens(image.base64Data)
+            }
+        }
+
+        for message in messages where message.role != .system {
+            // segmentText's parts, folded in order with its separators — no joined
+            // copy is materialized. Content and wire text are the shared bytes:
+            // folded AND counted in the same pass.
+            running = fold(running, message.role.rawValue)
+            running = fold(running, "\u{1}")
+            let content = message.content ?? ""
+            var ascii = 0, nonAscii = 0
+            running = foldCounting(running, content, ascii: &ascii, nonAscii: &nonAscii)
+            if message.content != nil {
+                total += WorkFolderContextPromptPlanner.estimateTokens(
+                    ascii: ascii, nonAscii: nonAscii)
+            }
+            let toolCallText = HarmonyToolCallEnvelope.appendedWireText(for: message)
+            if !toolCallText.isEmpty {
+                running = fold(running, "\u{1}")
+                var wa = 0, wn = 0
+                running = foldCounting(running, toolCallText, ascii: &wa, nonAscii: &wn)
+                total += WorkFolderContextPromptPlanner.estimateTokens(ascii: wa, nonAscii: wn)
+            }
+            for image in message.imageContent ?? [] {
+                running = fold(running, "\u{1}")
+                running = fold(running, image.mimeType)
+                running = fold(running, "\u{1}")
+                running = fold(running, String(image.base64Data.count))
+                total += WorkFolderContextPromptPlanner.estimateTokens(image.base64Data)
+            }
+            result.append(running)
+        }
+        return ChainWithTokens(chain: result, totalPromptTokens: total)
+    }
+
+    /// `fold`, also counting the string's scalar classes from its UTF-8 bytes:
+    /// ASCII scalar = byte < 0x80; any other scalar = its single lead byte
+    /// (`byte & 0xC0 != 0x80`). Continuation bytes hash but do not count.
+    private static func foldCounting(_ seed: UInt64, _ string: String,
+                                     ascii: inout Int, nonAscii: inout Int) -> UInt64 {
+        var hash = seed
+        for byte in string.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* fnvPrime
+            if byte < 0x80 {
+                ascii += 1
+            } else if byte & 0xC0 != 0x80 {
+                nonAscii += 1
+            }
+        }
+        return hash
     }
 }

@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// Pure, `nonisolated` policy that sizes the one-shot work-folder-context
 /// prompt to the loaded model's context window. Owns BOTH the token-budget
@@ -81,11 +82,41 @@ nonisolated enum WorkFolderContextPromptPlanner {
     /// separately so Cyrillic/CJK content is not under-counted. Deterministic;
     /// used for both budget derivation and section measurement so the two agree.
     static func estimateTokens(_ s: String) -> Int {
+        let counts = scalarCounts(s)
+        return estimateTokens(ascii: counts.ascii, nonAscii: counts.nonAscii)
+    }
+
+    /// The single scalar-walking home. The file-list shaper counts each entry
+    /// ONCE through here and prices every later decision from the counts via
+    /// `estimateTokens(ascii:nonAscii:)` — pricing must never re-walk what it
+    /// already counted (the collapse pass used to re-join the whole list per
+    /// candidate directory, O(dirs × total chars)).
+    static func scalarCounts(_ s: String) -> (ascii: Int, nonAscii: Int) {
         var ascii = 0
         var nonAscii = 0
         for scalar in s.unicodeScalars {
             if scalar.isASCII { ascii += 1 } else { nonAscii += 1 }
         }
+        #if DEBUG
+        _estimateScalarWork.wrappingAdd(ascii + nonAscii, ordering: .relaxed)
+        #endif
+        return (ascii, nonAscii)
+    }
+
+    #if DEBUG
+    /// Work-bound seam for `WorkFolderContextPromptPlannerTests`: total scalars
+    /// walked by `scalarCounts` since the last reset. Same shape as
+    /// `HarmonyToolCallParsingHelpers._repairFireCount`.
+    private static let _estimateScalarWork = Atomic<Int>(0)
+    static func _testScalarWork() -> Int { _estimateScalarWork.load(ordering: .relaxed) }
+    static func _testResetScalarWork() { _estimateScalarWork.store(0, ordering: .relaxed) }
+    #endif
+
+    /// The same two-class estimate from pre-counted scalar classes — the formula's
+    /// single home. `PromptPrefixFingerprint.chainAndTokens` counts the classes
+    /// during its FNV fold (scalars = non-continuation UTF-8 bytes) so pricing and
+    /// fingerprinting share one traversal of the conversation instead of three.
+    static func estimateTokens(ascii: Int, nonAscii: Int) -> Int {
         let tokens = Double(ascii) / charsPerTokenASCII + Double(nonAscii) / charsPerTokenNonASCII
         return Int(tokens.rounded(.up))
     }
@@ -211,51 +242,112 @@ nonisolated enum WorkFolderContextPromptPlanner {
         var truncatedFileCount: Int
     }
 
+    /// Shapes the file list to the budget. Each line's scalars are counted ONCE;
+    /// every later pricing decision is O(1) arithmetic over the counts — the old
+    /// shape re-joined and re-walked the WHOLE list per collapse candidate
+    /// (O(dirs × total chars)) and rebuilt the entry array per collapse, and the
+    /// "file-list snapshot cap upstream" its acceptance leaned on never existed.
+    ///
+    /// Two rounding schemes, both historical and both load-bearing for the
+    /// byte-identical pins: the collapse loop and `tokenCost` price the list as
+    /// ONE `estimateTokens` call over the join (single rounding, maintained as
+    /// running class totals); the tail-truncation pass prices each line with its
+    /// OWN `estimateTokens` call (per-line rounding), reproduced through the
+    /// `(ascii:nonAscii:)` overload — value-identical to
+    /// `estimateTokens("\n" + text)`, the newline being one ASCII scalar.
     private static func shapeFileList(_ input: WorkFolderContextInput, budget: Int) -> ListResult {
         guard !input.fileList.isEmpty else {
             return ListResult(lines: [], tokenCost: 0, collapsedDirs: [], truncatedFileCount: 0)
         }
 
-        var entries = input.fileList.map { ListEntry(text: "- \($0)", fileCount: 1) }
-        var collapsedDirs: [String] = []
+        let lineTexts = input.fileList.map { "- \($0)" }
+        let lineCounts = lineTexts.map { scalarCounts($0) }
+        let headerCounts = scalarCounts("File snapshot:")
 
-        func cost(_ entries: [ListEntry]) -> Int {
-            estimateTokens((["File snapshot:"] + entries.map(\.text)).joined(separator: "\n"))
+        // Running class totals of the CURRENT list: header + "\n"-joined lines.
+        var ascii = headerCounts.ascii
+        var nonAscii = headerCounts.nonAscii
+        for counts in lineCounts {
+            ascii += 1 + counts.ascii
+            nonAscii += counts.nonAscii
         }
+        func currentCost() -> Int { estimateTokens(ascii: ascii, nonAscii: nonAscii) }
 
-        // Collapse large directories, largest first, until it fits.
-        if cost(entries) > budget {
+        // Collapse large directories, largest first, until it fits — DECISIONS
+        // only; the entry array is materialized once afterwards. Children of
+        // distinct directories are disjoint (each path has one immediate
+        // parent), which is why the old per-collapse `inserted` guard holds for
+        // free here.
+        let childrenByParent = Dictionary(
+            grouping: input.fileList.indices, by: { immediateParent(of: input.fileList[$0]) })
+        var collapsedDirs: [String] = []
+        var collapsedSet: Set<String> = []
+        var aggregates: [String: (text: String, counts: (ascii: Int, nonAscii: Int), fileCount: Int)] = [:]
+        if currentCost() > budget {
             for dir in collapseCandidates(input.fileList) {
-                if cost(entries) <= budget { break }
-                guard let collapsed = collapse(entries, dir: dir, paths: input.fileList) else { continue }
-                entries = collapsed
+                if currentCost() <= budget { break }
+                guard let childIndices = childrenByParent[dir], !childIndices.isEmpty else { continue }
+                let text = aggregateLine(dir: dir, children: childIndices.map { input.fileList[$0] })
+                let aggCounts = scalarCounts(text)
+                for i in childIndices {
+                    ascii -= 1 + lineCounts[i].ascii
+                    nonAscii -= lineCounts[i].nonAscii
+                }
+                ascii += 1 + aggCounts.ascii
+                nonAscii += aggCounts.nonAscii
                 collapsedDirs.append(dir)
+                collapsedSet.insert(dir)
+                aggregates[dir] = (text, aggCounts, childIndices.count)
             }
         }
 
-        // Still over → tail-truncate with an exact-count marker.
+        // Materialize once — each aggregate lands at its FIRST child's position,
+        // exactly where the old per-collapse rebuild inserted it.
+        var entries: [ListEntry] = []
+        var entryCounts: [(ascii: Int, nonAscii: Int)] = []
+        entries.reserveCapacity(input.fileList.count)
+        entryCounts.reserveCapacity(input.fileList.count)
+        var emitted: Set<String> = []
+        for (i, path) in input.fileList.enumerated() {
+            let parent = immediateParent(of: path)
+            if collapsedSet.contains(parent) {
+                guard emitted.insert(parent).inserted, let agg = aggregates[parent] else { continue }
+                entries.append(ListEntry(text: agg.text, fileCount: agg.fileCount))
+                entryCounts.append(agg.counts)
+            } else {
+                entries.append(ListEntry(text: lineTexts[i], fileCount: 1))
+                entryCounts.append(lineCounts[i])
+            }
+        }
+
+        // Still over → tail-truncate with an exact-count marker (per-line rounding).
         var truncatedFileCount = 0
-        if cost(entries) > budget {
+        if currentCost() > budget {
             let markerReserve = estimateTokens("- … and 000000 more files (truncated to fit the model's context window)")
             var kept: [ListEntry] = []
-            var running = estimateTokens("File snapshot:")
-            for entry in entries {
-                let next = running + estimateTokens("\n" + entry.text)
+            var running = estimateTokens(ascii: headerCounts.ascii, nonAscii: headerCounts.nonAscii)
+            var keptAscii = headerCounts.ascii
+            var keptNonAscii = headerCounts.nonAscii
+            for (entry, counts) in zip(entries, entryCounts) {
+                let next = running + estimateTokens(ascii: 1 + counts.ascii, nonAscii: counts.nonAscii)
                 if next + markerReserve > budget { break }
                 kept.append(entry)
+                keptAscii += 1 + counts.ascii
+                keptNonAscii += counts.nonAscii
                 running = next
             }
             truncatedFileCount = entries[kept.count...].reduce(0) { $0 + $1.fileCount }
-            kept.append(ListEntry(
-                text: "- … and \(truncatedFileCount) more files (truncated to fit the model's context window)",
-                fileCount: 0
-            ))
+            let marker = "- … and \(truncatedFileCount) more files (truncated to fit the model's context window)"
+            let markerCounts = scalarCounts(marker)
+            kept.append(ListEntry(text: marker, fileCount: 0))
             entries = kept
+            ascii = keptAscii + 1 + markerCounts.ascii
+            nonAscii = keptNonAscii + markerCounts.nonAscii
         }
 
         return ListResult(
             lines: ["File snapshot:"] + entries.map(\.text),
-            tokenCost: cost(entries),
+            tokenCost: currentCost(),
             collapsedDirs: collapsedDirs,
             truncatedFileCount: truncatedFileCount
         )
@@ -277,35 +369,6 @@ nonisolated enum WorkFolderContextPromptPlanner {
                 return lhs.value > rhs.value
             }
             .map(\.key)
-    }
-
-    private static func collapse(
-        _ entries: [ListEntry],
-        dir: String,
-        paths: [String]
-    ) -> [ListEntry]? {
-        // Direct children: "<dir>/<name>" with no further slash.
-        let children = paths.filter { immediateParent(of: $0) == dir }
-        guard !children.isEmpty else { return nil }
-
-        let aggregate = ListEntry(text: aggregateLine(dir: dir, children: children), fileCount: children.count)
-
-        var result: [ListEntry] = []
-        var inserted = false
-        for entry in entries {
-            let path = String(entry.text.dropFirst(2)) // strip "- "
-            if entry.fileCount == 1, immediateParent(of: path) == dir {
-                if !inserted {
-                    result.append(aggregate)
-                    inserted = true
-                }
-                continue
-            }
-            result.append(entry)
-        }
-        // If the direct children weren't plain entries (already collapsed), skip.
-        guard inserted else { return nil }
-        return result
     }
 
     private static func aggregateLine(dir: String, children: [String]) -> String {

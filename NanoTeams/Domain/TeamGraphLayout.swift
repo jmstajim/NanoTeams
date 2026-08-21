@@ -93,7 +93,7 @@ nonisolated struct TeamGraphLayout: Codable, Hashable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.nodePositions =
             try c.decodeIfPresent([TeamNodePosition].self, forKey: .nodePositions)
-            ?? TeamGraphLayout.default.nodePositions
+                ?? TeamGraphLayout.default.nodePositions
         self.transform =
             try c.decodeIfPresent(TeamGraphTransform.self, forKey: .transform) ?? .identity
         self.hiddenRoleIDs =

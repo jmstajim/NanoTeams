@@ -262,8 +262,8 @@ final class SecureTokenStorageCoverageTests: XCTestCase {
             try sut.setToken(nil, forKey: "http://127.0.0.1:1234")
         } catch KeychainError.unhandled(let status)
             where status == errSecMissingEntitlement
-                || status == errSecInteractionNotAllowed
-                || status == errSecAuthFailed
+            || status == errSecInteractionNotAllowed
+            || status == errSecAuthFailed
         {
             throw XCTSkip("Keychain unavailable on this runner (status \(status)).")
         }
@@ -282,8 +282,8 @@ final class SecureTokenStorageCoverageTests: XCTestCase {
             try sut.setToken("real-token", forKey: key)
         } catch KeychainError.unhandled(let status)
             where status == errSecMissingEntitlement
-                || status == errSecInteractionNotAllowed
-                || status == errSecAuthFailed
+            || status == errSecInteractionNotAllowed
+            || status == errSecAuthFailed
         {
             throw XCTSkip("Keychain unavailable on this runner (status \(status)).")
         }
@@ -305,8 +305,8 @@ final class SecureTokenStorageCoverageTests: XCTestCase {
             try sut.setToken("  padded-token\n", forKey: key)
         } catch KeychainError.unhandled(let status)
             where status == errSecMissingEntitlement
-                || status == errSecInteractionNotAllowed
-                || status == errSecAuthFailed
+            || status == errSecInteractionNotAllowed
+            || status == errSecAuthFailed
         {
             throw XCTSkip("Keychain unavailable on this runner (status \(status)).")
         }
@@ -325,8 +325,8 @@ final class SecureTokenStorageCoverageTests: XCTestCase {
             try sut.setToken(token, forKey: key)
         } catch KeychainError.unhandled(let status)
             where status == errSecMissingEntitlement
-                || status == errSecInteractionNotAllowed
-                || status == errSecAuthFailed
+            || status == errSecInteractionNotAllowed
+            || status == errSecAuthFailed
         {
             throw XCTSkip("Keychain unavailable on this runner (status \(status)).")
         }
@@ -349,8 +349,8 @@ final class SecureTokenStorageCoverageTests: XCTestCase {
             try sut.setToken("token-localhost", forKey: k1)
         } catch KeychainError.unhandled(let status)
             where status == errSecMissingEntitlement
-                || status == errSecInteractionNotAllowed
-                || status == errSecAuthFailed
+            || status == errSecInteractionNotAllowed
+            || status == errSecAuthFailed
         {
             throw XCTSkip("Keychain unavailable on this runner (status \(status)).")
         }

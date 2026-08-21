@@ -32,7 +32,7 @@ private final class ScriptedAnswerClient: LLMClient, @unchecked Sendable {
         }
     }
 
-    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
 }
 
 /// Never yields anything — exercises the "no content" fallback in
@@ -50,7 +50,7 @@ private final class SilentStreamClient: LLMClient, @unchecked Sendable {
         AsyncThrowingStream { $0.finish() }
     }
 
-    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
 }
 
 /// Thread-safe latch used to observe that a `Task` handed to production code was
@@ -624,7 +624,7 @@ final class ToolLoopStateLoopWarningCoverageTests: XCTestCase {
 
         XCTAssertEqual(messages.count, 1,
                        "no visible call has been made since the arrival — there is nothing new "
-                       + "to say about a run that ended before it")
+                           + "to say about a run that ended before it")
         XCTAssertEqual(persistedUserTurns.count, 1)
     }
 
@@ -871,7 +871,7 @@ final class QueuedSupervisorInjectionGateCoverageTests: XCTestCase {
         XCTAssertTrue(
             preceding.contains("isExecutionLive"),
             "The injection call site must be gated on isExecutionLive — the function itself "
-            + "does not check (see testInject_functionItselfDoesNotConsultLiveness). Window: \(preceding)")
+                + "does not check (see testInject_functionItselfDoesNotConsultLiveness). Window: \(preceding)")
     }
 }
 
@@ -1201,7 +1201,7 @@ final class StepFlowControlCapFailureCoverageTests: XCTestCase {
         XCTAssertFalse(
             applied,
             "CLAUDE.md §7: mutateTask==true only proves persistence — the captured flag must "
-            + "catch a closure that short-circuited")
+                + "catch a closure that short-circuited")
     }
 }
 
@@ -1265,7 +1265,7 @@ final class StepLifecycleStartGuardCoverageTests: XCTestCase {
 
         XCTAssertTrue(hasState(task.id),
                       "The state entry is replaced BEFORE the guards — that is what makes the "
-                      + "cancel-then-replace ordering observable")
+                          + "cancel-then-replace ordering observable")
         XCTAssertFalse(service.isStepRunning(stepID: stepID, taskID: task.id))
     }
 

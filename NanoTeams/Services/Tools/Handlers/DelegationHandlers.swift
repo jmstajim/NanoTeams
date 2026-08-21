@@ -30,11 +30,11 @@ nonisolated struct DelegateToTeamTool: ToolHandler {
     /// shown in the role-editor UI; `buildSchema` reuses this string and appends
     /// the per-role catalog before handing the schema to the LLM.
     private static let baseDescription = """
-        Delegate a sub-task to another team and wait for it to finish. You receive the \
-        team's final artifacts as the tool result. The team has no other context, so \
-        put everything they need into task_brief. Supervisor escalations from the team \
-        route back to you for an answer.
-        """
+    Delegate a sub-task to another team and wait for it to finish. You receive the \
+    team's final artifacts as the tool result. The team has no other context, so \
+    put everything they need into task_brief. Supervisor escalations from the team \
+    route back to you for an answer.
+    """
 
     private static let parameterSchema = JS.object(
         properties: [
@@ -64,7 +64,7 @@ nonisolated struct DelegateToTeamTool: ToolHandler {
         if role.allowDelegationToGeneratedTeams {
             lines.append(
                 "- `\(DelegationConstants.generatedTeamSentinel)` — assemble a new team "
-                + "(extra LLM call, slower). Use only when no listed team fits."
+                    + "(extra LLM call, slower). Use only when no listed team fits."
             )
         }
         let catalogSection = lines.isEmpty
@@ -150,9 +150,9 @@ nonisolated struct CancelDelegationTool: ToolHandler {
     static let schema = ToolSchema(
         name: TN.cancelDelegation,
         description: """
-            Abort a delegation that is paused_by_supervisor. Stops the delegated \
-            team; the sub-task will not complete.
-            """,
+        Abort a delegation that is paused_by_supervisor. Stops the delegated \
+        team; the sub-task will not complete.
+        """,
         parameters: JS.object(
             properties: [
                 "child_task_id": JS.integer("Child task id from the paused delegation envelope."),
@@ -197,9 +197,9 @@ nonisolated struct ResumeDelegationTool: ToolHandler {
     static let schema = ToolSchema(
         name: TN.resumeDelegation,
         description: """
-            Resume a delegation that is paused_by_supervisor and keep waiting for \
-            its artifacts. Use when no change of direction is needed.
-            """,
+        Resume a delegation that is paused_by_supervisor and keep waiting for \
+        its artifacts. Use when no change of direction is needed.
+        """,
         parameters: JS.object(
             properties: [
                 "child_task_id": JS.integer("Child task id from the paused delegation envelope."),
@@ -241,9 +241,9 @@ nonisolated struct ForwardToTeamTool: ToolHandler {
     static let schema = ToolSchema(
         name: TN.forwardToTeam,
         description: """
-            Send guidance into a delegation that is paused_by_supervisor and \
-            resume it.
-            """,
+        Send guidance into a delegation that is paused_by_supervisor and \
+        resume it.
+        """,
         parameters: JS.object(
             properties: [
                 "child_task_id": JS.integer("Child task id from the paused delegation envelope."),

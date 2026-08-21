@@ -315,7 +315,7 @@ final class SelectableMessageTextTests: XCTestCase {
         XCTAssertNil(view.nextResponder)
         guard let cgEvent = CGEvent(scrollWheelEvent2Source: nil, units: .pixel,
                                     wheelCount: 1, wheel1: 5, wheel2: 0, wheel3: 0),
-              let event = NSEvent(cgEvent: cgEvent)
+            let event = NSEvent(cgEvent: cgEvent)
         else {
             return XCTFail("Could not synthesize a scroll wheel event.")
         }
@@ -389,7 +389,7 @@ final class SelectableMessageTextTests: XCTestCase {
         view.setFrameSize(NSSize(width: 350, height: 0))
         let cycleOneCount = view.ensureLayoutCallCountForTesting
         XCTAssertLessThanOrEqual(cycleOneCount, 4,
-            "Cycle 1: ensureLayout count = \(cycleOneCount). >4 indicates an amplification loop between intrinsicContentSize ↔ setFrameSize ↔ applyContent.")
+                                 "Cycle 1: ensureLayout count = \(cycleOneCount). >4 indicates an amplification loop between intrinsicContentSize ↔ setFrameSize ↔ applyContent.")
 
         // Second cycle to confirm the bound holds steady (not a one-shot
         // ramp-up).
@@ -403,7 +403,7 @@ final class SelectableMessageTextTests: XCTestCase {
         view.setFrameSize(NSSize(width: 400, height: 0))
         let cycleTwoCount = view.ensureLayoutCallCountForTesting
         XCTAssertLessThanOrEqual(cycleTwoCount, 4,
-            "Cycle 2: ensureLayout count = \(cycleTwoCount). Bound must hold steady.")
+                                 "Cycle 2: ensureLayout count = \(cycleTwoCount). Bound must hold steady.")
     }
 
     // MARK: - viewDidChangeEffectiveAppearance (I6)

@@ -188,7 +188,7 @@ private final class ScriptedJudgeClient: LLMClient, @unchecked Sendable {
         }
     }
 
-    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
 }
 
 /// Fails the stream — exercises the judge's deny-on-transport-error path.
@@ -206,5 +206,5 @@ private final class ThrowingJudgeClient: LLMClient, @unchecked Sendable {
             continuation.finish(throwing: StubError())
         }
     }
-    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
 }

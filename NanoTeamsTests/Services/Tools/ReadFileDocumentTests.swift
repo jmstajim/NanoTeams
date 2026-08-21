@@ -349,11 +349,11 @@ final class ReadFileDocumentTests: XCTestCase {
 
     func testReadLines_docx_returnsParagraphRange() throws {
         let docxURL = try makeDOCX(at: "many-paragraphs.docx", body: """
-            <w:p><w:r><w:t>paragraph one</w:t></w:r></w:p>
-            <w:p><w:r><w:t>paragraph two</w:t></w:r></w:p>
-            <w:p><w:r><w:t>paragraph three</w:t></w:r></w:p>
-            <w:p><w:r><w:t>paragraph four</w:t></w:r></w:p>
-            """)
+        <w:p><w:r><w:t>paragraph one</w:t></w:r></w:p>
+        <w:p><w:r><w:t>paragraph two</w:t></w:r></w:p>
+        <w:p><w:r><w:t>paragraph three</w:t></w:r></w:p>
+        <w:p><w:r><w:t>paragraph four</w:t></w:r></w:p>
+        """)
 
         let call = StepToolCall(
             name: "read_lines",
@@ -406,10 +406,10 @@ final class ReadFileDocumentTests: XCTestCase {
 
     func testReadLines_odt_returnsLineRange() throws {
         let odtURL = try makeODT(at: "notes.odt", body: """
-            <text:p>alpha line</text:p>
-            <text:p>beta line</text:p>
-            <text:p>gamma line</text:p>
-            """)
+        <text:p>alpha line</text:p>
+        <text:p>beta line</text:p>
+        <text:p>gamma line</text:p>
+        """)
 
         let call = StepToolCall(
             name: "read_lines",
@@ -751,9 +751,9 @@ final class ReadFileDocumentTests: XCTestCase {
 
     func testSearchDocuments_regexMode_onDOCX() throws {
         _ = try makeDOCX(at: "report.docx", body: """
-            <w:p><w:r><w:t>error: resource not found</w:t></w:r></w:p>
-            <w:p><w:r><w:t>warning: deprecated API</w:t></w:r></w:p>
-            """)
+        <w:p><w:r><w:t>error: resource not found</w:t></w:r></w:p>
+        <w:p><w:r><w:t>warning: deprecated API</w:t></w:r></w:p>
+        """)
 
         let call = StepToolCall(
             name: "search",
@@ -769,12 +769,12 @@ final class ReadFileDocumentTests: XCTestCase {
 
     func testSearchDocuments_contextLines_fromDOCX() throws {
         _ = try makeDOCX(at: "notes.docx", body: """
-            <w:p><w:r><w:t>preamble alpha</w:t></w:r></w:p>
-            <w:p><w:r><w:t>preamble beta</w:t></w:r></w:p>
-            <w:p><w:r><w:t>TARGETPHRASE here</w:t></w:r></w:p>
-            <w:p><w:r><w:t>aftermath gamma</w:t></w:r></w:p>
-            <w:p><w:r><w:t>aftermath delta</w:t></w:r></w:p>
-            """)
+        <w:p><w:r><w:t>preamble alpha</w:t></w:r></w:p>
+        <w:p><w:r><w:t>preamble beta</w:t></w:r></w:p>
+        <w:p><w:r><w:t>TARGETPHRASE here</w:t></w:r></w:p>
+        <w:p><w:r><w:t>aftermath gamma</w:t></w:r></w:p>
+        <w:p><w:r><w:t>aftermath delta</w:t></w:r></w:p>
+        """)
 
         let call = StepToolCall(
             name: "search",
@@ -864,8 +864,8 @@ final class ReadFileDocumentTests: XCTestCase {
         // Readable doc + query that doesn't match → count:0, NO skipped_files
         // (skipped_files is for files that couldn't be indexed, not for clean misses).
         _ = try makeDOCX(at: "report.docx", body: """
-            <w:p><w:r><w:t>normal body text</w:t></w:r></w:p>
-            """)
+        <w:p><w:r><w:t>normal body text</w:t></w:r></w:p>
+        """)
 
         let call = StepToolCall(
             name: "search",
@@ -900,8 +900,8 @@ final class ReadFileDocumentTests: XCTestCase {
 
     func testSearchDocuments_caseInsensitive_matchInsideDOCX() throws {
         _ = try makeDOCX(at: "report.docx", body: """
-            <w:p><w:r><w:t>The MixedCaseToken shows up once.</w:t></w:r></w:p>
-            """)
+        <w:p><w:r><w:t>The MixedCaseToken shows up once.</w:t></w:r></w:p>
+        """)
 
         let call = StepToolCall(
             name: "search",

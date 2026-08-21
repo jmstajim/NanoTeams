@@ -36,31 +36,53 @@ final class NTMSRepositoryGeneratedChatModeMigrationTests: XCTestCase {
         super.tearDown()
     }
 
-    // MARK: - The candidate filter (pure)
+    // MARK: - The candidate filter (pure, tri-state)
 
-    func testMayCarryPlaceholderChatMode_matrix() {
+    /// Mirrors `TeamResolution.resolveTeamID`'s rung order — one assertion per rung,
+    /// plus the tri-state contract (#91): `.unknown` is a first-class answer, never
+    /// read as "clear".
+    func testPlaceholderChatCandidacy_matrix() {
         let placeholder: NTMSID = "generated_placeholder"
         let ids: Set<NTMSID> = [placeholder]
+        let resolvable: Set<NTMSID> = [placeholder, "coding_assistant"]
 
-        XCTAssertFalse(
-            summary(isChatMode: false, pinnedTeamID: placeholder)
-                .mayCarryPlaceholderChatMode(placeholderTeamIDs: ids),
-            "false can never be the bug — the old seed only erred toward true")
-        XCTAssertTrue(
-            summary(isChatMode: true, pinnedTeamID: placeholder)
-                .mayCarryPlaceholderChatMode(placeholderTeamIDs: ids))
-        XCTAssertTrue(
-            summary(isChatMode: true, pinnedTeamID: nil)
-                .mayCarryPlaceholderChatMode(placeholderTeamIDs: ids),
-            "a never-started task has no pin to test — undecidable, so worth one read")
-        XCTAssertFalse(
-            summary(isChatMode: true, pinnedTeamID: "coding_assistant")
-                .mayCarryPlaceholderChatMode(placeholderTeamIDs: ids),
-            "a real team's pin rules the placeholder out with no I/O")
-        XCTAssertFalse(
-            summary(isChatMode: true, pinnedTeamID: "gen_abc123")
-                .mayCarryPlaceholderChatMode(placeholderTeamIDs: ids),
-            "an ADOPTED task re-pins to the generated team's own id, so it never matches")
+        func candidacy(
+            isChatMode: Bool = true, pinned: NTMSID? = nil,
+            hasGenerated: Bool? = false, preferred: NTMSID? = nil,
+            parent: Int? = nil, activeIsPlaceholder: Bool = false
+        ) -> PlaceholderChatCandidacy {
+            summary(isChatMode: isChatMode, pinnedTeamID: pinned,
+                    hasGeneratedTeam: hasGenerated, preferredTeamID: preferred,
+                    parentTaskID: parent)
+                .placeholderChatCandidacy(
+                    placeholderTeamIDs: ids, resolvableTeamIDs: resolvable,
+                    activeTeamIsPlaceholder: activeIsPlaceholder)
+        }
+
+        XCTAssertEqual(candidacy(isChatMode: false, pinned: placeholder), .decidedClear,
+                       "false can never be the bug — the old seed only erred toward true")
+        XCTAssertEqual(candidacy(hasGenerated: nil), .unknown,
+                       "a legacy row answers nothing — pay the read, never assume (#91)")
+        XCTAssertEqual(candidacy(pinned: placeholder, hasGenerated: true), .decidedClear,
+                       "rung 1: an adopted generated team is never the placeholder")
+        XCTAssertEqual(candidacy(pinned: placeholder), .decidedCandidate,
+                       "rung 2: the run pin names the placeholder")
+        XCTAssertEqual(candidacy(pinned: "coding_assistant"), .decidedClear,
+                       "rung 2: a real team's pin rules the placeholder out with no I/O")
+        XCTAssertEqual(candidacy(pinned: "gen_abc123"), .decidedClear,
+                       "rung 2: an ADOPTED task re-pins to the generated team's own id")
+        XCTAssertEqual(candidacy(preferred: "coding_assistant"), .decidedClear,
+                       "rung 3: the never-run-chat-task fix — a resolvable real preferred decides with no I/O")
+        XCTAssertEqual(candidacy(preferred: placeholder), .decidedCandidate,
+                       "rung 3: a resolvable preferred naming the placeholder is a candidate")
+        XCTAssertEqual(candidacy(preferred: "deleted_team", parent: 7), .decidedClear,
+                       "rung 4: an unresolvable preferred falls through, and a child resolves to childOrphan = nil")
+        XCTAssertEqual(candidacy(preferred: "deleted_team", activeIsPlaceholder: true), .decidedCandidate,
+                       "rung 5: root fallback — the effective active team decides")
+        XCTAssertEqual(candidacy(preferred: "deleted_team", activeIsPlaceholder: false), .decidedClear,
+                       "rung 5: root fallback, active team is real")
+        XCTAssertEqual(candidacy(activeIsPlaceholder: true), .decidedCandidate,
+                       "rung 5 with no preferred at all")
     }
 
     // MARK: - Wired through migrateIfNeeded → openOrCreateWorkFolder
@@ -217,13 +239,210 @@ final class NTMSRepositoryGeneratedChatModeMigrationTests: XCTestCase {
             reopened.tasksIndex.tasks.first(where: { $0.id == created.taskID })?.isChatMode, true)
     }
 
+    // MARK: - Index-decisive candidacy (zero reads on later opens)
+
+    /// The cost this rework removes: a never-run chat task on a REAL team used to
+    /// be "undecidable" (nil pin) and paid one `task.json` read on EVERY open,
+    /// forever — including plain Coding Assistant tasks, the default team.
+    ///
+    /// RED (pre-rework): the Bool filter selects the row on every open and the
+    /// second open probes the blob → the zero-probe assertion fails.
+    func testReopen_neverRunChatTaskOnRealTeam_paysZeroReadsOnLaterOpens() throws {
+        _ = try repository.openOrCreateWorkFolder(at: tempDir)
+        let victim = try repository.createTask(
+            at: tempDir, title: "Never run", supervisorTask: "hi", makeActive: false).taskID
+        // A separate ACTIVE task, so the victim's blob is not legitimately read
+        // by the active-task load in openOrCreateWorkFolder.
+        _ = try repository.createTask(at: tempDir, title: "Active", supervisorTask: "x")
+
+        let spy = ProbeCountingFileManager()
+        let spied = NTMSRepository(fileManager: spy)
+        _ = try spied.openOrCreateWorkFolder(at: tempDir)
+
+        let victimPath = taskURL(victim).path
+        XCTAssertEqual(spy.probes[victimPath, default: 0], 0,
+                       "a decided-clear row must cost zero blob probes on reopen")
+    }
+
+    /// A row written BEFORE the mirrored fields existed pays exactly ONE more
+    /// read: the sweep's convergence write stamps the deciding facts into the
+    /// row, and the next open decides from the index alone.
+    func testReopen_legacyRow_paysOneReadThenConverges() throws {
+        _ = try repository.openOrCreateWorkFolder(at: tempDir)
+        let victim = try repository.createTask(
+            at: tempDir, title: "Legacy", supervisorTask: "hi", makeActive: false).taskID
+        _ = try repository.createTask(at: tempDir, title: "Active", supervisorTask: "x")
+        try stripMirroredFields(taskID: victim)
+
+        let spy1 = ProbeCountingFileManager()
+        _ = try NTMSRepository(fileManager: spy1).openOrCreateWorkFolder(at: tempDir)
+        let victimPath = taskURL(victim).path
+        XCTAssertGreaterThan(spy1.probes[victimPath, default: 0], 0,
+                             "the legacy row must pay its one deciding read")
+        let row = try loadIndex().tasks.first(where: { $0.id == victim })
+        XCTAssertNotNil(row?.hasGeneratedTeam,
+                        "the convergence write must stamp the mirrored facts on disk")
+
+        let spy2 = ProbeCountingFileManager()
+        _ = try NTMSRepository(fileManager: spy2).openOrCreateWorkFolder(at: tempDir)
+        XCTAssertEqual(spy2.probes[victimPath, default: 0], 0,
+                       "after convergence the row decides from the index alone")
+    }
+
+    /// The #91 pin: `.unknown` must never be read as "clear". A legacy row hiding
+    /// the placeholder lie has NOTHING in the index to decide by — an
+    /// implementation that treats a nil `hasGeneratedTeam` as "no generated team,
+    /// decide from the remaining rungs" would skip the read and never heal.
+    func testReopen_legacyRowHidingThePlaceholderLie_isStillHealed() throws {
+        let taskID = try seedGeneratedTeamTask(withRun: false)
+        try writePreFixChatMode(taskID: taskID)
+        try stripMirroredFields(taskID: taskID)
+        // Keep the placeholder OUT of the active slot so rung 5 would say
+        // "clear" — the wrong implementation then has no rung left that reads.
+        XCTAssertNil(try loadIndex().tasks.first(where: { $0.id == taskID })?.preferredTeamID,
+                     "precondition: the stripped row carries no deciding fact")
+
+        _ = try repository.openOrCreateWorkFolder(at: tempDir)
+
+        XCTAssertEqual(try loadTask(taskID).isChatMode, false,
+                       "an unknown row must pay the read and heal, never be assumed clear")
+    }
+
+    // MARK: - Split-task rows: the sweep must not wipe the supervisor flag (#91)
+
+    /// The sweep reads task.json RAW (no step-log hydration), so a split task's
+    /// stream arrays are empty and a recomputed `hasPendingSupervisorInput`
+    /// would be a false NEGATIVE. The convergence write must carry the row's
+    /// existing answer forward, not overwrite persisted seen-state with `false`.
+    ///
+    /// RED: drop the `!task.streamsHydrated` preservation in the convergence
+    /// branch → the row's `true` becomes `false`.
+    func testConvergence_splitTaskRow_preservesPendingSupervisorFlag() throws {
+        _ = try repository.openOrCreateWorkFolder(at: tempDir)
+        let victim = try repository.createTask(
+            at: tempDir, title: "Split", supervisorTask: "hi", makeActive: false).taskID
+        _ = try repository.createTask(at: tempDir, title: "Active", supervisorTask: "x")
+        try splitifyBlob(taskID: victim)
+        try setRowPendingSupervisorInput(taskID: victim, value: true)
+        try stripMirroredFields(taskID: victim)  // .unknown → the sweep must pay the read
+
+        _ = try repository.openOrCreateWorkFolder(at: tempDir)
+
+        let row = try XCTUnwrap(loadIndex().tasks.first(where: { $0.id == victim }))
+        XCTAssertNotNil(row.hasGeneratedTeam,
+                        "anti-vacuum: the convergence write must actually have run")
+        XCTAssertEqual(row.hasPendingSupervisorInput, true,
+                       "converging a raw-read split task must keep the row's answer (#91)")
+    }
+
+    /// The HEAL branch is the second, independent writer of the same row —
+    /// pinned separately (#60): a split task that genuinely carries the
+    /// placeholder chat-mode lie is healed WITHOUT losing the supervisor flag.
+    ///
+    /// RED: drop the preservation in the heal branch → `true` becomes `false`
+    /// while the convergence pin above stays green.
+    func testHeal_splitTaskRow_preservesPendingSupervisorFlag() throws {
+        let taskID = try seedGeneratedTeamTask(withRun: true)
+        // A separate ACTIVE task: the open's active-task load hydrates and
+        // refreshes ITS row, and this fixture's log file deliberately does not
+        // exist — fail-open hydration of an ACTIVE victim would legitimately
+        // recompute the flag from empty streams after the sweep ran.
+        _ = try repository.createTask(at: tempDir, title: "Active", supervisorTask: "x")
+        try splitifyBlob(taskID: taskID)
+        try writePreFixChatMode(taskID: taskID)
+        try setRowPendingSupervisorInput(taskID: taskID, value: true)
+
+        _ = try repository.openOrCreateWorkFolder(at: tempDir)
+
+        XCTAssertEqual(try loadTask(taskID).isChatMode, false,
+                       "anti-vacuum: the heal must actually have fired")
+        let row = try XCTUnwrap(loadIndex().tasks.first(where: { $0.id == taskID }))
+        XCTAssertEqual(row.isChatMode, false)
+        XCTAssertEqual(row.hasPendingSupervisorInput, true,
+                       "healing a raw-read split task must keep the row's answer (#91)")
+    }
+
     // MARK: - Fixtures
 
-    private func summary(isChatMode: Bool, pinnedTeamID: NTMSID?) -> TaskSummary {
+    // No restated `@unchecked Sendable`: the SDK marks FileManager's Sendable conformance
+    // unavailable, so the restatement never granted anything and both language modes warn
+    // "conformance … is already unavailable" — the probe compiles and is used without it.
+    private final class ProbeCountingFileManager: FileManager {
+        nonisolated(unsafe) var probes: [String: Int] = [:]
+        override func fileExists(atPath path: String) -> Bool {
+            probes[path, default: 0] += 1
+            return super.fileExists(atPath: path)
+        }
+    }
+
+    /// Rewrites the blob to the SPLIT shape: a step whose `logCommit` says work
+    /// happened while the embedded arrays are empty — exactly what a raw
+    /// (non-hydrating) read of a post-split task decodes to. The decoder
+    /// derives `streamsHydrated == false` from this shape.
+    private func splitifyBlob(taskID: Int) throws {
+        var task = try loadTask(taskID)
+        var step = StepExecution(id: "engineer", role: .softwareEngineer, title: "Work")
+        // Terminal, so the stale-status sweep (which visits running /
+        // needs-input rows and rewrites them from a HYDRATED read) never
+        // touches this row — the two sweeps under test stay the only writers.
+        step.status = .done
+        step.logCommit = StepLogCommit(seq: 3, conversation: 2, wire: 0, toolCalls: 1, messages: 0)
+        if task.runs.isEmpty {
+            task.runs = [Run(id: 0, steps: [step])]
+        } else {
+            task.runs[0].steps = [step]
+        }
+        try writeTask(task)
+        XCTAssertFalse(try loadTask(taskID).streamsHydrated,
+                       "precondition: the blob decodes as a raw split task")
+    }
+
+    /// Stamps the seen-state flag onto the index row byte-directly — the
+    /// persisted `true` the sweep must not recompute away.
+    private func setRowPendingSupervisorInput(taskID: Int, value: Bool) throws {
+        let data = try Data(contentsOf: paths().tasksIndexJSON)
+        var root = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        var rows = try XCTUnwrap(root["tasks"] as? [[String: Any]])
+        for i in rows.indices where (rows[i]["id"] as? Int) == taskID {
+            rows[i]["hasPendingSupervisorInput"] = value
+        }
+        root["tasks"] = rows
+        try JSONSerialization.data(withJSONObject: root)
+            .write(to: paths().tasksIndexJSON)
+        XCTAssertEqual(
+            try loadIndex().tasks.first(where: { $0.id == taskID })?.hasPendingSupervisorInput,
+            value, "precondition: the flag is on disk")
+    }
+
+    /// Rewrites one index row to the byte-shape a pre-2026-08-21 build produced:
+    /// no `hasGeneratedTeam`, no `preferredTeamID`.
+    private func stripMirroredFields(taskID: Int) throws {
+        let data = try Data(contentsOf: paths().tasksIndexJSON)
+        var root = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        var rows = try XCTUnwrap(root["tasks"] as? [[String: Any]])
+        for i in rows.indices where (rows[i]["id"] as? Int) == taskID {
+            rows[i].removeValue(forKey: "hasGeneratedTeam")
+            rows[i].removeValue(forKey: "preferredTeamID")
+        }
+        root["tasks"] = rows
+        try JSONSerialization.data(withJSONObject: root)
+            .write(to: paths().tasksIndexJSON)
+        let reread = try loadIndex().tasks.first(where: { $0.id == taskID })
+        XCTAssertNil(reread?.hasGeneratedTeam, "precondition: the row is legacy-shaped")
+    }
+
+    private func summary(
+        isChatMode: Bool, pinnedTeamID: NTMSID?,
+        hasGeneratedTeam: Bool? = false, preferredTeamID: NTMSID? = nil,
+        parentTaskID: Int? = nil
+    ) -> TaskSummary {
         TaskSummary(
             id: 1, title: "T", status: .running, updatedAt: Date(),
-            isChatMode: isChatMode, parentTaskID: nil, nextRecurrenceFireAt: nil,
-            pinnedTeamID: pinnedTeamID)
+            isChatMode: isChatMode, parentTaskID: parentTaskID, nextRecurrenceFireAt: nil,
+            pinnedTeamID: pinnedTeamID, hasGeneratedTeam: hasGeneratedTeam,
+            preferredTeamID: preferredTeamID)
     }
 
     private func paths() -> NTMSPaths { NTMSPaths(workFolderRoot: tempDir) }

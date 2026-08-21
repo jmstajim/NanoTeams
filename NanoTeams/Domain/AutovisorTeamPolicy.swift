@@ -57,7 +57,7 @@ nonisolated struct AutovisorTeamPolicy: Hashable, Sendable {
     /// `settings.json` self-heals and the stored array can never disagree with this type.
     static func normalizedBlockList(_ ids: [NTMSID]) -> [NTMSID] {
         Array(Set(ids.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                     .filter { !$0.isEmpty })).sorted()
+                .filter { !$0.isEmpty })).sorted()
     }
 
     // MARK: - Predicates

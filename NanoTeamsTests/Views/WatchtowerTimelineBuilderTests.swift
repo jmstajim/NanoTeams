@@ -243,7 +243,7 @@ final class WatchtowerTimelineBuilderTests: XCTestCase {
         XCTAssertEqual(events.count, 4, "2 done steps × (started + completed)")
         let ids = events.map(\.id)
         XCTAssertEqual(Set(ids).count, ids.count,
-            "every timeline event id must be unique — the same role recurs across runs")
+                       "every timeline event id must be unique — the same role recurs across runs")
     }
 
     // MARK: - TimelineEvent.displayText

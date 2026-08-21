@@ -91,7 +91,7 @@ nonisolated enum TemplateResolver {
         let frHeader = "## Final reminder"
         if let range = text.range(of: frHeader, options: .backwards),
            range.lowerBound == text.startIndex
-            || text[text.index(before: range.lowerBound)] == "\n" {
+           || text[text.index(before: range.lowerBound)] == "\n" {
             let head = String(text[..<range.lowerBound])
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let tail = String(text[range.lowerBound...])

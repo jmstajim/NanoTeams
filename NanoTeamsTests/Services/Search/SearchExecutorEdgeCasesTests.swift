@@ -160,7 +160,7 @@ final class SearchExecutorEdgeCasesTests: XCTestCase {
                 return
             }
             XCTAssertEqual(q, "[unbalanced(",
-                "Error must carry the offending pattern verbatim.")
+                           "Error must carry the offending pattern verbatim.")
         }
     }
 
@@ -202,9 +202,9 @@ final class SearchExecutorEdgeCasesTests: XCTestCase {
         ))
 
         XCTAssertEqual(out.matches.count, 1,
-            "The valid source file still matches.")
+                       "The valid source file still matches.")
         XCTAssertTrue(out.skipped.contains(where: { $0.path == "broken.docx" }),
-            "Corrupt document must appear in skipped_files with path + reason.")
+                      "Corrupt document must appear in skipped_files with path + reason.")
     }
 
     // MARK: - .build, node_modules, Pods are all skipped

@@ -111,7 +111,7 @@ final class ToolResultSideEffectsCornerTests: XCTestCase {
 
         XCTAssertTrue(conversation.isEmpty,
                       "a successful write is already confirmed by the tool envelope; got: "
-                      + "\(conversation.map { $0.content ?? "" })")
+                          + "\(conversation.map { $0.content ?? "" })")
     }
 
     /// A failed settings write must reach the manager. Memory is its only
@@ -155,12 +155,12 @@ final class ToolResultSideEffectsCornerTests: XCTestCase {
 
         XCTAssertEqual(conversation.count, 1,
                        "the warning is the ONLY wire turn a failed write earns; got: "
-                       + "\(conversation.map { $0.content ?? "" })")
+                           + "\(conversation.map { $0.content ?? "" })")
 
         let notes = (step()?.llmConversation ?? []).filter { $0.sourceContext == .toolAcknowledgement }
         XCTAssertTrue(notes.isEmpty,
                       "a reassuring note beside a failure warning is the contradiction this removes; "
-                      + "got: \(notes.map { $0.content })")
+                          + "got: \(notes.map { $0.content })")
     }
 
     /// Blank content clears the step's scratchpad but deliberately leaves the
@@ -267,11 +267,11 @@ final class ToolResultSideEffectsCornerTests: XCTestCase {
         XCTAssertEqual(notes.count, 1, "got: \(notes.map { $0.content })")
         XCTAssertTrue(notes.first?.content.contains("implementation phase") ?? false,
                       "the note explains why the next bubble is a fresh conversation; got: "
-                      + "\(notes.first?.content ?? "nil")")
+                          + "\(notes.first?.content ?? "nil")")
 
         XCTAssertEqual(conversation.count, 1,
                        "the brief only — the transition note is display-only, and the boundary "
-                       + "would discard a wire copy anyway; got: \(conversation.map { $0.content ?? "" })")
+                           + "would discard a wire copy anyway; got: \(conversation.map { $0.content ?? "" })")
     }
 
     // MARK: - Artifact name resolution when the step is not in the latest run

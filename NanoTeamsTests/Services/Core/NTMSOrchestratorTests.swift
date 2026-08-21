@@ -1090,6 +1090,27 @@ final class NTMSOrchestratorTests: NTMSOrchestratorTestBase, @unchecked Sendable
         XCTAssertFalse(exists)
     }
 
+    /// Format migration (2026-08-21): the reveal URL prefers the current
+    /// `network_log.jsonl` and falls back to a pre-migration run's
+    /// `network_log.json` — logs die with their run, so nothing converts them.
+    func testNetworkLogURL_prefersJSONL_andFallsBackToLegacyArray() async throws {
+        await sut.openWorkFolder(tempDir)
+        let paths = NTMSPaths(workFolderRoot: tempDir)
+        let legacy = paths.legacyNetworkLogJSON(taskID: 0, runID: 0)
+        let current = paths.networkLogJSONL(taskID: 0, runID: 0)
+        try FileManager.default.createDirectory(
+            at: legacy.deletingLastPathComponent(), withIntermediateDirectories: true)
+
+        // Only the legacy array on disk (an old run): reveal it.
+        try Data("[]".utf8).write(to: legacy)
+        XCTAssertEqual(sut.networkLogURL(taskID: 0, runID: 0), legacy)
+        XCTAssertTrue(sut.networkLogExists(taskID: 0, runID: 0))
+
+        // The current file appears (a new run): it wins over the legacy one.
+        try Data("{}\n".utf8).write(to: current)
+        XCTAssertEqual(sut.networkLogURL(taskID: 0, runID: 0), current)
+    }
+
     // MARK: - OrchestratorEngineState
 
     func testEngineState_subscriptSetGet() {

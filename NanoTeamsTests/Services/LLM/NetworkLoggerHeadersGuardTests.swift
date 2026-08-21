@@ -27,7 +27,7 @@ final class NetworkLoggerHeadersGuardTests: XCTestCase {
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
 
         let banned: Set<String> = ["headers", "httpHeaders", "allHTTPHeaderFields",
-                                    "authorization", "Authorization"]
+                                   "authorization", "Authorization"]
         let leaks = banned.intersection(Set(json.keys))
         XCTAssertTrue(
             leaks.isEmpty,
@@ -59,7 +59,7 @@ final class NetworkLoggerHeadersGuardTests: XCTestCase {
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
 
         let banned: Set<String> = ["headers", "httpHeaders", "responseHeaders",
-                                    "authorization", "Authorization"]
+                                   "authorization", "Authorization"]
         let leaks = banned.intersection(Set(json.keys))
         XCTAssertTrue(leaks.isEmpty, "Response record must not serialize headers; found: \(leaks)")
     }

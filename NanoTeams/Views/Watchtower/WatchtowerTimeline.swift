@@ -179,7 +179,7 @@ private struct ClearTimelineButton: View {
         Button(action: action) {
             Image(systemName: "eye.slash")
                 .font(Typography.caption)
-                .foregroundStyle(isHovered ? .primary : .secondary)
+                .foregroundStyle(isHovered ? Colors.textPrimary : Colors.textSecondary)
         }
         .buttonStyle(.plain)
         .help("Hide timeline events")

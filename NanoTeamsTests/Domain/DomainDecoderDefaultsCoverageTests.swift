@@ -180,7 +180,7 @@ final class DomainDecoderDefaultsCoverageTests: XCTestCase {
         XCTAssertEqual(summary.status, .running)
         XCTAssertEqual(summary.status, task.status,
                        "index row and task blob must default to the same status or the sidebar "
-                       + "and the board disagree about one task")
+                           + "and the board disagree about one task")
         XCTAssertFalse(summary.isChatMode)
         XCTAssertNil(summary.parentTaskID, "absent parent means top-level, so the row is listed")
         XCTAssertNil(summary.nextRecurrenceFireAt, "no schedule means no recurring badge")

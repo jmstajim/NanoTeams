@@ -25,7 +25,8 @@ enum SidebarViewLogic {
     }
 
     /// Projects the task index into sidebar rows. `hasUnreadInput` lights only for a
-    /// chat-mode task waiting on the Supervisor whose prompt the user hasn't seen yet;
+    /// chat-mode task waiting on the Supervisor whose prompt the user hasn't seen yet
+    /// (durable fact, not `TaskStatus` — see `TaskSummary.isWaitingForSupervisor`);
     /// `isEngineRunning` / `isRecurring` are read straight off the live engine map and
     /// the recurrence schedule. `hasPendingBashApproval` lights when the task (even a
     /// BACKGROUND one) is holding a `bash` command awaiting Allow/Deny — the in-loop
@@ -38,8 +39,12 @@ enum SidebarViewLogic {
         engineStates: [Int: TeamEngineState]
     ) -> [SidebarTaskItem] {
         summaries.map { task in
+            // Keyed on the DURABLE fact, never on `status`: `StatusRecoveryService`
+            // parks every waiting step to `.paused` at launch without clearing the
+            // question, so a status check goes dark on exactly the chats that are
+            // still owed an answer.
             let hasUnread = task.isChatMode
-                && task.status == .needsSupervisorInput
+                && task.isWaitingForSupervisor
                 && !seenSupervisorInputTaskIDs.contains(task.id)
             return SidebarTaskItem(
                 id: task.id,

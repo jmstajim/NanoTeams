@@ -19,13 +19,13 @@ extension LLMExecutionService {
     func resolveCoordinatorRole(team: Team?) -> Role? {
         guard let team,
               let id = DesignatedCoordinatorResolver.normalize(
-                storedID: team.settings.meetingCoordinatorRoleID,
-                // Filter out Supervisor — Supervisor can never be a meeting
-                // coordinator (Supervisor is the user, not an LLM). Stored
-                // Supervisor IDs (hand-edited JSON / data corruption) get
-                // rejected here and self-heal to Auto. Symmetric with the
-                // picker which only lists non-Supervisor roles.
-                availableIDs: team.roles.filter { !$0.isSupervisor }.map(\.id)
+                  storedID: team.settings.meetingCoordinatorRoleID,
+                  // Filter out Supervisor — Supervisor can never be a meeting
+                  // coordinator (Supervisor is the user, not an LLM). Stored
+                  // Supervisor IDs (hand-edited JSON / data corruption) get
+                  // rejected here and self-heal to Auto. Symmetric with the
+                  // picker which only lists non-Supervisor roles.
+                  availableIDs: team.roles.filter { !$0.isSupervisor }.map(\.id)
               ),
               let def = team.roles.first(where: { $0.id == id }) else { return nil }
         if let systemRoleID = def.systemRoleID,

@@ -171,7 +171,7 @@ struct ToolSelectionView: View {
                     )
                 } label: {
                     Text(ToolSelectionLogic.isAllEditableSelected(selected: selectedTools, editable: editableToolNames)
-                         ? "Clear All" : "Select All")
+                        ? "Clear All" : "Select All")
                         .font(Typography.caption)
                         .fixedSize()
                 }

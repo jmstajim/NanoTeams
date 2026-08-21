@@ -20,9 +20,9 @@ final class MessageRepetitionDetectorTests: XCTestCase {
 
     func testAcrossMessages_threeNearlyIdenticalRecent_fires() {
         let nearly = """
-            I'll read the file js/calculator.js to understand the buttons logic
-            and propose a fix for the broken handlers in the keypad event listener.
-            """
+        I'll read the file js/calculator.js to understand the buttons logic
+        and propose a fix for the broken handlers in the keypad event listener.
+        """
         let messages = [
             "First, let me list the project files.",
             nearly,

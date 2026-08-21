@@ -360,6 +360,45 @@ final class GeneratedTeamConfigTests: XCTestCase {
                       "Orphan produced artifact should be promoted to supervisor_requires.")
     }
 
+    func testDecode_sameUnconsumedArtifactProducedByTwoRoles_appearsOnceInSupervisorRequires() throws {
+        // Two roles both produce "Report"; nobody consumes it and it is absent
+        // from supervisor_requires — promotion must add it exactly once. The
+        // promotion loop appends while it iterates, so its dedup must see its
+        // own earlier appends.
+        let json = """
+        {
+            "name": "T",
+            "description": "d",
+            "roles": [
+                {"name": "A", "prompt": "Write it.", "produces_artifacts": ["Report"], "requires_artifacts": ["Supervisor Task"], "tools": []},
+                {"name": "B", "prompt": "Write it too.", "produces_artifacts": ["Report"], "requires_artifacts": ["Supervisor Task"], "tools": []}
+            ],
+            "artifacts": [],
+            "supervisor_requires": []
+        }
+        """.data(using: .utf8)!
+        let cfg = try JSONDecoder().decode(GeneratedTeamConfig.self, from: json)
+        XCTAssertEqual(cfg.supervisorRequires.filter { $0 == "Report" }.count, 1,
+                       "The shared unconsumed artifact must be promoted exactly once, not once per producer.")
+    }
+
+    func testDecode_producedArtifactAlreadyInSupervisorRequires_notDuplicated() throws {
+        // The artifact is BOTH decoded from supervisor_requires and produced by a
+        // role — the seeded dedup set must suppress the promotion append.
+        let json = """
+        {
+            "name": "T",
+            "description": "d",
+            "roles": [{"name": "A", "prompt": "Write it.", "produces_artifacts": ["Report"], "requires_artifacts": ["Supervisor Task"], "tools": []}],
+            "artifacts": [{"name": "Report", "description": "r", "icon": null}],
+            "supervisor_requires": ["Report"]
+        }
+        """.data(using: .utf8)!
+        let cfg = try JSONDecoder().decode(GeneratedTeamConfig.self, from: json)
+        XCTAssertEqual(cfg.supervisorRequires, ["Report"],
+                       "An artifact already listed in supervisor_requires must not be appended again by promotion.")
+    }
+
     func testDecode_orphanSupervisorRequires_throws() {
         let json = """
         {

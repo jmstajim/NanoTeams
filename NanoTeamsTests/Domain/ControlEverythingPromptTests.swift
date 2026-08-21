@@ -48,15 +48,15 @@ final class ControlEverythingPromptTests: XCTestCase {
         // resolves to the bare value. This is the 2026-05 chip-format contract:
         // headers live in the template, chips are pure values.
         let template = """
-            ## Role
-            Test role.
-
-            ## Global guidance
-            {globalContext}
-
-            ## Final reminder
-            Do the thing.
-            """
+        ## Role
+        Test role.
+        
+        ## Global guidance
+        {globalContext}
+        
+        ## Final reminder
+        Do the thing.
+        """
         let placeholders = [
             "globalContext": PromptBuilder.formatGlobalContext("RULE_X"),
         ]
@@ -78,15 +78,15 @@ final class ControlEverythingPromptTests: XCTestCase {
         // clean and the editor template intact (author doesn't need to remove
         // the header to hide the section).
         let template = """
-            ## Role
-            Test role.
-
-            ## Global guidance
-            {globalContext}
-
-            ## Final reminder
-            Do the thing.
-            """
+        ## Role
+        Test role.
+        
+        ## Global guidance
+        {globalContext}
+        
+        ## Final reminder
+        Do the thing.
+        """
         let placeholders = [
             "globalContext": PromptBuilder.formatGlobalContext(""),
         ]
@@ -101,12 +101,12 @@ final class ControlEverythingPromptTests: XCTestCase {
 
     func testTemplateWithoutGlobalContextChip_autoAppendsForBackwardsCompat() {
         let template = """
-            ## Role
-            Custom role.
-
-            ## Final reminder
-            Do the thing.
-            """
+        ## Role
+        Custom role.
+        
+        ## Final reminder
+        Do the thing.
+        """
         let result = TemplateResolver.resolveSystemPrompt(
             template, placeholders: [:], globalContext: "RULE_X"
         )

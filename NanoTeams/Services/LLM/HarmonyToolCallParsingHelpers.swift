@@ -202,8 +202,8 @@ nonisolated enum ToolCallParsingHelpers {
         if inString {
             guard !memberBeganAfterLastClose else { return nil }
             if let marker = salvageEndMarker,
-                let boundary = s.range(of: marker, range: i..<s.endIndex)?.lowerBound,
-                truncate > boundary
+               let boundary = s.range(of: marker, range: i..<s.endIndex)?.lowerBound,
+               truncate > boundary
             {
                 return nil
             }
@@ -448,7 +448,7 @@ nonisolated enum ToolCallParsingHelpers {
                     var identifierEnd = i
                     while identifierEnd < text.endIndex,
                           text[identifierEnd].isLetter || text[identifierEnd].isNumber
-                              || text[identifierEnd] == "_"
+                          || text[identifierEnd] == "_"
                     {
                         identifierEnd = text.index(after: identifierEnd)
                     }
@@ -493,7 +493,7 @@ nonisolated enum ToolCallParsingHelpers {
         guard text.contains("\\") else { return nil }
         guard let data = "\"\(text)\"".data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(
-                with: data, options: [.fragmentsAllowed]),
+                  with: data, options: [.fragmentsAllowed]),
               let unescaped = object as? String,
               unescaped != text
         else { return nil }

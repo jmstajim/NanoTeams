@@ -81,9 +81,9 @@ nonisolated enum BashExplainService {
         """
         Command:
         \(command)
-
+        
         Working directory: \(workingDirectory ?? "(project root)")
-
+        
         Reply now: first what it does, then whether it is safe.
         """
     }

@@ -274,8 +274,8 @@ nonisolated enum SearchExecutor {
             for itemURL in urls {
                 // A nil `isDirectory` means the entry vanished or is unreadable.
                 guard let rv = try? itemURL.resourceValues(
-                        forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
-                      let isDir = rv.isDirectory
+                    forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+                    let isDir = rv.isDirectory
                 else { continue }
 
                 var isDirValue = isDir
@@ -497,8 +497,8 @@ nonisolated enum SearchExecutor {
         // `total_matches: 0` next to a full `filename_matches` array.
         let totalMatches: Int? =
             (truncated || results.perQueryBucketSaturated || effectiveOffset > 0)
-            ? nil
-            : (listMode ? filenameMatches.count : combined.count)
+                ? nil
+                : (listMode ? filenameMatches.count : combined.count)
 
         return SearchExecutorOutput(
             matches: page,

@@ -298,7 +298,7 @@ nonisolated enum AgentSkillsScanner {
 
             guard let children = try? fileManager.contentsOfDirectory(atPath: dir.path) else { return }
             for name in children.sorted()
-            where !WalkSkipRules.skipped.contains(name) && !extraSkips.contains(name) {
+                where !WalkSkipRules.skipped.contains(name) && !extraSkips.contains(name) {
                 let childURL = dir.appendingPathComponent(name)
                 var isDir: ObjCBool = false
                 guard fileManager.fileExists(atPath: childURL.path, isDirectory: &isDir), isDir.boolValue else { continue }

@@ -93,7 +93,7 @@ final class BashDefaultToolIDsTests: XCTestCase {
     }
 
     private func assertHasBash(_ ids: [String]?, _ label: String,
-                              file: StaticString = #filePath, line: UInt = #line) {
+                               file: StaticString = #filePath, line: UInt = #line) {
         guard let ids else {
             XCTFail("\(label): role missing from bundled team", file: file, line: line)
             return
@@ -104,7 +104,7 @@ final class BashDefaultToolIDsTests: XCTestCase {
     }
 
     private func assertNoBash(_ ids: [String]?, _ label: String,
-                             file: StaticString = #filePath, line: UInt = #line) {
+                              file: StaticString = #filePath, line: UInt = #line) {
         guard let ids else { return }
         XCTAssertFalse(ids.contains(TN.bash), "\(label) must NOT include bash", file: file, line: line)
         XCTAssertFalse(ids.contains(TN.bashOutput),

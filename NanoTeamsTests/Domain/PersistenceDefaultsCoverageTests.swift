@@ -30,13 +30,13 @@ final class PersistenceDefaultsCoverageTests: XCTestCase {
         let legacy = try decoder.decode(WorkFolderState.self, from: Data("{}".utf8))
         XCTAssertGreaterThanOrEqual(legacy.schemaVersion, 8,
                                     "a legacy decode must migrate the in-memory version forward, or "
-                                    + "the legacy branch re-fires on every open (CLAUDE.md #48)")
+                                        + "the legacy branch re-fires on every open (CLAUDE.md #48)")
 
         let newer = try decoder.decode(
             WorkFolderState.self, from: Data(#"{"schemaVersion":99}"#.utf8))
         XCTAssertEqual(newer.schemaVersion, 99,
                        "a file written by a newer build must keep its version — clamping it down "
-                       + "is a silent downgrade of someone else's data")
+                           + "is a silent downgrade of someone else's data")
     }
 
     /// RED: change `?? ""` on `name` to `?? "Untitled"` → this fails. The empty string is
@@ -49,7 +49,7 @@ final class PersistenceDefaultsCoverageTests: XCTestCase {
         XCTAssertEqual(state.name, "")
         XCTAssertEqual(state.lastAppliedAppVersion, "",
                        "an empty applied-version means 'never reconciled', which is what makes the "
-                       + "first version-bump pass run")
+                           + "first version-bump pass run")
         XCTAssertNil(state.activeTeamID, "nil active team is resolved to teams.first downstream")
         XCTAssertNil(state.activeTaskID)
         XCTAssertNotNil(state.id, "a missing id must be minted, not left invalid")
@@ -79,7 +79,7 @@ final class PersistenceDefaultsCoverageTests: XCTestCase {
         }
         XCTAssertEqual(floor, 1,
                        "a delegated task is at least depth 1 — depth 0 is the root's value and "
-                       + "would break the (parent == nil) ↔ (depth == 0) invariant")
+                           + "would break the (parent == nil) ↔ (depth == 0) invariant")
     }
 
     /// Normalization must be idempotent, or replaying a decode changes the value.
@@ -109,13 +109,13 @@ final class PersistenceDefaultsCoverageTests: XCTestCase {
 
         XCTAssertEqual(a, b,
                        "identity must survive a content edit, or a streaming meeting message "
-                       + "changes ForEach identity mid-render")
+                           + "changes ForEach identity mid-render")
         XCTAssertEqual(Set<TeamMessage>([a, b]).count, 1, "hash(into:) must agree with ==")
 
         let other = TeamMessage(role: .techLead, content: "first", messageType: .proposal)
         XCTAssertNotEqual(a, other,
                           "two separately created messages with identical content are still "
-                          + "different messages")
+                              + "different messages")
         XCTAssertEqual(Set<TeamMessage>([a, other]).count, 2)
     }
 
@@ -136,7 +136,7 @@ final class PersistenceDefaultsCoverageTests: XCTestCase {
         let impossible = RecurrenceRule.dailyAt(hour: 21, minute: 0, weekdays: [9])
         XCTAssertNil(impossible.nextFireDate(after: reference, calendar: calendar),
                      "an unmatchable weekday set must resolve to nil so TaskRecurrence.reschedule "
-                     + "self-disables, instead of staying enabled and never firing")
+                         + "self-disables, instead of staying enabled and never firing")
 
         // The reachable neighbour, so the test above is not passing for the wrong reason.
         let everyDay = RecurrenceRule.dailyAt(hour: 21, minute: 0, weekdays: [])

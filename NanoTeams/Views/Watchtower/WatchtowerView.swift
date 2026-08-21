@@ -152,7 +152,7 @@ struct WatchtowerView: View {
         .onAppear { refreshNotifications() }
         .onChange(of: engineState.taskEngineStates) { _, _ in refreshNotifications() }
         .onChange(of: store.activeTaskID) { _, _ in refreshNotifications() }
-        .onChange(of: config.dismissedNotificationIDs) { _, _ in refreshNotifications() }
+        .onChange(of: config.dismissedNotificationKeys) { _, _ in refreshNotifications() }
         // A held bash command keeps the step `.running`, so the engine-state watcher
         // above never fires for it — observe the approval map directly so the banner
         // surfaces (and clears) as commands are held/resolved across any task.
@@ -192,34 +192,38 @@ struct WatchtowerView: View {
     /// `engineState.taskEngineStates`, which transitions precisely when a role needs
     /// acceptance, fails, asks the Supervisor, or the task becomes ready for acceptance.
     private func refreshNotifications() {
-        // Build unfiltered list — all active notifications regardless of dismiss state.
-        let allNotifications = store.allLoadedTasks.flatMap { task -> [WatchtowerNotification] in
-            guard let run = task.runs.last else { return [] }
-            let team = store.resolvedTeam(for: task)
-            let bashApprovals = store.bashApprovalRequests.values.filter { $0.taskID == task.id }
-            return run.allWatchtowerNotifications(task: task, teamRoles: team.roles, bashApprovals: bashApprovals)
-                .map { WatchtowerNotification(taskID: task.id, taskTitle: task.title, isChatMode: task.isChatMode, type: $0) }
+        guard let workFolderID = store.snapshot?.projection.id else {
+            cachedNotifications = []
+            return
         }
+        let loaded = store.allLoadedTasks
+        let all = WatchtowerInboxBuilder.build(
+            loaded.map {
+                WatchtowerInboxBuilder.TaskInput(task: $0, teamRoles: store.resolvedTeam(for: $0).roles)
+            },
+            bashApprovals: Array(store.bashApprovalRequests.values)
+        )
 
-        // Clear dismissed entries for steps that no longer produce notifications.
-        // When a step was answered and is no longer .needsSupervisorInput, its dismissID
-        // is removed so the next question on the same step will show up.
-        // Guard: only run when tasks are loaded — on app startup allLoadedTasks may be
-        // empty, which would incorrectly undismiss everything.
-        if !store.allLoadedTasks.isEmpty {
-            let activeIDs = Set(allNotifications.map(\.id))
-            for id in config.dismissedNotificationIDs where !activeIDs.contains(id) {
-                config.undismissNotification(id: id)
-            }
-        }
+        // Expire dismissals whose notification is genuinely gone (the step was
+        // answered, the role accepted) — but ONLY for tasks we can actually see.
+        // `loadedTasks` is populated lazily and the startup sweep evicts each task
+        // right after recovering it, so scoping this to "is anything loaded" deleted
+        // every non-resident task's dismissals on every launch.
+        let dismissed = config.dismissedKeys(forWorkFolder: workFolderID)
+        let stale = WatchtowerInboxBuilder.staleDismissals(
+            dismissed: dismissed,
+            active: Set(all.map(\.dismissKey)),
+            loadedTaskIDs: Set(loaded.map(\.id)),
+            knownTaskIDs: Set(store.snapshot?.tasksIndex.tasks.map(\.id) ?? [])
+        )
+        config.undismissNotifications(workFolderID: workFolderID, keys: stale)
 
-        cachedNotifications = allNotifications.filter {
-            !config.dismissedNotificationIDs.contains($0.id)
-        }
+        cachedNotifications = WatchtowerInboxBuilder.visible(all, dismissed: dismissed.subtracting(stale))
     }
 
     private func dismissNotification(_ notification: WatchtowerNotification) {
-        config.dismissNotification(id: notification.id)
+        guard let workFolderID = store.snapshot?.projection.id else { return }
+        config.dismissNotification(workFolderID: workFolderID, key: notification.dismissKey)
         if case .supervisorInput = notification.type {
             taskState.markSupervisorInputSeen(taskID: notification.taskID)
         }

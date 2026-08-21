@@ -142,6 +142,64 @@ final class QuickCaptureBackstopBatchTests: NTMSOrchestratorTestBase, @unchecked
                        "needsSupervisorInput flag cleared on answer")
     }
 
+    // MARK: - Durable seen-marker retirement
+
+    /// The answer is the durable "question consumed" event. The view-layer sweep
+    /// that also clears this flag exists only while the main window is mounted —
+    /// an answer submitted from the Quick Capture panel with the window closed
+    /// must still retire the persisted marker, or the NEXT question finds the
+    /// task pre-"seen" and the unread dot never lights.
+    func testAnswer_retiresThePersistedSeenMarker() async {
+        let roleID = "worker"
+        let taskID = await setUpTaskWaitingForSupervisor(
+            roleIDs: [roleID], waitingRoleIDs: [roleID]
+        )
+        let folderID = sut.snapshot!.projection.id
+        sut.configuration.markTaskSeen(workFolderID: folderID, taskID: taskID)
+        let stepID = sut.loadedTask(taskID)!.runs.last!.steps.first!.id
+
+        let ok = await sut.answerSupervisorQuestion(stepID: stepID, taskID: taskID, answer: "done")
+
+        XCTAssertTrue(ok)
+        XCTAssertFalse(sut.configuration.isTaskSeen(workFolderID: folderID, taskID: taskID),
+                       "answer commit must clear the persisted seen marker, view mounted or not")
+    }
+
+    // MARK: - Restart shape: parked but still waiting
+
+    /// `StatusRecoveryService` parks a waiting step at `.paused` WITHOUT clearing
+    /// `needsSupervisorInput` — the human is still owed the reply. The backstop's
+    /// step filter must key on `canReceiveSupervisorAnswer`; filtering by
+    /// `status == .needsSupervisorInput` is what silently stranded a queued
+    /// message after a relaunch (the flush found "no waiting steps" and returned).
+    func testBackstop_parkedButWaitingStep_stillDrains() async {
+        let roleID = "worker"
+        let taskID = await setUpTaskWaitingForSupervisor(
+            roleIDs: [roleID], waitingRoleIDs: [roleID]
+        )
+        // Park the waiting step the way launch recovery does: status rewritten,
+        // flag and question left standing.
+        await sut.mutateTask(taskID: taskID) { task in
+            task.runs[0].steps[0].status = .paused
+        }
+
+        let controller = QuickCaptureController(formState: QuickCaptureFormState())
+        controller.store = sut
+        controller.formState.appendQueuedMessage(
+            msg("after restart", target: roleID), for: taskID
+        )
+
+        controller.tryFlushQueuedMessages()
+        await waitFor {
+            sut.loadedTask(taskID)?.runs.last?.steps.first?.supervisorAnswer != nil
+        }
+
+        let step = sut.loadedTask(taskID)?.runs.last?.steps.first
+        XCTAssertEqual(step?.supervisorAnswer, "after restart")
+        XCTAssertTrue(controller.formState.queuedMessages(for: taskID).isEmpty,
+                      "a parked-but-waiting chat must still receive its queued message")
+    }
+
     // MARK: - Answer attribution (isFromAutomatedSupervisor → supervisorAnswerWasAuto)
 
     /// The Autovisor's `message_task` payload delivered via the backstop must mark
@@ -602,10 +660,10 @@ final class QuickCaptureBackstopBatchTests: NTMSOrchestratorTestBase, @unchecked
                        "precondition: the batch was popped")
         XCTAssertNotNil(sut.loadedTask(taskID)?.runs.last?.steps.first?.supervisorAnswer,
                         "precondition: the batch was actually delivered — an empty queue alone "
-                        + "proves only the pop, which happens even when delivery then fails")
+                            + "proves only the pop, which happens even when delivery then fails")
         XCTAssertEqual(sut.errorSurfaced(since: errorsBefore)?.contains("payload.bin"), true,
                        "the sibling submit paths name the file; a drain that silently drops it "
-                       + "leaves the role answering about something it never received")
+                           + "leaves the role answering about something it never received")
     }
 
     /// Counter-test: a clean drain says nothing. Without this the report could be unconditional
@@ -636,10 +694,10 @@ final class QuickCaptureBackstopBatchTests: NTMSOrchestratorTestBase, @unchecked
 
         XCTAssertNotNil(sut.loadedTask(taskID)?.runs.last?.steps.first?.supervisorAnswer,
                         "precondition: the batch was delivered — otherwise the absence below is "
-                        + "the absence of a drain, not the absence of a banner")
+                            + "the absence of a drain, not the absence of a banner")
         XCTAssertEqual(sut.errorSurfaceCount, errorsBefore,
                        "an all-embedded drain must not banner. Counted rather than read off "
-                       + "`lastErrorMessage`, which also reads nil for an error that WAS "
-                       + "surfaced and then consumed by a render")
+                           + "`lastErrorMessage`, which also reads nil for an error that WAS "
+                           + "surfaced and then consumed by a render")
     }
 }

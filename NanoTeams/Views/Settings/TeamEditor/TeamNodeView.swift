@@ -25,73 +25,73 @@ struct TeamNodeView: View {
 
     var body: some View {
         Button(action: onSelect) {
-        VStack(spacing: Spacing.xxs) {
-            // Role icon and name
-            HStack(spacing: Spacing.xxs) {
-                Image(systemName: icon)
-                    .font(Typography.term2xs)
-                Text(roleName)
-                    .font(Typography.term2xs.weight(.medium))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-            }
-            .foregroundStyle(tintColor)
-
-            TerminalDivider()
-
-            // Input artifacts (required)
-            if !dependencies.requiredArtifacts.isEmpty {
-                HStack(alignment: .top, spacing: Spacing.xxs) {
-                    Image(systemName: "arrow.down.circle")
+            VStack(spacing: Spacing.xxs) {
+                // Role icon and name
+                HStack(spacing: Spacing.xxs) {
+                    Image(systemName: icon)
                         .font(Typography.term2xs)
-                        .foregroundStyle(Colors.info)
-                        .padding(.top, 1)
-                    Text(dependencies.requiredArtifacts.joined(separator: ", "))
-                        .font(Typography.term2xs)
-                        .foregroundStyle(Colors.textSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    Text(roleName)
+                        .font(Typography.term2xs.weight(.medium))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                .foregroundStyle(tintColor)
+
+                TerminalDivider()
+
+                // Input artifacts (required)
+                if !dependencies.requiredArtifacts.isEmpty {
+                    HStack(alignment: .top, spacing: Spacing.xxs) {
+                        Image(systemName: "arrow.down.circle")
+                            .font(Typography.term2xs)
+                            .foregroundStyle(Colors.info)
+                            .padding(.top, 1)
+                        Text(dependencies.requiredArtifacts.joined(separator: ", "))
+                            .font(Typography.term2xs)
+                            .foregroundStyle(Colors.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                // Output artifacts (produces)
+                if !dependencies.producesArtifacts.isEmpty {
+                    HStack(alignment: .top, spacing: Spacing.xxs) {
+                        Image(systemName: "arrow.up.circle")
+                            .font(Typography.term2xs)
+                            .foregroundStyle(Colors.artifact)
+                            .padding(.top, 1)
+                        Text(dependencies.producesArtifacts.joined(separator: ", "))
+                            .font(Typography.term2xs)
+                            .foregroundStyle(Colors.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
-
-            // Output artifacts (produces)
-            if !dependencies.producesArtifacts.isEmpty {
-                HStack(alignment: .top, spacing: Spacing.xxs) {
-                    Image(systemName: "arrow.up.circle")
-                        .font(Typography.term2xs)
-                        .foregroundStyle(Colors.artifact)
-                        .padding(.top, 1)
-                    Text(dependencies.producesArtifacts.joined(separator: ", "))
-                        .font(Typography.term2xs)
-                        .foregroundStyle(Colors.textSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, CornerRadius.small)
+            .padding(.vertical, Spacing.xs)
+            .frame(maxWidth: Self.nodeMaxWidth, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
+            .background(
+                RoundedRectangle.squircle(CornerRadius.medium)
+                    .fill(backgroundColor)
+            )
+            .overlay(
+                RoundedRectangle.squircle(CornerRadius.medium)
+                    .stroke(borderColor, lineWidth: isSelected ? 2 : 1)
+            )
+            .shadow(isDragging ? .elevated : .card)
+            .scaleEffect(isDragging ? 1.05 : 1.0)
+            .background(
+                GeometryReader { proxy in
+                    Color.clear
+                        .onAppear { onMeasure?(proxy.size) }
+                        .onChange(of: proxy.size) { _, newSize in onMeasure?(newSize) }
                 }
-            }
-        }
-        .padding(.horizontal, CornerRadius.small)
-        .padding(.vertical, Spacing.xs)
-        .frame(maxWidth: Self.nodeMaxWidth, alignment: .leading)
-        .fixedSize(horizontal: false, vertical: true)
-        .background(
-            RoundedRectangle.squircle(CornerRadius.medium)
-                .fill(backgroundColor)
-        )
-        .overlay(
-            RoundedRectangle.squircle(CornerRadius.medium)
-                .stroke(borderColor, lineWidth: isSelected ? 2 : 1)
-        )
-        .shadow(isDragging ? .elevated : .card)
-        .scaleEffect(isDragging ? 1.05 : 1.0)
-        .background(
-            GeometryReader { proxy in
-                Color.clear
-                    .onAppear { onMeasure?(proxy.size) }
-                    .onChange(of: proxy.size) { _, newSize in onMeasure?(newSize) }
-            }
-        )
-        .position(
-            x: position.x + dragOffset.width,
-            y: position.y + dragOffset.height
-        )
+            )
+            .position(
+                x: position.x + dragOffset.width,
+                y: position.y + dragOffset.height
+            )
         }
         .buttonStyle(.plain)
         .gesture(

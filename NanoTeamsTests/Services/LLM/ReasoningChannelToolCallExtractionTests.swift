@@ -42,7 +42,7 @@ final class ReasoningChannelToolCallExtractionTests: XCTestCase {
             }
         }
 
-        func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [String] { [] }
+        func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [LLMModelInfo] { [] }
     }
 
     private var service: LLMExecutionService!
@@ -91,7 +91,7 @@ final class ReasoningChannelToolCallExtractionTests: XCTestCase {
         )
 
         XCTAssertEqual(result.resolvedToolCalls.count, 1,
-            "Tool call emitted via reasoning channel must be extracted")
+                       "Tool call emitted via reasoning channel must be extracted")
         XCTAssertEqual(result.resolvedToolCalls.first?.name, "read_file")
         XCTAssertEqual(
             result.resolvedToolCalls.first?.argumentsJSON,
@@ -160,7 +160,7 @@ final class ReasoningChannelToolCallExtractionTests: XCTestCase {
         )
 
         XCTAssertEqual(result.resolvedToolCalls.count, 1,
-            "Retry-after-missing-deliverables loop must be broken by the fix")
+                       "Retry-after-missing-deliverables loop must be broken by the fix")
         XCTAssertEqual(result.resolvedToolCalls.first?.name, "create_artifact")
     }
 
@@ -184,7 +184,7 @@ final class ReasoningChannelToolCallExtractionTests: XCTestCase {
         )
 
         XCTAssertEqual(result.resolvedToolCalls.count, 1,
-            "Identical call in both channels must dedup to one")
+                       "Identical call in both channels must dedup to one")
         XCTAssertEqual(result.resolvedToolCalls.first?.name, "read_file")
     }
 
@@ -234,9 +234,9 @@ final class ReasoningChannelToolCallExtractionTests: XCTestCase {
         let persistedThinking = mockDelegate.commitStreamingCalls[0].3
         if let persistedThinking {
             XCTAssertFalse(persistedThinking.contains("<|call|>"),
-                "Persisted thinking must not contain raw <|call|> marker — got \(persistedThinking.debugDescription)")
+                           "Persisted thinking must not contain raw <|call|> marker — got \(persistedThinking.debugDescription)")
             XCTAssertFalse(persistedThinking.contains("<|end|>"),
-                "Persisted thinking must not contain raw <|end|> marker — got \(persistedThinking.debugDescription)")
+                           "Persisted thinking must not contain raw <|end|> marker — got \(persistedThinking.debugDescription)")
         }
         // Whitespace-only-after-cleaning is acceptable: when the only
         // thinking content was the envelope itself, post-clean is empty.

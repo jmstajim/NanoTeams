@@ -6,14 +6,14 @@ final class ArtifactCleaningTests: XCTestCase {
     func testControlTokensAreStrippedFromArtifacts() throws {
         // Simulate content with control tokens as seen in the report
         let input = """
-            **Requirements - Supervisor (Step 1 of 7)**
-
-            | # | Requirement | Rationale |
-            |---|-------------|-----------|
-            | 1 | Change greeting | Supervisor task |
-
-            <|channel|>final <|constrain|>requirements<|message|>These requirements capture the goal.
-            """
+        **Requirements - Supervisor (Step 1 of 7)**
+        
+        | # | Requirement | Rationale |
+        |---|-------------|-----------|
+        | 1 | Change greeting | Supervisor task |
+        
+        <|channel|>final <|constrain|>requirements<|message|>These requirements capture the goal.
+        """
 
         let cleaned = Self.cleanArtifactContent(input)
 
@@ -27,10 +27,10 @@ final class ArtifactCleaningTests: XCTestCase {
 
     func testIncompleteStartMarkersAreStripped() throws {
         let input = """
-            Some content here.
-            <|start|>functions.G
-            More content after.
-            """
+        Some content here.
+        <|start|>functions.G
+        More content after.
+        """
 
         let cleaned = Self.cleanArtifactContent(input)
 
@@ -41,9 +41,9 @@ final class ArtifactCleaningTests: XCTestCase {
 
     func testCallAndEndMarkersAreStripped() throws {
         let input = """
-            Response content
-            <|call|>{"name":"tool"}<|end|>
-            """
+        Response content
+        <|call|>{"name":"tool"}<|end|>
+        """
 
         let cleaned = Self.cleanArtifactContent(input)
 
@@ -54,15 +54,15 @@ final class ArtifactCleaningTests: XCTestCase {
 
     func testNormalContentIsPreserved() throws {
         let input = """
-            # Requirements Document
-
-            This is a normal markdown document with:
-            - Bullet points
-            - Code blocks: `print("Hello")`
-            - Tables and formatting
-
-            No special tokens here.
-            """
+        # Requirements Document
+        
+        This is a normal markdown document with:
+        - Bullet points
+        - Code blocks: `print("Hello")`
+        - Tables and formatting
+        
+        No special tokens here.
+        """
 
         let cleaned = Self.cleanArtifactContent(input)
 

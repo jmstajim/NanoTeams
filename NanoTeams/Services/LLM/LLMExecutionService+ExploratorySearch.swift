@@ -323,12 +323,12 @@ extension LLMExecutionService {
             role: .tool, content: envelope, toolCallID: result.providerID
         ))
         await appendLLMMessage(stepID: stepID, taskID: taskID, role: .tool, content: """
-            [CALL] \(result.toolName)
-            Arguments: \(result.argumentsJSON)
-
-            [RESULT]
-            \(envelope)
-            """)
+        [CALL] \(result.toolName)
+        Arguments: \(result.argumentsJSON)
+        
+        [RESULT]
+        \(envelope)
+        """)
 
         let finalResult = ToolExecutionResult(
             providerID: result.providerID,

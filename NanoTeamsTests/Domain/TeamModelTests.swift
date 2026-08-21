@@ -464,13 +464,13 @@ final class TeamModelTests: XCTestCase {
     func testTeam_Codable_WithDefaults() throws {
         // JSON without optional fields
         let json = """
-            {
-                "id": "550e8400-e29b-41d4-a716-446655440000",
-                "name": "Test Team",
-                "roles": [],
-                "artifacts": []
-            }
-            """.data(using: .utf8)!
+        {
+            "id": "550e8400-e29b-41d4-a716-446655440000",
+            "name": "Test Team",
+            "roles": [],
+            "artifacts": []
+        }
+        """.data(using: .utf8)!
 
         let team = try JSONDecoder().decode(Team.self, from: json)
 
@@ -789,11 +789,11 @@ final class TeamModelTests: XCTestCase {
 
     func testTeamLimits_Codable_PartialJSON_FillsMissingWithDefaults() throws {
         let json = """
-            {
-                "maxConsultationsPerStep": 10,
-                "maxMeetingsPerRun": 5
-            }
-            """.data(using: .utf8)!
+        {
+            "maxConsultationsPerStep": 10,
+            "maxMeetingsPerRun": 5
+        }
+        """.data(using: .utf8)!
 
         let limits = try JSONDecoder().decode(TeamLimits.self, from: json)
 
@@ -809,12 +809,12 @@ final class TeamModelTests: XCTestCase {
 
     func testTeamLimits_Codable_PartialJSON_MissingFieldsGetDefaults() throws {
         let json = """
-            {
-                "maxConsultationsPerStep": 5,
-                "maxMeetingsPerRun": 3,
-                "maxMeetingTurns": 10
-            }
-            """.data(using: .utf8)!
+        {
+            "maxConsultationsPerStep": 5,
+            "maxMeetingsPerRun": 3,
+            "maxMeetingTurns": 10
+        }
+        """.data(using: .utf8)!
 
         let limits = try JSONDecoder().decode(TeamLimits.self, from: json)
 
@@ -859,11 +859,11 @@ final class TeamModelTests: XCTestCase {
 
     func testTeamGraphTransform_Codable_PartialJSON_FillsMissingWithDefaults() throws {
         let json = """
-            {
-                "offsetX": 100.5,
-                "scale": 1.5
-            }
-            """.data(using: .utf8)!
+        {
+            "offsetX": 100.5,
+            "scale": 1.5
+        }
+        """.data(using: .utf8)!
 
         let transform = try JSONDecoder().decode(TeamGraphTransform.self, from: json)
 
@@ -909,12 +909,12 @@ final class TeamModelTests: XCTestCase {
 
     func testTeamGraphLayout_Codable_PartialJSON_CustomPositionsDefaultTransform() throws {
         let json = """
-            {
-                "nodePositions": [
-                    { "roleID": "softwareEngineer", "x": 50, "y": 100 }
-                ]
-            }
-            """.data(using: .utf8)!
+        {
+            "nodePositions": [
+                { "roleID": "softwareEngineer", "x": 50, "y": 100 }
+            ]
+        }
+        """.data(using: .utf8)!
 
         let layout = try JSONDecoder().decode(TeamGraphLayout.self, from: json)
 
@@ -1200,10 +1200,10 @@ final class TeamModelTests: XCTestCase {
 
     func testTeamGraphLayout_HiddenRoleIDs_Codable_MissingKey_DefaultsToEmpty() throws {
         let json = """
-            {
-                "nodePositions": [{ "roleID": "role1", "x": 100, "y": 200 }]
-            }
-            """.data(using: .utf8)!
+        {
+            "nodePositions": [{ "roleID": "role1", "x": 100, "y": 200 }]
+        }
+        """.data(using: .utf8)!
 
         let layout = try JSONDecoder().decode(TeamGraphLayout.self, from: json)
 

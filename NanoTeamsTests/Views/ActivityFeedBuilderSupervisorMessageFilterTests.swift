@@ -75,7 +75,7 @@ final class ActivityFeedBuilderSupervisorMessageFilterTests: XCTestCase {
     func testShouldSuppress_supervisorMessage_attachmentsOnly_isFalse() async {
         let raw = """
         Supervisor:
-
+        
         ## Attached Files
         - /path/to/file.swift
         """
@@ -92,7 +92,7 @@ final class ActivityFeedBuilderSupervisorMessageFilterTests: XCTestCase {
     func testShouldSuppress_supervisorMessage_clipsOnly_isFalse() async {
         let raw = """
         Supervisor:
-
+        
         ## Clipped Text
         let x = 1
         """

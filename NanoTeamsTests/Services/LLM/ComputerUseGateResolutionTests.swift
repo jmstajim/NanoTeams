@@ -886,5 +886,5 @@ private final class RecordingComputerUseJudgeClient: LLMClient, @unchecked Senda
         }
     }
 
-    func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [String] { [] }
+    func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [LLMModelInfo] { [] }
 }

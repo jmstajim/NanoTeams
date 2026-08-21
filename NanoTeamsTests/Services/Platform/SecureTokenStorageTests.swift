@@ -125,8 +125,8 @@ final class SecureTokenStorageTests: XCTestCase {
             try sut.setToken("integration-test-token", forKey: "k")
         } catch KeychainError.unhandled(let status)
             where status == errSecMissingEntitlement
-                || status == errSecInteractionNotAllowed
-                || status == errSecAuthFailed
+            || status == errSecInteractionNotAllowed
+            || status == errSecAuthFailed
         {
             throw XCTSkip("Keychain is unavailable on this runner (status \(status)).")
         }
@@ -190,6 +190,6 @@ final class SecureTokenStorageTests: XCTestCase {
     func testKeychainError_invalidUTF8_pointsUserAtRecoveryStep() {
         let err = KeychainError.invalidUTF8
         XCTAssertTrue(err.localizedDescription.lowercased().contains("re-enter")
-                      || err.localizedDescription.lowercased().contains("re enter"))
+            || err.localizedDescription.lowercased().contains("re enter"))
     }
 }

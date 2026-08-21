@@ -91,10 +91,10 @@ nonisolated struct TeamArtifact: Codable, Identifiable {
             String.self, forKey: .systemArtifactName)
         self.createdAt =
             try container.decodeIfPresent(Date.self, forKey: .createdAt)
-            ?? MonotonicClock.shared.now()
+                ?? MonotonicClock.shared.now()
         self.updatedAt =
             try container.decodeIfPresent(Date.self, forKey: .updatedAt)
-            ?? MonotonicClock.shared.now()
+                ?? MonotonicClock.shared.now()
     }
 }
 

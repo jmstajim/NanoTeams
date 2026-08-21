@@ -187,9 +187,9 @@ final class TaskManagementStatePersistenceTests: XCTestCase {
         XCTAssertTrue(sut.seenSupervisorInputTaskIDs.contains(1))
 
         // Step 2: task A processes the answer in the background → status .running.
-        sut.reconcileSeenSet(activeStatuses: [
-            1: .running,
-            2: .running,
+        sut.reconcileSeenSet(waitStates: [
+            1: .notWaiting,
+            2: .notWaiting,
         ], workFolderID: folderA)
         XCTAssertFalse(
             sut.seenSupervisorInputTaskIDs.contains(1),
@@ -224,9 +224,9 @@ final class TaskManagementStatePersistenceTests: XCTestCase {
         sut.markSupervisorInputSeen(taskID: 1)
         sut.markSupervisorInputSeen(taskID: 2)
 
-        sut.reconcileSeenSet(activeStatuses: [
-            1: .needsSupervisorInput,
-            2: .running,  // should be cleared
+        sut.reconcileSeenSet(waitStates: [
+            1: .waiting,
+            2: .notWaiting,  // should be cleared
         ], workFolderID: folderA)
 
         XCTAssertTrue(config.isTaskSeen(workFolderID: folderA, taskID: 1))
@@ -245,7 +245,7 @@ final class TaskManagementStatePersistenceTests: XCTestCase {
         sut.markSupervisorInputSeen(taskID: 1)
         sut.markSupervisorInputSeen(taskID: 2)
 
-        sut.reconcileSeenSet(activeStatuses: [:], workFolderID: folderA)
+        sut.reconcileSeenSet(waitStates: [:], workFolderID: folderA)
 
         XCTAssertTrue(
             config.isTaskSeen(workFolderID: folderA, taskID: 1),
@@ -266,7 +266,7 @@ final class TaskManagementStatePersistenceTests: XCTestCase {
         sut.markSupervisorInputSeen(taskID: 1)
         sut.markSupervisorInputSeen(taskID: 2)
 
-        sut.reconcileSeenSet(activeStatuses: [99: .running], workFolderID: folderB)
+        sut.reconcileSeenSet(waitStates: [99: .notWaiting], workFolderID: folderB)
 
         XCTAssertTrue(config.isTaskSeen(workFolderID: folderA, taskID: 1))
         XCTAssertTrue(config.isTaskSeen(workFolderID: folderA, taskID: 2))
@@ -281,7 +281,7 @@ final class TaskManagementStatePersistenceTests: XCTestCase {
         sut.loadSeenSet(for: folderA)
         sut.markSupervisorInputSeen(taskID: 1)
 
-        sut.reconcileSeenSet(activeStatuses: [1: .running], workFolderID: nil)
+        sut.reconcileSeenSet(waitStates: [1: .notWaiting], workFolderID: nil)
 
         XCTAssertFalse(
             config.isTaskSeen(workFolderID: folderA, taskID: 1),

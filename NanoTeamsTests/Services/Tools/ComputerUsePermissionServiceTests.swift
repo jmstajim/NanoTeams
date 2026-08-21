@@ -125,7 +125,7 @@ final class ComputerUsePermissionServiceTests: XCTestCase {
         for action in mutating {
             XCTAssertTrue(isAsk(ComputerUsePermissionService.evaluate(
                 input(action, bounds: true), policy: policy(mode: .semiAutomatic))),
-                "\(action) must ask in Semi-automatic (not read-only)")
+            "\(action) must ask in Semi-automatic (not read-only)")
         }
     }
 

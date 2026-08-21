@@ -58,7 +58,7 @@ final class FilePickerConfigurationTests: XCTestCase {
                        "the attach flow never creates directories")
         XCTAssertEqual(panel.allowedContentTypes, [.png, .jpeg],
                        "a stale content-type filter silently rejects the files the "
-                       + "current caller accepts")
+                           + "current caller accepts")
     }
 
     /// `directoryURL = nil` is part of the reset and reads like a no-op. It is not:
@@ -122,8 +122,8 @@ final class FilePickerConfigurationTests: XCTestCase {
         XCTAssertFalse(config.multiple)
         XCTAssertTrue(config.allowDirectories)
         XCTAssertEqual(config, FilePickerConfiguration(allowedContentTypes: [.pdf],
-                                                      multiple: false,
-                                                      allowDirectories: true))
+                                                       multiple: false,
+                                                       allowDirectories: true))
     }
 
     // MARK: - The re-entry guard
@@ -139,7 +139,7 @@ final class FilePickerConfigurationTests: XCTestCase {
         XCTAssertEqual(guardian.withClaim { 1 }, 1)
         XCTAssertEqual(guardian.withClaim { 2 }, 2,
                        "a released claim must be re-claimable — a leaked one wedges the "
-                       + "file picker permanently")
+                           + "file picker permanently")
     }
 
     /// The reason the guard exists: `runModal()` runs a NESTED event loop, so a second `+`
@@ -170,7 +170,7 @@ final class FilePickerConfigurationTests: XCTestCase {
         XCTAssertFalse(innerRan, "the nested modal loop must not re-enter the same panel")
         XCTAssertTrue(innerRefused,
                       "re-entry must yield nil — the caller reports 'already in flight', "
-                      + "which is NOT the same as the user cancelling (empty array)")
+                          + "which is NOT the same as the user cancelling (empty array)")
         XCTAssertFalse(guardian._testIsClaimed, "released on exit")
     }
 
@@ -192,7 +192,7 @@ final class FilePickerConfigurationTests: XCTestCase {
         }
         XCTAssertTrue(refusedIsNil,
                       "a refusal is nil, so `present` can report it separately from the "
-                      + "empty array a cancel produces")
+                          + "empty array a cancel produces")
     }
 
     /// Anti-vacuity: the guard must not be a global. Two pickers are independent, so one

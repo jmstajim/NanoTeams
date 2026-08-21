@@ -50,9 +50,9 @@ final class SearchIndexInvariantsTests: XCTestCase {
         for (token, ids) in index.postings {
             for id in ids {
                 XCTAssertGreaterThanOrEqual(id, 0,
-                    "Posting for '\(token)' has negative ID \(id)")
+                                            "Posting for '\(token)' has negative ID \(id)")
                 XCTAssertLessThan(id, bound,
-                    "Posting for '\(token)' references out-of-range id \(id) (bound \(bound))")
+                                  "Posting for '\(token)' references out-of-range id \(id) (bound \(bound))")
             }
         }
     }
@@ -64,7 +64,7 @@ final class SearchIndexInvariantsTests: XCTestCase {
         let index = await makeService().loadOrBuild()
         for (token, ids) in index.postings {
             XCTAssertEqual(ids, ids.sorted(),
-                "Posting list for '\(token)' must be sorted ascending.")
+                           "Posting list for '\(token)' must be sorted ascending.")
         }
     }
 
@@ -74,7 +74,7 @@ final class SearchIndexInvariantsTests: XCTestCase {
         let index = await makeService().loadOrBuild()
         for (token, ids) in index.postings {
             XCTAssertEqual(ids.count, Set(ids).count,
-                "Posting list for '\(token)' contains duplicates: \(ids)")
+                           "Posting list for '\(token)' contains duplicates: \(ids)")
         }
     }
 
@@ -84,14 +84,14 @@ final class SearchIndexInvariantsTests: XCTestCase {
         let tokenSet = Set(index.tokens)
         let postingsKeys = Set(index.postings.keys)
         XCTAssertEqual(tokenSet, postingsKeys,
-            "tokens[] must equal Set(postings.keys) — same vocabulary surface.")
+                       "tokens[] must equal Set(postings.keys) — same vocabulary surface.")
     }
 
     func testTokens_sortedAscending() async throws {
         try write("A.swift", content: "zebra alpha mango bird")
         let index = await makeService().loadOrBuild()
         XCTAssertEqual(index.tokens, index.tokens.sorted(),
-            "tokens[] must be sorted ascending for stable LLM hint slicing.")
+                       "tokens[] must be sorted ascending for stable LLM hint slicing.")
     }
 
     // MARK: - Signature invariants
@@ -128,9 +128,9 @@ final class SearchIndexInvariantsTests: XCTestCase {
         let index = await makeService().loadOrBuild()
         for file in index.files {
             XCTAssertFalse(file.path.hasPrefix("/"),
-                "File path '\(file.path)' must be relative, not absolute.")
+                           "File path '\(file.path)' must be relative, not absolute.")
             XCTAssertFalse(file.path.contains(tempDir.path),
-                "File path '\(file.path)' must not contain absolute prefix.")
+                           "File path '\(file.path)' must not contain absolute prefix.")
         }
     }
 
@@ -139,7 +139,7 @@ final class SearchIndexInvariantsTests: XCTestCase {
         let index = await makeService().loadOrBuild()
         for file in index.files {
             XCTAssertFalse(file.path.hasPrefix("./"),
-                "File path '\(file.path)' has stray './' prefix.")
+                           "File path '\(file.path)' has stray './' prefix.")
             XCTAssertFalse(file.path.hasPrefix("/"))
         }
     }
@@ -154,7 +154,7 @@ final class SearchIndexInvariantsTests: XCTestCase {
         let index = await makeService().loadOrBuild()
         XCTAssertEqual(index.files.count, 1)
         XCTAssertTrue(index.tokens.contains("uniquebinaryname"),
-            "Filename tokens must always land in the vocabulary.")
+                      "Filename tokens must always land in the vocabulary.")
     }
 
     // MARK: - Path location of on-disk index
@@ -164,7 +164,7 @@ final class SearchIndexInvariantsTests: XCTestCase {
         _ = await makeService().loadOrBuild()
         let expected = internalDir.appendingPathComponent("search_index.json")
         XCTAssertTrue(FileManager.default.fileExists(atPath: expected.path),
-            "Index must persist to .nanoteams/internal/search_index.json")
+                      "Index must persist to .nanoteams/internal/search_index.json")
     }
 
     // MARK: - All files appear in at least one posting (or are empty)
@@ -246,7 +246,7 @@ final class SearchIndexInvariantsTests: XCTestCase {
         )
         for id in 0..<index.files.count {
             XCTAssertTrue(allCovered.contains(id),
-                "File '\(index.files[id].path)' (id=\(id)) does not appear in any posting list.")
+                          "File '\(index.files[id].path)' (id=\(id)) does not appear in any posting list.")
         }
     }
 }

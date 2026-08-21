@@ -35,7 +35,7 @@ final class AutovisorGoalLintTests: XCTestCase {
     func testUnavailableToolNames_coversWhatTheLiteralListMissed() {
         for name in ["git_commit", "git_push", "bash", "bash_output",
                      "write_file", "create_artifact"]
-        where ToolNames.allNames.contains(name) {
+            where ToolNames.allNames.contains(name) {
             XCTAssertTrue(AutovisorGoalLint.unavailableToolNames.contains(name), name)
         }
     }

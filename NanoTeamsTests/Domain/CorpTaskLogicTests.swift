@@ -850,8 +850,8 @@ final class NTMSTaskLogicTests: XCTestCase {
 
     func testHasInitialInput_attachmentOnly() {
         let task = NTMSTask(id: 0, title: "Test",
-            supervisorTask: "",
-            attachmentPaths: [".nanoteams/tasks/123/attachments/spec.pdf"]
+                            supervisorTask: "",
+                            attachmentPaths: [".nanoteams/tasks/123/attachments/spec.pdf"]
         )
 
         XCTAssertTrue(task.hasInitialInput)
@@ -859,22 +859,22 @@ final class NTMSTaskLogicTests: XCTestCase {
 
     func testEffectiveSupervisorBrief_combinesGoalClipAndAttachments() {
         let task = NTMSTask(id: 0, title: "Test",
-            supervisorTask: "Implement import flow",
-            clippedTexts: ["Use the selected API response shape"],
-            attachmentPaths: [
-                ".nanoteams/tasks/123/attachments/spec.pdf",
-                ".nanoteams/tasks/123/attachments/mock.png"
-            ]
+                            supervisorTask: "Implement import flow",
+                            clippedTexts: ["Use the selected API response shape"],
+                            attachmentPaths: [
+                                ".nanoteams/tasks/123/attachments/spec.pdf",
+                                ".nanoteams/tasks/123/attachments/mock.png"
+                            ]
         )
 
         XCTAssertEqual(
             task.effectiveSupervisorBrief,
             """
             Implement import flow
-
+            
             ## Clipped Text
             Use the selected API response shape
-
+            
             ## Attached Files
             - .nanoteams/tasks/123/attachments/spec.pdf
             - .nanoteams/tasks/123/attachments/mock.png
@@ -884,8 +884,8 @@ final class NTMSTaskLogicTests: XCTestCase {
 
     func testEffectiveSupervisorBrief_emptyGoalWithClippedTextOnly() {
         let task = NTMSTask(id: 0, title: "Test",
-            supervisorTask: "",
-            clippedTexts: ["Selected text from app"]
+                            supervisorTask: "",
+                            clippedTexts: ["Selected text from app"]
         )
 
         XCTAssertEqual(
@@ -906,17 +906,17 @@ final class NTMSTaskLogicTests: XCTestCase {
 
     func testHasInitialInput_trueWithAllInputs() {
         let task = NTMSTask(id: 0, title: "Test",
-            supervisorTask: "Goal",
-            clippedTexts: ["clip"],
-            attachmentPaths: ["file.txt"]
+                            supervisorTask: "Goal",
+                            clippedTexts: ["clip"],
+                            attachmentPaths: ["file.txt"]
         )
         XCTAssertTrue(task.hasInitialInput)
     }
 
     func testEffectiveSupervisorBrief_attachmentsOnly() {
         let task = NTMSTask(id: 0, title: "Test",
-            supervisorTask: "",
-            attachmentPaths: [".nanoteams/tasks/1/attachments/spec.pdf"]
+                            supervisorTask: "",
+                            attachmentPaths: [".nanoteams/tasks/1/attachments/spec.pdf"]
         )
 
         XCTAssertEqual(
@@ -927,8 +927,8 @@ final class NTMSTaskLogicTests: XCTestCase {
 
     func testEffectiveSupervisorBrief_goalAndAttachments_noClip() {
         let task = NTMSTask(id: 0, title: "Test",
-            supervisorTask: "Build feature",
-            attachmentPaths: ["file.pdf"]
+                            supervisorTask: "Build feature",
+                            attachmentPaths: ["file.pdf"]
         )
 
         XCTAssertEqual(
@@ -939,8 +939,8 @@ final class NTMSTaskLogicTests: XCTestCase {
 
     func testEffectiveSupervisorBrief_whitespaceClippedText_ignored() {
         let task = NTMSTask(id: 0, title: "Test",
-            supervisorTask: "Goal",
-            clippedTexts: ["   \n\t"]
+                            supervisorTask: "Goal",
+                            clippedTexts: ["   \n\t"]
         )
 
         XCTAssertEqual(task.effectiveSupervisorBrief, "Goal")
@@ -993,18 +993,18 @@ final class NTMSTaskLogicTests: XCTestCase {
 
     func testEffectiveSupervisorBrief_multipleClips() {
         let task = NTMSTask(id: 0, title: "Test",
-            supervisorTask: "Goal",
-            clippedTexts: ["First clip", "Second clip"]
+                            supervisorTask: "Goal",
+                            clippedTexts: ["First clip", "Second clip"]
         )
 
         XCTAssertEqual(
             task.effectiveSupervisorBrief,
             """
             Goal
-
+            
             ## Clipped Text \u{2014} 1 of 2
             First clip
-
+            
             ## Clipped Text \u{2014} 2 of 2
             Second clip
             """

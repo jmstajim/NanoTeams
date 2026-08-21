@@ -198,7 +198,7 @@ nonisolated enum ToolCallLoopDetector {
         var trailingRun = 0
         for call in visible.reversed() {
             guard CallIdentity(tool: call.toolName, arguments: call.argumentsIdentity)
-                    == lastIdentity else { break }
+                == lastIdentity else { break }
             guard call.informationEpoch == lastCall.informationEpoch else { break }
             trailingRun += 1
         }
@@ -228,7 +228,7 @@ nonisolated enum ToolCallLoopDetector {
         // sibling with a branch here and one without is the tell.
         if detectRepetitiveFailure(in: recentCalls) != nil
             || detectPersistentToolError(in: recentCalls) != nil,
-           let last = recentCalls.last {
+            let last = recentCalls.last {
             return last.informationEpoch
         }
         return visibleCalls(in: recentCalls).last?.informationEpoch ?? 0

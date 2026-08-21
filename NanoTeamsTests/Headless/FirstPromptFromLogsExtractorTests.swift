@@ -22,7 +22,23 @@ final class FirstPromptFromLogsExtractorTests: XCTestCase {
         super.tearDown()
     }
 
+    /// Current format: JSONL, one record per line — what NetworkLogger writes
+    /// since 2026-08-21.
     private func writeLog(_ records: [NetworkLogRecord]) throws -> URL {
+        let url = tempDir.appendingPathComponent("network_log.jsonl")
+        let encoder = JSONCoderFactory.makeJSONLEncoder()
+        var data = Data()
+        for record in records {
+            data.append(try encoder.encode(record))
+            data.append(0x0A)
+        }
+        try data.write(to: url)
+        return url
+    }
+
+    /// Pre-2026-08-21 format: a JSON array. Log artifacts die with their run,
+    /// so nothing converts old files — the extractor must keep reading them.
+    private func writeLegacyArrayLog(_ records: [NetworkLogRecord]) throws -> URL {
         let url = tempDir.appendingPathComponent("network_log.json")
         let data = try JSONCoderFactory.makePersistenceEncoder().encode(records)
         try data.write(to: url)
@@ -137,13 +153,53 @@ final class FirstPromptFromLogsExtractorTests: XCTestCase {
         }
     }
 
-    func testExtract_malformedLog_throwsMalformedLog() throws {
+    func testExtract_brokenArray_throwsMalformedLog() throws {
+        // A `[`-led file claims the legacy ARRAY shape; a broken one is a hard
+        // error — the whole-array decoder has no per-row recovery.
         let url = tempDir.appendingPathComponent("network_log.json")
-        try Data("not-json-{".utf8).write(to: url)
+        try Data("[{\"broken\":".utf8).write(to: url)
         XCTAssertThrowsError(try FirstPromptFromLogsExtractor.extract(from: url, roleSubstring: "engineer")) { error in
             guard case FirstPromptFromLogsExtractor.ExtractError.malformedLog = error else {
                 return XCTFail("expected .malformedLog, got \(error)")
             }
         }
+    }
+
+    func testExtract_undecodableNonArrayBlob_readsAsZeroRecords() throws {
+        // Not `[`-led → treated as JSONL, where a bad line costs one ROW: a blob
+        // of zero decodable lines is an empty log (noMatch), not a hard error.
+        let url = tempDir.appendingPathComponent("network_log.jsonl")
+        try Data("not-json-{".utf8).write(to: url)
+        XCTAssertThrowsError(try FirstPromptFromLogsExtractor.extract(from: url, roleSubstring: "engineer")) { error in
+            guard case FirstPromptFromLogsExtractor.ExtractError.noMatch = error else {
+                return XCTFail("expected .noMatch, got \(error)")
+            }
+        }
+    }
+
+    /// The JSONL failure contract, end to end: a torn line (process died
+    /// mid-write) loses that row and NOTHING else. The array shape lost the
+    /// whole file to one bad byte — the difference is the point of the format.
+    func testExtract_tornTrailingLine_stillYieldsTheGoodRecords() throws {
+        let good = makeRequest(createdAt: Date(timeIntervalSince1970: 100), roleName: "Software Engineer")
+        let url = try writeLog([good])
+        var data = try Data(contentsOf: url)
+        data.append(Data("{\"id\":\"torn-mid-wri".utf8))
+        try data.write(to: url)
+
+        let match = try FirstPromptFromLogsExtractor.extract(from: url, roleSubstring: "engineer")
+        XCTAssertEqual(match.matchedCount, 1)
+    }
+
+    /// Legacy fallback: a pre-2026-08-21 array log must still extract — the
+    /// same predicate, the other decoder branch.
+    func testExtract_legacyArrayLog_stillExtracts() throws {
+        let early = makeRequest(createdAt: Date(timeIntervalSince1970: 100), roleName: "Software Engineer")
+        let late = makeRequest(createdAt: Date(timeIntervalSince1970: 200), roleName: "Software Engineer")
+        let url = try writeLegacyArrayLog([late, early])
+
+        let match = try FirstPromptFromLogsExtractor.extract(from: url, roleSubstring: "engineer")
+        XCTAssertEqual(match.matchedCount, 2)
+        XCTAssertEqual(match.wireBody.createdAt, early.createdAt, "earliest by createdAt wins")
     }
 }

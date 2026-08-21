@@ -42,8 +42,8 @@ struct ImprovePromptButton: View {
             mainButton
         }
         .animation(Animations.quick, value: session.canRevert)
-        .onChange(of: text) { _, newValue in
-            session.noteFieldTextChanged(newValue)
+        .onChange(of: text) { _, _ in
+            session.noteFieldTextChanged()
         }
         .onChange(of: session.isImproving) { _, improving in
             isImproving?.wrappedValue = improving

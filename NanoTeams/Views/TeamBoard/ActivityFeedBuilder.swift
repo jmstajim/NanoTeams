@@ -3,26 +3,44 @@ import SwiftUI
 // MARK: - Paired Assistant Message
 
 /// Snapshot of the assistant turn that emitted an active `ask_supervisor`.
-/// Shared between `ActivityFeedBuilder.ActiveSupervisorQuestion` (used to
-/// suppress the bubble in the timeline) and `TeamActivityActiveQuestion`
-/// (rendered in the composer's preview).
+/// Shared between `ActivityFeedBuilder.ActiveSupervisorQuestion` (which decides
+/// whether to suppress the bubble in the timeline) and
+/// `TeamActivityActiveQuestion` (the composer's question card).
 ///
-/// Pairs `id` and `thinking` atomically so they can't drift: the outer
-/// `Optional<PairedAssistantMessage>` is the only "paired data is missing"
-/// state. `id` drives feed-bubble suppression while the question is active;
-/// `thinking` feeds the composer's thinking disclosure.
+/// Pairs `id`, `thinking` and `content` atomically so they can't drift: the
+/// outer `Optional<PairedAssistantMessage>` is the only "paired data is
+/// missing" state. `id` identifies the feed bubble;
+/// `isFullyRenderedByQuestionCard` decides whether that bubble may be dropped;
+/// `thinking` feeds the card's thinking disclosure when it owns the turn.
 ///
-/// `thinking` is trim-to-nil at construction: whitespace-only input collapses
-/// to nil so `thinking != nil` reliably means "there is something to render."
-/// Consumers don't need to re-trim before checking emptiness.
+/// Both `thinking` and `content` are trim-to-nil at construction: whitespace-
+/// only input collapses to nil so `!= nil` reliably means "there is something
+/// to render." Consumers don't need to re-trim before checking emptiness.
 nonisolated struct PairedAssistantMessage: Equatable {
     let id: UUID
     let thinking: String?
+    /// The turn's prose, trim-to-nil. Read only through
+    /// `isFullyRenderedByQuestionCard` — stored rather than reduced to a `Bool`
+    /// so the type stays a faithful snapshot of the turn.
+    let content: String?
 
-    init(id: UUID, thinking: String?) {
+    /// Whether the composer's question card fully covers this turn. True when the
+    /// turn carries no prose: the card's question plus this turn's `thinking` is
+    /// then everything there is to render, and the feed may drop the bubble.
+    /// False when the turn carries prose the card does not render (since
+    /// `cfe23f5b` it renders none) — the bubble is that prose's only surface.
+    var isFullyRenderedByQuestionCard: Bool { content == nil }
+
+    /// `content` deliberately has NO default. A `nil` default reads as
+    /// "suppressible", silently reproducing the pre-fix behaviour at any site
+    /// that forgets to pass it — the wrong direction for the defect this type
+    /// now guards against. Both production sites and every test pass it.
+    init(id: UUID, thinking: String?, content: String?) {
         self.id = id
-        let trimmed = thinking?.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.thinking = (trimmed?.isEmpty == false) ? trimmed : nil
+        let trimmedThinking = thinking?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.thinking = (trimmedThinking?.isEmpty == false) ? trimmedThinking : nil
+        let trimmedContent = content?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.content = (trimmedContent?.isEmpty == false) ? trimmedContent : nil
     }
 }
 
@@ -253,7 +271,15 @@ nonisolated enum ActivityFeedBuilder {
         // never drift ("question card visible but feed still shows the bubble" or
         // vice versa). Active task + descendants share the same set since
         // `paired.id` (i.e. `LLMMessage.id`) is a globally-unique UUID.
-        let suppressedMessageIDs: Set<UUID> = Set(activeQuestions.compactMap { $0.paired?.id })
+        //
+        // Only turns the card FULLY renders are suppressible. A turn that also
+        // carried prose keeps its bubble: the card renders `question` + `thinking`
+        // and nothing else, so suppressing it would leave that prose with no
+        // surface at all. Each active question decides independently.
+        let suppressedMessageIDs: Set<UUID> = Set(activeQuestions.compactMap { q -> UUID? in
+            guard let paired = q.paired, paired.isFullyRenderedByQuestionCard else { return nil }
+            return paired.id
+        })
 
         // Active task: emit items as before, stamped with activeTaskID.
         emitItems(
@@ -401,12 +427,15 @@ nonisolated enum ActivityFeedBuilder {
                     continue
                 }
                 // Suppress the assistant turn paired with an active `ask_supervisor`
-                // — its substantive reply lives in the composer's preview while the
-                // question is unanswered. Once `supervisorAnswer` is set, the id
-                // drops out of `suppressedMessageIDs` and the bubble reappears as
-                // history. Streaming exemption: while the preview is live the user
-                // is watching the response come in; the composer chip only takes
-                // over after commit. See plan `replied-structured-petal.md`.
+                // — but only when the composer's question card renders everything
+                // that turn had to say (see `isFullyRenderedByQuestionCard`, applied
+                // when `suppressedMessageIDs` is built). A turn carrying prose is
+                // never in the set: the card has rendered no body since `cfe23f5b`,
+                // so this bubble is that prose's only surface. Once `supervisorAnswer`
+                // is set, the id drops out of the set and a suppressed bubble
+                // reappears as history. Streaming exemption: while the preview is
+                // live the user is watching the response come in; the composer chip
+                // only takes over after commit. See plan `replied-structured-petal.md`.
                 if !isActivelyStreaming && suppressedMessageIDs.contains(msg.id) {
                     continue
                 }
@@ -439,22 +468,27 @@ nonisolated enum ActivityFeedBuilder {
         // Answered supervisor-input notifications. Active / in-flight questions
         // (including the multi-round race where `step.supervisorAnswer` is
         // stale from a previous round) are owned by the docked composer and
-        // skipped here. `stepHasActiveSupervisorInput` is the shared predicate.
+        // skipped here. `StepExecution.hasActiveSupervisorInput` is the shared predicate.
         for step in steps {
             let askCalls = step.toolCalls.filter { $0.name == ToolNames.askSupervisor }
             let answerMessages = step.llmConversation.filter { $0.sourceContext == .supervisorAnswer }
-            let stepIsActive = Self.stepHasActiveSupervisorInput(step)
+            let stepIsActive = step.hasActiveSupervisorInput
+
+            // Built LAZILY — only a step that actually renders an ask card pays
+            // the O(k log k) build; steps with no ask calls pay nothing, exactly
+            // as the per-call reverse scans this replaces cost nothing there.
+            var thinkingResolver: ThinkingResolver?
 
             for (index, call) in askCalls.enumerated() {
                 let isLast = index == askCalls.count - 1
                 if isLast && stepIsActive { continue }
 
                 let question: String
-                if let parsed = parseAskSupervisorQuestion(from: call.argumentsJSON) {
+                if let parsed = call.parsedSupervisorQuestion {
                     question = parsed
                 } else if isLast {
                     question = step.supervisorQuestion
-                        .flatMap { parseAskSupervisorQuestion(from: $0) }
+                        .flatMap { StepToolCall.parseSupervisorQuestion(from: $0) }
                         ?? step.supervisorQuestion ?? "?"
                 } else {
                     question = "?"
@@ -473,10 +507,10 @@ nonisolated enum ActivityFeedBuilder {
                     rawAnswer = "(answered)"
                 }
 
-                let thinking = step.llmConversation
-                    .last(where: {
-                        $0.role == .assistant && $0.thinking != nil && $0.createdAt <= call.createdAt
-                    })?.thinking
+                if thinkingResolver == nil {
+                    thinkingResolver = ThinkingResolver(conversation: step.llmConversation)
+                }
+                let thinking = thinkingResolver?.thinking(atOrBefore: call.createdAt)
 
                 // Use answer timestamp (when Supervisor responded), fall back to call timestamp
                 let answerTimestamp = index < answerMessages.count
@@ -528,10 +562,8 @@ nonisolated enum ActivityFeedBuilder {
                 // never hits the fallback.
                 let answerMsg = card.answerMessage
                 let anchor = answerMsg?.createdAt ?? step.updatedAt
-                let thinking = step.llmConversation
-                    .last(where: {
-                        $0.role == .assistant && $0.thinking != nil && $0.createdAt <= anchor
-                    })?.thinking
+                let thinking = ThinkingResolver(conversation: step.llmConversation)
+                    .thinking(atOrBefore: anchor)
                 appendSupervisorInputNotification(
                     into: &items,
                     step: step,
@@ -583,9 +615,9 @@ nonisolated enum ActivityFeedBuilder {
 
     static func escalationCard(for step: StepExecution) -> EscalationCard? {
         guard !step.toolCalls.contains(where: { $0.name == ToolNames.askSupervisor }),
-              !stepHasActiveSupervisorInput(step),
+              !step.hasActiveSupervisorInput,
               let question = step.supervisorQuestion?
-                  .trimmingCharacters(in: .whitespacesAndNewlines),
+              .trimmingCharacters(in: .whitespacesAndNewlines),
               !question.isEmpty,
               step.supervisorAnswer != nil
         else { return nil }

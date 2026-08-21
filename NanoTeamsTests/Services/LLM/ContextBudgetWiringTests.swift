@@ -44,10 +44,17 @@ final class ContextBudgetWiringTests: XCTestCase {
         LLMConfig(provider: .ollama, baseURLString: "http://127.0.0.1:11434", modelName: "m")
     }
 
-    private func warn(messages: [ChatMessage]? = nil) async {
+    /// The estimate now arrives precomputed (it is `PromptPrefixLedger.record`'s
+    /// fused pricing) — priced here through the SAME estimator so the fixture's
+    /// meaning ("a prompt that exceeds 512 but fits a million") is preserved.
+    private var oversizedTokens: Int {
+        ContextBudgetPolicy.estimateTokens(messages: oversizedMessages)
+    }
+
+    private func warn(promptTokens: Int? = nil) async {
         await service.warnIfContextBudgetExceeded(
             stepID: stepID, taskID: taskID, client: client, config: config(),
-            toolSchemaText: "", messages: messages ?? oversizedMessages)
+            promptTokens: promptTokens ?? oversizedTokens)
     }
 
     // MARK: - The once-per-step latch
@@ -77,7 +84,7 @@ final class ContextBudgetWiringTests: XCTestCase {
         await warn()
         await service.warnIfContextBudgetExceeded(
             stepID: "other", taskID: taskID, client: client, config: config(),
-            toolSchemaText: "", messages: oversizedMessages)
+            promptTokens: oversizedTokens)
 
         XCTAssertEqual(delegate.lastErrorMessages.count, 2, "each step gets its own warning")
     }
@@ -120,7 +127,7 @@ final class ContextBudgetWiringTests: XCTestCase {
             service._testRegisterStepTask(stepID: "step\(i)", taskID: taskID)
             await service.warnIfContextBudgetExceeded(
                 stepID: "step\(i)", taskID: taskID, client: client, config: config(),
-                toolSchemaText: "", messages: oversizedMessages)
+                promptTokens: oversizedTokens)
         }
         XCTAssertEqual(client.probeCount, 1, "four steps on one model probe the window once")
     }
@@ -140,7 +147,7 @@ final class ContextBudgetWiringTests: XCTestCase {
             service._testRegisterStepTask(stepID: "step\(i)", taskID: taskID)
             await service.warnIfContextBudgetExceeded(
                 stepID: "step\(i)", taskID: taskID, client: client, config: config(),
-                toolSchemaText: "", messages: oversizedMessages)
+                promptTokens: oversizedTokens)
         }
         XCTAssertEqual(
             client.probeCount, 4,
@@ -154,7 +161,7 @@ final class ContextBudgetWiringTests: XCTestCase {
         for _ in 0..<5 {
             await service.warnIfContextBudgetExceeded(
                 stepID: "step", taskID: taskID, client: client, config: config(),
-                toolSchemaText: "", messages: oversizedMessages)
+                promptTokens: oversizedTokens)
         }
         XCTAssertEqual(
             client.probeCount, 1,
@@ -168,11 +175,11 @@ final class ContextBudgetWiringTests: XCTestCase {
         await service.warnIfContextBudgetExceeded(
             stepID: stepID, taskID: taskID, client: client,
             config: LLMConfig(provider: .ollama, baseURLString: "http://h:1", modelName: "a"),
-            toolSchemaText: "", messages: oversizedMessages)
+            promptTokens: oversizedTokens)
         await service.warnIfContextBudgetExceeded(
             stepID: stepID, taskID: taskID, client: client,
             config: LLMConfig(provider: .ollama, baseURLString: "http://h:1", modelName: "b"),
-            toolSchemaText: "", messages: oversizedMessages)
+            promptTokens: oversizedTokens)
         XCTAssertEqual(client.probeCount, 2, "a second model needs its own probe")
     }
 
@@ -186,7 +193,7 @@ final class ContextBudgetWiringTests: XCTestCase {
             await service.warnIfContextBudgetExceeded(
                 stepID: stepID, taskID: taskID, client: client,
                 config: LLMConfig(provider: .ollama, baseURLString: base, modelName: "m"),
-                toolSchemaText: "", messages: oversizedMessages)
+                promptTokens: oversizedTokens)
         }
         XCTAssertEqual(client.probeCount, 1, "one endpoint spelled three ways is one probe")
     }
@@ -215,9 +222,9 @@ final class ProbeCountingLLMClient: LLMClient, @unchecked Sendable {
         AsyncThrowingStream { $0.finish() }
     }
 
-    func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [String] { [] }
+    func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [LLMModelInfo] { [] }
     func fetchEmbeddingModels(config: LLMConfig) async throws -> [String] { [] }
-    func loadModel(modelName: String, baseURLString: String) async throws -> String { "" }
-    func unloadModel(instanceID: String, baseURLString: String) async throws {}
-    func listLoadedInstances(baseURLString: String) async throws -> [LoadedModelInstance] { [] }
+    func loadModel(provider _: LLMProvider, modelName: String, baseURLString: String) async throws -> String { "" }
+    func unloadModel(provider _: LLMProvider, instanceID: String, baseURLString: String) async throws {}
+    func listLoadedInstances(provider _: LLMProvider, baseURLString: String) async throws -> LoadedInstanceListing { .listed([]) }
 }

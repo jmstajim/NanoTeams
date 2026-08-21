@@ -64,7 +64,7 @@ final class StripDelegationToolsTests: XCTestCase {
         role.allowDelegationToGeneratedTeams = true
         let stripped = makeService().stripDelegationTools(from: makeTeam(roles: [role]))
         XCTAssertTrue(stripped.roles[0].allowedDelegationTeamIDs.isEmpty,
-                       "Generated team must not carry per-role delegation whitelists")
+                      "Generated team must not carry per-role delegation whitelists")
         XCTAssertFalse(stripped.roles[0].allowDelegationToGeneratedTeams,
                        "Generated team must not be allowed to chain-generate further teams")
     }

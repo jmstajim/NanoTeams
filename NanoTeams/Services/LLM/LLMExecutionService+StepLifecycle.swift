@@ -62,7 +62,7 @@ extension LLMExecutionService {
         // For delegated child tasks, log paths nest under the parent's directory tree.
         let ancestors = delegate.snapshot?.tasksIndex.ancestorIDs(of: task.id) ?? []
         let networkLogger: NetworkLogger? = delegate.loggingEnabled
-            ? NetworkLogger(logURL: paths.networkLogJSON(taskID: task.id, runID: runID, ancestors: ancestors))
+            ? NetworkLogger(logURL: paths.networkLogJSONL(taskID: task.id, runID: runID, ancestors: ancestors))
             : nil
         let toolCallsLogURL: URL? = delegate.loggingEnabled
             ? paths.toolCallsJSONL(taskID: task.id, runID: runID, ancestors: ancestors)

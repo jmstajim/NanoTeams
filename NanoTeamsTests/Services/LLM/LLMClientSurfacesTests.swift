@@ -53,9 +53,7 @@ final class LLMClientSurfacesTests: XCTestCase {
     }
 
     private func readNetworkRecords(at url: URL) throws -> [NetworkLogRecord] {
-        let data = try Data(contentsOf: url)
-        return try JSONCoderFactory.makeDateDecoder()
-            .decode([NetworkLogRecord].self, from: data)
+        try NetworkLogTestReading.strictRecords(at: url)
     }
 
     // MARK: - LLMClient protocol defaults
@@ -74,7 +72,7 @@ final class LLMClientSurfacesTests: XCTestCase {
     func testDefaultLoadModel_throwsProviderError() async {
         let client = MinimalLLMClient()
         do {
-            _ = try await client.loadModel(modelName: "m", baseURLString: "http://x")
+            _ = try await client.loadModel(provider: .lmStudio, modelName: "m", baseURLString: "http://x")
             XCTFail("Expected providerError — the default must be loud, not a silent success")
         } catch let error as LLMClientError {
             guard case .providerError(let message) = error else {
@@ -89,7 +87,7 @@ final class LLMClientSurfacesTests: XCTestCase {
     func testDefaultUnloadModel_throwsProviderError() async {
         let client = MinimalLLMClient()
         do {
-            try await client.unloadModel(instanceID: "i", baseURLString: "http://x")
+            try await client.unloadModel(provider: .lmStudio, instanceID: "i", baseURLString: "http://x")
             XCTFail("Expected providerError")
         } catch let error as LLMClientError {
             guard case .providerError = error else {
@@ -100,13 +98,33 @@ final class LLMClientSurfacesTests: XCTestCase {
         }
     }
 
-    /// Deliberately asymmetric with `loadModel`/`unloadModel`: returning `[]`
-    /// lets the caller fall through to `loadModel`, which is where a genuinely
-    /// unsupported provider surfaces its error.
-    func testDefaultListLoadedInstances_returnsEmptyRatherThanThrowing() async throws {
+    /// Deliberately asymmetric with `loadModel`/`unloadModel`: not throwing lets the caller fall
+    /// through to `loadModel`, which is where a genuinely unsupported provider surfaces its error.
+    ///
+    /// It answers `.unsupported`, NOT `.listed([])`. A client that never implemented the method
+    /// knows nothing about the server, and `[]` is what a server says when it has nothing loaded —
+    /// so the old default had every non-implementing double claiming an empty machine.
+    ///
+    /// RED: return `.listed([])` → `BenchmarkResidencyPreparer` reports `couldInspect` against a
+    /// client that cannot inspect anything.
+    func testDefaultListLoadedInstances_reportsUnsupportedRatherThanThrowingOrClaimingEmpty() async throws {
         let client = MinimalLLMClient()
-        let instances = try await client.listLoadedInstances(baseURLString: "http://x")
-        XCTAssertEqual(instances, [])
+        let listing = try await client.listLoadedInstances(
+            provider: .lmStudio, baseURLString: "http://x")
+        XCTAssertEqual(listing, .unsupported)
+        XCTAssertNotEqual(listing, .listed([]))
+    }
+
+    /// The collapse `.unsupported → []` must stay a decision each caller spells out, so the
+    /// accessor that performs it is pinned on its own.
+    ///
+    /// RED: make `adoptable` return nil-ish/throw for `.unsupported`, or have it drop the listed
+    /// instances → every adoption path either stops adopting or starts crashing.
+    func testAdoptable_collapsesUnsupportedToNothingAndPassesListedThrough() {
+        let instance = LoadedModelInstance(modelName: "nomic", instanceID: "nomic")
+        XCTAssertEqual(LoadedInstanceListing.unsupported.adoptable, [])
+        XCTAssertEqual(LoadedInstanceListing.listed([]).adoptable, [])
+        XCTAssertEqual(LoadedInstanceListing.listed([instance]).adoptable, [instance])
     }
 
     func testDefaultMetadataProbes_areUndeterminable() async {
@@ -737,18 +755,24 @@ final class LLMClientSurfacesTests: XCTestCase {
     /// LM Studio's `Stats.inputTokens` is non-optional, so a stats object
     /// missing it fails to decode — the frame must degrade to `.ignored`, never
     /// crash or fabricate a usage figure.
-    /// An EMPTY stats object is not undecodable — every field is optional, so it
-    /// decodes to all-defaults and the stream really did end. Reporting the
-    /// terminal event is right; the zeros are what "the server sent no counts"
-    /// looks like, and `TokenUsage` has no other way to say it.
+    /// An EMPTY stats object is not undecodable — every field is optional, so the stream really
+    /// did end and reporting the terminal event is right.
+    ///
+    /// Until 2026-08-19 this also asserted `TokenUsage(0, 0)`, reasoned as "the zeros are what
+    /// 'the server sent no counts' looks like, and `TokenUsage` has no other way to say it".
+    /// It does: the event's `usage` is already `TokenUsage?`, and the sibling test for an ABSENT
+    /// `stats` object had been using nil for exactly this all along. The zeros were a
+    /// fabrication indistinguishable downstream from a measurement — `GenerationSampleRecorder`
+    /// raises `.noTokensReported` only on nil, so they turned a benchmark run that measured
+    /// nothing into a finished run of dashes.
     func testSSE_chatEndWithEmptyStats_stillReportsTheTerminalEvent() {
         var parser = SSEEventParser()
         _ = parser.parse(line: "event: chat.end")
 
-        guard case .chatEnd(let usage, let prefill)? = parser.parse(line: #"data: {"stats": {}}"#)
+        guard case .chatEnd(let usage, let prefill, _, _)? = parser.parse(line: #"data: {"stats": {}}"#)
         else { return XCTFail("an empty stats object is still a chat.end") }
 
-        XCTAssertEqual(usage, TokenUsage(inputTokens: 0, outputTokens: 0))
+        XCTAssertNil(usage, "no counts were sent, and a fabricated zero would read as a measurement")
         XCTAssertNil(prefill, "no prefill figures were sent")
     }
 
@@ -769,7 +793,7 @@ final class LLMClientSurfacesTests: XCTestCase {
         var parser = SSEEventParser()
         _ = parser.parse(line: "event: chat.end")
         let json = #"{"type":"chat.end","result":{"stats":{"input_tokens":11,"total_output_tokens":3}}}"#
-        guard case .chatEnd(let usage, _)? = parser.parse(line: "data: \(json)") else {
+        guard case .chatEnd(let usage, _, _, _)? = parser.parse(line: "data: \(json)") else {
             return XCTFail("Expected chatEnd for the nested result shape")
         }
         XCTAssertEqual(usage, TokenUsage(inputTokens: 11, outputTokens: 3))
@@ -823,7 +847,7 @@ final class LLMClientSurfacesTests: XCTestCase {
         var parser = SSEEventParser()
         XCTAssertNil(parser.parse(line: "   event:   message.delta   "))
         guard case .contentDelta(let text)? =
-                parser.parse(line: "   data:   {\"content\":\"padded\"}   ") else {
+            parser.parse(line: "   data:   {\"content\":\"padded\"}   ") else {
             return XCTFail("Expected contentDelta despite padding")
         }
         XCTAssertEqual(text, "padded")
@@ -1293,7 +1317,7 @@ private final class MinimalLLMClient: LLMClient, @unchecked Sendable {
         }
     }
 
-    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] {
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] {
         []
     }
 }

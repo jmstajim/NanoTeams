@@ -13,8 +13,8 @@ final class VocabVectorIndexTests: XCTestCase {
         let dims = 4
         let count = 3
         let input: [Float] = [
-             0.1,  0.2, -0.3,  0.4,   // row 0
-             0.5, -0.6,  0.7,  0.8,   // row 1
+            0.1,  0.2, -0.3,  0.4,   // row 0
+            0.5, -0.6,  0.7,  0.8,   // row 1
             -0.9,  0.0,  1.0, -1.0,   // row 2
         ]
 

@@ -51,7 +51,7 @@ final class GitConflictParserTests: XCTestCase {
         XCTAssertEqual(
             GitConflictParser.conflictedPath(
                 inLine:
-                    "CONFLICT (rename/delete): r.txt renamed to r2.txt in HEAD, but deleted in other."
+                "CONFLICT (rename/delete): r.txt renamed to r2.txt in HEAD, but deleted in other."
             ),
             "r.txt")
     }
@@ -75,7 +75,7 @@ final class GitConflictParserTests: XCTestCase {
         XCTAssertEqual(
             GitConflictParser.conflictedPath(
                 inLine:
-                    "CONFLICT (modify/delete): my doc.txt deleted in other and modified in HEAD."),
+                "CONFLICT (modify/delete): my doc.txt deleted in other and modified in HEAD."),
             "my doc.txt")
     }
 
@@ -118,13 +118,13 @@ final class GitConflictParserTests: XCTestCase {
     /// RED: drop the `seen.insert(...).inserted` guard → `f.txt` appears twice.
     func testConflictedPaths_ordersAndDeduplicates() {
         let output = """
-            Auto-merging f.txt
-            CONFLICT (content): Merge conflict in f.txt
-             CONFLICT.md | 1 +
-            CONFLICT (add/add): Merge conflict in both.txt
-            CONFLICT (content): Merge conflict in f.txt
-            Automatic merge failed; fix conflicts and then commit the result.
-            """
+        Auto-merging f.txt
+        CONFLICT (content): Merge conflict in f.txt
+         CONFLICT.md | 1 +
+        CONFLICT (add/add): Merge conflict in both.txt
+        CONFLICT (content): Merge conflict in f.txt
+        Automatic merge failed; fix conflicts and then commit the result.
+        """
 
         XCTAssertEqual(GitConflictParser.conflictedPaths(in: output), ["f.txt", "both.txt"])
     }
@@ -144,11 +144,11 @@ final class GitConflictParserTests: XCTestCase {
     /// and the model is told three files need resolving.
     func testUnmergedPaths_collapseTheThreeStages() {
         let output = """
-            100644 df967b96a579e45a18b8251732d16804b2e56a55 1\tf.txt
-            100644 045951300cf4890e4273f294da20894d587b9ad1 2\tf.txt
-            100644 40830374235df1c19661a2901b7ca73cc9499f3d 3\tf.txt
-            100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 1\tdir/other file.txt
-            """
+        100644 df967b96a579e45a18b8251732d16804b2e56a55 1\tf.txt
+        100644 045951300cf4890e4273f294da20894d587b9ad1 2\tf.txt
+        100644 40830374235df1c19661a2901b7ca73cc9499f3d 3\tf.txt
+        100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 1\tdir/other file.txt
+        """
 
         XCTAssertEqual(
             GitConflictParser.unmergedPaths(inLsFilesOutput: output),

@@ -474,7 +474,7 @@ final class LLMExecutionService {
         let dict: [String: Any] = ["ok": true, "tool": toolName, "response": response]
         if let data = try? JSONSerialization.data(
             withJSONObject: dict, options: Self.collaborationEnvelopeOptions),
-           let json = String(data: data, encoding: .utf8)
+            let json = String(data: data, encoding: .utf8)
         {
             return json
         }
@@ -489,7 +489,7 @@ final class LLMExecutionService {
         let dict: [String: Any] = ["ok": false, "tool": toolName, "error": ["message": message]]
         if let data = try? JSONSerialization.data(
             withJSONObject: dict, options: Self.collaborationEnvelopeOptions),
-           let json = String(data: data, encoding: .utf8)
+            let json = String(data: data, encoding: .utf8)
         {
             return json
         }

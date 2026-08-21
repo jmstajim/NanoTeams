@@ -466,7 +466,7 @@ struct SidebarView: View {
                                 isSelected: selectedItem == .task(task.id),
                                 displayIndex: offset + 1
                             )
-                                .contentShape(Rectangle())
+                            .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                         .contextMenu {
@@ -521,7 +521,7 @@ struct SidebarView: View {
                 selectedItem = .autovisor
             } label: {
                 terminalNavRowContent(
-                    icon: "bolt.badge.automatic",
+                    icon: AutovisorConstants.symbolName,
                     title: "autovisor",
                     accessibilityName: "Autovisor",
                     isSelected: isSelected,

@@ -109,6 +109,9 @@ nonisolated struct OllamaClient: LLMClient {
                     var accumulatedThinking = ""
                     var capturedUsage: TokenUsage?
                     var capturedPrefill: ServerPrefillReport?
+                    var capturedGenerationNs: Double?
+                    var capturedTotalNs: Double?
+                    var capturedDoneReason: String?
                     var parser = OllamaChatStreamParser()
 
                     func handle(_ event: OllamaChatStreamParser.ParsedEvent) throws {
@@ -119,9 +122,12 @@ nonisolated struct OllamaClient: LLMClient {
                         case .thinkingDelta(let thinking):
                             accumulatedThinking += thinking
                             continuation.yield(StreamEvent(thinkingDelta: thinking))
-                        case .chatEnd(let usage, let prefill):
-                            capturedUsage = usage
-                            capturedPrefill = prefill
+                        case .chatEnd(let report):
+                            capturedUsage = report.usage
+                            capturedPrefill = report.prefill
+                            capturedGenerationNs = report.generationNs
+                            capturedTotalNs = report.totalNs
+                            capturedDoneReason = report.doneReason
                         case .error(let message):
                             throw LLMClientError.providerError(message)
                         }
@@ -139,9 +145,14 @@ nonisolated struct OllamaClient: LLMClient {
                     }
 
                     // Final event: usage plus the server's account of how it prefilled.
-                    if capturedUsage != nil || capturedPrefill != nil {
+                    if capturedUsage != nil || capturedPrefill != nil
+                        || capturedGenerationNs != nil || capturedTotalNs != nil
+                        || capturedDoneReason != nil {
                         continuation.yield(StreamEvent(
-                            tokenUsage: capturedUsage, serverPrefill: capturedPrefill))
+                            tokenUsage: capturedUsage, serverPrefill: capturedPrefill,
+                            serverGenerationNs: capturedGenerationNs,
+                            serverTotalNs: capturedTotalNs,
+                            serverDoneReason: capturedDoneReason))
                     }
 
                     if let logger, let reqRecord = requestRecord {
@@ -268,37 +279,54 @@ nonisolated struct OllamaClient: LLMClient {
             model: config.modelName,
             messages: out,
             stream: true,
-            options: config.temperature.map { ChatRequest.Options(temperature: $0) },
+            // Built when EITHER knob is set, not just temperature: mapping over one of them
+            // silently discarded the other, so a benchmark run (which sets only the cap) would
+            // have shipped `options` absent entirely.
+            options: (config.temperature == nil && config.maxOutputTokens == nil)
+                ? nil
+                : ChatRequest.Options(
+                    temperature: config.temperature, numPredict: config.maxOutputTokens),
             keepAlive: config.keepAliveSeconds
         )
     }
 
     // MARK: - Model Listing
 
-    func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [String] {
-        let names = try await fetchTagNames(config: config)
-        let capabilities = await probeCapabilities(names, config: config)
+    func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [LLMModelInfo] {
+        // Format and quantization ride `/api/tags` itself — `details.format` /
+        // `details.quantization_level`, present for every model in the one response that yields the
+        // names. They cost nothing extra here; the `/api/show` fan-out below is the capability
+        // probe, which is a separate and older question.
+        let infos = try await fetchTagEntries(config: config).map {
+            LLMModelInfo(
+                name: $0.name,
+                format: $0.details?.format,
+                quantization: $0.details?.quantizationLevel)
+        }
+        // Probed with the TRIMMED names, which are the same keys the filters look up below — the
+        // map and its readers cannot disagree about a name with stray whitespace.
+        let capabilities = await probeCapabilities(infos.map(\.name), config: config)
 
         if visionOnly {
             // Tags carry no capability metadata — the vision filter needs the
             // per-model `/api/show` probe. Models whose probe fails are
             // excluded (conservative: never offer a model we can't confirm
             // sees images).
-            return names.filter { capabilities[$0]??.contains("vision") == true }
-                .normalizedUnique()
+            return infos.filter { capabilities[$0.name]??.contains("vision") == true }
+                .normalizedUnique(name: \.name)
         }
 
         // Chat picker: exclude embedding-ONLY models (the LM Studio analogue
         // filters `type == "llm"`). Fail-open per model — a failed probe or a
         // capability-less old server never hides a chat model.
-        return names.filter { name in
-            guard let caps = capabilities[name] ?? nil else { return true }
+        return infos.filter { info in
+            guard let caps = capabilities[info.name] ?? nil else { return true }
             return !(caps.contains("embedding") && !caps.contains("completion"))
-        }.normalizedUnique()
+        }.normalizedUnique(name: \.name)
     }
 
     func fetchEmbeddingModels(config: LLMConfig) async throws -> [String] {
-        let names = try await fetchTagNames(config: config)
+        let names = try await fetchTagEntries(config: config).map(\.name)
         let capabilities = await probeCapabilities(names, config: config)
         // Degraded path for older Ollama builds without `capabilities` in
         // `/api/show`: when NO probe produced a capability list, return the
@@ -310,7 +338,73 @@ nonisolated struct OllamaClient: LLMClient {
             .normalizedUnique()
     }
 
-    private func fetchTagNames(config: LLMConfig) async throws -> [String] {
+    /// Models resident on this server right now, from `GET /api/ps`.
+    ///
+    /// The protocol default returns `[]` because the app does not MANAGE Ollama residency —
+    /// `LLMProvider.managesModelResidency` is false and nothing here loads or pins a model. That
+    /// is still true; this override exists for a different job: the benchmark has to be able to
+    /// SEE what else is resident, because a co-resident model competes for memory and bandwidth
+    /// and poisons every timing. Observing residency is not managing it.
+    ///
+    /// `instanceID` is the model name — Ollama has no per-instance identity, and eviction is
+    /// addressed by name.
+    func listLoadedInstances(
+        provider _: LLMProvider, baseURLString: String
+    ) async throws -> LoadedInstanceListing {
+        guard let baseURL = URL(string: baseURLString) else {
+            throw LLMClientError.invalidBaseURL(baseURLString)
+        }
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/ps"))
+        request.httpMethod = "GET"
+        request.timeoutInterval = 10
+        request.applyLMStudioBearer(baseURL: baseURLString, resolver: tokenResolver)
+
+        let (data, response) = try await session.sessionData(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw LLMClientError.missingResponse
+        }
+        let decoded = try JSONCoderFactory.makeWireDecoder().decode(PSResponse.self, from: data)
+        // Always `.listed`: `/api/ps` has been in Ollama since 0.1.x, and this
+        // client throws rather than synthesizing an answer on any non-2xx — so
+        // an empty list here really is an empty server.
+        return .listed(decoded.models.compactMap { entry in
+            guard let name = entry.name ?? entry.model, !name.isEmpty else { return nil }
+            return LoadedModelInstance(modelName: name, instanceID: name)
+        })
+    }
+
+    /// Evicts a model by asking for it with `keep_alive: 0` — Ollama's documented unload, and the
+    /// only one it offers (there is no unload endpoint).
+    ///
+    /// An empty `messages` array is deliberate: it makes the request a pure residency instruction
+    /// with no generation to pay for. Idempotent by nature — evicting a model that is already
+    /// gone is a no-op on the server, which matches the protocol's contract.
+    func unloadModel(
+        provider _: LLMProvider, instanceID: String, baseURLString: String
+    ) async throws {
+        guard let baseURL = URL(string: baseURLString) else {
+            throw LLMClientError.invalidBaseURL(baseURLString)
+        }
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/chat"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 30
+        request.applyLMStudioBearer(baseURL: baseURLString, resolver: tokenResolver)
+        request.httpBody = try JSONCoderFactory.makeWireEncoder().encode(
+            ChatRequest(model: instanceID, messages: [], stream: false, options: nil, keepAlive: 0))
+
+        let (_, response) = try await session.sessionData(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw LLMClientError.missingResponse
+        }
+    }
+
+    /// `GET /api/tags`, whole entries.
+    ///
+    /// Entries rather than names because one response carries three facts per model — the name,
+    /// `details.format` and `details.quantization_level` — and the two that are not the name were
+    /// decoded and dropped on the floor here for as long as this returned `[String]`.
+    private func fetchTagEntries(config: LLMConfig) async throws -> [TagsResponse.ModelEntry] {
         guard let baseURL = URL(string: config.baseURLString) else {
             throw LLMClientError.invalidBaseURL(config.baseURLString)
         }
@@ -328,7 +422,7 @@ nonisolated struct OllamaClient: LLMClient {
             throw LLMClientError.badHTTPStatus(http.statusCode, String(data: data, encoding: .utf8))
         }
         let decoded = try JSONCoderFactory.makeWireDecoder().decode(TagsResponse.self, from: data)
-        return decoded.models.map(\.name)
+        return decoded.models
     }
 
     /// Probes `/api/show` for every model concurrently. The map's value is
@@ -502,13 +596,18 @@ nonisolated struct OllamaClient: LLMClient {
             fields.append(.init(label: "Parameters", value: size))
         }
         if let quant = details?["quantization_level"] as? String, !quant.isEmpty {
-            fields.append(.init(label: "Quantization", value: quant))
+            fields.append(.init(label: ModelLoadDetails.quantizationLabel, value: quant))
         }
         if let family = details?["family"] as? String, !family.isEmpty {
             fields.append(.init(label: "Family", value: family))
         }
         if let format = details?["format"] as? String, !format.isEmpty {
-            fields.append(.init(label: "Format", value: format))
+            fields.append(.init(label: ModelLoadDetails.formatLabel, value: format))
+        }
+        // The minimum Ollama version this model needs. Paired with the server's own
+        // `/api/version` it explains a failure that would otherwise read as a bad model.
+        if let requires = obj["requires"] as? String, !requires.isEmpty {
+            fields.append(.init(label: "Requires Ollama", value: requires))
         }
         if let capabilities = parsed.capabilities, !capabilities.isEmpty {
             fields.append(.init(label: "Capabilities", value: capabilities.joined(separator: ", ")))
@@ -516,7 +615,7 @@ nonisolated struct OllamaClient: LLMClient {
         if let params = obj["parameters"] as? String {
             let trimmed = params.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty {
-                fields.append(.init(label: "Modelfile parameters", value: trimmed))
+                fields.append(.init(label: ModelLoadDetails.modelfileParametersLabel, value: trimmed))
             }
         }
         return fields

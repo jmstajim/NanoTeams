@@ -48,7 +48,7 @@ final class NetworkLoggerTests: XCTestCase {
         let attrs = try fileManager.attributesOfItem(atPath: nestedDir.path)
         let perms = (attrs[.posixPermissions] as? NSNumber)?.intValue
         XCTAssertEqual(perms, 0o700,
-                        "NetworkLogger should create parent directory with owner-only permissions")
+                       "NetworkLogger should create parent directory with owner-only permissions")
     }
 
     // MARK: - File Creation Tests
@@ -73,9 +73,9 @@ final class NetworkLoggerTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: logURL.path))
     }
 
-    // MARK: - JSON Format Tests
+    // MARK: - JSONL Format Tests
 
-    func testOutputIsValidJSONArray() throws {
+    func testOutputIsOneDecodableLinePerRecord() throws {
         let record = NetworkLogRecord(
             id: UUID(),
             createdAt: Date(),
@@ -92,10 +92,12 @@ final class NetworkLoggerTests: XCTestCase {
 
         logger.append(record)
 
-        let data = try Data(contentsOf: logURL)
-        let decoder = JSONCoderFactory.makeDateDecoder()
-        let decoded = try decoder.decode([NetworkLogRecord].self, from: data)
+        let decoded = try NetworkLogTestReading.strictRecords(at: logURL)
         XCTAssertEqual(decoded.count, 1)
+        // JSONL contract: exactly one newline-terminated line per record.
+        let text = try String(contentsOf: logURL, encoding: .utf8)
+        XCTAssertTrue(text.hasSuffix("\n"))
+        XCTAssertEqual(text.split(separator: "\n", omittingEmptySubsequences: true).count, 1)
     }
 
     // MARK: - Tool-call audit records (.toolCall)
@@ -155,15 +157,13 @@ final class NetworkLoggerTests: XCTestCase {
         )
         logger.append(record)
 
-        let data = try Data(contentsOf: logURL)
-        let decoder = JSONCoderFactory.makeDateDecoder()
-        let decoded = try decoder.decode([NetworkLogRecord].self, from: data)
+        let decoded = try NetworkLogTestReading.strictRecords(at: logURL)
         XCTAssertEqual(decoded.count, 1)
         XCTAssertEqual(decoded[0].direction, .toolCall)
         XCTAssertEqual(decoded[0].errorMessage, "bad")
     }
 
-    func testMultipleAppendsCreateArray() throws {
+    func testMultipleAppendsKeepOrder() throws {
         let correlationID = UUID()
 
         let request = NetworkLogRecord(
@@ -197,9 +197,7 @@ final class NetworkLoggerTests: XCTestCase {
         logger.append(request)
         logger.append(response)
 
-        let data = try Data(contentsOf: logURL)
-        let decoder = JSONCoderFactory.makeDateDecoder()
-        let decoded = try decoder.decode([NetworkLogRecord].self, from: data)
+        let decoded = try NetworkLogTestReading.strictRecords(at: logURL)
         XCTAssertEqual(decoded.count, 2)
         XCTAssertEqual(decoded[0].direction, .request)
         XCTAssertEqual(decoded[1].direction, .response)
@@ -314,10 +312,49 @@ final class NetworkLoggerTests: XCTestCase {
 
         wait(for: [expectation], timeout: 5.0)
 
-        let data = try Data(contentsOf: logURL)
-        let decoder = JSONCoderFactory.makeDateDecoder()
-        let decoded = try decoder.decode([NetworkLogRecord].self, from: data)
+        let decoded = try NetworkLogTestReading.strictRecords(at: logURL)
         XCTAssertEqual(decoded.count, 10)
+    }
+
+    /// TWO logger INSTANCES on one file — the real production shape: a step's
+    /// logger and team generation's logger share one run file, and parallel
+    /// roles of one run (CLAUDE.md #45) write concurrently. The old
+    /// per-instance queue serialized nothing across instances, and the
+    /// whole-array read-modify-write interleaved and silently LOST records
+    /// (this test is red against that implementation). `JSONLFileLog`
+    /// serializes per FILE, so every line lands.
+    func testConcurrentAppends_acrossTwoInstances_loseNothing() throws {
+        let expectation = XCTestExpectation(description: "Two-instance appends complete")
+        expectation.expectedFulfillmentCount = 40
+
+        let first = try XCTUnwrap(self.logger)
+        let second = NetworkLogger(logURL: logURL)
+
+        for i in 0..<40 {
+            let target = i % 2 == 0 ? first : second
+            DispatchQueue.global().async {
+                target.append(NetworkLogRecord(
+                    id: UUID(),
+                    createdAt: Date(),
+                    direction: .request,
+                    httpMethod: "POST",
+                    url: "http://localhost/race/\(i)",
+                    statusCode: nil,
+                    body: "body \(i)",
+                    durationMs: nil,
+                    errorMessage: nil,
+                    correlationID: UUID(),
+                    stepID: nil
+                ))
+                expectation.fulfill()
+            }
+        }
+
+        wait(for: [expectation], timeout: 10.0)
+
+        let decoded = try NetworkLogTestReading.strictRecords(at: logURL)
+        XCTAssertEqual(decoded.count, 40,
+                       "records written through a second instance must not clobber the first's")
     }
 
     // MARK: - StepID Context Tests

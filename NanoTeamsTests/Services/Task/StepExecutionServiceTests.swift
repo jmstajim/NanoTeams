@@ -11,8 +11,8 @@ final class StepExecutionServiceTests: XCTestCase {
     ) -> NTMSTask {
         let run = Run(id: 0, steps: steps)
         return NTMSTask(id: 0, title: "Test Task",
-            supervisorTask: "Test goal",
-            runs: [run]
+                        supervisorTask: "Test goal",
+                        runs: [run]
         )
     }
 

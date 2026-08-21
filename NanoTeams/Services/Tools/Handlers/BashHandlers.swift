@@ -15,12 +15,12 @@ nonisolated struct BashTool: ToolHandler {
     static let schema = ToolSchema(
         name: TN.bash,
         description: """
-            Run a shell command in the project work folder via your login shell \
-            (supports pipes, &&, globs, redirection). A non-zero exit code is normal output, \
-            not a tool error — read `exit_code`/`stderr`. Output is returned verbatim (text); \
-            redirect binary output to a file. Commands run inside a sandbox that confines writes \
-            to the work folder and temp directories.
-            """,
+        Run a shell command in the project work folder via your login shell \
+        (supports pipes, &&, globs, redirection). A non-zero exit code is normal output, \
+        not a tool error — read `exit_code`/`stderr`. Output is returned verbatim (text); \
+        redirect binary output to a file. Commands run inside a sandbox that confines writes \
+        to the work folder and temp directories.
+        """,
         parameters: JS.object(
             properties: [
                 "command": JS.string("The shell command to run."),
@@ -115,8 +115,7 @@ nonisolated struct BashTool: ToolHandler {
             let sandboxProfile = sandboxEnabled
                 ? SeatbeltSandbox.profile(
                     workFolderRoot: workFolderRoot,
-                    permissions: effectivePermissions,
-                    fileManager: fileManager)
+                    permissions: effectivePermissions)
                 : nil
 
             // MARK: Background
@@ -267,15 +266,15 @@ nonisolated struct BashOutputTool: ToolHandler {
     static let schema = ToolSchema(
         name: TN.bashOutput,
         description: """
-            Read new output from a background command started by `bash` (run_in_background), \
-            or stop it. Returns output produced since your last read, whether it is still \
-            running, and its exit code once finished.
-            """,
+        Read new output from a background command started by `bash` (run_in_background), \
+        or stop it. Returns output produced since your last read, whether it is still \
+        running, and its exit code once finished.
+        """,
         parameters: JS.object(
             properties: [
                 "command_id": JS.string("Id of the background command."),
                 "action": JS.string("read fetches new output; stop terminates the command.",
-                    enumValues: ["read", "stop"]),
+                                    enumValues: ["read", "stop"]),
             ],
             required: ["command_id"]
         )

@@ -208,10 +208,10 @@ nonisolated struct PromptBuilder {
         )
 
         if !requiredArtifacts.isEmpty,
-            let requiredSection = buildRequiredArtifactsSection(
-                artifacts: requiredArtifacts,
-                artifactReader: context.artifactReader
-            )
+           let requiredSection = buildRequiredArtifactsSection(
+               artifacts: requiredArtifacts,
+               artifactReader: context.artifactReader
+           )
         {
             messages.append(ChatMessage(role: .user, content: requiredSection))
         }
@@ -243,7 +243,7 @@ nonisolated struct PromptBuilder {
         // most recent call shape (Sclar2024/Lu2022 — format drift teaches drift).
         let hasAnsweredSupervisorQuestion =
             (step.supervisorQuestion?.isEmpty == false)
-            && (step.effectiveSupervisorAnswer?.isEmpty == false)
+                && (step.effectiveSupervisorAnswer?.isEmpty == false)
         if hasAnsweredSupervisorQuestion,
            let question = step.supervisorQuestion,
            let answer = step.effectiveSupervisorAnswer {

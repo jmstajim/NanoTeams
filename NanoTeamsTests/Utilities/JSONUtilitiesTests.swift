@@ -389,7 +389,7 @@ final class JSONUtilitiesTests: XCTestCase {
                      "Pre-condition: \\U is an invalid escape → strict-broken")
         XCTAssertNil(JSONUtilities.parseJSONDictionary(
             JSONUtilities.sanitizeJSONControlCharacters(broken)),
-                     "Non-control stray backslashes must fail closed, not be silently repaired")
+        "Non-control stray backslashes must fail closed, not be silently repaired")
     }
 
     func testSanitize_windowsPathWithValidEscapeChar_doesNotCorrupt() {

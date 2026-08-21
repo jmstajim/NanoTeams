@@ -118,8 +118,8 @@ final class QuickCaptureComposerHandoffCoverageTests: XCTestCase {
         sut.refreshPanelIfVisible()
 
         XCTAssertEqual(sut.formState.answerText, "",
-            "the send button now reads these fields against task B; A's message must not be "
-            + "what it sends")
+                       "the send button now reads these fields against task B; A's message must not be "
+                           + "what it sends")
         XCTAssertEqual(sut.formState.answerClippedTexts, [])
     }
 
@@ -144,7 +144,7 @@ final class QuickCaptureComposerHandoffCoverageTests: XCTestCase {
         sut.refreshPanelIfVisible()
 
         XCTAssertEqual(sut.formState.answerText, "for A only",
-            "the message was kept under the task it was typed for, and this is that task")
+                       "the message was kept under the task it was typed for, and this is that task")
     }
 
     /// The same misfiling one arm over: a question arriving on ANOTHER task made
@@ -178,9 +178,9 @@ final class QuickCaptureComposerHandoffCoverageTests: XCTestCase {
 
         XCTAssertTrue(sut.formState.isInAnswerMode, "precondition: B's question took the panel")
         XCTAssertEqual(sut.formState.answerText, "",
-            "B's question gets an empty answer field, not the message meant for A")
+                       "B's question gets an empty answer field, not the message meant for A")
         XCTAssertEqual(sut.formState._testAnswerDrafts[taskA]?.text, "for A only",
-            "and A keeps it")
+                       "and A keeps it")
     }
 
     // MARK: - What the overlay will accept
@@ -197,7 +197,7 @@ final class QuickCaptureComposerHandoffCoverageTests: XCTestCase {
         state.clippedTexts = ["\u{200B}// Source: a.swift:1-2\nlet x = 1"]
 
         XCTAssertTrue(state.canSubmit(mode: .overlay),
-            "the clip is the request; the hotkey that captured it is the whole point")
+                      "the clip is the request; the hotkey that captured it is the whole point")
         XCTAssertTrue(state.hasTaskDraftContent, "precondition: already counted as content")
     }
 
@@ -224,9 +224,9 @@ final class QuickCaptureComposerHandoffCoverageTests: XCTestCase {
         state.attachments = [try StagedAttachment(url: file, stagedRelativePath: "only.png")]
 
         XCTAssertFalse(state.canSubmit(mode: .overlay),
-            "no text and no clip means no title, and task creation refuses silently")
+                       "no text and no clip means no title, and task creation refuses silently")
         XCTAssertTrue(state.hasTaskDraftContent,
-            "still content for the discard prompt — the two questions differ")
+                      "still content for the discard prompt — the two questions differ")
     }
 
     // MARK: - Who the working title names
@@ -266,10 +266,10 @@ final class QuickCaptureComposerHandoffCoverageTests: XCTestCase {
             return XCTFail("expected working mode, got \(mode)")
         }
         XCTAssertEqual(roleName, "",
-            "no running step means no target; the form renders \"Thinking…\" for an empty "
-            + "name, which is the honest thing to say")
+                       "no running step means no target; the form renders \"Thinking…\" for an empty "
+                           + "name, which is the honest thing to say")
         XCTAssertNil(QuickCaptureController.firstRunningStepRoleID(in: task),
-            "precondition: this is exactly what the queue would target")
+                     "precondition: this is exactly what the queue would target")
     }
 
     /// Counter-test: a real running step is still named. Without it the fix could degenerate
@@ -294,6 +294,6 @@ final class QuickCaptureComposerHandoffCoverageTests: XCTestCase {
         }
         XCTAssertEqual(roleName, "Engineer")
         XCTAssertEqual(QuickCaptureController.firstRunningStepRoleID(in: task), "eng",
-            "title and queue target agree, which is the invariant the fallback broke")
+                       "title and queue target agree, which is the invariant the fallback broke")
     }
 }

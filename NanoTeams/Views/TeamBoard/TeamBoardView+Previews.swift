@@ -116,22 +116,22 @@ private enum TeamBoardPreviewData {
     The team has been debating between three rough directions and I want to \
     make sure we lock the right one before UX Researcher and UX Designer \
     invest a full sprint each.
-
+    
     Option A — mobile-first iOS app with a thin web admin for the operator \
     side. Pros: matches what we see in user research (87% of taps are mobile), \
     we can ship a TestFlight build to design partners by the end of the month, \
     and the team has the most experience here. Cons: web admin still needs \
     auth + role mgmt + audit log, which is non-trivial.
-
+    
     Option B — responsive web for everyone, no native app in v1. Pros: single \
     codebase, fastest to ship, easiest to iterate. Cons: PWA push notifications \
     are still flaky on iOS, and the camera/AR features in the design spec \
     require native APIs we'd have to defer.
-
+    
     Option C — hybrid: native iOS for end-users, web for operators, share a \
     GraphQL backend. Pros: each surface gets the right tooling. Cons: ~30% \
     more frontend work, and we'd need to hire a second iOS engineer.
-
+    
     Which direction should I take, and do you want me to write up a one-pager \
     on the trade-offs before I commit?
     """
@@ -351,7 +351,7 @@ private enum TeamBoardPreviewData {
                     ],
                     supervisorQuestion: """
                     Mobile or web first?
-
+                    
                     And which color palette should I use for the dark mode toggle — system default or our brand colors?
                     """
                 ),
@@ -983,8 +983,8 @@ private enum TeamBoardPreviewData {
                         response: "Yes — WCAG AA minimum (4.5:1 for text, 3:1 for large text). We also need to support Increased Contrast accessibility setting.",
                         status: .completed)
                 ], scratchpad: "## Dark Mode Implementation Plan\n- [x] Review existing theme infrastructure\n- [x] Consult UX Designer on color tokens\n- [x] Clarify auto vs manual toggle with Supervisor\n- [x] Design ThemeManager architecture\n- [ ] Migrate core components\n- [ ] Add feature flag integration",
-                   supervisorQuestion: "{\"question\": \"Should we support automatic switching based on system appearance, or manual toggle only?\"}",
-                   supervisorAnswer: "Support both — auto-detect system appearance by default, with a manual override in Settings."),
+                supervisorQuestion: "{\"question\": \"Should we support automatic switching based on system appearance, or manual toggle only?\"}",
+                supervisorAnswer: "Support both — auto-detect system appearance by default, with a manual override in Settings."),
             ],
             meetings: [
                 TeamMeeting(

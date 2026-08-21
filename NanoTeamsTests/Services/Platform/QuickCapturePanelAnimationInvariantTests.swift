@@ -26,7 +26,7 @@ final class QuickCapturePanelAnimationInvariantTests: XCTestCase {
 
     func testPanel_animationBehavior_isNoneAtInit() {
         XCTAssertEqual(sut.animationBehavior, .none,
-            "AppKit's default window-appearance fade must stay disabled. Re-enabling it would surface as a perceived 'appearance animation' even though no NSAnimationContext block exists in show/hide.")
+                       "AppKit's default window-appearance fade must stay disabled. Re-enabling it would surface as a perceived 'appearance animation' even though no NSAnimationContext block exists in show/hide.")
     }
 
     func testHide_doesNotMutateAlphaValue() {
@@ -38,7 +38,7 @@ final class QuickCapturePanelAnimationInvariantTests: XCTestCase {
         sut.alphaValue = 0.37
         sut.hide()
         XCTAssertEqual(sut.alphaValue, 0.37, accuracy: 0.0001,
-            "`hide()` must not touch alpha — there's no fade in either direction.")
+                       "`hide()` must not touch alpha — there's no fade in either direction.")
     }
 
     func testPanel_animationBehavior_staysNoneAfterShowHideCycle() {

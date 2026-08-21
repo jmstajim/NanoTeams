@@ -230,12 +230,12 @@ final class ActivityFeedBuilderTests: XCTestCase {
 
     func testCrossStepInterleavingMixedTypes() {
         let stepA = makeStep(role: .productManager,
-            toolCalls: [makeToolCall(at: date(100))],
-            artifacts: [makeArtifact(name: "Plan", at: date(400))]
+                             toolCalls: [makeToolCall(at: date(100))],
+                             artifacts: [makeArtifact(name: "Plan", at: date(400))]
         )
         let stepB = makeStep(role: .softwareEngineer,
-            messages: [makeMessage(content: "Msg", at: date(200))],
-            toolCalls: [makeToolCall(at: date(300))]
+                             messages: [makeMessage(content: "Msg", at: date(200))],
+                             toolCalls: [makeToolCall(at: date(300))]
         )
         let result = build(steps: [stepA, stepB])
         XCTAssertEqual(result.count, 4)
@@ -378,6 +378,29 @@ final class ActivityFeedBuilderTests: XCTestCase {
         XCTAssertEqual(notifications.count, 0, "Active notifications should be excluded from timeline")
     }
 
+    /// One step, TWO ask calls in its history, no stored `supervisorQuestion` —
+    /// the composer chip must read the LAST ask's arguments (`last(where:)`),
+    /// never the first ask of the run.
+    ///
+    /// RED: swap the lookup to `first(where:)` → the chip shows "Q1?" and the
+    /// asked-at anchor jumps back to the first call.
+    func testActiveSupervisorQuestion_twoAsksInOneStep_lastAskWins() {
+        let ask1 = makeToolCall(name: TN.askSupervisor, at: date(100), argumentsJSON: #"{"question":"Q1?"}"#)
+        let ask2 = makeToolCall(name: TN.askSupervisor, at: date(200), argumentsJSON: #"{"question":"Q2?"}"#)
+        let step = makeStep(
+            role: .productManager,
+            toolCalls: [ask1, ask2],
+            status: .needsSupervisorInput,
+            needsSupervisorInput: true
+        )
+
+        let questions = ActivityFeedBuilder.activeSupervisorQuestions(steps: [step])
+
+        XCTAssertEqual(questions.count, 1)
+        XCTAssertEqual(questions.first?.question, "Q2?")
+        XCTAssertEqual(questions.first?.askedAt, date(200))
+    }
+
     func testMultipleActiveNotificationsExcluded() {
         let ask1 = makeToolCall(name: TN.askSupervisor, at: date(100), argumentsJSON: #"{"question":"Q1?"}"#)
         let step1 = makeStep(
@@ -410,7 +433,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
     func testAnsweredNotificationAtAnswerTimestamp() {
         let askCall = makeToolCall(name: TN.askSupervisor, at: date(200), argumentsJSON: #"{"question":"Help?"}"#)
         let answerMsg = makeMessage(role: .user, content: "Supervisor answer: Yes", at: date(250),
-                                     sourceContext: .supervisorAnswer)
+                                    sourceContext: .supervisorAnswer)
         let step = makeStep(
             messages: [
                 makeMessage(content: "Before", at: date(100)),
@@ -436,7 +459,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
         // Step 1: answered question
         let ask1 = makeToolCall(name: TN.askSupervisor, at: date(100), argumentsJSON: #"{"question":"Q1?"}"#)
         let answer1 = makeMessage(role: .user, content: "Supervisor answer: A1", at: date(150),
-                                   sourceContext: .supervisorAnswer)
+                                  sourceContext: .supervisorAnswer)
         let step1 = makeStep(
             role: .productManager,
             messages: [answer1],
@@ -498,7 +521,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
     func testInFlightFalsePositive_resolvedAnswerStillEmits() {
         let askCall = makeToolCall(name: TN.askSupervisor, at: date(100), argumentsJSON: #"{"question":"Resolved?"}"#)
         let answerMsg = makeMessage(role: .user, content: "Supervisor answer: ok", at: date(150),
-                                     sourceContext: .supervisorAnswer)
+                                    sourceContext: .supervisorAnswer)
         let step = makeStep(
             messages: [answerMsg],
             toolCalls: [askCall],
@@ -525,7 +548,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
     func testInFlightSkipsTrailingWhenSupervisorAnswerStaleFromPriorRound() {
         let ask1 = makeToolCall(name: TN.askSupervisor, at: date(100), argumentsJSON: #"{"question":"first?"}"#)
         let answer1 = makeMessage(role: .user, content: "Supervisor answer: yes", at: date(150),
-                                   sourceContext: .supervisorAnswer)
+                                  sourceContext: .supervisorAnswer)
         let ask2 = makeToolCall(name: TN.askSupervisor, at: date(200), argumentsJSON: #"{"question":"second?"}"#)
         // The stale-`supervisorAnswer` window: iter 1 answered (message in
         // conversation, step.supervisorAnswer still set), iter 2 ask landed,
@@ -621,7 +644,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
     func testActiveSupervisorQuestions_returnsTrailingUnansweredEvenWithStaleAnswer() {
         let ask1 = makeToolCall(name: TN.askSupervisor, at: date(100), argumentsJSON: #"{"question":"first?"}"#)
         let answer1 = makeMessage(role: .user, content: "Supervisor answer: yes", at: date(150),
-                                   sourceContext: .supervisorAnswer)
+                                  sourceContext: .supervisorAnswer)
         let ask2 = makeToolCall(name: TN.askSupervisor, at: date(200), argumentsJSON: #"{"question":"second?"}"#)
         let step = makeStep(
             messages: [answer1],
@@ -642,7 +665,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
     func testInFlightDoesNotSuppressEarlierAnsweredCall() {
         let ask1 = makeToolCall(name: TN.askSupervisor, at: date(100), argumentsJSON: #"{"question":"first?"}"#)
         let answer1 = makeMessage(role: .user, content: "Supervisor answer: A1", at: date(150),
-                                   sourceContext: .supervisorAnswer)
+                                  sourceContext: .supervisorAnswer)
         let ask2 = makeToolCall(name: TN.askSupervisor, at: date(200), argumentsJSON: #"{"question":"second?"}"#)
         // Trailing ask is ask2 (in-flight), but ask1 was already answered.
         let step = makeStep(
@@ -674,7 +697,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
         let read = makeToolCall(name: TN.readFile, at: date(100), argumentsJSON: "{}")
         let ask = makeToolCall(name: TN.askSupervisor, at: date(150), argumentsJSON: #"{"question":"legacy?"}"#)
         let answer = makeMessage(role: .user, content: "Supervisor answer: yes", at: date(170),
-                                  sourceContext: .supervisorAnswer)
+                                 sourceContext: .supervisorAnswer)
         // ask was answered (count-check returns false), but the flag is still
         // set — a stuck-flag legacy state we want to detect, not ignore.
         let step = makeStep(
@@ -695,7 +718,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
             return false
         }
         XCTAssertEqual(notifications.count, 0,
-            "Emit-side skip must honor the needsSupervisorInput backstop even when trailing call isn't ask_supervisor")
+                       "Emit-side skip must honor the needsSupervisorInput backstop even when trailing call isn't ask_supervisor")
 
         // Activity-side: the dock must report a question so the user has a chip.
         // (Without ask calls there's no `lastCall` to surface, so the dock falls
@@ -872,7 +895,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
         let active = ActivityFeedBuilder.activeSupervisorQuestions(steps: [step])
         XCTAssertEqual(active.count, 1)
         XCTAssertEqual(active.first?.paired?.id, refusal.id,
-            "Escalation must pair with last assistant turn so user sees the LLM's refusal context")
+                       "Escalation must pair with last assistant turn so user sees the LLM's refusal context")
     }
 
     /// Mixed batch: one step with a real ask_supervisor (normal path) + one
@@ -1566,7 +1589,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
     func testFalsePositiveDiscriminator_oldCriterionWouldSkip_newCriterionEmits() {
         let ask = makeToolCall(name: TN.askSupervisor, at: date(100), argumentsJSON: #"{"question":"q?"}"#)
         let answerMsg = makeMessage(role: .user, content: "Supervisor answer: ok", at: date(150),
-                                     sourceContext: .supervisorAnswer)
+                                    sourceContext: .supervisorAnswer)
         // The discriminator: a step with the answer message committed, but
         // `step.supervisorAnswer` cleared (this only happens transiently if
         // the engine clears it on a follow-up — but happens often in unit
@@ -1587,7 +1610,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
             return false
         }
         XCTAssertEqual(notifications.count, 1,
-            "New criterion (count-based) must emit when there's a matching answer message")
+                       "New criterion (count-based) must emit when there's a matching answer message")
     }
 
     // MARK: - 6b. Active Supervisor Questions (banner data)
@@ -1616,7 +1639,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
         // distinguishes a real answered state from a stale-carry race window.
         let ask3 = makeToolCall(name: TN.askSupervisor, at: date(300), argumentsJSON: #"{"question":"Q3?"}"#)
         let answer3 = makeMessage(role: .user, content: "Supervisor answer: Done",
-                                   at: date(350), sourceContext: .supervisorAnswer)
+                                  at: date(350), sourceContext: .supervisorAnswer)
         let step3 = makeStep(
             role: .softwareEngineer,
             messages: [answer3],
@@ -1900,7 +1923,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
         // PM message at t=100, answered notification at t=250 (answer time), PM message at t=300
         let askCall = makeToolCall(name: TN.askSupervisor, at: date(200), argumentsJSON: #"{"question":"Q?"}"#)
         let answer = makeMessage(role: .user, content: "Supervisor answer: A", at: date(250),
-                                  sourceContext: .supervisorAnswer)
+                                 sourceContext: .supervisorAnswer)
         let step = makeStep(
             role: .productManager,
             messages: [
@@ -1926,7 +1949,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
             // Item after notification should also get header (grouping broken)
             if idx + 1 < result.count {
                 XCTAssertTrue(result[idx + 1].showSectionHeader,
-                    "Item after notification should get header (grouping broken)")
+                              "Item after notification should get header (grouping broken)")
             }
         }
     }
@@ -1994,7 +2017,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
         }
         XCTAssertTrue(contents.contains("Your previous turn was discarded…"),
                       "a .loopCorrection turn must reach the feed — without it the loop "
-                      + "break has no durable user-visible record at all")
+                          + "break has no durable user-visible record at all")
     }
 
     /// Same class of defect as `.loopCorrection`, and the one the wedged Autovisor pass
@@ -2016,7 +2039,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
         }
         XCTAssertTrue(contents.contains("You replied with text but did not call a tool."),
                       "a .retryNudge turn must reach the feed — otherwise N identical "
-                      + "assistant bubbles appear with no visible cause")
+                          + "assistant bubbles appear with no visible cause")
     }
 
     func testArtifactContentDedupOrderPreserved() {
@@ -2038,7 +2061,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
             return nil
         }
         XCTAssertFalse(messageContents.contains(artifactContent),
-            "Message matching artifact content should be filtered")
+                       "Message matching artifact content should be filtered")
         XCTAssertTrue(messageContents.contains("Before"))
         XCTAssertTrue(messageContents.contains("After"))
     }
@@ -2404,13 +2427,13 @@ final class ActivityFeedBuilderTests: XCTestCase {
     func testStripAttachedFiles_allSectionsCombined() {
         let input = """
         My answer
-
+        
         ## Clipped Text \u{2014} src/main.swift:1-5
         import Foundation
-
+        
         ## Attached File: my-helper.swift
         func helper() {}
-
+        
         ## Attached Files
         - .nanoteams/tasks/1/attachments/image.png
         """
@@ -2455,16 +2478,16 @@ final class ActivityFeedBuilderTests: XCTestCase {
     func testStripAttachedFiles_skillClipFileAndPaths_allExtracted() {
         let input = """
         My answer
-
+        
         ## Skill: review
         skill body
-
+        
         ## Clipped Text \u{2014} src.swift:1-5
         import Foundation
-
+        
         ## Attached File: helper.swift
         func helper() {}
-
+        
         ## Attached Files
         - path/img.png
         """
@@ -2526,7 +2549,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
     func testSupervisorTask_embeddedFileContent_strippedFromDisplay() {
         let taskWithEmbed = """
         опиши логику
-
+        
         ## Attached File: Логика.pdf
         Page 1: The offline logic...
         Page 2: When connectivity returns...
@@ -2554,10 +2577,10 @@ final class ActivityFeedBuilderTests: XCTestCase {
     func testSupervisorTask_embeddedFile_extractsAttachmentPaths() {
         let taskWithEmbed = """
         check this
-
+        
         ## Attached File: report.pdf
         Report content here
-
+        
         ## Attached Files
         - .nanoteams/tasks/1/attachments/report.pdf
         """
@@ -2581,7 +2604,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
     func testSupervisorTask_embeddedClips_extractedFromDisplay() {
         let taskWithClips = """
         do this
-
+        
         ## Clipped Text
         let x = 42
         """
@@ -2654,22 +2677,66 @@ final class ActivityFeedBuilderTests: XCTestCase {
     /// disclosure" without re-trimming. Mirrors the invariant the removed
     /// `content` field used to enforce.
     func testPairedAssistantMessage_whitespaceOnlyThinking_collapsesToNil() {
-        let paired = PairedAssistantMessage(id: UUID(), thinking: "   \n  ")
+        let paired = PairedAssistantMessage(id: UUID(), thinking: "   \n  ", content: nil)
         XCTAssertNil(paired.thinking)
     }
 
     /// Edge-trim preserves interior whitespace — only leading/trailing collapse.
     func testPairedAssistantMessage_thinking_trimsEdgesOnly() {
         let paired = PairedAssistantMessage(
-            id: UUID(), thinking: "  line one\n  line two  "
+            id: UUID(), thinking: "  line one\n  line two  ", content: nil
         )
         XCTAssertEqual(paired.thinking, "line one\n  line two")
     }
 
     /// Nil thinking stays nil.
     func testPairedAssistantMessage_nilThinking_staysNil() {
-        let paired = PairedAssistantMessage(id: UUID(), thinking: nil)
+        let paired = PairedAssistantMessage(id: UUID(), thinking: nil, content: nil)
         XCTAssertNil(paired.thinking)
+    }
+
+    /// `content` gets the same trim-to-nil treatment as `thinking`, so
+    /// `isFullyRenderedByQuestionCard` can't be fooled by a turn whose "prose" is
+    /// a stray newline the model emitted before its tool call. Mirror of the
+    /// `thinking` pins above.
+    /// RED: drop the `content` trim in `PairedAssistantMessage.init` → `content` keeps
+    /// the whitespace, `XCTAssertNil(paired.content)` fails, and the turn reads as prose.
+    func testPairedAssistantMessage_whitespaceOnlyContent_collapsesToNil() {
+        let paired = PairedAssistantMessage(id: UUID(), thinking: nil, content: "  \n\t ")
+        XCTAssertNil(paired.content)
+        XCTAssertTrue(paired.isFullyRenderedByQuestionCard,
+                      "Whitespace-only prose is no prose — the card still covers the turn")
+    }
+
+    /// Edge-trim only, matching `thinking`.
+    /// RED: drop the `content` trim in `PairedAssistantMessage.init` → the leading and
+    /// trailing spaces survive and the equality assertion fails.
+    func testPairedAssistantMessage_content_trimsEdgesOnly() {
+        let paired = PairedAssistantMessage(
+            id: UUID(), thinking: nil, content: "  first\n  second  "
+        )
+        XCTAssertEqual(paired.content, "first\n  second")
+    }
+
+    /// The suppression predicate, pinned directly — both outcomes are witnessed
+    /// by real data (17 contentless pairs, 1 with prose, in the probe over every
+    /// work folder on this machine).
+    /// RED: invert the predicate to `content != nil` → a contentless turn stops being
+    /// suppressible and `XCTAssertTrue` fails.
+    func testIsFullyRenderedByQuestionCard_nilContent_isTrue() {
+        let paired = PairedAssistantMessage(id: UUID(), thinking: "Reasoning.", content: nil)
+        XCTAssertTrue(paired.isFullyRenderedByQuestionCard,
+                      "A contentless turn is fully covered by the card's question + thinking")
+    }
+
+    /// RED: force the predicate to `true` → a prose turn reads as covered and
+    /// `XCTAssertFalse` fails.
+    func testIsFullyRenderedByQuestionCard_withProse_isFalse() {
+        let paired = PairedAssistantMessage(
+            id: UUID(), thinking: "Reasoning.", content: "Looked into it. Answering."
+        )
+        XCTAssertFalse(paired.isFullyRenderedByQuestionCard,
+                       "The card renders no body, so prose is not covered and the bubble must stay")
     }
 
     // MARK: - Paired-message lift (composer takes the reply, feed suppresses bubble)
@@ -2753,12 +2820,17 @@ final class ActivityFeedBuilderTests: XCTestCase {
                       "ask_supervisor is no longer the trailing call (a later read_file landed); chip must not appear")
     }
 
-    /// While the paired-question is active, the assistant bubble is suppressed
-    /// from the timeline — the composer's preview is the only place it appears.
-    /// Once `supervisorAnswer` is set, the bubble reappears (existing
-    /// active-hidden, answered-visible convention).
-    func testEmitItems_suppressesPairedAssistantMessage_whileActive_thenReappears() {
-        let reply = makeMessage(content: "Explanation.", at: date(90))
+    /// While the paired-question is active, a CONTENTLESS assistant turn is
+    /// suppressed from the timeline — the question card renders its `thinking`
+    /// plus the question, which is everything that turn had. Once
+    /// `supervisorAnswer` is set, the bubble reappears (existing active-hidden,
+    /// answered-visible convention).
+    ///
+    /// The contentless precondition is load-bearing, not incidental: this is the
+    /// 17-of-18 shape real `ask_supervisor` calls take. A fixture carrying prose
+    /// here would pin the very defect the narrowing removed.
+    func testEmitItems_suppressesContentlessPairedMessage_whileActive_thenReappears() {
+        let reply = makeMessage(content: "", at: date(90), thinking: "Reasoning.")
         let ask = makeToolCall(
             name: TN.askSupervisor,
             at: date(100),
@@ -2790,7 +2862,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
         // LLMMessage are appended in production (see
         // `LLMExecutionService+StepLifecycle.swift:124-128`).
         let answerMsg = makeMessage(role: .user, content: "Supervisor answer: Proceed",
-                                     at: date(110), sourceContext: .supervisorAnswer)
+                                    at: date(110), sourceContext: .supervisorAnswer)
         let answered = makeStep(
             role: .productManager,
             messages: [reply, answerMsg],
@@ -2820,8 +2892,12 @@ final class ActivityFeedBuilderTests: XCTestCase {
     /// (preview manager owns the live bubble). Even though it matches the suppressed
     /// id set, we must NOT skip it — otherwise the bubble disappears mid-stream when
     /// the engine flips state, and the composer hasn't yet caught up.
-    func testEmitItems_streamingPairedMessage_isNotSuppressed() {
-        let streamingReply = makeMessage(content: "...streaming...", at: date(90))
+    ///
+    /// Fixture is contentless-with-thinking on purpose: a prose-carrying turn is
+    /// not in the suppressed set at all after the narrowing, so the exemption
+    /// would no longer be what keeps it visible and the test would prove nothing.
+    func testEmitItems_streamingContentlessPairedMessage_isNotSuppressed() {
+        let streamingReply = makeMessage(content: "", at: date(90), thinking: "Streaming reasoning.")
         let ask = makeToolCall(
             name: TN.askSupervisor,
             at: date(100),
@@ -2848,6 +2924,114 @@ final class ActivityFeedBuilderTests: XCTestCase {
         }
         XCTAssertEqual(bubbles.count, 1,
                        "Streaming bubble must remain visible even when matching the suppressed set")
+    }
+    // MARK: - Prose paired with an active ask must keep a surface
+
+    /// The reported defect, reproduced structurally: a role streams prose AND a
+    /// trailing `ask_supervisor` in the SAME turn, then parks. The composer's
+    /// question card renders only `question` + `thinking` (commit `cfe23f5b`
+    /// deleted its body), so suppressing the bubble leaves that prose with no
+    /// surface at all — it is visible while streaming and vanishes at commit,
+    /// exactly while the user is reading in order to answer.
+    ///
+    /// Shape mirrors the real run: five contentless tool-loop iterations, then a
+    /// sixth turn carrying prose plus the ask.
+    ///
+    /// RED before the fix: `suppressedMessageIDs` takes every `paired.id`
+    /// unconditionally, so `proseBubbles.count == 0`.
+    /// RED: force `isFullyRenderedByQuestionCard` to `true` → the prose turn re-enters
+    /// `suppressedMessageIDs` and `bubbles.count` is 0 instead of 1.
+    func testEmitItems_realRunShape_prosePlusAskSupervisor_bubbleSurvives() {
+        // Five contentless iterations, each: empty assistant turn + a tool call.
+        var messages: [LLMMessage] = []
+        var calls: [StepToolCall] = []
+        for i in 0..<5 {
+            let base = date(Double(i) * 10)
+            messages.append(makeMessage(content: "", at: base))
+            calls.append(makeToolCall(name: TN.readLines, at: base.addingTimeInterval(1)))
+        }
+        // Sixth turn: prose + the ask, same turn.
+        let prose = makeMessage(content: "Looked into it. Answering.", at: date(60))
+        messages.append(prose)
+        let ask = makeToolCall(
+            name: TN.askSupervisor,
+            at: date(61),
+            argumentsJSON: #"{"question":"Short answer: which of the two layouts should I keep, the grid or the list?"}"#
+        )
+        calls.append(ask)
+
+        let step = makeStep(
+            role: .productManager,
+            messages: messages,
+            toolCalls: calls,
+            status: .needsSupervisorInput,
+            needsSupervisorInput: true
+        )
+        let questions = ActivityFeedBuilder.activeSupervisorQuestions(steps: [step])
+        XCTAssertEqual(questions.count, 1, "Trailing ask_supervisor must produce one active question")
+        XCTAssertEqual(questions[0].paired?.id, prose.id, "The prose turn is the paired one")
+
+        let result = ActivityFeedBuilder.buildTimelineItems(
+            steps: [step], run: nil,
+            stepArtifactContentCache: [:], debugModeEnabled: false,
+            activeQuestions: questions,
+            isStreaming: { _ in false }
+        )
+        let bubbles = result.compactMap { tagged -> LLMMessage? in
+            if case .llmMessage(let message, _, _, _) = tagged.item { return message }
+            return nil
+        }
+        // (a) the prose survives, (b) it is the ONLY bubble — the five contentless
+        // turns stay filtered by the empty-content rule, so the fix resurrects nothing.
+        XCTAssertEqual(bubbles.count, 1,
+                       "Exactly one bubble: the prose turn. Contentless turns must stay filtered.")
+        XCTAssertEqual(bubbles.first?.id, prose.id,
+                       "Prose emitted alongside an active ask_supervisor must remain in the feed")
+
+        // (c) grouping: the ask card now hugs its own prose bubble instead of the
+        // previous iteration's tool call (`continuesTurn` doc, known imprecision).
+        guard let askIndex = result.firstIndex(where: { tagged in
+            if case .toolCall(let call, _, _, _) = tagged.item { return call.id == ask.id }
+            return false
+        }) else { return XCTFail("ask_supervisor card must be in the timeline") }
+        XCTAssertTrue(result[askIndex].continuesTurn,
+                      "The ask card continues the turn opened by its own prose bubble")
+    }
+
+    /// Escalation twin — the second mechanism that populates `paired` (drift /
+    /// refusal-loop / parse-failure caps): no `ask_supervisor` tool call at all,
+    /// `needsSupervisorInput` flipped directly with `supervisorQuestion` set.
+    /// Two mechanisms, two pins (CLAUDE.md #60) — a fix applied to only the
+    /// tool-call construction site would leave this one suppressing prose.
+    /// RED: force `isFullyRenderedByQuestionCard` to `true` → the escalation-paired
+    /// prose is suppressed and `bubbles.count` is 0 instead of 1.
+    func testEmitItems_escalationPath_pairedTurnWithProse_bubbleSurvives() {
+        let prose = makeMessage(content: "Here is what I found so far.", at: date(90))
+        let step = makeStep(
+            role: .productManager,
+            messages: [prose],
+            toolCalls: [],
+            status: .needsSupervisorInput,
+            needsSupervisorInput: true,
+            supervisorQuestion: "I have looped three times without progress — how should I proceed?"
+        )
+        let questions = ActivityFeedBuilder.activeSupervisorQuestions(steps: [step])
+        XCTAssertEqual(questions.count, 1, "Escalation path must surface an active question")
+        XCTAssertEqual(questions[0].paired?.id, prose.id)
+
+        let result = ActivityFeedBuilder.buildTimelineItems(
+            steps: [step], run: nil,
+            stepArtifactContentCache: [:], debugModeEnabled: false,
+            activeQuestions: questions,
+            isStreaming: { _ in false }
+        )
+        let bubbles = result.compactMap { tagged -> LLMMessage? in
+            if case .llmMessage(let message, _, _, _) = tagged.item { return message }
+            return nil
+        }
+        XCTAssertEqual(bubbles.count, 1,
+                       "Escalation-paired prose must stay visible — the card renders only the question")
+        XCTAssertEqual(bubbles.first?.id, prose.id)
     }
 
     /// Pairs strictly by `createdAt <= lastCall.createdAt` — a stray assistant
@@ -2940,10 +3124,15 @@ final class ActivityFeedBuilderTests: XCTestCase {
 
     /// Multi-turn step (Q1 answered → Q2 active). Q1's paired reply (older) must stay
     /// visible as history; only Q2's paired reply (latest) is suppressed.
+    ///
+    /// Both turns are contentless-with-thinking so the subject under test stays
+    /// the SCOPE of the suppressed set (latest question only), not the prose rule:
+    /// a prose-carrying turn is never suppressible at all, which would make the
+    /// `newReply` half pass for the wrong reason.
     func testEmitItems_doesNotSuppressOlderPairedMessages_whenLaterQuestionActive() {
-        let oldReply = makeMessage(content: "First explanation.", at: date(50))
+        let oldReply = makeMessage(content: "", at: date(50), thinking: "First reasoning.")
         let oldAsk = makeToolCall(name: TN.askSupervisor, at: date(60), argumentsJSON: #"{"question":"Q1?"}"#)
-        let newReply = makeMessage(content: "Second explanation.", at: date(190))
+        let newReply = makeMessage(content: "", at: date(190), thinking: "Second reasoning.")
         let newAsk = makeToolCall(name: TN.askSupervisor, at: date(200), argumentsJSON: #"{"question":"Q2?"}"#)
 
         let step = makeStep(
@@ -3008,7 +3197,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
         }) else { return XCTFail("UX create_artifact tool call missing from feed") }
 
         XCTAssertEqual(callIdx, msgIdx + 1,
-            "The committed reasoning turn must sort immediately before its own create_artifact tool call — no concurrent role's item wedged between them")
+                       "The committed reasoning turn must sort immediately before its own create_artifact tool call — no concurrent role's item wedged between them")
     }
 
     /// Documents the pre-fix bug shape (and why the re-stamp matters): a turn-START
@@ -3036,7 +3225,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
             if case .toolCall(let c, _, _, _) = $0 { return c.id == uxCall.id }; return false
         }!
         XCTAssertGreaterThan(callIdx - msgIdx, 1,
-            "With a turn-START timestamp the concurrent PM item wedges between the bubble and its tool call — the split the commit re-stamp fixes")
+                             "With a turn-START timestamp the concurrent PM item wedges between the bubble and its tool call — the split the commit re-stamp fixes")
     }
 
     /// Full turn contiguity: with a turn-END timestamp the bubble, its tool call,
@@ -3112,7 +3301,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
         }
         guard let msgIdx, let callIdx else { return XCTFail("UX turn items missing from feed") }
         XCTAssertEqual(callIdx, msgIdx + 1,
-            "UX bubble and its tool call stay adjacent even with concurrent PM activity bracketing the turn on both sides")
+                       "UX bubble and its tool call stay adjacent even with concurrent PM activity bracketing the turn on both sides")
     }
 
     /// Two roles each commit a reasoning turn at their own turn-END; each role's
@@ -3166,7 +3355,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
               let m2 = mIdx(msg2.id), let c2 = cIdx(call2.id)
         else { return XCTFail("turn items missing from feed") }
         XCTAssertEqual([m1, c1, m2, c2], [0, 1, 2, 3],
-            "Two turns in one step render as msg1, call1, msg2, call2 — each bubble adjacent to its own tool call")
+                       "Two turns in one step render as msg1, call1, msg2, call2 — each bubble adjacent to its own tool call")
     }
 
     /// LIMIT of the fix (characterization): the re-stamp co-locates a role's OWN turn;
@@ -3191,7 +3380,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
             if case .toolCall(let c, _, _, _) = $0 { return c.id == uxCall.id }; return false
         }!
         XCTAssertEqual(callIdx - msgIdx, 2,
-            "A foreign item inside the commit→tool-call gap still sorts between bubble and call — the fix narrows but does not eliminate interleave")
+                       "A foreign item inside the commit→tool-call gap still sorts between bubble and call — the fix narrows but does not eliminate interleave")
     }
 
     // MARK: - Turn grouping

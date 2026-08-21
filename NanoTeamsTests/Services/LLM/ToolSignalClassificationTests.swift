@@ -90,7 +90,7 @@ final class ToolSignalClassificationTests: XCTestCase {
             """
             These ToolSignal cases are classified by nothing:
             \(unclassified.sorted().joined(separator: ", "))
-
+            
             A collaboration / delegation / manager signal that isn't in \
             `isCollaborationDeferredSignal` silently takes the regular path and its deferred \
             handler never runs. If the case genuinely belongs on the regular path, add it to \

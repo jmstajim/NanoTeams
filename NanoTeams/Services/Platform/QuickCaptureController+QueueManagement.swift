@@ -498,7 +498,7 @@ extension QuickCaptureController {
               let run = task.runs.last
         else { return }
 
-        let waitingSteps = run.steps.filter { $0.status == .needsSupervisorInput }
+        let waitingSteps = run.steps.filter(\.canReceiveSupervisorAnswer)
         guard !waitingSteps.isEmpty else { return }
 
         let queue = formState.queuedMessages(for: taskID)
@@ -509,13 +509,9 @@ extension QuickCaptureController {
         guard let step = waitingSteps.first(where: { $0.effectiveRoleID == picked.stepRoleID })
         else { return }
 
-        // ATOMIC RESERVE — pop every collected id synchronously before any await.
-        var popped: [QuickCaptureFormState.QueuedChatMessage] = []
-        for id in picked.messageIDs {
-            if let msg = formState.popFirstQueuedMessage(for: taskID, matching: { $0.id == id }) {
-                popped.append(msg)
-            }
-        }
+        // ATOMIC RESERVE — pop every collected id synchronously before any await,
+        // in one pass (the per-id loop was O(batch × queue)).
+        let popped = formState.popQueuedMessages(withIDs: picked.messageIDs, for: taskID)
         guard !popped.isEmpty else { return }
 
         // Build each message's body and join with a single newline (matching the
@@ -607,24 +603,32 @@ extension QuickCaptureController {
         waitingStepRoleIDs: [String]
     ) -> (stepRoleID: String, messageIDs: [UUID])? {
         guard !waitingStepRoleIDs.isEmpty else { return nil }
+        let waiting = Set(waitingStepRoleIDs)
 
-        // Find the first role-targeted message whose target is waiting — that
-        // role becomes the recipient. Targeted messages whose target is NOT
-        // waiting are skipped (they stay queued for their own backstop fire).
-        let pickedRoleID: String? = queue.lazy
-            .compactMap { msg -> String? in
-                guard let target = msg.targetRoleID,
-                      waitingStepRoleIDs.contains(target) else { return nil }
-                return target
+        // ONE pass. The first role-targeted message whose target is waiting picks
+        // the recipient (targeted messages whose target is NOT waiting stay queued
+        // for their own backstop fire); untargeted ids are buffered from the START
+        // of the scan — a leading untargeted message must not be lost to a later
+        // tier-1 winner — and targeted ids are bucketed per role so the winner's
+        // batch is ready without a second scan.
+        var pickedRoleID: String?
+        var targetedByRole: [String: [UUID]] = [:]
+        var untargeted: [UUID] = []
+        for msg in queue {
+            if let target = msg.targetRoleID {
+                targetedByRole[target, default: []].append(msg.id)
+                if pickedRoleID == nil, waiting.contains(target) { pickedRoleID = target }
+            } else {
+                untargeted.append(msg.id)
             }
-            .first ?? (queue.contains(where: { $0.targetRoleID == nil }) ? waitingStepRoleIDs.first : nil)
-
-        guard let roleID = pickedRoleID else { return nil }
+        }
+        // The fallback recipient comes from the ARRAY — "first waiting step" is
+        // order-significant, and a Set would randomize it per process.
+        let roleID = pickedRoleID ?? (untargeted.isEmpty ? nil : waitingStepRoleIDs.first)
+        guard let roleID else { return nil }
 
         // Tier 1 first (role-targeted to roleID, FIFO), then tier 2 (untargeted, FIFO).
-        let targeted = queue.compactMap { $0.targetRoleID == roleID ? $0.id : nil }
-        let untargeted = queue.compactMap { $0.targetRoleID == nil ? $0.id : nil }
-        let ids = targeted + untargeted
+        let ids = targetedByRole[roleID, default: []] + untargeted
         guard !ids.isEmpty else { return nil }
         return (roleID, ids)
     }

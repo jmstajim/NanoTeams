@@ -513,9 +513,9 @@ final class HarmonyToolCallParserTests: XCTestCase {
 
         XCTAssertEqual(calls.count, 1)
         XCTAssertEqual(calls[0].name, "cancel_delegation",
-            "Inner canonical envelope's `name` must override channel `to=`")
+                       "Inner canonical envelope's `name` must override channel `to=`")
         XCTAssertEqual(calls[0].argumentsJSON, "{}",
-            "When inner JSON is a canonical envelope, the dispatched args are the unwrapped `arguments` object")
+                       "When inner JSON is a canonical envelope, the dispatched args are the unwrapped `arguments` object")
     }
 
     /// Reserved-name guard parity with `parseToolCallFromJSON`. If a model emits a
@@ -530,7 +530,7 @@ final class HarmonyToolCallParserTests: XCTestCase {
 
         XCTAssertEqual(calls.count, 1)
         XCTAssertEqual(calls[0].name, "create_artifact",
-            "Reserved inner name must not be promoted; falls back to channel `to=`")
+                       "Reserved inner name must not be promoted; falls back to channel `to=`")
     }
 
     /// Named regression pin for the `create_artifact` flat-payload route. The
@@ -547,7 +547,7 @@ final class HarmonyToolCallParserTests: XCTestCase {
 
         XCTAssertEqual(calls.count, 1)
         XCTAssertEqual(calls[0].name, "create_artifact",
-            "Inner `name` without sibling `arguments` is a parameter value; channel `to=` wins")
+                       "Inner `name` without sibling `arguments` is a parameter value; channel `to=` wins")
         XCTAssertTrue(calls[0].argumentsJSON.contains("Product Requirements"))
         XCTAssertTrue(calls[0].argumentsJSON.contains("# PRD"))
     }
@@ -565,7 +565,7 @@ final class HarmonyToolCallParserTests: XCTestCase {
 
         XCTAssertEqual(calls.count, 1)
         XCTAssertEqual(calls[0].name, "read_file",
-            "When `arguments` is a string (not object), envelope-shape rejects and channel `to=` wins")
+                       "When `arguments` is a string (not object), envelope-shape rejects and channel `to=` wins")
     }
 
     /// Edge-shape pin: when `arguments` is an array instead of an object, same
@@ -577,7 +577,7 @@ final class HarmonyToolCallParserTests: XCTestCase {
 
         XCTAssertEqual(calls.count, 1)
         XCTAssertEqual(calls[0].name, "read_file",
-            "When `arguments` is an array (not object), envelope-shape rejects and channel `to=` wins")
+                       "When `arguments` is an array (not object), envelope-shape rejects and channel `to=` wins")
     }
 
     func testExtractChannelMarker_withLiteralNewlines() {
@@ -634,7 +634,7 @@ final class HarmonyToolCallParserTests: XCTestCase {
         [reasoning]
         Goal: "Make a calculator". Provide PRD. Simple.
         [/reasoning]
-
+        
         <|channel|>commentary to="create_artifact" <|constrain|>json<|message|>{"name":"Product Requirements","content":"# Product Requirements: Calculator Application\\n\\n## 1. Problem Statement & Target Users\\nUsers need a lightweight, reliable tool to perform basic arithmetic operations (addition, subtraction, multiplication, division) quickly on mobile or desktop without relying on external services. The target audience includes students, professionals, and anyone who requires quick calculations in everyday tasks.\\n\\n## 2. Key User Stories & Pain Points\\n1. **As a user, I want to enter numbers and operators via a simple keypad so that I can perform calculations without leaving my workflow.**\\n   - Pain point: Existing calculators may be cluttered or require multiple steps.\\n2. **As a user, I want the result to be displayed immediately after pressing \\"=\\" so that I can verify my input quickly.**\\n   - Pain point: Delayed or unclear results in some apps.\\n3. **As a user, I want the calculator to handle basic error cases (e.g., division by zero) gracefully with clear messages.**\\n   - Pain point: Crashes or confusing error screens."}
         """
         let parser = HarmonyToolCallParser()
@@ -656,7 +656,7 @@ final class HarmonyToolCallParserTests: XCTestCase {
         [reasoning]
         Supervisor task is to make a calculator. Likely user-facing. Need research report.
         [/reasoning]
-
+        
         <|channel|>final <|constrain|>create_artifact<|message|>{"name":"Research Report","content":"# Research Report – Calculator Feature\\n\\n## 1. User Personas\\n| Persona | Goals | Pain Points |\\n|---------|-------|-------------|\\n| **Alex – Student** | Quickly perform arithmetic for homework and labs. Needs a reliable, distraction‑free tool that can handle basic operations (+, –, ×, ÷) and simple functions (square root, percent). | Overwhelmed by complex scientific calculators. Wants a clean UI and instant results without navigating menus.\\n| **Jordan – Finance Analyst** | Compute quick financial figures (e.g., tax, interest) on the go. | Current phone calculators lack easy access to repeated operations; toggling between modes is tedious.\\n| **Maya – Casual User** | Use a calculator for everyday tasks (splitting bills, converting units). | Clunky layout on small screens; difficulty reaching keys during fast calculations."}
         """
         let parser = HarmonyToolCallParser()
@@ -679,7 +679,7 @@ final class HarmonyToolCallParserTests: XCTestCase {
         [reasoning]
         Need to call tool.
         [/reasoning]
-
+        
         <|channel|>commentary to=create_artifact <|constrain|>json<|message|>{"name":"Product Requirements","content":"## Product Requirements: Calculator Application\\n\\n1. **Problem Statement & Target Users**\\n   - Users need a lightweight, reliable tool to perform basic arithmetic (add, subtract, multiply, divide) quickly on mobile or desktop without external services. Target audience: students, professionals, and anyone needing quick calculations.\\n\\n2. **Key User Stories & Pain Points**\\n   1. *As a user, I want to enter numbers and operators via a simple keypad so I can calculate without leaving my workflow.*\\n      - Pain point: Existing calculators may be cluttered or require multiple steps."}
         """
         let parser = HarmonyToolCallParser()
@@ -700,7 +700,7 @@ final class HarmonyToolCallParserTests: XCTestCase {
         [reasoning]
         Need to plan.
         [/reasoning]
-
+        
         <|channel|>commentary to=update_scratchpad <|constrain|>json<|message|>{"content":"1. Review product requirements and design spec\\n2. Define project structure (React app, component hierarchy)\\n3. Implement calculator logic (evaluate single operation, error handling)\\n4. Build UI components: keypad, display, responsive layout\\n5. Add unit tests for logic (Jest)\\n6. Integrate with design spec and run visual regression\\n7. Prepare handoff artifacts (code repo link, README)\\n"}
         """
         let parser = HarmonyToolCallParser()
@@ -721,14 +721,14 @@ final class HarmonyToolCallParserTests: XCTestCase {
         [reasoning]
         We are stuck. Probably the system expects no tool calls; just plain answer? But earlier we were required to use create_artifact. However repeated failures suggest maybe tool call syntax wrong: need to output without quotes around keys? The JSON is correct. I'm out of juice.
         [/reasoning]
-
+        
         I'm sorry for the repeated issues. I'll provide the PRD directly here:
-
+        
         **Product Requirements: Calculator Application**
-
+        
         1. **Problem Statement & Target Users**
            - Users need a lightweight, reliable tool to perform basic arithmetic (add, subtract, multiply, divide) quickly on mobile or desktop without external services.
-
+        
         2. **Key User Stories & Pain Points**
            1. *As a user, I want to enter numbers and operators via a simple keypad so I can calculate without leaving my workflow.*
            2. *As a user, I want the result displayed immediately after pressing "=" so I can verify my input quickly.*
@@ -763,7 +763,7 @@ final class HarmonyToolCallParserTests: XCTestCase {
         [reasoning]
         Need to call create_artifact properly.
         [/reasoning]
-
+        
         <|channel|>commentary to= "create_artifact" <|constrain|>json<|message|>{"name":"Product Requirements","content":"# Product Requirements: Calculator Application\\n\\n## 1. Problem Statement & Target Users\\nUsers need a lightweight, reliable tool to perform basic arithmetic operations.\\n\\n## 4. Scope\\n- **In scope**: Basic arithmetic operations, responsive UI, error handling, unit tests for logic.\\n- **Out of scope**: Advanced functions (exponentiation, trigonometry), history log, persistence, multi-operation chaining.\\n\\n## 5. Success Metrics\\n- **Error Rate**: < 1% of operations resulting in crashes or unhandled exceptions.\\n- **Performance**: 99th percentile response time < 50 ms."}
         """
         let parser = HarmonyToolCallParser()
@@ -863,7 +863,7 @@ final class HarmonyToolCallParserTests: XCTestCase {
         let calls = HarmonyToolCallParser().extractAllToolCalls(from: input)
         XCTAssertEqual(calls.count, 1, "ChannelMarkerStrategy should benefit from shared salvage")
         XCTAssertEqual(calls[0].name, "Plan",
-            "Inner canonical envelope wins over channel `to=` (envelope-shape rule)")
+                       "Inner canonical envelope wins over channel `to=` (envelope-shape rule)")
         XCTAssertEqual(calls[0].argumentsJSON, "{\"x\":1}")
     }
 
@@ -890,12 +890,12 @@ final class HarmonyToolCallParserTests: XCTestCase {
     /// leading space inside `" .nanoteams/tasks/0"` (model quirk).
     func testStartMarker_channelStyle_readFile_realDataA_recognizedAsToolCall() throws {
         let input = """
-[reasoning]
-Open one.
-[/reasoning]
-
-<|start|>commentary to=read_file <|constrain|>json<|message|>{"path":" .nanoteams/tasks/0"}
-"""
+        [reasoning]
+        Open one.
+        [/reasoning]
+        
+        <|start|>commentary to=read_file <|constrain|>json<|message|>{"path":" .nanoteams/tasks/0"}
+        """
         let calls = HarmonyToolCallParser().extractAllToolCalls(from: input)
         XCTAssertEqual(calls.count, 1)
         XCTAssertEqual(calls.first?.name, "read_file")
@@ -911,19 +911,19 @@ Open one.
     /// a second tool call.
     func testStartMarker_channelStyle_listFiles_realDataB_inlinedUserTurn_oneCallOnly() throws {
         let input = """
-[reasoning]
-Let's list files inside .nanoteams/tasks/0.No output. Maybe empty dir. So nothing.
-
-Thus no tasks.
-
-We cannot proceed.
-[/reasoning]
-
-<|start|>commentary to=list_files <|constrain|>json<|message|>{"path":".nanoteams/tasks/0","depth":1}<|start|>userI've examined the repository contents—including the `.nanoteams/tasks` directories—and found no code or task files to act on. Without a clear specification or source file, I'm unable to perform any work at this time.
-"""
+        [reasoning]
+        Let's list files inside .nanoteams/tasks/0.No output. Maybe empty dir. So nothing.
+        
+        Thus no tasks.
+        
+        We cannot proceed.
+        [/reasoning]
+        
+        <|start|>commentary to=list_files <|constrain|>json<|message|>{"path":".nanoteams/tasks/0","depth":1}<|start|>userI've examined the repository contents—including the `.nanoteams/tasks` directories—and found no code or task files to act on. Without a clear specification or source file, I'm unable to perform any work at this time.
+        """
         let calls = HarmonyToolCallParser().extractAllToolCalls(from: input)
         XCTAssertEqual(calls.count, 1,
-            "the trailing <|start|>user… is a role marker, not a second tool call")
+                       "the trailing <|start|>user… is a role marker, not a second tool call")
         XCTAssertEqual(calls.first?.name, "list_files")
         let json = calls.first?.argumentsJSON ?? ""
         let decoded = try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any]
@@ -1016,7 +1016,7 @@ We cannot proceed.
         let payload = #"<|start|>commentary to=read_file <|constrain|>json<|message|>{"path":" .nanoteams/tasks/0"}"#
         let hit = HarmonyToolCallParser.harmonyMarkers.contains { payload.contains($0) }
         XCTAssertTrue(hit,
-            "bare <|start|> must be a Harmony marker so the streamer routes content to the harmony buffer")
+                      "bare <|start|> must be a Harmony marker so the streamer routes content to the harmony buffer")
     }
 
     func testHarmonyMarkers_doesNotIncludeFunctionPrefixOnly() {
@@ -1024,7 +1024,7 @@ We cannot proceed.
         // redundant (bare `<|start|>` already matches) and could mask a future
         // missing bare-start entry.
         XCTAssertFalse(HarmonyToolCallParser.harmonyMarkers.contains("<|start|>functions."),
-            "the bare `<|start|>` entry subsumes the function-prefix marker; keep one")
+                       "the bare `<|start|>` entry subsumes the function-prefix marker; keep one")
     }
 
     // MARK: - <|start|> envelope edge cases
@@ -1059,7 +1059,7 @@ We cannot proceed.
         let input = #"<|start|>commentary <|message|>{"path":"p"}"#
         let calls = HarmonyToolCallParser().extractAllToolCalls(from: input)
         XCTAssertTrue(calls.isEmpty,
-            "no `to=` and no `<|constrain|>` → no resolvable tool name → drop")
+                      "no `to=` and no `<|constrain|>` → no resolvable tool name → drop")
     }
 
     // MARK: - classifyHarmonyCallIssue: role-marker-only retry regression
@@ -1077,7 +1077,7 @@ We cannot proceed.
         let issue = ToolCallParsingHelpers.classifyHarmonyCallIssue(
             in: "<|start|>userhello<|end|>")
         XCTAssertEqual(issue, .noEnvelopeAttempt,
-            "<|start|>user…<|end|> is an inlined role turn, not a tool-call attempt")
+                       "<|start|>user…<|end|> is an inlined role turn, not a tool-call attempt")
     }
 
     func testClassifyHarmonyCallIssue_roleMarkerOnly_assistant_noEnvelopeAttempt() {
@@ -1090,7 +1090,7 @@ We cannot proceed.
         let issue = ToolCallParsingHelpers.classifyHarmonyCallIssue(
             in: "<|start|>userfoo<|end|><|start|>assistantbar<|end|>")
         XCTAssertEqual(issue, .noEnvelopeAttempt,
-            "every <|start|> is followed by a role marker → not an envelope attempt")
+                       "every <|start|> is followed by a role marker → not an envelope attempt")
     }
 
     func testClassifyHarmonyCallIssue_roleMarkerFollowedByActualCall_malformedJSON() {
@@ -1108,7 +1108,7 @@ We cannot proceed.
         let issue = ToolCallParsingHelpers.classifyHarmonyCallIssue(
             in: #"<|start|>commentary to=read_file <|message|>{"path":"p""#)
         XCTAssertNotEqual(issue, .noEnvelopeAttempt,
-            "channel-style envelope after <|start|> is an envelope attempt, not a role marker")
+                          "channel-style envelope after <|start|> is an envelope attempt, not a role marker")
     }
 
     func testClassifyHarmonyCallIssue_validCall_unchangedBehavior() {
@@ -1145,14 +1145,14 @@ We cannot proceed.
         let prose = """
         Okay, I will create the Implementation Plan artifact detailing the verified fixes \
         and the new bug found, with clear instructions for the Software Engineer.
-
+        
         Let's draft the Implementation Plan:
         - Architecture/Design: Single-file HTML/CSS/JS calculator. Uses `eval()` for \
         expression evaluation after regex substitution.
         - Verified Fixes: All 3 are correct and safe.
         - New Bug Found: `exp` (eˣ) and `10x` (10ˣ) functions append `'e^('` and `'10^('` \
         without checking for implicit multiplication.
-
+        
         Proportional to task scope. Simple but thorough.
         Done.
         Proceeding.
@@ -1178,7 +1178,7 @@ We cannot proceed.
         I already called create_artifact in my previous turn, but the system says it's missing. \
         I will call create_artifact again with the exact name "Implementation Plan" \
         and the content I drafted.
-
+        
         Tool: create_artifact
         Args: name="Implementation Plan", format="markdown", content="[the drafted text]"
         Done.

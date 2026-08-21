@@ -52,6 +52,58 @@ final class ActivityFeedArtifactCacheTests: XCTestCase {
         XCTAssertTrue(set.isEmpty)
     }
 
+    // MARK: - (relativePath, updatedAt) memo — 2026-08-21
+
+    /// The memo's contract, stated as a test: bytes are keyed by the MODEL's
+    /// (relativePath, updatedAt), so a disk rewrite with no model mutation serves
+    /// the memoized content. This is the deliberate trade that stops both callers
+    /// (feed rebuild, per-turn conversation-log render) from re-reading every
+    /// artifact of every step on every invocation.
+    func testMemo_diskRewriteWithoutModelBump_servesMemoizedContent() throws {
+        let rel = "tasks/0/runs/0/roles/eng/artifact_memo_a.md"
+        try writeArtifactFile(relativePath: rel, content: "V1")
+        let artifact = Artifact(name: "Memo", relativePath: rel)
+        let s = step(artifacts: [artifact])
+
+        XCTAssertTrue(ActivityFeedBuilder.loadArtifactContentsForStepSync(
+            s, workFolderURL: tempDir).contains("V1"))
+        try writeArtifactFile(relativePath: rel, content: "V2")
+        let again = ActivityFeedBuilder.loadArtifactContentsForStepSync(s, workFolderURL: tempDir)
+        XCTAssertTrue(again.contains("V1"), "same (path, updatedAt) must serve the memo")
+        XCTAssertFalse(again.contains("V2"))
+    }
+
+    /// A revision bumps `updatedAt`, which changes the key — the re-read is the
+    /// mutation this pins (RED: key the memo by relativePath alone and this fails).
+    func testMemo_updatedAtBump_reReadsFromDisk() throws {
+        let rel = "tasks/0/runs/0/roles/eng/artifact_memo_b.md"
+        try writeArtifactFile(relativePath: rel, content: "V1")
+        var artifact = Artifact(name: "Memo", relativePath: rel)
+        let s1 = step(artifacts: [artifact])
+        XCTAssertTrue(ActivityFeedBuilder.loadArtifactContentsForStepSync(
+            s1, workFolderURL: tempDir).contains("V1"))
+
+        try writeArtifactFile(relativePath: rel, content: "V2")
+        artifact.updatedAt = MonotonicClock.shared.now()
+        let s2 = step(artifacts: [artifact])
+        XCTAssertTrue(ActivityFeedBuilder.loadArtifactContentsForStepSync(
+            s2, workFolderURL: tempDir).contains("V2"))
+    }
+
+    /// A failed read must stay retryable — the artifact file may simply not have
+    /// landed yet, and memoizing the miss would hide it forever.
+    func testMemo_failedReadIsNotCached() throws {
+        let rel = "tasks/0/runs/0/roles/eng/artifact_memo_c.md"
+        let artifact = Artifact(name: "Memo", relativePath: rel)
+        let s = step(artifacts: [artifact])
+        XCTAssertTrue(ActivityFeedBuilder.loadArtifactContentsForStepSync(
+            s, workFolderURL: tempDir).isEmpty)
+
+        try writeArtifactFile(relativePath: rel, content: "LATE")
+        XCTAssertTrue(ActivityFeedBuilder.loadArtifactContentsForStepSync(
+            s, workFolderURL: tempDir).contains("LATE"))
+    }
+
     func testNilWorkFolder_returnsEmpty() {
         let s = step(artifacts: [Artifact(name: "Notes", relativePath: "tasks/0/x.md")])
         let set = ActivityFeedBuilder.loadArtifactContentsForStepSync(s, workFolderURL: nil)

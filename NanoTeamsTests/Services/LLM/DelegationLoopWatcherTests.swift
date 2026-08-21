@@ -342,10 +342,10 @@ final class DelegationLoopWatcherTests: XCTestCase {
         }
 
         let nearly = """
-            I'll read js/calculator.js and js/app.js to understand the buttons \
-            logic, then propose a fix for the broken handlers in the keypad \
-            event listener.
-            """
+        I'll read js/calculator.js and js/app.js to understand the buttons \
+        logic, then propose a fix for the broken handlers in the keypad \
+        event listener.
+        """
         let messages = [
             "First, let me list the project files to ground myself.",
             nearly,
@@ -742,10 +742,10 @@ final class DelegationLoopWatcherTests: XCTestCase {
         // Each thinking is the user-observed pattern: model reasoning about
         // re-reading the file after an edit, with mild per-iteration variation.
         let thinking = """
-            I need to read the script.js file again to see its current state \
-            after my last edit. The file should now have the backspace() method \
-            added, but I need to verify this and then fix the formatNumber function.
-            """
+        I need to read the script.js file again to see its current state \
+        after my last edit. The file should now have the backspace() method \
+        added, but I need to verify this and then fix the formatNumber function.
+        """
         let messages = [
             thinking + "\n",                                   // empty content suffix
             thinking + " Let me try again.\n",

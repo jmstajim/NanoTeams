@@ -7,7 +7,8 @@ import XCTest
 /// hit (both throw the byte-identical `invalidBaseURL("")`), so a regression
 /// collapsing `client(for:)` to always-native would stay green there. These
 /// tests inject two recording clients and assert the call landed on the right
-/// one — including the deliberate always-native lifecycle surface.
+/// one — the model-lifecycle surface included, which is where the router used
+/// to be always-native by omission rather than by decision.
 final class LLMClientRouterDispatchTests: XCTestCase {
 
     private final class MarkerClient: LLMClient, @unchecked Sendable {
@@ -29,9 +30,9 @@ final class LLMClientRouterDispatchTests: XCTestCase {
             }
         }
 
-        func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [String] {
+        func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [LLMModelInfo] {
             calls.append("fetchModels")
-            return [marker]
+            return [LLMModelInfo(name: marker)]
         }
 
         func fetchEmbeddingModels(config: LLMConfig) async throws -> [String] {
@@ -39,18 +40,24 @@ final class LLMClientRouterDispatchTests: XCTestCase {
             return [marker]
         }
 
-        func loadModel(modelName: String, baseURLString: String) async throws -> String {
+        func loadModel(
+            provider: LLMProvider, modelName: String, baseURLString: String
+        ) async throws -> String {
             calls.append("loadModel")
             return marker
         }
 
-        func unloadModel(instanceID: String, baseURLString: String) async throws {
+        func unloadModel(
+            provider: LLMProvider, instanceID: String, baseURLString: String
+        ) async throws {
             calls.append("unloadModel")
         }
 
-        func listLoadedInstances(baseURLString: String) async throws -> [LoadedModelInstance] {
+        func listLoadedInstances(
+            provider: LLMProvider, baseURLString: String
+        ) async throws -> LoadedInstanceListing {
             calls.append("listLoadedInstances")
-            return [LoadedModelInstance(modelName: marker, instanceID: marker)]
+            return .listed([LoadedModelInstance(modelName: marker, instanceID: marker)])
         }
 
         func modelSupportsVision(config: LLMConfig) async -> Bool? {
@@ -67,6 +74,7 @@ final class LLMClientRouterDispatchTests: XCTestCase {
             calls.append("modelLoadDetails")
             return ModelLoadDetails(fields: [.init(label: "marker", value: marker)])
         }
+
     }
 
     private var native: MarkerClient!
@@ -115,8 +123,8 @@ final class LLMClientRouterDispatchTests: XCTestCase {
     func testFetchModels_dispatchesPerProvider() async throws {
         let fromNative = try await router.fetchModels(config: config(.lmStudio), visionOnly: false)
         let fromOllama = try await router.fetchModels(config: config(.ollama), visionOnly: false)
-        XCTAssertEqual(fromNative, ["native"])
-        XCTAssertEqual(fromOllama, ["ollama"])
+        XCTAssertEqual(fromNative.map(\.name), ["native"])
+        XCTAssertEqual(fromOllama.map(\.name), ["ollama"])
     }
 
     func testFetchEmbeddingModels_dispatchesPerProvider() async throws {
@@ -139,14 +147,53 @@ final class LLMClientRouterDispatchTests: XCTestCase {
         XCTAssertEqual(ollamaDetails?.fields.first?.value, "ollama")
     }
 
-    // MARK: - Lifecycle surface is deliberately always-native
+    // MARK: - Lifecycle surface dispatches like everything else
 
-    func testLifecycle_alwaysRoutesToNativeClient() async throws {
-        _ = try await router.loadModel(modelName: "m", baseURLString: "http://x:1")
-        try await router.unloadModel(instanceID: "i", baseURLString: "http://x:1")
-        _ = try await router.listLoadedInstances(baseURLString: "http://x:1")
+    func testLifecycle_withAnLMStudioProvider_routesToTheNativeClient() async throws {
+        _ = try await router.loadModel(
+            provider: .lmStudio, modelName: "m", baseURLString: "http://x:1")
+        try await router.unloadModel(
+            provider: .lmStudio, instanceID: "i", baseURLString: "http://x:1")
+        _ = try await router.listLoadedInstances(
+            provider: .lmStudio, baseURLString: "http://x:1")
+
         XCTAssertEqual(native.calls, ["loadModel", "unloadModel", "listLoadedInstances"])
-        XCTAssertTrue(ollama.calls.isEmpty,
-                      "Explicit model lifecycle is an LM-Studio-only concept — the ledger only ever holds instances the native client loaded")
+        XCTAssertTrue(ollama.calls.isEmpty)
+    }
+
+    /// The defect this parameter exists to fix, and the reason this file's previous assertion —
+    /// "lifecycle ALWAYS routes to the native client" — was pinning a bug as a design.
+    ///
+    /// With a bare base URL the router had nothing to dispatch on, so an Ollama server was asked
+    /// for `/api/v0/models`; Ollama answers `404 page not found` (measured against 0.32.14), and
+    /// the native client's 404 branch — which means "an older LM Studio without v0" — returns an
+    /// empty list. `BenchmarkResidencyPreparer` then set `couldInspect = true` and every Ollama
+    /// benchmark row recorded `Residency: already alone` about a machine nobody had asked. The
+    /// Ollama client had implemented both calls for exactly this consumer and neither was
+    /// reachable.
+    ///
+    /// RED: route the lifecycle surface to `nativeClient` again → `ollama.calls` is empty and
+    /// residency provenance goes back to being fiction on that provider.
+    func testLifecycle_withAnOllamaProvider_routesToTheOllamaClient() async throws {
+        try await router.unloadModel(
+            provider: .ollama, instanceID: "i", baseURLString: "http://x:11434")
+        _ = try await router.listLoadedInstances(
+            provider: .ollama, baseURLString: "http://x:11434")
+
+        XCTAssertEqual(ollama.calls, ["unloadModel", "listLoadedInstances"])
+        XCTAssertTrue(native.calls.isEmpty, "the LM Studio client must not be asked about Ollama")
+    }
+
+    /// `loadModel` is the one that stays LM-Studio-only in EFFECT — Ollama loads on first use and
+    /// exposes no load endpoint — but it is the provider's client that says so now, not the
+    /// router. Here the double answers, which only proves dispatch; the real `OllamaClient`
+    /// inherits the throwing protocol default.
+    func testLoadModel_withAnOllamaProvider_reachesTheOllamaClientRatherThanBeingRerouted()
+        async throws
+    {
+        _ = try await router.loadModel(
+            provider: .ollama, modelName: "m", baseURLString: "http://x:11434")
+        XCTAssertEqual(ollama.calls, ["loadModel"])
+        XCTAssertTrue(native.calls.isEmpty)
     }
 }

@@ -770,10 +770,10 @@ final class VocabVectorIndexServiceTests: XCTestCase {
         let laxSet = Set(lax.terms)
         let strictSet = Set(strict.terms)
         XCTAssertTrue(strictSet.isSubset(of: laxSet),
-            "Stricter threshold must produce a subset: lax=\(laxSet), strict=\(strictSet)")
+                      "Stricter threshold must produce a subset: lax=\(laxSet), strict=\(strictSet)")
         XCTAssertTrue(laxSet.contains("account"))
         XCTAssertFalse(strictSet.contains("widget"),
-            "Widget (cos ≈ 0) must fall out at threshold 0.99")
+                       "Widget (cos ≈ 0) must fall out at threshold 0.99")
     }
 
     // MARK: - X1-X2: Cross-language / OOV expansion via deterministic mock
@@ -810,14 +810,14 @@ final class VocabVectorIndexServiceTests: XCTestCase {
         )
 
         XCTAssertEqual(client.callCount, buildCalls + 1,
-            "One whole-phrase embed call for the Cyrillic OOV query")
+                       "One whole-phrase embed call for the Cyrillic OOV query")
         let surfaced = Set(expansion.terms)
         XCTAssertTrue(surfaced.contains("user"),
-            "Phrase embed must surface the English translation via cosine")
+                      "Phrase embed must surface the English translation via cosine")
         XCTAssertTrue(surfaced.contains("account"),
-            "Near-cluster member `account` must also surface")
+                      "Near-cluster member `account` must also surface")
         XCTAssertFalse(surfaced.contains("widget"),
-            "Far-cluster `widget` must NOT surface at threshold 0.5")
+                       "Far-cluster `widget` must NOT surface at threshold 0.5")
     }
 
     /// X2: mixed-script query where one token is in vocab and another is
@@ -850,12 +850,12 @@ final class VocabVectorIndexServiceTests: XCTestCase {
         )
 
         XCTAssertEqual(client.callCount, buildCalls + 1,
-            "Multi-token query with OOV must fire exactly one phrase embed")
+                       "Multi-token query with OOV must fire exactly one phrase embed")
         let surfaced = Set(expansion.terms)
         XCTAssertTrue(surfaced.contains("remove"),
-            "Per-token tier from `delete` must find `remove`")
+                      "Per-token tier from `delete` must find `remove`")
         XCTAssertTrue(surfaced.contains("аккаунт"),
-            "Phrase tier must find `аккаунт` via the OOV token's semantic home")
+                      "Phrase tier must find `аккаунт` via the OOV token's semantic home")
     }
 
     // MARK: - Cfg1-Cfg2: Config change mid-session
@@ -885,7 +885,7 @@ final class VocabVectorIndexServiceTests: XCTestCase {
             config: cfg2, force: false
         )
         XCTAssertGreaterThan(client.callCount, buildCallsA,
-            "Model swap must invalidate the old embeddings")
+                             "Model swap must invalidate the old embeddings")
     }
 
     // MARK: - F1-F2: Failure recovery
@@ -934,7 +934,7 @@ final class VocabVectorIndexServiceTests: XCTestCase {
         // Only one new network call — the retry was for the failed batch
         // only (the other two tokens were reused from the first build).
         XCTAssertEqual(client.callCount, callsAfterFirst + 1,
-            "Recovery must diff to exactly the previously-failed batch")
+                       "Recovery must diff to exactly the previously-failed batch")
     }
 
     /// F2: a token in `failedTokens` that's also NO LONGER in vocab (gone)
@@ -971,7 +971,7 @@ final class VocabVectorIndexServiceTests: XCTestCase {
         XCTAssertEqual(count, 2, "Only cc + dd survive")
         XCTAssertEqual(failed, 0, "Gone tokens must be dropped from failedTokens too")
         XCTAssertEqual(client.callCount, callsBeforeSecond,
-            "No retries for tokens that are no longer in vocab")
+                       "No retries for tokens that are no longer in vocab")
     }
 
     // MARK: - S_R1-S_R2: Storage roundtrip
@@ -1003,7 +1003,7 @@ final class VocabVectorIndexServiceTests: XCTestCase {
             perTokenThreshold: 0.1, phraseThreshold: 0.99
         )
         XCTAssertEqual(e1.terms, ["account", "profile"].sorted(),
-            "Pre-roundtrip ranking at threshold 0.1 excludes widget")
+                       "Pre-roundtrip ranking at threshold 0.1 excludes widget")
 
         // Fresh service reads from disk, runs the same query.
         let service2 = makeService(client: client)
@@ -1013,7 +1013,7 @@ final class VocabVectorIndexServiceTests: XCTestCase {
             perTokenThreshold: 0.1, phraseThreshold: 0.99
         )
         XCTAssertEqual(Set(e1.terms), Set(e2.terms),
-            "Float16 roundtrip must not drop terms at threshold 0.1")
+                       "Float16 roundtrip must not drop terms at threshold 0.1")
     }
 
     /// S_R2: repeated rebuildIfNeeded with the same searchIndex reuses the
@@ -1032,7 +1032,7 @@ final class VocabVectorIndexServiceTests: XCTestCase {
             await service.rebuildIfNeeded(searchIndex: idx, config: cfg, force: false)
         }
         XCTAssertEqual(client.callCount, warmCalls,
-            "Smart-diff must produce zero network calls on no-op rebuilds")
+                       "Smart-diff must produce zero network calls on no-op rebuilds")
     }
 
     // MARK: - Clear
@@ -1073,7 +1073,7 @@ final class VocabVectorIndexServiceTests: XCTestCase {
 
         let clearError = await service.lastClearError
         XCTAssertNotNil(clearError,
-            "Failed bin/meta removal must surface via lastClearError.")
+                        "Failed bin/meta removal must surface via lastClearError.")
     }
 
     // MARK: - Persist failure after build
@@ -1108,7 +1108,7 @@ final class VocabVectorIndexServiceTests: XCTestCase {
         // Embedding succeeded — at least one HTTP call happened — so the
         // failure is genuinely on the persist side, not the upstream embed.
         XCTAssertGreaterThanOrEqual(client.callCount, 1,
-            "Test only meaningful when embedding succeeded but persist failed.")
+                                    "Test only meaningful when embedding succeeded but persist failed.")
 
         // On-disk state must NOT be present (write failed). A subsequent
         // load() on a fresh service should report .missing — guards against

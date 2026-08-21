@@ -558,10 +558,10 @@ final class XcodeBuildRunnerHelpersTests: XCTestCase {
     func testParseIssues_populatesEveryFieldAndKeepsSeverityLowercase() {
         let root = URL(fileURLWithPath: "/Users/x/Proj", isDirectory: true)
         let output = """
-            /Users/x/Proj/Sources/App/main.swift:12:34: error: cannot find 'foo' in scope
-            /Users/x/Proj/Sources/App/Util.swift:9:5: warning: initialization of immutable value 'x' was never used
-            /Users/x/Proj/Sources/App/Util.swift:9:5: note: did you mean 'y'?
-            """
+        /Users/x/Proj/Sources/App/main.swift:12:34: error: cannot find 'foo' in scope
+        /Users/x/Proj/Sources/App/Util.swift:9:5: warning: initialization of immutable value 'x' was never used
+        /Users/x/Proj/Sources/App/Util.swift:9:5: note: did you mean 'y'?
+        """
 
         let issues = XcodeBuildRunner.parseIssues(from: output, workFolderRoot: root)
 
@@ -612,14 +612,14 @@ final class XcodeBuildRunnerHelpersTests: XCTestCase {
     func testParseIssues_nonIssueOutput_yieldsNothing() {
         let root = URL(fileURLWithPath: "/Users/x/Proj", isDirectory: true)
         let output = """
-            note: Using new build system
-            Build system information
-            ld: error: duplicate symbol _main in:
-            /Users/x/Proj/build/obj1.o
-            /Users/x/Proj/build/obj2.o
-            xcodebuild: error: The project 'Sample' cannot be opened because it is missing.
-            ** BUILD FAILED **
-            """
+        note: Using new build system
+        Build system information
+        ld: error: duplicate symbol _main in:
+        /Users/x/Proj/build/obj1.o
+        /Users/x/Proj/build/obj2.o
+        xcodebuild: error: The project 'Sample' cannot be opened because it is missing.
+        ** BUILD FAILED **
+        """
 
         XCTAssertTrue(XcodeBuildRunner.parseIssues(from: output, workFolderRoot: root).isEmpty)
     }
@@ -634,9 +634,9 @@ final class XcodeBuildRunnerHelpersTests: XCTestCase {
     func testParseIssues_unlistedSeverities_areIgnored() {
         let root = URL(fileURLWithPath: "/Users/x/Proj", isDirectory: true)
         let output = """
-            /Users/x/Proj/A.swift:1:1: remark: inlined
-            /Users/x/Proj/A.swift:2:1: error: real one
-            """
+        /Users/x/Proj/A.swift:1:1: remark: inlined
+        /Users/x/Proj/A.swift:2:1: error: real one
+        """
 
         let issues = XcodeBuildRunner.parseIssues(from: output, workFolderRoot: root)
 
@@ -649,10 +649,10 @@ final class XcodeBuildRunnerHelpersTests: XCTestCase {
     func testParseIssues_messageStopsAtTheEndOfItsLine() {
         let root = URL(fileURLWithPath: "/Users/x/Proj", isDirectory: true)
         let output = """
-            /Users/x/Proj/A.swift:1:1: error: first problem
-            some continuation text that is not an issue line
-            /Users/x/Proj/B.swift:2:2: error: second problem
-            """
+        /Users/x/Proj/A.swift:1:1: error: first problem
+        some continuation text that is not an issue line
+        /Users/x/Proj/B.swift:2:2: error: second problem
+        """
 
         let issues = XcodeBuildRunner.parseIssues(from: output, workFolderRoot: root)
 

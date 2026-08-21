@@ -153,7 +153,7 @@ final class StreamingPreviewManager {
         let isNew = previews[key] == nil
         var message =
             previews[key]
-            ?? StepMessage(id: messageID, createdAt: MonotonicClock.shared.now(), role: role, content: "")
+                ?? StepMessage(id: messageID, createdAt: MonotonicClock.shared.now(), role: role, content: "")
         message.content += content
         if ModelTokenCleaner.containsModelTokens(message.content) {
             message.content = ModelTokenCleaner.stripTokens(message.content)
@@ -299,9 +299,9 @@ final class StreamingPreviewManager {
     func clear(stepID: String, taskID: Int) {
         let key = TaskStepKey(taskID: taskID, stepID: stepID)
         guard previews[key] != nil || streamingMessageIDs[key] != nil
-                || thinkingPreviews[key] != nil || processingStatus[key] != nil
-                || hasStreamActivity[key] != nil || streamingToolCall[key] != nil
-                || lastStreamActivityAt[key] != nil else { return }
+            || thinkingPreviews[key] != nil || processingStatus[key] != nil
+            || hasStreamActivity[key] != nil || streamingToolCall[key] != nil
+            || lastStreamActivityAt[key] != nil else { return }
         if let msgID = streamingMessageIDs[key] { activeMessageIDs.remove(msgID) }
         previews[key] = nil
         streamingMessageIDs[key] = nil
@@ -316,9 +316,9 @@ final class StreamingPreviewManager {
     /// Clears all streaming previews.
     func clearAll() {
         guard !previews.isEmpty || !streamingMessageIDs.isEmpty
-                || !thinkingPreviews.isEmpty || !processingStatus.isEmpty
-                || !hasStreamActivity.isEmpty || !streamingToolCall.isEmpty
-                || !lastStreamActivityAt.isEmpty else { return }
+            || !thinkingPreviews.isEmpty || !processingStatus.isEmpty
+            || !hasStreamActivity.isEmpty || !streamingToolCall.isEmpty
+            || !lastStreamActivityAt.isEmpty else { return }
         previews.removeAll()
         streamingMessageIDs.removeAll()
         activeMessageIDs.removeAll()

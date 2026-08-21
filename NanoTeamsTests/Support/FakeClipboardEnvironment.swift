@@ -20,7 +20,6 @@ final class FakePasteboard: PasteboardAccessing, @unchecked Sendable {
     private(set) var clearCount = 0
     private(set) var writes: [[PasteboardItemSnapshot]] = []
     private(set) var snapshotReads = 0
-    private(set) var changeCountReads = 0
 
     func snapshotItems() -> [PasteboardItemSnapshot]? {
         snapshotReads += 1

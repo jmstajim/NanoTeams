@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Sheet/modal dialog layout constants (feedback/restart/revision dialogs).
-enum SheetLayout {
+nonisolated enum SheetLayout {
     /// Standard sheet width for feedback/restart/revision dialogs
     static let standardWidth: CGFloat = 420
     /// Header icon container size

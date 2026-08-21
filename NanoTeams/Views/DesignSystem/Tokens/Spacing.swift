@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// 8-point grid spacing tokens.
-enum Spacing {
+nonisolated enum Spacing {
     /// Extra-extra small spacing - 2pt (for compact graph nodes only)
     static let xxs: CGFloat = 2
     /// Extra small spacing - 4pt

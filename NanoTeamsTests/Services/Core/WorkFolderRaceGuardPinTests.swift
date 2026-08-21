@@ -29,13 +29,9 @@ import XCTest
 final class WorkFolderRaceGuardPinTests: XCTestCase {
 
     private func source(_ relativePath: String) throws -> String {
-        let repoRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()  // Core
-            .deletingLastPathComponent()  // Services
-            .deletingLastPathComponent()  // NanoTeamsTests
-            .deletingLastPathComponent()  // repo root
-        return try String(
-            contentsOf: repoRoot.appendingPathComponent(relativePath), encoding: .utf8)
+        try String(
+            contentsOf: RatchetSourceScan.repoRoot.appendingPathComponent(relativePath),
+            encoding: .utf8)
     }
 
     /// Source with `//` comments stripped.
@@ -53,13 +49,9 @@ final class WorkFolderRaceGuardPinTests: XCTestCase {
     }
 
     private func strippedSource(_ relativePath: String) throws -> String {
-        try source(relativePath)
-            .components(separatedBy: "\n")
-            .map { line -> String in
-                guard let idx = line.range(of: "//")?.lowerBound else { return line }
-                return String(line[..<idx])
-            }
-            .joined(separator: "\n")
+        // The NAIVE spelling on purpose — this suite counts structure, not needles; see the
+        // spelling's own doc in `RatchetSourceScan` for the distinction.
+        RatchetSourceScan.strippingLineCommentsNaively(try source(relativePath))
     }
 
     /// Body of `func <name>` up to the next top-level `    func ` / `    private func `.

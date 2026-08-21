@@ -46,7 +46,7 @@ final class SSEEventParserTests: XCTestCase {
         let json = "{\"response_id\": \"resp-123\", \"stats\": {\"input_tokens\": 100, \"total_output_tokens\": 50}}"
         let result = parser.parse(line: "data: \(json)")
         // `response_id` is deliberately dropped — nothing resumes a chain.
-        if case .chatEnd(let usage, _) = result {
+        if case .chatEnd(let usage, _, _, _) = result {
             XCTAssertEqual(usage?.inputTokens, 100)
             XCTAssertEqual(usage?.outputTokens, 50)
         } else {
@@ -195,7 +195,7 @@ final class SSEEventParserTests: XCTestCase {
     private func chatEndPrefill(_ statsJSON: String) -> ServerPrefillReport? {
         _ = parser.parse(line: "event: chat.end")
         let result = parser.parse(line: "data: {\"stats\": \(statsJSON)}")
-        guard case .chatEnd(_, let prefill) = result else {
+        guard case .chatEnd(_, let prefill, _, _) = result else {
             XCTFail("Expected chatEnd, got \(String(describing: result))")
             return nil
         }
@@ -247,10 +247,134 @@ final class SSEEventParserTests: XCTestCase {
     func testChatEnd_missingStats_yieldsNoUsageAndNoPrefill() {
         _ = parser.parse(line: "event: chat.end")
         let result = parser.parse(line: "data: {\"response_id\": \"r\"}")
-        guard case .chatEnd(let usage, let prefill) = result else {
+        guard case .chatEnd(let usage, let prefill, _, _) = result else {
             return XCTFail("Expected chatEnd, got \(String(describing: result))")
         }
         XCTAssertNil(usage)
         XCTAssertNil(prefill)
+    }
+
+    // MARK: - chat.end: telemetry must not cost content
+
+    /// `decodeIfPresent` returns nil for an ABSENT key but THROWS on a type mismatch (#83), and
+    /// this parser decodes the whole frame under a single `try?` — so one mistyped telemetry
+    /// field discards the token counts and the prefill report along with it. The Ollama twin of
+    /// this was fixed on 2026-08-19 and its LM Studio sibling was left standing (#51).
+    func testChatEnd_withMistypedModelLoadTime_stillReportsTheTokenCounts() {
+        _ = parser.parse(line: "event: chat.end")
+        let result = parser.parse(
+            line: "data: {\"stats\": {\"input_tokens\": 900, \"total_output_tokens\": 8, "
+                + "\"model_load_time_seconds\": \"fast\"}}")
+        guard case .chatEnd(let usage, _, _, _) = result else {
+            return XCTFail(
+                "one mistyped telemetry field discarded the whole frame, got "
+                    + String(describing: result))
+        }
+        XCTAssertEqual(
+            usage, TokenUsage(inputTokens: 900, outputTokens: 8),
+            "telemetry is decoration; it must never cost content")
+    }
+
+    /// The neighbour of `testChatEnd_missingStats_yieldsNoUsageAndNoPrefill`, and the pair is
+    /// where the parser contradicts itself: an ABSENT `stats` object yields nil usage, while a
+    /// PRESENT one carrying no token keys yields `TokenUsage(0, 0)` — counts the server never
+    /// sent. Downstream the fabricated zero is indistinguishable from a measurement:
+    /// `GenerationSampleRecorder` raises `.noTokensReported` only when usage is nil, so a
+    /// benchmark run that measured nothing renders as a finished run of dashes. Ollama's parser
+    /// guards this (`promptEvalCount != nil || evalCount != nil`); this one did not.
+    func testChatEnd_statsWithNoTokenKeys_reportsNoUsageRatherThanZeros() {
+        _ = parser.parse(line: "event: chat.end")
+        let result = parser.parse(line: "data: {\"stats\": {\"model_load_time_seconds\": 0}}")
+        guard case .chatEnd(let usage, let prefill, _, _) = result else {
+            return XCTFail("Expected chatEnd, got \(String(describing: result))")
+        }
+        XCTAssertNil(usage, "a fabricated zero is indistinguishable from a measured one")
+        XCTAssertEqual(prefill?.modelLoadMs, 0, "the figure the server DID send still survives")
+    }
+
+    /// The same trap as the load figure, on the field added for the benchmark. Its own value may
+    /// be lost; the counts beside it may not.
+    func testChatEnd_withMistypedTokensPerSecond_stillReportsTheTokenCounts() {
+        _ = parser.parse(line: "event: chat.end")
+        let result = parser.parse(
+            line: "data: {\"stats\": {\"input_tokens\": 900, \"total_output_tokens\": 8, "
+                + "\"tokens_per_second\": \"fast\"}}")
+        guard case .chatEnd(let usage, _, let rate, _) = result else {
+            return XCTFail("a mistyped rate discarded the frame, got \(String(describing: result))")
+        }
+        XCTAssertEqual(usage, TokenUsage(inputTokens: 900, outputTokens: 8))
+        XCTAssertNil(rate, "the mistyped field itself is the only casualty")
+    }
+
+    // MARK: - chat.end: the server's own generation rate
+
+    /// Verbatim, with no scaling and no fence-post correction of ours. Measured on LM Studio
+    /// 0.4.21: the server's figure is `completion_tokens / (generation_time − TTFT)`, which is
+    /// Ollama's convention exactly — so re-deriving it here could only introduce a difference.
+    func testChatEnd_tokensPerSecond_isCarriedVerbatim() {
+        _ = parser.parse(line: "event: chat.end")
+        let result = parser.parse(
+            line: "data: {\"stats\": {\"input_tokens\": 12, \"total_output_tokens\": 232, "
+                + "\"tokens_per_second\": 70.88376163013098, \"reasoning_output_tokens\": 214}}")
+        guard case .chatEnd(_, _, let rate, let reasoning) = result else {
+            return XCTFail("Expected chatEnd, got \(String(describing: result))")
+        }
+        XCTAssertEqual(rate ?? 0, 70.88376163013098, accuracy: 1e-12, "no rounding, no scaling")
+        XCTAssertEqual(reasoning, 214)
+    }
+
+    /// #80, as a round trip rather than a constant: the rate must reach the benchmark as a RATE.
+    /// Turning it into a window here would fabricate endpoints the server never disclosed, and
+    /// routing it through `ServerPrefillReport` would hand the prompt-prefix cache detector a
+    /// number it is deliberately denied.
+    func testChatEnd_tokensPerSecond_neverBecomesAPrefillFigure() {
+        _ = parser.parse(line: "event: chat.end")
+        let result = parser.parse(
+            line: "data: {\"stats\": {\"input_tokens\": 900, \"total_output_tokens\": 8, "
+                + "\"model_load_time_seconds\": 0, \"tokens_per_second\": 70.9}}")
+        guard case .chatEnd(_, let prefill, let rate, _) = result else {
+            return XCTFail("Expected chatEnd, got \(String(describing: result))")
+        }
+        XCTAssertEqual(rate, 70.9)
+        XCTAssertNil(prefill?.prefillNs, "the rate must not be spent as a prefill window")
+        XCTAssertNil(prefill?.nsPerToken, "and the detector's rate branch stays unreachable")
+    }
+
+    /// The zero is a measurement on this wire too — the parser thresholds nothing, exactly as it
+    /// thresholds nothing on `modelLoadMs`. Whether a zero is usable is the policy layer's call.
+    func testChatEnd_zeroTokensPerSecond_isCarriedThroughAsZero() {
+        _ = parser.parse(line: "event: chat.end")
+        let result = parser.parse(
+            line: "data: {\"stats\": {\"input_tokens\": 9, \"total_output_tokens\": 1, "
+                + "\"tokens_per_second\": 0}}")
+        guard case .chatEnd(_, _, let rate, _) = result else {
+            return XCTFail("Expected chatEnd, got \(String(describing: result))")
+        }
+        XCTAssertEqual(rate, 0)
+    }
+
+    /// Ollama's shape, arriving on this parser's provider: no rate key at all.
+    func testChatEnd_withoutTokensPerSecond_leavesTheRateAbsent() {
+        _ = parser.parse(line: "event: chat.end")
+        let result = parser.parse(
+            line: "data: {\"stats\": {\"input_tokens\": 9, \"total_output_tokens\": 4}}")
+        guard case .chatEnd(let usage, _, let rate, let reasoning) = result else {
+            return XCTFail("Expected chatEnd, got \(String(describing: result))")
+        }
+        XCTAssertEqual(usage, TokenUsage(inputTokens: 9, outputTokens: 4))
+        XCTAssertNil(rate)
+        XCTAssertNil(reasoning)
+    }
+
+    /// One count present, the other absent: the usage is real and the missing half reads as 0,
+    /// which is the same rule Ollama's parser applies. Distinct from the both-absent case above,
+    /// where there is no usage at all.
+    func testChatEnd_withOnlyOneTokenCount_stillReportsUsage() {
+        _ = parser.parse(line: "event: chat.end")
+        let result = parser.parse(line: "data: {\"stats\": {\"total_output_tokens\": 7}}")
+        guard case .chatEnd(let usage, _, _, _) = result else {
+            return XCTFail("Expected chatEnd, got \(String(describing: result))")
+        }
+        XCTAssertEqual(usage, TokenUsage(inputTokens: 0, outputTokens: 7))
     }
 }

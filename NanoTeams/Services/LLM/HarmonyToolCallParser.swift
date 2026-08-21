@@ -198,7 +198,7 @@ nonisolated struct StartMarkerStrategy: ToolCallParsingStrategy {
 
             let blockEnd =
                 tail.range(of: Self.startMarker, range: idx..<tail.endIndex)?.lowerBound
-                ?? tail.endIndex
+                    ?? tail.endIndex
             if let envelope = ChannelEnvelopeParser.parseEnvelope(
                 in: tail, cursorAfterOpening: idx, blockEnd: blockEnd)
             {
@@ -291,7 +291,7 @@ nonisolated enum ChannelEnvelopeParser {
 
         if toolName == nil,
            let constrainRange = text.range(
-            of: ChannelMarkerStrategy.constrainMarker, range: cursorAfterOpening..<headerEnd)
+               of: ChannelMarkerStrategy.constrainMarker, range: cursorAfterOpening..<headerEnd)
         {
             let afterConstrain = constrainRange.upperBound
             if let (candidate, end) = ToolCallParsingHelpers.extractIdentifier(
@@ -315,7 +315,7 @@ nonisolated enum ChannelEnvelopeParser {
             jsonStart = ToolCallParsingHelpers.skipWhitespace(in: text, from: jsonStart)
             if jsonStart < text.endIndex, text[jsonStart] == "{",
                let (jsonText, endIdx) = ToolCallParsingHelpers.extractJSONBracedValue(
-                in: text, from: jsonStart)
+                   in: text, from: jsonStart)
             {
                 let (dispatchName, dispatchArgs) = ChannelMarkerStrategy.resolveDispatch(
                     channelName: resolvedName, innerJSON: jsonText)
@@ -359,7 +359,7 @@ nonisolated enum ChannelEnvelopeParser {
             in: text[nameEnd..<blockEnd], from: nameEnd)
         if let firstBrace = text[fallbackSearchStart..<blockEnd].firstIndex(of: "{"),
            let (jsonText, endIdx) = ToolCallParsingHelpers.extractJSONBracedValue(
-            in: text, from: firstBrace)
+               in: text, from: firstBrace)
         {
             let (dispatchName, dispatchArgs) = ChannelMarkerStrategy.resolveDispatch(
                 channelName: resolvedName, innerJSON: jsonText)
@@ -502,6 +502,11 @@ nonisolated struct HarmonyToolCallParser: Sendable {
     /// `<|start|>` here — the function-prefix variant is a subset and adding both would
     /// be redundant.
     static let harmonyMarkers: [String] = [callMarker, startMarker, channelMarker]
+
+    /// Longest verbatim marker, in characters — one input to
+    /// `StreamMarkerWindow.harmonyNeedleSpan`, which bounds how far back the
+    /// per-delta detection must look for a marker split across deltas.
+    static let maxMarkerLength = harmonyMarkers.map(\.count).max() ?? 0
 
     private let strategies: [ToolCallParsingStrategy]
 

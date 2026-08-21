@@ -30,7 +30,11 @@ final class ModelCatalog {
     }
 
     /// Cached model lists, keyed by `(normalized URL, visionOnly)`.
-    private(set) var modelsByKey: [CacheKey: [String]] = [:]
+    ///
+    /// Descriptors, not names: the fetch that fills this already carries each model's format and
+    /// quantization (see `LLMModelInfo`), and storing names alone was where those two facts were
+    /// lost for every surface in the app.
+    private(set) var modelsByKey: [CacheKey: [LLMModelInfo]] = [:]
     /// Last fetch error per key (cleared on success).
     private(set) var errorByKey: [CacheKey: String] = [:]
     /// Keys with an in-flight fetch — observable so pickers can render
@@ -43,9 +47,31 @@ final class ModelCatalog {
         self.clientFactory = clientFactory
     }
 
-    /// Cached list for `(url, provider)`, or `[]` if not fetched yet.
+    /// Cached names for `(url, provider)`, or `[]` if not fetched yet. What every model PICKER
+    /// reads — the order is the one `normalizedUnique` established and has always rendered.
     func models(for url: String, provider: LLMProvider, visionOnly: Bool = false) -> [String] {
+        infos(for: url, provider: provider, visionOnly: visionOnly).map(\.name)
+    }
+
+    /// Cached descriptors for `(url, provider)`, or `[]` if not fetched yet. Same list, same order,
+    /// with the format and quantization the server reported alongside each name.
+    func infos(for url: String, provider: LLMProvider, visionOnly: Bool = false) -> [LLMModelInfo] {
         modelsByKey[key(url, provider, visionOnly)] ?? []
+    }
+
+    /// What this server said about ONE model, or nil when it did not list it — a model the user
+    /// typed by hand, a stale selection, or a server that has not been fetched. Nil is never
+    /// rendered as "no format": it means nobody asked, or nobody answered.
+    ///
+    /// Matched on the trimmed name, which is `LLMModelInfo`'s own invariant, so a selection carrying
+    /// stray whitespace still finds its entry.
+    func info(
+        for url: String, provider: LLMProvider, modelName: String, visionOnly: Bool = false
+    ) -> LLMModelInfo? {
+        let target = modelName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !target.isEmpty else { return nil }
+        return infos(for: url, provider: provider, visionOnly: visionOnly)
+            .first { $0.name == target }
     }
 
     /// Last error for `(url, provider)`, or `nil`.

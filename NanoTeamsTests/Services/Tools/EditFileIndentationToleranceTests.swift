@@ -64,19 +64,10 @@ final class EditFileIndentationToleranceTests: XCTestCase {
         return runtime.executeAll(context: context, toolCalls: [call])[0]
     }
 
-    private func dataField(_ result: ToolExecutionResult, _ key: String) -> Any? {
-        guard
-            let json = try? JSONSerialization.jsonObject(with: Data(result.outputJSON.utf8))
-                as? [String: Any],
-            let data = json["data"] as? [String: Any]
-        else { return nil }
-        return data[key]
-    }
-
     private func message(_ result: ToolExecutionResult) -> String {
         guard
             let json = try? JSONSerialization.jsonObject(with: Data(result.outputJSON.utf8))
-                as? [String: Any],
+            as? [String: Any],
             let error = json["error"] as? [String: Any],
             let message = error["message"] as? String
         else { return "" }

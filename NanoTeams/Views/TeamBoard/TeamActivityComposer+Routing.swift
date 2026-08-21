@@ -217,7 +217,12 @@ extension TeamActivityComposer {
     /// filter in this file — `placeholderText`'s single-role test used to spell the
     /// predicate itself and diverged by counting observers, which made the chip row
     /// name a sole worker the placeholder beside it refused to name.
-    static func isMessageableRole(_ role: TeamRoleDefinition) -> Bool {
+    /// `nonisolated` because it is pure — two reads of a `nonisolated` Domain value — and
+    /// because line 93 passes it as a FUNCTION VALUE to `filter`, which the mirror's
+    /// `-swift-version 5` build rejects for a main-actor-isolated member (`call to main
+    /// actor-isolated static method … in a synchronous nonisolated context`). The four
+    /// `isMessageableRole($0)` call sites below are unaffected either way.
+    nonisolated static func isMessageableRole(_ role: TeamRoleDefinition) -> Bool {
         !role.isSupervisor && !role.isObserver
     }
 

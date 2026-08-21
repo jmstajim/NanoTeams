@@ -588,8 +588,8 @@ final class LLMExecutionServiceTests: XCTestCase {
         )
 
         return NTMSTask(id: 0, title: "Test Task",
-            supervisorTask: "Test goal",
-            runs: [run]
+                        supervisorTask: "Test goal",
+                        runs: [run]
         )
     }
 }
@@ -1543,11 +1543,11 @@ final class CleanHarmonyTokensTests: XCTestCase {
     func testMarkdownContentIsPreserved() {
         let input = """
         # Requirements Document
-
+        
         | Requirement | Description |
         |-------------|-------------|
         | FR-1 | The app must print "Hello" |
-
+        
         **Goal:** Update the greeting message.
         """
         let result = ConversationRepairService.cleanHarmonyTokens(input)
@@ -1574,7 +1574,7 @@ final class CleanHarmonyTokensTests: XCTestCase {
         <|channel|>commentary
         NanoTeamsSample
         **Goal:** Update the console greeting message.
-
+        
         | Requirement | Description |
         |-------------|-------------|
         | **Functional** | The app must print "Hello, NanoTeams" |
@@ -1997,8 +1997,8 @@ final class LLMExecutionServiceStepCompletionTests: XCTestCase {
         )
 
         let task = NTMSTask(id: 0, title: "Test Task",
-            supervisorTask: "Test goal",
-            runs: [run]
+                            supervisorTask: "Test goal",
+                            runs: [run]
         )
         service._testRegisterStepTask(stepID: stepExecution.id, taskID: task.id)
         return task
@@ -2173,7 +2173,7 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
             }
         }
 
-        func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [String] { [] }
+        func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [LLMModelInfo] { [] }
     }
 
     private var service: LLMExecutionService!
@@ -2526,7 +2526,7 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
 
         XCTAssertTrue(result.sawHarmonyMarker)
         XCTAssertGreaterThanOrEqual(mockDelegate.markStreamingToolCallCalls.count, 1,
-                                     "<|channel|> envelopes must fire the flag too")
+                                    "<|channel|> envelopes must fire the flag too")
         XCTAssertTrue(thinkingFed.contains("<|channel|>commentary"),
                       "Channel-variant envelope must stream into the thinking preview")
     }

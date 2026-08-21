@@ -98,7 +98,7 @@ struct CommandPaletteView: View {
             HStack {
                 Image(systemName: command.icon)
                     .frame(width: 24)
-                    .foregroundStyle(hoveredCommandID == command.id ? Colors.accent : .primary)
+                    .foregroundStyle(hoveredCommandID == command.id ? Colors.accent : Colors.textPrimary)
                 Text(command.title)
                 Spacer()
             }

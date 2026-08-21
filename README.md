@@ -4,7 +4,7 @@
 
 ### Free, open-source AI coding agent & multi-agent teams for macOS<br>— 100% local via Ollama or LM Studio, with an autonomous supervisor
 
-[![Build&Test](https://github.com/jmstajim/NanoTeams/actions/workflows/ios.yml/badge.svg)](https://github.com/jmstajim/NanoTeams/actions/workflows/ios.yml)
+<!-- [![Build&Test](https://github.com/jmstajim/NanoTeams/actions/workflows/ios.yml/badge.svg)](https://github.com/jmstajim/NanoTeams/actions/workflows/ios.yml) -->
 [![Version](https://img.shields.io/github/v/release/jmstajim/NanoTeams?label=version&color=5F87D9&style=flat-square)](https://github.com/jmstajim/NanoTeams/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-5F87D9?style=flat-square)](https://github.com/jmstajim/NanoTeams/blob/main/LICENSE)
 [![Downloads](https://img.shields.io/github/downloads/jmstajim/NanoTeams/total?label=downloads&color=5F87D9&style=flat-square)](https://github.com/jmstajim/NanoTeams/releases/latest)

@@ -102,7 +102,12 @@ extension NTMSOrchestrator {
         guard let workFolderRoot = workFolderURL else { return nil }
         let paths = NTMSPaths(workFolderRoot: workFolderRoot)
         let ancestors = snapshot?.tasksIndex.ancestorIDs(of: taskID) ?? []
-        return paths.networkLogJSON(taskID: taskID, runID: runID, ancestors: ancestors)
+        let current = paths.networkLogJSONL(taskID: taskID, runID: runID, ancestors: ancestors)
+        if fileManager.fileExists(atPath: current.path) { return current }
+        // Pre-JSONL runs wrote a JSON array; their logs are still worth revealing.
+        let legacy = paths.legacyNetworkLogJSON(taskID: taskID, runID: runID, ancestors: ancestors)
+        if fileManager.fileExists(atPath: legacy.path) { return legacy }
+        return current
     }
 
     func networkLogExists(taskID: Int, runID: Int) -> Bool {

@@ -92,8 +92,8 @@ final class SupervisorAutoAnswerExtendedTests: XCTestCase {
     func testGenerateAnswer_WorksWithWhitespaceGoal() async {
         let step = makeStep(role: .productManager, status: .running)
         let task = NTMSTask(id: 0, title: "Test",
-            supervisorTask: "   \n\t   ",
-            runs: [Run(id: 0, steps: [step])]
+                            supervisorTask: "   \n\t   ",
+                            runs: [Run(id: 0, steps: [step])]
         )
 
         let client = NativeLMStudioClient()

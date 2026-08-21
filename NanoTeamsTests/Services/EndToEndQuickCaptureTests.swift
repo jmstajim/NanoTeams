@@ -31,8 +31,8 @@ final class EndToEndQuickCaptureTests: XCTestCase {
 
     func testQuickCapture_multipleClippedTexts_combinedInBrief() {
         let task = NTMSTask(id: 0, title: "Test",
-            supervisorTask: "Fix the bugs",
-            clippedTexts: ["Error in login", "Crash on startup", "Memory leak in profile"]
+                            supervisorTask: "Fix the bugs",
+                            clippedTexts: ["Error in login", "Crash on startup", "Memory leak in profile"]
         )
 
         let brief = task.effectiveSupervisorBrief
@@ -54,8 +54,8 @@ final class EndToEndQuickCaptureTests: XCTestCase {
 
     func testQuickCapture_singleClippedText_inBrief() {
         let task = NTMSTask(id: 0, title: "Test",
-            supervisorTask: "Review this code",
-            clippedTexts: ["func doSomething() { }"]
+                            supervisorTask: "Review this code",
+                            clippedTexts: ["func doSomething() { }"]
         )
 
         let brief = task.effectiveSupervisorBrief
@@ -75,8 +75,8 @@ final class EndToEndQuickCaptureTests: XCTestCase {
 
     func testQuickCapture_withAttachments_hasInitialInput() {
         let task = NTMSTask(id: 0, title: "Test",
-            supervisorTask: "Analyze this",
-            attachmentPaths: ["attachments/screenshot.png"]
+                            supervisorTask: "Analyze this",
+                            attachmentPaths: ["attachments/screenshot.png"]
         )
 
         XCTAssertTrue(task.hasInitialInput, "Task with task description should have initial input")

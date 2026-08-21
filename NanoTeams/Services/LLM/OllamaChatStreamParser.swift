@@ -21,10 +21,48 @@ import Foundation
 /// the LM Studio path.
 nonisolated struct OllamaChatStreamParser {
 
+    /// Everything the terminal `done:true` chunk said, as one value.
+    ///
+    /// A struct rather than a widening list of associated values. `chatEnd` carried three and
+    /// would now carry five, and every growth silently reshapes every destructuring
+    /// `case .chatEnd(_, let prefill, _)` in the tree while wildcard matches keep compiling
+    /// (CLAUDE.md #25). Named fields also make the difference between reading `nil, nil, 42` and
+    /// reading what the 42 is.
+    ///
+    /// The parser applies no threshold and no guard to any of these — recording what the server
+    /// actually said is what lets a policy be re-derived from a real log later. A zero is carried
+    /// through as a zero.
+    struct TerminalReport: Equatable {
+        var usage: TokenUsage?
+        var prefill: ServerPrefillReport?
+        /// Ollama `eval_duration` — server-measured DECODE time.
+        var generationNs: Double?
+        /// Ollama `total_duration` — the server's own clock on the whole request, the only
+        /// cross-check the app's end-to-end measurement has.
+        var totalNs: Double?
+        /// Ollama `done_reason` — `"stop"` or `"length"`. The direct answer to "was this cut off
+        /// at the token ceiling", which nothing else on the wire gives.
+        var doneReason: String?
+
+        init(
+            usage: TokenUsage? = nil,
+            prefill: ServerPrefillReport? = nil,
+            generationNs: Double? = nil,
+            totalNs: Double? = nil,
+            doneReason: String? = nil
+        ) {
+            self.usage = usage
+            self.prefill = prefill
+            self.generationNs = generationNs
+            self.totalNs = totalNs
+            self.doneReason = doneReason
+        }
+    }
+
     enum ParsedEvent: Equatable {
         case contentDelta(String)
         case thinkingDelta(String)
-        case chatEnd(usage: TokenUsage?, prefill: ServerPrefillReport?)
+        case chatEnd(TerminalReport)
         case error(String)
     }
 
@@ -68,7 +106,12 @@ nonisolated struct OllamaChatStreamParser {
                 modelLoadMs: chunk.loadDurationNs.map { $0 / 1_000_000 },
                 prefillNs: chunk.promptEvalDurationNs,
                 promptTokens: chunk.promptEvalCount)
-            events.append(.chatEnd(usage: usage, prefill: prefill.isEmpty ? nil : prefill))
+            events.append(.chatEnd(TerminalReport(
+                usage: usage,
+                prefill: prefill.isEmpty ? nil : prefill,
+                generationNs: chunk.evalDurationNs,
+                totalNs: chunk.totalDurationNs,
+                doneReason: chunk.doneReason)))
         }
         return events
     }

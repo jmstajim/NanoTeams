@@ -764,7 +764,7 @@ final class PostTeardownWriteBarrierCornerTests: XCTestCase, @unchecked Sendable
         ) -> AsyncThrowingStream<StreamEvent, Error> {
             AsyncThrowingStream { $0.finish() }
         }
-        func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
+        func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
     }
 
     override func setUp() async throws {
@@ -1054,7 +1054,7 @@ final class OrphanStreamCommitDropTests: XCTestCase, @unchecked Sendable {
                 }
             }
         }
-        func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
+        func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
     }
 
     override func setUp() async throws {
@@ -1179,7 +1179,7 @@ final class DelegationGenerationTeardownTests: XCTestCase, @unchecked Sendable {
                 }
             }
         }
-        func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
+        func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
     }
 
     override func setUp() async throws {

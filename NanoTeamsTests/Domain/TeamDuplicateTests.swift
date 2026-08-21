@@ -43,7 +43,7 @@ final class TeamDuplicateTests: XCTestCase {
                       "Duplicating must not drop the generated-team permission")
         XCTAssertTrue(copiedAgent.hasDelegationConfigured,
                       "A duplicated Coding Agent must still be able to delegate — this is the "
-                      + "predicate that gates auto-injection of the 4-tool delegation pack")
+                          + "predicate that gates auto-injection of the 4-tool delegation pack")
     }
 
     func testDuplicate_keepsRoleIconAndColors() {

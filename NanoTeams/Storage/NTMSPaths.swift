@@ -89,7 +89,18 @@ nonisolated struct NTMSPaths: Hashable {
             .appendingPathComponent("conversation_log.md", isDirectory: false)
     }
 
-    func networkLogJSON(taskID: Int, runID: Int, ancestors: [Int] = []) -> URL {
+    /// The wire log — JSONL since 2026-08-21 (one record per line, O(1) appends,
+    /// per-file serialization in `JSONLFileLog`).
+    func networkLogJSONL(taskID: Int, runID: Int, ancestors: [Int] = []) -> URL {
+        internalRunDir(taskID: taskID, runID: runID, ancestors: ancestors)
+            .appendingPathComponent("network_log.jsonl", isDirectory: false)
+    }
+
+    /// Pre-2026-08-21 runs wrote a JSON ARRAY under this name. Log artifacts die
+    /// with their run, so nothing converts them — readers (`networkLogURL`,
+    /// `train_first_prompt.sh --from-logs` and its Swift mirror) fall back to
+    /// this when the `.jsonl` is absent.
+    func legacyNetworkLogJSON(taskID: Int, runID: Int, ancestors: [Int] = []) -> URL {
         internalRunDir(taskID: taskID, runID: runID, ancestors: ancestors)
             .appendingPathComponent("network_log.json", isDirectory: false)
     }
@@ -97,6 +108,18 @@ nonisolated struct NTMSPaths: Hashable {
     func toolCallsJSONL(taskID: Int, runID: Int, ancestors: [Int] = []) -> URL {
         internalRunDir(taskID: taskID, runID: runID, ancestors: ancestors)
             .appendingPathComponent("tool_calls.jsonl", isDirectory: false)
+    }
+
+    /// Per-STEP append log of the four stream collections (`llmConversation`,
+    /// `wireTranscript`, `toolCalls`, `messages`) — 98.4% of a task's bytes,
+    /// split out of `task.json` 2026-08-21 so `updateTaskOnly` appends O(delta)
+    /// instead of rewriting the whole conversation per message. Per step, not
+    /// per run: parallel roles (CLAUDE.md #45) write with zero contention, a
+    /// step reset compacts one step's file, and `tool_calls.jsonl` already owns
+    /// the run-level name.
+    func stepLogJSONL(taskID: Int, runID: Int, roleID: String, ancestors: [Int] = []) -> URL {
+        internalRoleDir(taskID: taskID, runID: runID, roleID: roleID, ancestors: ancestors)
+            .appendingPathComponent("step_log.jsonl", isDirectory: false)
     }
 
     func buildDiagnosticsJSON(taskID: Int, runID: Int, roleID: String, ancestors: [Int] = []) -> URL {
@@ -153,7 +176,7 @@ nonisolated struct NTMSPaths: Hashable {
     /// Strips path traversal characters from a role ID used as a directory name.
     private static func sanitizePathComponent(_ value: String) -> String {
         value.replacingOccurrences(of: "/", with: "_")
-             .replacingOccurrences(of: "..", with: "_")
+            .replacingOccurrences(of: "..", with: "_")
     }
 
     func stagedAttachmentDir(draftID: UUID) -> URL {

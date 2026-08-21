@@ -141,6 +141,19 @@ extension NTMSOrchestrator {
             return false
         }
 
+        // The answer is the durable "question consumed" event, so retire the
+        // persisted sidebar "read" marker HERE, not only in the view observer:
+        // `MainLayoutView`'s `onChange(of: allTaskWaitStates)` sweep exists only
+        // while the window is mounted, and an answer submitted from the Quick
+        // Capture panel with the main window closed would otherwise leave the
+        // flag standing — the NEXT question then finds the task already "seen"
+        // and the unread dot never lights for a question nobody has read. The
+        // mounted mirror (`TaskManagementState`) converges through that same
+        // observer; this write covers the unmounted window.
+        if let workFolderID = snapshot?.projection.id {
+            configuration.unmarkTaskSeen(workFolderID: workFolderID, taskID: taskID)
+        }
+
         let engineState = taskEngineStates[taskID] ?? .pending
         if engineState == .paused || engineState == .needsSupervisorInput {
             await resumeRun(taskID: taskID)

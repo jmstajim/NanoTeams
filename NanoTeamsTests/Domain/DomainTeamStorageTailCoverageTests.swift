@@ -61,16 +61,16 @@ final class FDomainTeamConfigParserRepairChainTests: XCTestCase {
     /// so `decodeTeamConfig` throws "Could not parse tool arguments as JSON".
     func testDecode_interiorQuotesPlusTrailingBrace_recoveredByScanningTheRepairedText() throws {
         let payload = """
-            {"name":"Quoted Team","description":"a "smart" one","roles":\
-            [{"name":"Engineer","prompt":"p","produces_artifacts":["Engineering Notes"]}]}}
-            """
+        {"name":"Quoted Team","description":"a "smart" one","roles":\
+        [{"name":"Engineer","prompt":"p","produces_artifacts":["Engineering Notes"]}]}}
+        """
 
         let build = try TeamConfigParser.decodeTeamConfig(from: payload)
 
         XCTAssertEqual(build.team.name, "Quoted Team")
         XCTAssertEqual(build.team.description, "a \"smart\" one",
                        "the interior quotes must be ESCAPED and preserved — a repair that "
-                       + "truncated the value at the first interior quote would also parse")
+                           + "truncated the value at the first interior quote would also parse")
         XCTAssertTrue(build.team.roles.contains(where: { $0.name == "Engineer" }))
     }
 
@@ -87,10 +87,10 @@ final class FDomainTeamConfigParserRepairChainTests: XCTestCase {
     /// matches and `decodeTeamConfig` throws.
     func testDecode_interiorQuotesPlusDroppedRolesArrayClose_recoveredByStructuralRepair() throws {
         let payload = """
-            {"name":"Dropped Closer Team","description":"a "smart" one","roles":\
-            [{"name":"Engineer","prompt":"p","produces_artifacts":["Engineering Notes"]},\
-            "artifacts":[]}
-            """
+        {"name":"Dropped Closer Team","description":"a "smart" one","roles":\
+        [{"name":"Engineer","prompt":"p","produces_artifacts":["Engineering Notes"]},\
+        "artifacts":[]}
+        """
 
         let build = try TeamConfigParser.decodeTeamConfig(from: payload)
 
@@ -101,7 +101,7 @@ final class FDomainTeamConfigParserRepairChainTests: XCTestCase {
         // come back empty (which `GeneratedTeamConfig` rejects outright).
         XCTAssertEqual(build.team.roles.count, 2,
                        "the recovered payload must still carry exactly one LLM role beside "
-                       + "the auto-added Supervisor")
+                           + "the auto-added Supervisor")
         XCTAssertTrue(build.team.roles.contains(where: { $0.name == "Engineer" }))
     }
 }
@@ -163,7 +163,7 @@ final class FDomainGeneratedTeamStripInvariantTests: XCTestCase {
                        "a role whose only output was file-shaped must still have a deliverable")
         XCTAssertEqual(reviewer?.dependencies.requiredArtifacts, ["Engineer Summary"],
                        "the dependency edge must be REDIRECTED, never dropped — dropping it "
-                       + "lets the downstream role start out of order")
+                           + "lets the downstream role start out of order")
         XCTAssertTrue(build.team.artifacts.contains(where: { $0.name == "Engineer Summary" }),
                       "the synthetic Summary must be declared as a team artifact")
     }
@@ -187,7 +187,7 @@ final class FDomainGeneratedTeamStripInvariantTests: XCTestCase {
         let reviewer = build.team.roles.first { $0.name == "Reviewer" }
         XCTAssertEqual(reviewer?.dependencies.requiredArtifacts, ["Engineering Notes"],
                        "the stripped name must point at the SAME producing role's surviving "
-                       + "deliverable so the wait is preserved")
+                           + "deliverable so the wait is preserved")
         let engineer = build.team.roles.first { $0.name == "Engineer" }
         XCTAssertEqual(
             engineer?.dependencies.producesArtifacts,
@@ -220,7 +220,7 @@ final class FDomainGeneratedTeamStripInvariantTests: XCTestCase {
             let stripWarnings = build.warnings.filter { $0.contains("file-shaped artifact name") }
             XCTAssertFalse(stripWarnings.isEmpty,
                            "the file-shaped cleanup must announce itself — a silent strip is "
-                           + "how a deliverable disappears with no trace")
+                               + "how a deliverable disappears with no trace")
             for warning in stripWarnings {
                 XCTAssertFalse(warning.contains("] — dropped."),
                                "every stripped name must be redirected, never dropped: \(warning)")
@@ -240,10 +240,10 @@ final class FDomainGeneratedTeamStripInvariantTests: XCTestCase {
     /// unknown-artifact check, which fails the test.
     func testDecode_requiresArtifactWithNoProducer_isNormalisedToSupervisorTask() throws {
         let payload = """
-            {"name":"Orphan Requires","description":"d","roles":\
-            [{"name":"Engineer","prompt":"p","requires_artifacts":["nobody_makes_this.txt"],\
-            "produces_artifacts":["Engineering Notes"]}]}
-            """
+        {"name":"Orphan Requires","description":"d","roles":\
+        [{"name":"Engineer","prompt":"p","requires_artifacts":["nobody_makes_this.txt"],\
+        "produces_artifacts":["Engineering Notes"]}]}
+        """
 
         let build = try TeamConfigParser.decodeTeamConfig(from: payload)
 
@@ -251,7 +251,7 @@ final class FDomainGeneratedTeamStripInvariantTests: XCTestCase {
         XCTAssertEqual(engineer?.dependencies.requiredArtifacts,
                        [SystemTemplates.supervisorTaskArtifactName],
                        "an unproduced requirement must collapse to the Supervisor Task, not "
-                       + "survive as an artifact nothing will ever deliver")
+                           + "survive as an artifact nothing will ever deliver")
     }
 }
 
@@ -310,7 +310,7 @@ final class FDomainValueTypeTailTests: XCTestCase {
         XCTAssertTrue(sut.roles.isEmpty)
         XCTAssertEqual(sut.deletedSystemRoleIDs, ["techLead"],
                        "without the tombstone the bundled-content reconcile re-adds the role "
-                       + "on the next app version bump")
+                           + "on the next app version bump")
     }
 
     /// Control: a non-system role leaves no tombstone. A blanket append would put a
@@ -381,7 +381,7 @@ final class FDomainValueTypeTailTests: XCTestCase {
         XCTAssertEqual(a.id, "engineer")
         XCTAssertEqual(a.id, b.id,
                        "identity is the role, not the coordinates — otherwise moving a node "
-                       + "re-creates the row instead of updating it")
+                           + "re-creates the row instead of updating it")
     }
 
     /// `BundledUpdateReport.DeferredTeam` is listed per team; two entries for the same
@@ -451,7 +451,7 @@ final class FDomainValueTypeTailTests: XCTestCase {
         for c in allCases {
             XCTAssertNotEqual(c.displayName, c.rawValue,
                               "\(c.rawValue) fell through to the rawValue fallback — the feed "
-                              + "would show a camelCase identifier")
+                                  + "would show a camelCase identifier")
         }
         XCTAssertEqual(ChangeRequestStatus.supervisorApproved.displayName, "Supervisor Approved")
     }
@@ -465,7 +465,7 @@ final class FDomainValueTypeTailTests: XCTestCase {
         for level in ComputerUseRestrictionLevel.allCases {
             XCTAssertFalse(level.settingDescription.isEmpty,
                            "\(level.rawValue) has no Settings description — the safety picker "
-                           + "would offer an unexplained option")
+                               + "would offer an unexplained option")
             XCTAssertFalse(level.displayName.isEmpty)
             XCTAssertFalse(level.judgeGuidance.isEmpty)
         }
@@ -490,7 +490,7 @@ final class FDomainValueTypeTailTests: XCTestCase {
                        "build metadata is not a version component")
         XCTAssertFalse(AppVersion.shouldReconcile(from: "1.0.0", to: "1.0.0+build.7"),
                        "a build-tagged binary must not re-run the bundled-content reconcile "
-                       + "against the same version it already applied")
+                           + "against the same version it already applied")
     }
 
     // MARK: WorkFolderContext back-compat alias
@@ -522,7 +522,7 @@ final class FDomainValueTypeTailTests: XCTestCase {
 
         XCTAssertEqual(sut.projection.teams.map(\.name), ["Replacement"],
                        "the alias must write through — otherwise every legacy call site's "
-                       + "mutation is silently dropped")
+                           + "mutation is silently dropped")
         XCTAssertEqual(sut.workFolder.teams.map(\.name), ["Replacement"])
     }
 
@@ -547,7 +547,7 @@ final class FDomainValueTypeTailTests: XCTestCase {
         XCTAssertTrue(readiness.missingArtifacts.isEmpty)
         XCTAssertNil(readiness.blockingReason,
                      "an unknown role is blocked by nothing nameable — 'Waiting for: ' with an "
-                     + "empty list is worse than no reason at all")
+                         + "empty list is worse than no reason at all")
     }
 
     /// `isSelectedRunActive` with no task at all. The run-history toolbar reads this to
@@ -586,7 +586,7 @@ final class FDomainTaskEngineStoreAdapterErrorRelayTests: XCTestCase {
 
         XCTAssertEqual(orchestrator.errorSurfaceCount, before + 1,
                        "the engine's error must actually surface — a dropped forward leaves "
-                       + "the run failed with no explanation")
+                           + "the run failed with no explanation")
         XCTAssertEqual(orchestrator.lastSurfacedError, message)
     }
 }
@@ -701,56 +701,27 @@ final class FDomainRepositoryTailTests: XCTestCase, @unchecked Sendable {
         try super.tearDownWithError()
     }
 
-    // MARK: updateTask / updateTaskOnly
+    // MARK: updateTaskOnly
 
     /// Writing a task whose `task.json` is absent must FAIL LOUDLY. The alternative —
     /// creating the file — would resurrect a task the user deleted, complete with its
-    /// index entry.
+    /// index entry. This is the DIRECT pin on the guard; the same contract is pinned
+    /// through a real caller (`createNewRun`'s catch arm) in
+    /// `MutateTaskBackgroundIndexTests` — a guard is pinned twice per CLAUDE.md #58.
     ///
     /// RED: replace the throw with `try store.write(task, ...)` -> no error is thrown
     /// and `XCTAssertThrowsError` fails.
-    func testUpdateTask_taskFileAbsent_throwsTaskNotFound() throws {
+    func testUpdateTaskOnly_taskFileAbsent_throwsTaskNotFound() throws {
         _ = try sut.openOrCreateWorkFolder(at: root)
         let ghost = NTMSTask(id: 999, title: "ghost", supervisorTask: "s")
 
-        XCTAssertThrowsError(try sut.updateTask(at: root, task: ghost)) { error in
+        XCTAssertThrowsError(try sut.updateTaskOnly(at: root, task: ghost)) { error in
             guard let repoError = error as? NTMSRepositoryError,
                   case .taskNotFound(let id) = repoError else {
                 return XCTFail("expected .taskNotFound, got \(error)")
             }
             XCTAssertEqual(id, 999)
         }
-    }
-
-    /// A task whose `task.json` exists but whose index row was lost (a torn write, or a
-    /// recovered `tasks_index.json`) must be re-added by the next update, not left
-    /// invisible. The index is what the sidebar and the scheduler scan — a task missing
-    /// from it still runs but cannot be seen or stopped.
-    ///
-    /// RED: change the `else { index.tasks.append(refreshed) }` branch to `else {}` ->
-    /// the returned context's index stays empty.
-    func testUpdateTask_indexRowLost_isAppendedBack() throws {
-        _ = try sut.openOrCreateWorkFolder(at: root)
-        let created = try sut.createTask(at: root, title: "Recoverable", supervisorTask: "s")
-        let taskID = created.taskID
-        let paths = NTMSPaths(workFolderRoot: root)
-
-        var index = try sut.store.read(TasksIndex.self, from: paths.tasksIndexJSON)
-        index.tasks.removeAll { $0.id == taskID }
-        try sut.store.write(index, to: paths.tasksIndexJSON)
-        let reread = try sut.store.read(TasksIndex.self, from: paths.tasksIndexJSON)
-        XCTAssertFalse(reread.tasks.contains(where: { $0.id == taskID }),
-                       "precondition: the index row must actually be gone")
-
-        var task = try sut.loadTask(at: root, taskID: taskID)
-        task.title = "Recovered"
-        let context = try sut.updateTask(at: root, task: task)
-
-        XCTAssertTrue(context.tasksIndex.tasks.contains(where: { $0.id == taskID && $0.title == "Recovered" }),
-                      "the task must reappear in the index, not stay orphaned on disk")
-        let onDisk = try sut.store.read(TasksIndex.self, from: paths.tasksIndexJSON)
-        XCTAssertTrue(onDisk.tasks.contains(where: { $0.id == taskID }),
-                      "and the repair must be persisted, not only returned")
     }
 
     /// Same contract on the background-task path. `updateTaskOnly` is what every
@@ -811,7 +782,7 @@ final class FDomainRepositoryTailTests: XCTestCase, @unchecked Sendable {
             }
             XCTAssertEqual(url.lastPathComponent, "artifact_engineering_notes.md",
                            "the error must name the artifact file so the role can tell which "
-                           + "deliverable failed")
+                               + "deliverable failed")
         }
     }
 
@@ -829,7 +800,7 @@ final class FDomainRepositoryTailTests: XCTestCase, @unchecked Sendable {
         try Data("{ not json at all".utf8).write(to: paths.tasksIndexJSON)
         XCTAssertTrue(FileManager.default.fileExists(atPath: paths.tasksIndexJSON.path),
                       "precondition: the file must EXIST and be undecodable, not be missing — "
-                      + "the missing case is a different guard")
+                          + "the missing case is a different guard")
 
         let relative = try sut.persistStepArtifactFile(
             at: root, taskID: 7, runID: 1, roleID: "engineer",
@@ -904,7 +875,7 @@ final class FDomainRepositoryTailTests: XCTestCase, @unchecked Sendable {
         let onDisk = try sut.store.read(TeamsFile.self, from: paths.teamsJSON)
         XCTAssertNil(onDisk.teams.first?.settings.hierarchy.reportsTo["coding-agent-role"],
                      "the self-heal must be PERSISTED — an in-memory-only fix leaves the "
-                     + "delegator broken for anything that re-reads teams.json")
+                         + "delegator broken for anything that re-reads teams.json")
     }
 
     /// Control for the same call: a clean file must not be rewritten. Without this the
@@ -954,7 +925,7 @@ final class FDomainRepositoryTailTests: XCTestCase, @unchecked Sendable {
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: paths.teamsJSON.path),
                        "a clean teams.json must not be rewritten — the write is gated on an "
-                       + "actual mutation, not run on every open")
+                           + "actual mutation, not run on every open")
         XCTAssertNil(teamsFile.teams[0].settings.hierarchy.reportsTo["coding-agent-role"],
                      "and the already-normalised team stays normalised")
     }

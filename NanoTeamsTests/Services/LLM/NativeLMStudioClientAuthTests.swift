@@ -83,7 +83,7 @@ final class NativeLMStudioClientAuthTests: XCTestCase {
         session.responseBody = Data("{\"instance_id\":\"abc\"}".utf8)
         let client = makeClient(session: session, tokens: [baseURL: "tok-load"])
 
-        _ = try await client.loadModel(modelName: "m", baseURLString: baseURL)
+        _ = try await client.loadModel(provider: .lmStudio, modelName: "m", baseURLString: baseURL)
 
         XCTAssertEqual(
             session.capturedRequest?.value(forHTTPHeaderField: "Authorization"),
@@ -98,7 +98,7 @@ final class NativeLMStudioClientAuthTests: XCTestCase {
         session.statusCode = 200
         let client = makeClient(session: session, tokens: [baseURL: "tok-unload"])
 
-        try await client.unloadModel(instanceID: "abc", baseURLString: baseURL)
+        try await client.unloadModel(provider: .lmStudio, instanceID: "abc", baseURLString: baseURL)
 
         XCTAssertEqual(
             session.capturedRequest?.value(forHTTPHeaderField: "Authorization"),
@@ -113,7 +113,7 @@ final class NativeLMStudioClientAuthTests: XCTestCase {
         session.responseBody = Data("{\"data\":[]}".utf8)
         let client = makeClient(session: session, tokens: [baseURL: "tok-list"])
 
-        _ = try await client.listLoadedInstances(baseURLString: baseURL)
+        _ = try await client.listLoadedInstances(provider: .lmStudio, baseURLString: baseURL)
 
         XCTAssertEqual(
             session.capturedRequest?.value(forHTTPHeaderField: "Authorization"),

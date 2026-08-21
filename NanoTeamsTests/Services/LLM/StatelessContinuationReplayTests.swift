@@ -154,26 +154,26 @@ final class StatelessContinuationReplayTests: XCTestCase {
                 LLMMessage(role: .system, content: "System prompt"),
                 LLMMessage(role: .user, content: "## Supervisor Task\n\nImplement M2."),
                 LLMMessage(role: .tool, content: """
-                    [CALL] read_file
-                    Arguments: {"path":"Package.swift"}
-
-                    [RESULT]
-                    \(readResult)
-                    """),
+                [CALL] read_file
+                Arguments: {"path":"Package.swift"}
+                
+                [RESULT]
+                \(readResult)
+                """),
                 LLMMessage(role: .tool, content: """
-                    [CALL] write_file
-                    Arguments: {"path":"Sources/MeditationApp/MeditationLibrary.swift"}
-
-                    [RESULT]
-                    \(writeResult)
-                    """),
+                [CALL] write_file
+                Arguments: {"path":"Sources/MeditationApp/MeditationLibrary.swift"}
+                
+                [RESULT]
+                \(writeResult)
+                """),
                 LLMMessage(role: .tool, content: """
-                    [CALL] bash
-                    Arguments: {"command":"swift build"}
-
-                    [RESULT]
-                    \(bashResult)
-                    """),
+                [CALL] bash
+                Arguments: {"command":"swift build"}
+                
+                [RESULT]
+                \(bashResult)
+                """),
                 LLMMessage(
                     role: .user,
                     content: MessageSourceContext.supervisorAnswerPrefix

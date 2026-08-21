@@ -122,8 +122,8 @@ final class AcceptanceServiceExtendedTests: XCTestCase {
 
         // Task with override uses task setting
         let task2 = NTMSTask(id: 0, title: "Task 2",
-            supervisorTask: "Goal",
-            acceptanceMode: .finalOnly
+                             supervisorTask: "Goal",
+                             acceptanceMode: .finalOnly
         )
         XCTAssertEqual(
             AcceptanceService.effectiveAcceptanceMode(for: task2, teamSettings: teamSettings),

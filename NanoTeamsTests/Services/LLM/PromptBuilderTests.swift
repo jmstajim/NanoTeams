@@ -214,15 +214,15 @@ final class PromptBuilderTests: XCTestCase {
 
         XCTAssertEqual(result, """
         **MyApp**
-
+        
         Ctx line
-
+        
         ### Agent instructions (CLAUDE.md)
-
+        
         Main body
-
+        
         ### Other agent instruction files
-
+        
         Read with read_file when relevant:
         - docs/AGENTS.md
         - z/GEMINI.md
@@ -238,17 +238,17 @@ final class PromptBuilderTests: XCTestCase {
 
         XCTAssertEqual(result, """
         **MyApp**
-
+        
         ### Agent instructions (CLAUDE.md)
-
+        
         Main body
-
+        
         ### Agent instructions (docs/style.md)
-
+        
         Use tabs.
-
+        
         ### Other agent instruction files
-
+        
         Read with read_file when relevant:
         - mockup.png
         """)
@@ -261,9 +261,9 @@ final class PromptBuilderTests: XCTestCase {
 
         XCTAssertEqual(result, """
         **MyApp**
-
+        
         ### Agent instructions (CLAUDE.md)
-
+        
         Main body
         """)
     }
@@ -275,9 +275,9 @@ final class PromptBuilderTests: XCTestCase {
 
         XCTAssertEqual(result, """
         **MyApp**
-
+        
         ### Other agent instruction files
-
+        
         Read with read_file when relevant:
         - CLAUDE.md
         """)
@@ -324,11 +324,11 @@ final class PromptBuilderTests: XCTestCase {
             agentInstructions: AgentInstructionsSnapshot(items: items))
         XCTAssertEqual(result, """
         **MyApp**
-
+        
         Ctx
-
+        
         ### Other agent instruction files
-
+        
         Read with read_file when relevant:
         - CLAUDE.md
         """)
@@ -719,9 +719,9 @@ final class PromptBuilderTests: XCTestCase {
 
     func testBuildChatMessages_usesEffectiveSupervisorBriefForQuickCaptureInput() {
         let task = NTMSTask(id: 0, title: "Test",
-            supervisorTask: "Implement import flow",
-            clippedTexts: ["Selected API response"],
-            attachmentPaths: [".nanoteams/tasks/abc/attachments/spec.pdf"]
+                            supervisorTask: "Implement import flow",
+                            clippedTexts: ["Selected API response"],
+                            attachmentPaths: [".nanoteams/tasks/abc/attachments/spec.pdf"]
         )
         let step = StepExecution(id: "test_step", role: .productManager, title: "PM Step")
         let run = Run(id: 0, steps: [step])
@@ -803,7 +803,7 @@ final class PromptBuilderTests: XCTestCase {
 
         XCTAssertNotNil(result)
         XCTAssertTrue(result!.contains(longContent.trimmingCharacters(in: .whitespacesAndNewlines)),
-                       "Full content must be present without truncation")
+                      "Full content must be present without truncation")
         XCTAssertFalse(result!.contains("truncated"), "Must not contain truncation marker")
     }
 
@@ -824,9 +824,9 @@ final class PromptBuilderTests: XCTestCase {
         XCTAssertTrue(result!.contains("NPC Roster"))
         XCTAssertTrue(result!.contains("Encounter Tables"))
         XCTAssertTrue(result!.contains(content1.trimmingCharacters(in: .whitespacesAndNewlines)),
-                       "First artifact content must be complete")
+                      "First artifact content must be complete")
         XCTAssertTrue(result!.contains(content2.trimmingCharacters(in: .whitespacesAndNewlines)),
-                       "Second artifact content must be complete")
+                      "Second artifact content must be complete")
         XCTAssertFalse(result!.contains("truncated"))
     }
 
@@ -988,9 +988,9 @@ final class PromptBuilderTests: XCTestCase {
         let systemMessage = messages.first { $0.role == .system }
         XCTAssertNotNil(systemMessage)
         XCTAssertTrue(systemMessage?.content?.contains("PlacementProbe") == true,
-                       "Work folder name must appear in the system prompt")
+                      "Work folder name must appear in the system prompt")
         XCTAssertTrue(systemMessage?.content?.contains("Unique context string for placement check") == true,
-                       "Work folder context must appear in the system prompt")
+                      "Work folder context must appear in the system prompt")
 
         let userMessagesWithWorkFolderHeader = messages.filter { msg in
             msg.role == .user && msg.content?.contains("## Work folder") == true
@@ -1161,8 +1161,8 @@ final class PromptBuilderTests: XCTestCase {
         // presence/value here; FR-is-last invariant is pinned in
         // `SystemTemplatesSectionPinTests.testEveryStepTemplate_finalReminderIsLastH2Section`.
         XCTAssertTrue(system.contains("## Global guidance\nRULE_X"),
-                       "system prompt should include the `## Global guidance` section "
-                       + "(template owns the header; chip resolves to the bare value)")
+                      "system prompt should include the `## Global guidance` section "
+                          + "(template owns the header; chip resolves to the bare value)")
     }
 
     func testBuildChatMessages_withEmptyGlobalContext_systemHasNoSeparator() {

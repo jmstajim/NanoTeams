@@ -90,7 +90,7 @@ final class EditFileInsertionReindentTests: XCTestCase {
     private func warnings(_ result: ToolExecutionResult) -> [String] {
         guard
             let json = try? JSONSerialization.jsonObject(with: Data(result.outputJSON.utf8))
-                as? [String: Any],
+            as? [String: Any],
             let meta = json["meta"] as? [String: Any],
             let warnings = meta["warnings"] as? [String]
         else { return [] }

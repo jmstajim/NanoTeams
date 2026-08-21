@@ -43,7 +43,7 @@ final class KeychainQueryCoverageTests: XCTestCase {
         XCTAssertEqual(string(query, kSecAttrAccount), account)
         XCTAssertEqual(query[kSecAttrSynchronizable as String] as? Bool, false,
                        "synchronizable must be FALSE — true puts the token on iCloud "
-                       + "Keychain and onto every device on the Apple ID")
+                           + "Keychain and onto every device on the Apple ID")
     }
 
     /// All four queries must address the SAME item. A divergence would strand every
@@ -85,7 +85,7 @@ final class KeychainQueryCoverageTests: XCTestCase {
         XCTAssertEqual(query[kSecAttrAccessible as String] as? String,
                        kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String,
                        "AfterFirstUnlock so background requests can read it; "
-                       + "ThisDeviceOnly so it does not migrate via a restore")
+                           + "ThisDeviceOnly so it does not migrate via a restore")
         XCTAssertNil(query[kSecReturnData as String],
                      "an insert must not ask for data back")
     }
@@ -108,7 +108,7 @@ final class KeychainQueryCoverageTests: XCTestCase {
         XCTAssertEqual(attrs[kSecAttrAccessible as String] as? String,
                        kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String,
                        "the accessibility class must be re-asserted on update too, or an "
-                       + "item created by an older build keeps its weaker class forever")
+                           + "item created by an older build keeps its weaker class forever")
     }
 
     // MARK: - Load
@@ -142,7 +142,7 @@ final class KeychainQueryCoverageTests: XCTestCase {
         XCTAssertEqual(KeychainStatus.write(errSecAuthFailed), .failed(errSecAuthFailed))
         XCTAssertEqual(KeychainStatus.write(errSecItemNotFound), .failed(errSecItemNotFound),
                        "not-found on an INSERT is nonsense and must surface, not be "
-                       + "quietly treated as success")
+                           + "quietly treated as success")
     }
 
     /// The absence-versus-failure split, which is the whole reason `loadToken` both returns
@@ -200,16 +200,16 @@ final class KeychainQueryCoverageTests: XCTestCase {
         // A CFArray is what `kSecMatchLimitAll` would hand back.
         XCTAssertThrowsError(try KeychainSecureTokenStorage.decodeToken(
             [Data("tok".utf8)] as CFTypeRef, status: errSecSuccess)) { error in
-            XCTAssertEqual(error as? KeychainError, .unhandled(errSecSuccess),
-                           "a non-Data payload is a lookup problem, not a corrupt token")
-        }
+                XCTAssertEqual(error as? KeychainError, .unhandled(errSecSuccess),
+                               "a non-Data payload is a lookup problem, not a corrupt token")
+            }
 
         // Lone continuation byte: valid Data, invalid UTF-8.
         XCTAssertThrowsError(try KeychainSecureTokenStorage.decodeToken(
             Data([0x80]) as CFTypeRef, status: errSecSuccess)) { error in
-            XCTAssertEqual(error as? KeychainError, .invalidUTF8,
-                           "bad bytes are the one case where re-entering the token helps")
-        }
+                XCTAssertEqual(error as? KeychainError, .invalidUTF8,
+                               "bad bytes are the one case where re-entering the token helps")
+            }
 
         XCTAssertThrowsError(try KeychainSecureTokenStorage.decodeToken(
             nil, status: errSecSuccess))
@@ -229,6 +229,6 @@ final class KeychainQueryCoverageTests: XCTestCase {
         XCTAssertNotEqual(KeychainSecureTokenStorage.normalize(baseURL: "http://localhost:1234"),
                           KeychainSecureTokenStorage.normalize(baseURL: "http://127.0.0.1:1234"),
                           "localhost and 127.0.0.1 are deliberately NOT collapsed — "
-                          + "firewalls can route them differently")
+                              + "firewalls can route them differently")
     }
 }

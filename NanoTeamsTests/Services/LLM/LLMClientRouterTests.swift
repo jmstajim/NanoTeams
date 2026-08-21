@@ -141,7 +141,7 @@ final class LLMClientRouterTests: XCTestCase {
         // Empty baseURL deterministically triggers invalidBaseURL on the
         // native client — confirms the call reached it.
         do {
-            _ = try await router.loadModel(modelName: "m", baseURLString: "")
+            _ = try await router.loadModel(provider: .lmStudio, modelName: "m", baseURLString: "")
             XCTFail("Expected throw")
         } catch let error as LLMClientError {
             if case .invalidBaseURL = error { /* ok */ } else {
@@ -154,7 +154,7 @@ final class LLMClientRouterTests: XCTestCase {
 
     func testUnloadModel_lmStudio_routesToNativeClient() async {
         do {
-            try await router.unloadModel(instanceID: "x", baseURLString: "")
+            try await router.unloadModel(provider: .lmStudio, instanceID: "x", baseURLString: "")
             XCTFail("Expected throw")
         } catch let error as LLMClientError {
             if case .invalidBaseURL = error { /* ok */ } else {

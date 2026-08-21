@@ -43,7 +43,7 @@ final class AutovisorCardReflectTests: XCTestCase {
         let toolCallID = UUID()
         let stepID = "autovisor"
         let task = makeManagerTaskWithPlaceholder(toolCallID: toolCallID, stepID: stepID,
-                                                   toolName: ToolNames.listTasks)
+                                                  toolName: ToolNames.listTasks)
         mockDelegate.taskToMutate = task
         service._testRegisterStepTask(stepID: stepID, taskID: task.id)
 
@@ -72,11 +72,11 @@ final class AutovisorCardReflectTests: XCTestCase {
 
         let updated = mockDelegate.taskToMutate?.runs[0].steps[0].toolCalls.first { $0.id == toolCallID }
         XCTAssertEqual(updated?.isError, false,
-            "list_tasks success must keep the card green.")
+                       "list_tasks success must keep the card green.")
         XCTAssertTrue(updated?.resultJSON?.contains("\"tasks\"") ?? false,
-            "Card must show the real list_tasks envelope (contains \"tasks\"), not the placeholder.")
+                      "Card must show the real list_tasks envelope (contains \"tasks\"), not the placeholder.")
         XCTAssertFalse(updated?.resultJSON?.contains("\"pending\"") ?? true,
-            "The \"pending\" placeholder must no longer be the persisted card result.")
+                       "The \"pending\" placeholder must no longer be the persisted card result.")
     }
 
     // MARK: - Failure branch: manager signal whose handler fails flips the card red
@@ -122,11 +122,11 @@ final class AutovisorCardReflectTests: XCTestCase {
 
         let updated = mockDelegate.taskToMutate?.runs[0].steps[0].toolCalls.first { $0.id == toolCallID }
         XCTAssertEqual(updated?.isError, true,
-            "A manager signal whose deferred handler fails must flip the card red.")
+                       "A manager signal whose deferred handler fails must flip the card red.")
         XCTAssertTrue(updated?.resultJSON?.contains("\"ok\":false") ?? false,
-            "Card must show the real error envelope, not the 'pending' placeholder.")
+                      "Card must show the real error envelope, not the 'pending' placeholder.")
         XCTAssertFalse(updated?.resultJSON?.contains("\"pending\"") ?? true,
-            "The 'pending' placeholder must no longer be the persisted card result.")
+                       "The 'pending' placeholder must no longer be the persisted card result.")
     }
 
     // MARK: - Classification guard
@@ -152,7 +152,7 @@ final class AutovisorCardReflectTests: XCTestCase {
             .waitForEvents
         ] {
             XCTAssertTrue(LLMExecutionService.isAutovisorSignal(signal),
-                "\(signal) is a Autovisor signal and must reflect its result onto the card.")
+                          "\(signal) is a Autovisor signal and must reflect its result onto the card.")
         }
 
         for signal: ToolSignal in [
@@ -165,7 +165,7 @@ final class AutovisorCardReflectTests: XCTestCase {
             .forwardToTeam(childTaskID: 1, message: "m")
         ] {
             XCTAssertFalse(LLMExecutionService.isAutovisorSignal(signal),
-                "\(signal) is not a manager signal — its card reflect (if any) is owned by reflectAttribution / delegation-on-failure, not the manager branch.")
+                           "\(signal) is not a manager signal — its card reflect (if any) is owned by reflectAttribution / delegation-on-failure, not the manager branch.")
         }
 
         XCTAssertFalse(LLMExecutionService.isAutovisorSignal(nil))
@@ -208,8 +208,8 @@ private final class StubLLMClient: LLMClient, @unchecked Sendable {
         AsyncThrowingStream { $0.finish() }
     }
 
-    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
-    func loadModel(modelName _: String, baseURLString _: String) async throws -> String { "" }
-    func unloadModel(instanceID _: String, baseURLString _: String) async throws {}
-    func listLoadedInstances(baseURLString _: String) async throws -> [LoadedModelInstance] { [] }
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
+    func loadModel(provider _: LLMProvider, modelName _: String, baseURLString _: String) async throws -> String { "" }
+    func unloadModel(provider _: LLMProvider, instanceID _: String, baseURLString _: String) async throws {}
+    func listLoadedInstances(provider _: LLMProvider, baseURLString _: String) async throws -> LoadedInstanceListing { .listed([]) }
 }

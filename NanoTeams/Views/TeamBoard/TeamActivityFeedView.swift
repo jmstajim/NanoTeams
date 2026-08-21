@@ -295,27 +295,27 @@ struct TeamActivityFeedView: View {
             }
 
             if hasActionBarContent {
-                    ActivityFeedActionBar(
-                        isFinalReviewStage: isFinalReviewStage,
-                        rolesNeedingAcceptance: rolesNeedingAcceptance,
-                        onSelectRole: onSelectRole,
-                        onReviewTask: onReviewTask,
-                        onAcceptRole: { roleID in
-                            guard let taskID = store.activeTaskID else { return }
-                            _ = await store.acceptRole(taskID: taskID, roleID: roleID)
-                        },
-                        onRequestChanges: { roleID in
-                            revisionRoleID = roleID
-                            revisionComment = ""
-                            isShowingRevisionSheet = true
-                        },
-                        filterRoleID: filterRoleID,
-                        supervisorReviewArtifacts: supervisorReviewArtifacts,
-                        producedArtifacts: producedArtifacts
-                    )
-                }
-
+                ActivityFeedActionBar(
+                    isFinalReviewStage: isFinalReviewStage,
+                    rolesNeedingAcceptance: rolesNeedingAcceptance,
+                    onSelectRole: onSelectRole,
+                    onReviewTask: onReviewTask,
+                    onAcceptRole: { roleID in
+                        guard let taskID = store.activeTaskID else { return }
+                        _ = await store.acceptRole(taskID: taskID, roleID: roleID)
+                    },
+                    onRequestChanges: { roleID in
+                        revisionRoleID = roleID
+                        revisionComment = ""
+                        isShowingRevisionSheet = true
+                    },
+                    filterRoleID: filterRoleID,
+                    supervisorReviewArtifacts: supervisorReviewArtifacts,
+                    producedArtifacts: producedArtifacts
+                )
             }
+
+        }
         .onGeometryChange(for: CGFloat.self) { proxy in
             proxy.size.height
         } action: { newHeight in
@@ -341,10 +341,14 @@ struct TeamActivityFeedView: View {
         // Composer visibility gates paired-message suppression. When the composer
         // hides (engine `.failed`, task closed, view enters read-only), the
         // previously-suppressed bubble must reappear in the feed — otherwise the
-        // LLM's `ask_supervisor`-paired reply is lost (no composer to surface it).
-        // The fingerprint includes `composerVisible`, so this onChange forces a
-        // rebuild even when no other state changed (e.g. terminal `.running` →
-        // `.failed` with no new tool calls / messages).
+        // turn's `thinking` is lost with no card to surface it. (Its PROSE is
+        // never at stake: since the suppression was narrowed to
+        // `isFullyRenderedByQuestionCard`, only contentless turns are suppressed
+        // at all — so this gate now covers reasoning-only turns, which is the
+        // whole of what the card would have shown.) The fingerprint includes
+        // `composerVisible`, so this onChange forces a rebuild even when no other
+        // state changed (e.g. terminal `.running` → `.failed` with no new tool
+        // calls / messages).
         .onChange(of: shouldShowComposer) { _, _ in
             viewModel.recomputeAndRebuild(context: buildContext())
         }

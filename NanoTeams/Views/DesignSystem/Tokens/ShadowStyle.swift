@@ -2,7 +2,7 @@ import SwiftUI
 
 /// Composite shadow token — bundles (color, radius, x, y) together so call sites
 /// can't mix-and-match components from different shadow styles.
-struct ShadowStyle {
+nonisolated struct ShadowStyle {
     let color: Color
     let radius: CGFloat
     let x: CGFloat

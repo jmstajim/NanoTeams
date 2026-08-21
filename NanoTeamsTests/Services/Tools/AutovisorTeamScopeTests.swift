@@ -177,7 +177,7 @@ final class AutovisorTeamScopeTests: XCTestCase {
             allTeams: [TeamTemplateFactory.autovisor(), TeamTemplateFactory.generatedTeam()],
             policy: AutovisorTeamPolicy())
         XCTAssertTrue(rows.isEmpty, "the manager's own team and the generated placeholder "
-                      + "aren't blockable — a checkbox there would be a silent no-op")
+            + "aren't blockable — a checkbox there would be a silent no-op")
     }
 
     func testWarning_tracksTheThreeConfigurationsWorthTelling() {

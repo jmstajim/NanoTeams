@@ -70,7 +70,7 @@ nonisolated struct GeneratedTeamConfig: Codable, Hashable {
                     DecodingError.Context(
                         codingPath: c.codingPath + [CodingKeys.prompt],
                         debugDescription:
-                            "`prompt` must not be empty — every role needs guidance to act on."
+                        "`prompt` must not be empty — every role needs guidance to act on."
                     )
                 )
             }
@@ -225,15 +225,15 @@ nonisolated struct GeneratedTeamConfig: Codable, Hashable {
         }
 
         let consumers = Set(rawRoles.flatMap(\.requiresArtifacts))
-        let supReqSet = Set(decodedSupervisorRequires)
+        var supReqSet = Set(decodedSupervisorRequires)
         for role in rawRoles {
             for produced in role.producesArtifacts {
                 if !consumers.contains(produced)
                     && !supReqSet.contains(produced)
                     && produced != SystemTemplates.supervisorTaskArtifactName
-                    && !decodedSupervisorRequires.contains(produced)
                 {
                     decodedSupervisorRequires.append(produced)
+                    supReqSet.insert(produced)
                 }
             }
         }

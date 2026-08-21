@@ -191,11 +191,11 @@ final class RunTeamGenerationSuccessTests: NTMSOrchestratorTestBase, @unchecked 
     func testRunTeamGeneration_success_surfacesBuildWarnings() async throws {
         guard let (taskID, _) = await prepareTask() else { return }
         scriptTeam("""
-            {"name":"Warned Team","description":"d","roles":[{"name":"Engineer",\
-            "prompt":"p","produces_artifacts":["Code"],\
-            "requires_artifacts":["Supervisor Task"],"tools":["no_such_tool"]}],\
-            "artifacts":[{"name":"Code","description":"c"}],"supervisor_requires":["Code"]}
-            """)
+        {"name":"Warned Team","description":"d","roles":[{"name":"Engineer",\
+        "prompt":"p","produces_artifacts":["Code"],\
+        "requires_artifacts":["Supervisor Task"],"tools":["no_such_tool"]}],\
+        "artifacts":[{"name":"Code","description":"c"}],"supervisor_requires":["Code"]}
+        """)
         sut.lastInfoMessage = nil
 
         let ok = await sut.runTeamGeneration(taskID: taskID)
@@ -356,5 +356,5 @@ final class ScriptedTeamGenerationClient: LLMClient, @unchecked Sendable {
         }
     }
 
-    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
 }

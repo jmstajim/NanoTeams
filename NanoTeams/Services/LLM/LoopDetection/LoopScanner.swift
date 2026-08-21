@@ -26,15 +26,35 @@ nonisolated enum LoopScanner {
     // MARK: - Streaming (live buffer)
 
     /// Runs the within-message detector on the live stream buffer. Callers throttle
-    /// the call cadence themselves (the scan is O(n²)). `content` has no default so
-    /// scope and channels are always specified together — a `.thinkingAndContent`
-    /// caller can't silently degrade to thinking-only by forgetting it; pass `""`
-    /// for a `.thinkingOnly` scan that has no visible-content channel.
+    /// the call cadence themselves. `content` has no default so scope and channels
+    /// are always specified together — a `.thinkingAndContent` caller can't
+    /// silently degrade to thinking-only by forgetting it; pass `""` for a
+    /// `.thinkingOnly` scan that has no visible-content channel.
+    ///
+    /// Each channel is bounded to the detector's tail window (+ slack) BEFORE the
+    /// combine: the scan itself is windowed to `repetitionTailWindowChars`, but
+    /// the combine concat and `detectTailLoop`'s leading whitespace-trim + count
+    /// ran over the WHOLE accumulated buffer per invocation — O(N²/cadence)
+    /// across a stream. The cadence gate bounds how OFTEN this runs, not what a
+    /// run costs (the same split `StreamScanCadenceGate` fixed for the gate
+    /// itself). The suffix is taken from `endIndex` — O(bound), not O(buffer).
     static func scanStreaming(thinking: String, content: String, scope: Scope) -> LoopSignal? {
-        let haystack = combine(thinking: thinking, content: content, scope: scope)
+        let bound = DelegationConstants.repetitionTailWindowChars + streamingSuffixSlack
+        let haystack = combine(
+            thinking: String(thinking.suffix(bound)),
+            content: String(content.suffix(bound)),
+            scope: scope
+        )
         guard let match = detectWithin(haystack) else { return nil }
         return .withinMessage(diagnostic: match.diagnostic)
     }
+
+    /// Absorbs what `detectTailLoop`'s whitespace-trim removes, so the bounded
+    /// suffix still yields the full detector window afterwards. Trailing
+    /// whitespace LONGER than the slack only shrinks the effective window — and
+    /// a whitespace "loop" is rejected by the detector's substantive-block rule
+    /// regardless, so the divergence cannot flip a verdict.
+    private static let streamingSuffixSlack = 1024
 
     /// Single funnel for every within-message detection so all the tunables are
     /// sourced from `DelegationConstants` in exactly one place — the streaming and

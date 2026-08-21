@@ -11,29 +11,94 @@
 
 import Foundation
 
+/// Verdict of the INDEX-ONLY half of the generated-placeholder chat-mode heal:
+/// can this row's candidacy be decided without loading `task.json`?
+///
+/// Until 2026-08-21 the filter was a Bool whose "undecidable" arm read as
+/// "candidate", so every never-run chat-mode task — including plain Coding
+/// Assistant tasks, the default team — paid one blob read on EVERY work-folder
+/// open, forever. Tri-state makes unknown a first-class answer (CLAUDE.md #91):
+/// `.unknown` rows pay the read ONCE, the sweep's convergence write stamps the
+/// deciding facts into the row, and the next open decides from the index alone.
+nonisolated enum PlaceholderChatCandidacy {
+    case decidedCandidate
+    case decidedClear
+    case unknown
+}
+
 nonisolated extension TaskSummary {
 
-    /// True when this index entry MIGHT be carrying the vacuous chat-mode value the
-    /// Generated Team placeholder used to seed — i.e. it is worth paying one `task.json`
-    /// read to decide. Never a verdict on its own: the verdict is `TeamResolution.resolveTeamID`
-    /// against the loaded task (see `NTMSRepository.normalizeGeneratedPlaceholderChatMode`).
+    /// Replicates `TeamResolution.resolveTeamID`'s id-only rung order against the
+    /// summary's mirrored facts — keep the two in lockstep (the sweep's blob-side
+    /// verdict still uses `resolveTeamID`, and they must agree):
+    ///   1. `hasGeneratedTeam == true` → adopted team, never the placeholder → clear.
+    ///   2. run pin (`pinnedTeamID`) → placeholder-membership decides.
+    ///   3. `preferredTeamID`, only when it RESOLVES against the live teams →
+    ///      membership decides (an unresolvable preferred falls through, exactly
+    ///      as `TeamResolution`'s rung 3 does).
+    ///   4. a child task (`parentTaskID != nil`) resolves to `.childOrphan` = nil
+    ///      → never the placeholder → clear.
+    ///   5. root fallback: the effective active team's membership decides.
     ///
-    /// `isChatMode == false` can never be the bug — the old seed only ever erred toward
-    /// `true` — so the honest majority of the index is filtered out with no I/O at all.
+    /// `isChatMode == false` can never be the bug — the old seed only ever erred
+    /// toward `true`. `hasGeneratedTeam == nil` is a row written before the field
+    /// existed: `.unknown`, pay the read, never assume.
+    func placeholderChatCandidacy(
+        placeholderTeamIDs: Set<NTMSID>,
+        resolvableTeamIDs: Set<NTMSID>,
+        activeTeamIsPlaceholder: Bool
+    ) -> PlaceholderChatCandidacy {
+        guard isChatMode else { return .decidedClear }
+        guard let hasGeneratedTeam else { return .unknown }
+        if hasGeneratedTeam { return .decidedClear }
+        if let pinnedTeamID {
+            return placeholderTeamIDs.contains(pinnedTeamID) ? .decidedCandidate : .decidedClear
+        }
+        if let preferredTeamID, resolvableTeamIDs.contains(preferredTeamID) {
+            return placeholderTeamIDs.contains(preferredTeamID) ? .decidedCandidate : .decidedClear
+        }
+        if parentTaskID != nil { return .decidedClear }
+        return activeTeamIsPlaceholder ? .decidedCandidate : .decidedClear
+    }
+}
+
+nonisolated extension TaskSummary {
+
+    /// "Someone is still owed a Supervisor answer on this task."
     ///
-    /// A nil `pinnedTeamID` is treated as UNDECIDABLE, not as "not a candidate".
-    /// `toSummary` derives the pin from `runs.last?.teamID` and `createTask` leaves `runs`
-    /// empty, so a generated task that was created and never started has no pin to test —
-    /// yet it still appears in the Autovisor's `list_tasks` as an open-ended chat it is
-    /// told to `control_task close`. The extra reads that costs are bounded by "chat-mode
-    /// tasks with no started run", a handful per folder, paid once per work-folder open.
+    /// The ONLY sanctioned way to read `hasPendingSupervisorInput` affirmatively.
+    /// Deliberately total: an index row written before the field existed reads
+    /// `false` here, and callers that must distinguish "no" from "don't know"
+    /// ask `supervisorInputStateIsKnown` as well.
     ///
-    /// An ADOPTED generated task is excluded for free: `applyGeneratedTeamSuccess` re-pins
-    /// `run.teamID` to the generated team's own `_gen_<uuid>`, so its summary never names
-    /// the placeholder.
-    func mayCarryPlaceholderChatMode(placeholderTeamIDs: Set<NTMSID>) -> Bool {
-        guard isChatMode else { return false }
-        guard let pinnedTeamID else { return true }
-        return placeholderTeamIDs.contains(pinnedTeamID)
+    /// Do NOT substitute `status == .needsSupervisorInput`. `StatusRecoveryService`
+    /// parks every waiting step to `.paused` at launch while leaving the question
+    /// intact, so the status says "answered" for a task that is still waiting —
+    /// which is how an already-read chat came back as unanswered after a restart.
+    var isWaitingForSupervisor: Bool { hasPendingSupervisorInput == true }
+
+    /// False only for a legacy index row that predates the field. A destructive
+    /// sweep must bail on these rather than treat unknown as "answered".
+    var supervisorInputStateIsKnown: Bool { hasPendingSupervisorInput != nil }
+}
+
+/// What the task index knows about "is this task waiting on the Supervisor".
+///
+/// Three cases, not two: `.unknown` is an index row written before
+/// `TaskSummary.hasPendingSupervisorInput` existed. Collapsing it into
+/// `.notWaiting` is exactly the mistake that would wipe every persisted "seen"
+/// flag on the first launch after the upgrade, so every consumer must branch on
+/// it explicitly rather than relying on a `Bool` default.
+nonisolated enum SupervisorWaitState: Equatable, Sendable {
+    case waiting
+    case notWaiting
+    case unknown
+
+    init(_ summary: TaskSummary) {
+        switch summary.hasPendingSupervisorInput {
+        case .some(true):  self = .waiting
+        case .some(false): self = .notWaiting
+        case .none:        self = .unknown
+        }
     }
 }

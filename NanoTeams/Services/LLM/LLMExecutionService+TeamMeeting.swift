@@ -127,7 +127,7 @@ extension LLMExecutionService {
         let isDefaultStorage = workFolderRoot == NTMSOrchestrator.defaultStorageURL
         let meetingToolCallsLogURL: URL? = delegate.loggingEnabled
             ? paths.toolCallsJSONL(taskID: tid, runID: run.id,
-                                    ancestors: delegate.snapshot?.tasksIndex.ancestorIDs(of: tid) ?? [])
+                                   ancestors: delegate.snapshot?.tasksIndex.ancestorIDs(of: tid) ?? [])
             : nil
         let (_, runtime) = ToolRegistry.defaultRegistry(
             workFolderRoot: workFolderRoot, toolCallsLogURL: meetingToolCallsLogURL,
@@ -236,34 +236,34 @@ extension LLMExecutionService {
                 let meetingStepKey = TaskStepKey(taskID: tid, stepID: stepID)
                 let (finalContent, allThinking, toolSummaries) =
                     try await MeetingToolExecutor.executeTurnToolLoop(
-                    initialResult: streamResult,
-                    conversationSoFar: turnMessages,
-                    meetingContext: meetingContext,
-                    client: client,
-                    config: speakerConfig,
-                    tools: speakerTools,
-                    runtime: runtime,
-                    toolContext: toolContext,
-                    stepID: stepID,
-                    networkLogger: networkLogger,
-                    cancellationRegistrar: { [weak self] batchTask in
-                        guard let self else { return }
-                        if let batchTask {
-                            self.executionStates[meetingStepKey]?.currentToolBatchTask = batchTask
-                        } else if self.executionStates[meetingStepKey]?.currentToolBatchTask != nil {
-                            self.executionStates[meetingStepKey]?.currentToolBatchTask = nil
+                        initialResult: streamResult,
+                        conversationSoFar: turnMessages,
+                        meetingContext: meetingContext,
+                        client: client,
+                        config: speakerConfig,
+                        tools: speakerTools,
+                        runtime: runtime,
+                        toolContext: toolContext,
+                        stepID: stepID,
+                        networkLogger: networkLogger,
+                        cancellationRegistrar: { [weak self] batchTask in
+                            guard let self else { return }
+                            if let batchTask {
+                                self.executionStates[meetingStepKey]?.currentToolBatchTask = batchTask
+                            } else if self.executionStates[meetingStepKey]?.currentToolBatchTask != nil {
+                                self.executionStates[meetingStepKey]?.currentToolBatchTask = nil
+                            }
+                        },
+                        recordPrefixChain: { [weak self] conversation in
+                            guard let self else { return }
+                            _ = await self.prefixLedger.record(
+                                baseURL: speakerConfig.baseURLString,
+                                model: speakerConfig.modelName,
+                                owner: .chain(id: meetingChainID),
+                                messages: conversation,
+                                toolSchemaText: "")
                         }
-                    },
-                    recordPrefixChain: { [weak self] conversation in
-                        guard let self else { return }
-                        _ = await self.prefixLedger.record(
-                            baseURL: speakerConfig.baseURLString,
-                            model: speakerConfig.modelName,
-                            owner: .chain(id: meetingChainID),
-                            messages: conversation,
-                            toolSchemaText: "")
-                    }
-                )
+                    )
 
                 // Complete the turn
                 let thinkingValue = allThinking.isEmpty ? nil : allThinking

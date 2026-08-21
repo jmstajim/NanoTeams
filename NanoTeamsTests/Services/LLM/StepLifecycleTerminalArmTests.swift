@@ -67,7 +67,7 @@ final class StepLifecycleTerminalArmTests: XCTestCase {
                        "the deliverable must be on the step, not just on disk")
         XCTAssertFalse(s?.wireTranscript.isEmpty ?? true,
                        "the wire transcript must be persisted BEFORE completing — it is what a "
-                        + "later revision replays instead of rebuilding from the display record")
+                           + "later revision replays instead of rebuilding from the display record")
         XCTAssertNil(s?.supervisorQuestion,
                      "a completed step must not also be parked for input")
     }
@@ -118,7 +118,7 @@ final class StepLifecycleTerminalArmTests: XCTestCase {
         XCTAssertEqual(s?.needsSupervisorInput, true)
         XCTAssertFalse(s?.supervisorAnswerPendingDelivery ?? true,
                        "a fresh park must not claim an undelivered answer — that flag is what "
-                        + "makes the re-entry append an ask_supervisor envelope")
+                           + "makes the re-entry append an ask_supervisor envelope")
         XCTAssertFalse(s?.wireTranscript.isEmpty ?? true,
                        "the transcript must be persisted so answering continues the SAME conversation")
         XCTAssertNotEqual(s?.status, .failed,
@@ -311,7 +311,6 @@ private final class ScriptedToolCallClient: LLMClient, @unchecked Sendable {
 
     private let lock = NSLock()
     private var _callCount = 0
-    var callCount: Int { lock.withLock { _callCount } }
     private let script: [Turn]
 
     init(script: [Turn]) {
@@ -356,5 +355,5 @@ private final class ScriptedToolCallClient: LLMClient, @unchecked Sendable {
         }
     }
 
-    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
 }

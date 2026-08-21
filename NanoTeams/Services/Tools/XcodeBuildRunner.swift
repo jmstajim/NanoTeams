@@ -152,11 +152,11 @@ nonisolated enum XcodeBuildRunner {
                         toolName: toolName, args: args,
                         code: .invalidArgs,
                         message:
-                            """
-                            Project settings file exists but could not be decoded: \(error.localizedDescription).
-                            This usually means the settings schema changed after the file was last written.
-                            The user should open NanoTeams settings and re-select the Xcode scheme.
-                            """
+                        """
+                        Project settings file exists but could not be decoded: \(error.localizedDescription).
+                        This usually means the settings schema changed after the file was last written.
+                        The user should open NanoTeams settings and re-select the Xcode scheme.
+                        """
                     ))
                 }
             } catch {
@@ -177,12 +177,12 @@ nonisolated enum XcodeBuildRunner {
                     toolName: toolName, args: args,
                     code: .invalidArgs,
                     message:
-                        """
-                        No scheme configured in project settings.
-                        Detected Xcode project: \(xcodeRef.path)
-                        \(detected.isEmpty ? "No schemes could be auto-detected." : "Available schemes: \(detected.joined(separator: ", "))")
-                        The user needs to select a scheme in NanoTeams settings before \(toolName == ToolNames.runXcodebuild ? "building" : "running tests").
-                        """
+                    """
+                    No scheme configured in project settings.
+                    Detected Xcode project: \(xcodeRef.path)
+                    \(detected.isEmpty ? "No schemes could be auto-detected." : "Available schemes: \(detected.joined(separator: ", "))")
+                    The user needs to select a scheme in NanoTeams settings before \(toolName == ToolNames.runXcodebuild ? "building" : "running tests").
+                    """
                 ))
             }
         }

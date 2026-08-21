@@ -87,8 +87,8 @@ extension NTMSOrchestrator {
                     // Primary role gets the Supervisor comment; downstream roles reset clean
                     let supervisorComment: String? =
                         (resetRoleID == roleID && !(comment ?? "").isEmpty)
-                        ? "Supervisor: \(comment!)"
-                        : nil
+                            ? "Supervisor: \(comment!)"
+                            : nil
                     task.runs[runIndex].steps[stepIndex].reset(supervisorComment: supervisorComment)
                 }
 
@@ -96,6 +96,10 @@ extension NTMSOrchestrator {
             }
             task.runs[runIndex].updatedAt = now
         }
+        // A restart births fresh instances of whatever banners these steps produce
+        // next — stored dismissals from the previous failure/acceptance round must
+        // not pre-dismiss them.
+        retireRoleBannerDismissals(taskID: taskID, roleIDs: rolesToReset)
 
         // Verify the reset actually landed before waking the engine. `mutateTask`
         // returning true means "persisted", not "the closure mutated anything"
@@ -195,6 +199,10 @@ extension NTMSOrchestrator {
             }
         }
 
+        // Queuing a role for revision consumes its acceptance state — the next
+        // acceptance round is a fresh banner instance.
+        retireRoleBannerDismissals(taskID: taskID, roleIDs: runningRoleIDs)
+
         if engine.state != .running && engine.state != .pending {
             engine.notifyExternalEvent()
         }
@@ -273,6 +281,7 @@ extension NTMSOrchestrator {
             task.runs[task.runs.count - 1] = run
         }
         guard success else { return false }
+        retireRoleBannerDismissals(taskID: taskID, roleIDs: [roleID])
         // Total wake. Worse than the revision case if it no-ops: `.accepted` is
         // `isComplete: true`, so the role leaves every attention surface (the Watchtower banner
         // self-dismisses, the acceptance card vanishes) while the released mid-pipeline gate
@@ -438,12 +447,13 @@ extension NTMSOrchestrator {
         // (CLAUDE.md §7) — re-read to confirm the revision actually landed.
         guard persisted,
               loadedTask(taskID)?.runs.last?.steps
-                  .first(where: { $0.id == stepID })?.revisionComment == raw
+              .first(where: { $0.id == stepID })?.revisionComment == raw
         else {
             lastErrorMessage =
                 "Could not request changes from '\(roleID)' — step state changed."
             return
         }
+        retireRoleBannerDismissals(taskID: taskID, roleIDs: [roleID])
         // Report a refused wake instead of trading an invisible stall for a different one: the
         // flag is on disk, so silence here is exactly the bug this method was fixed for. Must
         // stay the last statement with no `await` after it — the Autovisor's `reportingError`
@@ -453,4 +463,29 @@ extension NTMSOrchestrator {
                 + "resumed right now — press Resume on the task."
         }
     }
+    // MARK: - Watchtower dismissal retirement
+
+    /// Event-driven half of the dismissal lifecycle: the moment the state that
+    /// produced a banner is CONSUMED (acceptance granted, revision requested, role
+    /// restarted, failed run revived), any stored dismissal for that step's banners
+    /// has done its job and must not outlive it. The sampling GC
+    /// (`WatchtowerInboxBuilder.staleDismissals`) cannot express this rule: it only
+    /// expires a key whose banner is ABSENT while the task is loaded, so a dismissal
+    /// surviving into the NEXT instance of the same banner — the same step failing
+    /// again after a restart, a second acceptance round after a revision — would
+    /// suppress a banner nobody has read. Retiring both families together is
+    /// deliberate: absent keys are a no-op, and the transitions that consume one
+    /// state routinely produce the other.
+    func retireRoleBannerDismissals(taskID: Int, roleIDs: some Sequence<String>) {
+        guard let workFolderID = snapshot?.projection.id else { return }
+        let steps = loadedTask(taskID)?.runs.last?.steps ?? []
+        var keys: Set<WatchtowerDismissKey> = []
+        for roleID in roleIDs {
+            let stepID = steps.first(where: { $0.effectiveRoleID == roleID })?.id ?? roleID
+            keys.insert(.acceptance(taskID: taskID, stepID: stepID))
+            keys.insert(.failed(taskID: taskID, stepID: stepID))
+        }
+        configuration.undismissNotifications(workFolderID: workFolderID, keys: keys)
+    }
+
 }

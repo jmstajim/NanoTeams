@@ -191,8 +191,8 @@ struct SupervisorFinalReviewView: View {
     SupervisorFinalReviewView(
         task: NTMSTask(id: 0, title: "Build notification system", supervisorTask: "WebSocket-based real-time alerts"),
         run: Run(id: 0,
-            steps: [supervisorStep, step],
-            roleStatuses: team.roles.reduce(into: [:]) { $0[$1.id] = .done }
+                 steps: [supervisorStep, step],
+                 roleStatuses: team.roles.reduce(into: [:]) { $0[$1.id] = .done }
         ),
         roleDefinitions: team.roles,
         requiredArtifactNames: ["Supervisor Task", "Release Notes"],

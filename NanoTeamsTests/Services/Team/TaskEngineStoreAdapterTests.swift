@@ -47,7 +47,7 @@ final class TaskEngineStoreAdapterTests: XCTestCase {
 
         XCTAssertTrue(result.contains("Engineering Notes"))
         XCTAssertFalse(result.contains("Product Requirements"),
-                        "Artifacts from roles awaiting acceptance should be excluded")
+                       "Artifacts from roles awaiting acceptance should be excluded")
         XCTAssertTrue(result.contains(SystemTemplates.supervisorTaskArtifactName))
     }
 
@@ -68,7 +68,7 @@ final class TaskEngineStoreAdapterTests: XCTestCase {
         let result = TaskEngineStoreAdapter.computeProducedArtifactNames(task: task, run: run)
 
         XCTAssertTrue(result.contains("Product Requirements"),
-                       "Artifacts from accepted roles should be available")
+                      "Artifacts from accepted roles should be available")
         XCTAssertTrue(result.contains("Engineering Notes"))
     }
 

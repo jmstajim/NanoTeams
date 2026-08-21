@@ -131,7 +131,7 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
                       "the nudge must name the defect that actually occurred: \(retry)")
         XCTAssertTrue(retry.contains("to=read_file"),
                       "and it must name the CHANNEL form the model is actually emitting, "
-                      + "with a tool the role really holds: \(retry)")
+                          + "with a tool the role really holds: \(retry)")
         XCTAssertEqual(
             service._testHarmonyParseFailureCounter(stepID: stepID, taskID: task.id), 0,
             "a missing call block is not a parse failure and must not charge that cap")

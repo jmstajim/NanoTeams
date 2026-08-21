@@ -54,9 +54,9 @@ final class ChangeRequestServiceExtendedTests: XCTestCase {
         )
 
         XCTAssertTrue(result.topic.contains("Code Reviewer"),
-                       "Topic should contain requesting role's display name")
+                      "Topic should contain requesting role's display name")
         XCTAssertTrue(result.topic.contains("Software Engineer"),
-                       "Topic should contain target role's name")
+                      "Topic should contain target role's name")
     }
 
     func testBuildVotingContext_contextContainsAllFields() {

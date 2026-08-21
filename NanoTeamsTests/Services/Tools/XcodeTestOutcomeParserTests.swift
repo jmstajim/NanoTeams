@@ -29,10 +29,10 @@ final class XcodeTestOutcomeParserTests: XCTestCase {
     /// and a red one produced identical counts.
     func testCurrentXcodeLowercaseSpelling_isCounted() {
         let output = """
-            Test case 'GitHandlerTailTests.testGitStash_unknownAction()' passed on 'My Mac - NanoTeams (54350)' (0.450 seconds)
-            Test case 'GitHandlerTailTests.testGitStatus_unbornRepo()' passed on 'My Mac - NanoTeams (54350)' (1.002 seconds)
-            Test case 'GitHandlerTailTests.testBroken()' failed on 'My Mac - NanoTeams (54350)' (0.113 seconds)
-            """
+        Test case 'GitHandlerTailTests.testGitStash_unknownAction()' passed on 'My Mac - NanoTeams (54350)' (0.450 seconds)
+        Test case 'GitHandlerTailTests.testGitStatus_unbornRepo()' passed on 'My Mac - NanoTeams (54350)' (1.002 seconds)
+        Test case 'GitHandlerTailTests.testBroken()' failed on 'My Mac - NanoTeams (54350)' (0.113 seconds)
+        """
 
         let outcome = parse(output)
 
@@ -43,9 +43,9 @@ final class XcodeTestOutcomeParserTests: XCTestCase {
     /// The older bracketed spelling must keep working — the fix widens, it does not swap.
     func testLegacyBracketedSpelling_isStillCounted() {
         let output = """
-            Test Case '-[NanoTeamsTests.FooTests testA]' passed (0.001 seconds)
-            Test Case '-[NanoTeamsTests.FooTests testB]' failed (0.004 seconds)
-            """
+        Test Case '-[NanoTeamsTests.FooTests testA]' passed (0.001 seconds)
+        Test Case '-[NanoTeamsTests.FooTests testB]' failed (0.004 seconds)
+        """
 
         let outcome = parse(output)
 
@@ -58,9 +58,9 @@ final class XcodeTestOutcomeParserTests: XCTestCase {
     /// would overstate green.
     func testSkippedTests_countAsNeither() {
         let output = """
-            Test case 'FooTests.testA()' passed on 'My Mac' (0.1 seconds)
-            Test case 'FooTests.testB()' skipped on 'My Mac' (0.0 seconds)
-            """
+        Test case 'FooTests.testA()' passed on 'My Mac' (0.1 seconds)
+        Test case 'FooTests.testB()' skipped on 'My Mac' (0.0 seconds)
+        """
 
         let outcome = parse(output)
 
@@ -72,10 +72,10 @@ final class XcodeTestOutcomeParserTests: XCTestCase {
     /// the totals by roughly the number of classes.
     func testSuiteLines_areNotCountedAsTests() {
         let output = """
-            Test Suite 'FooTests' passed at 2026-08-08 00:00:00.000.
-            Test Suite 'All tests' failed at 2026-08-08 00:00:01.000.
-            Test case 'FooTests.testA()' passed on 'My Mac' (0.1 seconds)
-            """
+        Test Suite 'FooTests' passed at 2026-08-08 00:00:00.000.
+        Test Suite 'All tests' failed at 2026-08-08 00:00:01.000.
+        Test case 'FooTests.testA()' passed on 'My Mac' (0.1 seconds)
+        """
 
         let outcome = parse(output)
 
@@ -121,9 +121,9 @@ final class XcodeTestOutcomeParserTests: XCTestCase {
 
     func testMultipleFailures_areAllCollectedInOrder() {
         let output = """
-            /Users/dev/Proj/A.swift:1: error: first
-            /Users/dev/Proj/B.swift:2: error: second
-            """
+        /Users/dev/Proj/A.swift:1: error: first
+        /Users/dev/Proj/B.swift:2: error: second
+        """
 
         let outcome = parse(output)
 
@@ -135,9 +135,9 @@ final class XcodeTestOutcomeParserTests: XCTestCase {
     /// pins that a noisy build log doesn't manufacture failure records.
     func testWarnings_produceNoFailureRecords() {
         let output = """
-            /Users/dev/Proj/A.swift:9: warning: unused variable 'x'
-            /Users/dev/Proj/A.swift:9: note: did you mean
-            """
+        /Users/dev/Proj/A.swift:9: warning: unused variable 'x'
+        /Users/dev/Proj/A.swift:9: note: did you mean
+        """
 
         XCTAssertTrue(parse(output).failures.isEmpty, "only `error:` lines are failures")
     }

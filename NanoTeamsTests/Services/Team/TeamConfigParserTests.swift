@@ -375,10 +375,10 @@ final class TeamConfigParserTests: XCTestCase {
     /// End-to-end form of the same assumption, through the parser's own entry point.
     func testParse_trailingCommaConfig_decodesWithoutAnyRepair() throws {
         let config = """
-            {"name":"T","description":"d","roles":[{"name":"Eng","prompt":"p",\
-            "produces_artifacts":["Code"],"requires_artifacts":["Supervisor Task"],"tools":[],}],\
-            "artifacts":[{"name":"Code","description":"c"},],"supervisor_requires":["Code"],}
-            """
+        {"name":"T","description":"d","roles":[{"name":"Eng","prompt":"p",\
+        "produces_artifacts":["Code"],"requires_artifacts":["Supervisor Task"],"tools":[],}],\
+        "artifacts":[{"name":"Code","description":"c"},],"supervisor_requires":["Code"],}
+        """
         let build = try TeamConfigParser.decodeTeamConfig(from: config)
         XCTAssertEqual(build.team.name, "T")
     }
@@ -406,14 +406,14 @@ final class TeamConfigParserTests: XCTestCase {
     /// cannot reconstruct.
     func testDecodeTeamConfig_emptyRolePrompt_reportsTheFieldAndIndexToTheModel() {
         let payload = """
-            {"team_config":{"name":"T","description":"d",
-            "roles":[
-              {"name":"Alpha","prompt":"ok","produces_artifacts":["X"],"requires_artifacts":["Supervisor Task"]},
-              {"name":"Beta","prompt":"","produces_artifacts":["Y"],"requires_artifacts":["X"]}
-            ],
-            "artifacts":[{"name":"X","description":"x"},{"name":"Y","description":"y"}],
-            "supervisor_requires":["Y"]}}
-            """
+        {"team_config":{"name":"T","description":"d",
+        "roles":[
+          {"name":"Alpha","prompt":"ok","produces_artifacts":["X"],"requires_artifacts":["Supervisor Task"]},
+          {"name":"Beta","prompt":"","produces_artifacts":["Y"],"requires_artifacts":["X"]}
+        ],
+        "artifacts":[{"name":"X","description":"x"},{"name":"Y","description":"y"}],
+        "supervisor_requires":["Y"]}}
+        """
         XCTAssertThrowsError(try TeamConfigParser.decodeTeamConfig(from: payload)) { error in
             // This is the string the retry hands back: `describeDecodingError` on
             // the WRAPPER falls through to `localizedDescription`.
@@ -436,11 +436,11 @@ final class TeamConfigParserTests: XCTestCase {
     /// team that used to ship.
     func testDecodeTeamConfig_emptyPromptAndNoName_isTheReportedIncidentShape() {
         let payload = """
-            {"team_config":{"name":"T","description":"d",
-            "roles":[{"prompt":"","produces_artifacts":["X"],"requires_artifacts":["Supervisor Task"]}],
-            "artifacts":[{"name":"X","description":"x"}],
-            "supervisor_requires":["X"]}}
-            """
+        {"team_config":{"name":"T","description":"d",
+        "roles":[{"prompt":"","produces_artifacts":["X"],"requires_artifacts":["Supervisor Task"]}],
+        "artifacts":[{"name":"X","description":"x"}],
+        "supervisor_requires":["X"]}}
+        """
         XCTAssertThrowsError(try TeamConfigParser.decodeTeamConfig(from: payload)) { error in
             let described = TeamConfigParser.describeDecodingError(error)
             XCTAssertTrue(described.contains("prompt"), "got \(described)")
@@ -454,14 +454,14 @@ final class TeamConfigParserTests: XCTestCase {
     /// attributable to the empty prompt and nothing else.
     func testDecodeTeamConfig_sameShapeWithARealPrompt_decodes() throws {
         let payload = """
-            {"team_config":{"name":"T","description":"d",
-            "roles":[
-              {"name":"Alpha","prompt":"ok","produces_artifacts":["X"],"requires_artifacts":["Supervisor Task"]},
-              {"name":"Beta","prompt":"also ok","produces_artifacts":["Y"],"requires_artifacts":["X"]}
-            ],
-            "artifacts":[{"name":"X","description":"x"},{"name":"Y","description":"y"}],
-            "supervisor_requires":["Y"]}}
-            """
+        {"team_config":{"name":"T","description":"d",
+        "roles":[
+          {"name":"Alpha","prompt":"ok","produces_artifacts":["X"],"requires_artifacts":["Supervisor Task"]},
+          {"name":"Beta","prompt":"also ok","produces_artifacts":["Y"],"requires_artifacts":["X"]}
+        ],
+        "artifacts":[{"name":"X","description":"x"},{"name":"Y","description":"y"}],
+        "supervisor_requires":["Y"]}}
+        """
         let build = try TeamConfigParser.decodeTeamConfig(from: payload)
         XCTAssertEqual(build.team.roles.count, 3, "Supervisor + Alpha + Beta")
     }

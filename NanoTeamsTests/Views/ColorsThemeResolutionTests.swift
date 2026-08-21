@@ -76,7 +76,7 @@ final class ColorsThemeResolutionTests: XCTestCase {
         setTheme(.oled)
         let oled = Colors.nsTextPrimary
         XCTAssertFalse(terminal === oled,
-            "nsTextPrimary must return a fresh instance after a same-scheme theme switch (Terminal→OLED) so the new palette resolves immediately, not at next launch.")
+                       "nsTextPrimary must return a fresh instance after a same-scheme theme switch (Terminal→OLED) so the new palette resolves immediately, not at next launch.")
     }
 
     func testNSSurfaceCard_differentInstancePerTheme() {
@@ -85,7 +85,7 @@ final class ColorsThemeResolutionTests: XCTestCase {
         setTheme(.oled)
         let oled = Colors.nsSurfaceCard
         XCTAssertFalse(terminal === oled,
-            "nsSurfaceCard must return a fresh instance per theme.")
+                       "nsSurfaceCard must return a fresh instance per theme.")
     }
 
     // MARK: - Preserved contract: stable instance within a theme
@@ -96,7 +96,7 @@ final class ColorsThemeResolutionTests: XCTestCase {
     func testNSTextPrimary_sameInstanceWithinTheme() {
         setTheme(.umber)
         XCTAssertTrue(Colors.nsTextPrimary === Colors.nsTextPrimary,
-            "nsTextPrimary must be a stable instance WITHIN a theme.")
+                      "nsTextPrimary must be a stable instance WITHIN a theme.")
         XCTAssertTrue(Colors.nsSurfaceCard === Colors.nsSurfaceCard)
         XCTAssertTrue(Colors.nsTextSecondary === Colors.nsTextSecondary)
     }
@@ -106,11 +106,11 @@ final class ColorsThemeResolutionTests: XCTestCase {
     func testNSTextPrimary_resolvesActiveThemePalette() {
         setTheme(.oled)
         assertClose(rgba(Colors.nsTextPrimary, dark: true), expectedRGB(Theme.oledDark.textPrimary),
-            "nsTextPrimary under OLED must resolve oledDark.textPrimary")
+                    "nsTextPrimary under OLED must resolve oledDark.textPrimary")
 
         setTheme(.terminal)
         assertClose(rgba(Colors.nsTextPrimary, dark: true), expectedRGB(Theme.terminalDark.textPrimary),
-            "nsTextPrimary under Terminal must resolve terminalDark.textPrimary")
+                    "nsTextPrimary under Terminal must resolve terminalDark.textPrimary")
     }
 
     func testSwiftUIToken_resolvesFreshAcrossThemeSwitch() {
@@ -119,7 +119,7 @@ final class ColorsThemeResolutionTests: XCTestCase {
         setTheme(.umber)
         let umberAccent = ColorResolution.rgba(Colors.accent, dark: true)
         XCTAssertNotEqual(terminalAccent, umberAccent,
-            "Colors.accent must resolve to the active theme's accent — Terminal (lavender) vs Umber (orange).")
+                          "Colors.accent must resolve to the active theme's accent — Terminal (lavender) vs Umber (orange).")
         assertClose(umberAccent, expectedRGB(Theme.umberDark.accent), "Umber accent value")
     }
 

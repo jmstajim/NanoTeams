@@ -51,7 +51,7 @@ private final class UFCScriptedStreamClient: LLMClient, @unchecked Sendable {
         }
     }
 
-    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
 }
 
 private func ufcToolCallEvent(index: Int, id: String, name: String, args: String) -> StreamEvent {

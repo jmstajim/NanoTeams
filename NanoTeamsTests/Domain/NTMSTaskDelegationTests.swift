@@ -84,7 +84,7 @@ final class NTMSTaskDelegationTests: XCTestCase {
 
     func testMaxDelegationDepth_isThree() {
         XCTAssertEqual(DelegationConstants.maxDelegationDepth, 3,
-            "Hard-cap shipped at 3; changing this requires updating tests + handler logic.")
+                       "Hard-cap shipped at 3; changing this requires updating tests + handler logic.")
     }
 
     func testGeneratedTeamSentinel_isFixed() {

@@ -355,6 +355,34 @@ final class QuickCaptureFormState {
         queuedChatMessages[taskID, default: []].insert(contentsOf: messages, at: 0)
     }
 
+    /// Pops every message whose id is in `ids` in ONE pass over the queue, and
+    /// returns them in the ORDER OF `ids` — the caller's tier order (targeted
+    /// then untargeted) is what feeds the combined answer's body join, while
+    /// the queue itself is stored in arrival order. Ids with no match are
+    /// skipped. Removes the dictionary key when the queue empties —
+    /// `taskIDsWithQueuedMessages` iterates KEYS, and a lingering empty array
+    /// would wake the backstop on every engine-state change, forever.
+    ///
+    /// Replaces the per-id `popFirstQueuedMessage` loops in both drain paths
+    /// (`consumeQueuedSupervisorMessage`, `flushQueuedChatMessage`), whose cost
+    /// was O(batch × queue).
+    func popQueuedMessages(withIDs ids: [UUID], for taskID: Int) -> [QueuedChatMessage] {
+        guard var queue = queuedChatMessages[taskID], !ids.isEmpty else { return [] }
+        let wanted = Set(ids)
+        var byID: [UUID: QueuedChatMessage] = [:]
+        queue.removeAll { msg in
+            guard wanted.contains(msg.id) else { return false }
+            byID[msg.id] = msg
+            return true
+        }
+        if queue.isEmpty {
+            queuedChatMessages.removeValue(forKey: taskID)
+        } else {
+            queuedChatMessages[taskID] = queue
+        }
+        return ids.compactMap { byID[$0] }
+    }
+
     /// Pops the first queued message that satisfies `predicate` and returns it.
     /// Leaves other messages in place. Returns `nil` if no eligible message exists.
     @discardableResult

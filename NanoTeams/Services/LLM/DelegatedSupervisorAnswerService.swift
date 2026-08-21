@@ -118,14 +118,14 @@ enum DelegatedSupervisorAnswerService {
         let questionTurn = ChatMessage(
             role: .user,
             content: """
-                Delegated team "\(targetTeamName)" asks:
-                \(question)
-
-                \(Self.questionTurnBoundaryPhrase) \
-                Answer briefly in plain text. Only the ask_supervisor tool is available in this \
-                exchange. If the question is outside your scope, do not answer — call \
-                ask_supervisor with the question instead.
-                """
+            Delegated team "\(targetTeamName)" asks:
+            \(question)
+            
+            \(Self.questionTurnBoundaryPhrase) \
+            Answer briefly in plain text. Only the ask_supervisor tool is available in this \
+            exchange. If the question is outside your scope, do not answer — call \
+            ask_supervisor with the question instead.
+            """
         )
 
         // Seed with the role's accumulated llmConversation. `tool`-role messages

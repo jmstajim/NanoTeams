@@ -360,10 +360,10 @@ final class BashPermissionServiceTests: XCTestCase {
         // "  rm  " would match no program. A truly blank rule blocks nothing.
         XCTAssertTrue(isDeny(BashPermissionService.evaluate(
             command: "rm -rf /", policy: policy(deny: ["  rm  "]))),
-            "a padded deny rule must be trimmed and still match")
+        "a padded deny rule must be trimmed and still match")
         XCTAssertFalse(isDeny(BashPermissionService.evaluate(
             command: "rm -rf /", policy: policy(deny: ["", "   ", "\n"]))),
-            "blank deny rules must not block a command")
+        "blank deny rules must not block a command")
     }
 
     // MARK: - Segment splitting edges

@@ -86,7 +86,7 @@ final class SearchIndexServiceTests: XCTestCase {
         let loadError = await service.lastLoadError
 
         XCTAssertNotNil(loadError,
-            "Corrupt JSON must surface via `lastLoadError`, not collapse to nil.")
+                        "Corrupt JSON must surface via `lastLoadError`, not collapse to nil.")
     }
 
     // MARK: - B2: walk-error visibility
@@ -111,7 +111,7 @@ final class SearchIndexServiceTests: XCTestCase {
 
         XCTAssertEqual(index.files.count, 1, "Readable A.swift still indexed.")
         XCTAssertFalse(warnings.isEmpty,
-            "Unreadable subdir must surface at least one walk warning — got: \(warnings)")
+                       "Unreadable subdir must surface at least one walk warning — got: \(warnings)")
     }
 
     /// Guard against the related B2 case: a work-folder walk that yields zero
@@ -135,7 +135,7 @@ final class SearchIndexServiceTests: XCTestCase {
 
         XCTAssertEqual(index.files.count, 0)
         XCTAssertFalse(warnings.isEmpty,
-            "Empty-walk-after-error must not masquerade as a clean empty root.")
+                       "Empty-walk-after-error must not masquerade as a clean empty root.")
     }
 
     func testBuild_skipsInternalDir() async throws {
@@ -327,7 +327,7 @@ final class SearchIndexServiceTests: XCTestCase {
         await service.clear()
         let clearError = await service.lastClearError
         XCTAssertNotNil(clearError,
-            "Failed removeItem must surface via lastClearError, not silently succeed.")
+                        "Failed removeItem must surface via lastClearError, not silently succeed.")
     }
 
     func testClear_noOnDiskFile_isNotAnError() async {
@@ -370,13 +370,13 @@ final class SearchIndexServiceTests: XCTestCase {
         // A.swift + nested/Bar.swift = 2 real files. The cycle should NOT
         // produce duplicate or extra file entries.
         XCTAssertEqual(index.files.count, 2,
-            "Real files indexed; cycle didn't introduce phantom entries.")
+                       "Real files indexed; cycle didn't introduce phantom entries.")
         XCTAssertTrue(index.tokens.contains("foo"))
         XCTAssertTrue(index.tokens.contains("bar"))
 
         let warnings = await service.lastIndexWarnings
         XCTAssertTrue(warnings.contains { $0.contains("symlink cycle") },
-            "Cycle skip must surface as a walk warning — got: \(warnings)")
+                      "Cycle skip must surface as a walk warning — got: \(warnings)")
     }
 
     /// A symlink to a sibling (NOT cyclical) should still be followed once.
@@ -429,9 +429,9 @@ final class SearchIndexServiceTests: XCTestCase {
             // Root path — attributes succeeded. Nothing to assert.
         } else {
             XCTAssertFalse(warnings.isEmpty,
-                "Skipped file must surface a walk warning; got empty warnings.")
+                           "Skipped file must surface a walk warning; got empty warnings.")
             XCTAssertTrue(warnings.contains { $0.contains("B.swift") || $0.contains("attribute read failed") },
-                "Warning should reference the failed file or the failure mode — got: \(warnings)")
+                          "Warning should reference the failed file or the failure mode — got: \(warnings)")
         }
     }
 

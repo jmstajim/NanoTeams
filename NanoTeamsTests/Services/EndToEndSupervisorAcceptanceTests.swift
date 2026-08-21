@@ -270,7 +270,7 @@ final class EndToEndSupervisorAcceptanceTests: XCTestCase {
             roleStatuses: ["pm-role": .done, "swe-role": .done]
         )
         return NTMSTask(id: 0, title: "Test", supervisorTask: "Goal",
-            runs: [run], acceptanceMode: acceptanceMode
+                        runs: [run], acceptanceMode: acceptanceMode
         )
     }
 

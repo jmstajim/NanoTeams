@@ -119,8 +119,8 @@ final class AutovisorTeamPolicyTests: XCTestCase {
         XCTAssertEqual(AutovisorTeamPolicy().classify(teamID: "  generated  ", allTeams: [], activeTeam: nil),
                        .generated)
         XCTAssertEqual(AutovisorTeamPolicy(allowGeneration: false)
-                        .classify(teamID: "generated", allTeams: [], activeTeam: nil),
-                       .generationDisabled)
+            .classify(teamID: "generated", allTeams: [], activeTeam: nil),
+            .generationDisabled)
     }
 
     // MARK: - The omit-team_id path (the bypass this feature had to close)

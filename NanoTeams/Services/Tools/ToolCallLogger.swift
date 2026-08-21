@@ -34,7 +34,6 @@ nonisolated final class ToolCallLogger: @unchecked Sendable {
     let logURL: URL
     private let encoder: JSONEncoder
     private let fileManager: FileManager
-    private let queue = DispatchQueue(label: "com.nanoteams.toolcalllogger")
 
     init(logURL: URL, fileManager: FileManager = .default) {
         self.logURL = logURL
@@ -43,35 +42,15 @@ nonisolated final class ToolCallLogger: @unchecked Sendable {
         self.encoder = JSONCoderFactory.makeJSONLEncoder()
     }
 
+    /// Best-effort: never fails tool execution over a logging issue. The append
+    /// body (and the per-FILE serialization that replaced this class's
+    /// per-instance queue — parallel roles of one run share one file, CLAUDE.md
+    /// #45) lives in `JSONLFileLog`, the single home this body was the original
+    /// copy of.
     func append(_ record: ToolCallLogRecord) {
-        queue.sync {
-            do {
-                let data = try encoder.encode(record)
-                var line = data
-                line.append(0x0A)
-
-                let parent = logURL.deletingLastPathComponent()
-                if !fileManager.fileExists(atPath: parent.path) {
-                    try fileManager.createDirectory(at: parent, withIntermediateDirectories: true,
-                                                     attributes: NTMSRepository.internalDirAttributes)
-                }
-
-                if !fileManager.fileExists(atPath: logURL.path) {
-                    fileManager.createFile(atPath: logURL.path, contents: nil)
-                }
-
-                let handle = try FileHandle(forWritingTo: logURL)
-                defer { try? handle.close() }
-
-                try handle.seekToEnd()
-                try handle.write(contentsOf: line)
-            } catch {
-                // Best-effort logging; never fail tool execution due to logging issues.
-                #if DEBUG
-                print("[ToolCallLogger] append failed: \(error)")
-                #endif
-            }
-        }
+        JSONLFileLog.append(
+            record, to: logURL, encoder: encoder, fileManager: fileManager,
+            directoryAttributes: NTMSRepository.internalDirAttributes)
     }
     nonisolated deinit {}
 }

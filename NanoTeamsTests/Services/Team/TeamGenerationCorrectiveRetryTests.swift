@@ -49,7 +49,7 @@ final class TeamGenerationCorrectiveRetryTests: XCTestCase {
             }
         }
 
-        func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [String] { [] }
+        func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [LLMModelInfo] { [] }
     }
 
     // MARK: - Fixtures
@@ -58,17 +58,17 @@ final class TeamGenerationCorrectiveRetryTests: XCTestCase {
     /// `GeneratedTeamConfig.init(from:)` rejects outright — a defect no fallback and no
     /// synthesized default can paper over, so the only way past it is the model fixing it.
     private let badMode = """
-        {"name":"T","description":"d","roles":[{"name":"Eng","prompt":"p",\
-        "produces_artifacts":["Code"],"requires_artifacts":["Supervisor Task"],"tools":[]}],\
-        "artifacts":[{"name":"Code","description":"c"}],"supervisor_requires":["Code"],\
-        "supervisor_mode":"autnomous"}
-        """
+    {"name":"T","description":"d","roles":[{"name":"Eng","prompt":"p",\
+    "produces_artifacts":["Code"],"requires_artifacts":["Supervisor Task"],"tools":[]}],\
+    "artifacts":[{"name":"Code","description":"c"}],"supervisor_requires":["Code"],\
+    "supervisor_mode":"autnomous"}
+    """
 
     private let good = """
-        {"name":"T","description":"d","roles":[{"name":"Eng","prompt":"p",\
-        "produces_artifacts":["Code"],"requires_artifacts":["Supervisor Task"],"tools":[]}],\
-        "artifacts":[{"name":"Code","description":"c"}],"supervisor_requires":["Code"]}
-        """
+    {"name":"T","description":"d","roles":[{"name":"Eng","prompt":"p",\
+    "produces_artifacts":["Code"],"requires_artifacts":["Supervisor Task"],"tools":[]}],\
+    "artifacts":[{"name":"Code","description":"c"}],"supervisor_requires":["Code"]}
+    """
 
     // MARK: - The retry runs
 

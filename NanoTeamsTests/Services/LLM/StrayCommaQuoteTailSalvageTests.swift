@@ -195,8 +195,8 @@ final class StrayCommaQuoteTailSalvageTests: XCTestCase {
     func testProductionShapeFollowedByACleanEnvelope_bothResolve() {
         let envelope =
             #"<|call|>{"name":"edit_file","arguments":{"path":"a","old_text":"x","new_text":"y"},""#
-            + "<|end|>"
-            + #"<|call|>{"name":"read_file","arguments":{"path":"b"}}"# + "<|end|>"
+                + "<|end|>"
+                + #"<|call|>{"name":"read_file","arguments":{"path":"b"}}"# + "<|end|>"
 
         XCTAssertEqual(calls(envelope).map(\.name), ["edit_file", "read_file"])
     }
@@ -213,9 +213,9 @@ final class StrayCommaQuoteTailSalvageTests: XCTestCase {
     func testAnchorMarchedIntoTheNextEnvelope_isRefusedRatherThanSalvaged() {
         let envelope =
             #"<|call|>{"name":"edit_file","arguments":{"path":"a"},""#
-            + "<|end|>"
-            + #"<|call|>{"name":"write_file","arguments":{"content":"func f() {}","path":"b"}}"#
-            + "<|end|>"
+                + "<|end|>"
+                + #"<|call|>{"name":"write_file","arguments":{"content":"func f() {}","path":"b"}}"#
+                + "<|end|>"
 
         XCTAssertEqual(
             calls(envelope).map(\.name), ["write_file"],
@@ -231,7 +231,7 @@ final class StrayCommaQuoteTailSalvageTests: XCTestCase {
     func testHealthyEnvelopeCarryingTheEndMarkerInsideAStringValue_stillResolves() {
         let envelope =
             #"<|call|>{"name":"write_file","arguments":{"content":"write <|end|> to stop","path":"a.md"}}"#
-            + "<|end|>"
+                + "<|end|>"
 
         XCTAssertEqual(calls(envelope).map(\.name), ["write_file"])
         XCTAssertEqual(arguments(envelope)["content"] as? String, "write <|end|> to stop")

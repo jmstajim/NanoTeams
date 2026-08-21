@@ -44,7 +44,7 @@ final class TeamRoleDefinitionCanDelegateTests: XCTestCase {
     func testToolIDsContainsDelegateToTeam_butNoSettings_isFalse() {
         let role = makeRole(toolIDs: [ToolNames.delegateToTeam])
         XCTAssertFalse(role.hasDelegationConfigured,
-            "Old toolID-driven trigger must no longer apply.")
+                       "Old toolID-driven trigger must no longer apply.")
     }
 
     /// Whitelist + delegate_to_team in toolIDs (defensive double-config) still
@@ -88,8 +88,8 @@ final class TeamRoleDefinitionCanDelegateTests: XCTestCase {
             graphLayout: TeamGraphLayout()
         )
         XCTAssertFalse(team.delegationEnabled(for: subordinate),
-            "Subordinate role must not delegate even with settings — peer-status is the gate.")
+                       "Subordinate role must not delegate even with settings — peer-status is the gate.")
         XCTAssertTrue(team.delegationEnabled(for: peer),
-            "Peer role with settings populated → delegation enabled.")
+                      "Peer role with settings populated → delegation enabled.")
     }
 }

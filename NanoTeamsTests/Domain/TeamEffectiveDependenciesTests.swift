@@ -203,7 +203,7 @@ final class TeamRoleDependenciesTests: XCTestCase {
 
         XCTAssertTrue(readyAfterLore.contains(npcRoleID))
         XCTAssertFalse(readyAfterLore.contains(encounterRoleID),
-                        "Encounter Architect must wait for NPC Compendium")
+                       "Encounter Architect must wait for NPC Compendium")
         XCTAssertFalse(readyAfterLore.contains(rulesRoleID))
         XCTAssertFalse(readyAfterLore.contains(qmRoleID))
 
@@ -215,7 +215,7 @@ final class TeamRoleDependenciesTests: XCTestCase {
         )
 
         XCTAssertTrue(readyAfterNpc.contains(encounterRoleID),
-                       "Encounter Architect ready after NPC Compendium is produced")
+                      "Encounter Architect ready after NPC Compendium is produced")
         XCTAssertFalse(readyAfterNpc.contains(rulesRoleID))
         XCTAssertFalse(readyAfterNpc.contains(qmRoleID))
     }

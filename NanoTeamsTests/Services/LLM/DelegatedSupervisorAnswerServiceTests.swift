@@ -179,7 +179,7 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
             }
         }
 
-        func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
+        func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
     }
 
     // MARK: - Helpers
@@ -680,7 +680,7 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
                        "prose escalation instruction contradicts the tool-call-only detection")
         XCTAssertTrue(turn.localizedCaseInsensitiveContains("only"),
                       "turn must state ask_supervisor is the only tool available in this exchange "
-                      + "(the seeded system prompt advertises the role's full toolset)")
+                          + "(the seeded system prompt advertises the role's full toolset)")
         XCTAssertFalse(turn.contains("«"), "guillemets are a one-off delimiter — use plain quotes")
     }
 

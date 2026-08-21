@@ -141,8 +141,16 @@ actor PromptPrefixLedger {
         }
         models[mKey] = modelEntry
 
-        let totalTokens = ContextBudgetPolicy.estimateTokens(
+        // One traversal prices AND fingerprints the request (the pricing used to be
+        // a separate scalar-by-scalar walk here, plus a third in
+        // `warnIfContextBudgetExceeded`, which now consumes this Observation's
+        // `totalPromptTokens` instead). The fingerprint half of the walk is the
+        // detector's contract — it exists to catch prefix REWRITES, so no
+        // append-only shortcut can ever skip bytes — which makes one full walk
+        // per request the honest floor, and three of them pure waste.
+        let fused = PromptPrefixFingerprint.chainAndTokens(
             messages: messages, toolSchemaText: toolSchemaText)
+        let totalTokens = fused.totalPromptTokens
 
         guard owner.accumulatesPrefix else {
             return Observation(
@@ -156,8 +164,7 @@ actor PromptPrefixLedger {
                 floorSampleCount: modelEntry.prefillSampleCount)
         }
 
-        let chain = PromptPrefixFingerprint.chain(
-            messages: messages, toolSchemaText: toolSchemaText)
+        let chain = fused.chain
 
         // Compare first with a placeholder cost, then price only the segments that were actually
         // discarded — estimating tokens is the expensive half and is pointless on a hit.

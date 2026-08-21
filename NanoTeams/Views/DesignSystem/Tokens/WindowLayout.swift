@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Main window, sidebar, and team-board panel layout constants.
-enum WindowLayout {
+nonisolated enum WindowLayout {
     /// Default main window width
     static let mainDefaultWidth: CGFloat = 760
     /// Default main window height

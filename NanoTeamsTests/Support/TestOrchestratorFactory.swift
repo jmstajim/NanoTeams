@@ -164,7 +164,7 @@ final class UnreachableChatClient: LLMClient, @unchecked Sendable {
         AsyncThrowingStream { $0.finish(throwing: URLError(.cannotConnectToHost)) }
     }
 
-    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] {
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] {
         throw URLError(.cannotConnectToHost)
     }
 }

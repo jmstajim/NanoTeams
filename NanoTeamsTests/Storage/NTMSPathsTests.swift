@@ -126,12 +126,19 @@ final class NTMSPathsTests: XCTestCase {
         XCTAssertTrue(url.path.contains("internal/tasks/\(taskID)/runs/\(runID)"))
     }
 
-    func testNetworkLogJSON() {
+    func testNetworkLogJSONL() {
         let taskID = 0
         let runID = 0
-        let url = paths.networkLogJSON(taskID: taskID, runID: runID)
-        XCTAssertTrue(url.path.contains("network_log.json"))
+        let url = paths.networkLogJSONL(taskID: taskID, runID: runID)
+        XCTAssertTrue(url.path.contains("network_log.jsonl"))
         XCTAssertTrue(url.path.contains("internal/tasks/\(taskID)/runs/\(runID)"))
+    }
+
+    /// Pre-2026-08-21 runs wrote a JSON array under the old name; readers fall
+    /// back to it, so the accessor must keep resolving the exact legacy spelling.
+    func testLegacyNetworkLogJSON() {
+        let url = paths.legacyNetworkLogJSON(taskID: 0, runID: 0)
+        XCTAssertTrue(url.path.hasSuffix("network_log.json"))
     }
 
     // MARK: - Internal Build Diagnostic Paths

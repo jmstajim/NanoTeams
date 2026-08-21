@@ -51,7 +51,7 @@ final class TeamRoleDefinitionSkillsTests: XCTestCase {
 
         XCTAssertEqual(current.attachedSkillIDs, ordered,
                        "attachedSkillIDs order is segment-0 byte order — it must survive verbatim, "
-                       + "not be sorted or set-shuffled")
+                           + "not be sorted or set-shuffled")
     }
 
     func testDecode_legacyJSONWithoutKey_defaultsToEmpty() throws {

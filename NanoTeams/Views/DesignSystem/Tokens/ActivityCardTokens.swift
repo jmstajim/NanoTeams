@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Unified design tokens for Team Activity Feed cards.
-enum ActivityCardTokens {
+nonisolated enum ActivityCardTokens {
     /// Avatar size for all card types
     static let avatarSize: CGFloat = 22
     /// Avatar icon glyph size — pinned to `Typography.termSm` (12pt) so every

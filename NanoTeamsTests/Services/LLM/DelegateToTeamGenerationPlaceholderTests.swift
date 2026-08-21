@@ -330,7 +330,7 @@ final class DelegateToTeamGenerationPlaceholderTests: XCTestCase {
             }
         }
 
-        func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
+        func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
     }
 
     /// Throws on stream open — drives the handler's `catch` branch so we
@@ -351,6 +351,6 @@ final class DelegateToTeamGenerationPlaceholderTests: XCTestCase {
                 continuation.finish(throwing: StubError())
             }
         }
-        func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
+        func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
     }
 }

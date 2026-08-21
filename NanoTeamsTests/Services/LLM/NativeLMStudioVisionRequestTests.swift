@@ -221,7 +221,7 @@ final class NativeLMStudioVisionRequestTests: XCTestCase {
         let messages = [
             ChatMessage(role: .user, content: "Hi",
                         imageContent: [ImageContent(base64Data: "ABC",
-                                                     mimeType: "image/jpeg")])
+                                                    mimeType: "image/jpeg")])
         ]
         let request = NativeLMStudioClient.buildRequest(
             config: config(), messages: messages, tools: []

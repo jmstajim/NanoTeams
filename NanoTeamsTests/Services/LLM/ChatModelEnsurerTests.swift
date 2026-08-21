@@ -126,6 +126,27 @@ final class ChatModelEnsurerTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(client.loadUnloadCalls, [])
     }
 
+    /// A server that ANSWERS but cannot list is the opposite decision from one we could not
+    /// reach — and this is the pin that says so, because both used to be an empty array.
+    ///
+    /// Skipping here would defeat the only reason this type exists: an unloaded model would then
+    /// be JIT-loaded by the chat request, and a JIT instance is Auto-Evict eligible with a
+    /// 60-minute idle TTL. Adoption is impossible (nothing was listed), so the load must happen.
+    ///
+    /// RED: route `.unsupported` into the `catch` (`return .skipped`) → no load is issued, and
+    /// LM Studio JIT-loads the chat model behind the ensurer's back.
+    func testEnsureLoaded_listingUnsupported_stillLoadsExplicitly() async throws {
+        let client = RecordingLLMClient()
+        client.listLoadedInstancesUnsupported = true
+        let sut = ChatModelEnsurer()
+
+        try await sut.ensureLoaded(modelName: "qwen", baseURLString: baseURL, client: client)
+
+        XCTAssertEqual(
+            client.loadUnloadCalls, [.load(model: "qwen", baseURL: baseURL)],
+            "a listing-less server must still get an explicit load, not a JIT one")
+    }
+
     /// A load failure is actionable ("model not found") — surfacing it beats a
     /// vague downstream chat error.
     func testEnsureLoaded_loadFailure_throws() async {

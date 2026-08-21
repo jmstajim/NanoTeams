@@ -226,6 +226,12 @@ extension NTMSOrchestrator {
             task.runs[task.runs.count - 1] = run
         }
         guard success else { return false }
+        // A closed task produces no banners (WatchtowerInboxBuilder gates on closedAt),
+        // so its stored dismissals can never match anything again — reclaim them now
+        // instead of waiting for the sampling GC to load the task.
+        if let workFolderID = snapshot?.projection.id {
+            configuration.forgetDismissals(workFolderID: workFolderID, taskID: taskID)
+        }
         stopEngine(for: taskID)
         return true
     }

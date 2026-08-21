@@ -47,8 +47,6 @@ nonisolated protocol TaskRepository: Sendable {
     /// switch latency on the fast path.
     func setActiveTaskID(at workFolderRoot: URL, taskID: Int?) throws
     func deleteTask(at workFolderRoot: URL, taskID: Int) throws -> WorkFolderContext
-    // periphery:ignore - test-only API; production must use updateTaskOnly (CLAUDE.md invariant #6)
-    func updateTask(at workFolderRoot: URL, task: NTMSTask) throws -> WorkFolderContext
     func loadTask(at workFolderRoot: URL, taskID: Int) throws -> NTMSTask
     func updateTaskOnly(at workFolderRoot: URL, task: NTMSTask) throws
 }

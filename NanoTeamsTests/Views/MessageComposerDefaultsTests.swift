@@ -144,7 +144,7 @@ final class MessageComposerDefaultsTests: XCTestCase {
                             isSubmitting: false
                         )
                         XCTAssertEqual(action, .insertNewline,
-                            "editor mode must insert newline (enterSends=\(enterSends) shift=\(shift) cmd=\(command) canSubmit=\(canSubmit))")
+                                       "editor mode must insert newline (enterSends=\(enterSends) shift=\(shift) cmd=\(command) canSubmit=\(canSubmit))")
                     }
                 }
             }

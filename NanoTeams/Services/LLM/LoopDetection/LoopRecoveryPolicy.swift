@@ -132,17 +132,17 @@ nonisolated enum LoopRecoveryPolicy {
     private static func nudgeText(signal: LoopSignal, attempt: Int) -> String {
         let escalation = attempt >= 2
             ? " This has now happened \(attempt) times in a row. Do not restate the plan or "
-                + "re-read anything: make the single smallest tool call that moves the work forward, "
-                + "or say in one sentence what is blocking you."
+            + "re-read anything: make the single smallest tool call that moves the work forward, "
+            + "or say in one sentence what is blocking you."
             : " Do not re-derive the reasoning it was part-way through — decide from what is "
-                + "already in this conversation and continue with a tool call. If you genuinely "
-                + "cannot decide, say in one sentence what is blocking you."
+            + "already in this conversation and continue with a tool call. If you genuinely "
+            + "cannot decide, say in one sentence what is blocking you."
         return """
-            \(nudgeBlockOpen)
-            \(nudgePrefix) (\(signal.scope)): \(signal.diagnostic). You were not shown it.\
-            \(escalation)
-            \(nudgeBlockClose)
-            """
+        \(nudgeBlockOpen)
+        \(nudgePrefix) (\(signal.scope)): \(signal.diagnostic). You were not shown it.\
+        \(escalation)
+        \(nudgeBlockClose)
+        """
     }
 
     private static func stuckQuestion(signal: LoopSignal, roleName: String) -> String {

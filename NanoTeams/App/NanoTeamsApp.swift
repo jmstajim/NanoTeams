@@ -36,6 +36,14 @@ struct NanoTeamsApp: App {
     /// settings surface that picks a model so opening multiple cards on
     /// the same server doesn't re-issue `/api/v1/models`.
     @State private var modelCatalog = ModelCatalog()
+    /// The benchmark's measuring loop and its scan of what each provider has.
+    ///
+    /// Owned here rather than by `BenchmarkSettingsView` because a sweep over
+    /// every model on the machine runs for the better part of an hour, and
+    /// `SettingsView` swaps its content on every tab switch — state held by that
+    /// view loses its progress the first time the user looks at anything else.
+    /// Closing Settings deliberately does not stop it.
+    @State private var benchmarkSweep: BenchmarkSweepRunner
     /// Single source of truth for the active theme — System / Light / Dark /
     /// OLED / Arctic / ... Observed at app root so a switch invalidates every
     /// descendant `body`; `Colors.themed(...)` reads `Theme.current` per
@@ -59,6 +67,39 @@ struct NanoTeamsApp: App {
         _dictation = State(initialValue: DictationService(
             onErrorSurfaced: { message in orchestrator.lastErrorMessage = message }
         ))
+
+        let catalog = ModelCatalog()
+        _modelCatalog = State(initialValue: catalog)
+        _benchmarkSweep = State(initialValue: Self.makeBenchmarkSweep(
+            store: orchestrator, catalog: catalog))
+    }
+
+    /// Assembles the benchmark's measuring loop.
+    ///
+    /// Every seam of `GenerationBenchmarkRunner` is passed explicitly because each of its `nil`s
+    /// would resolve OUTWARD to a live server (CLAUDE.md #49) — and this is now the app's single
+    /// construction site for it, so the arguments are stated once, here, where they can be read
+    /// beside each other.
+    private static func makeBenchmarkSweep(
+        store: NTMSOrchestrator, catalog: ModelCatalog
+    ) -> BenchmarkSweepRunner {
+        let history = BenchmarkHistoryStore()
+        let configuration = store.configuration
+        return BenchmarkSweepRunner(
+            runner: GenerationBenchmarkRunner(
+                client: LLMClientRouter(),
+                // The single construction site, and therefore the kill switch: swapping this one
+                // argument disables every provenance probe, websocket included, without a setting
+                // to maintain.
+                probe: ServerProvenanceRouter(),
+                store: history,
+                // The app's own H1 hygiene check: roles stream concurrently by design, and a
+                // sample taken while another stream shares the machine measures both.
+                isBusy: { [weak store] in store?.hasRunningTasks ?? false }),
+            history: history,
+            discovery: ModelCatalogDiscovery(catalog: catalog),
+            isBusy: { [weak store] in store?.hasRunningTasks ?? false },
+            settings: configuration)
     }
 
     /// Resolved active theme — single point that decodes the persisted raw
@@ -165,6 +206,8 @@ struct NanoTeamsApp: App {
                 .environment(dictation)
                 .environment(appUpdateState)
                 .environment(modelCatalog)
+
+                .environment(benchmarkSweep)
                 // Without this, Test Connection can report SUCCESS while the status
                 // strip keeps saying OFFLINE until the next poll tick.
                 .environment(llmStatusMonitor)

@@ -101,9 +101,9 @@ final class EndToEndRoleAcceptanceReviewTests: NTMSOrchestratorTestBase, @unchec
 
         await sut.mutateTask(taskID: id) { task in
             let a = StepExecution(id: "pm", role: .productManager, title: "PM",
-                                   status: .done)
+                                  status: .done)
             let b = StepExecution(id: "tech_lead", role: .techLead, title: "TL",
-                                   status: .done)
+                                  status: .done)
             var run = Run(id: 0, steps: [a, b], roleStatuses: [
                 "pm": .needsAcceptance,
                 "tech_lead": .needsAcceptance,
@@ -142,7 +142,7 @@ final class EndToEndRoleAcceptanceReviewTests: NTMSOrchestratorTestBase, @unchec
         let id = await seedTaskWithNeedsAcceptanceStep()
 
         await sut.requestRevision(taskID: id, roleID: "pm",
-                                   comment: "Add more detail about scaling.")
+                                  comment: "Add more detail about scaling.")
 
         let run = sut.loadedTask(id)?.runs.last
         XCTAssertEqual(run?.roleStatuses["pm"], .revisionRequested,
@@ -189,7 +189,7 @@ final class EndToEndRoleAcceptanceReviewTests: NTMSOrchestratorTestBase, @unchec
         }
 
         await sut.requestRevision(taskID: id, roleID: "pm",
-                                   comment: "Expand section 2.")
+                                  comment: "Expand section 2.")
 
         let step = sut.loadedTask(id)?.runs.last?.steps.first { $0.id == "pm" }
         XCTAssertFalse(step?.artifacts.isEmpty ?? true,
@@ -210,7 +210,7 @@ final class EndToEndRoleAcceptanceReviewTests: NTMSOrchestratorTestBase, @unchec
 
         // Now the role is .accepted — requesting a revision must still flip it
         await sut.requestRevision(taskID: id, roleID: "pm",
-                                   comment: "Actually I want changes")
+                                  comment: "Actually I want changes")
 
         let run = sut.loadedTask(id)?.runs.last
         XCTAssertEqual(run?.roleStatuses["pm"], .revisionRequested,

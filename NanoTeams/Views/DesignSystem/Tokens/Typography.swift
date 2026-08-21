@@ -12,7 +12,7 @@ import SwiftUI
 /// named tokens pin the exact size/weight for the call sites that go through
 /// them. Back-compat token names (`subheadline`, `caption`, …) are preserved
 /// and re-pointed to mono so existing views keep compiling.
-enum Typography {
+nonisolated enum Typography {
     // MARK: - Mono helper
 
     private static func term(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {

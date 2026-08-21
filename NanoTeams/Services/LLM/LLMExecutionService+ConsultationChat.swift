@@ -39,10 +39,10 @@ extension LLMExecutionService {
         messages.append(LLMMessage(
             role: .user,
             content: """
-                Current Task:
-                Title: \(task.title)
-                Supervisor Task: \(task.effectiveSupervisorBrief)
-                """
+            Current Task:
+            Title: \(task.title)
+            Supervisor Task: \(task.effectiveSupervisorBrief)
+            """
         ))
 
         // Inject the role's own artifacts

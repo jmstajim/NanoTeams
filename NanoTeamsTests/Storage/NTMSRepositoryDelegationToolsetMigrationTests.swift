@@ -53,9 +53,9 @@ final class NTMSRepositoryDelegationToolsetMigrationTests: XCTestCase {
         let changed = repository.normalizeDelegationToolset(teams: &teams)
         XCTAssertTrue(changed, "Migration must report a mutation.")
         XCTAssertFalse(teams[0].roles[0].toolIDs.contains(ToolNames.delegateToTeam),
-            "delegate_to_team must be stripped — it auto-injects from settings now.")
+                       "delegate_to_team must be stripped — it auto-injects from settings now.")
         XCTAssertTrue(teams[0].roles[0].toolIDs.contains(ToolNames.readFile),
-            "Non-delegation tools must remain untouched.")
+                      "Non-delegation tools must remain untouched.")
         XCTAssertTrue(teams[0].roles[0].toolIDs.contains(ToolNames.askSupervisor))
     }
 
@@ -71,7 +71,7 @@ final class NTMSRepositoryDelegationToolsetMigrationTests: XCTestCase {
         var teams = [makeTeam(roles: [role])]
         _ = repository.normalizeDelegationToolset(teams: &teams)
         XCTAssertEqual(teams[0].roles[0].toolIDs, [ToolNames.readFile],
-            "All 4 delegation tools (+ legacy list_teams) must be stripped; non-delegation tools preserved.")
+                       "All 4 delegation tools (+ legacy list_teams) must be stripped; non-delegation tools preserved.")
     }
 
     // MARK: - Idempotent
@@ -83,7 +83,7 @@ final class NTMSRepositoryDelegationToolsetMigrationTests: XCTestCase {
         XCTAssertTrue(firstChanged)
         let secondChanged = repository.normalizeDelegationToolset(teams: &teams)
         XCTAssertFalse(secondChanged,
-            "Second call must be a no-op — idempotency is the self-healing contract.")
+                       "Second call must be a no-op — idempotency is the self-healing contract.")
     }
 
     // MARK: - Preserves settings + reportsTo
@@ -103,11 +103,11 @@ final class NTMSRepositoryDelegationToolsetMigrationTests: XCTestCase {
         _ = repository.normalizeDelegationToolset(teams: &teams)
 
         XCTAssertEqual(teams[0].roles[0].allowedDelegationTeamIDs, ["whitelisted-team-id"],
-            "Whitelist must survive migration.")
+                       "Whitelist must survive migration.")
         XCTAssertTrue(teams[0].roles[0].allowDelegationToGeneratedTeams,
-            "Generated permission must survive migration.")
+                      "Generated permission must survive migration.")
         XCTAssertEqual(teams[0].settings.hierarchy.reportsTo, ["someOtherRole": "sup"],
-            "Hierarchy untouched — only toolIDs is mutated.")
+                       "Hierarchy untouched — only toolIDs is mutated.")
     }
 
     // MARK: - No-op when clean
@@ -166,13 +166,13 @@ final class NTMSRepositoryDelegationToolsetMigrationTests: XCTestCase {
         let role = cContext.workFolder.teams.first { $0.templateID == "codingAgent" }?
             .roles.first { !$0.isSupervisor }
         XCTAssertFalse(role?.toolIDs.contains(ToolNames.delegateToTeam) ?? true,
-            "openOrCreateWorkFolder must invoke normalizeDelegationToolset and strip delegate_to_team from toolIDs.")
+                       "openOrCreateWorkFolder must invoke normalizeDelegationToolset and strip delegate_to_team from toolIDs.")
         XCTAssertFalse(role?.toolIDs.contains("list_teams") ?? true,
-            "openOrCreateWorkFolder must strip legacy list_teams literal from toolIDs.")
+                       "openOrCreateWorkFolder must strip legacy list_teams literal from toolIDs.")
         // Sanity: the role's delegation settings are NOT touched — Coding
         // Agent should still report `hasDelegationConfigured == true` from
         // its template-default whitelist.
         XCTAssertTrue(role?.hasDelegationConfigured ?? false,
-            "Migration must not clear delegation settings — only toolIDs is mutated.")
+                      "Migration must not clear delegation settings — only toolIDs is mutated.")
     }
 }

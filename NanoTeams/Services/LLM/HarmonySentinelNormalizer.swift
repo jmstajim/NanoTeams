@@ -48,6 +48,12 @@ nonisolated enum HarmonySentinelNormalizer {
     /// on its way to an unrelated brace.
     private static let maxDebrisRun = 20
 
+    /// Longest normalizable needle, in characters: prefix + debris run + `{`.
+    /// One input to `StreamMarkerWindow.harmonyNeedleSpan` — the per-delta
+    /// detection window must be able to hold a whole sentinel that arrived split
+    /// across deltas.
+    static let maxNeedleSpan = alienPrefix.count + maxDebrisRun + 1
+
     /// Rewrites every mangled opening sentinel to `<|call|>`, leaving everything else
     /// byte-identical.
     ///
@@ -61,13 +67,14 @@ nonisolated enum HarmonySentinelNormalizer {
     ///     there applies here too: the permissiveness of shape recognition scales with
     ///     the strength of the intent signal, and a bare mangled token is not one.
     static func normalize(_ text: String) -> String {
-        // Two read-only fast paths, in ascending cost, before anything is allocated. This
-        // runs on the WHOLE accumulated buffer on every content delta until a marker is
-        // found, so an unconditional rebuild is quadratic in the reply length — and the
-        // case that reaches it is not exotic: a partially-arrived sentinel is unmatched for
-        // a few deltas, and a model writing prose about `<|tool_call` is unmatched for the
-        // rest of the response.
-        guard text.contains(alienPrefix), hasNormalizableOccurrence(in: text) else {
+        // Two read-only fast paths before anything is allocated. Since 2026-08-21 the
+        // per-delta caller no longer reaches this with the whole accumulated buffer:
+        // `StreamMarkerWindow.harmonyNeedleArrived` scans only the delta plus a
+        // needle-sized overlap, and this function runs on the FULL buffer at most
+        // once per stream, on the delta that completed a needle. (The previous
+        // guard here was CLAUDE.md #106 in the flesh: allocation-free but O(buffer)
+        // per delta — the gate itself was the quadratic it claimed to prevent.)
+        guard text.contains(alienPrefix), hasNormalizableOccurrence(in: text[...]) else {
             return text
         }
 
@@ -78,7 +85,7 @@ nonisolated enum HarmonySentinelNormalizer {
         while let hit = text.range(of: alienPrefix, range: cursor..<text.endIndex) {
             result.append(contentsOf: text[cursor..<hit.lowerBound])
 
-            if let payload = payloadStart(in: text, after: hit.upperBound) {
+            if let payload = payloadStart(in: text[...], after: hit.upperBound) {
                 result.append(HarmonyToolCallParser.callMarker)
                 // The debris run can CARRY the call's identity: `gemma-4-26b-a4b-qat`
                 // writes `<|tool_call>call:edit_file{…}` (network_log.json, 2026-08-13),
@@ -104,7 +111,10 @@ nonisolated enum HarmonySentinelNormalizer {
 
     /// Whether at least one occurrence would actually be rewritten. Allocation-free, and
     /// bounded per occurrence by `maxDebrisRun`, so the no-op case stays a pure scan.
-    private static func hasNormalizableOccurrence(in text: String) -> Bool {
+    /// Takes a `Substring` so `StreamMarkerWindow` can ask about a bounded window
+    /// without copying it — the answer for a window is the answer for the buffer,
+    /// because a needle wholly inside the buffer lies wholly inside some window.
+    static func hasNormalizableOccurrence(in text: Substring) -> Bool {
         var cursor = text.startIndex
         while let hit = text.range(of: alienPrefix, range: cursor..<text.endIndex) {
             if payloadStart(in: text, after: hit.upperBound) != nil { return true }
@@ -136,7 +146,7 @@ nonisolated enum HarmonySentinelNormalizer {
 
     /// Index of the payload's opening `{`, or `nil` when the debris run disqualifies the
     /// match (too long, or interrupted by whitespace).
-    private static func payloadStart(in text: String, after start: String.Index) -> String.Index? {
+    private static func payloadStart(in text: Substring, after start: String.Index) -> String.Index? {
         var index = start
         var scanned = 0
         while index < text.endIndex, scanned < maxDebrisRun {

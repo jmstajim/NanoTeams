@@ -101,24 +101,25 @@ extension LLMExecutionService {
         let toolSchemaText = NativeLMStudioClient.toolSchemaTextForMeasurement(
             tools: tools, messages: messagesToSend)
 
-        // 2b-bis. An overflowing prompt is not rejected — it is truncated from the START,
-        // dropping the system prompt and tool catalog, and answered HTTP 200. Warn before
-        // sending so the user can tell "the model ignored its instructions" from "the model
-        // never received them".
-        await warnIfContextBudgetExceeded(
-            stepID: stepID, taskID: task.id, client: client, config: config,
-            toolSchemaText: toolSchemaText, messages: messagesToSend)
-
-        // 2b-ter. Fingerprint what we are about to send against what this step sent last, so a
+        // 2b-bis. Fingerprint what we are about to send against what this step sent last, so a
         // silent prompt-prefix (KV) cache miss can be attributed. Recorded BEFORE the send: the
         // server's own numbers only arrive at stream end, and combining the two is what
-        // separates "we broke our own prefix" from "the server dropped it".
+        // separates "we broke our own prefix" from "the server dropped it". The record also
+        // PRICES the request (one fused walk), which is what the budget warning below consumes.
         let prefixObservation = await prefixLedger.record(
             baseURL: config.baseURLString,
             model: config.modelName,
             owner: .step(taskID: task.id, stepID: stepID),
             messages: messagesToSend,
             toolSchemaText: toolSchemaText)
+
+        // 2b-ter. An overflowing prompt is not rejected — it is truncated from the START,
+        // dropping the system prompt and tool catalog, and answered HTTP 200. Warn before
+        // sending so the user can tell "the model ignored its instructions" from "the model
+        // never received them".
+        await warnIfContextBudgetExceeded(
+            stepID: stepID, taskID: task.id, client: client, config: config,
+            promptTokens: prefixObservation.totalPromptTokens)
 
         let streamResult = try await performStreamingCall(
             stepID: stepID,
@@ -399,8 +400,7 @@ extension LLMExecutionService {
         taskID: Int,
         client: any LLMClient,
         config: LLMConfig,
-        toolSchemaText: String,
-        messages: [ChatMessage]
+        promptTokens estimate: Int
     ) async {
         let stepKey = TaskStepKey(taskID: taskID, stepID: stepID)
         // A missing entry means the step is not executing — `?.` yields nil, which fails
@@ -426,14 +426,12 @@ extension LLMExecutionService {
             if contextLength != nil { probedContextLengths[cacheKey] = contextLength }
         }
 
-        // No window → the verdict below can only ever be `.unknown`. Bail before
-        // the estimate: it walks the WHOLE conversation scalar-by-scalar, and on
-        // a provider that never reports a window it would be recomputed and
-        // discarded on every iteration for the life of the step.
+        // No window → the verdict below can only ever be `.unknown`.
+        // The estimate arrives precomputed: it is `PromptPrefixLedger.record`'s
+        // `totalPromptTokens`, priced in the same walk that fingerprints the
+        // request — this function no longer re-walks the conversation.
         guard let contextLength else { return }
 
-        let estimate = ContextBudgetPolicy.estimateTokens(
-            messages: messages, toolSchemaText: toolSchemaText)
         guard case .exceeded(let promptTokens, let window) =
             ContextBudgetPolicy.verdict(promptTokens: estimate, contextLength: contextLength)
         else { return }

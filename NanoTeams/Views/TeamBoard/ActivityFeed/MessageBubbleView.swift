@@ -241,32 +241,32 @@ struct MessageBubbleView: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     Group {
-                    if let systemNotice {
-                        // The runtime talking to the model on the user's behalf.
-                        // Collapsed to a dim one-liner that opens the full text
-                        // in a window — including in debug mode, where the only
-                        // extra turns are context-LESS ones, which resolve to
-                        // nil and keep rendering as prose.
-                        //
-                        // `.serverError` used to be a full-width red card here;
-                        // its urgency now lives in this row's red label, and the
-                        // row stays live because in-place content rewrites fail
-                        // `MessageBubbleView.==` and force a re-render.
-                        SystemNoticeRow(
-                            notice: systemNotice,
-                            messageID: message.id,
-                            fullText: content
-                        )
-                    } else if message.sourceContext == .supervisorMessage {
-                        contentText
-                            .padding(ActivityCardTokens.cardPadding)
-                            .background(
-                                RoundedRectangle.squircle(ActivityCardTokens.cornerRadius)
-                                    .fill(Colors.surfaceElevated)
+                        if let systemNotice {
+                            // The runtime talking to the model on the user's behalf.
+                            // Collapsed to a dim one-liner that opens the full text
+                            // in a window — including in debug mode, where the only
+                            // extra turns are context-LESS ones, which resolve to
+                            // nil and keep rendering as prose.
+                            //
+                            // `.serverError` used to be a full-width red card here;
+                            // its urgency now lives in this row's red label, and the
+                            // row stays live because in-place content rewrites fail
+                            // `MessageBubbleView.==` and force a re-render.
+                            SystemNoticeRow(
+                                notice: systemNotice,
+                                messageID: message.id,
+                                fullText: content
                             )
-                    } else {
-                        contentText
-                    }
+                        } else if message.sourceContext == .supervisorMessage {
+                            contentText
+                                .padding(ActivityCardTokens.cardPadding)
+                                .background(
+                                    RoundedRectangle.squircle(ActivityCardTokens.cornerRadius)
+                                        .fill(Colors.surfaceElevated)
+                                )
+                        } else {
+                            contentText
+                        }
                     }
                     // Zero above the content when a thinking row precedes it —
                     // that pairing is the whole point of the status row's

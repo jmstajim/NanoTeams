@@ -106,11 +106,26 @@ nonisolated struct LMStudioDownloadedModelStore: DownloadedModelStore {
         }
     }
 
+    /// How many QUANTIZATIONS the folder holds — which is not the same as how many `.gguf` files
+    /// are in it.
+    ///
+    /// A multimodal GGUF repo ships its vision projector as a second `.gguf` beside the weights
+    /// (observed on disk: `Qwythos-9B-…-Q4_K_M.gguf` next to `mmproj-Qwythos-9B-…-F16.gguf`), and
+    /// counting it made the card announce "2 quantizations" for a model that has one. The
+    /// projector is a companion to the SAME quantization, not an alternative to it, and the number
+    /// on that row is the user's only clue about what Remove takes away.
+    ///
+    /// Matched on the `mmproj-` prefix, which is the naming convention llama.cpp emits and both
+    /// LM Studio and the GGUF repackagers preserve. A projector that ever failed to match would
+    /// only restore today's over-count, never hide a real quantization.
     private func ggufCount(in url: URL) -> Int {
         guard let entries = try? fileManager.contentsOfDirectory(
             at: url, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
         ) else { return 0 }
-        return entries.filter { $0.pathExtension.lowercased() == "gguf" }.count
+        return entries.filter {
+            $0.pathExtension.lowercased() == "gguf"
+                && !$0.lastPathComponent.lowercased().hasPrefix("mmproj-")
+        }.count
     }
 
     /// Recursive size. Prefers allocated size (what the volume actually spends)

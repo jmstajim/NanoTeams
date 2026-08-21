@@ -63,7 +63,7 @@ private final class DTSilentClient: LLMClient, @unchecked Sendable {
         callCount += 1
         return AsyncThrowingStream { $0.finish() }
     }
-    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
 }
 
 /// Emits one content delta carrying a valid `GeneratedTeamConfig` body, so
@@ -104,7 +104,7 @@ private final class DTGeneratingClient: LLMClient, @unchecked Sendable {
             continuation.finish()
         }
     }
-    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
 }
 
 /// Replays a fixed script of `StreamEvent`s, then finishes. Drives
@@ -131,7 +131,7 @@ private final class DTScriptedStreamClient: LLMClient, @unchecked Sendable {
             continuation.finish()
         }
     }
-    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
 }
 
 // MARK: - handleDelegateToTeam: pre-flight, resolution and hand-off
@@ -888,7 +888,7 @@ final class DelegationAwaiterUncoveredArmsTests: XCTestCase {
         // against the very bug this line exists to catch (verified by mutation).
         XCTAssertTrue(envelope.contains("exceeded the 0-second timeout"),
                       "the envelope must report the budget that actually elapsed, not the shipped "
-                      + "constant — the model reads this. envelope=\(envelope)")
+                          + "constant — the model reads this. envelope=\(envelope)")
         XCTAssertTrue(delegate.awaitedTaskIDs.isEmpty,
                       "the deadline is checked BEFORE awaiting, or a wedged child is waited on anyway")
         XCTAssertEqual(delegate.stopEngineCalls, [dtChildTID],

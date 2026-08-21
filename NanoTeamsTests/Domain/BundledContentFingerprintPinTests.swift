@@ -36,10 +36,10 @@ final class BundledContentFingerprintPinTests: XCTestCase {
             actual, Self.expectedFingerprint,
             """
             Bundled content changed.
-
+            
             The reconcile gate is MARKETING_VERSION, not content — so this change \
             reaches NO existing work folder until that version is bumped.
-
+            
             1. Bump MARKETING_VERSION in NanoTeams.xcodeproj/project.pbxproj \
             (both app-target entries).
             2. Set `expectedFingerprint` in this test to: \(actual)
@@ -73,11 +73,11 @@ final class BundledContentFingerprintPinTests: XCTestCase {
             keys, known,
             """
             The system-prompt chip catalog changed.
-
+            
             If you ADDED a chip: decide whether it needs a chip-or-append \
             fallback in TemplateResolver.resolveSystemPrompt. Without one it \
             never reaches CUSTOM teams (every "New Team" is custom), forever.
-
+            
             Then update `known` here.
             """
         )

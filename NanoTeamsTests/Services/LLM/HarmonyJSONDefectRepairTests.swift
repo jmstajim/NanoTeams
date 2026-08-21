@@ -1056,15 +1056,15 @@ final class HarmonyJSONDefectRepairTests: XCTestCase {
     /// `new_text` is shortened (the run's was 2478 bytes); `old_text` is verbatim.
     private static let composedDefectEnvelope =
         "<|call|>"
-        + #"{"name":"edit_file","arguments":{"new_text":"const TEX_SIZE = 16;\n",path":"CubeCraft/game.js","old_text":"  const GROUND_COLOR = [ 70, 110, 50 ];    // floor plane\n"}"#
-        + "<|end|>"
+            + #"{"name":"edit_file","arguments":{"new_text":"const TEX_SIZE = 16;\n",path":"CubeCraft/game.js","old_text":"  const GROUND_COLOR = [ 70, 110, 50 ];    // floor plane\n"}"#
+            + "<|end|>"
 
     /// Same composition, but the broken key is NOT identifier-shaped (`my-path`), so
     /// `repairMissingQuoteBeforeJSONKey` cannot match and no repair changes the bytes.
     private static let unrepairableComposedEnvelope =
         "<|call|>"
-        + #"{"name":"edit_file","arguments":{"new_text":"const A = 1;\n",my-path":"a/b.js","old_text":"x = [ 1, 2 ];  // keep\n"}"#
-        + "<|end|>"
+            + #"{"name":"edit_file","arguments":{"new_text":"const A = 1;\n",my-path":"a/b.js","old_text":"x = [ 1, 2 ];  // keep\n"}"#
+            + "<|end|>"
 
     /// Sanity for the rescue tests below: on the UNREPAIRED bytes the walker's mid-string
     /// EOF salvage anchors on the `]` INSIDE `old_text`'s value and truncates the span
@@ -1103,7 +1103,7 @@ final class HarmonyJSONDefectRepairTests: XCTestCase {
             args?["old_text"] as? String,
             "  const GROUND_COLOR = [ 70, 110, 50 ];    // floor plane\n",
             "old_text must survive COMPLETE — the model sent it complete; truncating it at "
-            + "the `]` (the walker's salvage anchor) is the poisoning this rescue removes")
+                + "the `]` (the walker's salvage anchor) is the poisoning this rescue removes")
     }
 
     /// The rescue consumes exactly its own `<|call|>…<|end|>` block: a healthy sibling

@@ -59,9 +59,9 @@ final class XcodeHandlerEnvelopeCoverageTests: XCTestCase {
     /// RED: change `log: success ? "" : log` to always `log` → the emptiness assertion fails.
     func testBuild_success_reportsSuccessAndShipsNoLog() throws {
         let runner = RecordingXcodebuildRunner(responses: [.ok("""
-            Building App
-            ** BUILD SUCCEEDED **
-            """)])
+        Building App
+        ** BUILD SUCCEEDED **
+        """)])
         let tool = RunXcodebuildTool(workFolderRoot: root, runner: runner)
 
         let result = tool.handle(context: context, args: [:])
@@ -83,10 +83,10 @@ final class XcodeHandlerEnvelopeCoverageTests: XCTestCase {
     func testBuild_failure_shipsLogExitCodeAndRelativizedIssues() throws {
         let sourcePath = root.appendingPathComponent("Sources/Counter.swift").path
         let runner = RecordingXcodebuildRunner(responses: [.failed(65, stdout: """
-            \(sourcePath):12:5: error: cannot find 'foo' in scope
-            \(sourcePath):20:1: warning: unused variable 'bar'
-            ** BUILD FAILED **
-            """)])
+        \(sourcePath):12:5: error: cannot find 'foo' in scope
+        \(sourcePath):20:1: warning: unused variable 'bar'
+        ** BUILD FAILED **
+        """)])
         let tool = RunXcodebuildTool(workFolderRoot: root, runner: runner)
 
         let result = tool.handle(context: context, args: [:])
@@ -162,10 +162,10 @@ final class XcodeHandlerEnvelopeCoverageTests: XCTestCase {
     /// RED: drop `.caseInsensitive` from `parseTestOutcome`'s `count(_:)` → `passed` becomes 0.
     func testTests_success_reportsTheParsedPassCountAndNoLog() throws {
         let runner = RecordingXcodebuildRunner(responses: [.ok("""
-            Test case 'AlphaTests.testOne()' passed on 'My Mac - NanoTeams (123)'
-            Test case 'AlphaTests.testTwo()' passed on 'My Mac - NanoTeams (123)'
-            ** TEST SUCCEEDED **
-            """)])
+        Test case 'AlphaTests.testOne()' passed on 'My Mac - NanoTeams (123)'
+        Test case 'AlphaTests.testTwo()' passed on 'My Mac - NanoTeams (123)'
+        ** TEST SUCCEEDED **
+        """)])
         let tool = RunXcodetestsTool(workFolderRoot: root, runner: runner)
 
         let result = tool.handle(context: context, args: [:])
@@ -186,11 +186,11 @@ final class XcodeHandlerEnvelopeCoverageTests: XCTestCase {
     func testTests_failure_shipsFailureRecordsWithRelativePaths() throws {
         let testPath = root.appendingPathComponent("Tests/AlphaTests.swift").path
         let runner = RecordingXcodebuildRunner(responses: [.failed(65, stdout: """
-            Test case 'AlphaTests.testOne()' passed on 'My Mac - NanoTeams (123)'
-            Test case 'AlphaTests.testTwo()' failed on 'My Mac - NanoTeams (123)'
-            \(testPath):25: error: XCTAssertEqual failed: ("1") is not equal to ("2")
-            ** TEST FAILED **
-            """)])
+        Test case 'AlphaTests.testOne()' passed on 'My Mac - NanoTeams (123)'
+        Test case 'AlphaTests.testTwo()' failed on 'My Mac - NanoTeams (123)'
+        \(testPath):25: error: XCTAssertEqual failed: ("1") is not equal to ("2")
+        ** TEST FAILED **
+        """)])
         let tool = RunXcodetestsTool(workFolderRoot: root, runner: runner)
 
         let result = tool.handle(context: context, args: [:])
@@ -217,9 +217,9 @@ final class XcodeHandlerEnvelopeCoverageTests: XCTestCase {
     /// RED: change `exitedCleanly && failed == 0` to just `exitedCleanly` → this fails.
     func testTests_zeroExitButParsedFailures_isNotReportedAsSuccess() throws {
         let runner = RecordingXcodebuildRunner(responses: [.ok("""
-            Test case 'AlphaTests.testTwo()' failed on 'My Mac - NanoTeams (123)'
-            /elsewhere/AlphaTests.swift:9: error: boom
-            """)])
+        Test case 'AlphaTests.testTwo()' failed on 'My Mac - NanoTeams (123)'
+        /elsewhere/AlphaTests.swift:9: error: boom
+        """)])
         let tool = RunXcodetestsTool(workFolderRoot: root, runner: runner)
 
         let data = try decodedData(tool.handle(context: context, args: [:]))
@@ -234,9 +234,9 @@ final class XcodeHandlerEnvelopeCoverageTests: XCTestCase {
     /// documents, where a model chased a `read_file` that could never resolve.
     func testTests_failureOutsideTheWorkFolder_keepsTheAbsolutePath() throws {
         let runner = RecordingXcodebuildRunner(responses: [.failed(65, stdout: """
-            Test case 'X.testY()' failed on 'My Mac'
-            /somewhere/else/Other.swift:3: error: nope
-            """)])
+        Test case 'X.testY()' failed on 'My Mac'
+        /somewhere/else/Other.swift:3: error: nope
+        """)])
         let tool = RunXcodetestsTool(workFolderRoot: root, runner: runner)
 
         let data = try decodedData(tool.handle(context: context, args: [:]))

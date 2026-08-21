@@ -62,8 +62,8 @@ nonisolated enum XcodeBuildHelpers {
     /// - Returns: True if warnings are present.
     static func hasWarnings(in outputJSON: String) -> Bool {
         guard let dict = JSONUtilities.parseJSONDictionary(outputJSON),
-            let meta = dict["meta"] as? [String: Any],
-            let warnings = meta["warnings"] as? [String]
+              let meta = dict["meta"] as? [String: Any],
+              let warnings = meta["warnings"] as? [String]
         else {
             return false
         }

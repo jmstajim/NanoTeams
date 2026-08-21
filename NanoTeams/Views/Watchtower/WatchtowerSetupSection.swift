@@ -131,7 +131,7 @@ struct WatchtowerSetupSection: View {
             )
         case .autovisor:
             return Copy(
-                icon: "folder.badge.person.crop",
+                icon: AutovisorConstants.symbolName,
                 title: "Autovisor",
                 description: "Let an automated supervisor watch this folder's tasks, answer their questions, and advance a goal on its own.",
                 tint: Colors.cyan,

@@ -166,7 +166,7 @@ final class EngineWakeTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
         XCTAssertFalse(sut.wakeEngine(taskID: f.id),
                        "a closed task is terminal — `closeTask` finalized every role and the run "
-                     + "loop has no `closedAt` awareness")
+                           + "loop has no `closedAt` awareness")
         XCTAssertNil(sut.taskEngines[f.id])
     }
 
@@ -236,7 +236,7 @@ final class EngineWakeTests: NTMSOrchestratorTestBase, @unchecked Sendable {
         }
         XCTAssertNotNil(latestRun(f.id)?.steps.first(where: { $0.id == synthetic }),
                         "premise: the synthetic step exists and is terminal, so ONLY the prefix "
-                      + "guard can refuse")
+                            + "guard can refuse")
         let before = sut.errorSurfaceCount
 
         await sut.requestRevision(taskID: f.id, roleID: synthetic, comment: "redo it")
@@ -396,6 +396,6 @@ final class EngineWakeTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
         XCTAssertEqual(sut.taskEngines[f.id]?.state, .pending,
                        "the engine is registered by engineForTask but must NOT be started while "
-                     + "the requester's step is still live")
+                           + "the requester's step is still live")
     }
 }

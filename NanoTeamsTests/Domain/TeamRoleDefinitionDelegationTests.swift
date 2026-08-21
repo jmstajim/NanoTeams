@@ -71,7 +71,7 @@ final class TeamRoleDefinitionDelegationTests: XCTestCase {
         // Adding the tool to toolIDs does NOT affect the predicate any more.
         role.toolIDs.append(ToolNames.delegateToTeam)
         XCTAssertFalse(role.hasDelegationConfigured,
-            "Settings-driven: toolIDs membership is no longer the trigger.")
+                       "Settings-driven: toolIDs membership is no longer the trigger.")
 
         // Adding a whitelist entry flips it true.
         role.allowedDelegationTeamIDs = ["team-A"]
@@ -132,12 +132,12 @@ final class TeamRoleDefinitionDelegationTests: XCTestCase {
             graphLayout: TeamGraphLayout()
         )
         XCTAssertTrue(team.roleIsTopLevelDelegator(agent),
-            "Agent has no reportsTo entry — peer with Supervisor — eligible.")
+                      "Agent has no reportsTo entry — peer with Supervisor — eligible.")
         XCTAssertFalse(team.roleIsTopLevelDelegator(pm),
-            "PM reports to Supervisor — subordinate, not peer — must not be eligible.")
+                       "PM reports to Supervisor — subordinate, not peer — must not be eligible.")
         XCTAssertFalse(team.roleIsTopLevelDelegator(engineer),
-            "Engineer reports to PM — must not be eligible.")
+                       "Engineer reports to PM — must not be eligible.")
         XCTAssertFalse(team.roleIsTopLevelDelegator(supervisor),
-            "Supervisor itself is never a delegator.")
+                       "Supervisor itself is never a delegator.")
     }
 }

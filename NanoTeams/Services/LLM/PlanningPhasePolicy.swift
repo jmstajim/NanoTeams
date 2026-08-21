@@ -458,7 +458,7 @@ nonisolated enum PlanningPhasePolicy {
     /// from slicing away the very turn this branch was protecting.
     static let planningClosedTurn =
         closedMarker + " — your full toolset is available now. "
-        + "Act on the message above."
+            + "Act on the message above."
 
     // The acknowledgement for a successful `update_scratchpad` used to live here,
     // choosing between a planning wording and a generic one. It moved to

@@ -112,7 +112,7 @@ final class ClientSeamTailCoverageTests: XCTestCase {
         for tolerated in lenient {
             XCTAssertNotNil(URL(string: tolerated),
                             "\(tolerated.debugDescription) is expected to parse — if it no longer "
-                            + "does, the fixtures above are no longer the interesting ones")
+                                + "does, the fixtures above are no longer the interesting ones")
         }
 
         // The invariant, stated once: every construction door proves the base parses.

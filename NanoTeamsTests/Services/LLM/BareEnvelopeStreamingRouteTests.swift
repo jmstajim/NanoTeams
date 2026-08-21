@@ -22,7 +22,7 @@ final class BareEnvelopeStreamingRouteTests: XCTestCase {
                 continuation.finish()
             }
         }
-        func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [String] { [] }
+        func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [LLMModelInfo] { [] }
     }
 
     private var service: LLMExecutionService!
@@ -123,7 +123,7 @@ final class BareEnvelopeStreamingRouteTests: XCTestCase {
         XCTAssertTrue(result.sawHarmonyMarker)
         // Whatever route 2 makes of it, route 4 must not be what answered.
         XCTAssertTrue(result.resolvedToolCalls.isEmpty
-                      || result.resolvedToolCalls.first?.name == ToolNames.waitForEvents)
+            || result.resolvedToolCalls.first?.name == ToolNames.waitForEvents)
     }
 
     /// Content channel only. A `<|…|>` marker means the same thing wherever it appears, so

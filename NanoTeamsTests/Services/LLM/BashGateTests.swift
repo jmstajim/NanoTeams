@@ -146,7 +146,7 @@ final class BashGateTests: XCTestCase {
         let (task, key) = await gateHolding([bashCall("make install")], policy: BashPolicy(mode: .manual))
         XCTAssertEqual(delegate.bashApprovalBeganRequests.first?.command, "make install")
         XCTAssertFalse(delegate.bashApprovalBeganRequests.first?.offerAlways ?? true,
-            "always-confirm Manual must not offer the Always-allow button")
+                       "always-confirm Manual must not offer the Always-allow button")
         service.resolveBashApproval(taskID: 1, stepID: "step1", commandKey: key, decision: .allow)
         let results = await task.value
         XCTAssertTrue(results.isEmpty, "allow → no synthetic → the call passes through and runs for real")
@@ -183,7 +183,7 @@ final class BashGateTests: XCTestCase {
         // A non-read-only ask command in semi-automatic mode is held and offers Always-allow.
         let (task, key) = await gateHolding([bashCall("make install")], policy: BashPolicy(mode: .semiAutomatic))
         XCTAssertTrue(delegate.bashApprovalBeganRequests.first?.offerAlways ?? false,
-            "semi-automatic mode offers the Always-allow button")
+                      "semi-automatic mode offers the Always-allow button")
         service.resolveBashApproval(taskID: 1, stepID: "step1", commandKey: key, decision: .allow)
         _ = await task.value
     }
@@ -393,5 +393,5 @@ private final class StubJudgeClient: LLMClient, @unchecked Sendable {
         }
     }
 
-    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
 }

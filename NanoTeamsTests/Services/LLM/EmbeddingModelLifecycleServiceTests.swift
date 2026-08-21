@@ -512,7 +512,7 @@ final class EmbeddingModelLifecycleServiceTests: XCTestCase {
         XCTAssertEqual(sut.loaded?.instanceID, "adopted-b")
         XCTAssertFalse(warnings.isEmpty,
                        "Adoption-path prior-unload failure must emit a warning so " +
-                       "the user can see the VRAM leak instead of getting silence.")
+                           "the user can see the VRAM leak instead of getting silence.")
         XCTAssertTrue(warnings.contains { $0.contains(configA.modelName) },
                       "Warning text must name the model that may still be loaded")
     }
@@ -534,7 +534,7 @@ final class EmbeddingModelLifecycleServiceTests: XCTestCase {
         XCTAssertEqual(sut.loaded?.instanceID, "fallback-a")
         XCTAssertFalse(warnings.isEmpty,
                        "List failure must emit a warning — silent swallow turns a " +
-                       "transient 503 into a duplicate-instance bug.")
+                           "transient 503 into a duplicate-instance bug.")
     }
 }
 
@@ -612,6 +612,11 @@ final class RecordingLLMClient: LLMClient, @unchecked Sendable {
     }
     var listLoadedInstancesError: Error?
 
+    /// Answer `.unsupported` instead of `.listed`: the server is reachable but has no listing
+    /// route. Deliberately separate from `listLoadedInstancesError` (a transport failure) —
+    /// `ChatModelEnsurer` treats the two differently and that difference needs a way to be set up.
+    var listLoadedInstancesUnsupported = false
+
     // Unused chat surface — protocol requirements with default-noop bodies.
     func streamChat(
         config _: LLMConfig,
@@ -624,9 +629,9 @@ final class RecordingLLMClient: LLMClient, @unchecked Sendable {
         AsyncThrowingStream { $0.finish() }
     }
 
-    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
 
-    func loadModel(modelName: String, baseURLString: String) async throws -> String {
+    func loadModel(provider _: LLMProvider, modelName: String, baseURLString: String) async throws -> String {
         lock.withLock { _calls.append(.load(model: modelName, baseURL: baseURLString)) }
         if let loadDelay { try? await Task.sleep(for: loadDelay) }
         if let loadError { throw loadError }
@@ -638,7 +643,7 @@ final class RecordingLLMClient: LLMClient, @unchecked Sendable {
         return "instance-for-\(modelName)"
     }
 
-    func unloadModel(instanceID: String, baseURLString: String) async throws {
+    func unloadModel(provider _: LLMProvider, instanceID: String, baseURLString: String) async throws {
         lock.withLock { _calls.append(.unload(instanceID: instanceID, baseURL: baseURLString)) }
         if let unloadHold { await unloadHold() }   // outside the lock, deliberately
         if let unloadError { throw unloadError }
@@ -649,9 +654,12 @@ final class RecordingLLMClient: LLMClient, @unchecked Sendable {
         lock.withLock { _listLoadedInstancesResults.removeAll { $0.instanceID == instanceID } }
     }
 
-    func listLoadedInstances(baseURLString: String) async throws -> [LoadedModelInstance] {
+    func listLoadedInstances(
+        provider _: LLMProvider, baseURLString: String
+    ) async throws -> LoadedInstanceListing {
         lock.withLock { _calls.append(.listLoadedInstances(baseURL: baseURLString)) }
         if let listLoadedInstancesError { throw listLoadedInstancesError }
-        return lock.withLock { _listLoadedInstancesResults }
+        if listLoadedInstancesUnsupported { return .unsupported }
+        return .listed(lock.withLock { _listLoadedInstancesResults })
     }
 }

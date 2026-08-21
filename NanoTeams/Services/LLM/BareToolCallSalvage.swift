@@ -105,7 +105,7 @@ nonisolated enum BareToolCallSalvage {
         // are right for "the model returned its config as prose" and wrong here.
         guard cleaned.hasPrefix("{"),
               let (jsonText, end) = ToolCallParsingHelpers.extractJSONBracedValue(
-                in: Substring(cleaned), from: cleaned.startIndex),
+                  in: Substring(cleaned), from: cleaned.startIndex),
               !requireCleanTail || isSentinelDebris(cleaned[end...])
         else { return nil }
 

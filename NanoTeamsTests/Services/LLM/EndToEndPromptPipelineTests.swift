@@ -99,9 +99,9 @@ final class EndToEndPromptPipelineTests: XCTestCase {
     func testPromptPipeline_customTeam_customTemplate() {
         let customTemplate = """
         You are {roleName} on team {teamName}.
-
+        
         {roleGuidance}
-
+        
         Tools: {toolList}
         """
 

@@ -284,7 +284,7 @@ final class SearchIndexCoordinatorTests: XCTestCase {
             XCTFail("Expected .ready, got \(c.vectorIndexState)"); return
         }
         XCTAssertGreaterThan(count, 0,
-            "Building on a non-empty corpus must produce vectors")
+                             "Building on a non-empty corpus must produce vectors")
         XCTAssertGreaterThan(client.callCount, 0)
         await c.stop()
     }
@@ -305,9 +305,9 @@ final class SearchIndexCoordinatorTests: XCTestCase {
         await c.clear()
 
         XCTAssertFalse(fm.fileExists(atPath: bin),
-            "clear() must delete vocab_vectors.bin")
+                       "clear() must delete vocab_vectors.bin")
         XCTAssertFalse(fm.fileExists(atPath: meta),
-            "clear() must delete vocab_vectors.meta.json")
+                       "clear() must delete vocab_vectors.meta.json")
         XCTAssertEqual(c.vectorIndexState, .missing)
     }
 
@@ -331,7 +331,7 @@ final class SearchIndexCoordinatorTests: XCTestCase {
         await waitUntilVectorReady(c2)
 
         XCTAssertGreaterThan(client2.callCount, 0,
-            "Fresh coordinator post-clear must re-embed from scratch")
+                             "Fresh coordinator post-clear must re-embed from scratch")
         await c2.stop()
     }
 
@@ -356,7 +356,7 @@ final class SearchIndexCoordinatorTests: XCTestCase {
         await waitUntilVectorReady(c2)
 
         XCTAssertEqual(client2.callCount, 0,
-            "Reopening a folder with on-disk vectors must not re-embed")
+                       "Reopening a folder with on-disk vectors must not re-embed")
         guard case .ready(_, _, let count) = c2.vectorIndexState else {
             XCTFail("Expected .ready from disk, got \(c2.vectorIndexState)"); return
         }
@@ -386,9 +386,9 @@ final class SearchIndexCoordinatorTests: XCTestCase {
         // Serialized: both awaited the same underlying task's result via
         // `currentVectorBuildTask`. Second call saw empty diff.
         XCTAssertEqual(client.callCount, warmCalls,
-            "Concurrent rebuilds must not double-embed — serializer + smart-diff")
+                       "Concurrent rebuilds must not double-embed — serializer + smart-diff")
         XCTAssertFalse(c.isBuildingVectorIndex,
-            "Both builds must have finished cleanly")
+                       "Both builds must have finished cleanly")
         await c.stop()
     }
 
@@ -443,7 +443,7 @@ final class SearchIndexCoordinatorTests: XCTestCase {
         await startTask.value
 
         XCTAssertFalse(c.isBuildingVectorIndex,
-            "stop() must leave isBuildingVectorIndex=false")
+                       "stop() must leave isBuildingVectorIndex=false")
     }
 
     // MARK: - Regression: start() must return promptly (non-blocking on build)
@@ -467,7 +467,7 @@ final class SearchIndexCoordinatorTests: XCTestCase {
         let elapsed = Date().timeIntervalSince(started)
 
         XCTAssertLessThan(elapsed, 0.25,
-            "start() must return before the first embed batch finishes (\(elapsed)s).")
+                          "start() must return before the first embed batch finishes (\(elapsed)s).")
         // Build might not even have reached the vector phase yet — that's the
         // whole point. Drain by cancelling to release the slow client.
         await c.stop()
@@ -498,7 +498,7 @@ final class SearchIndexCoordinatorTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(10))
         }
         XCTAssertTrue(observedBuilding,
-            "Background build must be observable via isBuilding/isBuildingVectorIndex after start() returns.")
+                      "Background build must be observable via isBuilding/isBuildingVectorIndex after start() returns.")
 
         await c.stop()
     }
@@ -522,11 +522,11 @@ final class SearchIndexCoordinatorTests: XCTestCase {
         let stopElapsed = Date().timeIntervalSince(stopStart)
 
         XCTAssertLessThan(stopElapsed, 1.0,
-            "stop() must interrupt the build — not wait for all embed batches (\(stopElapsed)s).")
+                          "stop() must interrupt the build — not wait for all embed batches (\(stopElapsed)s).")
         XCTAssertFalse(c.isBuilding,
-            "Token-build flag must be off after stop().")
+                       "Token-build flag must be off after stop().")
         XCTAssertFalse(c.isBuildingVectorIndex,
-            "Vector-build flag must be off after stop().")
+                       "Vector-build flag must be off after stop().")
     }
 
     /// Regression: deterministic companion to `testStop_duringBuild_*`. The
@@ -555,9 +555,9 @@ final class SearchIndexCoordinatorTests: XCTestCase {
 
         // Drain-loop post-condition: the vector slot is nil after stop().
         XCTAssertTrue(c._testCurrentVectorBuildTaskIsNil,
-            "stop() must drain the vector slot to nil.")
+                      "stop() must drain the vector slot to nil.")
         XCTAssertFalse(c.isBuildingVectorIndex,
-            "Vector-build flag must be off after stop() drains all successors.")
+                       "Vector-build flag must be off after stop() drains all successors.")
 
         // After stop() returns, no further embed batches must run — even
         // if a successor build was queued via pendingVectorRefresh. Snapshot
@@ -568,7 +568,7 @@ final class SearchIndexCoordinatorTests: XCTestCase {
         let callsAfterStop = client.callCount
         try await Task.sleep(for: .milliseconds(500))
         XCTAssertEqual(client.callCount, callsAfterStop,
-            "stop() must disarm pendingVectorRefresh — no successor build allowed.")
+                       "stop() must disarm pendingVectorRefresh — no successor build allowed.")
     }
 
     /// Regression: a late FS-event-driven refresh that reaches the
@@ -598,14 +598,14 @@ final class SearchIndexCoordinatorTests: XCTestCase {
 
         // No task should have been installed in the slot…
         XCTAssertTrue(c._testCurrentVectorBuildTaskIsNil,
-            "Late refresh request post-stop must not install a vector task.")
+                      "Late refresh request post-stop must not install a vector task.")
 
         // …and no embed batches should run when given time to surface.
         try await Task.sleep(for: .milliseconds(200))
         XCTAssertEqual(client.callCount, callsAfterStop,
-            "Gate must block the embed pipeline from running post-stop.")
+                       "Gate must block the embed pipeline from running post-stop.")
         XCTAssertFalse(c.isBuildingVectorIndex,
-            "Vector-build flag must stay off after a late blocked refresh.")
+                       "Vector-build flag must stay off after a late blocked refresh.")
     }
 
     /// Regression: `stop()` sets `isStopped = true`; `start()` must clear it.
@@ -635,7 +635,7 @@ final class SearchIndexCoordinatorTests: XCTestCase {
             return
         }
         XCTAssertGreaterThan(count, 0,
-            "Coordinator must rebuild after stop+start; isStopped must be cleared by start().")
+                             "Coordinator must rebuild after stop+start; isStopped must be cleared by start().")
         await c.stop()
     }
 

@@ -114,7 +114,7 @@ final class QuickCaptureFocusRestorationCoverageTests: XCTestCase {
         c.refreshPanelIfVisible()
 
         XCTAssertEqual(refocuses, baseline + 1,
-            "A rebuild into a composer-bearing mode must put the caret back.")
+                       "A rebuild into a composer-bearing mode must put the caret back.")
     }
 
     /// A loader-only working mode renders no field at all. `refocusInputField` hardcodes
@@ -134,7 +134,7 @@ final class QuickCaptureFocusRestorationCoverageTests: XCTestCase {
         c.refreshPanelIfVisible()
 
         XCTAssertEqual(refocuses, baseline,
-            "Non-chat working mode is the one legitimate no-field case.")
+                       "Non-chat working mode is the one legitimate no-field case.")
     }
 
     /// The present path already runs the retry loop through `show(expectsFocusableField:)`,
@@ -150,9 +150,9 @@ final class QuickCaptureFocusRestorationCoverageTests: XCTestCase {
         c._testPresentPanelSync()
 
         XCTAssertEqual(c._testPanel?._testRefocusInvocationCount, 0,
-            "`show(expectsFocusableField:)` owns focus on the present path.")
+                       "`show(expectsFocusableField:)` owns focus on the present path.")
         XCTAssertNotNil(c._testPanel?._testLastShowExpectsFocusableField,
-            "…and it really did run.")
+                        "…and it really did run.")
     }
 
     // MARK: - Key focus
@@ -193,9 +193,9 @@ final class QuickCaptureFocusRestorationCoverageTests: XCTestCase {
         c.showNewTask()
 
         XCTAssertEqual(refocuses, baselineRefocus + 1,
-            "still exactly one refocus per showNewTask — the restore moved into "
-            + "updatePanelContent, it did not double up")
+                       "still exactly one refocus per showNewTask — the restore moved into "
+                           + "updatePanelContent, it did not double up")
         XCTAssertEqual(keyPulls, baselineKeyPull + 1,
-            "an explicit request for the panel takes key back")
+                       "an explicit request for the panel takes key back")
     }
 }

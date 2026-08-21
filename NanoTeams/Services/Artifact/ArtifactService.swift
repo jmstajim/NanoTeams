@@ -94,7 +94,7 @@ nonisolated final class ArtifactService: @unchecked Sendable {
 
         // Create directory if needed (restricted permissions — internal data)
         try fileManager.createDirectory(at: jsonURL.deletingLastPathComponent(), withIntermediateDirectories: true,
-                                         attributes: NTMSRepository.internalDirAttributes)
+                                        attributes: NTMSRepository.internalDirAttributes)
 
         // Create summary diagnostics JSON for successful build
         let summaryDiagnostics: [String: Any] = [

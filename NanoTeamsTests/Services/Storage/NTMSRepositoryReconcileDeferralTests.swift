@@ -164,7 +164,7 @@ final class NTMSRepositoryReconcileDeferralTests: XCTestCase {
         XCTAssertEqual(
             try reopenAndReadSEPrompt(), f.bundledPrompt,
             "a paused task has no live tool loop and is never swept by status recovery — "
-            + "deferring on it freezes the team's prompts permanently"
+                + "deferring on it freezes the team's prompts permanently"
         )
     }
 
@@ -611,7 +611,7 @@ final class NTMSRepositoryReconcileDeferralTests: XCTestCase {
         XCTAssertEqual(
             Set(byTeam.keys), [firstTeam.id],
             "an unresolvable activeTeamID must fall back to teams.first, mirroring "
-            + "WorkFolderProjection.activeTeam"
+                + "WorkFolderProjection.activeTeam"
         )
     }
 
@@ -1043,7 +1043,7 @@ final class NTMSRepositoryReconcileDeferralTests: XCTestCase {
         XCTAssertEqual(
             afterMgr.prompt, bundledManagerPrompt,
             "the Autovisor carve-out must apply in the fail-closed arm too, or an enabled "
-            + "Autovisor holds the watermark on every open"
+                + "Autovisor holds the watermark on every open"
         )
     }
 

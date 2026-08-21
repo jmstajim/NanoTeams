@@ -219,6 +219,39 @@ final class OllamaRequestBuilderTests: XCTestCase {
                            + "the prefix cache dies")
     }
 
+    /// The benchmark sets a ceiling and NOTHING else, so `options` has to be built from either
+    /// knob rather than mapped over temperature alone.
+    ///
+    /// RED: keep `config.temperature.map { Options(temperature: $0) }` → a benchmark run ships no
+    /// `options` at all, the cap silently never reaches Ollama, and the only visible symptom is
+    /// that Ollama rows take as long as they always did.
+    func testOutputCapAlone_stillShipsOptions() throws {
+        var config = makeConfig()
+        config.maxOutputTokens = 512
+        let request = OllamaClient.buildRequest(
+            config: config, messages: [ChatMessage(role: .user, content: "hi")], tools: [])
+
+        XCTAssertEqual(request.options?.numPredict, 512)
+        let json = String(
+            data: try JSONCoderFactory.makeWireEncoder().encode(request), encoding: .utf8)!
+        XCTAssertTrue(json.contains(#""num_predict":512"#), json)
+        XCTAssertFalse(json.contains("temperature"), "an unset knob still omits its key")
+    }
+
+    /// Both knobs together, because they are built by one expression and a fix for one can drop
+    /// the other. RED: rebuild `options` from `maxOutputTokens` alone → the judge's temperature
+    /// pin disappears and security verdicts regain sampling variance.
+    func testTemperatureAndCap_bothRideOptions() throws {
+        var config = makeConfig()
+        config.temperature = 0
+        config.maxOutputTokens = 128
+        let request = OllamaClient.buildRequest(
+            config: config, messages: [ChatMessage(role: .user, content: "hi")], tools: [])
+
+        XCTAssertEqual(request.options?.temperature, 0)
+        XCTAssertEqual(request.options?.numPredict, 128)
+    }
+
     /// A configured keep-alive MUST reach the wire, on every request — Ollama restarts the
     /// idle timer per call. Without it the model (and its KV prefix cache) is evicted after
     /// Ollama's 5-minute default, which expires during a human's `ask_supervisor`

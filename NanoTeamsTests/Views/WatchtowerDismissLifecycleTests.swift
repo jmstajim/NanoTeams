@@ -3,12 +3,33 @@ import XCTest
 
 /// Tests for the Watchtower notification dismiss/undismiss lifecycle.
 ///
-/// Covers the interaction between `dismissedNotificationIDs`, `allWatchtowerNotifications`,
-/// and the stale-dismiss cleanup logic in `refreshNotifications()`.
+/// Covers the interaction between the persisted dismiss set and
+/// `allWatchtowerNotifications`. The stale-dismiss SWEEP moved to
+/// `WatchtowerInboxBuilder.staleDismissals` and is pinned in `WatchtowerInboxGCTests`
+/// against the production function — the versions that used to live here
+/// re-implemented the sweep in the test body and would have stayed green through
+/// any change to it.
 @MainActor
 final class WatchtowerDismissLifecycleTests: XCTestCase {
 
     var config: StoreConfiguration!
+    let folder = UUID(uuidString: "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF")!
+    let sampleKey = WatchtowerDismissKey(taskID: 1, typeID: "step_1")
+
+    /// Dismiss identities are task-scoped now (`stepID == roleID`, shared across every
+    /// task on a team), so these helpers pair a notification TYPE with this file's
+    /// single fixture task id.
+    private func key(_ type: WatchtowerNotificationType) -> WatchtowerDismissKey {
+        WatchtowerDismissKey(taskID: 1, typeID: type.dismissID)
+    }
+
+    private func dismiss(_ type: WatchtowerNotificationType) {
+        config.dismissNotification(workFolderID: folder, key: key(type))
+    }
+
+    private func isDismissed(_ type: WatchtowerNotificationType) -> Bool {
+        config.isDismissed(workFolderID: folder, key: key(type))
+    }
 
     override func setUp() async throws {
         try await super.setUp()
@@ -23,19 +44,19 @@ final class WatchtowerDismissLifecycleTests: XCTestCase {
     // MARK: - Dismiss / Undismiss
 
     func testDismissNotification_addsToSet() {
-        config.dismissNotification(id: "step_1")
-        XCTAssertTrue(config.dismissedNotificationIDs.contains("step_1"))
+        config.dismissNotification(workFolderID: folder, key: sampleKey)
+        XCTAssertTrue(config.isDismissed(workFolderID: folder, key: sampleKey))
     }
 
     func testUndismissNotification_removesFromSet() {
-        config.dismissNotification(id: "step_1")
-        config.undismissNotification(id: "step_1")
-        XCTAssertFalse(config.dismissedNotificationIDs.contains("step_1"))
+        config.dismissNotification(workFolderID: folder, key: sampleKey)
+        config.undismissNotification(workFolderID: folder, key: sampleKey)
+        XCTAssertFalse(config.isDismissed(workFolderID: folder, key: sampleKey))
     }
 
     func testUndismiss_nonexistentID_noOp() {
-        config.undismissNotification(id: "nonexistent")
-        XCTAssertTrue(config.dismissedNotificationIDs.isEmpty)
+        config.undismissNotification(workFolderID: folder, key: sampleKey)
+        XCTAssertTrue(config.dismissedKeys(forWorkFolder: folder).isEmpty)
     }
 
     // MARK: - allWatchtowerNotifications
@@ -47,7 +68,7 @@ final class WatchtowerDismissLifecycleTests: XCTestCase {
 
         let notifications = run.allWatchtowerNotifications(task: task, teamRoles: [])
         XCTAssertEqual(notifications.count, 1)
-        if case .supervisorInput(let stepID, let question, _) = notifications.first {
+        if case .supervisorInput(let stepID, let question, _, _) = notifications.first {
             XCTAssertEqual(stepID, "step_1")
             XCTAssertEqual(question, "What next?")
         } else {
@@ -61,7 +82,7 @@ final class WatchtowerDismissLifecycleTests: XCTestCase {
         // mirrors that resolved state (not the in-flight race window where
         // `needsSupervisorInput == true && answer != nil` — that's a transient
         // state in which the next question is now in-flight and the notification
-        // SHOULD appear, which is what `stepHasActiveSupervisorInput` correctly
+        // SHOULD appear, which is what `hasActiveSupervisorInput` correctly
         // returns).
         let step = makeStep(
             id: "step_1",
@@ -172,123 +193,73 @@ final class WatchtowerDismissLifecycleTests: XCTestCase {
         let task = makeTask(runs: [run])
 
         let all = run.allWatchtowerNotifications(task: task, teamRoles: [])
-        // Dismiss using the actual dismissID (which now includes the question
-        // text as a multi-round disambiguator).
-        config.dismissNotification(id: all[0].dismissID)
+        dismiss(all[0])
 
-        let visible = all.filter { !config.dismissedNotificationIDs.contains($0.dismissID) }
+        let visible = all.filter { !isDismissed($0) }
         XCTAssertTrue(visible.isEmpty, "Dismissed notification should not be visible")
     }
 
-    func testStaleCleanup_undismissesAnsweredStep() {
-        // Step was dismissed (user answered), then step is no longer needsSupervisorInput
-        config.dismissNotification(id: "step_1")
+    // The three `testStaleCleanup_*` cases that used to sit here inlined the sweep
+    // (`for id in dismissed where !activeIDs.contains(id)`) into the test body and
+    // never called production; one of them hardcoded an empty array and an `if` that
+    // could not run. They are replaced by `WatchtowerInboxGCTests`, which exercises
+    // `WatchtowerInboxBuilder.staleDismissals` directly.
 
-        let step = makeStep(id: "step_1", needsSupervisorInput: false, question: nil)
-        let run = makeRun(steps: [step])
-        let task = makeTask(runs: [run])
-
-        // Simulate refreshNotifications cleanup
-        let all = run.allWatchtowerNotifications(task: task, teamRoles: [])
-        let activeIDs = Set(all.map(\.dismissID))
-
-        for id in config.dismissedNotificationIDs where !activeIDs.contains(id) {
-            config.undismissNotification(id: id)
-        }
-
-        XCTAssertFalse(config.dismissedNotificationIDs.contains("step_1"),
-                        "Stale dismiss should be cleared when step no longer has active notification")
-    }
-
-    func testStaleCleanup_preservesDismissForActiveStep() {
-        // Step is dismissed via X button, but step still has active question
-        let step = makeStep(id: "step_1", needsSupervisorInput: true, question: "Q?")
-        let run = makeRun(steps: [step])
-        let task = makeTask(runs: [run])
-
-        let all = run.allWatchtowerNotifications(task: task, teamRoles: [])
-        let dismissID = all[0].dismissID
-        config.dismissNotification(id: dismissID)
-
-        let activeIDs = Set(all.map(\.dismissID))
-
-        for id in config.dismissedNotificationIDs where !activeIDs.contains(id) {
-            config.undismissNotification(id: id)
-        }
-
-        XCTAssertTrue(config.dismissedNotificationIDs.contains(dismissID),
-                       "Active notification dismiss should NOT be cleared")
-    }
-
-    func testStaleCleanup_emptyTasks_preservesDismissed() {
-        // Simulates app startup — no tasks loaded yet
-        config.dismissNotification(id: "step_1")
-        config.dismissNotification(id: "step_2")
-
-        let allLoadedTasks: [NTMSTask] = []  // empty on startup
-
-        // Guard: only run cleanup when tasks are loaded
-        if !allLoadedTasks.isEmpty {
-            // Would undismiss, but guard prevents it
-            config.undismissNotification(id: "step_1")
-        }
-
-        XCTAssertEqual(config.dismissedNotificationIDs.count, 2,
-                        "Dismissed IDs must survive when no tasks are loaded (app startup)")
-    }
-
+    /// End-to-end across one answer/re-ask cycle, driving the REAL sweep.
     func testFullLifecycle_answer_newQuestion_shows() {
-        // 1. Question appears
+        // 1. Question appears.
         let step1 = makeStep(id: "step_1", needsSupervisorInput: true, question: "Q1?")
         var run = makeRun(steps: [step1])
-        let task = makeTask(runs: [run])
+        var all = WatchtowerInboxBuilder.build([.init(task: makeTask(runs: [run]), teamRoles: [])])
+        XCTAssertEqual(all.count, 1)
+        let q1Key = all[0].dismissKey
 
-        var all = run.allWatchtowerNotifications(task: task, teamRoles: [])
-        XCTAssertEqual(all.count, 1, "Question should generate notification")
-        let q1DismissID = all[0].dismissID
+        // 2. Supervisor opens it → dismissed, banner hidden.
+        config.dismissNotification(workFolderID: folder, key: q1Key)
+        XCTAssertTrue(
+            WatchtowerInboxBuilder.visible(all, dismissed: [q1Key]).isEmpty,
+            "a dismissed banner must not be visible")
 
-        // 2. User answers → dismiss (using the actual dismissID, which now
-        //    includes the question text)
-        config.dismissNotification(id: q1DismissID)
-        var visible = all.filter { !config.dismissedNotificationIDs.contains($0.dismissID) }
-        XCTAssertTrue(visible.isEmpty, "Answered notification should be hidden")
-
-        // 3. Step processes answer (no longer needsSupervisorInput)
+        // 3. The step processes the answer and stops waiting → the sweep reclaims the
+        //    now-meaningless dismissal, because this task IS loaded.
         let step2 = makeStep(id: "step_1", needsSupervisorInput: false, question: nil, answer: "A1")
         run = makeRun(steps: [step2])
-        all = run.allWatchtowerNotifications(task: makeTask(runs: [run]), teamRoles: [])
-        let activeIDs = Set(all.map(\.dismissID))
-        for id in config.dismissedNotificationIDs where !activeIDs.contains(id) {
-            config.undismissNotification(id: id)
-        }
-        XCTAssertFalse(config.dismissedNotificationIDs.contains(q1DismissID),
-                        "Stale dismiss should be cleared")
+        all = WatchtowerInboxBuilder.build([.init(task: makeTask(runs: [run]), teamRoles: [])])
+        let stale = WatchtowerInboxBuilder.staleDismissals(
+            dismissed: config.dismissedKeys(forWorkFolder: folder),
+            active: Set(all.map(\.dismissKey)),
+            loadedTaskIDs: [1],
+            knownTaskIDs: [1])
+        config.undismissNotifications(workFolderID: folder, keys: stale)
+        XCTAssertFalse(config.isDismissed(workFolderID: folder, key: q1Key),
+                       "stale dismissal must be reclaimed once its task is visible and quiet")
 
-        // 4. New question arrives on same step — new dismissID, never dismissed.
-        //    Critical multi-round assertion: even if step 3's cleanup had failed
-        //    to undismiss Q1's stale entry, Q2 would still surface because its
-        //    dismissID differs from Q1's (different question text).
+        // 4. A new question on the same step carries a new identity and shows.
         let step3 = makeStep(id: "step_1", needsSupervisorInput: true, question: "Q2?")
         run = makeRun(steps: [step3])
-        all = run.allWatchtowerNotifications(task: makeTask(runs: [run]), teamRoles: [])
-        XCTAssertNotEqual(all[0].dismissID, q1DismissID, "Q2's dismissID must differ from Q1's")
-        visible = all.filter { !config.dismissedNotificationIDs.contains($0.dismissID) }
-        XCTAssertEqual(visible.count, 1, "New question should show (different dismissID)")
+        all = WatchtowerInboxBuilder.build([.init(task: makeTask(runs: [run]), teamRoles: [])])
+        XCTAssertNotEqual(all[0].dismissKey, q1Key)
+        XCTAssertEqual(
+            WatchtowerInboxBuilder.visible(all, dismissed: config.dismissedKeys(forWorkFolder: folder)).count,
+            1)
     }
+
 
     // MARK: - Multi-Round Race Regression
     //
     // Pin two invariants for the supervisor-input banner across rounds on the
     // same step: the count-based active predicate (race window where stale
-    // supervisorAnswer is still present) and per-question dismissID
-    // disambiguation (so dismissing Q_N doesn't suppress Q_(N+1)).
+    // supervisorAnswer is still present) and per-question dismiss identity
+    // (so dismissing Q_N doesn't suppress Q_(N+1)).
 
     /// Two ask_supervisor calls + one supervisorAnswer message → notification appears
     /// (the count-based predicate's `trailingUnanswered` branch).
-    func testMultiRoundRace_secondQuestionUnansweredViaToolCallCount() {
+    func testMultiRoundRace_secondQuestionUnansweredViaAnswerOrder() {
+        // Construction order IS the fixture: the predicate's law is "an answer
+        // landed AFTER the trailing ask", and MonotonicClock stamps at creation.
         let q1 = makeAskCall(question: "Q1?")
-        let q2 = makeAskCall(question: "Q2?")
         let a1 = makeAnswerMessage(text: "A1")
+        let q2 = makeAskCall(question: "Q2?")
         let step = StepExecution(
             id: "step_1",
             role: .softwareEngineer,
@@ -304,7 +275,7 @@ final class WatchtowerDismissLifecycleTests: XCTestCase {
         let notifications = run.allWatchtowerNotifications(task: makeTask(runs: [run]), teamRoles: [])
 
         XCTAssertEqual(notifications.count, 1, "Q2 must surface even with stale supervisorAnswer from A1")
-        guard case .supervisorInput(let stepID, let question, _) = notifications.first else {
+        guard case .supervisorInput(let stepID, let question, _, _) = notifications.first else {
             return XCTFail("Expected .supervisorInput")
         }
         XCTAssertEqual(stepID, "step_1")
@@ -312,8 +283,8 @@ final class WatchtowerDismissLifecycleTests: XCTestCase {
     }
 
     /// After dismissing Q1's banner (via "Open" arrow), Q2 arrives on the same step.
-    /// Q2's dismissID differs from Q1's because the question text is part of dismissID,
-    /// so Q2 is NOT filtered out even though dismissedNotificationIDs still contains Q1's ID.
+    /// Q2's dismiss key differs from Q1's because the key names the asking tool call,
+    /// so Q2 is NOT filtered out even though Q1's dismissal is still stored.
     func testMultiRoundRace_dismissedFirstQuestion_secondQuestionStillVisible() {
         // Round 1: only Q1
         let q1Call = makeAskCall(question: "Q1?")
@@ -329,10 +300,10 @@ final class WatchtowerDismissLifecycleTests: XCTestCase {
         let run1 = makeRun(steps: [step1])
         let q1Notifications = run1.allWatchtowerNotifications(task: makeTask(runs: [run1]), teamRoles: [])
         XCTAssertEqual(q1Notifications.count, 1)
-        let q1DismissID = q1Notifications[0].dismissID
+        let q1Key = key(q1Notifications[0])
 
-        // Supervisor clicks "Open" → dismissNotification(q1DismissID)
-        config.dismissNotification(id: q1DismissID)
+        // Supervisor clicks "Open" → the banner is dismissed.
+        config.dismissNotification(workFolderID: folder, key: q1Key)
 
         // Round 2: Q1 + A1 + Q2 (the race window — supervisorAnswer not yet cleared
         // when setNeedsSupervisorInput runs for Q2)
@@ -353,13 +324,13 @@ final class WatchtowerDismissLifecycleTests: XCTestCase {
         let q2Notifications = run2.allWatchtowerNotifications(task: makeTask(runs: [run2]), teamRoles: [])
 
         // Critical: Q2 surfaces despite Q1's dismiss still being in the set.
-        let visible = q2Notifications.filter { !config.dismissedNotificationIDs.contains($0.dismissID) }
+        let visible = q2Notifications.filter { !isDismissed($0) }
         XCTAssertEqual(visible.count, 1, "Q2 must appear; stale Q1 dismiss must not suppress it")
-        XCTAssertNotEqual(visible[0].dismissID, q1DismissID, "Q2's dismissID must differ")
+        XCTAssertNotEqual(key(visible[0]), q1Key, "Q2's identity must differ")
     }
 
     /// Cross-surface invariant: `Run.allWatchtowerNotifications` and
-    /// `ActivityFeedBuilder.stepHasActiveSupervisorInput` must agree on activeness
+    /// `StepExecution.hasActiveSupervisorInput` must agree on activeness
     /// for the same step. The two surfaces (Watchtower banners, activity feed
     /// composer chips) share one predicate so they can't drift.
     func testWatchtowerPredicate_consistentWithActivityFeedBuilder() {
@@ -410,7 +381,7 @@ final class WatchtowerDismissLifecycleTests: XCTestCase {
         for testCase in cases {
             let run = makeRun(steps: [testCase.step])
             let watchtowerActive = !run.allWatchtowerNotifications(task: makeTask(runs: [run]), teamRoles: []).isEmpty
-            let feedActive = ActivityFeedBuilder.stepHasActiveSupervisorInput(testCase.step)
+            let feedActive = testCase.step.hasActiveSupervisorInput
             XCTAssertEqual(feedActive, testCase.expectedActive,
                            "Feed predicate disagreement (\(testCase.label))")
             XCTAssertEqual(watchtowerActive, testCase.expectedActive,
@@ -448,7 +419,7 @@ final class WatchtowerDismissLifecycleTests: XCTestCase {
 
         // Pre-condition: predicate active (Q1 unanswered)
         XCTAssertTrue(
-            ActivityFeedBuilder.stepHasActiveSupervisorInput(task.runs[0].steps[0]),
+            task.runs[0].steps[0].hasActiveSupervisorInput,
             "Setup sanity: predicate must be active before answer"
         )
 
@@ -462,22 +433,59 @@ final class WatchtowerDismissLifecycleTests: XCTestCase {
         // engine resume or runStep continuation.
         let step = task.runs[0].steps[0]
         XCTAssertFalse(
-            ActivityFeedBuilder.stepHasActiveSupervisorInput(step),
+            step.hasActiveSupervisorInput,
             "Predicate must resolve atomically with the answer mutation"
         )
 
         // Sanity: the answer message landed in llmConversation with the right
-        // sourceContext so `answerMessages.count == askCalls.count`.
+        // sourceContext, AFTER the ask call — the order the predicate reads.
         let answerCount = step.llmConversation.filter { $0.sourceContext == .supervisorAnswer }.count
         XCTAssertEqual(answerCount, 1, "Exactly one .supervisorAnswer message appended")
         XCTAssertEqual(step.llmConversation.last?.content, "Supervisor answer: A1")
     }
 
+    /// An attachments-only answer IS a delivered answer (`supervisorAnswerPendingDelivery`
+    /// arms on it), so it must leave the same durable `.supervisorAnswer` record a text
+    /// answer leaves — without it the trailing ask reads unanswered FOREVER and the
+    /// chat resurfaces as waiting on every surface (the exact restart-bug class).
+    func testStepMessagingService_attachmentsOnlyAnswer_resolvesTheQuestion() {
+        let q1Call = makeAskCall(question: "Q1?")
+        var task = NTMSTask(
+            id: 1, title: "Test", supervisorTask: "Do",
+            runs: [{
+                var run = Run(id: 0, teamID: "t")
+                run.steps = [
+                    StepExecution(
+                        id: "step_1", role: .softwareEngineer, title: "T",
+                        status: .needsSupervisorInput,
+                        toolCalls: [q1Call],
+                        needsSupervisorInput: true,
+                        supervisorQuestion: "Q1?"
+                    )
+                ]
+                return run
+            }()]
+        )
+
+        let applied = StepMessagingService.answerSupervisorQuestion(
+            stepID: "step_1", answer: "", attachmentPaths: ["docs/spec.md"], in: &task
+        )
+        XCTAssertTrue(applied)
+
+        let step = task.runs[0].steps[0]
+        XCTAssertFalse(step.hasActiveSupervisorInput,
+                       "a delivered attachments-only answer must resolve the trailing ask")
+        let answers = step.llmConversation.filter { $0.sourceContext == .supervisorAnswer }
+        XCTAssertEqual(answers.count, 1)
+        XCTAssertTrue(answers[0].content.contains("docs/spec.md"),
+                      "the recorded answer names the attachment — the same framing the wire replay sends")
+    }
+
     /// Empty-answer edge: no LLMMessage append, no `"Supervisor answer: "` noise.
     /// The `needsSupervisorInput` flag still clears so the engine doesn't deadlock,
     /// but the predicate now sees `needsSupervisorInput == false` AND a trailing
-    /// ask call with no matching answer message — which the count branch counts as
-    /// still-active. Edge documented; not "broken" — empty answers shouldn't reach
+    /// ask call with no answer message after it — which reads as still-active.
+    /// Edge documented; not "broken" — empty answers shouldn't reach
     /// `answerSupervisorQuestion` in production (UI gates on non-empty), and if one
     /// slips through, leaving the banner active is the safe choice.
     func testStepMessagingService_emptyAnswer_skipsLLMMessageAppend() {
@@ -511,10 +519,13 @@ final class WatchtowerDismissLifecycleTests: XCTestCase {
         )
     }
 
-    /// Identical question text across rounds collides on dismissID — current
-    /// limitation of `"\(stepID)::\(question)"`. Pinned so a future change to
-    /// the format (e.g. UUID-based) breaks loudly here and is reviewed.
-    func testMultiRoundRace_identicalQuestionText_pinsKnownCollision() {
+    /// Used to pin a KNOWN COLLISION: two rounds with byte-identical question text on
+    /// the same step produced the same dismiss key, so dismissing round 1 suppressed
+    /// round 2. The key now carries the asking call's persisted `UUID` instead of the
+    /// text, so the collision is gone — which matters because in chat mode every turn
+    /// is an `ask_supervisor` call and repeated text is ordinary (hardcoded nudges,
+    /// a user re-asking the same thing).
+    func testMultiRoundRace_identicalQuestionText_noLongerCollides() {
         let askCall = makeAskCall(question: "Continue?")
         let step1 = StepExecution(
             id: "step_1", role: .softwareEngineer, title: "T",
@@ -525,10 +536,10 @@ final class WatchtowerDismissLifecycleTests: XCTestCase {
         )
         let run1 = makeRun(steps: [step1])
         let r1Notifications = run1.allWatchtowerNotifications(task: makeTask(runs: [run1]), teamRoles: [])
-        let r1DismissID = r1Notifications[0].dismissID
-        config.dismissNotification(id: r1DismissID)
+        let r1Key = key(r1Notifications[0])
+        config.dismissNotification(workFolderID: folder, key: r1Key)
 
-        // Second round, identical question text on same step.
+        // Second round, identical question text on the same step.
         let askCall2 = makeAskCall(question: "Continue?")
         let answer1 = makeAnswerMessage(text: "yes")
         let step2 = StepExecution(
@@ -543,14 +554,11 @@ final class WatchtowerDismissLifecycleTests: XCTestCase {
         let run2 = makeRun(steps: [step2])
         let r2Notifications = run2.allWatchtowerNotifications(task: makeTask(runs: [run2]), teamRoles: [])
 
-        // Current behaviour: dismissID collides → Q2 suppressed.
-        // If this assertion ever fails, the format changed to disambiguate
-        // identical text — update both this test and the dismissID doc comment.
-        XCTAssertEqual(r2Notifications[0].dismissID, r1DismissID,
-                        "Pinning known collision: identical question text reuses dismissID")
-        let visible = r2Notifications.filter { !config.dismissedNotificationIDs.contains($0.dismissID) }
-        XCTAssertTrue(visible.isEmpty,
-                       "Pinning known limitation: identical-text Q2 is suppressed by dismissed Q1")
+        XCTAssertNotEqual(key(r2Notifications[0]), r1Key,
+                          "identical text must no longer reuse the dismiss key")
+        let visible = r2Notifications.filter { !isDismissed($0) }
+        XCTAssertEqual(visible.count, 1,
+                       "round 2 must surface even though round 1 with the same text was dismissed")
     }
 
     // MARK: - Helpers

@@ -250,14 +250,14 @@ final class RetryNudgeVisibilityTests: XCTestCase {
                 XCTAssertTrue(
                     call.contains("sourceContext:") || preamble.contains(Self.exemptionMarker),
                     "A `.user` turn recorded by \(path) with no sourceContext is dropped by "
-                    + "ActivityFeedBuilder's no-source filter — attribute it, or state why "
-                    + "not with a `\(Self.exemptionMarker)` note. Call: \(call)")
+                        + "ActivityFeedBuilder's no-source filter — attribute it, or state why "
+                        + "not with a `\(Self.exemptionMarker)` note. Call: \(call)")
             }
         }
         XCTAssertGreaterThanOrEqual(
             checked, Self.minimumUserRecordSites,
             "Only \(checked) `.user` record sites found across \(sources.count) files — the "
-            + "walk or the opener is wrong, and a pin that checks almost nothing passes")
+                + "walk or the opener is wrong, and a pin that checks almost nothing passes")
     }
 
     /// A walk that silently reaches nothing passes the pin above vacuously, which is how a

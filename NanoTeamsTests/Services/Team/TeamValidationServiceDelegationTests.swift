@@ -73,9 +73,9 @@ final class TeamValidationServiceDelegationTests: XCTestCase {
         )
         let result = TeamValidationService.validate(team: team, allTeams: [team])
         XCTAssertTrue(result.errors.contains(.nonTopLevelDelegator(roleID: "pm")),
-            "PM reports to Supervisor → subordinate, not peer → must fail eligibility.")
+                      "PM reports to Supervisor → subordinate, not peer → must fail eligibility.")
         XCTAssertTrue(result.errors.contains(.nonTopLevelDelegator(roleID: "eng")),
-            "Engineer reports to PM → subordinate → must fail eligibility.")
+                      "Engineer reports to PM → subordinate → must fail eligibility.")
     }
 
     /// A role peer-level with Supervisor (no upstream `reportsTo`) passes eligibility.
@@ -131,7 +131,7 @@ final class TeamValidationServiceDelegationTests: XCTestCase {
         let team = makeTeam(roles: [supervisor(), pm], reportsTo: [:])
         let result = TeamValidationService.validate(team: team, allTeams: [team])
         XCTAssertTrue(result.warnings.contains(.unknownDelegationTeam(roleID: "pm", teamID: "team-zzz")),
-            "Should be warning, not error — team may have been deleted post-config.")
+                      "Should be warning, not error — team may have been deleted post-config.")
         XCTAssertFalse(result.errors.contains(.unknownDelegationTeam(roleID: "pm", teamID: "team-zzz")))
     }
 
@@ -175,7 +175,7 @@ final class TeamValidationServiceDelegationTests: XCTestCase {
         let team = makeTeam(roles: [supervisor(), pm], reportsTo: [:])
         let result = TeamValidationService.validate(team: team, allTeams: [team])
         XCTAssertFalse(result.warnings.contains(.noDelegationTargets(roleID: "pm")),
-            "Empty settings → hasDelegationConfigured=false → loop guard skips the rule.")
+                       "Empty settings → hasDelegationConfigured=false → loop guard skips the rule.")
     }
 
     func testNoDelegationTargets_silent_whenGeneratedAllowed() {
@@ -192,7 +192,7 @@ final class TeamValidationServiceDelegationTests: XCTestCase {
         let team = makeTeam(roles: [supervisor(), pm], reportsTo: [:])
         let result = TeamValidationService.validate(team: team, allTeams: [team])
         XCTAssertFalse(result.warnings.contains(.noDelegationTargets(roleID: "pm")),
-            "Generated-team permission means delegate_to_team's catalog will have at least the sentinel.")
+                       "Generated-team permission means delegate_to_team's catalog will have at least the sentinel.")
     }
 
     // MARK: - Roles without delegation settings are ignored
@@ -241,9 +241,9 @@ final class TeamValidationServiceDelegationTests: XCTestCase {
         let result = TeamValidationService.validate(team: home, allTeams: [home, chatTarget])
 
         XCTAssertTrue(result.warnings.contains(.noDelegationTargets(roleID: "pm")),
-            "A whitelist of only chat-mode (non-delegatable) teams leaves no valid target.")
+                      "A whitelist of only chat-mode (non-delegatable) teams leaves no valid target.")
         XCTAssertFalse(result.warnings.contains(.unknownDelegationTeam(roleID: "pm", teamID: "chat-team")),
-            "The team exists — it must NOT be reported as unknown, only as a non-target.")
+                       "The team exists — it must NOT be reported as unknown, only as a non-target.")
     }
 
     /// Contrast: a whitelist resolving to a KNOWN delegatable (non-chat) team is
@@ -262,7 +262,7 @@ final class TeamValidationServiceDelegationTests: XCTestCase {
         let result = TeamValidationService.validate(team: home, allTeams: [home, realTarget])
 
         XCTAssertFalse(result.warnings.contains(.noDelegationTargets(roleID: "pm")),
-            "A known, delegatable target must satisfy the valid-target check.")
+                       "A known, delegatable target must satisfy the valid-target check.")
     }
 
     // MARK: - Whitelist dedup

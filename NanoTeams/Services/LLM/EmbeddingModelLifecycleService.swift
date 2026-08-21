@@ -77,11 +77,12 @@ final class EmbeddingModelLifecycleService {
         // so a transient 503 doesn't silently mask a duplicate-instance bug.
         let serverLoaded: [LoadedModelInstance]
         do {
-            serverLoaded = try await client.listLoadedInstances(baseURLString: config.baseURLString)
+            serverLoaded = try await client.listLoadedInstances(
+                provider: .lmStudio, baseURLString: config.baseURLString).adoptable
         } catch {
             onWarning?(
                 "Couldn't query loaded models on \(config.baseURLString): \(error.localizedDescription). " +
-                "Adoption skipped — a duplicate embedding instance may be created."
+                    "Adoption skipped — a duplicate embedding instance may be created."
             )
             serverLoaded = []
         }
@@ -110,7 +111,7 @@ final class EmbeddingModelLifecycleService {
             if let prior = loaded, !priorIsAdopted {
                 do {
                     try await client.unloadModel(
-                        instanceID: prior.instanceID,
+                        provider: .lmStudio, instanceID: prior.instanceID,
                         baseURLString: prior.config.baseURLString
                     )
                 } catch {
@@ -121,7 +122,7 @@ final class EmbeddingModelLifecycleService {
                     // reclaimed on the prior endpoint.
                     onWarning?(
                         "Couldn't unload previous embedding model '\(prior.config.modelName)' on \(prior.config.baseURLString): " +
-                        "\(error.localizedDescription). It may still consume VRAM until the server is restarted."
+                            "\(error.localizedDescription). It may still consume VRAM until the server is restarted."
                     )
                 }
             }
@@ -146,7 +147,7 @@ final class EmbeddingModelLifecycleService {
         if let prior = loaded {
             do {
                 try await client.unloadModel(
-                    instanceID: prior.instanceID,
+                    provider: .lmStudio, instanceID: prior.instanceID,
                     baseURLString: prior.config.baseURLString
                 )
                 // Only clear after a successful unload — clearing on failure
@@ -173,7 +174,7 @@ final class EmbeddingModelLifecycleService {
         }
 
         let newID = try await client.loadModel(
-            modelName: config.modelName,
+            provider: .lmStudio, modelName: config.modelName,
             baseURLString: config.baseURLString
         )
         loaded = LoadedState(config: config, instanceID: newID)
@@ -189,10 +190,11 @@ final class EmbeddingModelLifecycleService {
         excluding keepID: String,
         client: any LLMClient
     ) async {
-        guard let listed = try? await client.listLoadedInstances(baseURLString: base) else {
+        guard let listed = try? await client.listLoadedInstances(
+            provider: .lmStudio, baseURLString: base).adoptable else {
             onWarning?(
                 "Couldn't enumerate embedding instances on \(base) to reap duplicates of '\(model)'. " +
-                "Duplicates may linger until the server is restarted."
+                    "Duplicates may linger until the server is restarted."
             )
             return
         }
@@ -210,15 +212,15 @@ final class EmbeddingModelLifecycleService {
         client: any LLMClient
     ) async {
         for sibling in instances
-        where ChatModelEnsurer.sameModel(sibling.modelName, model)
+            where ChatModelEnsurer.sameModel(sibling.modelName, model)
             && sibling.instanceID != keepID {
             do {
                 try await client.unloadModel(
-                    instanceID: sibling.instanceID, baseURLString: base)
+                    provider: .lmStudio, instanceID: sibling.instanceID, baseURLString: base)
             } catch {
                 onWarning?(
                     "Couldn't unload duplicate embedding instance '\(sibling.instanceID)' on \(base): " +
-                    "\(error.localizedDescription). It may still consume VRAM until the server is restarted."
+                        "\(error.localizedDescription). It may still consume VRAM until the server is restarted."
                 )
             }
         }
@@ -248,17 +250,17 @@ final class EmbeddingModelLifecycleService {
         var instanceIDs: [String] = [current.instanceID]
         do {
             let serverLoaded = try await client.listLoadedInstances(
-                baseURLString: current.config.baseURLString
-            )
+                provider: .lmStudio, baseURLString: current.config.baseURLString
+            ).adoptable
             for instance in serverLoaded
-            where ChatModelEnsurer.sameModel(instance.modelName, current.config.modelName)
+                where ChatModelEnsurer.sameModel(instance.modelName, current.config.modelName)
                 && !instanceIDs.contains(instance.instanceID) {
                 instanceIDs.append(instance.instanceID)
             }
         } catch {
             onWarning?(
                 "Couldn't query loaded models on \(current.config.baseURLString): \(error.localizedDescription). " +
-                "Unloading only the remembered instance — duplicates may linger."
+                    "Unloading only the remembered instance — duplicates may linger."
             )
         }
 
@@ -266,7 +268,7 @@ final class EmbeddingModelLifecycleService {
         for instanceID in instanceIDs {
             do {
                 try await client.unloadModel(
-                    instanceID: instanceID,
+                    provider: .lmStudio, instanceID: instanceID,
                     baseURLString: current.config.baseURLString
                 )
             } catch {

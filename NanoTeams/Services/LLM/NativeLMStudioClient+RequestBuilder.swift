@@ -109,7 +109,8 @@ extension NativeLMStudioClient {
             input: input,
             store: false,  // No chains: nothing ever resumes a stored response
             stream: true,
-            temperature: config.temperature
+            temperature: config.temperature,
+            maxOutputTokens: config.maxOutputTokens
         )
     }
 

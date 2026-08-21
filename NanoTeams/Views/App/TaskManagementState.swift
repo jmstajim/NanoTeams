@@ -55,25 +55,48 @@ import Foundation
         }
     }
 
-    /// Clears stale seen flags for tasks no longer `.needsSupervisorInput` or
-    /// absent from the index. Sweeps ALL tasks so backgrounded transitions out
-    /// of `.needsSupervisorInput` re-trigger the dot on the next question.
+    /// Drops every persisted UI marker for a task that no longer exists — both the
+    /// sidebar seen flag and the Watchtower dismissals. Without the second half the
+    /// dismissal set grows without bound, since its garbage collector only expires
+    /// keys for tasks it can still see.
+    func forgetTask(taskID: Int) {
+        unmarkSupervisorInputSeen(taskID: taskID)
+        if let folderID = currentWorkFolderID, let config {
+            config.forgetDismissals(workFolderID: folderID, taskID: taskID)
+        }
+    }
+
+    /// Clears stale seen flags for tasks that are no longer waiting on the
+    /// Supervisor, or absent from the index. Sweeps ALL tasks so backgrounded
+    /// transitions out of "waiting" re-trigger the dot on the next question.
     ///
-    /// Three guards keep this from destroying persisted state:
+    /// Keyed on `SupervisorWaitState`, never on `TaskStatus`: recovery parks every
+    /// waiting step to `.paused` at launch while leaving the question intact, so a
+    /// status-keyed sweep read "parked but still waiting" as "answered" and deleted
+    /// the persisted flag on every single launch.
+    ///
+    /// Four guards keep this from destroying persisted state:
     /// 1. Empty mirror → nothing to sweep.
-    /// 2. Empty `activeStatuses` → snapshot teardown; every entry would otherwise
-    ///    match `nil != .needsSupervisorInput` and get wiped on every folder-close.
+    /// 2. Empty `waitStates` → snapshot teardown; every entry would otherwise look
+    ///    absent-from-index and get wiped on every folder-close.
     /// 3. Folder-identity mismatch → the caller's snapshot describes a different
     ///    folder than the bound one (folder-switch race); routing unmarks
     ///    through `currentWorkFolderID` would scribble on the wrong namespace.
-    func reconcileSeenSet(activeStatuses: [Int: TaskStatus], workFolderID: UUID? = nil) {
+    /// 4. `.unknown` per task → a legacy index row carries no information, and
+    ///    treating it as "answered" would wipe every flag on the first launch
+    ///    after the upgrade — the exact failure this sweep is being fixed for.
+    func reconcileSeenSet(waitStates: [Int: SupervisorWaitState], workFolderID: UUID? = nil) {
         guard !seenSupervisorInputTaskIDs.isEmpty else { return }
-        guard !activeStatuses.isEmpty else { return }
+        guard !waitStates.isEmpty else { return }
         if let workFolderID, let bound = currentWorkFolderID, workFolderID != bound {
             return
         }
         let stale = seenSupervisorInputTaskIDs.filter { taskID in
-            activeStatuses[taskID] != .needsSupervisorInput
+            switch waitStates[taskID] {
+            case .none:            return true   // gone from the index → task deleted
+            case .some(.notWaiting): return true
+            case .some(.waiting), .some(.unknown): return false
+            }
         }
         for taskID in stale {
             unmarkSupervisorInputSeen(taskID: taskID)
@@ -110,7 +133,7 @@ import Foundation
         // queue is task-scoped either way).
         QuickCaptureController.shared.discardQueuedChatMessage(taskID: id)
         await store.removeTask(id)
-        unmarkSupervisorInputSeen(taskID: id)
+        forgetTask(taskID: id)
         taskToDelete = nil
         return wasActive
     }

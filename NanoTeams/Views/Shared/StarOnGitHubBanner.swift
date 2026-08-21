@@ -59,8 +59,8 @@ struct StarOnGitHubBanner: View {
 #Preview("Star on GitHub Banner") {
     @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
     StarOnGitHubBanner()
-    .padding()
-    .frame(width: 600)
-    .background(Colors.surfacePrimary)
-    .environment(store)
+        .padding()
+        .frame(width: 600)
+        .background(Colors.surfacePrimary)
+        .environment(store)
 }

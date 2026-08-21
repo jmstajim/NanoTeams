@@ -286,11 +286,11 @@ nonisolated struct EditFileTool: ToolHandler {
                     ? "Anchor indentation was rewritten to match the file. " : ""
                 warnings.append(
                     rewriteClause
-                    + "\(indentationPassedThroughLines) new line"
-                    + (indentationPassedThroughLines == 1 ? "" : "s")
-                    + " kept your own indentation — the anchor showed no depth for "
-                    + (indentationPassedThroughLines == 1 ? "it" : "them") + ". "
-                    + "Re-read the region if it must match the file's style."
+                        + "\(indentationPassedThroughLines) new line"
+                        + (indentationPassedThroughLines == 1 ? "" : "s")
+                        + " kept your own indentation — the anchor showed no depth for "
+                        + (indentationPassedThroughLines == 1 ? "it" : "them") + ". "
+                        + "Re-read the region if it must match the file's style."
                 )
             }
             // A tolerant-tier edit whose only difference WAS the whitespace collapses
@@ -304,14 +304,14 @@ nonisolated struct EditFileTool: ToolHandler {
             if matchedIgnoringInteriorWhitespace, newContent == content {
                 warnings.append(
                     "The edit left the file unchanged: old_text and new_text differ only "
-                    + "inside whitespace runs, where the file's own spacing wins. To change "
-                    + "spacing itself, old_text must match the file exactly."
+                        + "inside whitespace runs, where the file's own spacing wins. To change "
+                        + "spacing itself, old_text must match the file exactly."
                 )
             } else if matchedIgnoringIndentation, newContent == content {
                 warnings.append(
                     "The edit left the file unchanged: old_text and new_text differ only "
-                    + "in leading whitespace, where the file's own indentation wins. To "
-                    + "change indentation itself, old_text must match the file exactly."
+                        + "in leading whitespace, where the file's own indentation wins. To "
+                        + "change indentation itself, old_text must match the file exactly."
                 )
             }
 

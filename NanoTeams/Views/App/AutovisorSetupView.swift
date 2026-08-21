@@ -59,7 +59,7 @@ struct AutovisorSetupView: View {
             // Match the sidebar's leading glyph so the destination identity carries
             // across pane and nav row — same icon, same accent.
             HStack(spacing: Spacing.s) {
-                Image(systemName: "bolt.badge.automatic")
+                Image(systemName: AutovisorConstants.symbolName)
                     .font(Typography.term2xl)
                     .foregroundStyle(Colors.accent)
                 Text("autovisor")

@@ -129,6 +129,61 @@ final class WorkFolderContextPromptPlannerTests: XCTestCase {
         XCTAssertTrue(composition.userMessage.contains("- Sources/App.swift"))
     }
 
+    /// Aggregates land at their FIRST child's position with several interleaved
+    /// directories collapsing — a rewrite that appends aggregates at the end
+    /// (or at the last child) reorders the snapshot and fails here.
+    func testCompose_multipleInterleavedCollapses_aggregatesLandAtFirstChildPosition() {
+        var files: [String] = ["A-first.txt"]
+        for i in 0..<15 { files.append("dirA/a\(String(format: "%02d", i)).txt") }
+        files.append("between.txt")
+        for i in 0..<15 { files.append("dirB/b\(String(format: "%02d", i)).txt") }
+        files.append("tail.txt")
+        let input = WorkFolderContextInput(
+            rootName: "Interleaved", fileList: files,
+            fileTypeCounts: ["txt": files.count], excerpts: [])
+
+        // Budget forces BOTH directories to collapse but keeps every plain line.
+        let composition = Planner.compose(input: input, tokenBudget: 120)
+
+        let lines = composition.userMessage.components(separatedBy: "\n")
+        let aFirst = lines.firstIndex(of: "- A-first.txt")
+        let aggA = lines.firstIndex(where: { $0.hasPrefix("- dirA/ — 15 files") })
+        let between = lines.firstIndex(of: "- between.txt")
+        let aggB = lines.firstIndex(where: { $0.hasPrefix("- dirB/ — 15 files") })
+        let tail = lines.firstIndex(of: "- tail.txt")
+        XCTAssertNotNil(aggA, "dirA must collapse")
+        XCTAssertNotNil(aggB, "dirB must collapse")
+        if let aFirst, let aggA, let between, let aggB, let tail {
+            XCTAssertTrue(aFirst < aggA && aggA < between && between < aggB && aggB < tail,
+                          "aggregates must sit exactly where their first child sat: \(lines)")
+        } else {
+            XCTFail("expected all five anchor lines, got: \(lines)")
+        }
+    }
+
+    /// Work bound: shaping walks each input character O(1) times — the collapse
+    /// pass must never re-walk the whole list per candidate directory.
+    ///
+    /// RED (pre-rework): 300 candidate dirs × a full re-join per candidate put
+    /// the walked-scalar count two orders of magnitude above this bound.
+    func testCompose_scalarWork_isLinearInInput() {
+        var files: [String] = []
+        for d in 0..<300 {
+            for f in 0..<12 { files.append("dir\(String(format: "%03d", d))/file\(f).txt") }
+        }
+        let input = WorkFolderContextInput(
+            rootName: "Wide", fileList: files.sorted(),
+            fileTypeCounts: ["txt": files.count], excerpts: [])
+        let inputChars = files.reduce(0) { $0 + $1.unicodeScalars.count }
+
+        Planner._testResetScalarWork()
+        _ = Planner.compose(input: input, tokenBudget: 500)
+        let walked = Planner._testScalarWork()
+
+        XCTAssertLessThanOrEqual(walked, 25 * inputChars,
+                                 "collapse decisions must price from counts, not re-walk the list")
+    }
+
     func testCompose_rootFilesNeverCollapsed_tailTruncatedInstead() {
         var files: [String] = []
         for i in 0..<100 { files.append(String(format: "file%03d.txt", i)) }

@@ -82,7 +82,7 @@ extension LLMExecutionService {
             if let previousAnswer = step.consultations.first(where: {
                 $0.consultedRole == consultedRole
                     && $0.question.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-                        == question.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+                    == question.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
             })?.response {
                 return .ok("(Previously answered) \(previousAnswer)")
             }

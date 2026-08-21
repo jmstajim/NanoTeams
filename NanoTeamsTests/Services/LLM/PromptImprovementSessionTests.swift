@@ -285,7 +285,7 @@ final class PromptImprovementSessionTests: XCTestCase {
         session.failStream(message: "boom", generation: session.generation)
 
         field.text = "user moved on"
-        session.noteFieldTextChanged(field.text)
+        session.noteFieldTextChanged()
 
         XCTAssertNil(session.errorMessage)
         XCTAssertEqual(session.phase, .idle)
@@ -301,7 +301,7 @@ final class PromptImprovementSessionTests: XCTestCase {
 
         // The restore write triggers the host's .onChange — the echo must not
         // clear the error the user hasn't seen yet.
-        session.noteFieldTextChanged("original")
+        session.noteFieldTextChanged()
 
         XCTAssertEqual(session.errorMessage, "boom")
     }
@@ -405,7 +405,7 @@ final class PromptImprovementSessionTests: XCTestCase {
 
         // External owner (draft swap / programmatic clear) takes the field.
         field.text = "external owner's text"
-        session.noteFieldTextChanged(field.text)
+        session.noteFieldTextChanged()
 
         XCTAssertEqual(session.phase, .idle)
         XCTAssertEqual(field.text, "external owner's text",
@@ -452,7 +452,7 @@ final class PromptImprovementSessionTests: XCTestCase {
 
         // The session's own write comes back through .onChange — must not
         // read as an external edit.
-        session.noteFieldTextChanged("partial")
+        session.noteFieldTextChanged()
 
         XCTAssertEqual(session.phase, .streaming)
     }
@@ -481,7 +481,7 @@ final class PromptImprovementSessionTests: XCTestCase {
         session.ingest(delta: "Improved.", generation: session.generation)
         session.finishStream(generation: session.generation)
 
-        session.noteFieldTextChanged("Improved.")
+        session.noteFieldTextChanged()
 
         XCTAssertTrue(session.canRevert)
     }
@@ -495,7 +495,7 @@ final class PromptImprovementSessionTests: XCTestCase {
         session.finishStream(generation: session.generation)
 
         field.text = "Improved. Plus my tweak"
-        session.noteFieldTextChanged(field.text)
+        session.noteFieldTextChanged()
 
         XCTAssertFalse(session.canRevert)
     }
@@ -510,7 +510,7 @@ final class PromptImprovementSessionTests: XCTestCase {
 
         // handleSubmit clears the composer draft after send.
         field.text = ""
-        session.noteFieldTextChanged(field.text)
+        session.noteFieldTextChanged()
 
         XCTAssertFalse(session.canRevert)
     }
@@ -566,7 +566,7 @@ final class PromptImprovementSessionTests: XCTestCase {
 
         // User edits the improved text → the edit becomes the new v0.
         field.text = "v1 edited by user"
-        session.noteFieldTextChanged(field.text)
+        session.noteFieldTextChanged()
         start(session, field: field)
         session.ingest(delta: "v2", generation: session.generation)
         session.finishStream(generation: session.generation)
@@ -631,7 +631,7 @@ final class PromptImprovementSessionTests: XCTestCase {
         XCTAssertEqual(session.phase, .waitingForFirstDelta)
 
         field.text = "external owner's text"
-        session.noteFieldTextChanged(field.text)
+        session.noteFieldTextChanged()
 
         XCTAssertEqual(session.phase, .idle)
         XCTAssertEqual(field.text, "external owner's text",
@@ -706,7 +706,7 @@ final class PromptImprovementSessionTests: XCTestCase {
         let field = Field("original")
 
         field.text = "user typing freely"
-        session.noteFieldTextChanged(field.text)
+        session.noteFieldTextChanged()
 
         XCTAssertEqual(session.phase, .idle)
         XCTAssertFalse(session.canRevert)

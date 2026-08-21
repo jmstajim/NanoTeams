@@ -9,6 +9,17 @@ nonisolated enum UserDefaultsKeys {
     static let llmModel = "NanoTeams.llm.model.v1"
     static let debugModeEnabled = "NanoTeams.ui.debugModeEnabled.v1"
     static let maxLLMRetries = "NanoTeams.llm.maxRetries.v1"
+    /// How many measured samples one benchmark run takes, on top of its warm-up.
+    static let benchmarkRepeats = "NanoTeams.benchmark.repeats.v1"
+    /// The benchmark screen's OWN provider/endpoint/model, deliberately separate from the
+    /// app's active LLM settings.
+    static let benchmarkTarget = "NanoTeams.benchmark.target.v1"
+    /// Providers the user has switched off for the sweep, as raw values.
+    ///
+    /// Persisted because switching one off is a SAFETY statement — "measure what you like, but do
+    /// not unload my Ollama" — and a safety statement that evaporates on relaunch silently re-arms
+    /// the thing it was made about.
+    static let benchmarkExcludedProviders = "NanoTeams.benchmark.excludedProviders.v1"
     static let llmRequestTimeoutSeconds = "NanoTeams.llm.requestTimeoutSeconds.v1"
     static let ollamaKeepAliveSeconds = "NanoTeams.llm.ollamaKeepAliveSeconds.v1"
     static let lastOpenedWorkFolderPath = "LastOpenedProjectPath"
@@ -29,7 +40,18 @@ nonisolated enum UserDefaultsKeys {
     static let visionProvider = "NanoTeams.vision.provider.v1"
     static let llmProviderEndpoints = "NanoTeams.llm.providerEndpoints.v1"
     static let quickCapturePanelFrame = "NanoTeams.QuickCapturePanel"
-    static let dismissedNotificationIDs = "NanoTeams.ui.dismissedNotificationIDs.v1"
+    /// Persisted Watchtower inbox dismissals, as `"<workFolderUUID>:<WatchtowerDismissKey.storageKey>"`.
+    /// Namespaced by work folder for the same reason as `seenSupervisorInputKeys`:
+    /// task IDs are per-folder sequential `Int`s, so a global set let one folder's
+    /// dismissals suppress another folder's banners.
+    ///
+    /// `.v2` because the entry format changed — `.v1` held bare, task-less
+    /// `WatchtowerNotificationType.dismissID` strings that cannot be attributed to a
+    /// task and therefore could never be expired. `StoreConfiguration` removes the
+    /// old key once at init rather than leaving it as permanent garbage.
+    static let dismissedNotificationIDs = "NanoTeams.ui.dismissedNotificationKeys.v2"
+    /// Read once at init, only to delete it. See `dismissedNotificationIDs`.
+    static let legacyDismissedNotificationIDsV1 = "NanoTeams.ui.dismissedNotificationIDs.v1"
     static let dismissedFeatureTipIDs = "NanoTeams.ui.dismissedFeatureTipIDs.v1"
     /// Persisted sidebar "read" markers for chat tasks awaiting Supervisor input.
     /// Stored as `Set<String>` of `"<workFolderUUID>:<taskID>"`. Namespacing by

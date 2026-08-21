@@ -74,8 +74,8 @@ nonisolated enum TeamTemplateFactory {
             roleIDs: ["productManager", "uxResearcher", "uxDesigner", "techLead",
                       "softwareEngineer", "codeReviewer", "sre", "tpm"],
             artifactNames: [SystemTemplates.supervisorTaskArtifactName, "Product Requirements", "Research Report", "Design Spec",
-                           "Implementation Plan", "Engineering Notes",
-                           "Code Review Summary", "Production Readiness", "Production Readiness Summary", "Release Notes"],
+                            "Implementation Plan", "Engineering Notes",
+                            "Code Review Summary", "Production Readiness", "Production Readiness Summary", "Release Notes"],
             coordinatorIndex: 8,
             supervisorRequires: ["Release Notes"],
             supervisorMode: .autonomous
@@ -89,8 +89,8 @@ nonisolated enum TeamTemplateFactory {
             templateID: "engineering",
             roleIDs: ["techLead", "softwareEngineer", "codeReviewer", "tpm"],
             artifactNames: [SystemTemplates.supervisorTaskArtifactName,
-                           "Implementation Plan", "Engineering Notes",
-                           "Code Review Summary", "Release Notes"],
+                            "Implementation Plan", "Engineering Notes",
+                            "Code Review Summary", "Release Notes"],
             coordinatorIndex: 4,
             supervisorRequires: ["Release Notes"],
             supervisorMode: .autonomous
@@ -136,7 +136,7 @@ nonisolated enum TeamTemplateFactory {
             templateID: "questParty",
             roleIDs: ["loreMaster", "npcCreator", "encounterArchitect", "rulesArbiter", "questMaster"],
             artifactNames: [SystemTemplates.supervisorTaskArtifactName, "World Compendium", "NPC Compendium",
-                           "Encounter Guide", "Balance Review"],
+                            "Encounter Guide", "Balance Review"],
             coordinatorIndex: 5,
             supervisorRequires: [],
             supervisorCanBeInvited: true

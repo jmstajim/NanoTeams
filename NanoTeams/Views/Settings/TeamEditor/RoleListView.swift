@@ -60,8 +60,8 @@ struct RoleListView: View {
         let query = searchText.lowercased()
         return team.roles.filter { role in
             role.name.lowercased().contains(query) ||
-            role.dependencies.producesArtifacts.joined(separator: " ").lowercased().contains(query) ||
-            role.dependencies.requiredArtifacts.joined(separator: " ").lowercased().contains(query)
+                role.dependencies.producesArtifacts.joined(separator: " ").lowercased().contains(query) ||
+                role.dependencies.requiredArtifacts.joined(separator: " ").lowercased().contains(query)
         }
     }
 

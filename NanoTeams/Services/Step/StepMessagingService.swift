@@ -40,17 +40,23 @@ nonisolated enum StepMessagingService {
         task.runs[location.runIndex].steps[location.stepIndex].needsSupervisorInput = false
 
         // Append the supervisor answer to llmConversation in the SAME mutation
-        // that clears `needsSupervisorInput`. Without this, the count-based
-        // active-input predicate (`ActivityFeedBuilder.stepHasActiveSupervisorInput`)
-        // sees `askCalls.count > answerMessages.count` between this mutation and
-        // the engine's subsequent runStep continuation — the Watchtower banner
-        // and feed composer chip would re-surface for ~one event-loop tick after
-        // the user already answered. Empty answer skips the append (no
-        // "Supervisor answer: " noise).
-        if !clean.isEmpty {
+        // that clears `needsSupervisorInput`. `StepExecution.hasActiveSupervisorInput`
+        // reads "answered" as "a `.supervisorAnswer` message landed AFTER the trailing
+        // ask call", so this append IS the durable record that the question was
+        // resolved — skipping it for any DELIVERED answer would leave the step
+        // reading as waiting forever (the chat-shows-as-unanswered class). An
+        // attachments-only answer is delivered (`supervisorAnswerPendingDelivery`
+        // arms on it), so it must leave the same record; its recorded text is the
+        // attachment section `effectiveSupervisorAnswer` composes — the same framing
+        // the wire replay sends. Only a truly empty answer (no text, no attachments,
+        // nothing delivered) skips the append.
+        if task.runs[location.runIndex].steps[location.stepIndex].supervisorAnswerPendingDelivery {
+            let recorded = clean.isEmpty
+                ? (task.runs[location.runIndex].steps[location.stepIndex].effectiveSupervisorAnswer ?? "")
+                : clean
             let answerMessage = LLMMessage(
                 role: .user,
-                content: "\(MessageSourceContext.supervisorAnswerPrefix)\(clean)",
+                content: "\(MessageSourceContext.supervisorAnswerPrefix)\(recorded)",
                 sourceRole: .supervisor,
                 sourceContext: .supervisorAnswer
             )
@@ -63,7 +69,7 @@ nonisolated enum StepMessagingService {
         // (the Answer chip surfaces while `needsSupervisorInput` flag is true). Treat
         // .paused identically here so resumeRun's continuation path is invariant.
         let s = task.runs[location.runIndex].steps[location.stepIndex].status
-        if s == .needsSupervisorInput || s == .paused {
+        if s.acceptsSupervisorAnswer {
             task.runs[location.runIndex].steps[location.stepIndex].status = .pending
         }
         return true

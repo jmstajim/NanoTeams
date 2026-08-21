@@ -178,7 +178,7 @@ final class EndToEndTeamImportExportWorkflowTests: NTMSOrchestratorTestBase, @un
         let data = try TeamImportExportService.exportTeam(team)
 
         let imported = try TeamImportExportService.importTeam(from: data,
-                                                               newName: "My Renamed Team")
+                                                              newName: "My Renamed Team")
         XCTAssertEqual(imported.name, "My Renamed Team")
         XCTAssertEqual(imported.id, NTMSID.from(name: "My Renamed Team"),
                        "ID derived deterministically from the new name")
@@ -191,7 +191,7 @@ final class EndToEndTeamImportExportWorkflowTests: NTMSOrchestratorTestBase, @un
         let team = anyCustomTeam()
         let data = try TeamImportExportService.exportTeam(team)
         let imported = try TeamImportExportService.importTeam(from: data,
-                                                               newName: "Persistent Import")
+                                                              newName: "Persistent Import")
         await sut.mutateWorkFolder { proj in proj.addTeam(imported) }
 
         // Reopen

@@ -79,7 +79,9 @@ final class AppUpdateChecker {
 
 // MARK: - Wire types
 
-// swiftlint:disable identifier_name — snake_case keys match GitHub API literally.
+// snake_case keys match the GitHub API literally. (Keep the prose on its own line —
+// SwiftLint parses everything after `disable` as a space-separated rule list.)
+// swiftlint:disable identifier_name
 private struct LatestReleasePayload: Decodable {
     let tag_name: String
     let html_url: URL

@@ -191,5 +191,5 @@ private final class ScriptedLLMClient: LLMClient, @unchecked Sendable {
         }
     }
 
-    func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [String] { [] }
+    func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [LLMModelInfo] { [] }
 }

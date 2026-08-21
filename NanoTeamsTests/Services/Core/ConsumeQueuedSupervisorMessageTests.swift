@@ -632,7 +632,7 @@ final class ConsumeQueuedSupervisorMessageTests: NTMSOrchestratorTestBase, @unch
                       "marked as a redelivery, or the feed renders the same message a second time")
         XCTAssertTrue(queued[0].attachments.isEmpty,
                       "attachments were finalized on first delivery and their paths ride in the "
-                      + "text — re-staging them would duplicate files on disk")
+                          + "text — re-staging them would duplicate files on disk")
     }
 
     /// At the HEAD, not appended: a message queued while the boundary was crossing must not

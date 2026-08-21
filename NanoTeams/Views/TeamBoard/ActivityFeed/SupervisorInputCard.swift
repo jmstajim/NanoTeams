@@ -39,7 +39,7 @@ struct SupervisorInputCard: View {
 
             Text(question)
                 .font(Typography.termBase)
-                .foregroundStyle(isResolved ? .tertiary : .primary)
+                .foregroundStyle(isResolved ? Colors.textTertiary : Colors.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
 

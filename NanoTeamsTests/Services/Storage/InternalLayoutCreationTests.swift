@@ -152,7 +152,7 @@ final class InternalLayoutCreationTests: XCTestCase {
         let gitignoreURL = NTMSPaths(workFolderRoot: root).nanoteamsDir
             .appendingPathComponent(".gitignore")
         XCTAssertFalse(fm.fileExists(atPath: gitignoreURL.path),
-                        ".gitignore should NOT be created in Application Support")
+                       ".gitignore should NOT be created in Application Support")
     }
 
     // MARK: - Backup & Spotlight Exclusion
@@ -164,7 +164,7 @@ final class InternalLayoutCreationTests: XCTestCase {
         let paths = NTMSPaths(workFolderRoot: root)
         let values = try paths.internalDir.resourceValues(forKeys: [.isExcludedFromBackupKey])
         XCTAssertEqual(values.isExcludedFromBackup, true,
-                        "internal/ should be excluded from Time Machine backups")
+                       "internal/ should be excluded from Time Machine backups")
     }
 
     func testEnsureLayout_createsSpotlightMarker() throws {
@@ -174,7 +174,7 @@ final class InternalLayoutCreationTests: XCTestCase {
         let marker = NTMSPaths(workFolderRoot: root).internalDir
             .appendingPathComponent(".metadata_never_index")
         XCTAssertTrue(fm.fileExists(atPath: marker.path),
-                       ".metadata_never_index should exist inside internal/")
+                      ".metadata_never_index should exist inside internal/")
     }
 
     // MARK: - Task Directory Permissions

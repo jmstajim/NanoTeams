@@ -167,7 +167,7 @@ nonisolated struct TeamRoleDefinition: Codable, Identifiable {
         let systemRoleIDForIcon = try container.decodeIfPresent(String.self, forKey: .systemRoleID)
         self.icon =
             try container.decodeIfPresent(String.self, forKey: .icon)
-            ?? SystemTemplates.roles[systemRoleIDForIcon ?? ""]?.icon ?? "person"
+                ?? SystemTemplates.roles[systemRoleIDForIcon ?? ""]?.icon ?? "person"
         self.prompt = try container.decode(String.self, forKey: .prompt)
         self.toolIDs = try container.decodeIfPresent([String].self, forKey: .toolIDs) ?? []
         // Default FALSE. The phase used to be a single `update_scratchpad` call
@@ -187,11 +187,11 @@ nonisolated struct TeamRoleDefinition: Codable, Identifiable {
             .decodeIfPresent(Bool.self, forKey: .useResearchPhase)
         self.usePlanningPhase =
             try container.decodeIfPresent(Bool.self, forKey: .usePlanningPhase)
-            ?? legacyFlag.flatMap { $0 }
-            ?? false
+                ?? legacyFlag.flatMap { $0 }
+                ?? false
         self.dependencies =
             try container.decodeIfPresent(RoleDependencies.self, forKey: .dependencies)
-            ?? RoleDependencies(requiredArtifacts: [], producesArtifacts: [])
+                ?? RoleDependencies(requiredArtifacts: [], producesArtifacts: [])
         self.llmOverride = try container.decodeIfPresent(LLMOverride.self, forKey: .llmOverride)
         self.allowedDelegationTeamIDs =
             try container.decodeIfPresent([NTMSID].self, forKey: .allowedDelegationTeamIDs) ?? []
@@ -205,13 +205,13 @@ nonisolated struct TeamRoleDefinition: Codable, Identifiable {
             try container.decodeIfPresent(String.self, forKey: .iconColor) ?? "#FFFFFF"
         self.iconBackground =
             try container.decodeIfPresent(String.self, forKey: .iconBackground)
-            ?? RoleColorDefaults.defaultBackgroundHex(for: systemRoleIDForIcon)
+                ?? RoleColorDefaults.defaultBackgroundHex(for: systemRoleIDForIcon)
         self.createdAt =
             try container.decodeIfPresent(Date.self, forKey: .createdAt)
-            ?? MonotonicClock.shared.now()
+                ?? MonotonicClock.shared.now()
         self.updatedAt =
             try container.decodeIfPresent(Date.self, forKey: .updatedAt)
-            ?? MonotonicClock.shared.now()
+                ?? MonotonicClock.shared.now()
     }
 }
 

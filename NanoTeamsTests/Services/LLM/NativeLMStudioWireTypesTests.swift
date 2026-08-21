@@ -65,8 +65,26 @@ final class NativeLMStudioWireTypesTests: XCTestCase {
         XCTAssertEqual(stats.outputTokens, 120)
     }
 
-    func testStats_missingFields_defaultsToZero() throws {
+    /// Absent counts decode to ABSENT, not to zero.
+    ///
+    /// Until 2026-08-19 this asserted `0` for both, and the zeros travelled: `SSEEventParser` built
+    /// a `TokenUsage(0, 0)` out of them, which is non-nil, which meant `GenerationSampleRecorder`
+    /// never raised `.noTokensReported` — so a benchmark run that measured nothing rendered as a
+    /// finished run of dashes. A count the server did not send has to be distinguishable from one
+    /// it sent as zero.
+    func testStats_missingFields_areAbsentRatherThanZero() throws {
         let json = "{}".data(using: .utf8)!
+        let stats = try JSONDecoder().decode(NativeLMStudioClient.ChatEndEvent.Stats.self, from: json)
+        XCTAssertNil(stats.inputTokens)
+        XCTAssertNil(stats.outputTokens)
+        XCTAssertNil(stats.tokensPerSecond)
+        XCTAssertNil(stats.reasoningOutputTokens)
+    }
+
+    /// The complement, and the reason the line above is not pedantry: a server that really does
+    /// report zero is recorded as having reported it.
+    func testStats_explicitZeroIsAMeasurement() throws {
+        let json = #"{"input_tokens":0,"total_output_tokens":0}"#.data(using: .utf8)!
         let stats = try JSONDecoder().decode(NativeLMStudioClient.ChatEndEvent.Stats.self, from: json)
         XCTAssertEqual(stats.inputTokens, 0)
         XCTAssertEqual(stats.outputTokens, 0)

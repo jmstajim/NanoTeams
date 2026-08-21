@@ -93,6 +93,13 @@ struct LLMModelPickerSection: View {
     let availableModels: [String]
     let isFetching: Bool
     var emptyLabel: String = "Select a model"
+    /// Optional decoration for the SELECTED model, drawn between the picker and its reset button.
+    ///
+    /// Injected rather than owned, and optional so every existing call site renders exactly as
+    /// before: what is worth saying about a model differs by surface — the benchmark shows the
+    /// format and quantization it is about to measure, and no other picker has asked for anything.
+    /// Same idiom as `BenchmarkRunCard.modePicker`.
+    var accessory: AnyView?
     let onRefresh: () -> Void
 
     /// Mirrors the prior Picker content ordering: leading empty/sentinel
@@ -116,6 +123,8 @@ struct LLMModelPickerSection: View {
                 .font(Typography.subheadline)
                 .foregroundStyle(Colors.textSecondary)
             TerminalPicker(selection: $modelName, options: modelOptions, fillsWidth: true)
+
+            if let accessory { accessory }
 
             if !modelName.isEmpty {
                 Button {

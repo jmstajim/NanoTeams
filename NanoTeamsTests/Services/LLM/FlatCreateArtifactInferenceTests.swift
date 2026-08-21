@@ -26,7 +26,7 @@ final class FlatCreateArtifactInferenceTests: XCTestCase {
         let call = parse("{\"content\":\"the spec body\",\"format\":\"markdown\",\"name\":\"Design Spec\"}")
         XCTAssertEqual(call?.name, ToolNames.createArtifact)
         XCTAssertTrue(call?.argumentsJSON.contains("\"name\":\"Design Spec\"") == true,
-            "Artifact name must survive in args; got \(call?.argumentsJSON ?? "nil")")
+                      "Artifact name must survive in args; got \(call?.argumentsJSON ?? "nil")")
         XCTAssertTrue(call?.argumentsJSON.contains("\"content\":\"the spec body\"") == true)
     }
 

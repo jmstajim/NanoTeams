@@ -57,7 +57,7 @@ final class ResumeAfterRestartAnswerTests: NTMSOrchestratorTestBase, @unchecked 
 
         XCTAssertFalse(returnValue,
                        "answerSupervisorQuestion must return false when finalization fails — " +
-                       "callers (composer / Watchtower) rely on this to keep the user's draft intact")
+                           "callers (composer / Watchtower) rely on this to keep the user's draft intact")
         XCTAssertNotNil(sut.lastErrorMessage,
                         "user must see the failure reason; otherwise the dropped answer looks like silence")
 
@@ -166,7 +166,7 @@ final class ResumeAfterRestartAnswerTests: NTMSOrchestratorTestBase, @unchecked 
 
         XCTAssertNotEqual(sut.engineState[id], .paused,
                           "Engine must transition out of .paused after the answer is recorded — " +
-                          "the run is supposed to continue.")
+                              "the run is supposed to continue.")
     }
 
     // MARK: - Edge case: empty conversation

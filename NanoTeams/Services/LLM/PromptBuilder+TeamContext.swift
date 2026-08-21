@@ -115,8 +115,8 @@ nonisolated extension PromptBuilder {
         // alone are clean and consistent with the surrounding `##` sectioning.
         let artifactInstructionsBlock =
             artifactInstructions.isEmpty
-            ? ""
-            : "\n" + artifactInstructions.joined(separator: "\n")
+                ? ""
+                : "\n" + artifactInstructions.joined(separator: "\n")
 
         return (expectedArtifactsLine, artifactInstructionsBlock)
     }

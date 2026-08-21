@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 nonisolated enum AtomicJSONStoreError: LocalizedError {
     case unableToCreateDirectory(URL)
@@ -15,6 +16,14 @@ nonisolated enum AtomicJSONStoreError: LocalizedError {
 }
 
 nonisolated struct AtomicJSONStore {
+
+    #if DEBUG
+    /// Work-bound seam for the stream-split tests: total encoded bytes handed
+    /// to `write` since the last reset. Same shape as `MonotonicClock.reset()`.
+    static let _bytesWritten = Atomic<Int>(0)
+    static func _testBytesWritten() -> Int { _bytesWritten.load(ordering: .relaxed) }
+    static func _testResetBytesWritten() { _bytesWritten.store(0, ordering: .relaxed) }
+    #endif
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
     private let fileManager: FileManager
@@ -45,6 +54,9 @@ nonisolated struct AtomicJSONStore {
         }
 
         let data = try encoder.encode(value)
+        #if DEBUG
+        Self._bytesWritten.wrappingAdd(data.count, ordering: .relaxed)
+        #endif
 
         // Unique-per-call temp filename. A shared name (`.task.json.tmp`) raced
         // under concurrent writes to the same target: writer A would create

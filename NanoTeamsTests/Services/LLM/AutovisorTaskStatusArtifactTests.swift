@@ -53,14 +53,14 @@ final class AutovisorTaskStatusArtifactTests: XCTestCase {
 
         let json = await service.handleTaskStatus(taskID: 7)
         XCTAssertFalse(json.contains("[unreadable"),
-            "task_status hands back a path; it must never inline+fail-read content.")
+                       "task_status hands back a path; it must never inline+fail-read content.")
 
         let artifacts = try Self.decodeArtifacts(from: json)
         let byName = Dictionary(uniqueKeysWithValues: artifacts.map { ($0.name, $0.path) })
         XCTAssertEqual(byName["Implementation Plan"], ".nanoteams/\(planRel)",
-            "Implementation Plan must be reported as a read_file-able .nanoteams/ path.")
+                       "Implementation Plan must be reported as a read_file-able .nanoteams/ path.")
         XCTAssertEqual(byName["Engineering Notes"], ".nanoteams/\(notesRel)",
-            "Engineering Notes must be reported as a read_file-able .nanoteams/ path.")
+                       "Engineering Notes must be reported as a read_file-able .nanoteams/ path.")
     }
 
     /// An artifact with no persisted file (no relativePath) simply omits `path`
@@ -112,10 +112,10 @@ final class AutovisorTaskStatusArtifactTests: XCTestCase {
 
         XCTAssertEqual(artifacts.count, 2, "Both artifacts on the step must be listed (inner loop).")
         XCTAssertEqual(notes?.path, ".nanoteams/\(notesRel)",
-            "A normal deliverable keeps its read_file-able path.")
+                       "A normal deliverable keeps its read_file-able path.")
         XCTAssertNotNil(diag, "Build Diagnostics must still be listed by name.")
         XCTAssertNil(diag?.path,
-            "An internal (.nanoteams/internal/…) artifact must omit path — read_file can't read it.")
+                     "An internal (.nanoteams/internal/…) artifact must omit path — read_file can't read it.")
     }
 
     // MARK: - Timing / stuck contract
@@ -169,9 +169,9 @@ final class AutovisorTaskStatusArtifactTests: XCTestCase {
         let status = try Self.decodeStatus(from: json)
 
         XCTAssertEqual(status.stuck?.kind, "hang",
-            "120s idle must read as hung under the configured 60s threshold (the 180s default would not)")
+                       "120s idle must read as hung under the configured 60s threshold (the 180s default would not)")
         XCTAssertEqual(status.steps.first?.stuck?.kind, "hang",
-            "the step-level verdict must use the configured threshold too")
+                       "the step-level verdict must use the configured threshold too")
     }
 
     // MARK: - resumable contract
@@ -208,12 +208,12 @@ final class AutovisorTaskStatusArtifactTests: XCTestCase {
 
         XCTAssertEqual(row.status, "paused")
         XCTAssertEqual(row.resumable, true,
-            "the one actionable field on a paused step — without it the manager restarts and wipes the work")
+                       "the one actionable field on a paused step — without it the manager restarts and wipes the work")
         XCTAssertNil(row.stuck, "a paused step never carries a stuck verdict")
         XCTAssertNil(row.idle_seconds, "idle_seconds is gated on .running")
         XCTAssertNil(row.running_tool)
         XCTAssertEqual(row.elapsed_seconds, 23_885, accuracy: 5,
-            "elapsed keeps counting through app downtime — which is exactly why it must not be the signal")
+                       "elapsed keeps counting through app downtime — which is exactly why it must not be the signal")
     }
 
     /// `resumable` is `true`-or-omitted, never `false`: an absent key must not read
@@ -227,7 +227,7 @@ final class AutovisorTaskStatusArtifactTests: XCTestCase {
 
         let json = await service.handleTaskStatus(taskID: 12)
         XCTAssertFalse(json.contains("resumable"),
-            "omitted, not false — a running step's wire shape must be byte-identical to before")
+                       "omitted, not false — a running step's wire shape must be byte-identical to before")
         XCTAssertNil(try Self.decodeStatus(from: json).steps.first?.resumable)
     }
 
@@ -244,7 +244,7 @@ final class AutovisorTaskStatusArtifactTests: XCTestCase {
             ],
             roleStatuses: ["pm": .needsAcceptance, "tl": .done])
         XCTAssertEqual(status.roles_needing_acceptance, ["pm"],
-            "only the .needsAcceptance role is listed; the .done role is not")
+                       "only the .needsAcceptance role is listed; the .done role is not")
     }
 
     /// All roles complete (`.done`) → the field is omitted entirely (lean payload,
@@ -254,7 +254,7 @@ final class AutovisorTaskStatusArtifactTests: XCTestCase {
             steps: [StepExecution(id: "pm", role: .productManager, title: "PM", status: .done)],
             roleStatuses: ["pm": .done])
         XCTAssertNil(status.roles_needing_acceptance,
-            "no roles awaiting acceptance → field omitted from the wire payload")
+                     "no roles awaiting acceptance → field omitted from the wire payload")
     }
 
     /// Cardinality > 1: every `.needsAcceptance` role is listed, SORTED for a deterministic
@@ -277,7 +277,7 @@ final class AutovisorTaskStatusArtifactTests: XCTestCase {
         let status = try await decodedStatus(steps: steps, roleStatuses: roleStatuses)
         XCTAssertEqual(status.roles_needing_acceptance,
                        ["a_role", "g_role", "m_role", "t_role", "z_role"],
-            "all awaiting roles listed in sorted order; the .done role excluded")
+                       "all awaiting roles listed in sorted order; the .done role excluded")
         let stepIDs = Set(status.steps.map(\.role_id))
         for id in status.roles_needing_acceptance ?? [] {
             XCTAssertTrue(stepIDs.contains(id), "\(id) must appear in steps[].role_id")
@@ -303,7 +303,7 @@ final class AutovisorTaskStatusArtifactTests: XCTestCase {
             steps: [StepExecution(id: "pm", role: .productManager, title: "PM", status: .done)],
             roleStatuses: ["pm": .done, "ghost": .needsAcceptance])
         XCTAssertNil(status.roles_needing_acceptance,
-            "a .needsAcceptance status with no step row is un-actionable and must not be surfaced")
+                     "a .needsAcceptance status with no step row is un-actionable and must not be surfaced")
     }
 
     /// Corner: the field is strictly `.needsAcceptance`, NOT any incomplete status — a sibling
@@ -319,7 +319,7 @@ final class AutovisorTaskStatusArtifactTests: XCTestCase {
             roleStatuses: ["pm": .needsAcceptance, "tl": .accepted,
                            "swe": .failed, "cr": .revisionRequested])
         XCTAssertEqual(status.roles_needing_acceptance, ["pm"],
-            "only .needsAcceptance is surfaced; .accepted/.failed/.revisionRequested are not")
+                       "only .needsAcceptance is surfaced; .accepted/.failed/.revisionRequested are not")
     }
 
     /// Corner: the field is independent of task-level status — a gated `.needsAcceptance` role
@@ -333,7 +333,7 @@ final class AutovisorTaskStatusArtifactTests: XCTestCase {
             ],
             roleStatuses: ["pm": .needsAcceptance, "tl": .working])
         XCTAssertEqual(status.roles_needing_acceptance, ["pm"],
-            "a gated role is surfaced regardless of task-level status (mid-pipeline gate)")
+                       "a gated role is surfaced regardless of task-level status (mid-pipeline gate)")
     }
 
     /// Corner: the field reads RoleExecutionStatus, NOT StepStatus — a `.needsAcceptance` role
@@ -344,7 +344,7 @@ final class AutovisorTaskStatusArtifactTests: XCTestCase {
             steps: [StepExecution(id: "pm", role: .productManager, title: "PM", status: .done)],
             roleStatuses: ["pm": .needsAcceptance])
         XCTAssertEqual(status.roles_needing_acceptance, ["pm"],
-            "a .needsAcceptance role with a .done step must still be surfaced (role status drives it)")
+                       "a .needsAcceptance role with a .done step must still be surfaced (role status drives it)")
     }
 
     /// Corner: the field is scoped to the CURRENT run (`runs.last`) — a `.needsAcceptance`
@@ -360,7 +360,7 @@ final class AutovisorTaskStatusArtifactTests: XCTestCase {
 
         let status = try Self.decodeStatus(from: await service.handleTaskStatus(taskID: 20))
         XCTAssertNil(status.roles_needing_acceptance,
-            "only the latest run is reflected; the old run's .needsAcceptance must not leak")
+                     "only the latest run is reflected; the old run's .needsAcceptance must not leak")
     }
 
     // MARK: - list_tasks chat_mode
@@ -435,8 +435,8 @@ final class AutovisorTaskStatusArtifactTests: XCTestCase {
         mockDelegate.snapshot = WorkFolderContext(
             projection: projection, tasksIndex: TasksIndex(), toolDefinitions: [])
         mockDelegate.taskToMutate = NTMSTask(id: 1, title: "T", supervisorTask: "...",
-            runs: [Run(id: 0, steps: [StepExecution(id: "dup", role: .custom(id: "dup"), title: "Dup", status: .running)],
-                       roleStatuses: ["dup": .working])])
+                                             runs: [Run(id: 0, steps: [StepExecution(id: "dup", role: .custom(id: "dup"), title: "Dup", status: .running)],
+                                                        roleStatuses: ["dup": .working])])
 
         // Reaching this assertion at all proves no fatalError trap fired.
         let status = try Self.decodeStatus(from: await service.handleTaskStatus(taskID: 1))

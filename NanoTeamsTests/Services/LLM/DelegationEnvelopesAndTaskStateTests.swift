@@ -59,7 +59,7 @@ private final class DENoopLLMClient: LLMClient, @unchecked Sendable {
         callCount += 1
         return AsyncThrowingStream { $0.finish() }
     }
-    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
 }
 
 /// A team whose Supervisor requires `requires` — `Team.supervisorRequiredArtifacts`

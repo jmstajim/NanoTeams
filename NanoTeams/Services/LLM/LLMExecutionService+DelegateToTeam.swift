@@ -143,7 +143,7 @@ extension LLMExecutionService {
                     guard let runIdx = task.runs.indices.last,
                           let stepIdx = task.runs[runIdx].steps.firstIndex(where: { $0.id == stepID }),
                           let tcIdx = task.runs[runIdx].steps[stepIdx].toolCalls
-                              .firstIndex(where: { $0.id == placeholderToolCallID })
+                          .firstIndex(where: { $0.id == placeholderToolCallID })
                     else { return }
                     task.runs[runIdx].steps[stepIdx].toolCalls[tcIdx].resultJSON = successEnvelope
                     task.runs[runIdx].steps[stepIdx].toolCalls[tcIdx].isError = false
@@ -164,7 +164,7 @@ extension LLMExecutionService {
                         guard let runIdx = task.runs.indices.last,
                               let stepIdx = task.runs[runIdx].steps.firstIndex(where: { $0.id == stepID }),
                               let tcIdx = task.runs[runIdx].steps[stepIdx].toolCalls
-                                  .firstIndex(where: { $0.id == placeholderToolCallID })
+                              .firstIndex(where: { $0.id == placeholderToolCallID })
                         else { return }
                         task.runs[runIdx].steps[stepIdx].toolCalls[tcIdx].resultJSON = errorEnvelope
                         task.runs[runIdx].steps[stepIdx].toolCalls[tcIdx].isError = true

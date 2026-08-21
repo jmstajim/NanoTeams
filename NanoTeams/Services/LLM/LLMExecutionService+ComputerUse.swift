@@ -67,9 +67,9 @@ extension LLMExecutionService {
     /// `ScreenInputHotkeyTests.testAccessibilityDenied_namesTheAccessibilityPane`.
     nonisolated static let accessibilityDeniedMessage =
         "NanoTeams does not have macOS Accessibility permission, so mouse and keyboard actions "
-        + "are silently dropped by the OS. Only the supervisor can grant it, and they have been "
-        + "prompted. Do not retry input actions in this step; screen_capture uses a different "
-        + "permission and is unaffected."
+            + "are silently dropped by the OS. Only the supervisor can grant it, and they have been "
+            + "prompted. Do not retry input actions in this step; screen_capture uses a different "
+            + "permission and is unaffected."
 
     func appendComputerUseResult(
         result: ToolExecutionResult,
@@ -94,7 +94,7 @@ extension LLMExecutionService {
             computerUse.input.requestAccessibilityIfNeeded()   // opens System Settings prompt (once)
             await finalizeToolResult(
                 envelope: makeErrorEnvelope(code: .computerUseDenied,
-                    message: Self.accessibilityDeniedMessage),
+                                            message: Self.accessibilityDeniedMessage),
                 isError: true, result: result, toolCallID: toolCallID,
                 stepID: stepID, taskID: taskID, conversationMessages: &conversationMessages, tracker: tracker)
             return
@@ -211,11 +211,11 @@ extension LLMExecutionService {
     /// `ax_elements` list (precise coordinates); the description supplies the
     /// visual context the text-only main model can't see.
     private static let captureDescriptionPrompt = """
-        Describe this screenshot for an agent that operates the app without seeing it: \
-        overall layout, key controls and their visible states, and any readable text. \
-        The agent aims clicks with a separate element list, so describe content — do not \
-        estimate coordinates. Be concise.
-        """
+    Describe this screenshot for an agent that operates the app without seeing it: \
+    overall layout, key controls and their visible states, and any readable text. \
+    The agent aims clicks with a separate element list, so describe content — do not \
+    estimate coordinates. Be concise.
+    """
 
     private func runCapture(
         target: String, windowTitle: String?, key: TaskStepKey,
@@ -322,10 +322,10 @@ extension LLMExecutionService {
         guard let visionConfig = delegate?.visionLLMConfig else {
             await finalizeToolResult(
                 envelope: makeErrorEnvelope(code: .computerUseDenied,
-                    message: "The main model cannot see images and no Vision model is configured, "
-                        + "so this screenshot cannot be delivered. Do not re-capture — the result "
-                        + "will be identical. Work from the ax_elements list, or ask the supervisor "
-                        + "to configure a Vision model."),
+                                            message: "The main model cannot see images and no Vision model is configured, "
+                                                + "so this screenshot cannot be delivered. Do not re-capture — the result "
+                                                + "will be identical. Work from the ax_elements list, or ask the supervisor "
+                                                + "to configure a Vision model."),
                 isError: true, result: result, toolCallID: toolCallID,
                 stepID: stepID, taskID: taskID, conversationMessages: &conversationMessages, tracker: tracker)
             return
@@ -333,8 +333,8 @@ extension LLMExecutionService {
 
         let description: String
         do {
-        // Same interleaver as the `analyze_image` path — see the note there.
-        await noteInterleavingCall(label: "vision", config: visionConfig)
+            // Same interleaver as the `analyze_image` path — see the note there.
+            await noteInterleavingCall(label: "vision", config: visionConfig)
             description = try await VisionAnalysisService.analyze(
                 prompt: Self.captureDescriptionPrompt,
                 imageBase64: captured.pngBase64,
@@ -347,7 +347,7 @@ extension LLMExecutionService {
         } catch {
             await finalizeToolResult(
                 envelope: makeErrorEnvelope(code: .commandFailed,
-                    message: "Screenshot captured, but the Vision model failed to describe it: \(errorText(error))"),
+                                            message: "Screenshot captured, but the Vision model failed to describe it: \(errorText(error))"),
                 isError: true, result: result, toolCallID: toolCallID,
                 stepID: stepID, taskID: taskID, conversationMessages: &conversationMessages, tracker: tracker)
             return
@@ -403,7 +403,7 @@ extension LLMExecutionService {
         guard let captured = executionStates[key]?.lastComputerUseCapture else {
             await finalizeToolResult(
                 envelope: makeErrorEnvelope(code: .computerUseDenied,
-                    message: "No screenshot yet — call screen_capture before clicking or scrolling."),
+                                            message: "No screenshot yet — call screen_capture before clicking or scrolling."),
                 isError: true, result: result, toolCallID: toolCallID,
                 stepID: stepID, taskID: taskID, conversationMessages: &conversationMessages, tracker: tracker)
             return
@@ -416,7 +416,7 @@ extension LLMExecutionService {
         else {
             await finalizeToolResult(
                 envelope: makeErrorEnvelope(code: .invalidArgs,
-                    message: "Coordinates (\(x), \(y)) are outside the \(captured.pixelWidth)×\(captured.pixelHeight) screenshot."),
+                                            message: "Coordinates (\(x), \(y)) are outside the \(captured.pixelWidth)×\(captured.pixelHeight) screenshot."),
                 isError: true, result: result, toolCallID: toolCallID,
                 stepID: stepID, taskID: taskID, conversationMessages: &conversationMessages, tracker: tracker)
             return
@@ -526,16 +526,16 @@ extension LLMExecutionService {
     ) async {
         conversationMessages.append(ChatMessage(role: .tool, content: envelope, toolCallID: result.providerID))
         await appendLLMMessage(stepID: stepID, taskID: taskID, role: .tool, content: """
-            [CALL] \(result.toolName)
-            Arguments: \(result.argumentsJSON)
-
-            [RESULT]
-            \(envelope)
-            """)
+        [CALL] \(result.toolName)
+        Arguments: \(result.argumentsJSON)
+        
+        [RESULT]
+        \(envelope)
+        """)
         await updateToolCallResult(stepID: stepID, taskID: taskID, toolCallID: toolCallID,
-            result: ToolExecutionResult(
-                providerID: result.providerID, toolName: result.toolName,
-                argumentsJSON: result.argumentsJSON, outputJSON: envelope, isError: isError))
+                                   result: ToolExecutionResult(
+                                       providerID: result.providerID, toolName: result.toolName,
+                                       argumentsJSON: result.argumentsJSON, outputJSON: envelope, isError: isError))
         tracker?.record(toolName: result.toolName, argumentsJSON: result.argumentsJSON,
                         resultJSON: envelope, isError: isError)
     }

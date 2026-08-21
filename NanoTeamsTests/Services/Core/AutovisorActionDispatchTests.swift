@@ -291,7 +291,7 @@ final class AutovisorActionDispatchTests: NTMSOrchestratorTestBase, @unchecked S
         XCTAssertEqual(queued.first?.targetRoleID, "r", "role targeting must survive the hop")
         XCTAssertEqual(queued.first?.isFromAutomatedSupervisor, true,
                        "an Autovisor-authored message must be flagged automated, or a "
-                    + "backstop delivery would render it with the human checkmark")
+                           + "backstop delivery would render it with the human checkmark")
     }
 
     /// An idle task is woken so it drains the queue on iteration 1 — otherwise a message to
@@ -325,7 +325,7 @@ final class AutovisorActionDispatchTests: NTMSOrchestratorTestBase, @unchecked S
         XCTAssertTrue(recurrence.isEnabled)
         XCTAssertNotNil(recurrence.nextFireAt,
                         "reschedule must have resolved a future slot — an enabled recurrence "
-                      + "with no nextFireAt is invisible to the scheduler")
+                            + "with no nextFireAt is invisible to the scheduler")
         guard case .interval(let seconds) = recurrence.rule else {
             return XCTFail("expected an interval rule, got \(recurrence.rule)")
         }
@@ -417,10 +417,10 @@ final class AutovisorActionDispatchTests: NTMSOrchestratorTestBase, @unchecked S
             let r = await sut.performAutovisorAction(.controlTask(taskID: id, verb: .start))
 
             XCTAssertFalse(r.ok, "a start that appended no run must be reported as failure "
-                               + "(state \(String(describing: state)))")
+                + "(state \(String(describing: state)))")
             XCTAssertFalse(r.message.contains("already running"),
                            "state \(String(describing: state)) is not active — the active guard "
-                         + "must not fire; got \(r.message)")
+                               + "must not fire; got \(r.message)")
             XCTAssertTrue(r.message.contains("could not start"),
                           "the honest no-op message must be used; got \(r.message)")
             XCTAssertEqual(runCount(id), before)

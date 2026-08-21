@@ -41,6 +41,19 @@ final class AutovisorTeamTests: XCTestCase {
         XCTAssertFalse(role.dependencies.requiredArtifacts.isEmpty)
     }
 
+    func testManagerRoleIcon_isTheSharedAutovisorSymbol() {
+        // One glyph on every Autovisor surface. The role template's icon is what
+        // the activity feed renders (`ActivityFeedRoleAvatar` reads
+        // `roleDefinition.icon`), and `syncAutovisorTeamToTemplate` force-syncs
+        // stored teams to it on folder open — so pinning template ↔ shared
+        // constant keeps the chat avatar in lock-step with the sidebar/settings
+        // branding, which reference the same constant.
+        XCTAssertEqual(SystemTemplates.roles[AutovisorConstants.managerRoleSystemID]?.icon,
+                       AutovisorConstants.symbolName)
+        XCTAssertEqual(managerTeam().nonSupervisorRoles.first?.icon,
+                       AutovisorConstants.symbolName)
+    }
+
     /// Renamed from `…isReadOnly…`: the manager also carries the Xcode runners,
     /// which are not reads. The invariant that actually holds — and the one the
     /// prompt's "never implement it yourself" boundary rests on — is NON-MUTATING:
@@ -310,7 +323,7 @@ final class AutovisorTeamTests: XCTestCase {
                       "Supervisor-message guidance must be numbered steps (decomposed), not prose")
         let att = lines(after: "### Attachments")
         XCTAssertGreaterThanOrEqual(att.filter { $0.hasPrefix("- ") }.count, 2,
-                      "attachments guidance must be a typed-dispatch bullet list (decomposed), not prose")
+                                    "attachments guidance must be a typed-dispatch bullet list (decomposed), not prose")
     }
 
     /// Regression guard for the read-only fix: the manager prompt must NOT name a repo-mutation

@@ -21,17 +21,17 @@ final class RealWorldThinkingLoopDetectionTests: XCTestCase {
     private let autovisorListTasksPeriod = #"""
     *Let's assume the list shows Task #7 is `needsSupervisorInput`.*
     *Why?* Because the memory says "Current focus: Tutorial overlay". This implies we are *in the process* of defining or building it.
-
+    
     *Let's assume the list shows Task #7 is `needsSupervisorAcceptance`.*
     *Why?* Because the memory says "Next steps: ... accept tutorial overlay deliverable".
-
+    
     *Let's try to find out.*
-
+    
     *Action*: `list_tasks`
-
+    
     *Wait, I need to output the tool call.*
-
-
+    
+    
     """#
 
     /// Coding Assistant looping while "about to" apply a one-line import fix. One
@@ -39,17 +39,17 @@ final class RealWorldThinkingLoopDetectionTests: XCTestCase {
     private let codingImportFixPeriod = #"""
     One detail: `Game.js` line 19.
     `import { UpgradeSystem } from '../systems\\UpgradeSystem.js';`
-
+    
     I will change it to `import { UpgradeSystem } from '../systems/UpgradeSystem.js';`.
-
+    
     Let's go.
-
+    
     One final check: `Game.js` line 19.
     `import { UpgradeSystem } from '../systems\\UpgradeSystem.js';`
-
+    
     I will apply the edit.
-
-
+    
+    
     """#
 
     /// Fresh Autovisor run (reported separately): loops on "update memory →
@@ -57,15 +57,15 @@ final class RealWorldThinkingLoopDetectionTests: XCTestCase {
     /// cycle ≈ 280 chars. Shortest of the three — still over the old 200 cap.
     private let autovisorMemoryPeriod = #"""
     So I will update memory to reflect this.
-
+    
     I will output `update_scratchpad` and `wait_for_events`.
-
+    
     Wait, I should check if I need to call `control_task` on Task 7?
     No, I just answered a question. It's running.
-
+    
     One detail: "Task #7... is running".
     My answer was "Please start Phase 5".
-
+    
     """#
 
     /// Fresh Autovisor run (reported separately): alternates two near-identical
@@ -76,14 +76,14 @@ final class RealWorldThinkingLoopDetectionTests: XCTestCase {
     private let autovisorIgnorePromptPeriod = #"""
     One detail: The prompt says "Current State... Current Task: Phase 2".
     I will ignore this.
-
+    
     I will output the calls.
-
+    
     One detail: The prompt says "Current State... Current Focus: Phase 2".
     I will ignore this.
-
+    
     I will output the calls.
-
+    
     """#
 
     /// Fresh run (reported separately): Coding/Autovisor loops on a "plan the relic
@@ -91,18 +91,18 @@ final class RealWorldThinkingLoopDetectionTests: XCTestCase {
     /// …" re-emitted verbatim ~30×. One cycle ≈ 258 chars.
     private let relicPlanPeriod = #"""
     I'll proceed.
-
+    
     One detail: `RelicManager` methods `loadRelics` and `getOwnedRelics`.
     I'll assume they exist.
-
+    
     I'll do the edit.
-
+    
     One detail: `Game.js` line 105-133.
     I'll replace it.
-
+    
     One detail: `characters.json` has `id` field.
     `relics.json` has `id` field.
-
+    
     """#
 
     /// Fresh Autovisor run (reported separately): loops on a large multi-paragraph
@@ -116,14 +116,14 @@ final class RealWorldThinkingLoopDetectionTests: XCTestCase {
     This is a constraint.
     I am marking step 3 as complete (by checking it).
     So I will update.
-
+    
     Then wait.
-
+    
     One thing: The prompt says "Start with step 1 of your plan."
     This is an instruction.
-
+    
     I will update the scratchpad.
-
+    
     Content:
     "1. ✅ Tasks 1-7 are DONE.
     2. 🔄 Task #8 (Phase 5: Game Completion) is RUNNING (resumed).
@@ -131,9 +131,9 @@ final class RealWorldThinkingLoopDetectionTests: XCTestCase {
        - Team: startup (Software Engineer).
        - Status: Running (2465s). No artifacts. Monitoring."
     3. ~~Next: Monitor Task #8 progress for completion or new questions.~~ (Status: Running, no artifacts. Waiting.)"
-
+    
     Then wait.
-
+    
     """#
 
     /// Fresh run (reported separately): a *template cycle* loop. The model re-emits

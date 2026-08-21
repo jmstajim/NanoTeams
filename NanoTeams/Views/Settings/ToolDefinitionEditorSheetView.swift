@@ -235,7 +235,7 @@ struct ToolDefinitionEditorView: View {
     private func encodeParameters(_ schema: JSONSchema) -> String {
         let encoder = JSONCoderFactory.makeDisplayEncoder()
         if let data = try? encoder.encode(schema),
-            let text = String(data: data, encoding: .utf8)
+           let text = String(data: data, encoding: .utf8)
         {
             return text
         }

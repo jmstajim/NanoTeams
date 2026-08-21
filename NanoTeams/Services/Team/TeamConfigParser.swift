@@ -469,11 +469,11 @@ nonisolated enum TeamConfigParser {
             case "}":
                 if stack.last == "{" { stack.removeLast(); arrayCommaIndex = nil }
                 else if stack.last == "[" { insertAt = i; closer = "]" }
-                // else: excess `}` (trailing junk) — not our drop, ignore.
+            // else: excess `}` (trailing junk) — not our drop, ignore.
             case "]":
                 if stack.last == "[" { stack.removeLast(); arrayCommaIndex = nil }
                 else if stack.last == "{" { insertAt = i; closer = "}" }
-                // else: excess `]` — ignore.
+            // else: excess `]` — ignore.
             case ":":
                 if stack.last == "[" {
                     // A key:value inside an array is impossible — the array's `]`

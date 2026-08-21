@@ -509,8 +509,11 @@ nonisolated extension NTMSRepository {
         let effectiveActiveTeam = activeTeamID.flatMap { teamsByID[$0] } ?? teams.first
 
         var running: [NTMSID: [RunningRoleEvidence]] = [:]
+        // One hop map for the whole sweep — per-entry `ancestorIDs(of:)` would
+        // rebuild it per row, making this loop O(tasks²).
+        let links = tasksIndex.parentLinks()
         for entry in tasksIndex.tasks {
-            let ancestors = tasksIndex.ancestorIDs(of: entry.id)
+            let ancestors = tasksIndex.ancestorIDs(of: entry.id, links: links)
             let taskURL = paths.taskJSON(taskID: entry.id, ancestors: ancestors)
             guard fileManager.fileExists(atPath: taskURL.path) else { continue }
             let task: NTMSTask
@@ -614,16 +617,28 @@ nonisolated extension NTMSRepository {
         // against the raw stored id would disagree with what the app actually runs.
         let effectiveActiveTeam = activeTeamID.flatMap { teamsByID[$0] } ?? teams.first
 
+        // Index-decisive candidacy (tri-state, CLAUDE.md #91): `.decidedClear`
+        // rows cost no I/O at all; `.unknown` rows (written before the mirrored
+        // fields existed) pay ONE read and are converged below, so they decide
+        // from the index on every later open.
+        let resolvableTeamIDs = Set(teamsByID.keys)
+        let activeTeamIsPlaceholder = effectiveActiveTeam.map { placeholderIDs.contains($0.id) } ?? false
         // Snapshot the indices first so the loop never mutates the array it iterates.
         let candidates = tasksIndex.tasks.indices.filter {
-            tasksIndex.tasks[$0].mayCarryPlaceholderChatMode(placeholderTeamIDs: placeholderIDs)
+            tasksIndex.tasks[$0].placeholderChatCandidacy(
+                placeholderTeamIDs: placeholderIDs,
+                resolvableTeamIDs: resolvableTeamIDs,
+                activeTeamIsPlaceholder: activeTeamIsPlaceholder
+            ) != .decidedClear
         }
         guard !candidates.isEmpty else { return false }
 
         var changed = false
+        // Same per-sweep hop map as `scanRunningTeamRoles` — see the comment there.
+        let links = tasksIndex.parentLinks()
         for i in candidates {
             let entry = tasksIndex.tasks[i]
-            let ancestors = tasksIndex.ancestorIDs(of: entry.id)
+            let ancestors = tasksIndex.ancestorIDs(of: entry.id, links: links)
             let taskURL = paths.taskJSON(taskID: entry.id, ancestors: ancestors)
             guard fileManager.fileExists(atPath: taskURL.path) else { continue }
 
@@ -646,7 +661,33 @@ nonisolated extension NTMSRepository {
                       activeTeam: effectiveActiveTeam
                   ),
                   placeholderIDs.contains(resolved)
-            else { continue }
+            else {
+                // The read was PAID and the verdict is "not a candidate" — converge
+                // the row so this task decides from the index on every later open
+                // instead of re-paying the read forever (an `.unknown` legacy row
+                // gains the mirrored fields here; a stale `.decidedCandidate` row
+                // gains the facts that cleared it). Same expression `updateTaskOnly`
+                // uses, so the surfaces can't drift.
+                // The read was PAID and the verdict is "not a candidate" — converge
+                // the row so this task decides from the index on every later open
+                // instead of re-paying the read forever (an `.unknown` legacy row
+                // gains the mirrored fields here; a stale `.decidedCandidate` row
+                // gains the facts that cleared it). Same expression `updateTaskOnly`
+                // uses, so the surfaces can't drift.
+                var refreshed = task.toSummary()
+                if !task.streamsHydrated {
+                    // Raw read of a split task: its stream arrays are empty on
+                    // disk, so the recomputed `hasPendingSupervisorInput` would
+                    // be a false NEGATIVE — and writing `false` over a true row
+                    // wipes persisted seen-state (#91). Keep the row's answer.
+                    refreshed.hasPendingSupervisorInput = tasksIndex.tasks[i].hasPendingSupervisorInput
+                }
+                if tasksIndex.tasks[i] != refreshed {
+                    tasksIndex.tasks[i] = refreshed
+                    changed = true
+                }
+                continue
+            }
 
             var healed = task
             healed.setStoredChatMode(false)
@@ -659,8 +700,14 @@ nonisolated extension NTMSRepository {
                     + "for the generated-placeholder chat-mode heal: \(error)")
                 continue
             }
-            // The same expression `updateTaskOnly` uses, so the two can't drift.
-            tasksIndex.tasks[i] = healed.toSummary()
+            // The same expression `updateTaskOnly` uses, so the two can't drift —
+            // except the supervisor field on a raw-read split task (see the
+            // convergence branch above for why `false` must not be recomputed).
+            var refreshed = healed.toSummary()
+            if !healed.streamsHydrated {
+                refreshed.hasPendingSupervisorInput = tasksIndex.tasks[i].hasPendingSupervisorInput
+            }
+            tasksIndex.tasks[i] = refreshed
             changed = true
         }
         return changed

@@ -113,9 +113,7 @@ nonisolated protocol AXNodeReading: Sendable {
     func boolValue(_ attribute: String, of node: Node) -> Bool?
     func frame(of node: Node) -> CGRect?
     func children(of node: Node) -> [Node]
-    func element(_ attribute: String, of node: Node) -> Node?
     func elements(_ attribute: String, of node: Node) -> [Node]
-    func selectedRange(of node: Node) -> AXTextRange?
 
     /// Announce this process as an assistive client. Advisory: an app that rejects the write
     /// degrades to its native tree.

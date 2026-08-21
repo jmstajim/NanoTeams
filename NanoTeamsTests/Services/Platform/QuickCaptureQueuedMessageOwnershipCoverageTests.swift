@@ -95,8 +95,8 @@ final class QuickCaptureQueuedMessageOwnershipCoverageTests: XCTestCase {
 
         XCTAssertTrue(sut.formState.hasQueuedMessage(for: taskID), "precondition")
         XCTAssertNotEqual(sut.formState.draftID, draftBefore,
-            "the queued message now owns that staging directory; the live composer needs "
-            + "a fresh one or the next cancel deletes files it does not own")
+                          "the queued message now owns that staging directory; the live composer needs "
+                              + "a fresh one or the next cancel deletes files it does not own")
     }
 
     /// The consequence, end to end: the gesture that deletes the live draft must not reach
@@ -118,11 +118,11 @@ final class QuickCaptureQueuedMessageOwnershipCoverageTests: XCTestCase {
         sut.cancelDraft()
 
         XCTAssertTrue(sut.formState.hasQueuedMessage(for: taskID),
-            "cancelling the live draft is not a retraction of an already-queued message")
+                      "cancelling the live draft is not a retraction of an already-queued message")
         XCTAssertTrue(FileManager.default.fileExists(atPath: staged.url.path),
-            "the queued message still names this file; deleting it turns a pending "
-            + "delivery into a finalize failure minutes later, with nothing on screen "
-            + "connecting the two")
+                      "the queued message still names this file; deleting it turns a pending "
+                          + "delivery into a finalize failure minutes later, with nothing on screen "
+                          + "connecting the two")
     }
 
     /// The rotation must not fire when nothing was queued — an empty payload is rejected by
@@ -139,7 +139,7 @@ final class QuickCaptureQueuedMessageOwnershipCoverageTests: XCTestCase {
         sut.submitQueuedMessageFromForm()
 
         XCTAssertEqual(sut.formState.draftID, draftBefore,
-            "nothing was handed off, so nothing changed owner")
+                       "nothing was handed off, so nothing changed owner")
     }
 
     // MARK: - What can ride the interrupt channel
@@ -194,14 +194,14 @@ final class QuickCaptureQueuedMessageOwnershipCoverageTests: XCTestCase {
         }
         XCTAssertTrue(delivered.contains("stop it"))
         XCTAssertTrue(delivered.contains("the child keeps re-reading the same file"),
-            "the entry is destroyed right after this call, so anything the channel does "
-            + "not carry is lost — and clips are text, which it can carry")
+                      "the entry is destroyed right after this call, so anything the channel does "
+                          + "not carry is lost — and clips are text, which it can carry")
         XCTAssertTrue(delivered.contains("## Clipped Text"),
-            "composed through the same builder every other submission path uses, so the "
-            + "role reads clips in the shape its prompt describes")
+                      "composed through the same builder every other submission path uses, so the "
+                          + "role reads clips in the shape its prompt describes")
         XCTAssertFalse(sut.formState.hasQueuedMessage(for: taskID),
-            "unchanged: a delivered interrupt still removes the entry, or the role's next "
-            + "iteration would consume the same guidance a second time")
+                       "unchanged: a delivered interrupt still removes the entry, or the role's next "
+                           + "iteration would consume the same guidance a second time")
     }
 
     /// Files cannot ride a `String` into a JSON envelope, and finalizing them here would
@@ -229,9 +229,9 @@ final class QuickCaptureQueuedMessageOwnershipCoverageTests: XCTestCase {
 
         XCTAssertTrue(queued)
         XCTAssertTrue(sut.formState.hasQueuedMessage(for: taskID),
-            "kept, so the ordinary drain can deliver text AND files together")
+                      "kept, so the ordinary drain can deliver text AND files together")
         XCTAssertTrue(store.completionAwaiter.hasWaiters(for: 43),
-            "the role is still suspended — nothing claimed to have woken it")
+                      "the role is still suspended — nothing claimed to have woken it")
         XCTAssertEqual(sut.formState.queuedMessages(for: taskID).first?.attachments, [staged])
 
         store.completionAwaiter.cancelAll(taskID: 43)
@@ -258,8 +258,8 @@ final class QuickCaptureQueuedMessageOwnershipCoverageTests: XCTestCase {
 
         await handler.value
         XCTAssertEqual(box.value, .parentMessageQueued(text: "stop it"),
-            "text-only is exactly what the channel carries losslessly, and the composed "
-            + "body of a clip-less message is the text itself")
+                       "text-only is exactly what the channel carries losslessly, and the composed "
+                           + "body of a clip-less message is the text itself")
         XCTAssertFalse(sut.formState.hasQueuedMessage(for: taskID))
     }
 }

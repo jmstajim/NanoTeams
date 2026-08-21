@@ -64,7 +64,7 @@ final class ComputerUseCaptureDeliveryTests: XCTestCase, @unchecked Sendable {
             }
         }
 
-        func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
+        func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
     }
 
     private struct VisionUnavailable: Error {}

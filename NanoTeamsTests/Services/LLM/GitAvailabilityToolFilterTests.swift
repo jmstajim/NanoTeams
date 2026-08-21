@@ -100,7 +100,7 @@ final class GitAvailabilityToolFilterTests: XCTestCase {
         ]
         XCTAssertEqual(allGitFromRegistry, allGitTools,
                        "ToolHandlerRegistry git* sets must cover every git tool. "
-                     + "If this fails, either a new tool is missing a category or "
-                     + "the filter won't catch it.")
+                           + "If this fails, either a new tool is missing a category or "
+                           + "the filter won't catch it.")
     }
 }

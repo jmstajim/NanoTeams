@@ -250,8 +250,8 @@ final class ProcessRunnerTests: XCTestCase {
         // Should contain typical git status output
         XCTAssertTrue(
             result.stdout.contains("On branch") ||
-            result.stdout.contains("No commits yet") ||
-            result.stdout.contains("nothing to commit")
+                result.stdout.contains("No commits yet") ||
+                result.stdout.contains("nothing to commit")
         )
     }
 
@@ -457,7 +457,7 @@ final class ProcessRunnerTests: XCTestCase {
         XCTAssertLessThan(
             elapsed, 4.0,
             "SIGTERM-ignoring child must be SIGKILLed within 2 s grace; took \(elapsed)s. "
-            + "A SIGKILL regression would wait the full 60 s sleep."
+                + "A SIGKILL regression would wait the full 60 s sleep."
         )
     }
 

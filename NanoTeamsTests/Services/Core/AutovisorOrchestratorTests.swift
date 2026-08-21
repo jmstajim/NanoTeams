@@ -55,9 +55,9 @@ final class AutovisorOrchestratorTests: NTMSOrchestratorTestBase, @unchecked Sen
         sut.lastInfoMessage = nil
         await sut.setAutovisorEnabled(true)
         XCTAssertNotNil(sut.lastInfoMessage,
-            "refusing to enable without a work folder must surface an info message")
+                        "refusing to enable without a work folder must surface an info message")
         XCTAssertFalse(sut.snapshot?.workFolder.settings.autovisorEnabled ?? false,
-            "the enable must NOT have persisted")
+                       "the enable must NOT have persisted")
     }
 
     /// Disabling is always allowed (it clears a possibly-stale persisted `true`),
@@ -67,7 +67,7 @@ final class AutovisorOrchestratorTests: NTMSOrchestratorTestBase, @unchecked Sen
         sut.lastInfoMessage = nil
         await sut.setAutovisorEnabled(false)
         XCTAssertNil(sut.lastInfoMessage,
-            "disabling is always allowed — the enable guard must not fire on disable")
+                     "disabling is always allowed — the enable guard must not fire on disable")
     }
 
     /// The return value makes a refused enable observable — `AutovisorSetupView.enable`
@@ -89,9 +89,9 @@ final class AutovisorOrchestratorTests: NTMSOrchestratorTestBase, @unchecked Sen
     func testAutovisorShowsSetupPane_noManagerTask_isTrue() {
         XCTAssertNil(sut.autovisorTaskID, "precondition: manager never created")
         XCTAssertTrue(sut.autovisorShowsSetupPane,
-            "no manager task → show setup, not a chat for a manager that doesn't exist")
+                      "no manager task → show setup, not a chat for a manager that doesn't exist")
         XCTAssertTrue(sut.autovisorRequiresSetupBeforeEnabling,
-            "nothing to turn on yet → the pill must route to setup")
+                      "nothing to turn on yet → the pill must route to setup")
     }
 
     /// The created-then-disabled wiring, end to end on the orchestrator: a manager
@@ -112,9 +112,9 @@ final class AutovisorOrchestratorTests: NTMSOrchestratorTestBase, @unchecked Sen
 
         XCTAssertEqual(sut.autovisorTaskID, mgrID, "disable keeps the manager task — only Delete clears it")
         XCTAssertTrue(sut.autovisorShowsSetupPane,
-            "disabled → the tab shows the start page, whatever the goal says")
+                      "disabled → the tab shows the start page, whatever the goal says")
         XCTAssertFalse(sut.autovisorRequiresSetupBeforeEnabling,
-            "a real goal is already set → the pill re-enables in one click")
+                       "a real goal is already set → the pill re-enables in one click")
     }
 
     // MARK: - F1: role validation

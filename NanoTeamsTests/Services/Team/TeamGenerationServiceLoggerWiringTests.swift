@@ -32,7 +32,7 @@ final class TeamGenerationServiceLoggerWiringTests: XCTestCase {
             return AsyncThrowingStream { $0.finish() }
         }
 
-        func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [String] { [] }
+        func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [LLMModelInfo] { [] }
     }
 
     private var tempDir: URL!
@@ -137,7 +137,7 @@ final class TeamGenerationServiceLoggerWiringTests: XCTestCase {
                 }
                 return AsyncThrowingStream { $0.finish() }
             }
-            func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [String] { [] }
+            func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [LLMModelInfo] { [] }
         }
 
         let logURL = tempDir.appendingPathComponent("network_log.json")
@@ -152,11 +152,9 @@ final class TeamGenerationServiceLoggerWiringTests: XCTestCase {
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: logURL.path),
                       "Logger must persist records to disk")
-        let data = try Data(contentsOf: logURL)
-        let records = try JSONCoderFactory.makeDateDecoder()
-            .decode([NetworkLogRecord].self, from: data)
+        let records = try NetworkLogTestReading.strictRecords(at: logURL)
         XCTAssertGreaterThanOrEqual(records.count, 1,
-                                     "At least one record must be written")
+                                    "At least one record must be written")
         XCTAssertTrue(records.allSatisfy { $0.roleName == "Team Generator" },
                       "All team-gen records must be attributed to 'Team Generator'")
         XCTAssertTrue(records.allSatisfy { $0.stepID == "step_xyz" },

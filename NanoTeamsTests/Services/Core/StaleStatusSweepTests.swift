@@ -68,6 +68,29 @@ final class StaleStatusSweepTests: NTMSOrchestratorTestBase, @unchecked Sendable
         sut.snapshot?.tasksIndex.tasks.first(where: { $0.id == taskID })?.status
     }
 
+    private func diskIndexWaiting(_ taskID: Int, root: URL? = nil) -> Bool? {
+        let p = NTMSPaths(workFolderRoot: root ?? tempDir)
+        let index = try? jsonStore.read(TasksIndex.self, from: p.tasksIndexJSON)
+        return index?.tasks.first(where: { $0.id == taskID })?.hasPendingSupervisorInput
+    }
+
+    private func memIndexWaiting(_ taskID: Int) -> Bool? {
+        sut.snapshot?.tasksIndex.tasks.first(where: { $0.id == taskID })?.hasPendingSupervisorInput
+    }
+
+    /// Rewrites the on-disk index row for `taskID` to the pre-field legacy shape
+    /// (`hasPendingSupervisorInput` key absent). Synthesized `encode(to:)` uses
+    /// `encodeIfPresent`, so a nil field round-trips as a genuinely absent key.
+    private func stripWaitingFieldFromDiskIndex(_ taskID: Int) throws {
+        let path = paths.tasksIndexJSON
+        var index = try jsonStore.read(TasksIndex.self, from: path)
+        guard let i = index.tasks.firstIndex(where: { $0.id == taskID }) else {
+            return XCTFail("index row for task \(taskID) missing")
+        }
+        index.tasks[i].hasPendingSupervisorInput = nil
+        try jsonStore.write(index, to: path)
+    }
+
     private func diskTask(_ taskID: Int, ancestors: [Int] = [], root: URL? = nil) -> NTMSTask? {
         let p = NTMSPaths(workFolderRoot: root ?? tempDir)
         return try? jsonStore.read(NTMSTask.self, from: p.taskJSON(taskID: taskID, ancestors: ancestors))
@@ -196,6 +219,104 @@ final class StaleStatusSweepTests: NTMSOrchestratorTestBase, @unchecked Sendable
         XCTAssertEqual(sut.taskEngineStates[a], .paused,
                        "must seed .paused, NOT .needsSupervisorInput — NSI would block eviction via isTaskEngineActive")
         XCTAssertNil(sut.snapshot?.loadedTasks[a], "NSI task must still be evictable")
+        // The fix, in one place: parking rewrote `status`, but the index row must
+        // still carry the durable waiting fact — `.paused` alone reads as answered,
+        // which is what relit every already-read chat after a restart.
+        XCTAssertEqual(memIndexWaiting(a), true,
+                       "swept row must stamp hasPendingSupervisorInput — the sidebar keys on it, not on status")
+        XCTAssertEqual(diskIndexWaiting(a), true)
+    }
+
+    /// The one-time backfill for rows written before `hasPendingSupervisorInput`
+    /// existed: a legacy `.paused` row can hide an unanswered question, so the
+    /// widened sweep filter must select it once, stamp the field, and converge.
+    /// Without this fixture the `!supervisorInputStateIsKnown` clause of the
+    /// filter has no test that traverses it (CLAUDE.md #57).
+    func testSweep_legacyPausedRow_backfilledInOneOpenPass() async throws {
+        await sut.openWorkFolder(tempDir)
+        let a = await sut.createTask(title: "A", supervisorTask: "a")!
+        await sut.mutateTask(taskID: a) { task in
+            task.setStoredChatMode(true)
+            let step = StepExecution(
+                id: "assistant", role: .softwareEngineer, title: "Chat",
+                status: .needsSupervisorInput,
+                needsSupervisorInput: true,
+                supervisorQuestion: "Here is my reply."
+            )
+            task.runs = [Run(id: 0, steps: [step], roleStatuses: ["assistant": .working])]
+        }
+        _ = await sut.createTask(title: "B", supervisorTask: "b")!
+
+        // First restart parks the task; the second sees the legacy-shaped row.
+        restartOrchestrator()
+        await sut.openWorkFolder(tempDir)
+        XCTAssertEqual(diskIndexStatus(a), .paused, "precondition: parked by the sweep")
+        try stripWaitingFieldFromDiskIndex(a)
+
+        restartOrchestrator()
+        await sut.openWorkFolder(tempDir)
+
+        XCTAssertEqual(diskIndexWaiting(a), true,
+                       "legacy .paused row must be backfilled in the first open pass")
+        XCTAssertEqual(memIndexWaiting(a), true)
+        XCTAssertEqual(diskIndexStatus(a), .paused, "backfill must not disturb the parked status")
+        XCTAssertNil(sut.snapshot?.loadedTasks[a], "backfill pass must still evict")
+    }
+
+    /// The probe branch of the backfill (task already loaded, recovery a no-op):
+    /// disk alone is not convergence — the sidebar reads `snapshot.tasksIndex`, so
+    /// the in-memory row must move in the same pass, not on the next launch.
+    func testInProcessReopen_legacyRow_probeBranchConvergesMemoryToo() async throws {
+        await sut.openWorkFolder(tempDir)
+        let a = await sut.createTask(title: "A", supervisorTask: "a")!
+        await sut.mutateTask(taskID: a) { task in
+            task.setStoredChatMode(true)
+            // Already-parked shape: nothing for recovery to do, so the sweep's
+            // probe branch takes its convergence path instead of the mutate path.
+            let step = StepExecution(
+                id: "assistant", role: .softwareEngineer, title: "Chat",
+                status: .paused,
+                needsSupervisorInput: true,
+                supervisorQuestion: "Reply."
+            )
+            task.runs = [Run(id: 0, steps: [step], roleStatuses: ["assistant": .idle])]
+        }
+        _ = await sut.createTask(title: "B", supervisorTask: "b")!
+        XCTAssertNotNil(sut.snapshot?.loadedTasks[a], "precondition: A resident (in-process)")
+        try stripWaitingFieldFromDiskIndex(a)
+
+        // Same orchestrator, same folder: the index is re-read from disk (legacy
+        // row), while A survives in `loadedTasks` — the probe branch's shape.
+        await sut.openWorkFolder(tempDir)
+
+        XCTAssertEqual(diskIndexWaiting(a), true)
+        XCTAssertEqual(memIndexWaiting(a), true,
+                       "the probe-branch backfill must converge the in-memory row in the same pass")
+    }
+
+    /// The `.failed` half of the widened filter: a failed run answers "not waiting",
+    /// and stamping that false is what stops the row from being re-selected on
+    /// every open (the filter is self-terminating, not a standing tax).
+    func testSweep_legacyFailedRow_backfilledAsNotWaiting() async throws {
+        await sut.openWorkFolder(tempDir)
+        let a = await sut.createTask(title: "A", supervisorTask: "a")!
+        await sut.mutateTask(taskID: a) { task in
+            task.setStoredChatMode(false)
+            task.status = .failed
+            let step = StepExecution(
+                id: "worker", role: .softwareEngineer, title: "Work", status: .failed)
+            task.runs = [Run(id: 0, steps: [step], roleStatuses: ["worker": .failed])]
+        }
+        _ = await sut.createTask(title: "B", supervisorTask: "b")!
+        try stripWaitingFieldFromDiskIndex(a)
+
+        restartOrchestrator()
+        await sut.openWorkFolder(tempDir)
+
+        XCTAssertEqual(diskIndexWaiting(a), false,
+                       "legacy .failed row must converge to a KNOWN not-waiting, not stay unknown")
+        XCTAssertEqual(diskIndexStatus(a), .failed,
+                       "recovery must not resurrect a failed task")
     }
 
     func testInProcessReopen_staleLoadedTask_recoveredEvictedSeeded() async {

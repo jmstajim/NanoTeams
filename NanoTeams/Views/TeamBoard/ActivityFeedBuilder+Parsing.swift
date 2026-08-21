@@ -110,6 +110,18 @@ nonisolated extension ActivityFeedBuilder {
     /// message↔artifact dedup matches in both. NOT `ArtifactService.readContent` (it
     /// truncates at 50 KB, which would break content-equality dedup). `nonisolated` so
     /// it runs off the main actor.
+    /// Per-file memo keyed by (relativePath, updatedAt): both callers — the feed
+    /// view model per rebuild and `renderConversationLog` per committed turn —
+    /// used to re-read EVERY artifact file of every step from disk on every
+    /// invocation, O(turns x artifacts) reads across a run for bytes that only
+    /// change when a revision bumps `updatedAt` (which changes the key). An
+    /// external edit that rewrites the file WITHOUT a model mutation serves
+    /// stale content until the next revision — acceptable for a dedup input and
+    /// a debug artifact; the alternative re-reads everything per turn forever.
+    /// NSCache: thread-safe, evicts under pressure (CLAUDE.md's sanctioned
+    /// `nonisolated(unsafe)` static shape).
+    private nonisolated(unsafe) static let artifactContentCache = NSCache<NSString, NSString>()
+
     static func loadArtifactContentsForStepSync(
         _ step: StepExecution,
         workFolderURL: URL?
@@ -118,10 +130,18 @@ nonisolated extension ActivityFeedBuilder {
         var contents: Set<String> = []
         for artifact in step.artifacts {
             guard let relativePath = artifact.relativePath else { continue }
+            let cacheKey = "\(relativePath)|\(artifact.updatedAt.timeIntervalSinceReferenceDate)" as NSString
+            if let cached = artifactContentCache.object(forKey: cacheKey) {
+                contents.insert(cached as String)
+                continue
+            }
             let fileURL = projectURL
                 .appendingPathComponent(".nanoteams")
                 .appendingPathComponent(relativePath)
             if let content = try? String(contentsOf: fileURL, encoding: .utf8) {
+                // Only a successful read is memoized — an unreadable file must
+                // stay retryable (it may simply not have landed yet).
+                artifactContentCache.setObject(content as NSString, forKey: cacheKey)
                 contents.insert(content)
             } else {
                 #if DEBUG
@@ -180,33 +200,5 @@ nonisolated extension ActivityFeedBuilder {
         let inputs = bubbleDisplayInputs(raw: msg.displayContent, isSupervisorMessage: true)
         let textEmpty = inputs.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return textEmpty && inputs.paths.isEmpty && inputs.clippedTexts.isEmpty
-    }
-
-    /// Extracts the question string from an `ask_supervisor` tool call's argumentsJSON.
-    /// Handles both valid JSON and malformed/truncated JSON from streaming.
-    static func parseAskSupervisorQuestion(from text: String) -> String? {
-        if let data = text.data(using: .utf8),
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let question = json["question"] as? String,
-           !question.isEmpty
-        {
-            return question
-        }
-
-        guard let prefixRange = text.range(
-            of: #""question"\s*:\s*""#, options: .regularExpression
-        ) else { return nil }
-
-        var extracted = String(text[prefixRange.upperBound...])
-        if extracted.hasSuffix("\"}") {
-            extracted = String(extracted.dropLast(2))
-        } else if extracted.hasSuffix("\"") {
-            extracted = String(extracted.dropLast(1))
-        }
-        extracted = extracted
-            .replacingOccurrences(of: "\\\"", with: "\"")
-            .replacingOccurrences(of: "\\n", with: "\n")
-            .replacingOccurrences(of: "\\\\", with: "\\")
-        return extracted.isEmpty ? nil : extracted
     }
 }

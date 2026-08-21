@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Settings-specific layout constants (master-detail, card icons, toggle rows).
-enum SettingsLayout {
+nonisolated enum SettingsLayout {
     /// Width of the list in master-detail views
     static let listWidth: CGFloat = 260
     /// Minimum width for detail panels

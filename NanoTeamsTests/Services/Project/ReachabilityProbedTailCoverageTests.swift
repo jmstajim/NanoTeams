@@ -275,7 +275,7 @@ final class ReachabilityProbedTailCoverageTests: XCTestCase {
         XCTAssertEqual(viaGuard.excerpts.count, viaEmptyWalk.excerpts.count)
         XCTAssertNotEqual(viaGuard.rootName, viaEmptyWalk.rootName,
                           "the fixtures are supposed to carry different roots — if these match, "
-                          + "the comparison above no longer distinguishes the two routes")
+                              + "the comparison above no longer distinguishes the two routes")
     }
 
     /// `decodeUTF8TrimmingPartialTail` drops up to three trailing bytes to rescue an excerpt whose
@@ -319,6 +319,6 @@ final class ReachabilityProbedTailCoverageTests: XCTestCase {
             "non-UTF-8 bytes must yield no excerpt rather than mojibake")
         XCTAssertTrue(input.excerpts.contains { $0.path == "good.txt" },
                       "anti-vacuum: excerpting has to be working at all, or the assertion above "
-                      + "passes for the wrong reason")
+                          + "passes for the wrong reason")
     }
 }

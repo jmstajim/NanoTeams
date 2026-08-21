@@ -11,6 +11,9 @@ extension StoreConfiguration {
         static let llmModel = UserDefaultsKeys.llmModel
         static let debugModeEnabled = UserDefaultsKeys.debugModeEnabled
         static let maxLLMRetries = UserDefaultsKeys.maxLLMRetries
+        static let benchmarkRepeats = UserDefaultsKeys.benchmarkRepeats
+        static let benchmarkTarget = UserDefaultsKeys.benchmarkTarget
+        static let benchmarkExcludedProviders = UserDefaultsKeys.benchmarkExcludedProviders
         static let llmRequestTimeoutSeconds = UserDefaultsKeys.llmRequestTimeoutSeconds
         static let ollamaKeepAliveSeconds = UserDefaultsKeys.ollamaKeepAliveSeconds
         static let timelineClearedUpToDate = UserDefaultsKeys.timelineClearedUpToDate
@@ -20,6 +23,7 @@ extension StoreConfiguration {
         static let visionProvider = UserDefaultsKeys.visionProvider
         static let llmProviderEndpoints = UserDefaultsKeys.llmProviderEndpoints
         static let dismissedNotificationIDs = UserDefaultsKeys.dismissedNotificationIDs
+        static let legacyDismissedNotificationIDsV1 = UserDefaultsKeys.legacyDismissedNotificationIDsV1
         static let dismissedFeatureTipIDs = UserDefaultsKeys.dismissedFeatureTipIDs
         static let seenSupervisorInputKeys = UserDefaultsKeys.seenSupervisorInputKeys
         static let enterSendsMessage = UserDefaultsKeys.enterSendsMessage

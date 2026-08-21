@@ -2,19 +2,23 @@ import Foundation
 
 // Active supervisor-question extraction for the docked composer.
 // Pure static helpers split out of ActivityFeedBuilder; the core
-// builder (emitItems) shares stepHasActiveSupervisorInput with these.
+// builder (emitItems) shares StepExecution.hasActiveSupervisorInput with these.
 nonisolated extension ActivityFeedBuilder {
 
     // MARK: - Active Supervisor Questions (for banner)
 
     /// Data for an active (unanswered) supervisor question, displayed as a banner.
     ///
-    /// `paired` identifies the assistant turn that emitted the question — used by
-    /// `emitItems` to suppress that bubble from the feed (so the question card
-    /// is the sole surface for that turn while unanswered) and by the composer
-    /// to surface the turn's `thinking` in its disclosure row. Existing convention
-    /// is `active = hidden from feed, answered = visible` (see "Answered
-    /// supervisor-input notifications" branch in `emitItems`).
+    /// `paired` identifies the assistant turn that emitted the question. It is
+    /// always populated when such a turn exists; what varies is whether the turn
+    /// is SUPPRESSIBLE — `PairedAssistantMessage.isFullyRenderedByQuestionCard`
+    /// decides that, and only a turn with no prose qualifies. For those,
+    /// `emitItems` drops the bubble (the card is then the sole surface) and the
+    /// composer shows the turn's `thinking` in its disclosure row; convention is
+    /// `active = hidden from feed, answered = visible` (see "Answered
+    /// supervisor-input notifications" branch in `emitItems`). A turn that also
+    /// carried prose keeps its bubble and yields the disclosure to it, so no
+    /// model output is hidden without a surface.
     ///
     /// `paired == nil` covers the case where no assistant turn precedes the tool
     /// call (e.g. ask landed on turn 1 with no preamble) — composer falls back
@@ -32,44 +36,13 @@ nonisolated extension ActivityFeedBuilder {
         let askedAt: Date
     }
 
-    /// Single source of truth for "this step has an unanswered `ask_supervisor`
-    /// question that the docked composer should own". Shared by `emitItems`'s
-    /// supervisor-input skip, `activeSupervisorQuestions`, and the
-    /// `supervisorInputCount` fingerprint — all three must agree, otherwise
-    /// the composer chip, the feed skip, and the rebuild trigger fall out of
-    /// sync (which is exactly the bug the multi-round race produced).
-    ///
-    /// Criterion: the trailing tool call is `ask_supervisor` AND there are
-    /// more `ask_supervisor` calls than `Supervisor answer: …` messages in
-    /// `llmConversation`. `needsSupervisorInput` is OR'd in as defensive
-    /// backstop for any engine path that sets the flag without a matching
-    /// tool call.
-    ///
-    /// The count check is critical for the multi-round race: after the
-    /// supervisor answers iter N, `step.supervisorAnswer` retains the iter-N
-    /// answer until `setNeedsSupervisorInput` runs for iter N+1. Between
-    /// `appendToolCalls(N+1)` and that clear, the iter N+1 question is
-    /// in-flight but `step.supervisorAnswer` is still non-nil — a
-    /// `supervisorAnswer == nil` guard misclassifies it as resolved.
-    /// Counting answer messages against ask calls is invariant to that
-    /// lifecycle (both fields are written together — see
-    /// `LLMExecutionService+StepLifecycle.swift`).
-    static func stepHasActiveSupervisorInput(_ step: StepExecution) -> Bool {
-        let askCalls = step.toolCalls.filter { $0.name == ToolNames.askSupervisor }
-        guard !askCalls.isEmpty else { return step.needsSupervisorInput }
-        let answerMessages = step.llmConversation.filter { $0.sourceContext == .supervisorAnswer }
-        let trailingIsAsk = step.toolCalls.last?.name == ToolNames.askSupervisor
-        let trailingUnanswered = trailingIsAsk && answerMessages.count < askCalls.count
-        return trailingUnanswered || step.needsSupervisorInput
-    }
-
     /// Extracts active (unanswered) supervisor questions from steps. Result is sorted
     /// ascending by `askedAt`, with `stepID` as a deterministic tie-breaker — two
     /// `ask_supervisor` calls landing in the same monotonic tick must produce a stable
     /// order across recomputes, otherwise the leftmost chip flips and any draft typed
     /// into the auto-selected recipient would silently retarget on the next refresh.
     ///
-    /// Uses `stepHasActiveSupervisorInput` for the active-state check.
+    /// Uses `StepExecution.hasActiveSupervisorInput` for the active-state check.
     ///
     /// Two surfacing paths:
     /// 1. **Trailing `ask_supervisor` tool call** — normal path. Question text
@@ -80,22 +53,26 @@ nonisolated extension ActivityFeedBuilder {
     ///    call `setNeedsSupervisorInput(stepID:question:sessionID:)` directly,
     ///    flipping the flag without appending a tool call. Without this branch,
     ///    `activeSupervisorQuestions` silently returned `[]` for these steps
-    ///    even though `stepHasActiveSupervisorInput` agreed they were waiting —
+    ///    even though `hasActiveSupervisorInput` agreed they were waiting —
     ///    composer chip never appeared, question card never rendered, and the
     ///    user had to switch tasks to force a fresh view rebuild.
     ///    Pinned by `ActivityFeedBuilderTests.testEscalationPath_emptyAskCalls_flagSet_surfacesStoredQuestion`.
     static func activeSupervisorQuestions(steps: [StepExecution]) -> [ActiveSupervisorQuestion] {
         var result: [ActiveSupervisorQuestion] = []
         for step in steps {
-            guard stepHasActiveSupervisorInput(step) else { continue }
-            let askCalls = step.toolCalls.filter { $0.name == ToolNames.askSupervisor }
+            guard step.hasActiveSupervisorInput else { continue }
+            // `last(where:)`, not `filter{}.last`: this runs from `recomputeSteps`
+            // on every runDataVersion tick, and the materialized filter was an
+            // O(toolCalls) pass per tick that grows without bound in chat-mode
+            // steps — only the LAST ask is ever read here.
+            let lastAskCall = step.toolCalls.last(where: { $0.name == ToolNames.askSupervisor })
 
             let question: String
             let toolCallID: UUID
             let askedAt: Date
             let paired: PairedAssistantMessage?
 
-            if let lastCall = askCalls.last {
+            if let lastCall = lastAskCall {
                 // Normal path: trailing ask_supervisor tool call.
                 //
                 // Preference order:
@@ -126,7 +103,7 @@ nonisolated extension ActivityFeedBuilder {
                     .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 if step.needsSupervisorInput, !storedQ.isEmpty {
                     question = storedQ
-                } else if let parsed = parseAskSupervisorQuestion(from: lastCall.argumentsJSON) {
+                } else if let parsed = lastCall.parsedSupervisorQuestion {
                     question = parsed
                 } else if !storedQ.isEmpty {
                     question = storedQ
@@ -136,12 +113,13 @@ nonisolated extension ActivityFeedBuilder {
                 toolCallID = lastCall.id
                 askedAt = lastCall.createdAt
                 // Pair with the most-recent assistant turn at or before the
-                // active ask. `id` drives bubble-suppression in `emitItems`;
+                // active ask. `id` identifies the bubble in `emitItems`;
+                // `content` decides whether that bubble may be suppressed;
                 // `thinking` feeds the composer's thinking disclosure.
                 paired = step.llmConversation
                     .last(where: { $0.role == .assistant && $0.createdAt <= lastCall.createdAt })
                     .map {
-                        PairedAssistantMessage(id: $0.id, thinking: $0.thinking)
+                        PairedAssistantMessage(id: $0.id, thinking: $0.thinking, content: $0.content)
                     }
             } else {
                 // Escalation path: `setNeedsSupervisorInput` from drift /
@@ -158,12 +136,13 @@ nonisolated extension ActivityFeedBuilder {
                 toolCallID = UUID()  // synthetic — escalation path has no real tool call
                 askedAt = step.updatedAt
                 // Pair with the last assistant turn (the one that triggered
-                // the cap) so its bubble is suppressed and its thinking shows
-                // in the composer's disclosure.
+                // the cap). If it carried no prose, its bubble is suppressed and
+                // its thinking shows in the composer's disclosure; if it did,
+                // the bubble stays and keeps the reasoning with it.
                 paired = step.llmConversation
                     .last(where: { $0.role == .assistant })
                     .map {
-                        PairedAssistantMessage(id: $0.id, thinking: $0.thinking)
+                        PairedAssistantMessage(id: $0.id, thinking: $0.thinking, content: $0.content)
                     }
             }
 

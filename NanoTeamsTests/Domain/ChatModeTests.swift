@@ -357,7 +357,7 @@ final class ChatModeTests: XCTestCase {
         // ask_supervisor (pinned by AutovisorAskSupervisorGateTests). Exclude it
         // alongside "supervisor".
         for (stepID, toolIDs) in SystemTemplates.fallbackToolIDs
-        where stepID != "supervisor" && stepID != AutovisorConstants.managerRoleSystemID {
+            where stepID != "supervisor" && stepID != AutovisorConstants.managerRoleSystemID {
             XCTAssertTrue(
                 toolIDs.contains(askSupervisor),
                 "Role '\(stepID)' should have ask_supervisor in fallback toolIDs"

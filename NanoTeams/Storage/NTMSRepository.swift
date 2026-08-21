@@ -8,6 +8,13 @@ enum NTMSRepositoryError: LocalizedError {
     case taskNotFound(Int)
     case unableToEncodeReport
     case unableToWriteReport(URL, underlying: Error)
+    /// A step's stream flush failed — the whole task write is refused so the
+    /// blob and the log can never disagree about where the streams live.
+    case stepLogWriteFailed(taskID: Int, stepID: String)
+    /// A split task whose streams were never hydrated reached `updateTaskOnly`.
+    /// Persisting it would diff empty arrays against the log and TRUNCATE a
+    /// run's whole conversation — loud refusal, never silent data loss.
+    case unhydratedTask(Int)
 
     var errorDescription: String? {
         switch self {
@@ -19,6 +26,10 @@ enum NTMSRepositoryError: LocalizedError {
             "Unable to encode report as UTF-8."
         case .unableToWriteReport(let url, let underlying):
             "Unable to write report to \(url.path): \(underlying.localizedDescription)"
+        case .stepLogWriteFailed(let taskID, let stepID):
+            "Unable to write the step log for task \(taskID), step '\(stepID)'."
+        case .unhydratedTask(let id):
+            "Refusing to persist task \(id): its conversation streams were never loaded."
         }
     }
 }
@@ -65,7 +76,9 @@ nonisolated struct NTMSRepository: WorkFolderRepository, TaskRepository, ToolRep
         if let activeID = state.activeTaskID {
             let ancestors = tasksIndex.ancestorIDs(of: activeID)
             if fileManager.fileExists(atPath: paths.taskJSON(taskID: activeID, ancestors: ancestors).path) {
-                activeTask = try store.read(NTMSTask.self, from: paths.taskJSON(taskID: activeID, ancestors: ancestors))
+                var loaded = try store.read(NTMSTask.self, from: paths.taskJSON(taskID: activeID, ancestors: ancestors))
+                hydrateStreams(&loaded, paths: paths, ancestors: ancestors)
+                activeTask = loaded
 
                 // Update index entry for the active task only (derived status, title, updatedAt).
                 if let activeTask {
@@ -193,7 +206,9 @@ nonisolated struct NTMSRepository: WorkFolderRepository, TaskRepository, ToolRep
         } else if let activeID = state.activeTaskID {
             let ancestors = index.ancestorIDs(of: activeID)
             if fileManager.fileExists(atPath: paths.taskJSON(taskID: activeID, ancestors: ancestors).path) {
-                resolvedActiveTask = try store.read(NTMSTask.self, from: paths.taskJSON(taskID: activeID, ancestors: ancestors))
+                var loaded = try store.read(NTMSTask.self, from: paths.taskJSON(taskID: activeID, ancestors: ancestors))
+                hydrateStreams(&loaded, paths: paths, ancestors: ancestors)
+                resolvedActiveTask = loaded
             }
         }
 
@@ -268,11 +283,11 @@ nonisolated struct NTMSRepository: WorkFolderRepository, TaskRepository, ToolRep
         // Internal directories (hidden from LLM) — owner-only access
         if !fileManager.fileExists(atPath: paths.internalDir.path) {
             try fileManager.createDirectory(at: paths.internalDir, withIntermediateDirectories: true,
-                                             attributes: Self.internalDirAttributes)
+                                            attributes: Self.internalDirAttributes)
         }
         if !fileManager.fileExists(atPath: paths.internalTasksDir.path) {
             try fileManager.createDirectory(at: paths.internalTasksDir, withIntermediateDirectories: true,
-                                             attributes: Self.internalDirAttributes)
+                                            attributes: Self.internalDirAttributes)
         }
         // Fix existing installations (idempotent)
         try? fileManager.setAttributes(Self.internalDirAttributes, ofItemAtPath: paths.internalDir.path)

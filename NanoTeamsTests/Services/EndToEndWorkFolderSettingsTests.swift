@@ -78,12 +78,12 @@ final class EndToEndWorkFolderSettingsTests: NTMSOrchestratorTestBase, @unchecke
 
     func testUpdateDescription_multiLine_roundTripsCorrectly() async {
         let multiLine = """
-            # My Project
-
-            - First line
-            - Second line with `code`
-            - Unicode: café, 🚀, 日本語
-            """
+        # My Project
+        
+        - First line
+        - Second line with `code`
+        - Unicode: café, 🚀, 日本語
+        """
 
         await sut.openWorkFolder(tempDir)
         await sut.updateWorkFolderContext(multiLine)

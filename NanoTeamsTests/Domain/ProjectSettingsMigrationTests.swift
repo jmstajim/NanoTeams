@@ -76,7 +76,7 @@ final class ProjectSettingsMigrationTests: XCTestCase {
         XCTAssertTrue(json.contains("\"contextPrompt\""), "must serialize new key")
         XCTAssertFalse(json.contains("\"description\""),
                        "must not write legacy key — stale on-disk data would " +
-                       "shadow the new key during partial-migration reads")
+                           "shadow the new key during partial-migration reads")
         XCTAssertFalse(json.contains("\"descriptionPrompt\""),
                        "must not write legacy prompt key")
     }

@@ -198,7 +198,7 @@ actor ChatModelEnsurer {
         let key = Self.key(model: instance.modelName, base: instance.baseURLString)
         let task = Task.detached {
             try await client.unloadModel(
-                instanceID: instance.instanceID,
+                provider: .lmStudio, instanceID: instance.instanceID,
                 baseURLString: instance.baseURLString
             )
         }
@@ -266,7 +266,8 @@ actor ChatModelEnsurer {
         }
 
         let task = Task.detached {
-            try await client.unloadModel(instanceID: instanceID, baseURLString: baseURLString)
+            try await client.unloadModel(
+                provider: .lmStudio, instanceID: instanceID, baseURLString: baseURLString)
         }
         unloading[key] = task
         defer { unloading[key] = nil }
@@ -287,9 +288,12 @@ actor ChatModelEnsurer {
     ) async {
         let deadline = Date().addingTimeInterval(ModelResidencyConstants.unloadSettleTimeout)
         while Date() < deadline {
-            guard let resident = try? await client.listLoadedInstances(
-                baseURLString: instance.baseURLString)
+            guard let listing = try? await client.listLoadedInstances(
+                provider: .lmStudio, baseURLString: instance.baseURLString)
             else { return }  // can't observe ⇒ don't stall the switch
+            // `.unsupported` collapses to "not observed here", which is the same
+            // decision as a throw: stop waiting rather than spin to the deadline.
+            let resident = listing.adoptable
             if !resident.contains(where: { $0.instanceID == instance.instanceID }) { return }
             try? await Task.sleep(for: ModelResidencyConstants.unloadSettlePollInterval)
         }
@@ -307,7 +311,21 @@ actor ChatModelEnsurer {
         // itself.
         let loaded: [LoadedModelInstance]
         do {
-            loaded = try await client.listLoadedInstances(baseURLString: baseURLString)
+            // `.lmStudio` explicitly, and it is a statement rather than a
+            // placeholder: this ledger only ever holds instances the LM Studio
+            // client loaded, and every entry point is behind
+            // `LLMProvider.managesModelResidency`. Naming the provider here is
+            // what the router used to assume silently for everyone.
+            //
+            // `.adoptable` collapses "this server cannot list" into "nothing to
+            // adopt" ON PURPOSE, and the difference from the `catch` below is
+            // the whole point of this type existing: a server that answers but
+            // has no listing route still gets an EXPLICIT load, which is the
+            // only reason this class exists (a JIT-loaded model is Auto-Evict
+            // eligible and carries a 60-minute idle TTL). A server we could not
+            // reach gets `.skipped`, so the chat call raises the real error.
+            loaded = try await client.listLoadedInstances(
+                provider: .lmStudio, baseURLString: baseURLString).adoptable
         } catch {
             return .skipped
         }
@@ -316,7 +334,7 @@ actor ChatModelEnsurer {
         }
 
         let instanceID = try await client.loadModel(
-            modelName: model, baseURLString: baseURLString)
+            provider: .lmStudio, modelName: model, baseURLString: baseURLString)
         return .loaded(instanceID: instanceID)
     }
 

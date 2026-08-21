@@ -15,7 +15,7 @@ final class QuickCapturePanelRefocusInputFieldTests: XCTestCase {
         panel.refocusInputField()
         panel.refocusInputField()
         XCTAssertEqual(panel._testRefocusInvocationCount, 3,
-            "Counter must increment on every call.")
+                       "Counter must increment on every call.")
     }
 
     /// Dismiss-race: panel never shown → `isVisible == false`. The retry
@@ -92,7 +92,7 @@ final class QuickCapturePanelRefocusInputFieldTests: XCTestCase {
         panel.refocusInputField()
 
         XCTAssertEqual(panel.makeKeyAndOrderFrontCallCount, 1,
-            "refocusInputField must re-key the panel — otherwise the caret stays invisible after a repeat `+` press.")
+                       "refocusInputField must re-key the panel — otherwise the caret stays invisible after a repeat `+` press.")
     }
 
     /// Each refocus must re-key — between spam-taps the user may have
@@ -105,7 +105,7 @@ final class QuickCapturePanelRefocusInputFieldTests: XCTestCase {
         panel.refocusInputField()
         panel.refocusInputField()
         XCTAssertEqual(panel.makeKeyAndOrderFrontCallCount, 3,
-            "Each refocus call must re-key — no implicit debounce.")
+                       "Each refocus call must re-key — no implicit debounce.")
     }
 
     /// Spam-tap concurrency: three rapid `refocusInputField()` calls against

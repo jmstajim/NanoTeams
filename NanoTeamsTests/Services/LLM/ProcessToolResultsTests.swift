@@ -239,7 +239,7 @@ final class ProcessToolResultsTests: XCTestCase {
         // card does not. See the `feed-invisible-by-design:` note at the call site.
         XCTAssertNil(persisted[1].sourceContext,
                      "The direction comments on the failed call's own card — attributing it "
-                     + "puts the same sentence on screen twice for one event")
+                         + "puts the same sentence on screen twice for one event")
     }
 
     /// End-to-end, on the surface the Supervisor actually looks at: a failed call
@@ -300,7 +300,7 @@ final class ProcessToolResultsTests: XCTestCase {
         }
         XCTAssertTrue(notices.isEmpty,
                       "The card already carries the reason; a notice under it restates it. Got: "
-                      + notices.map(\.rowLabel).joined(separator: ", "))
+                          + notices.map(\.rowLabel).joined(separator: ", "))
 
         // Half two of the contract, and it belongs in the same test: the model must
         // still be steered, or a later "the row is noise" cleanup deletes the steering
@@ -323,9 +323,9 @@ final class ProcessToolResultsTests: XCTestCase {
         installTask(task)
 
         let envelope = """
-            {"ok":false,"error":"tool_not_authorized","tool":"write_file",\
-            "message":"Tool 'write_file' is not available for this role."}
-            """
+        {"ok":false,"error":"tool_not_authorized","tool":"write_file",\
+        "message":"Tool 'write_file' is not available for this role."}
+        """
         let result = makeResult(
             providerID: "tc_0", toolName: ToolNames.writeFile,
             argumentsJSON: args, outputJSON: envelope, isError: true
@@ -597,7 +597,7 @@ final class ProcessToolResultsTests: XCTestCase {
 
         XCTAssertEqual(conversation.count, 1,
                        "tool turn only — the model already has the tool envelope; got: "
-                       + "\(conversation.map { $0.content ?? "" })")
+                           + "\(conversation.map { $0.content ?? "" })")
         guard conversation.count == 1 else { return }
         XCTAssertEqual(conversation[0].role, .tool)
 
@@ -607,7 +607,7 @@ final class ProcessToolResultsTests: XCTestCase {
             .filter { $0.sourceContext == .toolAcknowledgement }
         XCTAssertTrue(notes.isEmpty,
                       "the tool card already renders `→ ok`; a note would duplicate it. Got: "
-                      + "\(notes.map { $0.content })")
+                          + "\(notes.map { $0.content })")
     }
 
     // MARK: - Group G: the explicit `.teamCreation` arm
@@ -901,8 +901,8 @@ private final class ProcessToolResultsStubClient: LLMClient, @unchecked Sendable
         AsyncThrowingStream { $0.finish() }
     }
 
-    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
-    func loadModel(modelName _: String, baseURLString _: String) async throws -> String { "" }
-    func unloadModel(instanceID _: String, baseURLString _: String) async throws {}
-    func listLoadedInstances(baseURLString _: String) async throws -> [LoadedModelInstance] { [] }
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
+    func loadModel(provider _: LLMProvider, modelName _: String, baseURLString _: String) async throws -> String { "" }
+    func unloadModel(provider _: LLMProvider, instanceID _: String, baseURLString _: String) async throws {}
+    func listLoadedInstances(provider _: LLMProvider, baseURLString _: String) async throws -> LoadedInstanceListing { .listed([]) }
 }

@@ -38,7 +38,7 @@ final class EndToEndSwitchTeamOnRunningTaskTests: NTMSOrchestratorTestBase, @unc
         await sut.mutateWorkFolder { proj in proj.setActiveTeam(team1ID) }
 
         let taskID = await sut.createTask(title: "T", supervisorTask: "x",
-                                           preferredTeamID: team1ID)!
+                                          preferredTeamID: team1ID)!
         await sut.switchTask(to: taskID)
 
         await sut.switchTeam(to: team2ID)
@@ -73,7 +73,7 @@ final class EndToEndSwitchTeamOnRunningTaskTests: NTMSOrchestratorTestBase, @unc
         guard let activeID = sut.workFolder?.activeTeamID else { return XCTFail() }
 
         let taskID = await sut.createTask(title: "T", supervisorTask: "x",
-                                           preferredTeamID: activeID)!
+                                          preferredTeamID: activeID)!
         await sut.switchTask(to: taskID)
 
         // Seed some run state
@@ -103,7 +103,7 @@ final class EndToEndSwitchTeamOnRunningTaskTests: NTMSOrchestratorTestBase, @unc
         let team2 = teams[1]
 
         let taskID = await sut.createTask(title: "T", supervisorTask: "x",
-                                           preferredTeamID: team1.id)!
+                                          preferredTeamID: team1.id)!
         await sut.switchTask(to: taskID)
 
         // Add a step for a role that exists in team1 but not team2
@@ -151,7 +151,7 @@ final class EndToEndSwitchTeamOnRunningTaskTests: NTMSOrchestratorTestBase, @unc
         }
 
         let taskID = await sut.createTask(title: "T", supervisorTask: "x",
-                                           preferredTeamID: team1.id)!
+                                          preferredTeamID: team1.id)!
         await sut.switchTask(to: taskID)
 
         await sut.mutateTask(taskID: taskID) { task in
@@ -199,7 +199,7 @@ final class EndToEndSwitchTeamOnRunningTaskTests: NTMSOrchestratorTestBase, @unc
         let newID = teams[1].id
 
         let taskID = await sut.createTask(title: "T", supervisorTask: "x",
-                                           preferredTeamID: teams[0].id)!
+                                          preferredTeamID: teams[0].id)!
         await sut.switchTask(to: taskID)
         await sut.switchTeam(to: newID)
 

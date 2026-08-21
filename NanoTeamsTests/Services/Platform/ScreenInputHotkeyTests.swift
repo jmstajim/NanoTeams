@@ -306,7 +306,7 @@ final class ScreenInputHotkeyCoordinateContractTests: XCTestCase {
                            "long side must be capped for \(geometry)")
         }
         XCTAssertGreaterThan(downscaledCount, 0,
-            "the geometry table must include a downscaled case or the centre test is vacuous")
+                             "the geometry table must include a downscaled case or the centre test is vacuous")
     }
 
     /// The LAST valid image pixel must land strictly inside the region, exactly one pixel-step

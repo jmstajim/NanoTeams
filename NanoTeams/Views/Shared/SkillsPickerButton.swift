@@ -170,8 +170,8 @@ private struct SkillsPickerPopover: View {
 
     private var emptyState: some View {
         Text(searchText.trimmingCharacters(in: .whitespaces).isEmpty
-             ? SkillsPickerLogic.emptyStateHint(hasProjectRoot: hasProjectRoot)
-             : "No skills match “\(searchText)”.")
+            ? SkillsPickerLogic.emptyStateHint(hasProjectRoot: hasProjectRoot)
+            : "No skills match “\(searchText)”.")
             .font(Typography.caption)
             .foregroundStyle(Colors.textSecondary)
             .fixedSize(horizontal: false, vertical: true)

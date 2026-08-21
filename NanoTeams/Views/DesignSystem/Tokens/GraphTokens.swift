@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Design tokens for team graph drawing (connections, labels, node dimensions).
-enum GraphTokens {
+nonisolated enum GraphTokens {
     /// Default line width for connections
     static let connectionLineWidth: CGFloat = 1.5
     /// Highlighted connection line width

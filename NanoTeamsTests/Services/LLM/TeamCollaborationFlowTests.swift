@@ -95,7 +95,7 @@ final class TeamCollaborationFlowTests: XCTestCase {
 
         XCTAssertNotNil(error)
         XCTAssertTrue(error?.contains("yourself") ?? false || error?.contains("same") ?? false,
-                       "Should reject self-consultation")
+                      "Should reject self-consultation")
     }
 
     func testConsultationValidation_supervisorConsultation_returnsError() {
@@ -109,7 +109,7 @@ final class TeamCollaborationFlowTests: XCTestCase {
         )
 
         XCTAssertNotNil(error,
-                       "Consulting supervisor directly should return error (use ask_supervisor)")
+                        "Consulting supervisor directly should return error (use ask_supervisor)")
     }
 
     func testConsultationValidation_validTeammate_returnsNil() {
@@ -350,11 +350,11 @@ final class TeamCollaborationFlowTests: XCTestCase {
     func testTallyVotes_voteAtEndOfLongMessage() {
         let messages = [
             TeamMessage(role: .softwareEngineer, content: """
-                I've reviewed the changes carefully. The null check fix is important
-                and the code quality improvements are welcome. After careful consideration,
-                I believe these changes are necessary.
-                VOTE: APPROVE
-                """),
+            I've reviewed the changes carefully. The null check fix is important
+            and the code quality improvements are welcome. After careful consideration,
+            I believe these changes are necessary.
+            VOTE: APPROVE
+            """),
             TeamMessage(role: .techLead, content: "Good analysis. VOTE: APPROVE"),
         ]
 

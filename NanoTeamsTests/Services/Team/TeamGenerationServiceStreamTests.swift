@@ -34,7 +34,7 @@ final class TeamGenerationServiceStreamTests: XCTestCase {
             }
         }
 
-        func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [String] { [] }
+        func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [LLMModelInfo] { [] }
     }
 
     // MARK: - Helpers
@@ -278,7 +278,7 @@ final class TeamGenerationServiceStreamTests: XCTestCase {
                 }
             }
         }
-        func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [String] { [] }
+        func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [LLMModelInfo] { [] }
     }
 
     func testFirstContentDeadline_stuckReasoningLoop_breaksStreamEarly() async {
@@ -320,7 +320,7 @@ final class TeamGenerationServiceStreamTests: XCTestCase {
                     }
                 }
             }
-            func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [String] { [] }
+            func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [LLMModelInfo] { [] }
         }
         let outcome = await TeamGenerationService.generateWithDiagnostics(
             taskDescription: "t", config: LLMConfig(),
@@ -348,7 +348,7 @@ final class TeamGenerationServiceStreamTests: XCTestCase {
                 capturedMessages = messages
                 return AsyncThrowingStream { $0.finish() }
             }
-            func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [String] { [] }
+            func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [LLMModelInfo] { [] }
         }
         let cap = CapturingClient()
         _ = try? await TeamGenerationService.generate(

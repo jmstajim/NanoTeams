@@ -108,7 +108,7 @@ final class CloseTaskTests: NTMSOrchestratorTestBase, @unchecked Sendable {
         _ = await sut.closeTask(taskID: taskID)
 
         XCTAssertEqual(sut.activeTask?.runs.last?.steps.first?.status, .failed,
-                        "Failed steps should preserve their status for diagnostics")
+                       "Failed steps should preserve their status for diagnostics")
     }
 
     /// Pin: `closeTask` finalizes any role statuses still in
@@ -162,7 +162,7 @@ final class CloseTaskTests: NTMSOrchestratorTestBase, @unchecked Sendable {
         _ = await sut.closeTask(taskID: taskID)
 
         XCTAssertEqual(sut.activeTask?.runs.last?.steps.first?.status, .pending,
-                        "Pending steps (never started) should not be marked done")
+                       "Pending steps (never started) should not be marked done")
     }
 
     // MARK: - Multiple Steps Mixed Statuses

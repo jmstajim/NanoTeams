@@ -143,7 +143,7 @@ nonisolated extension SystemTemplates {
         // repo's state rather than change it); NO repo-mutation tools (no write_file/edit_file/
         // delete_file, no git-write), NOT delegate_to_team. The manager inspects the repo and
         // delegates every change via `create_managed_task` — it cannot edit anything.
-        role("autovisor", name: "Autovisor", icon: "folder.badge.person.crop",
+        role("autovisor", name: "Autovisor", icon: AutovisorConstants.symbolName,
              toolIDs: AutovisorConstants.managerDefaultToolIDs,
              requires: [supervisorTaskArtifactName]),
     ])

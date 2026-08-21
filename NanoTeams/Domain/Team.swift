@@ -502,6 +502,6 @@ nonisolated extension Team: Hashable {
 
     static func == (lhs: Team, rhs: Team) -> Bool {
         lhs.id == rhs.id &&
-        lhs.updatedAt == rhs.updatedAt
+            lhs.updatedAt == rhs.updatedAt
     }
 }

@@ -269,13 +269,13 @@ final class AtomicJSONStoreTests: XCTestCase, @unchecked Sendable {
     func testWriteAndReadNTMSTask() throws {
         let testURL = tempDir.appendingPathComponent("task.json")
         let task = NTMSTask(id: 0, title: "Test Task",
-            supervisorTask: "Build something",
-            status: .running,
-            runs: [
-                Run(id: 0, steps: [
-                    StepExecution(id: "test_step", role: .productManager, title: "PO Step", status: .done)
-                ])
-            ]
+                            supervisorTask: "Build something",
+                            status: .running,
+                            runs: [
+                                Run(id: 0, steps: [
+                                    StepExecution(id: "test_step", role: .productManager, title: "PO Step", status: .done)
+                                ])
+                            ]
         )
 
         try store.write(task, to: testURL)

@@ -108,7 +108,7 @@ final class AutovisorAskSupervisorGateTests: XCTestCase {
                        "the role-lookup-miss fallback must not grant ask_supervisor to the manager")
         XCTAssertTrue(schemas.contains { $0.name == ToolNames.listTasks },
                       "the miss degrades to the manager's real default toolset (fallbackToolIDs[\"autovisor\"]), "
-                        + "not the generic custom-role set")
+                          + "not the generic custom-role set")
     }
 
     func testFallbackToolIDs_autovisorKey_isManagerDefaults_noAskSupervisor() {

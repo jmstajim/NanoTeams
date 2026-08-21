@@ -43,23 +43,23 @@ nonisolated enum RoleExecutionStatus: String, Codable, Hashable, CaseIterable {
 
     private static let metadata: [RoleExecutionStatus: StatusMetadata] = [
         .idle:              StatusMetadata(displayName: "Standby",            icon: "circle",
-                                          isActive: false, isComplete: false, requiresSupervisorAttention: false, canStart: false, canRestart: false),
+                                           isActive: false, isComplete: false, requiresSupervisorAttention: false, canStart: false, canRestart: false),
         .ready:             StatusMetadata(displayName: "Ready",              icon: "circle.lefthalf.filled",
-                                          isActive: false, isComplete: false, requiresSupervisorAttention: false, canStart: true,  canRestart: false),
+                                           isActive: false, isComplete: false, requiresSupervisorAttention: false, canStart: true,  canRestart: false),
         .working:           StatusMetadata(displayName: "Working",            icon: "arrow.triangle.2.circlepath",
-                                          isActive: true,  isComplete: false, requiresSupervisorAttention: false, canStart: false, canRestart: true),
+                                           isActive: true,  isComplete: false, requiresSupervisorAttention: false, canStart: false, canRestart: true),
         .needsAcceptance:   StatusMetadata(displayName: "Needs Review",        icon: "hand.raised.circle",
-                                          isActive: true,  isComplete: false, requiresSupervisorAttention: true,  canStart: false, canRestart: true),
+                                           isActive: true,  isComplete: false, requiresSupervisorAttention: true,  canStart: false, canRestart: true),
         .accepted:          StatusMetadata(displayName: "Accepted",           icon: "checkmark.circle",
-                                          isActive: false, isComplete: true,  requiresSupervisorAttention: false, canStart: false, canRestart: true),
+                                           isActive: false, isComplete: true,  requiresSupervisorAttention: false, canStart: false, canRestart: true),
         .revisionRequested: StatusMetadata(displayName: "Revision Requested", icon: "arrow.counterclockwise",
-                                          isActive: true,  isComplete: false, requiresSupervisorAttention: false, canStart: true,  canRestart: true),
+                                           isActive: true,  isComplete: false, requiresSupervisorAttention: false, canStart: true,  canRestart: true),
         .done:              StatusMetadata(displayName: "Done",               icon: "checkmark.circle",
-                                          isActive: false, isComplete: true,  requiresSupervisorAttention: false, canStart: false, canRestart: true),
+                                           isActive: false, isComplete: true,  requiresSupervisorAttention: false, canStart: false, canRestart: true),
         .failed:            StatusMetadata(displayName: "Failed",             icon: "xmark.circle",
-                                          isActive: false, isComplete: false, requiresSupervisorAttention: true,  canStart: false, canRestart: true),
+                                           isActive: false, isComplete: false, requiresSupervisorAttention: true,  canStart: false, canRestart: true),
         .skipped:           StatusMetadata(displayName: "Skipped",            icon: "forward.circle",
-                                          isActive: false, isComplete: true,  requiresSupervisorAttention: false, canStart: false, canRestart: true),
+                                           isActive: false, isComplete: true,  requiresSupervisorAttention: false, canStart: false, canRestart: true),
     ]
 
     var displayName: String { Self.metadata[self]?.displayName ?? "" }

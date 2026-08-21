@@ -274,7 +274,7 @@ final class ToolsFileSystemTests: XCTestCase {
         XCTAssertTrue(results[0].isError, "start_line past EOF must error, not return empty content")
         XCTAssertTrue(
             results[0].outputJSON.lowercased().contains("range") ||
-            results[0].outputJSON.contains("exceeds file length"),
+                results[0].outputJSON.contains("exceeds file length"),
             "Error must indicate range/length issue. Got: \(results[0].outputJSON)"
         )
     }
@@ -1677,8 +1677,8 @@ final class ToolsFileSystemTests: XCTestCase {
 
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("\"skipped_binary_count\" : 3")
-                      || results[0].outputJSON.contains("\"skipped_binary_count\":3"),
-                      "expected aggregate count of 3 binary files, got: \(results[0].outputJSON)")
+            || results[0].outputJSON.contains("\"skipped_binary_count\":3"),
+            "expected aggregate count of 3 binary files, got: \(results[0].outputJSON)")
     }
 
     func testSearch_noBinaryFiles_omitsSkippedBinaryCountField() throws {

@@ -162,8 +162,8 @@ extension LLMExecutionService {
             await recordChangeRequest(taskID: tid, changeRequest: changeRequest)
             return .ok(
                 "Change request NOT carried — the voting meeting produced no votes. "
-                + "Participants must reply with `VOTE: APPROVE` or `VOTE: REJECT`. "
-                + "The existing work stands; ask again with a clearer request if the change is still needed."
+                    + "Participants must reply with `VOTE: APPROVE` or `VOTE: REJECT`. "
+                    + "The existing work stands; ask again with a clearer request if the change is still needed."
             )
 
         case .tied:
@@ -254,13 +254,13 @@ extension LLMExecutionService {
             task.runs[runIndex].steps[stepIndex].amendments.append(amendment)
 
             let amendmentContext = """
-                ## AMENDMENT REQUEST
-                Requested by: \(requestingRoleID)
-                Changes needed: \(changes)
-                Reasoning: \(reasoning)
-
-                Update your work to address these changes. Your original conversation and artifacts are preserved above. Produce updated artifacts that incorporate the requested changes.
-                """
+            ## AMENDMENT REQUEST
+            Requested by: \(requestingRoleID)
+            Changes needed: \(changes)
+            Reasoning: \(reasoning)
+            
+            Update your work to address these changes. Your original conversation and artifacts are preserved above. Produce updated artifacts that incorporate the requested changes.
+            """
 
             task.runs[runIndex].steps[stepIndex].messages.append(
                 StepMessage(role: .supervisor, content: amendmentContext)
@@ -346,12 +346,12 @@ extension LLMExecutionService {
                 guard isDone || isRunning else { continue }  // idle / not started: no action
 
                 let contextMsg = """
-                    ## UPSTREAM AMENDMENT NOTICE
-                    Role '\(sourceRoleID)' is amending their work.
-                    Changes: \(changes)
-
-                    Review and update your work if affected by these upstream changes.
-                    """
+                ## UPSTREAM AMENDMENT NOTICE
+                Role '\(sourceRoleID)' is amending their work.
+                Changes: \(changes)
+                
+                Review and update your work if affected by these upstream changes.
+                """
                 task.runs[runIndex].steps[stepIndex].messages.append(
                     StepMessage(role: .supervisor, content: contextMsg)
                 )

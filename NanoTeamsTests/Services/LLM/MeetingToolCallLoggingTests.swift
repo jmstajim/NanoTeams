@@ -39,8 +39,7 @@ final class MeetingToolCallLoggingTests: XCTestCase {
 
     private func networkToolCallRecords() throws -> [NetworkLogRecord] {
         guard fileManager.fileExists(atPath: netURL.path) else { return [] }
-        let all = try JSONCoderFactory.makeDateDecoder()
-            .decode([NetworkLogRecord].self, from: Data(contentsOf: netURL))
+        let all = try NetworkLogTestReading.strictRecords(at: netURL)
         return all.filter { $0.direction == .toolCall }
     }
 
@@ -69,9 +68,9 @@ final class MeetingToolCallLoggingTests: XCTestCase {
             content: "", thinking: "", resolvedToolCalls: emitted)
         _ = NTMSTask(id: 7, title: "T", supervisorTask: "g", runs: [Run(id: 0, steps: [])])
         let context = TeamMeetingService.MeetingContext( initiatedBy: .softwareEngineer,
-            participants: [.softwareEngineer, .productManager], availableArtifacts: [],
-            artifactReader: { _ in nil }, team: nil,
-            coordinatorRole: .softwareEngineer, limits: TeamLimits())
+                                                         participants: [.softwareEngineer, .productManager], availableArtifacts: [],
+                                                         artifactReader: { _ in nil }, team: nil,
+                                                         coordinatorRole: .softwareEngineer, limits: TeamLimits())
         let toolContext = ToolExecutionContext(
             workFolderRoot: tempDir, taskID: 7, runID: 0, roleID: "team_software_engineer")
 
@@ -154,8 +153,8 @@ private final class StubLLMClient: LLMClient, @unchecked Sendable {
         AsyncThrowingStream { $0.finish() }
     }
 
-    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
-    func loadModel(modelName _: String, baseURLString _: String) async throws -> String { "" }
-    func unloadModel(instanceID _: String, baseURLString _: String) async throws {}
-    func listLoadedInstances(baseURLString _: String) async throws -> [LoadedModelInstance] { [] }
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
+    func loadModel(provider _: LLMProvider, modelName _: String, baseURLString _: String) async throws -> String { "" }
+    func unloadModel(provider _: LLMProvider, instanceID _: String, baseURLString _: String) async throws {}
+    func listLoadedInstances(provider _: LLMProvider, baseURLString _: String) async throws -> LoadedInstanceListing { .listed([]) }
 }

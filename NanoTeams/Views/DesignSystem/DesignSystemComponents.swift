@@ -363,7 +363,7 @@ struct SettingsPillButton: View {
                     .lineLimit(1)
             }
             .font(Typography.captionSemibold)
-            .foregroundStyle(isDestructive ? Colors.error : .secondary)
+            .foregroundStyle(isDestructive ? Colors.error : Colors.textSecondary)
             .padding(.horizontal, Spacing.m)
             .padding(.vertical, Spacing.xs)
             .background(

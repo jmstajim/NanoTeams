@@ -25,7 +25,7 @@ final class FilenameMatcherTests: XCTestCase {
         XCTAssertEqual(matches.count, 1)
         XCTAssertEqual(matches[0].path, "Services/Search/Foo.swift")
         XCTAssertEqual(matches[0].matched_on, .path,
-            "Query hit a parent directory in the path, not the basename")
+                       "Query hit a parent directory in the path, not the basename")
     }
 
     func testSubstring_caseInsensitive() {
@@ -150,7 +150,7 @@ final class FilenameMatcherTests: XCTestCase {
         )
         XCTAssertEqual(matches.count, 2)
         XCTAssertTrue(matches.allSatisfy { $0.matched_on == .basename },
-            "Basename matches must fill the budget before path matches")
+                      "Basename matches must fill the budget before path matches")
     }
 
     // MARK: - Glob match
@@ -194,15 +194,15 @@ final class FilenameMatcherTests: XCTestCase {
     /// to a match-everything glob on failure → both candidates match and this reds.
     func testGlob_uncompilablePattern_failsClosed() {
         XCTAssertTrue(CompiledGlob._testUncompilableGlobSentinel.contains("*"),
-            "the sentinel must contain a wildcard or FilenameMatcher never compiles it, "
-            + "and this test silently degrades to exercising the substring path")
+                      "the sentinel must contain a wildcard or FilenameMatcher never compiles it, "
+                          + "and this test silently degrades to exercising the substring path")
         let matches = FilenameMatcher.match(
             candidates: ["foo.swift", "bar.swift"],
             queries: [CompiledGlob._testUncompilableGlobSentinel],
             limit: 10
         )
         XCTAssertTrue(matches.isEmpty,
-            "An uncompilable glob query must match nothing, never the entire tree.")
+                      "An uncompilable glob query must match nothing, never the entire tree.")
     }
 
     // MARK: - Multi-language / cross-script (relevant to expand pipeline)
@@ -284,7 +284,7 @@ final class FilenameMatcherTests: XCTestCase {
         )
         XCTAssertEqual(matches.count, 1)
         XCTAssertEqual(matches[0].matched_on, .basename,
-            "A file at the root has basename == path; the basename branch must win.")
+                       "A file at the root has basename == path; the basename branch must win.")
     }
 
     // MARK: - Glob: literal-only patterns and edge cases
@@ -296,7 +296,7 @@ final class FilenameMatcherTests: XCTestCase {
             limit: 10
         )
         XCTAssertEqual(matches.count, 3,
-            "A bare `*` glob matches every basename.")
+                       "A bare `*` glob matches every basename.")
     }
 
     func testGlob_multipleWildcards_anchored() {
@@ -312,7 +312,7 @@ final class FilenameMatcherTests: XCTestCase {
         )
         XCTAssertEqual(Set(matches.map(\.path)),
                        ["src/AuthHelper.swift", "src/AuthHelperTests.swift", "src/Helper.swift"],
-            "`*Helper*.swift` matches anything containing `Helper` and ending in `.swift`.")
+                       "`*Helper*.swift` matches anything containing `Helper` and ending in `.swift`.")
     }
 
     func testGlob_questionMarkIsNotWildcard() {
@@ -349,7 +349,7 @@ final class FilenameMatcherTests: XCTestCase {
         XCTAssertEqual(matches.count, 1)
         XCTAssertEqual(matches[0].path, "Sources/Search/Foo.swift")
         XCTAssertEqual(matches[0].matched_on, .path,
-            "Glob hit only the parent directory in the full path.")
+                       "Glob hit only the parent directory in the full path.")
     }
 
     // MARK: - Mixed glob + non-glob queries in one call
@@ -362,7 +362,7 @@ final class FilenameMatcherTests: XCTestCase {
         )
         XCTAssertEqual(Set(matches.map(\.path)),
                        ["README.md", "Helpers.swift"],
-            "Glob and substring queries can both contribute matches in one call.")
+                       "Glob and substring queries can both contribute matches in one call.")
     }
 
     // MARK: - Boundary: limit edges
@@ -375,7 +375,7 @@ final class FilenameMatcherTests: XCTestCase {
         )
         XCTAssertEqual(matches.count, 1)
         XCTAssertEqual(matches[0].path, "alpha.swift",
-            "Limit 1 must take the first basename hit lexicographically.")
+                       "Limit 1 must take the first basename hit lexicographically.")
     }
 
     func testLimitLargerThanMatchCount_returnsAll() {
@@ -385,7 +385,7 @@ final class FilenameMatcherTests: XCTestCase {
             limit: 1000
         )
         XCTAssertEqual(matches.count, 2,
-            "When limit exceeds available matches, return all of them.")
+                       "When limit exceeds available matches, return all of them.")
     }
 
     // MARK: - Empty / invalid input shapes
@@ -461,7 +461,7 @@ final class FilenameMatcherTests: XCTestCase {
         )
         XCTAssertEqual(matches.count, 1)
         XCTAssertEqual(matches[0].matched_on, .basename,
-            "Even though `Services` hit only the path first, `Foo` hits the basename and wins.")
+                       "Even though `Services` hit only the path first, `Foo` hits the basename and wins.")
     }
 
     // MARK: - Candidate-list dedup within a single call

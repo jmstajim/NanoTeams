@@ -38,8 +38,8 @@ struct BashRulesTable: View {
         self._allowRules = allowRules
         self._rows = State(initialValue:
             denyRules.wrappedValue.map { RuleRow(pattern: $0, decision: .deny) }
-            + askRules.wrappedValue.map { RuleRow(pattern: $0, decision: .ask) }
-            + allowRules.wrappedValue.map { RuleRow(pattern: $0, decision: .allow) })
+                + askRules.wrappedValue.map { RuleRow(pattern: $0, decision: .ask) }
+                + allowRules.wrappedValue.map { RuleRow(pattern: $0, decision: .allow) })
     }
 
     var body: some View {

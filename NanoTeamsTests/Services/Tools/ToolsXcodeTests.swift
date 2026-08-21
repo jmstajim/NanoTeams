@@ -242,9 +242,9 @@ final class ToolsXcodeTests: XCTestCase {
     func testParseIssues_errorAndWarningFormat() {
         let issues = XcodeBuildRunner.parseIssues(
             from: """
-                /Users/dev/Project/Sources/File.swift:42:10: error: cannot find 'foo' in scope
-                /Users/dev/Project/Sources/Other.swift:15:5: warning: unused variable 'bar'
-                """,
+            /Users/dev/Project/Sources/File.swift:42:10: error: cannot find 'foo' in scope
+            /Users/dev/Project/Sources/Other.swift:15:5: warning: unused variable 'bar'
+            """,
             workFolderRoot: URL(fileURLWithPath: "/Users/dev/Project"))
 
         XCTAssertEqual(issues.count, 2)
@@ -268,11 +268,11 @@ final class ToolsXcodeTests: XCTestCase {
     func testParseTestOutcome_countsBothResultLineSpellings() {
         let outcome = XcodeBuildRunner.parseTestOutcome(
             output: """
-                Test Case '-[MyAppTests.SomeTests testLegacy]' started.
-                Test Case '-[MyAppTests.SomeTests testLegacy]' passed (0.001 seconds).
-                Test case 'SomeTests.testModern()' passed on 'My Mac - NanoTeams (123)'
-                Test case 'OtherTests.testFailure()' failed on 'My Mac - NanoTeams (123)'
-                """,
+            Test Case '-[MyAppTests.SomeTests testLegacy]' started.
+            Test Case '-[MyAppTests.SomeTests testLegacy]' passed (0.001 seconds).
+            Test case 'SomeTests.testModern()' passed on 'My Mac - NanoTeams (123)'
+            Test case 'OtherTests.testFailure()' failed on 'My Mac - NanoTeams (123)'
+            """,
             scheme: "App",
             workFolderRoot: URL(fileURLWithPath: "/Users/dev/Project"))
 
@@ -283,8 +283,8 @@ final class ToolsXcodeTests: XCTestCase {
     func testParseTestOutcome_failureDetailsCarryFileLineAndMessage() {
         let outcome = XcodeBuildRunner.parseTestOutcome(
             output: """
-                /Users/dev/Project/Tests/SomeTests.swift:25: error: -[MyAppTests.SomeTests testExample] : XCTAssertEqual failed: ("1") is not equal to ("2")
-                """,
+            /Users/dev/Project/Tests/SomeTests.swift:25: error: -[MyAppTests.SomeTests testExample] : XCTAssertEqual failed: ("1") is not equal to ("2")
+            """,
             scheme: "App",
             workFolderRoot: URL(fileURLWithPath: "/Users/dev/Project"))
 
@@ -300,10 +300,10 @@ final class ToolsXcodeTests: XCTestCase {
     func testParseIssues_countsSeveritiesAcrossManyLines() {
         let issues = XcodeBuildRunner.parseIssues(
             from: """
-                /path/to/file.swift:10:5: error: cannot convert value of type 'Int' to expected argument type 'String'
-                /path/to/file.swift:20:10: error: missing return in a function expected to return 'Bool'
-                /path/to/file.swift:30:3: warning: result of call to 'print' is unused
-                """,
+            /path/to/file.swift:10:5: error: cannot convert value of type 'Int' to expected argument type 'String'
+            /path/to/file.swift:20:10: error: missing return in a function expected to return 'Bool'
+            /path/to/file.swift:30:3: warning: result of call to 'print' is unused
+            """,
             workFolderRoot: tempDir)
 
         XCTAssertEqual(issues.count, 3)

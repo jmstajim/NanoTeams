@@ -18,16 +18,16 @@ final class ModelLoadFailureClassifierTests: XCTestCase {
     /// Kept literal on purpose — a paraphrase would stop pinning the real wire
     /// format.
     private let productionBody = """
-        {
-          "error": {
-            "type": "model_load_failed",
-            "message": "Failed to load LLM 'google/gemma-4-26b-a4b': Error: Model loading was \
-        stopped due to insufficient system resources. Continuing to load the model would likely \
-        overload your system and cause it to freeze. If you think this is incorrect, you can \
-        adjust the model loading guardrails in settings."
-          }
-        }
-        """
+    {
+      "error": {
+        "type": "model_load_failed",
+        "message": "Failed to load LLM 'google/gemma-4-26b-a4b': Error: Model loading was \
+    stopped due to insufficient system resources. Continuing to load the model would likely \
+    overload your system and cause it to freeze. If you think this is incorrect, you can \
+    adjust the model loading guardrails in settings."
+      }
+    }
+    """
 
     // MARK: - Positive
 

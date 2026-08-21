@@ -106,8 +106,8 @@ struct LLMServerConfigCard: View {
                         .font(Typography.caption)
                 }
                 .foregroundStyle(effectiveStatus == .failure
-                                 ? Colors.error
-                                 : Colors.textSecondary)
+                    ? Colors.error
+                    : Colors.textSecondary)
                 .lineLimit(2)
             }
 

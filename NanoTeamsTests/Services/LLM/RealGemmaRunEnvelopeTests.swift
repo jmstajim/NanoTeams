@@ -31,7 +31,7 @@ final class RealGemmaRunEnvelopeTests: XCTestCase {
                 continuation.finish()
             }
         }
-        func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [String] { [] }
+        func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [LLMModelInfo] { [] }
     }
 
     private var service: LLMExecutionService!
@@ -105,7 +105,7 @@ final class RealGemmaRunEnvelopeTests: XCTestCase {
         XCTAssertEqual(result.resolvedToolCalls.count, 1)
         XCTAssertEqual(result.resolvedToolCalls.first?.name, ToolNames.listFiles)
         XCTAssertTrue(result.assistantContent.isEmpty,
-            "the envelope must never survive as visible assistant prose")
+                      "the envelope must never survive as visible assistant prose")
     }
 
     /// Record `[39]` @13:52:24.821Z, body excerpted. The model invented a batch schema
@@ -126,26 +126,26 @@ final class RealGemmaRunEnvelopeTests: XCTestCase {
     func testMeditationApp_record39_inventedBatchSchema_isNamedNotSwallowed() async throws {
         let content = #"""
         This completes the implementation of M1. I have introduced a minimal navigation structure using `NavigationView` in `ContentView.swift`.
-
+        
         <|tool_call>call_multiple{"contributions":[{"toolName":"create_artifact","arguments":{"name":"Engineering Notes","content":"# Engineering Notes\n\n## Summary of Work Implemented (M1)\n"}}}]}<|end|>
         """#
         let result = try await replayFull(
             reasoning: "I will submit the Engineering Notes artifact.", content: content)
 
         XCTAssertTrue(result.sawHarmonyMarker,
-            "the mangled sentinel must be recognised so the diagnostic path is reachable")
+                      "the mangled sentinel must be recognised so the diagnostic path is reachable")
         XCTAssertTrue(result.resolvedToolCalls.isEmpty,
-            "an invented batch schema names no tool and must not be inferred into one")
+                      "an invented batch schema names no tool and must not be inferred into one")
         XCTAssertTrue(result.harmonyBuffer.contains("create_artifact"),
-            "the payload must survive for the diagnostic — this is what ModelTokenCleaner used to eat")
+                      "the payload must survive for the diagnostic — this is what ModelTokenCleaner used to eat")
         let issue = ToolCallParsingHelpers.classifyHarmonyCallIssue(in: result.harmonyBuffer)
         XCTAssertEqual(issue, .malformedJSON,
-            "must be classified as a named defect, not `.noCallEnvelope` / `.noEnvelopeAttempt` "
-            + "(which are what an unrecognised sentinel produces, and neither yields a usable nudge)")
+                       "must be classified as a named defect, not `.noCallEnvelope` / `.noEnvelopeAttempt` "
+                           + "(which are what an unrecognised sentinel produces, and neither yields a usable nudge)")
         XCTAssertTrue(result.assistantContent.hasPrefix("This completes the implementation of M1."),
-            "genuine pre-marker prose stays visible")
+                      "genuine pre-marker prose stays visible")
         XCTAssertFalse(result.assistantContent.contains("contributions"),
-            "no part of the envelope may reach the chat as text")
+                       "no part of the envelope may reach the chat as text")
     }
 
     // MARK: - Product Manager
@@ -318,8 +318,8 @@ final class RealGemmaRunEnvelopeTests: XCTestCase {
         )
         XCTAssertEqual(calls.count, 1)
         XCTAssertEqual(calls.first?.name, ToolNames.createArtifact,
-            "Flat artifact-shaped payload must resolve to create_artifact, not a tool named after the artifact")
+                       "Flat artifact-shaped payload must resolve to create_artifact, not a tool named after the artifact")
         XCTAssertTrue(calls.first?.argumentsJSON.contains("Production Readiness") == true,
-            "The artifact name must survive in the arguments")
+                      "The artifact name must survive in the arguments")
     }
 }

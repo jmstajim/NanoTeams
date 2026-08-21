@@ -35,10 +35,10 @@ nonisolated struct ToolDefinitionRecord: Codable, Identifiable, Hashable {
 
     static func == (lhs: ToolDefinitionRecord, rhs: ToolDefinitionRecord) -> Bool {
         lhs.id == rhs.id &&
-        lhs.name == rhs.name &&
-        lhs.prompt == rhs.prompt &&
-        lhs.parameters == rhs.parameters &&
-        lhs.isBuiltIn == rhs.isBuiltIn
+            lhs.name == rhs.name &&
+            lhs.prompt == rhs.prompt &&
+            lhs.parameters == rhs.parameters &&
+            lhs.isBuiltIn == rhs.isBuiltIn
     }
 }
 

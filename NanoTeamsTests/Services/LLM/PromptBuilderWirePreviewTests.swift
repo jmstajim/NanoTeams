@@ -962,7 +962,7 @@ final class PromptBuilderWirePreviewTests: XCTestCase {
         let labelColour = labelAttrs[.foregroundColor] as? NSColor
         XCTAssertEqual(labelColour, Colors.nsTextPrimary,
                        "`Team purpose:` label must render in default text colour, "
-                       + "not the `\"role\"` category colour")
+                           + "not the `\"role\"` category colour")
 
         // Value colour — sample the foreground immediately after the label.
         // The team description starts after `\nTeam purpose: ` (15 chars including
@@ -974,7 +974,7 @@ final class PromptBuilderWirePreviewTests: XCTestCase {
         let valueColour = valueAttrs[.foregroundColor] as? NSColor
         XCTAssertEqual(valueColour, PlaceholderAttachment.color(for: "role"),
                        "resolved `{teamDescription}` value must carry the `\"role\"` "
-                       + "category colour (indigo)")
+                           + "category colour (indigo)")
     }
 
     /// Empty `team.description` MUST NOT leave an orphan `Team purpose:` label
@@ -993,8 +993,8 @@ final class PromptBuilderWirePreviewTests: XCTestCase {
         )
         XCTAssertFalse(attributed.string.contains("Team purpose:"),
                        "orphan `Team purpose:` label must be stripped from the "
-                       + "attributed preview when `team.description` is empty. "
-                       + "Got:\n\(attributed.string)")
+                           + "attributed preview when `team.description` is empty. "
+                           + "Got:\n\(attributed.string)")
     }
     // MARK: - Attributed-vs-plain parity on the branches that make them diverge
 

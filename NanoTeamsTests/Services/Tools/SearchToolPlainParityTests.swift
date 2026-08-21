@@ -171,9 +171,9 @@ final class SearchToolPlainParityTests: XCTestCase {
         let env = try parse(result.outputJSON)
         let data = env["data"] as? [String: Any]
         XCTAssertNil(data?["skipped_files"],
-            "skipped_files must be omitted when no files were skipped.")
+                     "skipped_files must be omitted when no files were skipped.")
         XCTAssertNil(data?["skipped_binary_count"],
-            "skipped_binary_count must be omitted when zero.")
+                     "skipped_binary_count must be omitted when zero.")
     }
 
     func testPlain_skippedBinaryCount_presentWhenBinary() throws {
@@ -237,7 +237,7 @@ final class SearchToolPlainParityTests: XCTestCase {
         let matches = (env["data"] as? [String: Any])?["matches"] as? [[String: Any]]
         let paths = matches?.compactMap { $0["path"] as? String }
         XCTAssertEqual(paths, ["aa.swift", "bb.swift", "cc.swift"],
-            "Directory walk must remain alphabetically stable.")
+                       "Directory walk must remain alphabetically stable.")
     }
 
     // MARK: - Error behavior
@@ -268,7 +268,7 @@ final class SearchToolPlainParityTests: XCTestCase {
         let env = try parse(result.outputJSON)
         let data = env["data"] as? [String: Any]
         XCTAssertNil(data?["filename_matches"],
-            "filename_matches must be omitted when no files matched by name.")
+                     "filename_matches must be omitted when no files matched by name.")
     }
 
     func testPlain_filenameMatches_presentWhenBasenameHits() throws {
@@ -279,7 +279,7 @@ final class SearchToolPlainParityTests: XCTestCase {
         let env = try parse(result.outputJSON)
         let data = env["data"] as? [String: Any]
         XCTAssertEqual(data?["count"] as? Int, 0,
-            "Query has no content hits — only a filename hit.")
+                       "Query has no content hits — only a filename hit.")
         let names = data?["filename_matches"] as? [[String: Any]]
         XCTAssertEqual(names?.count, 1)
         XCTAssertEqual(names?.first?["path"] as? String, "Sources/SearchExecutor.swift")
@@ -315,7 +315,7 @@ final class SearchToolPlainParityTests: XCTestCase {
         XCTAssertTrue(onValues.contains("path"))
         for v in onValues {
             XCTAssertTrue(v == "basename" || v == "path",
-                "matched_on raw value drifted: \(v)")
+                          "matched_on raw value drifted: \(v)")
         }
     }
 
@@ -351,7 +351,7 @@ final class SearchToolPlainParityTests: XCTestCase {
         XCTAssertEqual(matches?.first?["path"] as? String, "Search.swift")
         let names = data?["filename_matches"] as? [[String: Any]]
         XCTAssertEqual(names?.first?["path"] as? String, "Search.swift",
-            "Same file legitimately appears in both arrays — no dedup between them.")
+                       "Same file legitimately appears in both arrays — no dedup between them.")
     }
 
     /// `file_glob` should narrow filename match candidates the same way it
@@ -367,7 +367,7 @@ final class SearchToolPlainParityTests: XCTestCase {
         let names = (env["data"] as? [String: Any])?["filename_matches"] as? [[String: Any]]
         let paths = names?.compactMap { $0["path"] as? String } ?? []
         XCTAssertEqual(paths, ["a.swift"],
-            "Filename matches must reflect the same glob-narrowed scope as content matches.")
+                       "Filename matches must reflect the same glob-narrowed scope as content matches.")
     }
 
     /// Pin nil-when-empty semantics under both `count == 0` AND
@@ -382,7 +382,7 @@ final class SearchToolPlainParityTests: XCTestCase {
         let data = env["data"] as? [String: Any]
         XCTAssertEqual(data?["count"] as? Int, 0)
         XCTAssertNil(data?["filename_matches"],
-            "Empty filename_matches must be omitted to keep envelope compact.")
+                     "Empty filename_matches must be omitted to keep envelope compact.")
     }
 
     /// Internal-dir entries must NEVER reach `filename_matches`. Pin via
@@ -397,7 +397,7 @@ final class SearchToolPlainParityTests: XCTestCase {
         let names = (env["data"] as? [String: Any])?["filename_matches"] as? [[String: Any]]
         let paths = names?.compactMap { $0["path"] as? String } ?? []
         XCTAssertFalse(paths.contains(where: { $0.contains("internal") }),
-            "Internal-dir entries must never appear in filename_matches.")
+                       "Internal-dir entries must never appear in filename_matches.")
         XCTAssertTrue(paths.contains("Sources/Helper.swift"))
     }
 }

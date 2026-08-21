@@ -80,7 +80,7 @@ final class EditFileRealRunRegressionTests: XCTestCase {
     private func message(_ result: ToolExecutionResult) -> String {
         guard
             let json = try? JSONSerialization.jsonObject(with: Data(result.outputJSON.utf8))
-                as? [String: Any],
+            as? [String: Any],
             let error = json["error"] as? [String: Any],
             let message = error["message"] as? String
         else { return "" }
@@ -90,7 +90,7 @@ final class EditFileRealRunRegressionTests: XCTestCase {
     private func dataField(_ result: ToolExecutionResult, _ key: String) -> Any? {
         guard
             let json = try? JSONSerialization.jsonObject(with: Data(result.outputJSON.utf8))
-                as? [String: Any],
+            as? [String: Any],
             let data = json["data"] as? [String: Any]
         else { return nil }
         return data[key]
@@ -213,7 +213,7 @@ final class EditFileRealRunRegressionTests: XCTestCase {
     private static func warningTexts(_ result: ToolExecutionResult) -> [String] {
         guard
             let json = try? JSONSerialization.jsonObject(with: Data(result.outputJSON.utf8))
-                as? [String: Any],
+            as? [String: Any],
             let meta = json["meta"] as? [String: Any],
             let warnings = meta["warnings"] as? [String]
         else { return [] }
@@ -285,7 +285,7 @@ final class EditFileRealRunRegressionTests: XCTestCase {
     /// arguments), twice in one assistant response. `deduplicateToolCalls` existed but
     /// was gated on a streaming break that this reply never tripped, so both executed.
     ///
-    /// RED: re-gate the collapse on `loopDetected` → two calls survive.
+    /// RED: re-gate the collapse on a streaming break having fired → two calls survive.
     func testReal_identicalMainContentCall_executesOnce() throws {
         let first = EditFileRealRunFixtures.failure(at: "2026-08-15T10:08:30.191")
         let second = EditFileRealRunFixtures.failure(at: "2026-08-15T10:08:30.213")
@@ -313,39 +313,121 @@ final class EditFileRealRunRegressionTests: XCTestCase {
     /// The streaming path that holds the gate has no test seam, and this is the house
     /// pattern for a wiring invariant that cannot be reached behaviourally.
     ///
-    /// The gate is what let the duplicate through in the field: `loopDetected` is set
-    /// only by a streaming break whose own preconditions that 56-call reply never met.
+    /// A gate is what let the duplicate through in the field: the collapse used to run only
+    /// when a streaming `break` had already fired, and that break's own preconditions were
+    /// never met by the 56-call reply. This pin used to name the flag that carried the gate;
+    /// the flag outlived its last reader and was removed, which retired that spelling — and
+    /// with it the anti-vacuum assertion that the identifier must still exist. The durable
+    /// property is the one asserted here: the call is a plain statement of its `do` body,
+    /// not the inside of any conditional.
     ///
-    /// RED: wrap the call in `if loopDetected { … }` → fails.
-    func testDeduplication_isNotGatedOnLoopDetected() throws {
-        let path = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()   // Tools
-            .deletingLastPathComponent()   // Services
-            .deletingLastPathComponent()   // NanoTeamsTests
-            .deletingLastPathComponent()   // repo root
-            .appendingPathComponent("NanoTeams/Services/LLM/LLMExecutionService+Streaming.swift")
-        let source = try String(contentsOf: path, encoding: .utf8)
+    /// RED: wrap the call in `if thinkingLoopSignal != nil { … }` → BOTH arms fire, the
+    /// window arm because a conditional opens above it and the indentation arm because it
+    /// sits one level deeper. The indentation arm is the one that survives distance: a gate
+    /// opened twenty lines up still deepens the call, where the window sees nothing.
+    func testDeduplication_isNotGatedAtItsCallSite() throws {
+        let source = try String(
+            contentsOf: RatchetSourceScan.repoRoot.appendingPathComponent(
+                "NanoTeams/Services/LLM/LLMExecutionService+Streaming.swift"),
+            encoding: .utf8)
+        // Comments stripped first: the call site is documented with prose that describes the
+        // very gate this pin forbids, and a raw scan would read the explanation as the thing.
+        let lines = RatchetSourceScan.strippingLineComments(source).components(separatedBy: "\n")
 
-        // Strip `//` comments before matching: the call site is documented with prose
-        // that names the very gate this pin forbids, and a raw scan would flag it.
-        let lines = source.components(separatedBy: "\n").map { line -> String in
-            guard let range = line.range(of: "//") else { return line }
-            return String(line[line.startIndex..<range.lowerBound])
+        let scan = Self.scanDedupCallSite(lines)
+        XCTAssertEqual(scan.callSiteCount, 1, "expected exactly one call site to police")
+        XCTAssertNotNil(
+            scan.doBodyIndent,
+            "anti-vacuum: the enclosing `do {` was not found, so the indentation arm proves nothing")
+        XCTAssertEqual(scan.offenders, [], "the duplicate collapse must not be conditional")
+    }
+
+    /// The half the scan above structurally cannot prove: that the rule REJECTS the shape it
+    /// exists to reject (CLAUDE.md #57). Runs the SAME predicate over a synthetic gated
+    /// fixture, one per arm, so a rule that silently stopped firing cannot pass as a clean
+    /// tree. Written as literal lines rather than a file so the fixture can never drift into
+    /// the corpus the pin scans.
+    func testTheRuleFiresOnAGatedCallSite() {
+        let needle = "deduplicateToolCalls" + "("
+
+        let gatedNearby = [
+            "        do {",
+            "            if somethingFired {",
+            "                resolvedToolCalls = Self.\(needle)resolvedToolCalls)",
+            "            }",
+        ]
+        XCTAssertFalse(
+            Self.scanDedupCallSite(gatedNearby).offenders.isEmpty,
+            "a conditional opening directly above the call must be rejected")
+
+        // The same gate, opened far enough above that a three-line window cannot see it —
+        // only the indentation arm can. Without this the window arm could carry both cases
+        // and the indentation arm would be untested.
+        let gatedFarAway = [
+            "        do {",
+            "            if somethingFired {",
+            "                let a = 1", "                let b = 2", "                let c = 3",
+            "                let d = 4", "                let e = 5",
+            "                resolvedToolCalls = Self.\(needle)resolvedToolCalls)",
+            "            }",
+        ]
+        XCTAssertFalse(
+            Self.scanDedupCallSite(gatedFarAway).offenders.isEmpty,
+            "a gate opened beyond the window must still be rejected, by indentation")
+
+        let ungated = [
+            "        do {",
+            "            resolvedToolCalls = Self.\(needle)resolvedToolCalls)",
+        ]
+        XCTAssertEqual(
+            Self.scanDedupCallSite(ungated).offenders, [],
+            "the rule must ACCEPT the shape production actually has")
+    }
+
+    /// Where the single `deduplicateToolCalls(…)` call sits relative to the `do {` body it
+    /// must be a plain statement of.
+    private struct DedupCallSite {
+        let callSiteCount: Int
+        /// Indentation of the enclosing `do {`. `nil` means the scan could not anchor, which
+        /// makes the indentation arm vacuous — asserted separately rather than silently
+        /// passing.
+        let doBodyIndent: Int?
+        /// Non-empty when the call is gated.
+        let offenders: [String]
+    }
+
+    private static func scanDedupCallSite(_ lines: [String]) -> DedupCallSite {
+        func indentation(of line: String) -> Int {
+            line.prefix(while: { $0 == " " }).count
+        }
+        func trimmed(_ line: String) -> String {
+            line.trimmingCharacters(in: .whitespaces)
         }
 
         let needle = "deduplicateToolCalls" + "("
-        let gate = "loop" + "Detected"
-        let callSites = lines.indices.filter { lines[$0].contains(needle) && !lines[$0].contains("func ") }
-        XCTAssertEqual(callSites.count, 1, "expected exactly one call site to police")
-        XCTAssertTrue(
-            lines.contains { $0.contains(gate) },
-            "anti-vacuum: the gate identifier must still exist in this file, or the pin proves nothing")
+        let callSites = lines.indices.filter {
+            lines[$0].contains(needle) && !lines[$0].contains("func ")
+        }
+        let doBodyIndent = lines.first { trimmed($0) == "do {" }.map(indentation(of:))
 
-        let call = callSites[0]
-        let window = lines[max(0, call - 3)...call]
-        XCTAssertFalse(
-            window.contains { $0.contains(gate) },
-            "the duplicate collapse must not be conditional: \(Array(window))")
+        guard let call = callSites.first else {
+            return DedupCallSite(
+                callSiteCount: callSites.count, doBodyIndent: doBodyIndent, offenders: [])
+        }
+
+        var offenders: [String] = []
+        let openers = ["if ", "guard ", "switch ", "else {", "else if ", "} else"]
+        for line in lines[max(0, call - 3)..<call]
+            where line.contains("{") && openers.contains(where: { trimmed(line).hasPrefix($0) }) {
+            offenders.append(line)
+        }
+        // Catches a gate opened at ANY distance: one statement level below `do {` is the only
+        // depth an ungated call can have.
+        if let doBodyIndent, indentation(of: lines[call]) > doBodyIndent + 4 {
+            offenders.append(lines[call])
+        }
+        return DedupCallSite(
+            callSiteCount: callSites.count, doBodyIndent: doBodyIndent, offenders: offenders)
     }
 
     // MARK: - Whole-run classification

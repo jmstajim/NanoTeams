@@ -42,7 +42,7 @@ private final class CExecCapturingClient: LLMClient, @unchecked Sendable {
         }
     }
 
-    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
 }
 
 /// Never streams anything — used where the assertion is that the model was NEVER reached.
@@ -63,7 +63,7 @@ private final class CExecSilentClient: LLMClient, @unchecked Sendable {
         return AsyncThrowingStream { $0.finish() }
     }
 
-    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
 }
 
 private struct CExecWaitTimeout: Error, LocalizedError {

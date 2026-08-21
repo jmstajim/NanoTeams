@@ -451,15 +451,15 @@ struct WorkFolderSettingsView: View {
                     .fill(Colors.surfaceElevated)
             )
             .onChange(of: promptDraft) { _, newValue in
-                    promptSaveTask?.cancel()
-                    promptSaveTask = Task {
-                        try? await Task.sleep(for: .milliseconds(500))
-                        guard !Task.isCancelled else { return }
-                        if store.workFolder?.settings.contextPrompt != newValue {
-                            await store.updateContextPrompt(newValue)
-                        }
+                promptSaveTask?.cancel()
+                promptSaveTask = Task {
+                    try? await Task.sleep(for: .milliseconds(500))
+                    guard !Task.isCancelled else { return }
+                    if store.workFolder?.settings.contextPrompt != newValue {
+                        await store.updateContextPrompt(newValue)
                     }
                 }
+            }
 
             HStack {
                 Button {

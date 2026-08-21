@@ -95,7 +95,7 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
                 this.spellCooldownUI = new SpellCooldownUI(this.spellManager, this.canvas);
                 \u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}
                 // XP and Leveling Systems
-
+        
         """
         let url = try writeFile("game.js", fileContent)
 

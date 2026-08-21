@@ -101,7 +101,7 @@ nonisolated enum TaskMutationService {
         }
         guard
             let callIndex = task.runs[location.runIndex].steps[location.stepIndex].toolCalls
-                .firstIndex(where: { $0.id == toolCallID })
+            .firstIndex(where: { $0.id == toolCallID })
         else {
             print("[TaskMutation] updateToolCallResult: tool call \(toolCallID) not found in step \(stepID)")
             return

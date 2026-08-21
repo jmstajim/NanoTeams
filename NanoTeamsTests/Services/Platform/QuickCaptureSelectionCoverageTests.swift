@@ -139,7 +139,7 @@ final class QuickCaptureSelectionCoverageTests: XCTestCase {
                        "an answer-mode capture belongs to the answer draft")
         XCTAssertTrue(sut.formState.clippedTexts.isEmpty,
                       "it must NOT also reach the task draft — the card would render "
-                      + "against a draft the user never meant")
+                          + "against a draft the user never meant")
     }
 
     /// This slot used to hold `testCapture_answerFlagWithoutAnAnswerMode_routesToTheTaskBucket`,
@@ -262,7 +262,7 @@ final class QuickCaptureSelectionCoverageTests: XCTestCase {
         XCTAssertFalse(sut._testIsPanelVisible, "the open handler toggles the overlay")
         XCTAssertEqual(capturer.capturedRoots.count, 0,
                        "opening the overlay must not capture the user's selection — "
-                       + "⌃⌥⌘0 is the no-clip combo")
+                           + "⌃⌥⌘0 is the no-clip combo")
     }
 
     /// The clip handler dispatches into an async `Task`, so the capture is observable
@@ -341,9 +341,9 @@ final class QuickCaptureSelectionCoverageTests: XCTestCase {
 
         XCTAssertTrue(QuickCaptureController.shared.selectionCapturer is SystemSelectionCapturer,
                       "production must name the live capturer explicitly, or ⌃⌥⌘K "
-                      + "silently captures nothing for every user")
+                          + "silently captures nothing for every user")
         XCTAssertTrue(QuickCaptureController.shared.hotkeyManager is GlobalHotkeyManager,
                       "production must name the live registrar explicitly, or ⌃⌥⌘0 and ⌃⌥⌘K "
-                      + "silently never fire for every user")
+                          + "silently never fire for every user")
     }
 }

@@ -85,7 +85,7 @@ final class CompletedRunRestartRecoveryTests: NTMSOrchestratorTestBase, @uncheck
         XCTAssertEqual(
             diskRoleStatus(taskID), .done,
             "recovery must resolve the gate off the TASK'S OWN team (.finalOnly ⇒ .done); "
-            + "a nil teamSettings would settle .needsAcceptance instead",
+                + "a nil teamSettings would settle .needsAcceptance instead",
             line: line
         )
     }

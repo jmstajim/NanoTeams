@@ -145,12 +145,12 @@ final class ConversationReplayTests: XCTestCase {
     /// model the only record of which call produced which result.
     func testRebuild_preservesToolCompositeVerbatim() {
         let composite = """
-            [CALL] read_file
-            Arguments: {"path":"Package.swift"}
-
-            [RESULT]
-            {"ok":true,"data":{"content":"// swift-tools-version: 5.9"}}
-            """
+        [CALL] read_file
+        Arguments: {"path":"Package.swift"}
+        
+        [RESULT]
+        {"ok":true,"data":{"content":"// swift-tools-version: 5.9"}}
+        """
         let rebuilt = ConversationReplay.rebuildFromDisplayRecord([display(.tool, composite)])
         XCTAssertEqual(rebuilt.first?.role, .tool)
         XCTAssertEqual(rebuilt.first?.content, composite)

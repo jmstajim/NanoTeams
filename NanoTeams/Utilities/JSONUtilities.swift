@@ -17,7 +17,7 @@ nonisolated enum JSONUtilities {
     static func jsonStringForToolArgs(_ dict: [String: Any]) -> String {
         if dict.isEmpty { return "{}" }
         if let data = try? JSONSerialization.data(withJSONObject: dict, options: [.sortedKeys]),
-            let s = String(data: data, encoding: .utf8)
+           let s = String(data: data, encoding: .utf8)
         {
             return s
         }
@@ -168,7 +168,7 @@ nonisolated enum JSONUtilities {
 
         for key in keys {
             guard let currentDict = current as? [String: Any],
-                let next = currentDict[key]
+                  let next = currentDict[key]
             else {
                 return nil
             }

@@ -183,9 +183,9 @@ final class WorkFolderFileSplitTests: XCTestCase {
         let teamsAfter = try Data(contentsOf: paths.teamsJSON)
         let wfAfter = try Data(contentsOf: paths.workFolderJSON)
         XCTAssertEqual(teamsBefore, teamsAfter,
-            "teams.json MUST be preserved when settings.json is corrupt")
+                       "teams.json MUST be preserved when settings.json is corrupt")
         XCTAssertEqual(wfBefore, wfAfter,
-            "workfolder.json MUST be preserved when settings.json is corrupt")
+                       "workfolder.json MUST be preserved when settings.json is corrupt")
     }
 
     func testCorruptedTeamsFilePreservesOtherFiles() throws {
@@ -202,10 +202,10 @@ final class WorkFolderFileSplitTests: XCTestCase {
 
         let settingsAfter = try Data(contentsOf: paths.settingsJSON)
         XCTAssertEqual(settingsBefore, settingsAfter,
-            "settings.json MUST be preserved when teams.json is corrupt")
+                       "settings.json MUST be preserved when teams.json is corrupt")
         let settingsDecoded = try JSONCoderFactory.makeDateDecoder().decode(ProjectSettings.self, from: settingsAfter)
         XCTAssertEqual(settingsDecoded.context, "Survives Corruption",
-            "User context must survive a teams.json corruption")
+                       "User context must survive a teams.json corruption")
     }
 
     func testCorruptedWorkFolderJSONPreservesOtherFiles() throws {
@@ -236,7 +236,7 @@ final class WorkFolderFileSplitTests: XCTestCase {
             $0.hasPrefix("settings.json.corrupt-") && $0.hasSuffix(".bak")
         }
         XCTAssertFalse(backups.isEmpty,
-            "Corrupt settings.json should be preserved as a .bak file, found: \(internalContents)")
+                       "Corrupt settings.json should be preserved as a .bak file, found: \(internalContents)")
     }
 
     // MARK: - Cross-file consistency after recovery
@@ -265,16 +265,16 @@ final class WorkFolderFileSplitTests: XCTestCase {
         // team that actually exists in the recovered teams.json.
         let teamIDs = Set(ctx.workFolder.teams.map(\.id))
         XCTAssertFalse(teamIDs.contains(danglingID),
-            "sanity: dangling id should not be present in recovered teams")
+                       "sanity: dangling id should not be present in recovered teams")
         if let active = ctx.workFolder.activeTeamID {
             XCTAssertTrue(teamIDs.contains(active),
-                "activeTeamID must resolve to a real team after recovery (was: \(active))")
+                          "activeTeamID must resolve to a real team after recovery (was: \(active))")
         }
         // The dangling id must not be persisted on disk either.
         let wfData = try Data(contentsOf: paths.workFolderJSON)
         let wfState = try JSONCoderFactory.makeDateDecoder().decode(WorkFolderState.self, from: wfData)
         XCTAssertNotEqual(wfState.activeTeamID, danglingID,
-            "persisted activeTeamID must not be the dangling reference")
+                          "persisted activeTeamID must not be the dangling reference")
     }
 
     // MARK: - Sandbox invariant: LLM-accessible dirs stay outside internal/
@@ -291,18 +291,18 @@ final class WorkFolderFileSplitTests: XCTestCase {
 
         let internalPath = paths.internalDir.path
         XCTAssertFalse(paths.tasksDir.path.hasPrefix(internalPath),
-            "tasks/ dir must be LLM-accessible (outside internal/), was: \(paths.tasksDir.path)")
+                       "tasks/ dir must be LLM-accessible (outside internal/), was: \(paths.tasksDir.path)")
         XCTAssertFalse(paths.tasksDir.path.hasPrefix(internalPath),
-            "runs/ dir must be LLM-accessible (outside internal/), was: \(paths.tasksDir.path)")
+                       "runs/ dir must be LLM-accessible (outside internal/), was: \(paths.tasksDir.path)")
 
         // Pick an arbitrary UUID to probe the per-task attachments path.
         let probeID = 42
         let attachmentsDir = paths.taskAttachmentsDir(taskID: probeID)
         XCTAssertFalse(attachmentsDir.path.hasPrefix(internalPath),
-            "task attachments dir must be outside internal/, was: \(attachmentsDir.path)")
+                       "task attachments dir must be outside internal/, was: \(attachmentsDir.path)")
 
         let stepDir = paths.roleDir(taskID: 0, runID: 0, roleID: "test_role")
         XCTAssertFalse(stepDir.path.hasPrefix(internalPath),
-            "run step dir (where artifacts live) must be outside internal/, was: \(stepDir.path)")
+                       "run step dir (where artifacts live) must be outside internal/, was: \(stepDir.path)")
     }
 }

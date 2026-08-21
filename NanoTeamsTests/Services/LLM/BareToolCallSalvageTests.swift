@@ -236,7 +236,7 @@ final class BareToolCallSalvageTests: XCTestCase {
         XCTAssertEqual(
             sites, [URL(fileURLWithPath: Self.expectedCallSitePath).lastPathComponent],
             "the salvage is scoped to the step tool loop; adding a caller means re-arguing "
-            + "its guards for that surface, not reusing them")
+                + "its guards for that surface, not reusing them")
     }
 
     /// A broken `#filePath`→repoRoot derivation would enumerate nothing and pass vacuously.

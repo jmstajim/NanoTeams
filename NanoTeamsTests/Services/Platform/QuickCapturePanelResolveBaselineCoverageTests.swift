@@ -78,7 +78,7 @@ final class QuickCapturePanelResolveBaselineCoverageTests: XCTestCase {
         sut._testPresentPanelSync()
 
         XCTAssertEqual(sut._testLastRefreshedTaskID, taskA,
-            "the show pipeline resolved content for A, so A is what the next refresh compares against")
+                       "the show pipeline resolved content for A, so A is what the next refresh compares against")
     }
 
     /// The sharp symptom. `showNewTask` sets `forceNewTaskMode` and posts a navigation to
@@ -107,7 +107,7 @@ final class QuickCapturePanelResolveBaselineCoverageTests: XCTestCase {
         sut.refreshPanelIfVisible()
 
         XCTAssertTrue(sut._testForceNewTaskMode,
-            "nothing about the active task changed, so nothing may cancel the form")
+                      "nothing about the active task changed, so nothing may cancel the form")
     }
 
     /// The same reading in the other direction: a task change that DID happen must still be seen.
@@ -133,7 +133,7 @@ final class QuickCapturePanelResolveBaselineCoverageTests: XCTestCase {
         sut.refreshPanelIfVisible()
 
         XCTAssertFalse(sut._testForceNewTaskMode,
-            "the user navigated INTO another task — that is what clears the flag")
+                       "the user navigated INTO another task — that is what clears the flag")
     }
 
     /// Watchtower keeps the flag whatever the baseline says: the guard there is
@@ -153,7 +153,7 @@ final class QuickCapturePanelResolveBaselineCoverageTests: XCTestCase {
         sut.refreshPanelIfVisible()
 
         XCTAssertTrue(sut._testForceNewTaskMode,
-            "no task is selected, so there is no task to resolve back to")
+                      "no task is selected, so there is no task to resolve back to")
     }
 
     // MARK: - Arriving at a chat composer with an unclaimed bucket
@@ -179,13 +179,13 @@ final class QuickCapturePanelResolveBaselineCoverageTests: XCTestCase {
         XCTAssertNil(sut.formState.answerFieldsOwnerTaskID, "the dismiss released the bucket")
         XCTAssertEqual(sut.formState.answerText, "", "and cleared it")
         XCTAssertEqual(sut.formState._testAnswerDrafts[taskA]?.text, "half an answer",
-            "precondition: the dismiss saved it rather than discarding it")
+                       "precondition: the dismiss saved it rather than discarding it")
 
         // The question was answered elsewhere; the task is back to plain chat working.
         sut._testPresentPanelSync()
 
         XCTAssertEqual(sut.formState.answerText, "half an answer",
-            "the chat composer binds the same bucket — the text belongs on screen")
+                       "the chat composer binds the same bucket — the text belongs on screen")
         XCTAssertEqual(sut.formState.answerFieldsOwnerTaskID, taskA)
     }
 
@@ -244,7 +244,7 @@ final class QuickCapturePanelResolveBaselineCoverageTests: XCTestCase {
         sut.refreshPanelIfVisible()
 
         XCTAssertEqual(sut.formState.answerText, "what the user is typing now",
-            "the bucket already holds A's content — there is nothing to load back over it")
+                       "the bucket already holds A's content — there is nothing to load back over it")
     }
 
     /// A non-chat working task binds no composer at all, so arriving there must neither claim the
@@ -265,6 +265,6 @@ final class QuickCapturePanelResolveBaselineCoverageTests: XCTestCase {
         sut._testPresentPanelSync()
 
         XCTAssertEqual(sut.formState.answerFieldsOwnerTaskID, 999,
-            "a loader-only surface has no composer to hand the bucket to")
+                       "a loader-only surface has no composer to hand the bucket to")
     }
 }

@@ -53,7 +53,7 @@ final class TeamActivityFeedBubbleResolutionTests: XCTestCase {
         let raw = """
         Supervisor:
         body text
-
+        
         ## Attached Files
         /path/to/file.swift
         """
@@ -157,10 +157,10 @@ final class TeamActivityFeedBubbleResolutionTests: XCTestCase {
         let raw = """
         Supervisor:
         Look at this please
-
+        
         ## Clipped Text
         let x = 1
-
+        
         ## Attached Files
         - /path/to/file.swift
         """
@@ -194,10 +194,10 @@ final class TeamActivityFeedBubbleResolutionTests: XCTestCase {
     func testResolveBubbleInputs_supervisorAnswer_stripsAttachmentMarkers() async {
         let raw = """
         Supervisor answer: Проверь этот файл
-
+        
         ## Clipped Text
         let x = 1
-
+        
         ## Attached Files
         - /path/to/file.swift
         """

@@ -79,8 +79,8 @@ final class QuickCaptureFolderScopeCoverageTests: NTMSOrchestratorTestBase, @unc
 
         XCTAssertNotNil(inA)
         XCTAssertEqual(inA, inB,
-            "Each folder allocates from its own TasksIndex.nextTaskID, so the FIRST task of "
-            + "every folder carries the same id. Collision is the norm, not an edge case.")
+                       "Each folder allocates from its own TasksIndex.nextTaskID, so the FIRST task of "
+                           + "every folder carries the same id. Collision is the norm, not an edge case.")
     }
 
     // MARK: - The queue
@@ -99,11 +99,11 @@ final class QuickCaptureFolderScopeCoverageTests: NTMSOrchestratorTestBase, @unc
         await sut.openWorkFolder(folderB)
 
         XCTAssertFalse(formState.hasQueuedMessage(for: taskID),
-            "A message the user typed for folder A's task must not be delivered to the "
-            + "same-numbered task of folder B.")
+                       "A message the user typed for folder A's task must not be delivered to the "
+                           + "same-numbered task of folder B.")
         XCTAssertTrue(formState.taskIDsWithQueuedMessages.isEmpty,
-            "No folder-A key may survive — `tryFlushQueuedMessages` iterates this list and "
-            + "wakes runs for every id in it.")
+                      "No folder-A key may survive — `tryFlushQueuedMessages` iterates this list and "
+                          + "wakes runs for every id in it.")
     }
 
     /// The gate is on folder IDENTITY, not on "openWorkFolder was called". Re-opening the
@@ -120,7 +120,7 @@ final class QuickCaptureFolderScopeCoverageTests: NTMSOrchestratorTestBase, @unc
         await sut.openWorkFolder(tempDir)
 
         XCTAssertTrue(formState.hasQueuedMessage(for: taskID),
-            "Same folder id → same task-id namespace → the message is still for this task.")
+                      "Same folder id → same task-id namespace → the message is still for this task.")
     }
 
     /// `apply(_:)` runs on every snapshot-level change, not just folder opens. An ordinary
@@ -137,7 +137,7 @@ final class QuickCaptureFolderScopeCoverageTests: NTMSOrchestratorTestBase, @unc
         _ = await sut.createTask(title: "B", supervisorTask: "b")
 
         XCTAssertTrue(formState.hasQueuedMessage(for: taskID),
-            "A same-folder snapshot change must leave folder-scoped state alone.")
+                      "A same-folder snapshot change must leave folder-scoped state alone.")
     }
 
     // MARK: - Answer drafts
@@ -159,8 +159,8 @@ final class QuickCaptureFolderScopeCoverageTests: NTMSOrchestratorTestBase, @unc
         await sut.openWorkFolder(folderB)
 
         XCTAssertNil(formState._testAnswerDrafts[taskID],
-            "A draft written against folder A's task must not pre-fill the answer composer "
-            + "for the same-numbered task of folder B.")
+                     "A draft written against folder A's task must not pre-fill the answer composer "
+                         + "for the same-numbered task of folder B.")
     }
 
     /// The LIVE answer session points at a step id that only exists in the folder being
@@ -181,10 +181,10 @@ final class QuickCaptureFolderScopeCoverageTests: NTMSOrchestratorTestBase, @unc
         await sut.openWorkFolder(folderB)
 
         XCTAssertFalse(formState.isInAnswerMode,
-            "The pending question belongs to a folder that is no longer open.")
+                       "The pending question belongs to a folder that is no longer open.")
         XCTAssertNil(formState.pendingAnswer)
         XCTAssertTrue(formState.answerClippedTexts.isEmpty,
-            "Clips captured for folder A's answer must not ride into folder B.")
+                      "Clips captured for folder A's answer must not ride into folder B.")
     }
 
     // MARK: - Scope boundary
@@ -203,8 +203,8 @@ final class QuickCaptureFolderScopeCoverageTests: NTMSOrchestratorTestBase, @unc
 
         XCTAssertEqual(formState.title, "Refactor the login flow")
         XCTAssertEqual(formState.supervisorTask, "start with AuthService",
-            "Unsent text is folder-agnostic — the task it becomes will be created in "
-            + "whichever folder is open when the user submits.")
+                       "Unsent text is folder-agnostic — the task it becomes will be created in "
+                           + "whichever folder is open when the user submits.")
     }
 
     /// Staged files live under the CLOSED folder's `.nanoteams/staged/`, so their relative
@@ -224,9 +224,9 @@ final class QuickCaptureFolderScopeCoverageTests: NTMSOrchestratorTestBase, @unc
         await sut.openWorkFolder(folderB)
 
         XCTAssertTrue(formState.attachments.isEmpty,
-            "Files staged inside the closed folder cannot be finalized against the new root.")
+                      "Files staged inside the closed folder cannot be finalized against the new root.")
         XCTAssertNotEqual(formState.draftID, before,
-            "A fresh staging directory for the new folder, so the next drop does not land "
-            + "in a directory keyed to the old one.")
+                          "A fresh staging directory for the new folder, so the next drop does not land "
+                              + "in a directory keyed to the old one.")
     }
 }

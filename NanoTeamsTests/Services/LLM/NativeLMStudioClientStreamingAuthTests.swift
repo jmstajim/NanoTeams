@@ -116,10 +116,9 @@ final class NativeLMStudioClientStreamingAuthTests: XCTestCase {
 
         XCTAssertTrue(thrown is CancellationError,
                       "a cancelled transport must surface as CancellationError, not as a "
-                      + "transport failure the caller would banner; got \(String(describing: thrown))")
+                          + "transport failure the caller would banner; got \(String(describing: thrown))")
 
-        let data = try Data(contentsOf: logURL)
-        let records = try JSONCoderFactory.makeDateDecoder().decode([NetworkLogRecord].self, from: data)
+        let records = try NetworkLogTestReading.strictRecords(at: logURL)
         XCTAssertTrue(records.contains { $0.direction == .request },
                       "precondition: the request was logged, so the run really reached the transport")
         XCTAssertFalse(records.contains { $0.direction == .response },

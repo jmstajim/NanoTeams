@@ -89,8 +89,8 @@ nonisolated enum AutovisorGoalLintCopy {
     /// toolset rather than against itself.
     static let capability =
         "The Autovisor's manager can read files, read git, and build or test to see "
-        + "where the repo stands — it has no shell or write tools. Anything that has "
-        + "to be CHANGED goes to a team it delegates to."
+            + "where the repo stands — it has no shell or write tools. Anything that has "
+            + "to be CHANGED goes to a team it delegates to."
 
     /// The goal-specific half, or `nil` when the goal is clean.
     static func detail(for findings: [AutovisorGoalLint.Finding]) -> String? {

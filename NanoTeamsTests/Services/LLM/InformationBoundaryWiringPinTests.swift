@@ -89,8 +89,8 @@ final class InformationBoundaryWiringPinTests: XCTestCase {
         XCTAssertTrue(
             following.contains("noteExternalInformationArrived"),
             "A delivered Supervisor turn must open an information epoch on the tracker — "
-            + "without it the detector counts a repeat that straddles brand-new information "
-            + "as a loop. Window: \(following)")
+                + "without it the detector counts a repeat that straddles brand-new information "
+                + "as a loop. Window: \(following)")
     }
 
     /// The arm must be gated on the value the injection RETURNED, not merely on some
@@ -115,7 +115,7 @@ final class InformationBoundaryWiringPinTests: XCTestCase {
         let binding = String(src[lineStart..<call.lowerBound])
         guard binding.contains("let "), binding.contains("=") else {
             return XCTFail("The injection result is no longer bound to a name — the arm below "
-                           + "cannot be gated on a delivery it never captured. Line: \(binding)")
+                + "cannot be gated on a delivery it never captured. Line: \(binding)")
         }
         let deliveredIdent = binding
             .replacingOccurrences(of: "let ", with: " ")
@@ -139,9 +139,9 @@ final class InformationBoundaryWiringPinTests: XCTestCase {
             XCTAssertTrue(
                 conditions.contains(where: preceding.contains),
                 "Arming the epoch must be branched on the injection reporting a delivery — "
-                + "expected `if \(deliveredIdent)` (or `guard`) directly above it. An "
-                + "unconditional arm marks every iteration's first call and silently disables "
-                + "repetition detection. Window: \(preceding)")
+                    + "expected `if \(deliveredIdent)` (or `guard`) directly above it. An "
+                    + "unconditional arm marks every iteration's first call and silently disables "
+                    + "repetition detection. Window: \(preceding)")
             searchStart = arm.upperBound
         }
         XCTAssertEqual(armCount, 1, "Expected exactly one in-step boundary arm, found \(armCount)")
@@ -161,8 +161,8 @@ final class InformationBoundaryWiringPinTests: XCTestCase {
         XCTAssertTrue(
             arguments.contains("informationBoundary:"),
             "The watcher sees only tuples, so the caller must hand it the boundary. "
-            + "Belt-and-braces beside the compiler (the parameter is required), and the "
-            + "anchor the value pin below searches from. Window: \(arguments)")
+                + "Belt-and-braces beside the compiler (the parameter is required), and the "
+                + "anchor the value pin below searches from. Window: \(arguments)")
     }
 
     /// The parameter must stay REQUIRED at both declarations.
@@ -196,8 +196,8 @@ final class InformationBoundaryWiringPinTests: XCTestCase {
             XCTAssertFalse(
                 remainder.contains("="),
                 "\(path) gave `informationBoundary` a default. `nil` is not a neutral "
-                + "fallback — it claims the conversation held no arrival, which silently "
-                + "reverts the fix for any caller that forgets it. Remainder: \(remainder)")
+                    + "fallback — it claims the conversation held no arrival, which silently "
+                    + "reverts the fix for any caller that forgets it. Remainder: \(remainder)")
         }
     }
 
@@ -227,7 +227,7 @@ final class InformationBoundaryWiringPinTests: XCTestCase {
             XCTAssertFalse(
                 value.contains(narrowing),
                 "`\(narrowing)` narrows the conversation before the boundary is read — the "
-                + "arrival it must find is exactly what a narrowing can drop. Argument: \(value)")
+                    + "arrival it must find is exactly what a narrowing can drop. Argument: \(value)")
         }
     }
 }

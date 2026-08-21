@@ -38,21 +38,21 @@ enum EditFileTask28Fixtures {
     /// convention throughout — the file was never irregular here, which is what makes
     /// this run's failure purely the model's re-emission.
     static let contentAtFailure = """
-        struct LibraryEmptyState: View {
-            var body: some View {
-                VStack(spacing: 12) {
-                    Text("No sessions yet")
-                        .font(.headline)
-                }
-                .frame(maxWidth: .infinity)
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel("Library empty. No meditation sessions are available yet.")
+    struct LibraryEmptyState: View {
+        var body: some View {
+            VStack(spacing: 12) {
+                Text("No sessions yet")
+                    .font(.headline)
             }
+            .frame(maxWidth: .infinity)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Library empty. No meditation sessions are available yet.")
         }
-
-        // MARK: - Profile Tab
-
-        """
+    }
+    
+    // MARK: - Profile Tab
+    
+    """
 
     /// The appended block, at the depths the model actually used (4, 8, 12, and a
     /// body depth it perturbed on every retry). Parameterised on that last depth
@@ -61,12 +61,12 @@ enum EditFileTask28Fixtures {
     private static func appendedBlock(bodyDepth: Int) -> String {
         let deep = String(repeating: " ", count: bodyDepth)
         return """
-
-
+        
+        
         /// Shown when an active category filter matches no sessions.
         private struct LibraryCategoryEmptyState: View {
             let category: SessionCategory?
-
+        
             var body: some View {
                 VStack(spacing: 12) {
                     Image(systemName: "line.3.horizontal.decrease.circle")
@@ -79,20 +79,20 @@ enum EditFileTask28Fixtures {
 
     /// 17:28:40.681 — the first failure. Five-line anchor.
     private static let fiveLineAnchor = """
-                 .frame(maxWidth: .infinity)
-                 .accessibilityElement(children: .combine)
-                 .accessibilityLabel("Library empty. No meditation sessions are available yet.")
-             }
-        }
-        """
+             .frame(maxWidth: .infinity)
+             .accessibilityElement(children: .combine)
+             .accessibilityLabel("Library empty. No meditation sessions are available yet.")
+         }
+    }
+    """
 
     /// 17:29:12 onward — the model shortened the anchor to three lines and then held
     /// it byte-identical for three consecutive calls.
     private static let threeLineAnchor = """
-                 .accessibilityLabel("Library empty. No meditation sessions are available yet.")
-             }
-        }
-        """
+             .accessibilityLabel("Library empty. No meditation sessions are available yet.")
+         }
+    }
+    """
 
     static let failures: [FailedEdit] = [
         FailedEdit(

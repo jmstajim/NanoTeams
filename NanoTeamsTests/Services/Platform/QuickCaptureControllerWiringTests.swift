@@ -79,7 +79,7 @@ final class QuickCaptureControllerWiringTests: XCTestCase {
         let recorded = sut._testPanel?._testLastShowExpectsFocusableField
         XCTAssertNotNil(recorded, "presentPanelSync must call panel.show()")
         XCTAssertEqual(recorded, resolved.expectsFocusableField,
-            "Wiring must pass `resolvedMode.expectsFocusableField`, not a stale or hardcoded value.")
+                       "Wiring must pass `resolvedMode.expectsFocusableField`, not a stale or hardcoded value.")
     }
 
     /// Explicit overlay-mode wiring: no task selected → `.overlay` →
@@ -93,7 +93,7 @@ final class QuickCaptureControllerWiringTests: XCTestCase {
         sut._testPresentPanelSync()
 
         XCTAssertEqual(sut._testPanel?._testLastShowExpectsFocusableField, true,
-            "Overlay mode renders a focusable composer; `expectsFocusableField` must be true so a missing field surfaces as a regression.")
+                       "Overlay mode renders a focusable composer; `expectsFocusableField` must be true so a missing field surfaces as a regression.")
     }
 
     /// Re-show preserves the new mode's value, not the previous show's.
@@ -112,7 +112,7 @@ final class QuickCaptureControllerWiringTests: XCTestCase {
         sut._testPresentPanelSync()
 
         XCTAssertNotNil(sut._testPanel?._testLastShowExpectsFocusableField,
-            "Each presentPanelSync must record a fresh value — verifies show() is actually called on every show pipeline pass, not skipped after the first.")
+                        "Each presentPanelSync must record a fresh value — verifies show() is actually called on every show pipeline pass, not skipped after the first.")
     }
 
     // MARK: - showNewTask refocus wiring
@@ -127,7 +127,7 @@ final class QuickCaptureControllerWiringTests: XCTestCase {
         sut.showNewTask()
 
         XCTAssertEqual(sut._testPanel?._testRefocusInvocationCount, baseline + 1,
-            "Visible-branch showNewTask must refocus after updatePanelContent rebuilds the NSHostingView.")
+                       "Visible-branch showNewTask must refocus after updatePanelContent rebuilds the NSHostingView.")
     }
 
     func testShowNewTask_whenHidden_doesNotInvokeRefocusInputFieldSynchronously() {
@@ -139,7 +139,7 @@ final class QuickCaptureControllerWiringTests: XCTestCase {
         // Hidden branch dispatches Task { await showPanel(...) }, so any
         // synchronous refocus would be in the wrong place.
         XCTAssertEqual(sut._testPanel?._testRefocusInvocationCount ?? 0, baseline,
-            "Hidden-panel path drives focus via panel.show, not refocusInputField.")
+                       "Hidden-panel path drives focus via panel.show, not refocusInputField.")
     }
 
     /// Spam-tap at controller wiring level: N consecutive `showNewTask()`
@@ -159,7 +159,7 @@ final class QuickCaptureControllerWiringTests: XCTestCase {
         sut.showNewTask()
 
         XCTAssertEqual(sut._testPanel?._testRefocusInvocationCount, baseline + 3,
-            "Each showNewTask on visible panel must refocus — spam-tap is a real scenario.")
+                       "Each showNewTask on visible panel must refocus — spam-tap is a real scenario.")
     }
 
     /// Answer-mode → new-task transition: `showNewTask()` calls
@@ -188,6 +188,6 @@ final class QuickCaptureControllerWiringTests: XCTestCase {
 
         XCTAssertFalse(sut._testIsInAnswerMode, "showNewTask must exit answer mode")
         XCTAssertEqual(sut._testPanel?._testRefocusInvocationCount, baseline + 1,
-            "showNewTask must still refocus after exitAnswerMode side-effects.")
+                       "showNewTask must still refocus after exitAnswerMode side-effects.")
     }
 }

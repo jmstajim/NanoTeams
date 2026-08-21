@@ -32,7 +32,7 @@ final class AppUpdateIntervalCoverageTests: XCTestCase {
         XCTAssertEqual(seconds.count, ordered.count)
         XCTAssertEqual(seconds, seconds.sorted(),
                        "a cadence picker whose options are not monotonic is a mislabelled control: "
-                       + "\(zip(ordered, seconds).map { "\($0)=\($1)" })")
+                           + "\(zip(ordered, seconds).map { "\($0)=\($1)" })")
         XCTAssertEqual(AppUpdateCheckInterval.daily.seconds, 86_400)
         XCTAssertEqual(AppUpdateCheckInterval.weekly.seconds, 7 * 86_400)
     }
@@ -63,7 +63,7 @@ final class AppUpdateIntervalCoverageTests: XCTestCase {
         XCTAssertEqual(Set(AppUpdateCheckInterval.allCases.map(\.rawValue)),
                        ["daily", "weekly", "biweekly", "monthly", "never"],
                        "these raw values are persisted; renaming one silently resets every "
-                       + "existing user's update cadence to the default")
+                           + "existing user's update cadence to the default")
 
         // …and they round-trip, since that is how the setting is actually stored.
         for interval in AppUpdateCheckInterval.allCases {

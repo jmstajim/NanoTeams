@@ -168,21 +168,21 @@ nonisolated enum TeamGenerationService {
         var messages: [ChatMessage] = [
             ChatMessage(role: .system, content: systemPrompt ?? Self.defaultSystemPrompt),
             ChatMessage(role: .user, content: """
-                Task:
-                \(taskDescription)
-
-                Analyze this task and call create_team ONCE with the optimal team configuration.
-                """),
+            Task:
+            \(taskDescription)
+            
+            Analyze this task and call create_team ONCE with the optimal team configuration.
+            """),
         ]
         if let priorAttempt {
             // Show the model its own payload back, then name the single defect. Anything
             // vaguer ("that failed, try again") reproduces the same config.
             messages.append(ChatMessage(role: .assistant, content: priorAttempt.arguments))
             messages.append(ChatMessage(role: .user, content: """
-                That config was rejected: \(priorAttempt.reason)
-
-                Call create_team once more. Keep everything that was fine and fix only that.
-                """))
+            That config was rejected: \(priorAttempt.reason)
+            
+            Call create_team once more. Keep everything that was fine and fix only that.
+            """))
         }
 
         var toolAccumulator = ToolCallAccumulator()
@@ -341,49 +341,49 @@ nonisolated enum TeamGenerationService {
     /// Built-in default system prompt. Settings can read this to seed the
     /// custom-prompt editor.
     static let defaultSystemPrompt: String = """
-        You design teams of LLM-driven roles to execute the user's task. Call `create_team` ONCE with a `team_config` matching the schema.
-
-        ## Role types
-        - **Producing** — has `produces_artifacts`; auto-finishes when all artifacts are submitted via create_artifact.
-        - **Chat** — has `requires_artifacts` only, empty `produces_artifacts`; talks via ask_supervisor until paused. A team with empty `supervisor_requires` runs in Chat mode.
-        - **Observer** — no artifacts; speaks only in meetings. Use for personality-driven debate teams.
-
-        ## Role object
-        Every role needs `name` AND `prompt` — both required, no defaults:
-        `{"name":"Backend Engineer","prompt":"…","tools":["read_file","write_file"],"requires_artifacts":["Supervisor Task"],"produces_artifacts":["API Specification"]}`
-
-        ## Design rules
-        - `Supervisor Task` is always the first dependency. The Supervisor produces it automatically.
-        - The final deliverable(s) go into `supervisor_requires` for review — list them there even when a review role also requires them. Use `supervisor_requires: []` only for open-ended dialogue with no requested deliverable (Chat mode).
-        - Artifact names are conceptual deliverables (`API Specification`, `Deployment Runbook`), never file names (`server.js`, `convert.py`, `overview.json`) — the runtime rejects file-shaped names and degrades them to a generic label. Roles still write the real source files with write_file.
-        - Give every role a detailed `prompt` for THIS task and tools matching its responsibility.
-        - Include `ask_supervisor` for roles that may need clarification.
-        - Add `ask_teammate` / `request_team_meeting` for roles that benefit from collaboration.
-        - `supervisor_mode`: `autonomous` or `manual`. `autonomous` for clear specs, `manual` for creative/ambiguous tasks.
-        - `acceptance_mode`: `finalOnly` (default — Supervisor reviews only the final deliverable), `afterEachRole`, or `afterEachArtifact`. Use exact enum values — `manual`/`autonomous` are NOT valid here.
-
-        ## Tool selection
-        | Task type                              | Mandatory tools per producing role                                          |
-        |----------------------------------------|------------------------------------------------------------------------------|
-        | Modifies on-disk files (any language)  | write_file + edit_file + read_file + list_files + search                    |
-        | Apple-ecosystem (Swift / Xcode / iOS / macOS / watchOS / tvOS / visionOS / UIKit / AppKit / SwiftUI / XCTest / .xcodeproj) | also add run_xcodebuild + run_xcodetests on at least one role |
-        | Review / plan / research / writing     | read_file + read_lines + list_files + search + ask_supervisor + update_scratchpad — NO writers, NO git |
-        | Chat / assistant                       | read_file + write_file + edit_file + list_files + search + update_scratchpad + ask_supervisor + analyze_image |
-
-        The writer rule triggers on any request to change files, in any language (e.g. "fix", "implement", "переписать") — such roles need write_file to produce their output.
-
-        The Xcode row applies to any work on Apple-ecosystem code (the technologies listed in its table row); every other stack ships without Xcode tools.
-
-        Git write tools come as a set: `git_status + git_add + git_commit` together or omit all three.
-        Add `analyze_image` only when the task plausibly involves image content.
-
-        ## Language
-        Write role names, team name, team description, role prompts, and artifact names in the SAME language as the user's task. No force-translation to English.
-
-        ## Output
-        Call `create_team` exactly once with the full config — no prose, no other tool calls. The payload is strict valid JSON.
-
-        ## Final reminder
-        Use exact enum values: `supervisor_mode` ∈ {`autonomous`, `manual`}, `acceptance_mode` ∈ {`finalOnly`, `afterEachRole`, `afterEachArtifact`}. One `create_team` tool call, strict valid JSON.
-        """
+    You design teams of LLM-driven roles to execute the user's task. Call `create_team` ONCE with a `team_config` matching the schema.
+    
+    ## Role types
+    - **Producing** — has `produces_artifacts`; auto-finishes when all artifacts are submitted via create_artifact.
+    - **Chat** — has `requires_artifacts` only, empty `produces_artifacts`; talks via ask_supervisor until paused. A team with empty `supervisor_requires` runs in Chat mode.
+    - **Observer** — no artifacts; speaks only in meetings. Use for personality-driven debate teams.
+    
+    ## Role object
+    Every role needs `name` AND `prompt` — both required, no defaults:
+    `{"name":"Backend Engineer","prompt":"…","tools":["read_file","write_file"],"requires_artifacts":["Supervisor Task"],"produces_artifacts":["API Specification"]}`
+    
+    ## Design rules
+    - `Supervisor Task` is always the first dependency. The Supervisor produces it automatically.
+    - The final deliverable(s) go into `supervisor_requires` for review — list them there even when a review role also requires them. Use `supervisor_requires: []` only for open-ended dialogue with no requested deliverable (Chat mode).
+    - Artifact names are conceptual deliverables (`API Specification`, `Deployment Runbook`), never file names (`server.js`, `convert.py`, `overview.json`) — the runtime rejects file-shaped names and degrades them to a generic label. Roles still write the real source files with write_file.
+    - Give every role a detailed `prompt` for THIS task and tools matching its responsibility.
+    - Include `ask_supervisor` for roles that may need clarification.
+    - Add `ask_teammate` / `request_team_meeting` for roles that benefit from collaboration.
+    - `supervisor_mode`: `autonomous` or `manual`. `autonomous` for clear specs, `manual` for creative/ambiguous tasks.
+    - `acceptance_mode`: `finalOnly` (default — Supervisor reviews only the final deliverable), `afterEachRole`, or `afterEachArtifact`. Use exact enum values — `manual`/`autonomous` are NOT valid here.
+    
+    ## Tool selection
+    | Task type                              | Mandatory tools per producing role                                          |
+    |----------------------------------------|------------------------------------------------------------------------------|
+    | Modifies on-disk files (any language)  | write_file + edit_file + read_file + list_files + search                    |
+    | Apple-ecosystem (Swift / Xcode / iOS / macOS / watchOS / tvOS / visionOS / UIKit / AppKit / SwiftUI / XCTest / .xcodeproj) | also add run_xcodebuild + run_xcodetests on at least one role |
+    | Review / plan / research / writing     | read_file + read_lines + list_files + search + ask_supervisor + update_scratchpad — NO writers, NO git |
+    | Chat / assistant                       | read_file + write_file + edit_file + list_files + search + update_scratchpad + ask_supervisor + analyze_image |
+    
+    The writer rule triggers on any request to change files, in any language (e.g. "fix", "implement", "переписать") — such roles need write_file to produce their output.
+    
+    The Xcode row applies to any work on Apple-ecosystem code (the technologies listed in its table row); every other stack ships without Xcode tools.
+    
+    Git write tools come as a set: `git_status + git_add + git_commit` together or omit all three.
+    Add `analyze_image` only when the task plausibly involves image content.
+    
+    ## Language
+    Write role names, team name, team description, role prompts, and artifact names in the SAME language as the user's task. No force-translation to English.
+    
+    ## Output
+    Call `create_team` exactly once with the full config — no prose, no other tool calls. The payload is strict valid JSON.
+    
+    ## Final reminder
+    Use exact enum values: `supervisor_mode` ∈ {`autonomous`, `manual`}, `acceptance_mode` ∈ {`finalOnly`, `afterEachRole`, `afterEachArtifact`}. One `create_team` tool call, strict valid JSON.
+    """
 }

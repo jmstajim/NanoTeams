@@ -60,7 +60,7 @@ final class NTMSRepositoryTests: XCTestCase {
 
         let p = paths(for: root)
         XCTAssertTrue(FileManager.default.fileExists(atPath: p.workFolderJSON.path),
-                       "project.json should exist after openOrCreateWorkFolder")
+                      "project.json should exist after openOrCreateWorkFolder")
     }
 
     // MARK: - 3. openOrCreateWorkFolder_createsTasksIndexJSON
@@ -71,7 +71,7 @@ final class NTMSRepositoryTests: XCTestCase {
 
         let p = paths(for: root)
         XCTAssertTrue(FileManager.default.fileExists(atPath: p.tasksIndexJSON.path),
-                       "tasks_index.json should exist after openOrCreateWorkFolder")
+                      "tasks_index.json should exist after openOrCreateWorkFolder")
     }
 
     // MARK: - 4. openOrCreateWorkFolder_createsToolsJSON
@@ -82,7 +82,7 @@ final class NTMSRepositoryTests: XCTestCase {
 
         let p = paths(for: root)
         XCTAssertTrue(FileManager.default.fileExists(atPath: p.toolsJSON.path),
-                       "tools.json should exist after openOrCreateWorkFolder")
+                      "tools.json should exist after openOrCreateWorkFolder")
     }
 
     // MARK: - 5. openOrCreateWorkFolder_returnsProjectWithDefaultTeams
@@ -92,10 +92,10 @@ final class NTMSRepositoryTests: XCTestCase {
         let context = try sut.openOrCreateWorkFolder(at: root)
 
         XCTAssertFalse(context.workFolder.teams.isEmpty,
-                        "Work folder should have default bootstrap teams")
+                       "Work folder should have default bootstrap teams")
         // Default defaultTeams should include at least one team
         XCTAssertGreaterThanOrEqual(context.workFolder.teams.count, 1,
-                                     "Work folder should have at least one default team")
+                                    "Work folder should have at least one default team")
     }
 
     // MARK: - 6. openOrCreateWorkFolder_idempotent
@@ -107,7 +107,7 @@ final class NTMSRepositoryTests: XCTestCase {
         let second = try sut.openOrCreateWorkFolder(at: root)
 
         XCTAssertEqual(first.workFolder.id, second.workFolder.id,
-                        "Calling openOrCreateWorkFolder twice should return the same project")
+                       "Calling openOrCreateWorkFolder twice should return the same project")
         XCTAssertEqual(first.workFolder.name, second.workFolder.name)
         XCTAssertEqual(first.tasksIndex.tasks.count, second.tasksIndex.tasks.count)
     }
@@ -141,7 +141,7 @@ final class NTMSRepositoryTests: XCTestCase {
 
         let p = paths(for: root)
         XCTAssertTrue(FileManager.default.fileExists(atPath: p.taskJSON(taskID: taskID).path),
-                       "task.json should be created for the new task")
+                      "task.json should be created for the new task")
     }
 
     // MARK: - 9. createTask_updatesTasksIndex
@@ -153,7 +153,7 @@ final class NTMSRepositoryTests: XCTestCase {
         let (context, _) = try sut.createTask(at: root, title: "Indexed Task", supervisorTask: "Goal")
 
         XCTAssertEqual(context.tasksIndex.tasks.count, 1,
-                        "Tasks index should contain the new task")
+                       "Tasks index should contain the new task")
         XCTAssertEqual(context.tasksIndex.tasks.first?.title, "Indexed Task")
     }
 
@@ -300,12 +300,12 @@ final class NTMSRepositoryTests: XCTestCase {
 
         let p = paths(for: root)
         XCTAssertTrue(FileManager.default.fileExists(atPath: p.taskDir(taskID: taskID).path),
-                       "Task directory should exist before deletion")
+                      "Task directory should exist before deletion")
 
         _ = try sut.deleteTask(at: root, taskID: taskID)
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: p.taskDir(taskID: taskID).path),
-                        "Task directory should be removed after deletion")
+                       "Task directory should be removed after deletion")
     }
 
     // MARK: - 16. deleteTask_removesFromIndex
@@ -321,7 +321,7 @@ final class NTMSRepositoryTests: XCTestCase {
         let afterDelete = try sut.deleteTask(at: root, taskID: taskID)
 
         XCTAssertFalse(afterDelete.tasksIndex.tasks.contains(where: { $0.id == taskID }),
-                        "Task should be removed from index after deletion")
+                       "Task should be removed from index after deletion")
     }
 
     // MARK: - 17. deleteTask_activeTask_picksFallback
@@ -341,9 +341,9 @@ final class NTMSRepositoryTests: XCTestCase {
 
         // Should have picked a fallback active task (Task A)
         XCTAssertNotNil(afterDelete.activeTaskID,
-                         "Should pick a fallback active task when the active one is deleted")
+                        "Should pick a fallback active task when the active one is deleted")
         XCTAssertEqual(afterDelete.activeTaskID, taskA.id,
-                        "Fallback should be the remaining task")
+                       "Fallback should be the remaining task")
     }
 
     // MARK: - 18. deleteTask_nonExistentTask_throws
@@ -402,7 +402,7 @@ final class NTMSRepositoryTests: XCTestCase {
         let summary = reloaded.tasksIndex.tasks.first(where: { $0.id == task.id })
         XCTAssertNotNil(summary, "Task should still be in index after updateTaskOnly")
         XCTAssertEqual(summary?.title, "After Update",
-                        "Index should reflect the updated title")
+                       "Index should reflect the updated title")
     }
 
     // MARK: - 21. updateTaskOnly_nonExistentTask_throws
@@ -486,11 +486,11 @@ final class NTMSRepositoryTests: XCTestCase {
         let slug = Artifact.slugify("Product Requirements")
         let fileURL = stepDir.appendingPathComponent("artifact_\(slug).md", isDirectory: false)
         XCTAssertTrue(FileManager.default.fileExists(atPath: fileURL.path),
-                       "Artifact file should be written to disk")
+                      "Artifact file should be written to disk")
 
         let readBack = try String(contentsOf: fileURL, encoding: .utf8)
         XCTAssertTrue(readBack.contains("Product Requirements"),
-                       "Written file should contain the artifact content")
+                      "Written file should contain the artifact content")
     }
 
     // MARK: - 25. persistStepArtifactFile_returnsRelativePath
@@ -513,14 +513,14 @@ final class NTMSRepositoryTests: XCTestCase {
 
         // Should be relative to .nanoteams/, starting with "tasks/..."
         XCTAssertTrue(relativePath.hasPrefix("tasks/"),
-                       "Relative path should start with 'tasks/', got: \(relativePath)")
+                      "Relative path should start with 'tasks/', got: \(relativePath)")
         XCTAssertTrue(relativePath.contains(String(runID)),
-                       "Relative path should contain the run ID")
+                      "Relative path should contain the run ID")
         XCTAssertTrue(relativePath.contains("roles/\(roleID)"),
-                       "Relative path should contain the role ID")
+                      "Relative path should contain the role ID")
         let slug = Artifact.slugify("Design Spec")
         XCTAssertTrue(relativePath.hasSuffix("artifact_\(slug).md"),
-                       "Relative path should end with the artifact filename")
+                      "Relative path should end with the artifact filename")
     }
 
     // MARK: - 26. persistStepArtifactFile_stripsControlTokens
@@ -565,7 +565,7 @@ final class NTMSRepositoryTests: XCTestCase {
         XCTAssertFalse(readBack.contains("<|message|>"), "Control token <|message|> should be stripped")
         XCTAssertFalse(readBack.contains("<|constrain|>"), "Control token <|constrain|> should be stripped")
         XCTAssertTrue(readBack.contains("Here is the actual content."),
-                       "Non-control content should be preserved")
+                      "Non-control content should be preserved")
     }
 
     // MARK: - persistStepArtifactBinary
@@ -614,12 +614,12 @@ final class NTMSRepositoryTests: XCTestCase {
 
         let updated = try sut.updateWorkFolderContext(at: root, context: "A cool project")
         XCTAssertEqual(updated.workFolder.settings.context, "A cool project",
-                        "Context should be updated")
+                       "Context should be updated")
 
         // Verify persistence by re-reading
         let reloaded = try sut.openOrCreateWorkFolder(at: root)
         XCTAssertEqual(reloaded.workFolder.settings.context, "A cool project",
-                        "Context should persist across reloads")
+                       "Context should persist across reloads")
     }
 
     // MARK: - 28. resetWorkFolderSettings_recreatesDefaults
@@ -639,22 +639,22 @@ final class NTMSRepositoryTests: XCTestCase {
 
         // The project should be fresh with defaults
         XCTAssertEqual(resetContext.workFolder.settings.context, "",
-                        "Context should be reset to default empty string")
+                       "Context should be reset to default empty string")
         XCTAssertTrue(resetContext.tasksIndex.tasks.isEmpty,
-                       "Tasks index should be empty after reset")
+                      "Tasks index should be empty after reset")
         XCTAssertNil(resetContext.activeTaskID,
-                      "Active task should be nil after reset")
+                     "Active task should be nil after reset")
         XCTAssertNil(resetContext.activeTask,
-                      "Active task should be nil after reset")
+                     "Active task should be nil after reset")
         XCTAssertFalse(resetContext.workFolder.teams.isEmpty,
-                        "Default teams should be bootstrapped after reset")
+                       "Default teams should be bootstrapped after reset")
 
         // Verify .nanoteams directory still exists (recreated)
         let p = paths(for: root)
         XCTAssertTrue(FileManager.default.fileExists(atPath: p.nanoteamsDir.path),
-                       ".nanoteams directory should be recreated after reset")
+                      ".nanoteams directory should be recreated after reset")
         XCTAssertTrue(FileManager.default.fileExists(atPath: p.workFolderJSON.path),
-                       "project.json should be recreated after reset")
+                      "project.json should be recreated after reset")
     }
 
     // MARK: - Additional Edge Case Tests
@@ -668,7 +668,7 @@ final class NTMSRepositoryTests: XCTestCase {
         let (ctx3, _) = try sut.createTask(at: root, title: "Task 3", supervisorTask: "G3")
 
         XCTAssertEqual(ctx3.tasksIndex.tasks.count, 3,
-                        "All three tasks should be in the index")
+                       "All three tasks should be in the index")
     }
 
     func testDeleteTask_lastTask_clearsActiveToNil() throws {
@@ -681,12 +681,12 @@ final class NTMSRepositoryTests: XCTestCase {
         let afterDelete = try sut.deleteTask(at: root, taskID: taskID)
 
         XCTAssertTrue(afterDelete.tasksIndex.tasks.isEmpty,
-                       "Index should be empty after deleting the last task")
+                      "Index should be empty after deleting the last task")
         XCTAssertNil(afterDelete.activeTaskID,
-                      "Active task ID should be nil when no tasks remain")
+                     "Active task ID should be nil when no tasks remain")
     }
 
-    func testUpdateTask_persistsAndReloads() throws {
+    func testUpdateTaskOnly_persistsAndReloads() throws {
         let root = try makeProjectRoot()
         _ = try sut.openOrCreateWorkFolder(at: root)
 
@@ -694,10 +694,7 @@ final class NTMSRepositoryTests: XCTestCase {
         var task = created.activeTask!
 
         task.title = "Mutated Task"
-        let updated = try sut.updateTask(at: root, task: task)
-
-        XCTAssertEqual(updated.activeTask?.title, "Mutated Task",
-                        "updateTask should return context with the updated task")
+        try sut.updateTaskOnly(at: root, task: task)
 
         // Verify persistence
         let loaded = try sut.loadTask(at: root, taskID: task.id)
@@ -725,7 +722,7 @@ final class NTMSRepositoryTests: XCTestCase {
         let context = try sut.openOrCreateWorkFolder(at: root)
 
         XCTAssertEqual(context.workFolder.name, root.lastPathComponent,
-                        "Work folder name should default to the folder name")
+                       "Work folder name should default to the folder name")
     }
 
     func testOpenOrCreateProject_returnsToolDefinitions() throws {
@@ -733,7 +730,7 @@ final class NTMSRepositoryTests: XCTestCase {
         let context = try sut.openOrCreateWorkFolder(at: root)
 
         XCTAssertFalse(context.toolDefinitions.isEmpty,
-                        "Tool definitions should be populated with defaults")
+                       "Tool definitions should be populated with defaults")
     }
 
     func testOpenOrCreateProject_noActiveTaskInitially() throws {
@@ -741,7 +738,7 @@ final class NTMSRepositoryTests: XCTestCase {
         let context = try sut.openOrCreateWorkFolder(at: root)
 
         XCTAssertNil(context.activeTaskID,
-                      "No active task should exist for a fresh project")
+                     "No active task should exist for a fresh project")
         XCTAssertNil(context.activeTask)
     }
 
@@ -759,7 +756,7 @@ final class NTMSRepositoryTests: XCTestCase {
         let afterDelete = try sut.deleteTask(at: root, taskID: taskA.id)
 
         XCTAssertEqual(afterDelete.activeTaskID, taskB.id,
-                        "Deleting a non-active task should not change the active task")
+                       "Deleting a non-active task should not change the active task")
     }
 
     func testPersistStepArtifactFile_createsStepDirectory() throws {
@@ -825,7 +822,7 @@ final class NTMSRepositoryTests: XCTestCase {
         let reopened = try sut.openOrCreateWorkFolder(at: root)
         XCTAssertEqual(reopened.workFolder.teams.count, Team.defaultTeams.count)
         XCTAssertTrue(reopened.workFolder.teams.contains { $0.templateID == "engineering" },
-                       "Engineering team should be merged on open")
+                      "Engineering team should be merged on open")
     }
 
     // MARK: - System Role Dependency Sync
@@ -856,7 +853,7 @@ final class NTMSRepositoryTests: XCTestCase {
         let role = team.roles.first { $0.systemRoleID == "encounterArchitect" }!
         XCTAssertTrue(role.dependencies.requiredArtifacts.contains("World Compendium"))
         XCTAssertTrue(role.dependencies.requiredArtifacts.contains("NPC Compendium"),
-                       "NPC Compendium should be synced from template because producer exists in team")
+                      "NPC Compendium should be synced from template because producer exists in team")
     }
 
     func testOpenOrCreateProject_doesNotAddRequiredArtifact_whenProducerMissing() throws {
@@ -872,7 +869,7 @@ final class NTMSRepositoryTests: XCTestCase {
         }
         let tl = team.roles.first { $0.systemRoleID == "techLead" }!
         XCTAssertFalse(tl.dependencies.requiredArtifacts.contains("Product Requirements"),
-                        "Product Requirements should NOT be added — PM is absent from Engineering team")
+                       "Product Requirements should NOT be added — PM is absent from Engineering team")
     }
 
     func testOpenOrCreateProject_syncsProducesArtifacts() throws {
@@ -907,7 +904,7 @@ final class NTMSRepositoryTests: XCTestCase {
         let faang = reopened.workFolder.teams.first { $0.templateID == "faang" }!
         let supervisor = faang.roles.first { $0.systemRoleID == "supervisor" }!
         XCTAssertEqual(supervisor.dependencies.requiredArtifacts, ["Release Notes"],
-                        "Supervisor requiredArtifacts should NOT be overwritten by generic template")
+                       "Supervisor requiredArtifacts should NOT be overwritten by generic template")
     }
 
     func testOpenOrCreateProject_startupSupervisorRequires_isEngineeringNotesOnly() throws {
@@ -920,7 +917,7 @@ final class NTMSRepositoryTests: XCTestCase {
         let startup = reopened.workFolder.teams.first { $0.templateID == "startup" }!
         let supervisor = startup.roles.first { $0.systemRoleID == "supervisor" }!
         XCTAssertEqual(supervisor.dependencies.requiredArtifacts, ["Engineering Notes"],
-                        "Startup Supervisor requiredArtifacts should NOT be overwritten by generic template")
+                       "Startup Supervisor requiredArtifacts should NOT be overwritten by generic template")
     }
 
     func testOpenOrCreateProject_dependencySyncIsIdempotent() throws {
@@ -937,7 +934,7 @@ final class NTMSRepositoryTests: XCTestCase {
         let ea2 = questParty2.roles.first { $0.systemRoleID == "encounterArchitect" }!
 
         XCTAssertEqual(ea1.updatedAt, ea2.updatedAt,
-                        "No unnecessary timestamp update when dependencies already match")
+                       "No unnecessary timestamp update when dependencies already match")
     }
 
     func testOpenOrCreateProject_skipsCustomRoles() throws {

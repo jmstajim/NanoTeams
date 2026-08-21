@@ -54,10 +54,10 @@ final class TeamBoardRunControlTests: XCTestCase {
     func testHistoricalRun_suppressesControlForEveryState() {
         for state in TeamEngineState.allCases {
             XCTAssertNil(select(state, historical: true),
-                "historical run must show no run button for \(state.rawValue)")
+                         "historical run must show no run button for \(state.rawValue)")
         }
         XCTAssertNil(select(nil, historical: true),
-            "historical run must show no run button for a nil engine state")
+                     "historical run must show no run button for a nil engine state")
     }
 
     /// Sanity: the live path is NOT universally suppressed (guards against a

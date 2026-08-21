@@ -385,7 +385,7 @@ final class BOrchSchedulingTailTests: NTMSOrchestratorTestBase, @unchecked Senda
                       "the banner must name the task so the user can find it; got \(banner)")
         XCTAssertEqual(sut.loadedTask(id)?.runs.count, runsBefore,
                        "premise: the fire really appended no run — otherwise `didStart` would be true "
-                     + "and this test would be asserting the wrong arm")
+                           + "and this test would be asserting the wrong arm")
         guard let rescheduled = sut.loadedTask(id)?.recurrence?.nextFireAt else {
             return XCTFail("the slot must still be rescheduled, or the next tick re-fires immediately")
         }
@@ -423,7 +423,7 @@ final class BOrchSchedulingTailTests: NTMSOrchestratorTestBase, @unchecked Senda
                      "nothing was evicted, so no residency sweep may be spawned")
         XCTAssertNotNil(sut.loadedTask(child),
                         "a delegation descendant of the ACTIVE task must stay loaded — the parent's "
-                      + "feed and graph render it")
+                            + "feed and graph render it")
     }
 
     /// The complement, which is what makes the assertion above about the DESCENDANT

@@ -81,7 +81,7 @@ nonisolated enum ToolConstants {
                                 tools: [TN.createTeam]),
             ToolCategoryDisplay(id: "delegation", name: "Delegation", icon: "arrowshape.turn.up.right",
                                 tools: [TN.delegateToTeam, TN.cancelDelegation, TN.resumeDelegation, TN.forwardToTeam]),
-            ToolCategoryDisplay(id: "autovisor", name: "Autovisor", icon: "folder.badge.person.crop",
+            ToolCategoryDisplay(id: "autovisor", name: "Autovisor", icon: AutovisorConstants.symbolName,
                                 tools: [TN.listTasks, TN.taskStatus, TN.createManagedTask, TN.controlTask,
                                         TN.manageRole, TN.answerTaskQuestion, TN.messageTask, TN.scheduleTask,
                                         TN.setWorkFolderContext, TN.waitForEvents]),

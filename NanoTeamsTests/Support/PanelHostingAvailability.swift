@@ -43,7 +43,7 @@ enum PanelHostingAvailability {
         if #available(macOS 26, *) { return }
         throw XCTSkip(
             "Building QuickCaptureFormView in an NSHostingView aborts the XCTest worker on "
-            + "macOS < 26 (the mirror's CI runner). See DEBTS.md D-7.",
+                + "macOS < 26 (the mirror's CI runner). See DEBTS.md D-7.",
             file: file,
             line: line
         )

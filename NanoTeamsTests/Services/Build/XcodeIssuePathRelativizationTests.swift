@@ -55,9 +55,9 @@ final class XcodeIssuePathRelativizationTests: XCTestCase {
     func testParseIssues_genuineDescendant_relativizes() {
         let root = URL(fileURLWithPath: "/Users/x/NanoTeams", isDirectory: true)
         let output = """
-            /Users/x/NanoTeams/Sources/A.swift:12:5: warning: unused variable
-            /Users/x/NanoTeams/Sources/B.swift:3:1: error: cannot find 'Foo' in scope
-            """
+        /Users/x/NanoTeams/Sources/A.swift:12:5: warning: unused variable
+        /Users/x/NanoTeams/Sources/B.swift:3:1: error: cannot find 'Foo' in scope
+        """
 
         let issues = XcodeBuildRunner.parseIssues(from: output, workFolderRoot: root)
 

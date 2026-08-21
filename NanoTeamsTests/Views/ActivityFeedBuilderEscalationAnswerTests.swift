@@ -150,7 +150,7 @@ final class ActivityFeedBuilderEscalationAnswerTests: XCTestCase {
                        "bubble text comes via displayContent (prefix stripped)")
         XCTAssertTrue(supervisorNotifications(in: items).isEmpty,
                       "no Q&A card while re-parked (supervisorAnswer is nil — gate fails); "
-                        + "the ACTIVE question is owned by the composer, not emitItems")
+                          + "the ACTIVE question is owned by the composer, not emitItems")
     }
 
     func testEscalationAnswer_multipleCycles_allBubblesChronological() {

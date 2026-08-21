@@ -28,8 +28,8 @@ final class WorkFolderContextGenerationTests: NTMSOrchestratorTestBase, @uncheck
 
         XCTAssertTrue(sut.isGeneratingWorkFolderContext,
                       "Flag must flip before the spawned Task awaits — otherwise " +
-                      "the second surface would miss the generating state during " +
-                      "the network round-trip.")
+                          "the second surface would miss the generating state during " +
+                          "the network round-trip.")
 
         sut.cancelWorkFolderContextGeneration()
     }

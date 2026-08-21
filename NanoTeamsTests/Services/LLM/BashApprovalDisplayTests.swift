@@ -66,6 +66,6 @@ final class BashApprovalDisplayTests: XCTestCase {
         let needle = "displayWorking" + "Directory"
         XCTAssertTrue(code.contains(needle),
                       "BashApprovalCard no longer renders the working directory — the human "
-                      + "approves a command without seeing the cwd the Auto judge sees")
+                          + "approves a command without seeing the cwd the Auto judge sees")
     }
 }

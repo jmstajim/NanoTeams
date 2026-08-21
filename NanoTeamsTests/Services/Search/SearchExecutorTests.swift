@@ -17,7 +17,7 @@ final class SearchModeTests: XCTestCase {
     func testRaw_unknownString_yieldsSubstring() {
         XCTAssertEqual(SearchMode(raw: "glob"), .substring)
         XCTAssertEqual(SearchMode(raw: "REGEX"), .substring,
-            "Case-sensitive — 'REGEX' is not 'regex'. Falls back safely.")
+                       "Case-sensitive — 'REGEX' is not 'regex'. Falls back safely.")
         XCTAssertEqual(SearchMode(raw: ""), .substring)
     }
 }
@@ -286,7 +286,7 @@ final class SearchExecutorTests: XCTestCase {
                 return
             }
             XCTAssertEqual(q, "[unclosed",
-                "Error must carry the offending pattern so the envelope can echo it.")
+                           "Error must carry the offending pattern so the envelope can echo it.")
         }
     }
 
@@ -307,9 +307,9 @@ final class SearchExecutorTests: XCTestCase {
             // future enum-only refactor doesn't regress the surfaced message.
             let desc = error.localizedDescription
             XCTAssertTrue(desc.contains("[unclosed"),
-                "localizedDescription should reference the bad pattern; got: \(desc)")
+                          "localizedDescription should reference the bad pattern; got: \(desc)")
             XCTAssertTrue(desc.contains("regex"),
-                "localizedDescription should classify the failure mode; got: \(desc)")
+                          "localizedDescription should classify the failure mode; got: \(desc)")
         }
     }
 
@@ -366,7 +366,7 @@ final class SearchExecutorTests: XCTestCase {
         ))
         XCTAssertEqual(out.matches.count, 1)
         XCTAssertEqual(out.matches[0].path, "a.swift",
-            "Internal subtree must not contribute matches at any depth.")
+                       "Internal subtree must not contribute matches at any depth.")
     }
 
     // MARK: - Filename matches (walk-collected)
@@ -380,7 +380,7 @@ final class SearchExecutorTests: XCTestCase {
             internalDir: internalDir
         ))
         XCTAssertEqual(out.matches.count, 0,
-            "Query doesn't appear in any file's content.")
+                       "Query doesn't appear in any file's content.")
         XCTAssertEqual(out.filenameMatches.count, 1)
         XCTAssertEqual(out.filenameMatches[0].path, "Sources/SearchExecutor.swift")
         XCTAssertEqual(out.filenameMatches[0].matched_on, .basename)
@@ -395,7 +395,7 @@ final class SearchExecutorTests: XCTestCase {
             internalDir: internalDir
         ))
         XCTAssertEqual(out.filenameMatches.first?.path, "Domain/Search.swift",
-            "Basename hits must come before path-only hits.")
+                       "Basename hits must come before path-only hits.")
         XCTAssertEqual(out.filenameMatches.first?.matched_on, .basename)
     }
 
@@ -408,7 +408,7 @@ final class SearchExecutorTests: XCTestCase {
             internalDir: internalDir
         ))
         XCTAssertEqual(out.filenameMatches.count, 0,
-            "Internal-dir files must not contribute filename matches even when they'd otherwise match.")
+                       "Internal-dir files must not contribute filename matches even when they'd otherwise match.")
     }
 
     func testFilenameMatches_respectFileGlob() throws {
@@ -447,7 +447,7 @@ final class SearchExecutorTests: XCTestCase {
             internalDir: internalDir
         ))
         XCTAssertEqual(Set(out.filenameMatches.map(\.path)), ["a.swift", "c.swift"],
-            "Constrained walk only visits the listed files for filename matching too.")
+                       "Constrained walk only visits the listed files for filename matching too.")
     }
 
     // MARK: - Filename matches: walk-integration corner cases
@@ -464,7 +464,7 @@ final class SearchExecutorTests: XCTestCase {
         ))
         XCTAssertEqual(out.filenameMatches.count, 1)
         XCTAssertEqual(out.filenameMatches[0].path, "Sources/SearchExecutor.swift",
-            "WalkSkipRules-blocked subtree must not contribute filename matches.")
+                       "WalkSkipRules-blocked subtree must not contribute filename matches.")
     }
 
     func testFilenameMatches_deeplyNested_pathBranchAttribution() throws {
@@ -494,7 +494,7 @@ final class SearchExecutorTests: XCTestCase {
         let paths = Set(out.filenameMatches.map(\.path))
         XCTAssertTrue(paths.contains(where: { $0.contains("inside/foo.swift") }))
         XCTAssertFalse(paths.contains(where: { $0.contains("outside/foo.swift") }),
-            "Files outside the `paths` scope must not contribute filename matches.")
+                       "Files outside the `paths` scope must not contribute filename matches.")
     }
 
     func testFilenameMatches_multipleQueries_allTermsContribute() throws {
@@ -579,9 +579,9 @@ final class SearchExecutorTests: XCTestCase {
             internalDir: internalDir
         ))
         XCTAssertEqual(out.matches.count, 0,
-            "No content matches the regex `FooBar` in this file.")
+                       "No content matches the regex `FooBar` in this file.")
         XCTAssertEqual(out.filenameMatches.count, 1,
-            "Filename match runs in substring mode regardless of content `mode`.")
+                       "Filename match runs in substring mode regardless of content `mode`.")
     }
 
     func testFilenameMatches_combinedWithContentMatches_bothPresent() throws {
@@ -596,7 +596,7 @@ final class SearchExecutorTests: XCTestCase {
         XCTAssertEqual(out.matches.count, 1)
         XCTAssertEqual(out.filenameMatches.count, 1)
         XCTAssertEqual(out.filenameMatches[0].path, "Search.swift",
-            "Same file appearing in both `matches` and `filename_matches` is by design.")
+                       "Same file appearing in both `matches` and `filename_matches` is by design.")
     }
 
     func testFilenameMatches_pathsTargetingSingleFile_onlyThatFile() throws {
@@ -612,7 +612,7 @@ final class SearchExecutorTests: XCTestCase {
             internalDir: internalDir
         ))
         XCTAssertEqual(out.filenameMatches.map(\.path), ["only.swift"],
-            "Single-file `paths` argument feeds the file into the filename-match scan, mirroring the dir-walk branch.")
+                       "Single-file `paths` argument feeds the file into the filename-match scan, mirroring the dir-walk branch.")
     }
 
     func testFilenameMatches_emptyQueriesArray_emptyOutput() throws {
@@ -702,7 +702,7 @@ final class SearchExecutorTests: XCTestCase {
         XCTAssertEqual(out.matches.count, 1, "The text file's match must still be found")
         XCTAssertEqual(out.matches.first?.path, "a.txt")
         XCTAssertGreaterThanOrEqual(out.skippedBinaryCount, 1,
-            "The non-UTF-8 file must be counted as binary, not surfaced in skipped_files")
+                                    "The non-UTF-8 file must be counted as binary, not surfaced in skipped_files")
         XCTAssertFalse(
             out.skipped.contains(where: { $0.path == "blob.bin" }),
             "Binary files go into the aggregate count, NOT skipped_files — preserving the prior contract."
@@ -740,7 +740,7 @@ final class SearchExecutorTests: XCTestCase {
         // after the first cancel-check tick must short-circuit. 32 files of
         // NEEDLE on an uncancelled run would produce 32 matches.
         XCTAssertLessThan(out.matches.count, 32,
-            "Cancelled walk must short-circuit; got all \(out.matches.count) matches as if not cancelled.")
+                          "Cancelled walk must short-circuit; got all \(out.matches.count) matches as if not cancelled.")
     }
 
     /// Unterminated last line must remain matchable. Defends against a
@@ -817,7 +817,7 @@ final class SearchExecutorTests: XCTestCase {
         ))
         XCTAssertEqual(out.filenameMatches.map(\.path), ["blob.gd"])
         XCTAssertEqual(out.skippedBinaryCount, 0,
-            "List mode must not open file content — the binary is listed, never read.")
+                       "List mode must not open file content — the binary is listed, never read.")
         XCTAssertTrue(out.skipped.isEmpty)
     }
 
@@ -853,10 +853,10 @@ final class SearchExecutorTests: XCTestCase {
         ))
         let paths = Set(out.filenameMatches.map(\.path))
         XCTAssertEqual(out.filenameMatches.count, 5,
-            "Roster must hold 5 DISTINCT files, not stop early on duplicate appends.")
+                       "Roster must hold 5 DISTINCT files, not stop early on duplicate appends.")
         XCTAssertEqual(out.filenameMatches.count, paths.count, "No duplicate entries in the roster.")
         XCTAssertTrue(paths.isSuperset(of: ["src/zzz1.txt", "src/zzz2.txt"]),
-            "Files reachable only via the second path must not be dropped by duplicate inflation.")
+                      "Files reachable only via the second path must not be dropped by duplicate inflation.")
     }
 
     func testListMode_singleFilePathEntry_respectsFileGlob() throws {
@@ -873,7 +873,7 @@ final class SearchExecutorTests: XCTestCase {
             internalDir: internalDir
         ))
         XCTAssertEqual(out.filenameMatches.map(\.path), ["scene.gd"],
-            "file_glob must exclude the non-matching single-file path entry.")
+                       "file_glob must exclude the non-matching single-file path entry.")
     }
 
     func testContentSearch_singleFilePathEntry_filenameMatchSurvivesBudgetExhaustion() throws {
@@ -891,7 +891,7 @@ final class SearchExecutorTests: XCTestCase {
         ))
         XCTAssertEqual(out.matches.count, 3, "bigdir should fill the content-match budget")
         XCTAssertTrue(out.filenameMatches.contains { $0.path == "target_needle.txt" },
-            "An explicitly-named file's filename match must survive a budget-exhausting sibling path.")
+                      "An explicitly-named file's filename match must survive a budget-exhausting sibling path.")
     }
 
     func testListMode_duplicatePathEntries_countedOnce() throws {
@@ -903,7 +903,7 @@ final class SearchExecutorTests: XCTestCase {
             internalDir: internalDir
         ))
         XCTAssertEqual(out.filenameMatches.map(\.path), ["a.txt"],
-            "A repeated single-file path entry must appear once, not thrice.")
+                       "A repeated single-file path entry must appear once, not thrice.")
     }
 
     func testListMode_emptyQueriesArray_isNotListMode_evenWithGlob() throws {
@@ -919,7 +919,7 @@ final class SearchExecutorTests: XCTestCase {
         ))
         XCTAssertTrue(out.matches.isEmpty)
         XCTAssertTrue(out.filenameMatches.isEmpty,
-            "An empty queries ARRAY is a no-op search, not list mode.")
+                      "An empty queries ARRAY is a no-op search, not list mode.")
     }
 
     func testListMode_exactlyMaxResults_notTruncated() throws {
@@ -937,7 +937,7 @@ final class SearchExecutorTests: XCTestCase {
         ))
         XCTAssertEqual(out.filenameMatches.count, 3)
         XCTAssertFalse(out.truncated,
-            "Exactly maxResults files with none dropped must not be marked truncated.")
+                       "Exactly maxResults files with none dropped must not be marked truncated.")
     }
 
     func testListMode_respectsInternalDirSkip() throws {

@@ -112,6 +112,14 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
     /// from artifacts created in the prior execution.
     var revisionComment: String?
 
+    /// Written by the repository, read by the repository. Non-nil ⇔ this step's
+    /// four stream collections live in `step_log.jsonl` (`NTMSPaths.stepLogJSONL`)
+    /// and the embedded arrays in `task.json` are STRIPPED on write; nil ⇔ legacy
+    /// task — the embedded arrays remain authoritative and are never migrated in
+    /// place (reader-fallback, the `network_log.json` precedent). See
+    /// `StepLogCommit` for the desync-resolution table.
+    var logCommit: StepLogCommit?
+
     /// Bundled delegation state for this step. Two previously-flat fields
     /// (`activeDelegationChildID`, `delegationChildIDs`)
     /// were aggregated here so the cross-field invariant
@@ -232,9 +240,9 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         self.supervisorAnswerWasAuto = supervisorAnswerWasAuto
         self.supervisorAnswerPendingDelivery =
             supervisorAnswerPendingDelivery
-            ?? Self.inferPendingDelivery(
-                answer: supervisorAnswer,
-                attachmentPaths: supervisorAnswerAttachmentPaths)
+                ?? Self.inferPendingDelivery(
+                    answer: supervisorAnswer,
+                    attachmentPaths: supervisorAnswerAttachmentPaths)
         self.supervisorCommentForNext = supervisorCommentForNext
         self.tokenUsage = tokenUsage
         self.llmConversation = llmConversation
@@ -281,6 +289,7 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         case llmConversation
         case wireTranscript
         case revisionComment
+        case logCommit
         // New aggregated shape (preferred on encode + decode).
         case delegation
         case ancillary
@@ -320,9 +329,9 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         // legacy data gets exactly one delivery, and the flag governs from then on.
         self.supervisorAnswerPendingDelivery =
             try c.decodeIfPresent(Bool.self, forKey: .supervisorAnswerPendingDelivery)
-            ?? Self.inferPendingDelivery(
-                answer: self.supervisorAnswer,
-                attachmentPaths: self.supervisorAnswerAttachmentPaths)
+                ?? Self.inferPendingDelivery(
+                    answer: self.supervisorAnswer,
+                    attachmentPaths: self.supervisorAnswerAttachmentPaths)
         self.supervisorCommentForNext = try c.decodeIfPresent(String.self, forKey: .supervisorCommentForNext)
         self.tokenUsage = try c.decodeIfPresent(TokenUsage.self, forKey: .tokenUsage)
         self.llmConversation =
@@ -334,6 +343,7 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         self.wireTranscript =
             try c.decodeIfPresent([ChatMessage].self, forKey: .wireTranscript) ?? []
         self.revisionComment = try c.decodeIfPresent(String.self, forKey: .revisionComment)
+        self.logCommit = try c.decodeIfPresent(StepLogCommit.self, forKey: .logCommit)
         // Delegation/ancillary: prefer the new nested shape, fall back to
         // the legacy flat keys for files written by earlier builds.
         // Both decodes use `decodeIfPresent` so missing keys default to
@@ -402,6 +412,7 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         // disk re-encoded after a read) don't grow a `"wireTranscript":[]` key.
         if !wireTranscript.isEmpty { try c.encode(wireTranscript, forKey: .wireTranscript) }
         try c.encodeIfPresent(revisionComment, forKey: .revisionComment)
+        try c.encodeIfPresent(logCommit, forKey: .logCommit)
         // Encode the new bundled shape only when non-empty (preserves the
         // pre-fix policy of omitting empty delegation/ancillary state from
         // the JSON for non-delegating roles — keeps `task.json` small).

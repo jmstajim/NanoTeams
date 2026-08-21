@@ -41,6 +41,132 @@ final class ToolCallAccumulatorTests: XCTestCase {
         XCTAssertEqual(calls[0].argumentsJSON, "{\"kind\":\"plan\",\"name\":\"P\",\"content\":\"Hi\"}")
     }
 
+    // MARK: - Raw-duplicate probe (per-delta half of duplicate detection)
+
+    /// Raw-only oracle: the byte-identity half of the OLD per-delta check, verbatim —
+    /// `"name\u{1F}args"` collision over the finalized calls.
+    private func rawOracle() -> Bool {
+        var seen = Set<String>()
+        for call in accumulator.finalize() {
+            if !seen.insert("\(call.name)\u{1F}\(call.argumentsJSON)").inserted { return true }
+        }
+        return false
+    }
+
+    private func delta(_ idx: Int, id: String? = nil, name: String? = nil,
+                       args: String? = nil) -> StreamEvent.ToolCallDelta {
+        StreamEvent.ToolCallDelta(index: idx, id: id, name: name, argumentsDelta: args)
+    }
+
+    /// Two byte-identical calls, framed differently (one whole, one split across
+    /// three deltas), must read as duplicates at exactly the same point the old
+    /// whole-rebuild check saw them — parity asserted after EVERY absorb.
+    func testRawDuplicate_detectedAcrossDifferentDeltaFraming() {
+        let steps: [[StreamEvent.ToolCallDelta]] = [
+            [delta(0, id: "a", name: "read_file", args: "{\"path\":\"x.txt\"}")],
+            [delta(1, id: "b", name: "read_file", args: "{\"path\":")],
+            [delta(1, args: "\"x.")],
+            [delta(1, args: "txt\"}")],
+        ]
+        for (i, event) in steps.enumerated() {
+            accumulator.absorb(event)
+            XCTAssertEqual(accumulator.hasRawDuplicate, rawOracle(),
+                           "parity diverged after absorb \(i)")
+        }
+        XCTAssertTrue(accumulator.hasRawDuplicate)
+    }
+
+    func testRawDuplicate_bothCallsInOneCoalescedEvent() {
+        accumulator.absorb([
+            delta(0, id: "a", name: "git_status", args: "{}"),
+            delta(1, id: "b", name: "git_status", args: "{}"),
+        ])
+        XCTAssertTrue(accumulator.hasRawDuplicate)
+        XCTAssertEqual(accumulator.hasRawDuplicate, rawOracle())
+    }
+
+    func testDistinctCalls_noRawDuplicate_atAnyPoint() {
+        let steps: [[StreamEvent.ToolCallDelta]] = [
+            [delta(0, id: "a", name: "read_file", args: "{\"path\":\"a.txt\"}")],
+            [delta(1, id: "b", name: "read_file", args: "{\"path\":")],
+            [delta(1, args: "\"b.txt\"}")],
+        ]
+        for event in steps {
+            accumulator.absorb(event)
+            XCTAssertFalse(accumulator.hasRawDuplicate)
+            XCTAssertEqual(accumulator.hasRawDuplicate, rawOracle())
+        }
+    }
+
+    /// The two-tier split, pinned: whitespace-differing duplicates are NOT the raw
+    /// probe's job (no O(1) signature over-approximates JSON canonical equality) —
+    /// they are caught by `containsDuplicateToolCalls`, which the streaming loop
+    /// runs behind `toolDeltaScanGate` instead of per delta.
+    func testCanonicalDuplicate_isNotRaw_butCanonicalPathCatchesIt() {
+        accumulator.absorb([
+            delta(0, id: "a", name: "write_file", args: "{\"path\":\"x\",\"content\":\"hi\"}"),
+            delta(1, id: "b", name: "write_file", args: "{ \"content\" : \"hi\", \"path\" : \"x\" }"),
+        ])
+        XCTAssertFalse(accumulator.hasRawDuplicate)
+        XCTAssertTrue(LLMExecutionService.containsDuplicateToolCalls(accumulator.finalize()))
+    }
+
+    func testSingleCall_neverRawDuplicate() {
+        accumulator.absorb([delta(0, id: "a", name: "read_file", args: "{\"path\":\"x\"}")])
+        XCTAssertFalse(accumulator.hasRawDuplicate)
+    }
+
+    /// Nameless partials are invisible to `finalize()` and must be invisible to the
+    /// probe too — two identical UNNAMED payloads are not a duplicate CALL.
+    func testUnnamedPartials_areIgnoredByTheProbe() {
+        accumulator.absorb([
+            delta(0, args: "{\"x\":1}"),
+            delta(1, args: "{\"x\":1}"),
+        ])
+        XCTAssertFalse(accumulator.hasRawDuplicate)
+        XCTAssertEqual(accumulator.hasRawDuplicate, rawOracle())
+    }
+
+    /// Empty-args duplicates: two calls that carry a name and no argument bytes.
+    func testRawDuplicate_emptyArgsPair() {
+        accumulator.absorb([
+            delta(0, id: "a", name: "list_files"),
+            delta(1, id: "b", name: "list_files"),
+        ])
+        XCTAssertEqual(accumulator.hasRawDuplicate, rawOracle())
+        XCTAssertTrue(accumulator.hasRawDuplicate)
+    }
+
+    /// WIRING PIN (CLAUDE.md #57): the canonical probe in the `toolCallDeltas`
+    /// branch of `performStreamingCall` must sit behind `toolDeltaScanGate` —
+    /// restoring the per-delta call is the mutation this catches. Anti-vacuum:
+    /// both identifiers must exist in the branch at all.
+    func testStreamingWiring_canonicalProbeIsCadenceGated() throws {
+        let url = RatchetSourceScan.repoRoot
+            .appendingPathComponent("NanoTeams/Services/LLM/LLMExecutionService+Streaming.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        guard let branchStart = source.range(of: "if !event.toolCallDeltas.isEmpty {") else {
+            return XCTFail("toolCallDeltas branch not found — the pin's subject moved")
+        }
+        // The branch ends where the usage-capture lines resume.
+        guard let branchEnd = source.range(of: "if let u = event.tokenUsage",
+                                           range: branchStart.upperBound..<source.endIndex) else {
+            return XCTFail("end anchor not found — the pin's subject moved")
+        }
+        let branch = source[branchStart.lowerBound..<branchEnd.lowerBound]
+        XCTAssertTrue(branch.contains("hasRawDuplicate"),
+                      "per-delta raw probe vanished from the toolCallDeltas branch")
+        guard let canonical = branch.range(of: "containsDuplicateToolCalls") else {
+            return XCTFail("canonical probe vanished from the toolCallDeltas branch")
+        }
+        guard let gate = branch.range(of: "toolDeltaScanGate.shouldScan") else {
+            return XCTFail("cadence gate vanished from the toolCallDeltas branch")
+        }
+        XCTAssertTrue(gate.lowerBound < canonical.lowerBound,
+                      "canonical probe runs before/without the cadence gate — the "
+                          + "per-delta full JSON parse is back (CLAUDE.md #106)")
+    }
+
     // MARK: - Multiple Tool Calls
 
     func testMultipleToolCallsParallel() {

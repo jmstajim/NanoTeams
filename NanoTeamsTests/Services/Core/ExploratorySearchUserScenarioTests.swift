@@ -198,7 +198,7 @@ final class ExploratorySearchUserScenarioTests: NTMSOrchestratorTestBase, @unche
 
         XCTAssertEqual(sut.configuration.exploratorySearchEnabled, true)
         XCTAssertNotNil(sut.searchIndexCoordinator,
-            "After on → off → on, the final state must be ON with a live coordinator.")
+                        "After on → off → on, the final state must be ON with a live coordinator.")
     }
 
     // MARK: - Regression: searchIndexCoordinator must be observable by views
@@ -238,9 +238,9 @@ final class ExploratorySearchUserScenarioTests: NTMSOrchestratorTestBase, @unche
         await Task.yield()
 
         XCTAssertTrue(observationFired.value,
-            "Views that read `store.searchIndexCoordinator` must be notified on assignment. "
-            + "If this fails the property has been marked @ObservationIgnored — reverting that "
-            + "would freeze the Advanced settings cards at their initial nil snapshot.")
+                      "Views that read `store.searchIndexCoordinator` must be notified on assignment. "
+                          + "If this fails the property has been marked @ObservationIgnored — reverting that "
+                          + "would freeze the Advanced settings cards at their initial nil snapshot.")
     }
 
     /// Direct regression for the "install race / FSEventStream leak" class:
@@ -258,7 +258,7 @@ final class ExploratorySearchUserScenarioTests: NTMSOrchestratorTestBase, @unche
 
         await sut.setUpSearchIndexCoordinatorIfEnabled()
         XCTAssertTrue(sut.searchIndexCoordinator === first,
-            "Second setUp must not install a second coordinator.")
+                      "Second setUp must not install a second coordinator.")
     }
 
     // MARK: - Folder lifecycle
@@ -812,7 +812,7 @@ final class ExploratorySearchUserScenarioTests: NTMSOrchestratorTestBase, @unche
         XCTAssertTrue(team.isChatMode, "Sanity check — team is chat-mode")
 
         let step = StepExecution(id: "coding_assistant", role: .softwareEngineer,
-                                  title: "Chat", status: .running)
+                                 title: "Chat", status: .running)
         var task = NTMSTask(id: 0, title: "Test", supervisorTask: "do work",
                             runs: [Run(id: 0, steps: [step])])
         task.adoptGeneratedTeam(team)

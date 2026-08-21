@@ -67,7 +67,7 @@ final class SyncEngineStateFromRunTests: NTMSOrchestratorTestBase, @unchecked Se
 
         let state = sut.taskEngineStates[taskID]
         XCTAssertEqual(state, .paused,
-            "chat-mode + all-done steps + closedAt=nil → engine state must be .paused so composer renders")
+                       "chat-mode + all-done steps + closedAt=nil → engine state must be .paused so composer renders")
     }
 
     // MARK: - Scenario B — chat-mode, advisory step recovered to `.paused`
@@ -95,7 +95,7 @@ final class SyncEngineStateFromRunTests: NTMSOrchestratorTestBase, @unchecked Se
         )
 
         XCTAssertEqual(sut.taskEngineStates[taskID], .done,
-            "chat-mode + closedAt set → engine state must be .done (closed chats stay closed)")
+                       "chat-mode + closedAt set → engine state must be .done (closed chats stay closed)")
     }
 
     // MARK: - Scenario D — non-chat baseline, all done w/o closedAt
@@ -151,7 +151,7 @@ final class SyncEngineStateFromRunTests: NTMSOrchestratorTestBase, @unchecked Se
         await sut.openWorkFolder(tempDir)
 
         XCTAssertNil(sut.taskEngineStates[taskID],
-            "no runs → no engine state seeded (guard short-circuits)")
+                     "no runs → no engine state seeded (guard short-circuits)")
     }
 
     // MARK: - Scenario H — `ensureTaskLoaded` (background task path)
@@ -187,7 +187,7 @@ final class SyncEngineStateFromRunTests: NTMSOrchestratorTestBase, @unchecked Se
         await sut.ensureTaskLoaded(aID)
 
         XCTAssertEqual(sut.taskEngineStates[aID], .paused,
-            "ensureTaskLoaded must use chat-mode-aware seeding so background chat tasks load with composer-visible state")
+                       "ensureTaskLoaded must use chat-mode-aware seeding so background chat tasks load with composer-visible state")
     }
 
     // MARK: - Scenario I — mid-conversation crash recovery (`.running` → `.paused`)
@@ -216,14 +216,14 @@ final class SyncEngineStateFromRunTests: NTMSOrchestratorTestBase, @unchecked Se
         await sut.openWorkFolder(tempDir)
 
         XCTAssertEqual(sut.taskEngineStates[taskID], .paused,
-            "running chat step → recovery → sync must end at .paused so composer shows + Resume works")
+                       "running chat step → recovery → sync must end at .paused so composer shows + Resume works")
 
         // Recovery side-effects (defense-in-depth assertions):
         let task = sut.activeTask
         XCTAssertEqual(task?.runs.last?.steps.last?.status, .paused,
-            "running step should be recovered to .paused")
+                       "running step should be recovered to .paused")
         XCTAssertEqual(task?.runs.last?.roleStatuses["assistant"], .idle,
-            "working role should be recovered to .idle")
+                       "working role should be recovered to .idle")
     }
 
     // MARK: - Scenario J — `.needsSupervisorInput` direct sync branch
@@ -280,7 +280,7 @@ final class SyncEngineStateFromRunTests: NTMSOrchestratorTestBase, @unchecked Se
         // Active = nonChat (last created). Verify seeded as .done.
         XCTAssertEqual(sut.activeTaskID, nonChatID)
         XCTAssertEqual(sut.taskEngineStates[nonChatID], .done,
-            "non-chat task with all-done steps + no closedAt → engine state .done (acceptance flow)")
+                       "non-chat task with all-done steps + no closedAt → engine state .done (acceptance flow)")
 
         // Now load the background chat task — it must seed independently, NOT
         // pick up the non-chat task's .done state.
@@ -288,9 +288,9 @@ final class SyncEngineStateFromRunTests: NTMSOrchestratorTestBase, @unchecked Se
         await sut.ensureTaskLoaded(chatID)
 
         XCTAssertEqual(sut.taskEngineStates[chatID], .paused,
-            "chat task seeds independently to .paused even when sibling non-chat task is .done")
+                       "chat task seeds independently to .paused even when sibling non-chat task is .done")
         XCTAssertEqual(sut.taskEngineStates[nonChatID], .done,
-            "non-chat task's engine state must not be perturbed by chat task seeding")
+                       "non-chat task's engine state must not be perturbed by chat task seeding")
     }
 
     // MARK: - mapDerivedStatusToEngineState (pure switch coverage)
@@ -319,7 +319,7 @@ final class SyncEngineStateFromRunTests: NTMSOrchestratorTestBase, @unchecked Se
 
     func testMapDerivedStatus_needsSupervisorAcceptance_seedsDone() {
         XCTAssertEqual(NTMSOrchestrator.mapDerivedStatusToEngineState(.needsSupervisorAcceptance, hasSteps: true), .done,
-            "needsSupervisorAcceptance collapses to .done engine state — UI surfaces acceptance via task data, not engine state")
+                       "needsSupervisorAcceptance collapses to .done engine state — UI surfaces acceptance via task data, not engine state")
     }
 
     func testMapDerivedStatus_runningWithSteps_seedsPaused() {
@@ -328,12 +328,12 @@ final class SyncEngineStateFromRunTests: NTMSOrchestratorTestBase, @unchecked Se
 
     func testMapDerivedStatus_runningWithoutSteps_returnsNil() {
         XCTAssertNil(NTMSOrchestrator.mapDerivedStatusToEngineState(.running, hasSteps: false),
-            "running + no steps → no engine state (don't fabricate one for a half-built run)")
+                     "running + no steps → no engine state (don't fabricate one for a half-built run)")
     }
 
     func testMapDerivedStatus_waiting_seedsPaused() {
         XCTAssertEqual(NTMSOrchestrator.mapDerivedStatusToEngineState(.waiting, hasSteps: true), .paused,
-            "waiting branch is dead through current paths, but contract is `.paused` — pinned so a future caller doesn't get phantom .running")
+                       "waiting branch is dead through current paths, but contract is `.paused` — pinned so a future caller doesn't get phantom .running")
         XCTAssertEqual(NTMSOrchestrator.mapDerivedStatusToEngineState(.waiting, hasSteps: false), .paused)
     }
 
@@ -352,7 +352,7 @@ final class SyncEngineStateFromRunTests: NTMSOrchestratorTestBase, @unchecked Se
             _ = NTMSOrchestrator.mapDerivedStatusToEngineState(status, hasSteps: false)
         }
         XCTAssertEqual(TaskStatus.allCases.count, 7,
-            "TaskStatus has 7 cases — if this assertion breaks, audit `mapDerivedStatusToEngineState` for the new case")
+                       "TaskStatus has 7 cases — if this assertion breaks, audit `mapDerivedStatusToEngineState` for the new case")
     }
 
     // MARK: - Scenario M — `.running` derived status with empty `lastRun.steps`
@@ -372,7 +372,7 @@ final class SyncEngineStateFromRunTests: NTMSOrchestratorTestBase, @unchecked Se
         sut.syncEngineStateFromRun(taskID: 555, task: task)
 
         XCTAssertNil(sut.taskEngineStates[555],
-            ".running with empty steps must not seed engine state — caller should reset the run, not be handed a phantom .paused")
+                     ".running with empty steps must not seed engine state — caller should reset the run, not be handed a phantom .paused")
     }
 
     // MARK: - Scenario N — pre-existing engine guard
@@ -393,7 +393,7 @@ final class SyncEngineStateFromRunTests: NTMSOrchestratorTestBase, @unchecked Se
         sut.syncEngineStateFromRun(taskID: 777, task: task)
 
         XCTAssertNil(sut.taskEngineStates[777],
-            "pre-existing engine present → sync must NOT install a parallel engine state")
+                     "pre-existing engine present → sync must NOT install a parallel engine state")
     }
 
     // MARK: - Scenario L — sidebar status label after restart
@@ -420,7 +420,7 @@ final class SyncEngineStateFromRunTests: NTMSOrchestratorTestBase, @unchecked Se
         XCTAssertNotNil(summary)
         XCTAssertTrue(summary?.isChatMode == true)
         XCTAssertEqual(summary?.status, .running,
-            "chat-mode task summary must be .running (sidebar then renders 'Chat'), not .needsSupervisorAcceptance/.done")
+                       "chat-mode task summary must be .running (sidebar then renders 'Chat'), not .needsSupervisorAcceptance/.done")
 
         // Bonus: tasksIndex (the persisted summary store backing the sidebar)
         // must agree — otherwise the sidebar lags behind the in-memory task.

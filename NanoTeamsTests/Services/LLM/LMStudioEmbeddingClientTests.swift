@@ -169,8 +169,8 @@ final class LMStudioEmbeddingClientTests: XCTestCase {
         let mock = MockNetworkSession()
         mock.statusCode = 404
         mock.responseBody = Data("""
-            {"error":{"message":"Model 'text-embedding-nomic-embed-text-v1.5' not found. Please load it in LM Studio.","type":"invalid_request_error"}}
-            """.utf8)
+        {"error":{"message":"Model 'text-embedding-nomic-embed-text-v1.5' not found. Please load it in LM Studio.","type":"invalid_request_error"}}
+        """.utf8)
         let client = LMStudioEmbeddingClient(session: mock)
 
         await assertThrows(EmbeddingClientError.self, matching: { err in
@@ -189,8 +189,8 @@ final class LMStudioEmbeddingClientTests: XCTestCase {
         let mock = MockNetworkSession()
         mock.statusCode = 404
         mock.responseBody = Data("""
-            {"error":{"message":"Endpoint /v1/embed does not exist","type":"invalid_request_error"}}
-            """.utf8)
+        {"error":{"message":"Endpoint /v1/embed does not exist","type":"invalid_request_error"}}
+        """.utf8)
         let client = LMStudioEmbeddingClient(session: mock)
 
         await assertThrows(EmbeddingClientError.self, matching: { err in
@@ -226,8 +226,8 @@ final class LMStudioEmbeddingClientTests: XCTestCase {
         let mock = MockNetworkSession()
         mock.statusCode = 401
         mock.responseBody = Data("""
-            {"error":{"message":"Authentication required","type":"invalid_request_error"}}
-            """.utf8)
+        {"error":{"message":"Authentication required","type":"invalid_request_error"}}
+        """.utf8)
         let client = LMStudioEmbeddingClient(session: mock)
 
         await assertThrows(EmbeddingClientError.self, matching: { err in
@@ -246,8 +246,8 @@ final class LMStudioEmbeddingClientTests: XCTestCase {
         let mock = MockNetworkSession()
         mock.statusCode = 403
         mock.responseBody = Data("""
-            {"error":{"message":"Insufficient permissions","type":"invalid_request_error"}}
-            """.utf8)
+        {"error":{"message":"Insufficient permissions","type":"invalid_request_error"}}
+        """.utf8)
         let client = LMStudioEmbeddingClient(session: mock)
 
         await assertThrows(EmbeddingClientError.self, matching: { err in
@@ -267,8 +267,8 @@ final class LMStudioEmbeddingClientTests: XCTestCase {
         // Message intentionally contains "model" — the classifier could
         // mis-match this if the status check were skipped.
         mock.responseBody = Data("""
-            {"error":{"message":"Cannot access model — auth required","type":"unauthorized"}}
-            """.utf8)
+        {"error":{"message":"Cannot access model — auth required","type":"unauthorized"}}
+        """.utf8)
         let client = LMStudioEmbeddingClient(session: mock)
 
         await assertThrows(EmbeddingClientError.self, matching: { err in

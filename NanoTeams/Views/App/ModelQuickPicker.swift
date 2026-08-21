@@ -384,7 +384,7 @@ nonisolated enum ModelQuickPickerLogic {
         var seen = Set<String>()
         var rows: [Row] = []
         for name in available
-        where !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            where !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && seen.insert(name).inserted {
             rows.append(Row(name: name,
                             isSelected: name == selected,

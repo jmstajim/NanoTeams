@@ -72,13 +72,13 @@ final class SidebarSeenIndicatorE2ETests: XCTestCase {
     /// "seen" must still appear in the sidebar under all filter modes.
     func testFilteredTasks_seenTask_stillVisible_underRunningFilter() {
         let seen = SidebarTaskItem(id: 7, title: "Seen",
-                                    status: .running,
-                                    updatedAt: MonotonicClock.shared.now(),
-                                    isChatMode: false)
+                                   status: .running,
+                                   updatedAt: MonotonicClock.shared.now(),
+                                   isChatMode: false)
         let unseen = SidebarTaskItem(id: 8, title: "Unseen",
-                                      status: .running,
-                                      updatedAt: MonotonicClock.shared.now(),
-                                      isChatMode: false)
+                                     status: .running,
+                                     updatedAt: MonotonicClock.shared.now(),
+                                     isChatMode: false)
 
         sut.markSupervisorInputSeen(taskID: 7)
         sut.taskFilter = .running

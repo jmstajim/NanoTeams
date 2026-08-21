@@ -82,7 +82,7 @@ final class ToolCallLoggerTests: XCTestCase {
         let attrs = try fileManager.attributesOfItem(atPath: nestedDir.path)
         let perms = (attrs[.posixPermissions] as? NSNumber)?.intValue
         XCTAssertEqual(perms, 0o700,
-                        "ToolCallLogger should create parent directory with owner-only permissions")
+                       "ToolCallLogger should create parent directory with owner-only permissions")
     }
 
     func testAppend_writesJSONLine() throws {

@@ -86,7 +86,7 @@ final class AutovisorRunNowForceTests: NTMSOrchestratorTestBase, @unchecked Send
                        "force must append a fresh run even while the manager is mid-pass")
         XCTAssertEqual(firstRunStepStatus(mgrID), .paused,
                        "the superseded run's step must be drained to .paused — a bare "
-                     + "stopEngineForTask would leave a forever-.running lie")
+                           + "stopEngineForTask would leave a forever-.running lie")
         sut.stopEngineForTask(mgrID)
     }
 
@@ -139,8 +139,8 @@ final class AutovisorRunNowForceTests: NTMSOrchestratorTestBase, @unchecked Send
 
         XCTAssertEqual(runCountAtCancel, 1,
                        "the cancelled step's persist arm must run while the OLD run is still "
-                     + "runs.last — otherwise its wireTranscript clobbers the fresh run "
-                     + "(same TaskStepKey, single-role manager team)")
+                           + "runs.last — otherwise its wireTranscript clobbers the fresh run "
+                           + "(same TaskStepKey, single-role manager team)")
         XCTAssertEqual(runCount(mgrID), 2, "and the fresh run must still land")
         sut.stopEngineForTask(mgrID)
     }
@@ -272,7 +272,7 @@ final class AutovisorRunNowForceTests: NTMSOrchestratorTestBase, @unchecked Send
 
         XCTAssertEqual(runCount(mgrID), before + 1,
                        "two concurrent force clicks must append exactly ONE run — a read-only "
-                     + "guard lets both through, and the loser then kills the winner's engine")
+                           + "guard lets both through, and the loser then kills the winner's engine")
         sut.stopEngineForTask(mgrID)
     }
 
@@ -297,7 +297,7 @@ final class AutovisorRunNowForceTests: NTMSOrchestratorTestBase, @unchecked Send
                        "a disabled Autovisor must not run a zombie review pass")
         XCTAssertNotNil(sut.lastInfoMessage,
                         "and the refusal must say why — a silent no-op is the very defect "
-                      + "force was introduced to fix")
+                            + "force was introduced to fix")
     }
 
     /// The same gate on the default path, so no caller can start a zombie pass.

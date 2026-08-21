@@ -116,9 +116,8 @@ struct ExploratorySearchEmbeddingsCard: View {
         }
 
         if let progress = coordinator.vectorIndexProgress {
-            ProgressView(value: Double(progress.processed),
-                         total: Double(max(progress.total, 1)))
-                .progressViewStyle(.linear)
+            TerminalProgressBar(
+                value: Double(progress.processed) / Double(max(progress.total, 1)))
         }
     }
 

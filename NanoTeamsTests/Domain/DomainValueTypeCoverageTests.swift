@@ -41,7 +41,7 @@ final class DomainValueTypeCoverageTests: XCTestCase {
         XCTAssertEqual(settings.limits, TeamLimits.default)
         XCTAssertEqual(settings.defaultAcceptanceMode, .afterEachRole,
                        "the fail-VISIBLE default: one extra Accept click beats silently accepting "
-                       + "on the Supervisor's behalf")
+                           + "on the Supervisor's behalf")
         XCTAssertTrue(settings.acceptanceCheckpoints.isEmpty)
         XCTAssertEqual(settings.supervisorMode, .manual,
                        "a team with no recorded mode must block on ask_supervisor, never auto-answer")
@@ -109,7 +109,7 @@ final class DomainValueTypeCoverageTests: XCTestCase {
         b.roles.removeAll()
         XCTAssertEqual(a, b,
                        "Team.== compares id + updatedAt only (CLAUDE.md #42). Code needing a real "
-                       + "structural diff must compare encoded JSON, which is what mutateWorkFolder does.")
+                           + "structural diff must compare encoded JSON, which is what mutateWorkFolder does.")
 
         a.updatedAt = a.updatedAt.addingTimeInterval(1)
         XCTAssertNotEqual(a, b, "a bumped updatedAt is what makes two revisions distinct")
@@ -142,7 +142,7 @@ final class DomainValueTypeCoverageTests: XCTestCase {
         // The witness must separate two distinct roles, or a ForEach over them collapses.
         XCTAssertEqual(Set(Role.builtInCases.map(\.id)).count, Role.builtInCases.count,
                        "two built-in roles share an Identifiable id — a ForEach over them would "
-                       + "hit the duplicate-ID case")
+                           + "hit the duplicate-ID case")
     }
 
     /// A stored `Role` raw value that is neither a known built-in nor `custom:`-prefixed. Real
@@ -156,7 +156,7 @@ final class DomainValueTypeCoverageTests: XCTestCase {
         let bare = try decoder.decode(Role.self, from: Data("\"retired_role\"".utf8))
         XCTAssertEqual(bare, .custom(id: "retired_role"),
                        "an unknown bare id must degrade to .custom, not throw — otherwise a role "
-                       + "removed from the enum makes old task files undecodable")
+                           + "removed from the enum makes old task files undecodable")
 
         let prefixed = try decoder.decode(Role.self, from: Data("\"custom:my_role\"".utf8))
         XCTAssertEqual(prefixed, .custom(id: "my_role"), "the custom: prefix is stripped")

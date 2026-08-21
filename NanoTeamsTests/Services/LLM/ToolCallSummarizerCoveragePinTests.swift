@@ -37,7 +37,7 @@ nonisolated final class ToolCallSummarizerCoveragePinTests: XCTestCase {
     func testEveryToolEitherSummarizesItsArgumentsOrIsJustifiedInTheAllowlist() {
         var unexplained: [String] = []
         for name in ToolNames.allNames
-        where !ToolCallSummarizer.hasArgumentSummarizer(for: name)
+            where !ToolCallSummarizer.hasArgumentSummarizer(for: name)
             && !ToolCallSummarizer.toolsWithoutArgumentSummary.contains(name) {
             unexplained.append(name)
         }

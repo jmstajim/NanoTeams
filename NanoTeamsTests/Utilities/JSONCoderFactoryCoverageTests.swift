@@ -32,7 +32,7 @@ final class JSONCoderFactoryCoverageTests: XCTestCase {
         XCTAssertEqual(plain.at.timeIntervalSince1970,
                        fractional.at.timeIntervalSince1970, accuracy: 1.0,
                        "the two accepted shapes must denote the same instant — the second-precision "
-                       + "form is what pre-fix files on disk carry")
+                           + "form is what pre-fix files on disk carry")
     }
 
     /// RED: delete the `throw DecodingError.dataCorruptedError(...)` and return a fixed date →
@@ -99,6 +99,6 @@ final class JSONCoderFactoryCoverageTests: XCTestCase {
         XCTAssertEqual(String(decoding: display, as: UTF8.self),
                        String(decoding: persistence, as: UTF8.self),
                        "with no dates involved the two encoders must agree; if they ever diverge, "
-                       + "the formatting options drifted apart")
+                           + "the formatting options drifted apart")
     }
 }

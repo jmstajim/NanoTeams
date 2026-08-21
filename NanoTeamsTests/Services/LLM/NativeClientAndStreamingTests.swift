@@ -88,7 +88,7 @@ private final class ScriptedStreamClient: LLMClient, @unchecked Sendable {
         }
     }
 
-    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
 }
 
 // MARK: - NativeLMStudioClient.streamChat, end to end
@@ -173,19 +173,19 @@ final class NativeClientStreamChatTests: XCTestCase {
         session.chatPayload = """
         event: prompt_processing.start
         data: {}
-
+        
         event: prompt_processing.progress
         data: {"progress":0.5}
-
+        
         event: reasoning.delta
         data: {"content":"weighing options"}
-
+        
         event: message.delta
         data: {"content":"Hello"}
-
+        
         event: message.delta
         data: {"content":" world"}
-
+        
         event: chat.end
         data: {"stats":{"input_tokens":120,"total_output_tokens":8,"model_load_time_seconds":0}}
         """
@@ -209,7 +209,7 @@ final class NativeClientStreamChatTests: XCTestCase {
         session.chatPayload = """
         event: prompt_processing.end
         data: {}
-
+        
         event: message.delta
         data: {"content":"go"}
         """
@@ -250,18 +250,18 @@ final class NativeClientStreamChatTests: XCTestCase {
         session.chatPayload = """
         event: chat.start
         data: {"id":"resp_1"}
-
+        
         event: message.start
         data: {}
-
+        
         event: message.delta
         data: {"content":"a"}
-
+        
         : this is an SSE comment
-
+        
         event: tool_call.start
         data: {"name":"mcp_thing"}
-
+        
         event: message.delta
         data: {"content":"b"}
         """
@@ -277,7 +277,7 @@ final class NativeClientStreamChatTests: XCTestCase {
         session.chatPayload = """
         event: message.delta
         data: {"content":"partial"}
-
+        
         event: error
         data: {"message":"model crashed"}
         """
@@ -597,8 +597,7 @@ final class NativeClientStreamChatTests: XCTestCase {
     // MARK: - Network logging
 
     private func readLog(_ url: URL) throws -> [NetworkLogRecord] {
-        let data = try Data(contentsOf: url)
-        return try JSONCoderFactory.makeDateDecoder().decode([NetworkLogRecord].self, from: data)
+        try NetworkLogTestReading.strictRecords(at: url)
     }
 
     func testStream_networkLogger_writesPairedRequestAndResponseRecords() async throws {
@@ -614,10 +613,10 @@ final class NativeClientStreamChatTests: XCTestCase {
         session.chatPayload = """
         event: reasoning.delta
         data: {"content":"deliberating"}
-
+        
         event: message.delta
         data: {"content":"final answer"}
-
+        
         event: chat.end
         data: {"stats":{"input_tokens":11,"total_output_tokens":4,"model_load_time_seconds":0}}
         """
@@ -909,7 +908,8 @@ final class StreamingPostStreamArmsTests: XCTestCase {
     /// The count used to be incremented only inside the `sawHarmonyMarker` branch, so the
     /// delta that first carried a marker never counted its own — with two envelopes
     /// buffered the counter read 1, the `>= 2` gate never fired, and because the post-loop
-    /// dedup is gated on `loopDetected`, BOTH identical calls were dispatched. Which
+    /// dedup back then only ran when a break HAD fired, BOTH identical calls were dispatched.
+    /// Which
     /// framing a provider chooses is not something this app controls.
     func testTwoDuplicateEnvelopes_asTwoDeltas_stillBreakAndCollapse() async throws {
         let dup = envelope("read_file", "{\"path\":\"a.txt\"}")
@@ -1251,7 +1251,7 @@ final class StreamingPostStreamArmsTests: XCTestCase {
                       "the prose the model wrote before the marker must survive: \(content)")
         XCTAssertTrue(content.contains(unresolved),
                       "the unresolved envelope must ride the same turn VERBATIM — the "
-                      + "malformed-JSON nudge points the model at it: \(content)")
+                          + "malformed-JSON nudge points the model at it: \(content)")
     }
 
     /// A turn whose calls RESOLVED is untouched: the envelope re-materializes from

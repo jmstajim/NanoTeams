@@ -312,7 +312,7 @@ final class InputControlOwnWindowRectTests: XCTestCase {
     func testEntryWithoutOwnerPID_isSkipped() {
         let payload: [[String: Any]] = [
             [kCGWindowBounds as String: (CGRect(x: 0, y: 0, width: 300, height: 200)
-                .dictionaryRepresentation as NSDictionary) as! [String: Any]]
+                    .dictionaryRepresentation as NSDictionary) as! [String: Any]]
         ]
         XCTAssertEqual(InputControlService.ownWindowRects(from: payload, pid: ownPID), [])
     }

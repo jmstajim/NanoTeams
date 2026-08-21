@@ -144,7 +144,7 @@ extension NTMSOrchestrator {
             let isEmbeddingModel = ChatModelEnsurer.sameModel(
                 instance.modelName, embedConfig.modelName)
                 && instance.baseURLString.normalizedBaseURL
-                    == embedConfig.baseURLString.normalizedBaseURL
+                == embedConfig.baseURLString.normalizedBaseURL
             if !isEmbeddingModel {
                 let normalizedBase = instance.baseURLString.normalizedBaseURL
                 let listing: [LoadedModelInstance]?
@@ -152,7 +152,7 @@ extension NTMSOrchestrator {
                     listing = cached
                 } else {
                     listing = try? await resolvedClient.listLoadedInstances(
-                        baseURLString: instance.baseURLString)
+                        provider: .lmStudio, baseURLString: instance.baseURLString).adoptable
                     listings[normalizedBase] = listing
                 }
                 // Reap only when our OWNED instance is itself listed: if it is
@@ -161,7 +161,7 @@ extension NTMSOrchestrator {
                 if let listing,
                    listing.contains(where: { $0.instanceID == instance.instanceID }) {
                     for duplicate in listing
-                    where ChatModelEnsurer.sameModel(duplicate.modelName, instance.modelName)
+                        where ChatModelEnsurer.sameModel(duplicate.modelName, instance.modelName)
                         && duplicate.instanceID != instance.instanceID {
                         // Atomic, authority-aware, ledger-free reap on the
                         // ensurer: it re-checks the census and skips any
@@ -234,7 +234,8 @@ extension NTMSOrchestrator {
         for base in referencedBaseURLs {
             // Best-effort: a listing failure just means the ledger stays empty
             // for that server and ownership is picked up on first use instead.
-            guard let resident = try? await resolvedClient.listLoadedInstances(baseURLString: base)
+            guard let resident = try? await resolvedClient
+                .listLoadedInstances(provider: .lmStudio, baseURLString: base).adoptable
             else { continue }
             residentIDs.formUnion(resident.map(\.instanceID))
 
@@ -372,7 +373,11 @@ extension NTMSOrchestrator {
         client: (any LLMClient)? = nil
     ) async -> Set<String> {
         let resolvedClient = client ?? resolvedChatLifecycleClient
-        guard let instances = try? await resolvedClient.listLoadedInstances(baseURLString: baseURLString)
+        // `.adoptable`, and the doc above is why it is honest here: a server that
+        // cannot list produces NO badge, which is the same outcome as an
+        // unreachable one and is not a claim in either direction.
+        guard let instances = try? await resolvedClient
+            .listLoadedInstances(provider: .lmStudio, baseURLString: baseURLString).adoptable
         else { return [] }
         return Set(instances.map(\.modelName))
     }
@@ -403,11 +408,12 @@ extension NTMSOrchestrator {
         let resolvedClient = client ?? resolvedChatLifecycleClient
         let ensurer = resolvedEnsurer(ensurer)
 
-        guard let instances = try? await resolvedClient.listLoadedInstances(baseURLString: baseURLString)
+        guard let instances = try? await resolvedClient
+            .listLoadedInstances(provider: .lmStudio, baseURLString: baseURLString).adoptable
         else { return }
 
         for instance in instances
-        where modelNames.contains(where: { ChatModelEnsurer.sameModel($0, instance.modelName) }) {
+            where modelNames.contains(where: { ChatModelEnsurer.sameModel($0, instance.modelName) }) {
             try? await ensurer.reclaim(
                 OwnedChatModel(
                     modelName: instance.modelName,

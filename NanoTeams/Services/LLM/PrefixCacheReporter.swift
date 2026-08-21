@@ -83,7 +83,7 @@ final class PrefixCacheReporter {
         countsByCause[miss.diagnosis.cause.causeClass, default: 0] += 1
         countsByOwner[miss.owner.displayName, default: 0] += 1
         if case .serverDroppedCache(let suspect) = miss.diagnosis.cause,
-            let suspect, !suspect.isEmpty
+           let suspect, !suspect.isEmpty
         {
             suspectsByCause[.serverDroppedCache, default: []].insert(
                 LLMCallOwner.displayName(forKey: suspect))

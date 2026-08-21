@@ -112,8 +112,7 @@ final class ToolExecutionTests: XCTestCase {
 
     private func networkToolCallRecords(at url: URL) throws -> [NetworkLogRecord] {
         guard FileManager.default.fileExists(atPath: url.path) else { return [] }
-        let data = try Data(contentsOf: url)
-        let all = try JSONCoderFactory.makeDateDecoder().decode([NetworkLogRecord].self, from: data)
+        let all = try NetworkLogTestReading.strictRecords(at: url)
         return all.filter { $0.direction == .toolCall }
     }
 

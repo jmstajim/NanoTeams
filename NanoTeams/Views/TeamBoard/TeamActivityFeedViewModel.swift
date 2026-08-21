@@ -43,10 +43,12 @@ final class TeamActivityFeedViewModel {
         var teamNameByTaskID: [Int: String] = [:]
         /// Whether the composer is currently rendered. Gates paired-message
         /// bubble suppression: when the composer is hidden (engine `.failed`,
-        /// `isReadOnly`, closed task), suppression MUST NOT fire — otherwise
-        /// the LLM's reply disappears from the feed with no preview card to
-        /// surface it. Default `true` so callers that don't care (preview,
-        /// tests) get the historical behavior.
+        /// `isReadOnly`, closed task), suppression MUST NOT fire — otherwise a
+        /// suppressed turn disappears from the feed with no question card to
+        /// surface it. Only contentless turns are ever suppressed (see
+        /// `PairedAssistantMessage.isFullyRenderedByQuestionCard`), so what this
+        /// gate protects is their `thinking` row. Default `true` so callers that
+        /// don't care (preview, tests) get the historical behavior.
         var composerVisible: Bool = true
     }
 
@@ -108,7 +110,7 @@ final class TeamActivityFeedViewModel {
         /// view enters read-only), the cached timeline must invalidate so
         /// previously-suppressed bubbles reappear. Without this in the
         /// fingerprint, `recomputeAndRebuild`'s short-circuit would skip the
-        /// rebuild and the LLM's reply would stay hidden.
+        /// rebuild and those turns would stay hidden.
         let composerVisible: Bool
     }
 
@@ -185,8 +187,8 @@ final class TeamActivityFeedViewModel {
             // rebuild trigger, the feed skip, and the composer chip all agree
             // on which steps are actively waiting. The naive
             // `needsSupervisorInput && supervisorAnswer == nil` predicate
-            // misses the multi-round race window (see `stepHasActiveSupervisorInput`).
-            supervisorInputCount: steps.filter(ActivityFeedBuilder.stepHasActiveSupervisorInput).count,
+            // misses the multi-round race window (see `StepExecution.hasActiveSupervisorInput`).
+            supervisorInputCount: steps.filter(\.hasActiveSupervisorInput).count,
             failedStepCount: steps.filter { $0.status == .failed }.count,
             descendantSummary: DescendantSummary.compute(descendants),
             composerVisible: composerVisible
@@ -214,7 +216,9 @@ final class TeamActivityFeedViewModel {
         // Suppress the paired-message bubble ONLY when the composer is rendered
         // to surface it. When the composer is hidden (engine `.failed`, read-only
         // history, closed task) we must keep the feed bubble visible — otherwise
-        // the LLM's substantive reply disappears with no UI to fall back to.
+        // the turn disappears with no UI to fall back to. This is one of two
+        // conditions; the builder applies the other (only turns the card fully
+        // renders are suppressible at all).
         let activeQuestions = composerVisible ? cachedSupervisorQuestions : []
         cachedTimelineItems = ActivityFeedBuilder.buildTimelineItems(
             steps: steps,

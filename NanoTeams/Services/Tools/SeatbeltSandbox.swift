@@ -26,8 +26,7 @@ nonisolated enum SeatbeltSandbox {
     /// reads blocked.
     static func profile(
         workFolderRoot: URL,
-        permissions: BashSandboxPermissions = BashSandboxPermissions(),
-        fileManager: FileManager = .default
+        permissions: BashSandboxPermissions = BashSandboxPermissions()
     ) -> String {
         let work = canonical(workFolderRoot)
         let tmp = canonical(URL(fileURLWithPath: NSTemporaryDirectory()))
@@ -116,7 +115,7 @@ nonisolated enum SeatbeltSandbox {
         var writeClause = "(allow file-write*"
         if let subpathClause = subpathClause(writeSubpaths) { writeClause += "\n\(subpathClause)" }
         writeClause += """
-
+        
             (literal "/dev/null")
             (literal "/dev/zero")
             (literal "/dev/dtracehelper")

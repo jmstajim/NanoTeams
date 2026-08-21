@@ -151,6 +151,88 @@ final class PromptPrefixFingerprintTests: XCTestCase {
             "the single-use image strip is a real prefix change; it is exempted by the caller, not hidden here")
     }
 
+    // MARK: - chainAndTokens parity (the fused walk)
+
+    /// `chainAndTokens` replaced THREE whole-conversation walks per request (the
+    /// ledger's pricing, the chain, and the budget warning's second pricing) with
+    /// one. Its contract is exact parity on both halves — the chain
+    /// element-for-element, the price to the token — including the per-string
+    /// rounding granularity and the image asymmetry (base64 priced in full,
+    /// hashed by shape).
+    ///
+    /// RED: flip the lead-byte class test in `foldCounting` (`byte < 0x80` →
+    /// `byte <= 0x80`) and the Cyrillic fixture diverges; drop the role fold and
+    /// every chain fixture diverges.
+    private func assertParity(_ messages: [ChatMessage], toolSchemaText: String = "",
+                              file: StaticString = #filePath, line: UInt = #line) {
+        let fused = PromptPrefixFingerprint.chainAndTokens(
+            messages: messages, toolSchemaText: toolSchemaText)
+        XCTAssertEqual(fused.chain,
+                       PromptPrefixFingerprint.chain(messages: messages,
+                                                     toolSchemaText: toolSchemaText),
+                       "chain diverged", file: file, line: line)
+        XCTAssertEqual(fused.totalPromptTokens,
+                       ContextBudgetPolicy.estimateTokens(messages: messages,
+                                                          toolSchemaText: toolSchemaText),
+                       "price diverged", file: file, line: line)
+    }
+
+    func testFused_parityOnPlainASCIIConversation() {
+        assertParity([system("You are helpful."), user("hello"), assistant("hi there")])
+    }
+
+    /// The estimator is two-class (#82: ~0.78x ASCII, ~0.45x Cyrillic rates) —
+    /// the fused byte-level classifier must reproduce the scalar classes exactly.
+    func testFused_parityOnCyrillicAndMixedText() {
+        assertParity([system("Ты — ассистент."),
+                      user("Привет, мир! ascii tail"),
+                      assistant("Ответ: 42 🚀 (emoji is one scalar pair)")])
+        assertParity([user(String(repeating: "щ", count: 999))])
+    }
+
+    func testFused_parityWithToolSchemaText() {
+        assertParity([user("q")], toolSchemaText: "## Tools\n{\"name\":\"read_file\"}")
+    }
+
+    func testFused_parityOnToolCallTurns() {
+        let call = ChatMessage(
+            role: .assistant, content: "",
+            toolCalls: [ChatToolCall(id: "c1", name: "read_file",
+                                     argumentsJSON: "{\"path\":\"a\"}")])
+        let result = ChatMessage(role: .tool, content: "file body", toolCallID: "x")
+        assertParity([system("s"), user("u"), call, result])
+    }
+
+    /// Base64 is PRICED in full but HASHED by shape — the one part of the walk
+    /// where the two halves deliberately read different bytes.
+    func testFused_parityOnImageTurn() {
+        let image = ChatMessage(
+            role: .user, content: "look",
+            imageContent: [ImageContent(base64Data: String(repeating: "QUJD", count: 500),
+                                        mimeType: "image/png")])
+        assertParity([system("s"), image, assistant("seen")])
+    }
+
+    func testFused_parityOnMultipleSystemMessages() {
+        assertParity([system("first"), user("u"), system("second"), assistant("a")])
+    }
+
+    func testFused_parityOnEdges() {
+        assertParity([])
+        assertParity([user("")])
+        assertParity([ChatMessage(role: .user, content: nil)])
+        assertParity([system("only system")])
+        // A nil-content system message (skipped by the joiner, priced as zero)
+        // and a system message CARRYING an image — the two arms the fused walk
+        // handles "so the parity is exact by construction, not by an assumption
+        // about system turns".
+        assertParity([ChatMessage(role: .system, content: nil), user("u")])
+        assertParity([ChatMessage(role: .system, content: "s",
+                                  imageContent: [ImageContent(base64Data: "QUJD",
+                                                              mimeType: "image/png")]),
+                      user("u")])
+    }
+
     // MARK: - commonPrefixLength edges
 
     func testCommonPrefixLength_edges() {

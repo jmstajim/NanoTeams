@@ -101,7 +101,7 @@ final class TeamEngineScenarioTests: XCTestCase {
         // In afterEachRole, role A should get .needsAcceptance (not .done)
         let aCalls = mockStore.updateRoleStatusCalls.filter { $0.roleID == "a" }
         XCTAssertTrue(aCalls.contains(where: { $0.status == .needsAcceptance }),
-                       "In afterEachRole mode, every completing role should get .needsAcceptance")
+                      "In afterEachRole mode, every completing role should get .needsAcceptance")
     }
 
     // MARK: - Scenario 2: customCheckpoints acceptance
@@ -153,14 +153,14 @@ final class TeamEngineScenarioTests: XCTestCase {
         // A should be .done (not a checkpoint)
         let aCalls = mockStore.updateRoleStatusCalls.filter { $0.roleID == "a" }
         XCTAssertTrue(aCalls.contains(where: { $0.status == .done }),
-                       "Non-checkpoint role A should get .done")
+                      "Non-checkpoint role A should get .done")
         XCTAssertFalse(aCalls.contains(where: { $0.status == .needsAcceptance }),
-                        "Non-checkpoint role A should NOT get .needsAcceptance")
+                       "Non-checkpoint role A should NOT get .needsAcceptance")
 
         // B should be .needsAcceptance (it is a checkpoint)
         let bCalls = mockStore.updateRoleStatusCalls.filter { $0.roleID == "b" }
         XCTAssertTrue(bCalls.contains(where: { $0.status == .needsAcceptance }),
-                       "Checkpoint role B should get .needsAcceptance")
+                      "Checkpoint role B should get .needsAcceptance")
     }
 
     // MARK: - Scenario 3: parallel flow
@@ -223,9 +223,9 @@ final class TeamEngineScenarioTests: XCTestCase {
 
         // Both iOS and Android should have been started (findOrCreateStep called for both)
         XCTAssertTrue(mockStore.findOrCreateStepCalls.contains("ios"),
-                       "iOS should have been started after Design is done")
+                      "iOS should have been started after Design is done")
         XCTAssertTrue(mockStore.findOrCreateStepCalls.contains("android"),
-                       "Android should have been started after Design is done")
+                      "Android should have been started after Design is done")
     }
 
     // MARK: - Scenario 4: diamond dependency
@@ -272,7 +272,7 @@ final class TeamEngineScenarioTests: XCTestCase {
 
         // C should have been started (both dependencies satisfied)
         XCTAssertTrue(mockStore.findOrCreateStepCalls.contains("c"),
-                       "Role C should start when both Art A and Art B are produced")
+                      "Role C should start when both Art A and Art B are produced")
     }
 
     // MARK: - Scenario 5: revision cascade
@@ -313,7 +313,7 @@ final class TeamEngineScenarioTests: XCTestCase {
 
         // resetStepForRevision should have been called for A's step
         XCTAssertTrue(mockStore.resetStepForRevisionCalls.contains(stepAID),
-                       "Engine should call resetStepForRevision for the revision-requested role")
+                      "Engine should call resetStepForRevision for the revision-requested role")
     }
 
     /// Regression (reported bug): after request_changes, the engine must NOT start a
@@ -346,9 +346,9 @@ final class TeamEngineScenarioTests: XCTestCase {
         try? await Task.sleep(for: .milliseconds(700))
 
         XCTAssertTrue(mockStore.resetStepForRevisionCalls.contains(stepAID),
-                       "Upstream A's revision should start")
+                      "Upstream A's revision should start")
         XCTAssertFalse(mockStore.findOrCreateStepCalls.contains("b"),
-                        "Downstream B must NOT start while A is still revising")
+                       "Downstream B must NOT start while A is still revising")
     }
 
     /// Defensive: a cyclic revision set (a⇐b, b⇐a both .revisionRequested) leaves no role
@@ -379,9 +379,9 @@ final class TeamEngineScenarioTests: XCTestCase {
         // (The pre-existing deadlock branch says "Execution stalled", so matching "stall"
         // would also pass if the new arm were deleted and execution fell through.)
         XCTAssertTrue(mockStore.setLastErrorMessageCalls.contains(where: { $0.lowercased().contains("dependency cycle") }),
-                       "Should surface the revision dependency-cycle error rather than spin")
+                      "Should surface the revision dependency-cycle error rather than spin")
         XCTAssertTrue(mockStore.setLastErrorMessageCalls.contains(where: { $0.contains("[a, b]") }),
-                       "Error should name the blocked roles so the Supervisor knows what to fix")
+                      "Error should name the blocked roles so the Supervisor knows what to fix")
     }
 
     /// Regression (request_changes deadlock): when the role that requested a change is
@@ -416,7 +416,7 @@ final class TeamEngineScenarioTests: XCTestCase {
         try? await Task.sleep(for: .milliseconds(700))
 
         XCTAssertTrue(mockStore.resetStepForRevisionCalls.contains("swe"),
-                       "Target revision must start even though the (downstream) requesting role is still .working")
+                      "Target revision must start even though the (downstream) requesting role is still .working")
     }
 
     /// Re-gating pin: when a revision role is gated (its upstream is still revising) and the
@@ -450,13 +450,13 @@ final class TeamEngineScenarioTests: XCTestCase {
         try? await Task.sleep(for: .milliseconds(700))
 
         XCTAssertTrue(mockStore.resetStepForRevisionCalls.contains("up"),
-                       "Upstream revision should start")
+                      "Upstream revision should start")
         XCTAssertFalse(mockStore.findOrCreateStepCalls.contains("down"),
-                        "Downstream revision must stay gated behind the still-revising upstream")
+                       "Downstream revision must stay gated behind the still-revising upstream")
         XCTAssertNotEqual(sut.state, .failed,
                           "Must NOT false-fail as a cycle while a role is still working")
         XCTAssertFalse(mockStore.setLastErrorMessageCalls.contains(where: { $0.lowercased().contains("dependency cycle") }),
-                        "No dependency-cycle error should be surfaced while work is in flight")
+                       "No dependency-cycle error should be surfaced while work is in flight")
     }
 
     /// Mixed iteration: a startable revision role and an independent idle/ready role both
@@ -486,9 +486,9 @@ final class TeamEngineScenarioTests: XCTestCase {
         try? await Task.sleep(for: .milliseconds(700))
 
         XCTAssertTrue(mockStore.resetStepForRevisionCalls.contains("swe"),
-                       "The startable revision role must eventually start")
+                      "The startable revision role must eventually start")
         XCTAssertTrue(mockStore.findOrCreateStepCalls.contains("other"),
-                       "The independent ready role must also start — neither is starved")
+                      "The independent ready role must also start — neither is starved")
     }
 
     /// Un-gating handoff: a downstream revision role gated behind a revising upstream must
@@ -525,9 +525,9 @@ final class TeamEngineScenarioTests: XCTestCase {
         await fulfillment(of: [expectation], timeout: 3.0)
 
         XCTAssertTrue(mockStore.resetStepForRevisionCalls.contains("up"),
-                       "Upstream revision should start")
+                      "Upstream revision should start")
         XCTAssertTrue(mockStore.resetStepForRevisionCalls.contains("down"),
-                       "Downstream revision must start once the upstream revision completes (gate releases)")
+                      "Downstream revision must start once the upstream revision completes (gate releases)")
         XCTAssertNotEqual(sut.state, .failed, "A valid acyclic revision cascade should complete, not fail")
     }
 
@@ -558,8 +558,8 @@ final class TeamEngineScenarioTests: XCTestCase {
 
         XCTAssertEqual(sut.state, .failed)
         XCTAssertFalse(mockStore.setLastErrorMessageCalls.isEmpty,
-                        "Engine should report an error message on deadlock")
+                       "Engine should report an error message on deadlock")
         XCTAssertTrue(mockStore.setLastErrorMessageCalls.first?.contains("stalled") ?? false,
-                       "Error message should mention stalled execution")
+                      "Error message should mention stalled execution")
     }
 }

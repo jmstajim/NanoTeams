@@ -39,7 +39,7 @@ final class OneShotReasoningChannelCoverageTests: XCTestCase {
             }
         }
 
-        func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [String] { [] }
+        func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [LLMModelInfo] { [] }
     }
 
     private var client: ScriptedClient!
@@ -145,10 +145,10 @@ final class OneShotReasoningChannelCoverageTests: XCTestCase {
     /// fail — it failed in the one shape that also suppresses the retry built to rescue it.
     func testTeamGeneration_harmonyEnvelopeInTheReasoningChannel_isParsed() async {
         let teamConfig = """
-            {"name":"Duo","roles":[{"name":"Engineer","prompt":"Build it",\
-            "produces_artifacts":["Notes"],"requires_artifacts":["Supervisor Task"],\
-            "tools":["read_file"]}],"supervisor_requires":["Notes"]}
-            """
+        {"name":"Duo","roles":[{"name":"Engineer","prompt":"Build it",\
+        "produces_artifacts":["Notes"],"requires_artifacts":["Supervisor Task"],\
+        "tools":["read_file"]}],"supervisor_requires":["Notes"]}
+        """
         let escaped = teamConfig
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
@@ -174,11 +174,11 @@ final class OneShotReasoningChannelCoverageTests: XCTestCase {
     /// path and `noResponse`.
     func testTeamGeneration_bareJSONInTheReasoningChannel_isParsed() async {
         client.thinking = """
-            Here is the team:
-            {"name":"Solo","roles":[{"name":"Engineer","prompt":"Build it",\
-            "produces_artifacts":["Notes"],"requires_artifacts":["Supervisor Task"],\
-            "tools":["read_file"]}],"supervisor_requires":["Notes"]}
-            """
+        Here is the team:
+        {"name":"Solo","roles":[{"name":"Engineer","prompt":"Build it",\
+        "produces_artifacts":["Notes"],"requires_artifacts":["Supervisor Task"],\
+        "tools":["read_file"]}],"supervisor_requires":["Notes"]}
+        """
 
         let outcome = await TeamGenerationService.generateWithDiagnostics(
             taskDescription: "build a thing", config: config, client: client)
@@ -210,15 +210,15 @@ final class OneShotReasoningChannelCoverageTests: XCTestCase {
     /// emits the real call must not have its deliberation parsed instead.
     func testTeamGeneration_contentWins_whenBothChannelsSpeak() async {
         client.thinking = """
-            {"name":"WRONG","roles":[{"name":"Engineer","prompt":"x",\
-            "produces_artifacts":["Notes"],"requires_artifacts":["Supervisor Task"],\
-            "tools":["read_file"]}],"supervisor_requires":["Notes"]}
-            """
+        {"name":"WRONG","roles":[{"name":"Engineer","prompt":"x",\
+        "produces_artifacts":["Notes"],"requires_artifacts":["Supervisor Task"],\
+        "tools":["read_file"]}],"supervisor_requires":["Notes"]}
+        """
         client.content = """
-            {"name":"RIGHT","roles":[{"name":"Engineer","prompt":"x",\
-            "produces_artifacts":["Notes"],"requires_artifacts":["Supervisor Task"],\
-            "tools":["read_file"]}],"supervisor_requires":["Notes"]}
-            """
+        {"name":"RIGHT","roles":[{"name":"Engineer","prompt":"x",\
+        "produces_artifacts":["Notes"],"requires_artifacts":["Supervisor Task"],\
+        "tools":["read_file"]}],"supervisor_requires":["Notes"]}
+        """
 
         let outcome = await TeamGenerationService.generateWithDiagnostics(
             taskDescription: "build a thing", config: config, client: client)

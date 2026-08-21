@@ -30,7 +30,7 @@ final class AutovisorHangIncidentRegressionTests: XCTestCase {
                 continuation.finish()
             }
         }
-        func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [String] { [] }
+        func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [LLMModelInfo] { [] }
     }
 
     private var service: LLMExecutionService!

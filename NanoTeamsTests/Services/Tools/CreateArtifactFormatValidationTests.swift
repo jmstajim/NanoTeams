@@ -507,7 +507,7 @@ final class CreateArtifactFormatValidationTests: XCTestCase {
         let call = StepToolCall(
             name: "create_artifact",
             argumentsJSON:
-                "{\"name\":\"Release Notes\",\"markdown\":\"# Real body\",\"format\":\"markdown\"}"
+            "{\"name\":\"Release Notes\",\"markdown\":\"# Real body\",\"format\":\"markdown\"}"
         )
 
         let results = runtime.executeAll(context: ctx, toolCalls: [call])
@@ -529,7 +529,7 @@ final class CreateArtifactFormatValidationTests: XCTestCase {
             let call = StepToolCall(
                 name: "create_artifact",
                 argumentsJSON:
-                    "{\"name\":\"Release Notes\",\"content\":\(body),\"format\":\"pdf\"}"
+                "{\"name\":\"Release Notes\",\"content\":\(body),\"format\":\"pdf\"}"
             )
 
             let results = runtime.executeAll(context: ctx, toolCalls: [call])

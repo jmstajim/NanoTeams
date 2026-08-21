@@ -15,10 +15,10 @@ nonisolated struct CreateTeamTool: ToolHandler {
     static let schema = ToolSchema(
         name: TN.createTeam,
         description: """
-            Create a new team configuration for this task. The Supervisor role is added automatically; \
-            give roles "Supervisor Task" in their requires_artifacts to start them first. Call exactly once — \
-            the step auto-completes and the generated team begins execution.
-            """,
+        Create a new team configuration for this task. The Supervisor role is added automatically; \
+        give roles "Supervisor Task" in their requires_artifacts to start them first. Call exactly once — \
+        the step auto-completes and the generated team begins execution.
+        """,
         parameters: JS.object(
             properties: [
                 "team_config": JS.string("Complete team configuration as a JSON object: name, description, supervisor_mode, acceptance_mode, roles[], artifacts[], supervisor_requires[]."),

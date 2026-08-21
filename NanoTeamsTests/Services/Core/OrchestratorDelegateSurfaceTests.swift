@@ -206,22 +206,22 @@ final class OrchestratorDelegateSurfaceTests: NTMSOrchestratorTestBase, @uncheck
 
     func testParseSchemes_realXcodebuildListShape() {
         let stdout = """
-            Information about project "NanoTeams":
-                Targets:
-                    NanoTeams
-                    NanoTeamsTests
-
-                Build Configurations:
-                    Debug
-                    Release
-
-                If no build configuration is specified and -scheme is not passed then "Release" is used.
-
-                Schemes:
-                    NanoTeams
-                    NanoTeamsUITests
-
-            """
+        Information about project "NanoTeams":
+            Targets:
+                NanoTeams
+                NanoTeamsTests
+        
+            Build Configurations:
+                Debug
+                Release
+        
+            If no build configuration is specified and -scheme is not passed then "Release" is used.
+        
+            Schemes:
+                NanoTeams
+                NanoTeamsUITests
+        
+        """
 
         XCTAssertEqual(
             XcodeBuildHelpers.parseSchemes(fromListOutput: stdout),
@@ -232,11 +232,11 @@ final class OrchestratorDelegateSurfaceTests: NTMSOrchestratorTestBase, @uncheck
     /// section of `-list` output would be reported as a scheme.
     func testParseSchemes_stopsAtTheFirstBlankLineAfterTheHeader() {
         let stdout = """
-            Schemes:
-                Alpha
-
-                Beta
-            """
+        Schemes:
+            Alpha
+        
+            Beta
+        """
 
         XCTAssertEqual(XcodeBuildHelpers.parseSchemes(fromListOutput: stdout), ["Alpha"])
     }
@@ -255,11 +255,11 @@ final class OrchestratorDelegateSurfaceTests: NTMSOrchestratorTestBase, @uncheck
     /// build configurations.
     func testParseSchemes_stopsAtAColonBearingSectionHeader() {
         let stdout = """
-            Schemes:
-                Alpha
-                Targets:
-                Beta
-            """
+        Schemes:
+            Alpha
+            Targets:
+            Beta
+        """
 
         XCTAssertEqual(XcodeBuildHelpers.parseSchemes(fromListOutput: stdout), ["Alpha"])
     }
@@ -268,12 +268,12 @@ final class OrchestratorDelegateSurfaceTests: NTMSOrchestratorTestBase, @uncheck
     /// a section follows the scheme list.
     func testParseSchemes_neverReportsAnotherSectionsContentsAsSchemes() {
         let stdout = """
-            Schemes:
-                App
-                Build Configurations:
-                    Debug
-                    Release
-            """
+        Schemes:
+            App
+            Build Configurations:
+                Debug
+                Release
+        """
 
         XCTAssertEqual(
             XcodeBuildHelpers.parseSchemes(fromListOutput: stdout), ["App"],

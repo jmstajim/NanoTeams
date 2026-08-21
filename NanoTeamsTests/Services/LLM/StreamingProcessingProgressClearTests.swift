@@ -76,7 +76,7 @@ final class StreamingProcessingProgressClearTests: XCTestCase {
         // happen at end-of-stream (line 176); post-fix it fires on the first
         // thinking delta.
         XCTAssertGreaterThanOrEqual(delegate.clearProcessingStatusCalls.count, 1,
-                                     "Indicator must clear at least once during the run")
+                                    "Indicator must clear at least once during the run")
 
         // Critical contract: the first clear comes BEFORE generation completes
         // — i.e. while there's still streaming work happening. We check this
@@ -110,7 +110,7 @@ final class StreamingProcessingProgressClearTests: XCTestCase {
 
         XCTAssertEqual(delegate.updateProcessingStatusCalls.map(\.1), [.indeterminate, .fraction(0.95)])
         XCTAssertGreaterThanOrEqual(delegate.clearProcessingStatusCalls.count, 1,
-                                     "Content-only models must also clear on first content delta")
+                                    "Content-only models must also clear on first content delta")
     }
 
     // MARK: - Late progress events ignored
@@ -182,7 +182,7 @@ final class StreamingProcessingProgressClearTests: XCTestCase {
         // the UI flips to "Generating" promptly. Idempotency is fine —
         // duplicate fires are no-ops in the manager.
         XCTAssertGreaterThanOrEqual(delegate.markStreamActivityCalls.count, 3,
-                                     "markStreamActivity must fire on all 3 delta types (thinking, content, tool-call) — got \(delegate.markStreamActivityCalls.count) calls")
+                                    "markStreamActivity must fire on all 3 delta types (thinking, content, tool-call) — got \(delegate.markStreamActivityCalls.count) calls")
     }
 
     /// Pin: tool-call-only stream (no content, no thinking) still flips
@@ -209,9 +209,9 @@ final class StreamingProcessingProgressClearTests: XCTestCase {
         )
 
         XCTAssertGreaterThanOrEqual(delegate.markStreamActivityCalls.count, 1,
-                                     "Tool-call delta must mark activity even though no content/thinking is visible")
+                                    "Tool-call delta must mark activity even though no content/thinking is visible")
         XCTAssertGreaterThanOrEqual(delegate.clearProcessingStatusCalls.count, 1,
-                                     "Tool-call delta must also clear processingStatus — same flow as content/thinking")
+                                    "Tool-call delta must also clear processingStatus — same flow as content/thinking")
     }
 
     // MARK: - markStreamingToolCall (envelope-as-thinking pipe + Generating fallback)
@@ -243,7 +243,7 @@ final class StreamingProcessingProgressClearTests: XCTestCase {
         )
 
         XCTAssertGreaterThanOrEqual(delegate.markStreamingToolCallCalls.count, 1,
-                                     "Harmony-marker detection must fire markStreamingToolCall — the indicator needs it to override the frozen-prose suppression")
+                                    "Harmony-marker detection must fire markStreamingToolCall — the indicator needs it to override the frozen-prose suppression")
 
         // The envelope text must surface AS THINKING (preview-only) so the
         // user watches the call being typed under the animated "Thinking…"
@@ -311,7 +311,7 @@ final class StreamingProcessingProgressClearTests: XCTestCase {
         )
 
         XCTAssertGreaterThanOrEqual(delegate.markStreamingToolCallCalls.count, 1,
-                                     "OpenAI tool-call deltas must fire markStreamingToolCall")
+                                    "OpenAI tool-call deltas must fire markStreamingToolCall")
 
         // Args fragments surface as thinking too — same "show it as if it
         // were thinking" presentation as the harmony envelope.
@@ -407,7 +407,7 @@ final class StreamingProcessingProgressClearTests: XCTestCase {
         XCTAssertEqual(delegate.updateProcessingStatusCalls.map(\.1), [.indeterminate],
                        "A provider that narrates nothing must still get the stream-start claim — otherwise its whole prefill window renders 'Waiting…'")
         XCTAssertGreaterThanOrEqual(delegate.clearProcessingStatusCalls.count, 1,
-                                     "End-of-stream clear must still fire even when no progress events arrived")
+                                    "End-of-stream clear must still fire even when no progress events arrived")
     }
 
     // MARK: - Ordering: the claim must follow beginStreaming
@@ -570,6 +570,6 @@ final class StreamingProcessingProgressClearTests: XCTestCase {
             }
         }
 
-        func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
+        func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
     }
 }

@@ -61,7 +61,7 @@ final class ToolSchemasDelegationGatingTests: XCTestCase {
         let agent = makeAgent()
         let team = makeTeam([makeSupervisor(), agent])
         XCTAssertFalse(team.delegationEnabled(for: agent),
-            "No whitelist + generated off → no auto-injection.")
+                       "No whitelist + generated off → no auto-injection.")
     }
 
     /// One whitelist entry, generated off → predicate fires.
@@ -89,7 +89,7 @@ final class ToolSchemasDelegationGatingTests: XCTestCase {
             reportsTo: ["agent": "sup"]
         )
         XCTAssertFalse(team.delegationEnabled(for: agent),
-            "Subordinate role must not auto-inject delegation tools — peer status is the structural half.")
+                       "Subordinate role must not auto-inject delegation tools — peer status is the structural half.")
     }
 
     /// Legacy `delegate_to_team` in `toolIDs` with no settings → still no
@@ -99,7 +99,7 @@ final class ToolSchemasDelegationGatingTests: XCTestCase {
         let agent = makeAgent(toolIDs: [ToolNames.delegateToTeam])
         let team = makeTeam([makeSupervisor(), agent])
         XCTAssertFalse(team.delegationEnabled(for: agent),
-            "Legacy toolID is no longer the trigger — settings are the single source of truth.")
+                       "Legacy toolID is no longer the trigger — settings are the single source of truth.")
     }
 
     // MARK: - Inline team catalog (replaces `list_teams`)

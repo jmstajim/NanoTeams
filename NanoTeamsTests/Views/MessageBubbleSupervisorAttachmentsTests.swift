@@ -54,7 +54,7 @@ final class MessageBubbleSupervisorAttachmentsTests: XCTestCase {
         let content = """
         Supervisor:
         что на этой картинке?
-
+        
         ## Attached Files
         - .nanoteams/tasks/1/attachments/Screenshot-2026-05-04-152318837.png
         """
@@ -70,7 +70,7 @@ final class MessageBubbleSupervisorAttachmentsTests: XCTestCase {
         let content = """
         Supervisor:
         review these
-
+        
         ## Attached Files
         - .nanoteams/tasks/2/attachments/a.png
         - .nanoteams/tasks/2/attachments/b.swift
@@ -97,7 +97,7 @@ final class MessageBubbleSupervisorAttachmentsTests: XCTestCase {
     func testQueuedChat_attachmentOnly_emptyTextWithPath() {
         let content = """
         Supervisor:
-
+        
         ## Attached Files
         - .nanoteams/tasks/1/attachments/photo.jpg
         """
@@ -115,7 +115,7 @@ final class MessageBubbleSupervisorAttachmentsTests: XCTestCase {
         let content = """
         Supervisor:
         check this
-
+        
         ## Clipped Text
         let foo = bar()
         return foo + 1
@@ -134,7 +134,7 @@ final class MessageBubbleSupervisorAttachmentsTests: XCTestCase {
         let content = """
         Supervisor:
         what does this do?
-
+        
         ## Clipped Text \u{2014} Calculator.swift:42-51
         func add(_ a: Int, _ b: Int) -> Int {
             return a + b
@@ -155,10 +155,10 @@ final class MessageBubbleSupervisorAttachmentsTests: XCTestCase {
         let content = """
         Supervisor:
         please look
-
+        
         ## Clipped Text
         snippet here
-
+        
         ## Attached Files
         - a.png
         - b.png
@@ -196,7 +196,7 @@ final class MessageBubbleSupervisorAttachmentsTests: XCTestCase {
     func testLegacyInlinePrefix_stripsCorrectlyAndExtractsPath() {
         let content = """
         Supervisor: legacy single-line prefix
-
+        
         ## Attached Files
         - foo.png
         """
@@ -253,7 +253,7 @@ final class MessageBubbleSupervisorAttachmentsTests: XCTestCase {
     /// Files ---` text. The fix narrows the fallback to "stripped was never run".
     func testBubbleDisplayInputs_attachmentOnlySupervisor_dropsRawMarkers() {
         let raw = """
-
+        
         ## Attached Files
         - photo.jpg
         """
@@ -268,7 +268,7 @@ final class MessageBubbleSupervisorAttachmentsTests: XCTestCase {
     func testBubbleDisplayInputs_textPlusFile_supervisor_returnsCleanedText() {
         let raw = """
         body
-
+        
         ## Attached Files
         - a.png
         """
@@ -300,7 +300,7 @@ final class MessageBubbleSupervisorAttachmentsTests: XCTestCase {
         let content = """
         Supervisor:
         body
-
+        
         ## Attached Files
         - a.png
         """

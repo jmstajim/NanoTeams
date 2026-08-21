@@ -59,7 +59,7 @@ struct WatchtowerNotificationBanner: View {
                 if let taskTitle {
                     (
                         Text("task/").foregroundStyle(Colors.textQuaternary)
-                        + Text(taskTitle).foregroundStyle(Colors.textTertiary)
+                            + Text(taskTitle).foregroundStyle(Colors.textTertiary)
                     )
                     .font(Typography.term2xs)
                     .lineLimit(1)
@@ -150,7 +150,8 @@ private struct DismissButton: View {
             notification: .supervisorInput(
                 stepID: "preview",
                 question: "What should be the priority for this feature? Should we focus on performance or user experience first?",
-                role: .tpm
+                role: .tpm,
+                toolCallID: nil
             ),
             onDismiss: {},
             onViewDetails: {},

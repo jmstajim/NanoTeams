@@ -97,7 +97,7 @@ final class RoleControlTeamGenerationGuardTests: NTMSOrchestratorTestBase, @unch
         }
         guard let template = sut.workFolder?.teams.first(where: { $0.isGeneratedPlaceholder }),
               let taskID = await sut.createTask(
-                title: "Gen", supervisorTask: "build it", preferredTeamID: template.id)
+                  title: "Gen", supervisorTask: "build it", preferredTeamID: template.id)
         else { XCTFail("setup failed"); return nil }
 
         await sut.mutateTask(taskID: taskID) { task in
@@ -110,7 +110,7 @@ final class RoleControlTeamGenerationGuardTests: NTMSOrchestratorTestBase, @unch
                         StepToolCall(
                             name: ToolNames.createTeam, argumentsJSON: "{}",
                             resultJSON:
-                                #"{"ok":false,"error":{"code":"GENERATION_FAILED","message":"AI returned invalid team configuration"}}"#,
+                            #"{"ok":false,"error":{"code":"GENERATION_FAILED","message":"AI returned invalid team configuration"}}"#,
                             isError: true)
                     ])
             ]

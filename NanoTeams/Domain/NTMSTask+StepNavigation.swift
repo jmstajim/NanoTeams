@@ -37,7 +37,7 @@ nonisolated extension NTMSTask {
     /// - Returns: The step, or nil if the location is invalid.
     func step(at location: StepLocation) -> StepExecution? {
         guard runs.indices.contains(location.runIndex),
-            runs[location.runIndex].steps.indices.contains(location.stepIndex)
+              runs[location.runIndex].steps.indices.contains(location.stepIndex)
         else {
             return nil
         }
@@ -62,7 +62,7 @@ nonisolated extension NTMSTask {
     func withStep(at location: StepLocation, mutation: (inout StepExecution) -> Void) -> NTMSTask {
         var copy = self
         guard copy.runs.indices.contains(location.runIndex),
-            copy.runs[location.runIndex].steps.indices.contains(location.stepIndex)
+              copy.runs[location.runIndex].steps.indices.contains(location.stepIndex)
         else {
             return self
         }

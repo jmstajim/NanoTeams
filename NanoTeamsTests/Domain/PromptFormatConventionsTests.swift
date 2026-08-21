@@ -218,7 +218,7 @@ final class PromptFormatConventionsTests: XCTestCase {
         for (label, contents) in Self.auditedSurfaces {
             for needle in Self.settingsPathNeedles where contents.contains(needle) {
                 XCTFail("[\(label)] names the UI path \"\(needle)\" — the LLM can't click it. "
-                        + "Name the capability and who can change it, not where they'd click.")
+                    + "Name the capability and who can change it, not where they'd click.")
             }
         }
     }
@@ -239,7 +239,7 @@ final class PromptFormatConventionsTests: XCTestCase {
             ).outputJSON
             for needle in Self.settingsPathNeedles where envelope.contains(needle) {
                 XCTFail("ToolUnavailabilityReason.\(reason) names the UI path \"\(needle)\" — "
-                        + "the model reads this envelope and cannot click it.")
+                    + "the model reads this envelope and cannot click it.")
             }
             XCTAssertFalse(envelope.isEmpty, "every reason must produce an envelope")
         }
@@ -296,15 +296,15 @@ final class PromptFormatConventionsTests: XCTestCase {
                 let code = line.contains("//") ? String(line[line.startIndex..<line.range(of: "//")!.lowerBound]) : String(line)
                 for needle in Self.settingsPathNeedles where code.contains(needle) {
                     XCTFail("\(url.lastPathComponent) builds model-facing errors and names the UI "
-                            + "path \"\(needle)\": \(code.trimmingCharacters(in: .whitespaces)). "
-                            + "Name the capability and who can change it — or, if this string is "
-                            + "genuinely human-facing, add a \(Self.userFacingOptOut) <why> marker.")
+                        + "path \"\(needle)\": \(code.trimmingCharacters(in: .whitespaces)). "
+                        + "Name the capability and who can change it — or, if this string is "
+                        + "genuinely human-facing, add a \(Self.userFacingOptOut) <why> marker.")
                 }
             }
         }
         // Anti-vacuum: the shape list must still select a real population.
         XCTAssertGreaterThan(scanned, 10, "the construction-shape filter selected almost nothing — "
-                             + "the shapes probably drifted and the scan is now vacuous")
+            + "the shapes probably drifted and the scan is now vacuous")
     }
 
     // MARK: - Helpers

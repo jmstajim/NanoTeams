@@ -7,7 +7,7 @@ final class ContextOverflowClassifierTests: XCTestCase {
     /// The verbatim message observed in production (folder CastleSurvivors).
     private let productionMessage =
         "The number of tokens to keep from the initial prompt is greater than the context length. "
-        + "Try to load the model with a larger context length, or provide a shorter input"
+            + "Try to load the model with a larger context length, or provide a shorter input"
 
     func testProductionMessage_asProviderError_matches() {
         XCTAssertTrue(

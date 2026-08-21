@@ -28,9 +28,9 @@ final class FileSystemWatcherTests: XCTestCase {
     func testStart_withEmptyPaths_returnsFalse() {
         let watcher = FileSystemWatcher(paths: [], debounce: 0.2, onChange: {})
         XCTAssertFalse(watcher.start(),
-            "Empty paths → watcher cannot subscribe → start must return false.")
+                       "Empty paths → watcher cannot subscribe → start must return false.")
         XCTAssertFalse(watcher.isRunning,
-            "isRunning must reflect the failed start so callers can branch on it.")
+                       "isRunning must reflect the failed start so callers can branch on it.")
     }
 
     func testStart_withValidPath_returnsTrueAndIsRunning() {
@@ -38,7 +38,7 @@ final class FileSystemWatcherTests: XCTestCase {
             paths: [tempDir], debounce: 0.2, onChange: {}
         )
         XCTAssertTrue(watcher.start(),
-            "Valid path → start must report success.")
+                      "Valid path → start must report success.")
         XCTAssertTrue(watcher.isRunning)
         watcher.stop()
     }

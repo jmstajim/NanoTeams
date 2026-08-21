@@ -79,7 +79,7 @@ final class QuickCaptureComposerFieldOwnershipCoverageTests: XCTestCase {
 
         XCTAssertEqual(state.supervisorTask, "a task I have not submitted")
         XCTAssertEqual(state.answerText, "a reply I am typing",
-            "two composers, two purposes, two fields — neither may overwrite the other")
+                       "two composers, two purposes, two fields — neither may overwrite the other")
     }
 
     /// The submit gates read the field their own composer binds. Sharing made a task draft
@@ -95,14 +95,14 @@ final class QuickCaptureComposerFieldOwnershipCoverageTests: XCTestCase {
         state.supervisorTask = "a task I have not submitted"
         XCTAssertTrue(state.canSubmit(mode: .overlay))
         XCTAssertFalse(state.canSubmit(mode: working),
-            "there is nothing to queue to the chat task — that text is a task draft")
+                       "there is nothing to queue to the chat task — that text is a task draft")
         XCTAssertFalse(state.canSubmit(mode: answering),
-            "and nothing to answer with")
+                       "and nothing to answer with")
 
         state.supervisorTask = ""
         state.answerText = "make it blue"
         XCTAssertFalse(state.canSubmit(mode: .overlay),
-            "and the reverse: a half-typed chat message is not a task")
+                       "and the reverse: a half-typed chat message is not a task")
         XCTAssertTrue(state.canSubmit(mode: working))
         XCTAssertTrue(state.canSubmit(mode: answering))
     }
@@ -131,11 +131,11 @@ final class QuickCaptureComposerFieldOwnershipCoverageTests: XCTestCase {
             return XCTFail("expected the chat-working composer")
         }
         XCTAssertEqual(sut.formState.answerText, "",
-            "the chat composer starts empty; the task draft is not a message to this task")
+                       "the chat composer starts empty; the task draft is not a message to this task")
         XCTAssertFalse(sut.formState.canSubmit(mode: mode),
-            "and the send button aimed at this task has nothing to send")
+                       "and the send button aimed at this task has nothing to send")
         XCTAssertEqual(sut.formState.supervisorTask, "Refactor the parser",
-            "and the draft is still there for whenever the user goes back to make the task")
+                       "and the draft is still there for whenever the user goes back to make the task")
     }
 
     /// The same route, all the way to the queue. The send button reads
@@ -154,9 +154,9 @@ final class QuickCaptureComposerFieldOwnershipCoverageTests: XCTestCase {
         sut.submitQueuedMessageFromForm()
 
         XCTAssertTrue(sut.formState.queuedMessages(for: task).isEmpty,
-            "a task the user never submitted must not become a message to a running task")
+                      "a task the user never submitted must not become a message to a running task")
         XCTAssertEqual(sut.formState.supervisorTask, "Refactor the parser",
-            "and the send press must not have consumed it either")
+                       "and the send press must not have consumed it either")
     }
 
     /// The reverse direction, which the stash never covered at all: a half-typed chat message
@@ -177,7 +177,7 @@ final class QuickCaptureComposerFieldOwnershipCoverageTests: XCTestCase {
         sut.showNewTask()
 
         XCTAssertEqual(sut.formState.supervisorTask, "",
-            "the new-task form opens empty; the chat message was never a task description")
+                       "the new-task form opens empty; the chat message was never a task description")
         XCTAssertFalse(sut.formState.canSubmit(mode: .overlay))
     }
 
@@ -193,14 +193,14 @@ final class QuickCaptureComposerFieldOwnershipCoverageTests: XCTestCase {
 
         state.enterAnswerMode(payload: answerPayload(taskID: 7))
         XCTAssertEqual(state.supervisorTask, "Refactor the parser",
-            "entering answer mode does not need to move the task draft anywhere")
+                       "entering answer mode does not need to move the task draft anywhere")
         state.answerText = "use SwiftUI"
         state.exitAnswerMode()
 
         XCTAssertEqual(state.supervisorTask, "Refactor the parser")
         XCTAssertEqual(state.answerText, "", "the answer field is cleared on the way out")
         XCTAssertEqual(state._testAnswerDrafts[7]?.text, "use SwiftUI",
-            "and the unsent answer is kept per task, as before")
+                       "and the unsent answer is kept per task, as before")
     }
 
     /// Both drafts alive at once — the state the shared field made unrepresentable.
@@ -246,9 +246,9 @@ final class QuickCaptureComposerFieldOwnershipCoverageTests: XCTestCase {
         sut.refreshPanelIfVisible()
 
         XCTAssertEqual(sut.formState.answerText, "",
-            "B's composer is not where A's message goes, however the panel got here")
+                       "B's composer is not where A's message goes, however the panel got here")
         XCTAssertEqual(sut.formState._testAnswerDrafts[taskA]?.text, "for A only",
-            "and A still has it")
+                       "and A still has it")
     }
 
     /// The ownership claim is what makes the above work, and it must be dropped when the fields
@@ -284,9 +284,9 @@ final class QuickCaptureComposerFieldOwnershipCoverageTests: XCTestCase {
         state.discardFolderScopedState()
 
         XCTAssertEqual(state.answerText, "",
-            "an answer belongs to the task that asked, and that task is in the folder we left")
+                       "an answer belongs to the task that asked, and that task is in the folder we left")
         XCTAssertEqual(state.supervisorTask, "Refactor the parser",
-            "unsent task text outlives the folder — the task is created wherever we are next")
+                       "unsent task text outlives the folder — the task is created wherever we are next")
         XCTAssertFalse(state.isInAnswerMode)
     }
 
@@ -324,6 +324,6 @@ final class QuickCaptureComposerFieldOwnershipCoverageTests: XCTestCase {
 
         XCTAssertEqual(sut.formState.answerText, "")
         XCTAssertEqual(sut.formState.supervisorTask, "Refactor the parser",
-            "the task draft was never part of this submission")
+                       "the task draft was never part of this submission")
     }
 }

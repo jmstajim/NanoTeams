@@ -481,7 +481,7 @@ final class BashJudgeServiceTests: XCTestCase {
         else { return XCTFail("prompt must fence the command and carry the working dir") }
         XCTAssertTrue(workDir.lowerBound < begin.lowerBound,
                       "real working-directory line must precede the fence so an injected copy "
-                      + "appears inside untrusted data, after the real one")
+                          + "appears inside untrusted data, after the real one")
         guard let lastEnd = prompt.range(of: "END COMMAND", options: .backwards) else {
             return XCTFail("prompt must close the fence")
         }

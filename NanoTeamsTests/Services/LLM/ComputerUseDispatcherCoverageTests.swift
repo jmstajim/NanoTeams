@@ -444,5 +444,5 @@ private final class CancellingChatClient: LLMClient, @unchecked Sendable {
         AsyncThrowingStream { $0.finish(throwing: CancellationError()) }
     }
 
-    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
 }

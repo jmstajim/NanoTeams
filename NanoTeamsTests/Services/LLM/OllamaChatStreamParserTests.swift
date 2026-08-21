@@ -42,12 +42,16 @@ final class OllamaChatStreamParserTests: XCTestCase {
     func testDoneLineWithCounts_emitsUsage() {
         let events = parser.parse(
             line: #"{"model":"m","done":true,"done_reason":"stop","prompt_eval_count":120,"eval_count":45}"#)
-        XCTAssertEqual(events, [.chatEnd(usage: TokenUsage(inputTokens: 120, outputTokens: 45), prefill: nil)])
+        // The fixture always carried `done_reason` and the parser always dropped it, which is what
+        // made this line a demonstration rather than an assertion. RED: remove `doneReason` from
+        // the expected value → the reason the server stated is discarded again.
+        XCTAssertEqual(events, [.chatEnd(.init(
+            usage: TokenUsage(inputTokens: 120, outputTokens: 45), doneReason: "stop"))])
     }
 
     func testDoneLineWithoutCounts_emitsNilUsage() {
         let events = parser.parse(line: #"{"model":"m","done":true}"#)
-        XCTAssertEqual(events, [.chatEnd(usage: nil, prefill: nil)])
+        XCTAssertEqual(events, [.chatEnd(.init())])
     }
 
     func testDoneLineWithTrailingContent_emitsContentThenEnd() {
@@ -55,7 +59,7 @@ final class OllamaChatStreamParserTests: XCTestCase {
             line: #"{"message":{"content":"bye"},"done":true,"prompt_eval_count":1,"eval_count":2}"#)
         XCTAssertEqual(events, [
             .contentDelta("bye"),
-            .chatEnd(usage: TokenUsage(inputTokens: 1, outputTokens: 2), prefill: nil),
+            .chatEnd(.init(usage: TokenUsage(inputTokens: 1, outputTokens: 2))),
         ])
     }
 
@@ -119,7 +123,7 @@ final class OllamaChatStreamParserTests: XCTestCase {
         // The stream ends mid-think: the held-back text (none here) plus the
         // end event — reasoning already routed, nothing lost.
         let events = parser.parse(line: #"{"done":true,"prompt_eval_count":5,"eval_count":6}"#)
-        XCTAssertEqual(events, [.chatEnd(usage: TokenUsage(inputTokens: 5, outputTokens: 6), prefill: nil)])
+        XCTAssertEqual(events, [.chatEnd(.init(usage: TokenUsage(inputTokens: 5, outputTokens: 6)))])
     }
 
     func testPartialTagAtTransportEnd_finalizeEmitsItVerbatim() {
@@ -157,7 +161,7 @@ final class OllamaChatStreamParserTests: XCTestCase {
             line: #"{"message":{"thinking":"last thought"},"done":true,"prompt_eval_count":1,"eval_count":2}"#)
         XCTAssertEqual(events, [
             .thinkingDelta("last thought"),
-            .chatEnd(usage: TokenUsage(inputTokens: 1, outputTokens: 2), prefill: nil),
+            .chatEnd(.init(usage: TokenUsage(inputTokens: 1, outputTokens: 2))),
         ])
     }
 
@@ -167,12 +171,12 @@ final class OllamaChatStreamParserTests: XCTestCase {
 
     func testPromptEvalCountOnly_usageWithZeroOutput() {
         let events = parser.parse(line: #"{"done":true,"prompt_eval_count":77}"#)
-        XCTAssertEqual(events, [.chatEnd(usage: TokenUsage(inputTokens: 77, outputTokens: 0), prefill: nil)])
+        XCTAssertEqual(events, [.chatEnd(.init(usage: TokenUsage(inputTokens: 77, outputTokens: 0)))])
     }
 
     func testEvalCountOnly_usageWithZeroInput() {
         let events = parser.parse(line: #"{"done":true,"eval_count":9}"#)
-        XCTAssertEqual(events, [.chatEnd(usage: TokenUsage(inputTokens: 0, outputTokens: 9), prefill: nil)])
+        XCTAssertEqual(events, [.chatEnd(.init(usage: TokenUsage(inputTokens: 0, outputTokens: 9)))])
     }
 
     func testCRLFLineEnding_trimmedBeforeDecode() {
@@ -194,6 +198,162 @@ final class OllamaChatStreamParserTests: XCTestCase {
 
     func testJSONArrayLine_skippedNotCrashed() {
         XCTAssertEqual(parser.parse(line: #"[1,2,3]"#), [])
+    }
+
+    // MARK: - Server prefill report (prompt-prefix cache detection)
+
+    func testDone_withPrefillDurations_reportsThemForCacheDetection() {
+        var parser = OllamaChatStreamParser()
+        let line = #"{"done":true,"prompt_eval_count":1000,"eval_count":8,"#
+            + #""prompt_eval_duration":450000000,"load_duration":0}"#
+        let events = parser.parse(line: line)
+
+        guard case .chatEnd(let report)? = events.last else {
+            return XCTFail("expected chatEnd, got \(events)")
+        }
+        XCTAssertEqual(report.prefill?.prefillNs, 450_000_000)
+        XCTAssertEqual(report.prefill?.promptTokens, 1000)
+        XCTAssertEqual(report.prefill?.modelLoadMs, 0)
+        // 450ms / 1000 tokens — the measured COLD rate on this project's models.
+        XCTAssertEqual(report.prefill?.nsPerToken ?? 0, 450_000, accuracy: 1)
+    }
+
+    func testDone_withModelLoad_reportsItInMilliseconds() {
+        var parser = OllamaChatStreamParser()
+        let events = parser.parse(
+            line: #"{"done":true,"prompt_eval_count":10,"load_duration":2236645542}"#)
+
+        guard case .chatEnd(let report)? = events.last else {
+            return XCTFail("expected chatEnd, got \(events)")
+        }
+        // bench_baseline's one genuine cold load. The parser converts ns→ms VERBATIM and applies
+        // no threshold: a reported load is a duration, not a flag (Ollama reports ~22 ms on every
+        // warm request), and `PrefixCachePolicy.minimumLoadMsForReload` is what decides. Keeping
+        // the raw number here is also what lets that threshold be re-derived from a real run.
+        XCTAssertEqual(report.prefill?.modelLoadMs ?? 0, 2236.6, accuracy: 0.1,
+                       "the load duration reaches the policy unrounded and unfiltered")
+    }
+
+    func testDone_withoutDurations_reportsNoPrefill() {
+        var parser = OllamaChatStreamParser()
+        let events = parser.parse(line: #"{"done":true,"prompt_eval_count":5,"eval_count":6}"#)
+
+        guard case .chatEnd(let report)? = events.last else {
+            return XCTFail("expected chatEnd, got \(events)")
+        }
+        XCTAssertNil(report.prefill, "prompt_eval_count alone is a denominator, not a signal")
+    }
+
+    func testNsPerToken_requiresBothHalvesToBePositive() {
+        XCTAssertNil(ServerPrefillReport(prefillNs: 100, promptTokens: 0).nsPerToken)
+        XCTAssertNil(ServerPrefillReport(prefillNs: 0, promptTokens: 100).nsPerToken)
+        XCTAssertNil(ServerPrefillReport(promptTokens: 100).nsPerToken)
+        XCTAssertEqual(ServerPrefillReport(prefillNs: 1000, promptTokens: 10).nsPerToken, 100)
+    }
+
+    // MARK: - Server generation window (`eval_duration`)
+
+    /// The only generation window either provider reports. RED: a missing or wrong `CodingKey`
+    /// → leaves this nil and the benchmark falls back to a client-measured window on a provider
+    /// that could have answered exactly.
+    func testDone_withEvalDuration_reportsTheGenerationWindow() {
+        var parser = OllamaChatStreamParser()
+        let events = parser.parse(
+            line: #"{"done":true,"eval_count":120,"eval_duration":6000000000}"#)
+
+        guard case .chatEnd(let report)? = events.last else {
+            return XCTFail("expected chatEnd, got \(events)")
+        }
+        XCTAssertEqual(report.generationNs, 6_000_000_000)
+    }
+
+    /// RED: `?? 0` at the decode → turns "the server did not say" into "the server measured zero",
+    /// which downstream reads as an infinite rate.
+    func testDone_withoutEvalDuration_reportsNoGenerationWindow() {
+        var parser = OllamaChatStreamParser()
+        let events = parser.parse(line: #"{"done":true,"eval_count":120}"#)
+
+        guard case .chatEnd(let report)? = events.last else {
+            return XCTFail("expected chatEnd, got \(events)")
+        }
+        XCTAssertNil(report.generationNs)
+    }
+
+    /// Verbatim, like `load_duration`. RED: a `> 0` guard inside the parser migrates the policy
+    /// into the wrong layer → destroys the fact that the server reported a zero at all —
+    /// `BenchmarkMetricsPolicy.serverRate` is what refuses to divide by it.
+    func testDone_evalDurationZero_isCarriedVerbatim() {
+        var parser = OllamaChatStreamParser()
+        let events = parser.parse(line: #"{"done":true,"eval_count":120,"eval_duration":0}"#)
+
+        guard case .chatEnd(let report)? = events.last else {
+            return XCTFail("expected chatEnd, got \(events)")
+        }
+        XCTAssertEqual(report.generationNs, 0, "a reported zero is a measurement, not an absence")
+    }
+
+    /// The highest-value pin of the four. `parse` does ONE `try? decode(ChatChunk.self)` per line
+    /// and returns `[]` on any failure — so declaring `evalDurationNs` as a non-optional `Double`
+    /// would make a server that omits or mistypes the field lose the ENTIRE terminal chunk:
+    /// no usage, no prefill report, no `chatEnd` event, and the prompt-prefix cache signal gone
+    /// with it. RED: declare the field non-optional → this decodes nothing and the guard fails.
+    func testDone_evalDurationMalformed_terminalChunkStillDecodes() {
+        var parser = OllamaChatStreamParser()
+        let line = #"{"done":true,"prompt_eval_count":900,"eval_count":120,"#
+            + #""prompt_eval_duration":450000000,"eval_duration":"fast"}"#
+        let events = parser.parse(line: line)
+
+        guard case .chatEnd(let report)? = events.last else {
+            return XCTFail("a malformed optional field must not discard the whole chunk")
+        }
+        XCTAssertEqual(report.usage?.outputTokens, 120)
+        XCTAssertEqual(report.prefill?.prefillNs, 450_000_000)
+        XCTAssertNil(report.generationNs)
+    }
+
+    // MARK: - The two facts the terminal chunk always carried and nobody decoded
+
+    /// RED: remove either key from `CodingKeys` → the server's own clock on the whole request and
+    /// its statement of why it stopped go back to being discarded on arrival.
+    func testDone_reportsTheServersTotalDurationAndStopReason() {
+        var parser = OllamaChatStreamParser()
+        let line = #"{"done":true,"done_reason":"length","eval_count":512,"#
+            + #""total_duration":18000000000}"#
+        guard case .chatEnd(let report)? = parser.parse(line: line).last else {
+            return XCTFail("expected chatEnd")
+        }
+        XCTAssertEqual(report.totalNs, 18_000_000_000)
+        XCTAssertEqual(report.doneReason, "length")
+    }
+
+    /// The lesson of 2026-08-19, now with a String field: `decodeIfPresent` returns nil for an
+    /// ABSENT key and THROWS on a type mismatch, and this parser decodes each line under one
+    /// `try?`, so one mistyped telemetry field discards the ENTIRE terminal chunk — `done`, the
+    /// token counts and the prompt-prefix cache signal with it (CLAUDE.md #83).
+    /// RED: move `doneReason` into the strict block beside `error` → the whole chunk decodes to
+    /// nothing and every assertion below fails.
+    func testDone_malformedDoneReason_doesNotCostTheChunkItsContent() {
+        var parser = OllamaChatStreamParser()
+        let line = #"{"done":true,"done_reason":{"why":"length"},"prompt_eval_count":900,"#
+            + #""eval_count":120,"prompt_eval_duration":450000000}"#
+        guard case .chatEnd(let report)? = parser.parse(line: line).last else {
+            return XCTFail("a malformed telemetry field must not discard the whole chunk")
+        }
+        XCTAssertEqual(report.usage?.outputTokens, 120)
+        XCTAssertEqual(report.prefill?.prefillNs, 450_000_000)
+        XCTAssertNil(report.doneReason, "the malformed field itself is the only thing lost")
+    }
+
+    /// Same rule, same reason, for the numeric one.
+    /// RED: declare `totalDurationNs` non-optional or decode it strictly → fails.
+    func testDone_malformedTotalDuration_doesNotCostTheChunkItsContent() {
+        var parser = OllamaChatStreamParser()
+        let line = #"{"done":true,"total_duration":"quick","eval_count":45}"#
+        guard case .chatEnd(let report)? = parser.parse(line: line).last else {
+            return XCTFail("a malformed telemetry field must not discard the whole chunk")
+        }
+        XCTAssertEqual(report.usage?.outputTokens, 45)
+        XCTAssertNil(report.totalNs)
     }
 }
 
@@ -333,9 +493,9 @@ final class ThinkTagSplitterTests: XCTestCase {
 
     // MARK: - Chunk-framing independence (property-style)
 
-    /// Feeds `text` through a fresh splitter in the given piece sizes and
-    /// returns the aggregate (content, thinking) including the final flush.
-    private func run(_ text: String, chunks: [String]) -> ThinkTagSplitter.Output {
+    /// Feeds the chunks through a fresh splitter and returns the aggregate
+    /// (content, thinking) including the final flush.
+    private func run(chunks: [String]) -> ThinkTagSplitter.Output {
         var s = ThinkTagSplitter()
         var total = ThinkTagSplitter.Output()
         for chunk in chunks {
@@ -354,17 +514,17 @@ final class ThinkTagSplitterTests: XCTestCase {
     /// that coalesces NDJSON deltas or a model that emits multi-token deltas
     /// must see identical semantics to char-by-char streaming.
     private func assertFramingIndependent(_ text: String, file: StaticString = #filePath, line: UInt = #line) {
-        let reference = run(text, chunks: [text])
+        let reference = run(chunks: [text])
         // Every two-chunk split.
         for i in 0...text.count {
             let idx = text.index(text.startIndex, offsetBy: i)
-            let out = run(text, chunks: [String(text[..<idx]), String(text[idx...])])
+            let out = run(chunks: [String(text[..<idx]), String(text[idx...])])
             XCTAssertEqual(out, reference,
                            "two-chunk split at \(i) diverged for: \(text)",
                            file: file, line: line)
         }
         // Char-by-char.
-        let charByChar = run(text, chunks: text.map(String.init))
+        let charByChar = run(chunks: text.map(String.init))
         XCTAssertEqual(charByChar, reference,
                        "char-by-char diverged for: \(text)", file: file, line: line)
     }
@@ -392,57 +552,6 @@ final class ThinkTagSplitterTests: XCTestCase {
 
     func testFramingIndependence_noTagsAtAll() {
         assertFramingIndependent("just some plain prose with < and > and </ inside")
-    }
-
-    // MARK: - Server prefill report (prompt-prefix cache detection)
-
-    func testDone_withPrefillDurations_reportsThemForCacheDetection() {
-        var parser = OllamaChatStreamParser()
-        let line = #"{"done":true,"prompt_eval_count":1000,"eval_count":8,"#
-            + #""prompt_eval_duration":450000000,"load_duration":0}"#
-        let events = parser.parse(line: line)
-
-        guard case .chatEnd(_, let prefill)? = events.last else {
-            return XCTFail("expected chatEnd, got \(events)")
-        }
-        XCTAssertEqual(prefill?.prefillNs, 450_000_000)
-        XCTAssertEqual(prefill?.promptTokens, 1000)
-        XCTAssertEqual(prefill?.modelLoadMs, 0)
-        // 450ms / 1000 tokens — the measured COLD rate on this project's models.
-        XCTAssertEqual(prefill?.nsPerToken ?? 0, 450_000, accuracy: 1)
-    }
-
-    func testDone_withModelLoad_reportsItInMilliseconds() {
-        var parser = OllamaChatStreamParser()
-        let events = parser.parse(
-            line: #"{"done":true,"prompt_eval_count":10,"load_duration":2236645542}"#)
-
-        guard case .chatEnd(_, let prefill)? = events.last else {
-            return XCTFail("expected chatEnd, got \(events)")
-        }
-        // bench_baseline's one genuine cold load. The parser converts ns→ms VERBATIM and applies
-        // no threshold: a reported load is a duration, not a flag (Ollama reports ~22 ms on every
-        // warm request), and `PrefixCachePolicy.minimumLoadMsForReload` is what decides. Keeping
-        // the raw number here is also what lets that threshold be re-derived from a real run.
-        XCTAssertEqual(prefill?.modelLoadMs ?? 0, 2236.6, accuracy: 0.1,
-                       "the load duration reaches the policy unrounded and unfiltered")
-    }
-
-    func testDone_withoutDurations_reportsNoPrefill() {
-        var parser = OllamaChatStreamParser()
-        let events = parser.parse(line: #"{"done":true,"prompt_eval_count":5,"eval_count":6}"#)
-
-        guard case .chatEnd(_, let prefill)? = events.last else {
-            return XCTFail("expected chatEnd, got \(events)")
-        }
-        XCTAssertNil(prefill, "prompt_eval_count alone is a denominator, not a signal")
-    }
-
-    func testNsPerToken_requiresBothHalvesToBePositive() {
-        XCTAssertNil(ServerPrefillReport(prefillNs: 100, promptTokens: 0).nsPerToken)
-        XCTAssertNil(ServerPrefillReport(prefillNs: 0, promptTokens: 100).nsPerToken)
-        XCTAssertNil(ServerPrefillReport(promptTokens: 100).nsPerToken)
-        XCTAssertEqual(ServerPrefillReport(prefillNs: 1000, promptTokens: 10).nsPerToken, 100)
     }
 
 }

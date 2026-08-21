@@ -101,6 +101,87 @@ final class StoreConfigurationProviderFlipTests: XCTestCase {
                        "no-op provider write must not reset the endpoint")
     }
 
+    // MARK: - knownLLMEndpoints(for:)
+
+    /// The ACTIVE provider's endpoint is the live field. `providerEndpointMemory` never holds it —
+    /// it is written from `oldValue` on a flip — so a lookup that consulted only the memory would
+    /// be blind to the provider the user is actually using.
+    ///
+    /// RED: read `rememberedEndpoint` for every provider → the active provider answers with
+    /// nothing at all, and the benchmark stops clearing the one server it definitely knows about.
+    func testKnownEndpoints_forTheActiveProvider_includeTheLiveURL() {
+        config.llmProvider = .ollama
+        config.llmBaseURLString = "http://ollama-box:11434"
+
+        XCTAssertEqual(config.knownLLMEndpoints(for: .ollama), ["http://ollama-box:11434"])
+    }
+
+    /// RED: return `llmBaseURLString` regardless of the argument → the sweep asks LM Studio's
+    /// address about Ollama, and a run clears a server the user never named.
+    func testKnownEndpoints_forTheOtherProvider_areItsRememberedOnes() {
+        config.llmBaseURLString = "http://lm-box:1234"
+        config.llmProvider = .ollama
+        config.llmBaseURLString = "http://ollama-box:11434"
+
+        XCTAssertEqual(config.knownLLMEndpoints(for: .lmStudio), ["http://lm-box:1234"])
+        XCTAssertEqual(config.knownLLMEndpoints(for: .ollama), ["http://ollama-box:11434"])
+    }
+
+    /// A provider nobody has ever pointed the app at is not "at its default address" — it is
+    /// unknown, and saying so is the whole point.
+    ///
+    /// RED: fall back to `provider.defaultBaseURL` → every caller receives a guess shaped exactly
+    /// like a fact, and the one that clears servers starts acting on addresses the user never
+    /// confirmed. `DEBTS.md` D-B1 §2 refused precisely that.
+    func testKnownEndpoints_forANeverVisitedProvider_areEmpty() {
+        XCTAssertEqual(config.llmProvider, .lmStudio, "precondition: Ollama never visited")
+
+        XCTAssertTrue(config.knownLLMEndpoints(for: .ollama).isEmpty)
+    }
+
+    /// The benchmark screen owns a target that can point somewhere the global settings never did —
+    /// a second LM Studio box, say. That address is known too, and a run measuring on one of them
+    /// has to clear the other.
+    ///
+    /// RED: drop the `benchmarkTarget` source → the sweep never clears the box the user actually
+    /// benchmarks against unless it happens to match the global endpoint.
+    func testKnownEndpoints_includeTheBenchmarkTargetsOwnEndpoint() {
+        config.benchmarkTarget = BenchmarkTarget(
+            provider: .ollama, baseURLString: "http://bench-box:11434", modelName: "qwen3.8")
+
+        XCTAssertEqual(config.knownLLMEndpoints(for: .ollama), ["http://bench-box:11434"])
+    }
+
+    /// RED: drop the de-duplication → the same server is listed, unloaded and reported twice, and
+    /// the provenance line claims a machine that does not exist.
+    func testKnownEndpoints_deduplicateOnTheNormalizedAddress() {
+        config.llmProvider = .ollama
+        config.llmBaseURLString = "http://ollama-box:11434"
+        config.benchmarkTarget = BenchmarkTarget(
+            provider: .ollama, baseURLString: "http://ollama-box:11434/", modelName: "qwen3.8")
+
+        XCTAssertEqual(config.knownLLMEndpoints(for: .ollama), ["http://ollama-box:11434"],
+                       "a trailing slash is not a second machine")
+    }
+
+    /// RED: drop the `nonBlank` filter → a URL cleared mid-edit is handed on as "", and the
+    /// listing throws `invalidBaseURL` while the row records "not verified" about a machine
+    /// nobody named.
+    func testKnownEndpoints_dropBlankValues() {
+        config.llmBaseURLString = "   "
+
+        XCTAssertTrue(config.knownLLMEndpoints(for: .lmStudio).isEmpty)
+    }
+
+    func testKnownEndpoints_surviveRelaunch() {
+        config.llmBaseURLString = "http://lm-box:1234"
+        config.llmProvider = .ollama
+
+        let reloaded = StoreConfiguration(storage: storage)
+        XCTAssertEqual(reloaded.knownLLMEndpoints(for: .lmStudio), ["http://lm-box:1234"],
+                       "the memory rides UserDefaults, not just the in-memory dict")
+    }
+
     // MARK: - visionProvider
 
     func testVisionProvider_persistsAndRestores() {

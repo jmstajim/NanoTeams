@@ -79,7 +79,7 @@ final class ExploratorySearchTrainerTests: XCTestCase {
             XCTAssertEqual(summary.tag, kase.tag, "Case order or tag drift.")
             XCTAssertEqual(summary.query, kase.query)
             XCTAssertGreaterThan(summary.elapsedSeconds, 0,
-                "[\(summary.tag)] elapsedSeconds should be positive.")
+                                 "[\(summary.tag)] elapsedSeconds should be positive.")
         }
 
         // Soft signal — at least one non-adversarial case should expand.

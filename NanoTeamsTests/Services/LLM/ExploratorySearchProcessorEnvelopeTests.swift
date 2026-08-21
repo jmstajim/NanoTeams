@@ -75,9 +75,9 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
         XCTAssertEqual(convo.count, 1, "Processor must append exactly one tool turn.")
         let env = convo.first?.content ?? ""
         XCTAssertTrue(env.contains("\"exploratory_disabled\":true"),
-            "Disabled branch must mark `exploratory_disabled: true`.")
+                      "Disabled branch must mark `exploratory_disabled: true`.")
         XCTAssertTrue(env.contains("\"expanded_terms\":[]"),
-            "Disabled branch must report empty expanded_terms.")
+                      "Disabled branch must report empty expanded_terms.")
         XCTAssertTrue(env.contains("\"query\":\"scroll\""))
     }
 
@@ -100,7 +100,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
 
         let env = convo.first?.content ?? ""
         XCTAssertTrue(env.contains("\"expansion_error\":\"index_unavailable\""),
-            "Missing index must surface as `expansion_error: index_unavailable`.")
+                      "Missing index must surface as `expansion_error: index_unavailable`.")
         // Even on the failure path, the tool result must NOT be marked as error.
         XCTAssertEqual(mock.awaitSearchIndexCallCount, 1)
     }
@@ -124,7 +124,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
 
         let env = convo.first?.content ?? ""
         XCTAssertTrue(env.contains("\"expansion_error\":\"no_work_folder\""),
-            "No folder must surface as `expansion_error: no_work_folder`.")
+                      "No folder must surface as `expansion_error: no_work_folder`.")
     }
 
     // MARK: - Tool message attribution
@@ -160,7 +160,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
         )
 
         XCTAssertEqual(convo.first?.toolCallID, "call_xyz",
-            "providerID must thread through to the LLM-visible tool turn.")
+                       "providerID must thread through to the LLM-visible tool turn.")
     }
 
     // MARK: - Empty postings short-circuit
@@ -190,9 +190,9 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
 
         let env = convo.first?.content ?? ""
         XCTAssertTrue(env.contains("\"hit_files\":0"),
-            "Empty posting intersection must short-circuit with hit_files: 0.")
+                      "Empty posting intersection must short-circuit with hit_files: 0.")
         XCTAssertTrue(env.contains("\"matches\":[]"),
-            "No file matches the query terms.")
+                      "No file matches the query terms.")
     }
 
     // MARK: - T1-T4: delegate.expandSearchQuery → envelope round-trip
@@ -242,13 +242,13 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
 
         let env = convo.first?.content ?? ""
         XCTAssertTrue(env.contains("\"expanded_terms\":[\"user\"]"),
-            "Envelope must surface `.expanded` terms verbatim.")
+                      "Envelope must surface `.expanded` terms verbatim.")
         XCTAssertFalse(env.contains("\"expansion_error\""),
-            "`.expanded` must not write an `expansion_error` field.")
+                       "`.expanded` must not write an `expansion_error` field.")
         XCTAssertTrue(env.contains("\"hit_files\":1"),
-            "Posting intersection for scroll + user must hit UserManager.swift.")
+                      "Posting intersection for scroll + user must hit UserManager.swift.")
         XCTAssertEqual(mock.expandSearchQueryCallCount, 1,
-            "Delegate must be called exactly once per exploratory_search invocation.")
+                       "Delegate must be called exactly once per exploratory_search invocation.")
     }
 
     func testUnavailable_building_envelopePropagatesReason() async {
@@ -268,7 +268,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
 
         let env = convo.first?.content ?? ""
         XCTAssertTrue(env.contains("\"expansion_error\":\"vector_index_building\""),
-            "Envelope must propagate `unavailableReason` as `expansion_error`.")
+                      "Envelope must propagate `unavailableReason` as `expansion_error`.")
         // Expansion terms empty but posting intersection still runs on the
         // original query token. `scroll` has no postings → 0 hits.
         XCTAssertTrue(env.contains("\"expanded_terms\":[]"))
@@ -290,7 +290,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
 
         let env = convo.first?.content ?? ""
         XCTAssertTrue(env.contains("\"expansion_error\":\"embedding_model_not_loaded\""),
-            "Exact canonical string must reach the chat LLM envelope.")
+                      "Exact canonical string must reach the chat LLM envelope.")
     }
 
     func testTransientError_envelopeHasBothTermsAndError() async {
@@ -314,13 +314,13 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
 
         let env = convo.first?.content ?? ""
         XCTAssertTrue(env.contains("\"expansion_error\":\"embedding_http_error\""),
-            "Transient error reason must land in `expansion_error`.")
+                      "Transient error reason must land in `expansion_error`.")
         XCTAssertTrue(env.contains("\"user\""),
-            "Partial per-token terms must survive in `expanded_terms`.")
+                      "Partial per-token terms must survive in `expanded_terms`.")
         XCTAssertTrue(env.contains("\"account\""))
         // Two hits — UserManager.swift (for "user") + AccountService.swift.
         XCTAssertTrue(env.contains("\"hit_files\":2"),
-            "Posting intersection must treat `.transientError` terms the same as `.expanded`.")
+                      "Posting intersection must treat `.transientError` terms the same as `.expanded`.")
     }
 
     // MARK: - B1: search_error surfaces executor throws
@@ -362,7 +362,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
 
         let env = convo.first?.content ?? ""
         XCTAssertTrue(env.contains("\"search_error\":"),
-            "Executor throw must surface a `search_error` field. Envelope: \(env)")
+                      "Executor throw must surface a `search_error` field. Envelope: \(env)")
     }
 
     func testIndexUnavailable_executorThrow_surfacesSearchError() async throws {
@@ -399,7 +399,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
 
         let env = convo.first?.content ?? ""
         XCTAssertTrue(env.contains("\"search_error\":"),
-            "Executor throw in fall-back path must also surface `search_error`. Envelope: \(env)")
+                      "Executor throw in fall-back path must also surface `search_error`. Envelope: \(env)")
     }
 
     // MARK: - B4: distinct `index_unavailable` causes
@@ -423,9 +423,9 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
 
         let env = convo.first?.content ?? ""
         XCTAssertTrue(env.contains("\"expansion_error\":\"no_work_folder\""),
-            "no_work_folder is distinct from index_unavailable.")
+                      "no_work_folder is distinct from index_unavailable.")
         XCTAssertFalse(env.contains("\"expansion_error\":\"index_unavailable\""),
-            "no_work_folder must NOT be labelled `index_unavailable`.")
+                       "no_work_folder must NOT be labelled `index_unavailable`.")
     }
 
     /// Default-storage mode ("Application Support") cannot host a exploratory-search
@@ -448,7 +448,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
 
         let env = convo.first?.content ?? ""
         XCTAssertTrue(env.contains("\"expansion_error\":\"exploratory_unsupported_default_storage\""),
-            "Default storage must surface its own distinct reason. Envelope: \(env)")
+                      "Default storage must surface its own distinct reason. Envelope: \(env)")
     }
 
     // MARK: - B3: short-circuit preserves `skipped_*` accounting
@@ -478,9 +478,9 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
 
         let env = convo.first?.content ?? ""
         XCTAssertTrue(env.contains("\"hit_files\":0"),
-            "Scroll has no postings — short-circuit fires.")
+                      "Scroll has no postings — short-circuit fires.")
         XCTAssertTrue(env.contains("\"skipped_binary_count\""),
-            "Short-circuit branch must still surface skipped_binary_count. Envelope: \(env)")
+                      "Short-circuit branch must still surface skipped_binary_count. Envelope: \(env)")
     }
 
     // MARK: - I2: tracker records the finalized envelope, not the interim
@@ -511,9 +511,9 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
         let recorded = tracker.recentCalls(limit: .max).first(where: { $0.toolName == ToolNames.search })
         XCTAssertNotNil(recorded, "Finalize step must have recorded the call.")
         XCTAssertFalse(recorded?.resultJSON.contains("\"status\":\"exploring\"") ?? true,
-            "Tracker must NOT hold the interim placeholder. Got: \(recorded?.resultJSON ?? "")")
+                       "Tracker must NOT hold the interim placeholder. Got: \(recorded?.resultJSON ?? "")")
         XCTAssertTrue(recorded?.resultJSON.contains("\"exploratory_disabled\":true") ?? false,
-            "Tracker must hold the finalized disabled-branch envelope.")
+                      "Tracker must hold the finalized disabled-branch envelope.")
     }
 
     // MARK: - Filename matches in expand pipeline
@@ -549,11 +549,11 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
 
         let env = convo.first?.content ?? ""
         XCTAssertTrue(env.contains("\"filename_matches\""),
-            "Expand pipeline must surface filename matches from the index. Envelope: \(env)")
+                      "Expand pipeline must surface filename matches from the index. Envelope: \(env)")
         // Foundation escapes `/` to `\/` in JSON; assert on the basename
         // (uniquely identifying) and the matched_on tag instead.
         XCTAssertTrue(env.contains("ScrollContainer.swift"),
-            "File matching the query basename must appear regardless of posting hits.")
+                      "File matching the query basename must appear regardless of posting hits.")
         XCTAssertTrue(env.contains("\"matched_on\":\"basename\""))
     }
 
@@ -588,7 +588,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
         let env = convo.first?.content ?? ""
         // Foundation escapes `/` to `\/` in JSON; assert on the basename.
         XCTAssertTrue(env.contains("UserAccount.swift"),
-            "Expanded vocab term must drive filename matching. Envelope: \(env)")
+                      "Expanded vocab term must drive filename matching. Envelope: \(env)")
     }
 
     /// Empty postings short-circuit branch must still emit filename matches
@@ -618,9 +618,9 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
 
         let env = convo.first?.content ?? ""
         XCTAssertTrue(env.contains("\"hit_files\":0"),
-            "Posting intersection is empty.")
+                      "Posting intersection is empty.")
         XCTAssertTrue(env.contains("ScrollView.swift"),
-            "Filename match must surface from the index even when postings are empty. Envelope: \(env)")
+                      "Filename match must surface from the index even when postings are empty. Envelope: \(env)")
     }
 
     /// Disabled / fall-back branches use the plain executor's filename
@@ -645,7 +645,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
         let env = convo.first?.content ?? ""
         XCTAssertTrue(env.contains("\"exploratory_disabled\":true"))
         XCTAssertTrue(env.contains("ScrollHelper.swift"),
-            "Disabled branch must pipe filename matches from plain executor. Envelope: \(env)")
+                      "Disabled branch must pipe filename matches from plain executor. Envelope: \(env)")
     }
 
     /// Real work folder + coordinator returned nil = actual bug. Keep the
@@ -667,7 +667,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
 
         let env = convo.first?.content ?? ""
         XCTAssertTrue(env.contains("\"expansion_error\":\"index_unavailable\""),
-            "Real folder + nil coordinator still uses `index_unavailable`. Envelope: \(env)")
+                      "Real folder + nil coordinator still uses `index_unavailable`. Envelope: \(env)")
     }
 
     // MARK: - Filename matches: more expand-pipeline corner cases
@@ -697,7 +697,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
 
         let env = convo.first?.content ?? ""
         XCTAssertFalse(env.contains("\"filename_matches\""),
-            "Empty roster must omit filename_matches entirely.")
+                       "Empty roster must omit filename_matches entirely.")
     }
 
     /// Both posting hits AND filename hits surface in the same envelope —
@@ -730,9 +730,9 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
 
         let env = convo.first?.content ?? ""
         XCTAssertTrue(env.contains("\"hit_files\":1"),
-            "Posting intersection should hit Search.swift.")
+                      "Posting intersection should hit Search.swift.")
         XCTAssertTrue(env.contains("\"filename_matches\""),
-            "Filename match should also surface for the same file.")
+                      "Filename match should also surface for the same file.")
     }
 
     /// Internal-dir entries must never reach the index — but if a buggy
@@ -765,7 +765,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
 
         let env = convo.first?.content ?? ""
         XCTAssertTrue(env.contains("Foo.swift"),
-            "Sandbox-clean index entries must surface in filename_matches.")
+                      "Sandbox-clean index entries must surface in filename_matches.")
     }
 
     /// `filename_matches` must respect `payload.maxResults` cap even when
@@ -820,7 +820,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
         struct Inner: Decodable { let filename_matches: [FilenameMatch]? }
         let decoded = try JSONDecoder().decode(Outer.self, from: envData)
         XCTAssertEqual(decoded.data.filename_matches?.count, 5,
-            "Filename matches must be capped at payload.maxResults.")
+                       "Filename matches must be capped at payload.maxResults.")
     }
 
     /// MatchedOn raw values must serialize as "basename" / "path" — pin

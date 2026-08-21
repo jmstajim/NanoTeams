@@ -122,7 +122,7 @@ final class TeamActivityFeedLogicTests: XCTestCase {
     }
 
     private func parseQuestion(from text: String) -> String? {
-        ActivityFeedBuilder.parseAskSupervisorQuestion(from: text)
+        StepToolCall.parseSupervisorQuestion(from: text)
     }
 
     // MARK: - Bug 1: Supervisor Answer Messages Filtered in Non-Debug
@@ -334,7 +334,7 @@ final class TeamActivityFeedLogicTests: XCTestCase {
         let notifs = supervisorNotifications(for: step)
         XCTAssertEqual(notifs.count, 1)
         XCTAssertEqual(notifs[0].timestamp, answerTime,
-            "Answered notification should sort at the answer's createdAt (when the Supervisor responded), NOT step.updatedAt or the ask's tool-call time")
+                       "Answered notification should sort at the answer's createdAt (when the Supervisor responded), NOT step.updatedAt or the ask's tool-call time")
         XCTAssertEqual(notifs[0].answer, "Blue")
     }
 
@@ -354,7 +354,7 @@ final class TeamActivityFeedLogicTests: XCTestCase {
         let notifs = supervisorNotifications(for: step)
         XCTAssertEqual(notifs.count, 1)
         XCTAssertEqual(notifs[0].timestamp, Date.distantFuture,
-            "Active (unanswered) notification should be pinned to bottom")
+                       "Active (unanswered) notification should be pinned to bottom")
         XCTAssertNil(notifs[0].answer)
     }
 
@@ -411,7 +411,7 @@ final class TeamActivityFeedLogicTests: XCTestCase {
         XCTAssertEqual(notifs[0].question, "First question")
         XCTAssertEqual(notifs[0].answer, "answer1")
         XCTAssertEqual(notifs[0].timestamp, firstAnswerTime,
-            "Answered notification sorts at the answer's createdAt")
+                       "Answered notification sorts at the answer's createdAt")
 
         XCTAssertEqual(notifs[1].question, "Second question")
         XCTAssertEqual(notifs[1].answer, "answer2")
@@ -483,9 +483,9 @@ final class TeamActivityFeedLogicTests: XCTestCase {
         let notifs = supervisorNotifications(for: step)
         XCTAssertEqual(notifs.count, 1)
         XCTAssertTrue(notifs[0].timestamp <= artifactTime,
-            "Notification should sort before artifact created after the answer")
+                      "Notification should sort before artifact created after the answer")
         XCTAssertEqual(notifs[0].timestamp, answerTime,
-            "Resolved notification sorts at the answer message's createdAt (when the Supervisor responded)")
+                       "Resolved notification sorts at the answer message's createdAt (when the Supervisor responded)")
     }
 
     func testParseQuestionFromArgumentsJSON() {
@@ -537,9 +537,9 @@ final class TeamActivityFeedLogicTests: XCTestCase {
         let notifs = supervisorNotifications(for: step)
         XCTAssertEqual(notifs.count, 2)
         XCTAssertEqual(notifs[0].question, "?",
-            "Earlier call with unparseable JSON should show '?' not the latest question")
+                       "Earlier call with unparseable JSON should show '?' not the latest question")
         XCTAssertEqual(notifs[1].question, "Latest question",
-            "Last call should parse correctly")
+                       "Last call should parse correctly")
     }
 
     func testLastCallWithUnparseableJSONFallsBackToStepQuestion() {
@@ -559,7 +559,7 @@ final class TeamActivityFeedLogicTests: XCTestCase {
         let notifs = supervisorNotifications(for: step)
         XCTAssertEqual(notifs.count, 1)
         XCTAssertEqual(notifs[0].question, "Fallback question",
-            "Last call should fall back to step.supervisorQuestion")
+                       "Last call should fall back to step.supervisorQuestion")
     }
 
     // MARK: - Bug 8: Raw JSON in Notification Question
@@ -582,7 +582,7 @@ final class TeamActivityFeedLogicTests: XCTestCase {
         let notifs = supervisorNotifications(for: step)
         XCTAssertEqual(notifs.count, 1)
         XCTAssertEqual(notifs[0].question, "You stand in the noisy market of Veira",
-            "Truncated JSON should still yield the question text, not raw JSON")
+                       "Truncated JSON should still yield the question text, not raw JSON")
     }
 
     func testPartialJSONWithOnlyOpenBrace() {
@@ -621,7 +621,7 @@ final class TeamActivityFeedLogicTests: XCTestCase {
         let notifs = supervisorNotifications(for: step)
         XCTAssertEqual(notifs.count, 1)
         XCTAssertEqual(notifs[0].question, "Line1\nLine2 and \"quoted\" text",
-            "JSON escapes should be unescaped in displayed question")
+                       "JSON escapes should be unescaped in displayed question")
     }
 
     func testMultipleCallsTruncatedJSONEachParsedIndependently() {
@@ -648,9 +648,9 @@ final class TeamActivityFeedLogicTests: XCTestCase {
         let notifs = supervisorNotifications(for: step)
         XCTAssertEqual(notifs.count, 2)
         XCTAssertEqual(notifs[0].question, "First question about magic",
-            "First call's truncated JSON should parse to its own question")
+                       "First call's truncated JSON should parse to its own question")
         XCTAssertEqual(notifs[1].question, "Second question about dragons",
-            "Second call's truncated JSON should parse to its own question")
+                       "Second call's truncated JSON should parse to its own question")
     }
 
     func testRawJSONNeverShownAsQuestion() {
@@ -669,7 +669,7 @@ final class TeamActivityFeedLogicTests: XCTestCase {
         for json in [validJSON, truncatedJSON, emptyQuestion, noQuestionKey] {
             if let parsed = parseQuestion(from: json) {
                 XCTAssertFalse(parsed.hasPrefix("{"),
-                    "Parsed question should never start with '{': got \(parsed)")
+                               "Parsed question should never start with '{': got \(parsed)")
             }
         }
     }
@@ -707,7 +707,7 @@ final class TeamActivityFeedLogicTests: XCTestCase {
         XCTAssertEqual(notifs[0].question, "Question A")
         XCTAssertEqual(notifs[0].answer, "A answer")
         XCTAssertEqual(notifs[1].question, "?",
-            "Middle call with broken JSON should show '?' not 'Question C'")
+                       "Middle call with broken JSON should show '?' not 'Question C'")
         XCTAssertEqual(notifs[1].answer, "B answer")
         XCTAssertEqual(notifs[2].question, "Question C")
         XCTAssertNil(notifs[2].answer, "Last call is active — no answer")
@@ -733,11 +733,11 @@ final class TeamActivityFeedLogicTests: XCTestCase {
         let notifs = supervisorNotifications(for: step)
         XCTAssertEqual(notifs.count, 3)
         XCTAssertEqual(notifs[0].question, "?",
-            "First call: unparseable, not last → '?'")
+                       "First call: unparseable, not last → '?'")
         XCTAssertEqual(notifs[1].question, "?",
-            "Second call: unparseable, not last → '?'")
+                       "Second call: unparseable, not last → '?'")
         XCTAssertEqual(notifs[2].question, "Real third question",
-            "Last call: unparseable but falls back to step.supervisorQuestion")
+                       "Last call: unparseable but falls back to step.supervisorQuestion")
     }
 
     func testQuestionsStayDistinctAfterNewCallAppears() {
@@ -803,9 +803,9 @@ final class TeamActivityFeedLogicTests: XCTestCase {
 
         let notifs = supervisorNotifications(for: step)
         XCTAssertEqual(notifs[0].question, "Original Q1",
-            "First notification must use its own parsed question, not step.supervisorQuestion")
+                       "First notification must use its own parsed question, not step.supervisorQuestion")
         XCTAssertNotEqual(notifs[0].question, notifs[1].question,
-            "Different tool calls must show different questions")
+                          "Different tool calls must show different questions")
     }
 
     // MARK: - Bug 3: Thinking Streaming State
@@ -829,19 +829,19 @@ final class TeamActivityFeedLogicTests: XCTestCase {
 
     func testThinkingStreamingWhileNoContent() {
         XCTAssertTrue(isThinkingStreaming(isStreaming: true, hasContent: false),
-            "Thinking should show spinner when streaming and no content yet")
+                      "Thinking should show spinner when streaming and no content yet")
     }
 
     func testThinkingNotStreamingWhenContentArrived() {
         XCTAssertFalse(isThinkingStreaming(isStreaming: true, hasContent: true),
-            "Thinking spinner should stop once content starts arriving")
+                       "Thinking spinner should stop once content starts arriving")
     }
 
     func testThinkingNotStreamingWhenNotStreaming() {
         XCTAssertFalse(isThinkingStreaming(isStreaming: false, hasContent: false),
-            "Thinking should not show spinner when not streaming")
+                       "Thinking should not show spinner when not streaming")
         XCTAssertFalse(isThinkingStreaming(isStreaming: false, hasContent: true),
-            "Thinking should not show spinner when not streaming (with content)")
+                       "Thinking should not show spinner when not streaming (with content)")
     }
 
     func testThinkingStreamingDuringToolCallAssembly() {
@@ -945,7 +945,7 @@ final class TeamActivityFeedLogicTests: XCTestCase {
                             isStreamingToolCall: toolCall,
                             hasThinkingContent: hasThinking)
                         XCTAssertFalse(top && trailing,
-                            "Both thinking rows animating at once (isStreaming: \(isStreaming), hasContent: \(hasContent), toolCall: \(toolCall), hasThinking: \(hasThinking))")
+                                       "Both thinking rows animating at once (isStreaming: \(isStreaming), hasContent: \(hasContent), toolCall: \(toolCall), hasThinking: \(hasThinking))")
                     }
                 }
             }
@@ -1011,7 +1011,7 @@ final class TeamActivityFeedLogicTests: XCTestCase {
 
                                 let liveCount = [top, trailing, statusText != nil].filter(\.self).count
                                 XCTAssertLessThanOrEqual(liveCount, 1,
-                                    "Multiple live indicators (top: \(top), trailing: \(trailing), status: \(statusText ?? "nil")) at (isStreaming: \(isStreaming), hasContent: \(hasContent), toolCall: \(toolCall), hasThinking: \(hasThinking), progress: \(String(describing: progress)), activity: \(activity))")
+                                                         "Multiple live indicators (top: \(top), trailing: \(trailing), status: \(statusText ?? "nil")) at (isStreaming: \(isStreaming), hasContent: \(hasContent), toolCall: \(toolCall), hasThinking: \(hasThinking), progress: \(String(describing: progress)), activity: \(activity))")
                             }
                         }
                     }
@@ -1070,7 +1070,7 @@ final class TeamActivityFeedLogicTests: XCTestCase {
 
                                 let occupancy = [statusText != nil, trailing, reserved].filter(\.self).count
                                 XCTAssertLessThanOrEqual(occupancy, 1,
-                                    "Tail slot occupied \(occupancy)× (status: \(statusText ?? "nil"), trailing: \(trailing), reserved: \(reserved)) at (isStreaming: \(isStreaming), hasContent: \(hasContent), toolCall: \(toolCall), hasThinking: \(hasThinking), progress: \(String(describing: progress)), activity: \(activity))")
+                                                         "Tail slot occupied \(occupancy)× (status: \(statusText ?? "nil"), trailing: \(trailing), reserved: \(reserved)) at (isStreaming: \(isStreaming), hasContent: \(hasContent), toolCall: \(toolCall), hasThinking: \(hasThinking), progress: \(String(describing: progress)), activity: \(activity))")
                             }
                         }
                     }
@@ -1237,7 +1237,7 @@ final class TeamActivityFeedLogicTests: XCTestCase {
                             let growingProse = hasContent && !toolCall
 
                             XCTAssertTrue(top || trailing || statusText != nil || growingProse,
-                                "Zero live signal while streaming at (hasContent: \(hasContent), toolCall: \(toolCall), hasThinking: \(hasThinking), progress: \(String(describing: progress)), activity: \(activity))")
+                                          "Zero live signal while streaming at (hasContent: \(hasContent), toolCall: \(toolCall), hasThinking: \(hasThinking), progress: \(String(describing: progress)), activity: \(activity))")
                         }
                     }
                 }
@@ -1322,7 +1322,7 @@ final class TeamActivityFeedLogicTests: XCTestCase {
         streamingManager.commit(stepID: stepID, taskID: 0)
 
         XCTAssertFalse(streamingManager.isStreaming(messageID: messageID),
-            "After commit, message should no longer be detected as streaming")
+                       "After commit, message should no longer be detected as streaming")
     }
 
     func testEmptyMessagePassesFilterDuringStreaming() {
@@ -1460,18 +1460,18 @@ final class TeamActivityFeedLogicTests: XCTestCase {
 
         XCTAssertTrue(pauseableStates.contains(.running))
         XCTAssertTrue(pauseableStates.contains(.needsSupervisorInput),
-            "needsSupervisorInput should be pauseable")
+                      "needsSupervisorInput should be pauseable")
         XCTAssertTrue(pauseableStates.contains(.needsAcceptance),
-            "needsAcceptance should be pauseable")
+                      "needsAcceptance should be pauseable")
         XCTAssertFalse(pauseableStates.contains(.paused))
         XCTAssertFalse(pauseableStates.contains(.done))
 
         XCTAssertTrue(resumeableStates.contains(.paused))
         XCTAssertFalse(resumeableStates.contains(.needsAcceptance),
-            "needsAcceptance should NOT be resumeable — it's pauseable now")
+                       "needsAcceptance should NOT be resumeable — it's pauseable now")
         XCTAssertFalse(resumeableStates.contains(.running))
         XCTAssertFalse(resumeableStates.contains(.needsSupervisorInput),
-            "needsSupervisorInput should NOT be resumeable — it's already active")
+                       "needsSupervisorInput should NOT be resumeable — it's already active")
     }
 
     // MARK: - shouldShowComposer (chat-mode visibility regression)

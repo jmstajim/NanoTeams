@@ -26,7 +26,7 @@ final class MalformedToolCallLoggingTests: XCTestCase {
     [reasoning]
     Building the calculator.
     [/reasoning]
-
+    
     <|call|>{"name":"create_artifact","arguments":{"content":"<button onclick=\\"appendOperator('-')">-</button>","name":"index.html"}}<|end|>
     """
 
@@ -47,8 +47,8 @@ final class MalformedToolCallLoggingTests: XCTestCase {
     /// model's attempt, and the card/audit record must not present it as one.
     private static let salvageTruncatedPayload =
         "[reasoning]\nPlanning the edit.\n[/reasoning]\n\nAdding the block.\n\n<|call|>"
-        + #"{"name":"edit_file","arguments":{"new_text":"const A = 1;\n",my-path":"a/b.js","old_text":"x = [ 1, 2 ];  // keep\n"}"#
-        + "<|end|>"
+            + #"{"name":"edit_file","arguments":{"new_text":"const A = 1;\n",my-path":"a/b.js","old_text":"x = [ 1, 2 ];  // keep\n"}"#
+            + "<|end|>"
 
     override func setUp() async throws {
         try await super.setUp()
@@ -97,8 +97,7 @@ final class MalformedToolCallLoggingTests: XCTestCase {
 
     private func networkToolCallRecords() -> [NetworkLogRecord] {
         guard fileManager.fileExists(atPath: netURL.path),
-              let data = try? Data(contentsOf: netURL),
-              let all = try? JSONCoderFactory.makeDateDecoder().decode([NetworkLogRecord].self, from: data)
+              let all = try? NetworkLogTestReading.strictRecords(at: netURL)
         else { return [] }
         return all.filter { $0.direction == .toolCall }
     }

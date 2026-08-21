@@ -39,6 +39,42 @@ struct MainLayoutView: View {
     // MARK: - Body
 
     var body: some View {
+        // Split from `mainContent` deliberately: the layout's modifier chain had
+        // grown past the type-checker's budget, and SwiftUI reports that as a
+        // timeout on whichever line the solver gave up at. Two expressions solve
+        // independently (CLAUDE.md #10, same failure mode as large array literals).
+        mainContent
+            .onChange(of: allTaskWaitStates) { _, newStates in
+                // Sweep seen flags for ALL tasks (not just the active one) so a
+                // backgrounded task that stops waiting re-triggers the dot on its next
+                // question. Its own observer, and keyed on the DURABLE wait state rather
+                // than `TaskStatus`: recovery parks every waiting step at launch, which a
+                // status-keyed sweep read as "answered" and used to wipe the whole
+                // persisted set on startup.
+                taskState.reconcileSeenSet(
+                    waitStates: newStates,
+                    workFolderID: store.snapshot?.projection.id
+                )
+            }
+            .onChange(of: activeTaskObservation) { previous, current in
+                let viewing = current.map { selectedItem == .task($0.taskID) } ?? false
+                let decision = SupervisorSeenPolicy.onChange(
+                    previous: previous, current: current, isViewing: viewing)
+                applySeen(decision.seen)
+                if let taskID = current?.taskID, !decision.dismissQuestionIDs.isEmpty {
+                    // The Supervisor is reading this chat right now, so the questions
+                    // that just arrived are already seen. Without this, nothing ever
+                    // retires a reply that landed in an OPEN chat — and since every
+                    // chat-mode turn is an `ask_supervisor` call and the app always
+                    // launches on the Watchtower, the inbox re-listed every reply the
+                    // user had already read after each restart.
+                    dismissSupervisorInputNotifications(
+                        for: taskID, questionIDs: decision.dismissQuestionIDs)
+                }
+            }
+    }
+
+    private var mainContent: some View {
         VStack(spacing: 0) {
             HStack(spacing: 0) {
                 // Custom flat sidebar — replaces NavigationSplitView's native column
@@ -98,14 +134,7 @@ struct MainLayoutView: View {
             // bootstrap completes.
             taskState.loadSeenSet(for: newID)
         }
-        .onChange(of: allTaskStatuses) { _, newStatuses in
-            // Sweep seen flags for ALL tasks (not just the active one) so a
-            // backgrounded task transitioning out of `.needsSupervisorInput`
-            // re-triggers the dot on its next question.
-            taskState.reconcileSeenSet(
-                activeStatuses: newStatuses,
-                workFolderID: store.snapshot?.projection.id
-            )
+        .onChange(of: allTaskStatuses) { _, _ in
             // Immediate Autovisor wake on ANY derived task-status change. The
             // itemizer (`autovisorAttentionItems`) reads BOTH live engine state
             // (needsSupervisor) AND derived summary status (failed / completed /
@@ -163,34 +192,31 @@ struct MainLayoutView: View {
             if case .task(let taskID) = newValue {
                 Task {
                     await store.switchTask(to: taskID)
+                    // Opening a task retires ALL of its banners, as before. The seen
+                    // flag goes through the policy so opening a QUIET task clears it
+                    // instead of freezing it — a frozen flag survives the sweep (which
+                    // only clears non-waiting tasks) and would swallow the dot on that
+                    // task's next question.
                     autoDismissNotifications(for: taskID)
+                    let opened = store.loadedTask(taskID)
+                    applySeen(SupervisorSeenPolicy.onOpen(
+                        taskID: taskID,
+                        questionIDs: opened?.activeSupervisorQuestionIDs ?? [],
+                        isWaiting: opened?.hasPendingSupervisorInput ?? false))
                     QuickCaptureController.shared.refreshPanelIfVisible(explicitTaskNavigation: true)
                 }
                 QuickCaptureController.shared.isTaskSelected = true
-                taskState.markSupervisorInputSeen(taskID: taskID)
                 NotificationCenter.default.post(name: .scrollFeedToBottom, object: nil)
             } else {
                 QuickCaptureController.shared.isTaskSelected = false
                 QuickCaptureController.shared.refreshPanelIfVisible()
             }
         }
-        .onChange(of: activeTaskDerivedStatus) { oldStatus, newStatus in
+        .onChange(of: activeTaskDerivedStatus) { _, _ in
+            // Panel refresh only. The seen/dismiss decision moved to the observer
+            // below, which watches the QUESTIONS rather than the coarse status —
+            // this one still has to fire on every status change for Quick Capture.
             QuickCaptureController.shared.refreshPanelIfVisible()
-            // Clear "seen" when task leaves needsSupervisorInput so the indicator
-            // can re-trigger on the next question. Also mark seen if the active task
-            // enters needsSupervisorInput while the user is already viewing it.
-            if let taskID = store.activeTaskID {
-                if oldStatus == .needsSupervisorInput, newStatus != .needsSupervisorInput {
-                    taskState.unmarkSupervisorInputSeen(taskID: taskID)
-                } else if newStatus == .needsSupervisorInput {
-                    if case .task(taskID) = selectedItem {
-                        taskState.markSupervisorInputSeen(taskID: taskID)
-                    } else {
-                        // User is on Watchtower or another task — clear "seen" so sidebar shows unread
-                        taskState.unmarkSupervisorInputSeen(taskID: taskID)
-                    }
-                }
-            }
         }
         .onChange(of: engineState.taskEngineStates) {
             // Single handler: refreshes the panel + drives queue flush. The controller
@@ -225,18 +251,71 @@ struct MainLayoutView: View {
         return Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0.status) })
     }
 
-    // MARK: - Auto-Dismiss Notifications
+    /// Sibling of `allTaskStatuses`, carrying the DURABLE "is this task waiting on the
+    /// Supervisor" fact instead of the run-control status. Deliberately a separate
+    /// projection rather than a widening of the one above: that one drives the
+    /// Autovisor wake and must keep firing on `.failed` / `.done`, which this fact
+    /// does not distinguish. Equatable-narrow for the same reason — it flips only on
+    /// the fact, never on an `updatedAt` tick.
+    private var allTaskWaitStates: [Int: SupervisorWaitState] {
+        guard let summaries = store.snapshot?.tasksIndex.tasks else { return [:] }
+        return Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, SupervisorWaitState($0)) })
+    }
+
+    /// The active task's live question identities, for `SupervisorSeenPolicy`.
+    ///
+    /// Excludes the Autovisor: its manager parks on `wait_for_events`, which is an
+    /// `ask_supervisor` call like any other, so viewing that pane would otherwise
+    /// churn the policy for a question no human was asked.
+    private var activeTaskObservation: SupervisorSeenPolicy.Observation? {
+        guard let taskID = store.activeTaskID, taskID != store.autovisorTaskID else { return nil }
+        guard let task = store.loadedTask(taskID) else { return nil }
+        return SupervisorSeenPolicy.Observation(
+            taskID: taskID,
+            questionIDs: task.activeSupervisorQuestionIDs,
+            isWaiting: task.hasPendingSupervisorInput)
+    }
+
+    // MARK: - Seen / Dismiss
+
+    private func applySeen(_ action: SupervisorSeenPolicy.SeenAction) {
+        switch action {
+        case .mark(let taskID):  taskState.markSupervisorInputSeen(taskID: taskID)
+        case .clear(let taskID): taskState.unmarkSupervisorInputSeen(taskID: taskID)
+        case .none:              break
+        }
+    }
 
     /// Dismisses all Watchtower notifications from the opened task.
     private func autoDismissNotifications(for taskID: Int) {
-        guard let task = store.loadedTask(taskID),
-              let run = task.runs.last else { return }
-        let team = store.resolvedTeam(for: task)
-        let bashApprovals = store.bashApprovalRequests.values.filter { $0.taskID == task.id }
-        let notifications = run.allWatchtowerNotifications(
-            task: task, teamRoles: team.roles, bashApprovals: bashApprovals)
-        for notification in notifications {
-            config.dismissNotification(id: notification.dismissID)
+        dismissNotifications(for: taskID) { _ in true }
+    }
+
+    /// Retires only the `.supervisorInput` banners naming the given questions.
+    ///
+    /// Narrow on purpose: this fires while the Supervisor is READING a chat, and
+    /// "dismiss everything for this task" would also silently swallow a `.failed` or
+    /// `.acceptance` banner they have not looked at.
+    private func dismissSupervisorInputNotifications(for taskID: Int, questionIDs: Set<UUID>) {
+        dismissNotifications(for: taskID) { type in
+            guard case .supervisorInput(_, _, _, let toolCallID) = type,
+                  let toolCallID else { return false }
+            return questionIDs.contains(toolCallID)
+        }
+    }
+
+    private func dismissNotifications(
+        for taskID: Int,
+        matching predicate: (WatchtowerNotificationType) -> Bool
+    ) {
+        guard let workFolderID = store.snapshot?.projection.id,
+              let task = store.loadedTask(taskID) else { return }
+        let notifications = WatchtowerInboxBuilder.build(
+            [.init(task: task, teamRoles: store.resolvedTeam(for: task).roles)],
+            bashApprovals: Array(store.bashApprovalRequests.values)
+        )
+        for notification in notifications where predicate(notification.type) {
+            config.dismissNotification(workFolderID: workFolderID, key: notification.dismissKey)
         }
     }
 

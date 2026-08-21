@@ -60,7 +60,7 @@ final class ExploratorySearchDelegateWiringTests: NTMSOrchestratorTestBase, @unc
         let idx = await sut.awaitSearchIndex()
         XCTAssertNotNil(idx)
         XCTAssertTrue(idx?.tokens.contains("marker") ?? false,
-            "awaitSearchIndex must return the built index, not a fresh empty one.")
+                      "awaitSearchIndex must return the built index, not a fresh empty one.")
     }
 
     // MARK: - Multiple awaitSearchIndex calls share the same index
@@ -78,7 +78,7 @@ final class ExploratorySearchDelegateWiringTests: NTMSOrchestratorTestBase, @unc
         let second = await sut.awaitSearchIndex()
         XCTAssertNotNil(first)
         XCTAssertEqual(first?.generatedAt, second?.generatedAt,
-            "Repeated calls between changes must return the same cached build.")
+                       "Repeated calls between changes must return the same cached build.")
     }
 
     // MARK: - Toggle off mid-flight
@@ -98,6 +98,6 @@ final class ExploratorySearchDelegateWiringTests: NTMSOrchestratorTestBase, @unc
         await sut.onExploratorySearchSettingChanged()
         let idxDisabled = await sut.awaitSearchIndex()
         XCTAssertNil(idxDisabled,
-            "After disable, the delegate must report no index available.")
+                     "After disable, the delegate must report no index available.")
     }
 }

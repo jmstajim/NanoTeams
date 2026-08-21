@@ -279,7 +279,7 @@ final class ExploratorySearchTrainer: @unchecked Sendable {
     /// after lowercasing). Returns `nil` when `expected` is nil or empty —
     /// the auditor treats that as "no expectation, skip scoring".
     static func recall<S: Sequence>(expected: [String]?, actual: S) -> Double?
-    where S.Element == String {
+        where S.Element == String {
         guard let expected, !expected.isEmpty else { return nil }
         let actualSet: Set<String> = Set(
             actual.map { $0.lowercased(with: Locale(identifier: "en_US_POSIX")) }

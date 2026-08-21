@@ -44,7 +44,7 @@ final class DeliverablesElisionTests: XCTestCase {
             XCTAssertFalse(
                 body.contains("{expectedArtifacts}."),
                 "\(name) must not have a literal `.` after `{expectedArtifacts}` — "
-                + "that defeats stripOrphanHeaders for empty-deliverables roles."
+                    + "that defeats stripOrphanHeaders for empty-deliverables roles."
             )
             XCTAssertTrue(
                 body.contains("{expectedArtifacts}"),

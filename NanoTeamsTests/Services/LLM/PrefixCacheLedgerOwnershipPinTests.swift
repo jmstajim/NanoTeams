@@ -103,7 +103,7 @@ final class PrefixCacheLedgerOwnershipPinTests: XCTestCase {
                 .components(separatedBy: "\n")
                 .enumerated()
                 .map({ ($0.offset + 1, Self.strippingLineComments($0.element)) })
-            where text.contains(Self.sharedRefNeedle)
+                where text.contains(Self.sharedRefNeedle)
                 || (text.contains(": PromptPrefixLedger") && text.contains("= .shared")) {
                 offenders.append("\(relativePath):\(line)")
             }

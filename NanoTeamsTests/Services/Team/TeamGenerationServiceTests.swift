@@ -21,22 +21,22 @@ final class TeamGenerationServiceTests: XCTestCase {
 
     func testExtractJSON_codeFencedJSON() {
         let input = """
-            Here is the team:
-            ```json
-            {"name": "Team"}
-            ```
-            That's it.
-            """
+        Here is the team:
+        ```json
+        {"name": "Team"}
+        ```
+        That's it.
+        """
         let result = TeamConfigParser.extractJSONObject(from: input)
         XCTAssertEqual(result?.trimmingCharacters(in: .whitespacesAndNewlines), #"{"name": "Team"}"#)
     }
 
     func testExtractJSON_codeFencedNoLang() {
         let input = """
-            ```
-            {"name": "X"}
-            ```
-            """
+        ```
+        {"name": "X"}
+        ```
+        """
         let result = TeamConfigParser.extractJSONObject(from: input)
         XCTAssertEqual(result?.trimmingCharacters(in: .whitespacesAndNewlines), #"{"name": "X"}"#)
     }
@@ -177,10 +177,10 @@ final class TeamGenerationServiceTests: XCTestCase {
     func testExtractJSON_uppercaseJsonLangTag_handled() {
         // Some models emit ```JSON (capitalized).
         let input = """
-            ```JSON
-            {"name": "Upper"}
-            ```
-            """
+        ```JSON
+        {"name": "Upper"}
+        ```
+        """
         let result = TeamConfigParser.extractJSONObject(from: input)
         XCTAssertEqual(result?.trimmingCharacters(in: .whitespacesAndNewlines), #"{"name": "Upper"}"#)
     }
@@ -188,15 +188,15 @@ final class TeamGenerationServiceTests: XCTestCase {
     func testExtractJSON_multipleFencedBlocks_firstWins() {
         // First fenced block should win, not the second.
         let input = """
-            Here's the team:
-            ```json
-            {"name": "First"}
-            ```
-            And another option:
-            ```json
-            {"name": "Second"}
-            ```
-            """
+        Here's the team:
+        ```json
+        {"name": "First"}
+        ```
+        And another option:
+        ```json
+        {"name": "Second"}
+        ```
+        """
         let result = TeamConfigParser.extractJSONObject(from: input)
         XCTAssertEqual(result?.trimmingCharacters(in: .whitespacesAndNewlines), #"{"name": "First"}"#)
     }
@@ -205,11 +205,11 @@ final class TeamGenerationServiceTests: XCTestCase {
         // A model emits ```json but forgets the closing fence — we should still find
         // the raw JSON object via the final fallback scan.
         let input = """
-            Here's it:
-            ```json
-            {"name": "Salvaged"}
-            (no closing fence)
-            """
+        Here's it:
+        ```json
+        {"name": "Salvaged"}
+        (no closing fence)
+        """
         let result = TeamConfigParser.extractJSONObject(from: input)
         XCTAssertEqual(result, #"{"name": "Salvaged"}"#)
     }
@@ -323,7 +323,7 @@ final class TeamGenerationServiceTests: XCTestCase {
         // the count assertion above, this distinguishes "merge fix worked" from
         // "auto-promote alone was enough" — the latter would leave the counter at 0.
         XCTAssertEqual(TeamConfigParser.siblingMergeFireCount, 1,
-            "Decode must trigger exactly one merge fire on the misplaced supervisor_requires sibling")
+                       "Decode must trigger exactly one merge fire on the misplaced supervisor_requires sibling")
     }
 
     /// Inside-team_config wins on conflict — if the model placed the same key
@@ -373,74 +373,74 @@ final class TeamGenerationServiceTests: XCTestCase {
                 XCTAssertEqual(result.team.name, "Outer Team")
             },
             Case(key: "description", json: """
-                {
-                    "team_config": {
-                        "name": "T",
-                        "roles": [{"name":"R","prompt":"p","produces_artifacts":["X"],"requires_artifacts":["Supervisor Task"],"tools":[]}],
-                        "artifacts": [{"name":"X","description":"d"}]
-                    },
-                    "description": "outer desc"
-                }
-                """) { result in
+            {
+                "team_config": {
+                    "name": "T",
+                    "roles": [{"name":"R","prompt":"p","produces_artifacts":["X"],"requires_artifacts":["Supervisor Task"],"tools":[]}],
+                    "artifacts": [{"name":"X","description":"d"}]
+                },
+                "description": "outer desc"
+            }
+            """) { result in
                 XCTAssertEqual(result.team.description, "outer desc")
             },
             Case(key: "supervisor_mode", json: """
-                {
-                    "team_config": {
-                        "name": "T", "description": "d",
-                        "roles": [{"name":"R","prompt":"p","produces_artifacts":["X"],"requires_artifacts":["Supervisor Task"],"tools":[]}],
-                        "artifacts": [{"name":"X","description":"d"}]
-                    },
-                    "supervisor_mode": "manual"
-                }
-                """) { result in
+            {
+                "team_config": {
+                    "name": "T", "description": "d",
+                    "roles": [{"name":"R","prompt":"p","produces_artifacts":["X"],"requires_artifacts":["Supervisor Task"],"tools":[]}],
+                    "artifacts": [{"name":"X","description":"d"}]
+                },
+                "supervisor_mode": "manual"
+            }
+            """) { result in
                 XCTAssertEqual(result.team.settings.supervisorMode, .manual)
             },
             Case(key: "acceptance_mode", json: """
-                {
-                    "team_config": {
-                        "name": "T", "description": "d",
-                        "roles": [{"name":"R","prompt":"p","produces_artifacts":["X"],"requires_artifacts":["Supervisor Task"],"tools":[]}],
-                        "artifacts": [{"name":"X","description":"d"}]
-                    },
-                    "acceptance_mode": "afterEachRole"
-                }
-                """) { result in
+            {
+                "team_config": {
+                    "name": "T", "description": "d",
+                    "roles": [{"name":"R","prompt":"p","produces_artifacts":["X"],"requires_artifacts":["Supervisor Task"],"tools":[]}],
+                    "artifacts": [{"name":"X","description":"d"}]
+                },
+                "acceptance_mode": "afterEachRole"
+            }
+            """) { result in
                 XCTAssertEqual(result.team.settings.defaultAcceptanceMode, .afterEachRole)
             },
             Case(key: "roles", json: """
-                {
-                    "team_config": {
-                        "name": "T", "description": "d",
-                        "artifacts": [{"name":"Y","description":"d"}]
-                    },
-                    "roles": [{"name":"R","prompt":"p","produces_artifacts":["Y"],"requires_artifacts":["Supervisor Task"],"tools":[]}]
-                }
-                """) { result in
+            {
+                "team_config": {
+                    "name": "T", "description": "d",
+                    "artifacts": [{"name":"Y","description":"d"}]
+                },
+                "roles": [{"name":"R","prompt":"p","produces_artifacts":["Y"],"requires_artifacts":["Supervisor Task"],"tools":[]}]
+            }
+            """) { result in
                 XCTAssertNotNil(result.team.roles.first { $0.name == "R" })
             },
             Case(key: "artifacts", json: """
-                {
-                    "team_config": {
-                        "name": "T", "description": "d",
-                        "roles": [{"name":"R","prompt":"p","produces_artifacts":["Z"],"requires_artifacts":["Supervisor Task"],"tools":[]}]
-                    },
-                    "artifacts": [{"name":"Z","description":"sibling"}]
-                }
-                """) { result in
+            {
+                "team_config": {
+                    "name": "T", "description": "d",
+                    "roles": [{"name":"R","prompt":"p","produces_artifacts":["Z"],"requires_artifacts":["Supervisor Task"],"tools":[]}]
+                },
+                "artifacts": [{"name":"Z","description":"sibling"}]
+            }
+            """) { result in
                 let names = Set(result.team.artifacts.map(\.name))
                 XCTAssertTrue(names.contains("Z"))
             },
             Case(key: "supervisor_requires", json: """
-                {
-                    "team_config": {
-                        "name": "T", "description": "d",
-                        "roles": [{"name":"R","prompt":"p","produces_artifacts":["X"],"requires_artifacts":["Supervisor Task"],"tools":[]}],
-                        "artifacts": [{"name":"X","description":"d"}]
-                    },
-                    "supervisor_requires": ["X"]
-                }
-                """) { result in
+            {
+                "team_config": {
+                    "name": "T", "description": "d",
+                    "roles": [{"name":"R","prompt":"p","produces_artifacts":["X"],"requires_artifacts":["Supervisor Task"],"tools":[]}],
+                    "artifacts": [{"name":"X","description":"d"}]
+                },
+                "supervisor_requires": ["X"]
+            }
+            """) { result in
                 XCTAssertTrue(result.team.supervisorRequiredArtifacts.contains("X"))
             },
         ]
@@ -472,7 +472,7 @@ final class TeamGenerationServiceTests: XCTestCase {
         let names = Set(result.team.artifacts.map(\.name))
         XCTAssertTrue(names.contains("X"), "Misplaced artifacts sibling must be merged into team_config")
         XCTAssertTrue(result.team.supervisorRequiredArtifacts.contains("X"),
-            "Misplaced supervisor_requires sibling must be merged into team_config")
+                      "Misplaced supervisor_requires sibling must be merged into team_config")
     }
 
     /// Whitelist is narrow on purpose. Junk siblings (`foo`, `bar`) must NOT be
@@ -543,7 +543,7 @@ final class TeamGenerationServiceTests: XCTestCase {
         let data = try JSONCoderFactory.makePersistenceEncoder().encode(cfg)
         let json = try XCTUnwrap(String(data: data, encoding: .utf8))
         let dict = try XCTUnwrap(JSONUtilities.parseJSONDictionary(json),
-            "Encoded GeneratedTeamConfig must round-trip as a JSON dictionary")
+                                 "Encoded GeneratedTeamConfig must round-trip as a JSON dictionary")
         XCTAssertEqual(
             Set(dict.keys),
             TeamConfigParser.teamConfigSiblingKeys,

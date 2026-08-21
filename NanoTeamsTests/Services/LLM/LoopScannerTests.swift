@@ -32,6 +32,20 @@ final class LoopScannerTests: XCTestCase {
         XCTAssertNil(LoopScanner.scanStreaming(thinking: clean(), content: "", scope: .thinkingOnly))
     }
 
+    /// The bounded suffix must still see a loop at the live TAIL of a buffer far
+    /// larger than the detector window — an active loop always reaches the tail,
+    /// and the bound exists to cap cost, never to move the window.
+    func testScanStreaming_loopAtTailOfHugeBuffer_stillFires() {
+        let hugeCleanPrefix = String(
+            repeating: "Long unique reasoning sentence number one, then another different thought. ",
+            count: 2_000) // ~150k chars, far past the window
+        XCTAssertNotNil(LoopScanner.scanStreaming(
+            thinking: hugeCleanPrefix + loop(), content: "", scope: .thinkingOnly))
+        // And the verdict equals the tail scanned alone — the prefix buys nothing.
+        XCTAssertNil(LoopScanner.scanStreaming(
+            thinking: hugeCleanPrefix + clean(), content: "", scope: .thinkingOnly))
+    }
+
     // MARK: - scanCommitted priority + recency
 
     private func toolCalls(_ n: Int, at: Date) -> [(name: String, argsJSON: String, createdAt: Date)] {
@@ -142,13 +156,13 @@ final class LoopScannerTests: XCTestCase {
             .map { _ in (name: "read_file", argsJSON: #"{"path":"a"}"#, createdAt: cutoff) }
         XCTAssertNil(LoopScanner.scanCommitted(
             recentAssistant: [], toolCalls: atCutoff, cutoffDate: cutoff, informationBoundary: nil, scope: .thinkingAndContent),
-            "createdAt == cutoff must be excluded (strict >)")
+        "createdAt == cutoff must be excluded (strict >)")
 
         let afterCutoff = (0..<DelegationConstants.repetitionMinIdenticalToolCalls)
             .map { i in (name: "read_file", argsJSON: #"{"path":"a"}"#, createdAt: cutoff.addingTimeInterval(Double(i + 1))) }
         XCTAssertNotNil(LoopScanner.scanCommitted(
             recentAssistant: [], toolCalls: afterCutoff, cutoffDate: cutoff, informationBoundary: nil, scope: .thinkingAndContent),
-            "createdAt > cutoff must be included")
+        "createdAt > cutoff must be included")
     }
 
     /// Mixed history: stale identical calls (pre-cutoff) + too few fresh ones → the
@@ -163,7 +177,7 @@ final class LoopScannerTests: XCTestCase {
         calls.append((name: "read_file", argsJSON: #"{"path":"a"}"#, createdAt: cutoff.addingTimeInterval(5)))
         XCTAssertNil(LoopScanner.scanCommitted(
             recentAssistant: [], toolCalls: calls, cutoffDate: cutoff, informationBoundary: nil, scope: .thinkingAndContent),
-            "Only 1 fresh call survives the cutoff → below minRepeats → no fire")
+        "Only 1 fresh call survives the cutoff → below minRepeats → no fire")
     }
 
     // MARK: - Information boundary

@@ -53,51 +53,33 @@ nonisolated struct NetworkLogRecord: Codable, Hashable {
 nonisolated final class NetworkLogger: @unchecked Sendable {
     let logURL: URL
     private let encoder: JSONEncoder
-    private let decoder: JSONDecoder
     private let fileManager: FileManager
-    private let queue = DispatchQueue(label: "com.nanoteams.networklogger")
 
     init(logURL: URL, fileManager: FileManager = .default) {
         self.logURL = logURL
         self.fileManager = fileManager
 
-        self.encoder = JSONCoderFactory.makePersistenceEncoder()
-        self.decoder = JSONCoderFactory.makeDateDecoder()
+        self.encoder = JSONCoderFactory.makeJSONLEncoder()
     }
 
+    /// One line per record, O(1) in the log's size, serialized PER FILE by
+    /// `JSONLFileLog` — not per instance, because instances do not map 1:1 onto
+    /// files (a step's logger and team generation's logger share one run file,
+    /// and parallel roles write concurrently, CLAUDE.md #45).
+    ///
+    /// This replaced a decode-whole + append + pretty-print re-encode + atomic
+    /// rewrite per record: O(n) per call and O(n²) bytes across a run with no
+    /// ceiling (`maxToolIterations = 0`), measured at 5.77 MB of I/O for a
+    /// 327 KB / 33-record log — plus `try? decode ?? []`, which silently
+    /// truncated the whole file on one corrupt byte, where a torn JSONL line
+    /// now costs one row. The human-readable `conversation_log.md` is NOT
+    /// produced here — it renders what the user actually SEES (the activity
+    /// feed), owned by `NTMSOrchestrator+ConversationLog`, so it can be diffed
+    /// against this wire log.
     func append(_ record: NetworkLogRecord) {
-        queue.sync {
-            do {
-                // Read existing records
-                var records: [NetworkLogRecord] = []
-                if fileManager.fileExists(atPath: logURL.path),
-                   let data = fileManager.contents(atPath: logURL.path) {
-                    records = (try? decoder.decode([NetworkLogRecord].self, from: data)) ?? []
-                }
-
-                // Append new record
-                records.append(record)
-
-                // Create parent directory if needed
-                let parent = logURL.deletingLastPathComponent()
-                if !fileManager.fileExists(atPath: parent.path) {
-                    try fileManager.createDirectory(at: parent, withIntermediateDirectories: true,
-                                                     attributes: NTMSRepository.internalDirAttributes)
-                }
-
-                // Write back as JSON array. The human-readable `conversation_log.md`
-                // is NO LONGER produced here — it now renders what the user actually
-                // SEES (the activity feed), owned by `NTMSOrchestrator+ConversationLog`,
-                // so it can be diffed against this wire log.
-                let data = try encoder.encode(records)
-                try data.write(to: logURL, options: .atomic)
-            } catch {
-                // Best-effort logging; never fail operations due to logging issues
-                #if DEBUG
-                print("[NetworkLogger] append failed: \(error)")
-                #endif
-            }
-        }
+        JSONLFileLog.append(
+            record, to: logURL, encoder: encoder, fileManager: fileManager,
+            directoryAttributes: NTMSRepository.internalDirAttributes)
     }
 
     /// Creates a request record and returns it for later response pairing

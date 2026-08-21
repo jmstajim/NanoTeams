@@ -12,7 +12,7 @@ nonisolated extension NTMSRepository {
         let paths = try preparePaths(at: workFolderRoot)
         let draftDir = paths.stagedAttachmentDir(draftID: draftID)
         try fileManager.createDirectory(at: draftDir, withIntermediateDirectories: true,
-                                         attributes: Self.internalDirAttributes)
+                                        attributes: Self.internalDirAttributes)
 
         let destinationURL = uniqueFileURL(
             in: draftDir,

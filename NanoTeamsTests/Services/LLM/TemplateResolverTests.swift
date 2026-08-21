@@ -105,24 +105,24 @@ final class TemplateResolverTests: XCTestCase {
     func testCollapseBlankLines_realisticPlaceholderResidue() {
         // Simulates what `resolve` produces when `{toolList}` resolves to "":
         let input = """
-            You are a role.
-
-
-            Your expertise:
-            something.
-
-
-            Deliverables: foo.
-            """
+        You are a role.
+        
+        
+        Your expertise:
+        something.
+        
+        
+        Deliverables: foo.
+        """
         // The double-blank `\n\n\n` runs become `\n\n` (one blank line).
         let output = """
-            You are a role.
-
-            Your expertise:
-            something.
-
-            Deliverables: foo.
-            """
+        You are a role.
+        
+        Your expertise:
+        something.
+        
+        Deliverables: foo.
+        """
         XCTAssertEqual(TemplateResolver.collapseBlankLines(input), output)
     }
 
@@ -150,14 +150,14 @@ final class TemplateResolverTests: XCTestCase {
     /// lines. This is the case exercised by chip resolution to `""`.
     func testStripOrphanHeaders_emptyBetweenTwoSections_strips() {
         let input = """
-            ## A
-            content A
-
-            ## Empty
-
-            ## B
-            content B
-            """
+        ## A
+        content A
+        
+        ## Empty
+        
+        ## B
+        content B
+        """
         let result = TemplateResolver.stripOrphanHeaders(input)
         XCTAssertFalse(result.contains("## Empty"),
                        "Empty `## Empty` header must be stripped; got:\n\(result)")
@@ -172,16 +172,16 @@ final class TemplateResolverTests: XCTestCase {
     /// strip can make the next match's look-ahead newly satisfiable.
     func testStripOrphanHeaders_chainOfTwoEmptySections_bothStripped() {
         let input = """
-            ## A
-            content A
-
-            ## Empty1
-
-            ## Empty2
-
-            ## B
-            content B
-            """
+        ## A
+        content A
+        
+        ## Empty1
+        
+        ## Empty2
+        
+        ## B
+        content B
+        """
         let result = TemplateResolver.stripOrphanHeaders(input)
         XCTAssertFalse(result.contains("## Empty1"),
                        "First empty header must be stripped; got:\n\(result)")
@@ -192,18 +192,18 @@ final class TemplateResolverTests: XCTestCase {
     /// Chain of THREE consecutive empty sections — all three stripped.
     func testStripOrphanHeaders_chainOfThreeEmptySections_allStripped() {
         let input = """
-            ## A
-            content
-
-            ## E1
-
-            ## E2
-
-            ## E3
-
-            ## B
-            content
-            """
+        ## A
+        content
+        
+        ## E1
+        
+        ## E2
+        
+        ## E3
+        
+        ## B
+        content
+        """
         let result = TemplateResolver.stripOrphanHeaders(input)
         for header in ["## E1", "## E2", "## E3"] {
             XCTAssertFalse(result.contains(header),
@@ -217,11 +217,11 @@ final class TemplateResolverTests: XCTestCase {
     /// EOS without the secondary pass).
     func testStripOrphanHeaders_trailingEmptyAtEOS_strips() {
         let input = """
-            ## A
-            content
-
-            ## Trailing
-            """
+        ## A
+        content
+        
+        ## Trailing
+        """
         let result = TemplateResolver.stripOrphanHeaders(input)
         XCTAssertFalse(result.contains("## Trailing"),
                        "Trailing empty header at EOS must be stripped; got:\n\(result)")
@@ -234,14 +234,14 @@ final class TemplateResolverTests: XCTestCase {
     /// parent's body counts as non-empty.
     func testStripOrphanHeaders_h3SubsectionUnderH2_doesNotStripParent() {
         let input = """
-            ## Parent
-
-            ### Sub
-            sub content
-
-            ## After
-            content
-            """
+        ## Parent
+        
+        ### Sub
+        sub content
+        
+        ## After
+        content
+        """
         let result = TemplateResolver.stripOrphanHeaders(input)
         XCTAssertTrue(result.contains("## Parent"),
                       "Parent `## ` header with `### ` subsection content must NOT be stripped; got:\n\(result)")
@@ -257,12 +257,12 @@ final class TemplateResolverTests: XCTestCase {
     /// No-op when every section has body — nothing to strip.
     func testStripOrphanHeaders_allSectionsHaveBody_returnsUnchanged() {
         let input = """
-            ## A
-            content A
-
-            ## B
-            content B
-            """
+        ## A
+        content A
+        
+        ## B
+        content B
+        """
         XCTAssertEqual(TemplateResolver.stripOrphanHeaders(input), input)
     }
 
@@ -347,10 +347,10 @@ final class TemplateResolverTests: XCTestCase {
         )
         XCTAssertFalse(resolved.contains("Team purpose:"),
                        "empty `{teamDescription}` must collapse the whole `Team purpose: ` line, "
-                       + "not leave an orphan label. Got:\n\(resolved)")
+                           + "not leave an orphan label. Got:\n\(resolved)")
         XCTAssertEqual(resolved, "## Team\nMembers: A, B.\n\nYour position: lead.",
                        "neighbouring blank line must collapse the same way `stripOrphanHeaders` "
-                       + "handles empty `##` sections")
+                           + "handles empty `##` sections")
     }
 
     // MARK: - resolve — single-pass semantics (values are data, never re-scanned)
@@ -459,15 +459,15 @@ final class TemplateResolverTests: XCTestCase {
         XCTAssertEqual(out, """
         ## Role
         X
-
+        
         ## Skills
-
+        
         S
-
+        
         ## Global guidance
-
+        
         G
-
+        
         ## Final reminder
         Submit once.
         """)

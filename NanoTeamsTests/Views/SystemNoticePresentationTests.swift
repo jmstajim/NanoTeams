@@ -139,7 +139,7 @@ final class SystemNoticePresentationTests: XCTestCase {
 
         XCTAssertEqual(MessageSourceContext.serverError.displayLabel, "serverError",
                        "Domain still has no label for it — the raw-value fallback is pinned by "
-                       + "LLMMessageSourceContextTests; the row's wording is deliberately local.")
+                           + "LLMMessageSourceContextTests; the row's wording is deliberately local.")
         XCTAssertEqual(
             SystemNoticePresentation.resolve(context: .serverError, content: "b")?.windowTitle,
             "server error")

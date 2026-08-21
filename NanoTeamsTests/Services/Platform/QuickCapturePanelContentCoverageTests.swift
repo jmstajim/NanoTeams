@@ -118,7 +118,7 @@ final class QuickCapturePanelContentCoverageTests: XCTestCase {
         XCTAssertNotNil(controller._testPanel, "presentPanelSync must create the panel")
         XCTAssertTrue(controller._testPanel?._testHasContent == true,
                       "the panel must have been handed a form view — an empty panel is "
-                      + "the silent form of this bug: the overlay appears blank")
+                          + "the silent form of this bug: the overlay appears blank")
 
         // A second rebuild must be idempotent, which is what `showNewTask` and
         // `refreshPanelIfVisible` rely on when they call it on an already-visible panel.

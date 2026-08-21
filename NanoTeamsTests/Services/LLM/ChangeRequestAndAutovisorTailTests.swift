@@ -59,7 +59,7 @@ private final class ScriptedVoteLLMClient: LLMClient, @unchecked Sendable {
         }
     }
 
-    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
 }
 
 /// Records every request and finishes immediately with no events.
@@ -84,7 +84,7 @@ private final class RecordingSilentLLMClient: LLMClient, @unchecked Sendable {
         return AsyncThrowingStream { $0.finish() }
     }
 
-    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
 }
 
 // MARK: - 1. handleChangeRequest: validation routing + vote arms
@@ -807,7 +807,7 @@ final class StepLifecycleLoopTopArmTests: XCTestCase {
 
         XCTAssertFalse(currentStep()?.wireTranscript.isEmpty ?? true,
                        "a park with no persisted transcript strands the conversation — "
-                     + "re-entry would fall back to a lossy rebuild")
+                           + "re-entry would fall back to a lossy rebuild")
     }
 
     /// The flag is CONSUMED at the top of the arm, so a resumed step doesn't re-park

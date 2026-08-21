@@ -107,8 +107,6 @@ final class VisionAndComputerUseApprovalFlowTests: XCTestCase {
             id: taskIDValue, title: "t", supervisorTask: "g", runs: [Run(id: 0, steps: [step])])
     }
 
-    private func makeTask() -> NTMSTask { Self.makeTask() }
-
     private func visionResult(path: String, prompt: String = "Describe it") -> ToolExecutionResult {
         ToolExecutionResult(
             providerID: providerID,
@@ -989,7 +987,7 @@ private final class StubVisionClient: LLMClient, @unchecked Sendable {
         }
     }
 
-    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
 
     func modelSupportsVision(config _: LLMConfig) async -> Bool? { visionSupport }
 }

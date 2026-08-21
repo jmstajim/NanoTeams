@@ -83,7 +83,7 @@ final class ConsultationChatArtifactContextTests: XCTestCase {
         XCTAssertNotNil(content, "An over-cap artifact must be truncated, not dropped.")
         XCTAssertTrue(content?.hasSuffix("\n... (truncated)") ?? false,
                       "The cap must be announced, not applied silently. got length: "
-                      + String(content?.count ?? -1))
+                          + String(content?.count ?? -1))
         XCTAssertEqual(content?.filter({ $0 == "A" }).count, ArtifactConstants.maxContentBytes,
                        "Exactly maxContentBytes of payload survives the cap.")
     }
@@ -394,7 +394,7 @@ final class ConsultationChatArtifactContextTests: XCTestCase {
         let msg = chat.messages[2].content
         XCTAssertTrue(msg.contains("[Ghost Notes]:"),
                       "An upstream artifact with no readable payload is still worth naming — "
-                      + "the role can ask for it. got: \(msg)")
+                          + "the role can ask for it. got: \(msg)")
         XCTAssertFalse(msg.contains("```"),
                        "No fence may be opened for content that does not exist.")
     }
@@ -426,7 +426,7 @@ final class ConsultationChatArtifactContextTests: XCTestCase {
 
         XCTAssertEqual(chat.injectedArtifactIDs, ["product_requirements", "engineering_notes"],
                        "A freshly seeded chat has already 'seen' the whole run, so the next "
-                       + "getOrCreate must not re-inject any of it.")
+                           + "getOrCreate must not re-inject any of it.")
     }
 
     /// The three builders are siblings with identical shape, but only

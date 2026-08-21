@@ -40,7 +40,7 @@ final class TaskMutationServiceTests: XCTestCase {
         )
         let run = Run(id: 0, steps: [step])
         task.runs.append(run)
-        _ = try repository.updateTask(at: tempDir, task: task)
+        try repository.updateTaskOnly(at: tempDir, task: task)
 
         return (task, stepID)
     }

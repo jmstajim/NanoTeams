@@ -28,7 +28,7 @@ extension TeamEngine {
                 transition(to: .paused)
                 store.setLastErrorMessageForUI(
                     "Run paused: iteration limit (\(autoIterationLimit)) reached. " +
-                    "Press Resume to continue, or increase 'Auto iterations limit' in Team Settings."
+                        "Press Resume to continue, or increase 'Auto iterations limit' in Team Settings."
                 )
                 return
             }

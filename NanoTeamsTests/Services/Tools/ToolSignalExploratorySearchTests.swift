@@ -60,7 +60,7 @@ final class ToolSignalExploratorySearchTests: XCTestCase {
             maxResults: -5
         )
         XCTAssertGreaterThanOrEqual(p.maxResults, 1,
-            "Negative maxResults must clamp to the positive domain.")
+                                    "Negative maxResults must clamp to the positive domain.")
     }
 
     func testPayload_hugeMaxResults_clamped() throws {
@@ -71,7 +71,7 @@ final class ToolSignalExploratorySearchTests: XCTestCase {
             maxResults: 1_000_000
         )
         XCTAssertLessThanOrEqual(p.maxResults, ExploratorySearchPayload.maxAllowedResults,
-            "Pathologically large maxResults must clamp.")
+                                 "Pathologically large maxResults must clamp.")
     }
 
     func testPayload_negativeContext_clampedToZero() throws {

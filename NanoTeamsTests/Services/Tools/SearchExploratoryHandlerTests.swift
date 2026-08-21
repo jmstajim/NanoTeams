@@ -151,7 +151,7 @@ final class SearchExploratoryHandlerTests: XCTestCase {
             args: ["query": "target", "exploratory": false]
         )
         XCTAssertNil(result.signal,
-            "Explicit `exploratory: false` must override the user-toggle default.")
+                     "Explicit `exploratory: false` must override the user-toggle default.")
     }
 
     /// The old `expand` key is retired (pre-release rename). Asserting
@@ -162,7 +162,7 @@ final class SearchExploratoryHandlerTests: XCTestCase {
             args: ["query": "scroll", "exploratory_search": true]
         )
         XCTAssertNil(result.signal,
-            "Legacy `expand` key is removed; must behave as plain search.")
+                     "Legacy `expand` key is removed; must behave as plain search.")
     }
 
     // MARK: - Schema
@@ -171,8 +171,8 @@ final class SearchExploratoryHandlerTests: XCTestCase {
         let params = SearchTool.schema.parameters
         let keys = Set(params.properties?.keys ?? [:].keys)
         XCTAssertTrue(keys.contains("exploratory"),
-            "Schema must expose `expand` as the primary flag. Keys: \(keys)")
+                      "Schema must expose `expand` as the primary flag. Keys: \(keys)")
         XCTAssertFalse(keys.contains("exploratory_search"),
-            "Legacy `expand` key must not appear in the schema.")
+                       "Legacy `expand` key must not appear in the schema.")
     }
 }

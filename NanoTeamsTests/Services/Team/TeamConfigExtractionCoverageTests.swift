@@ -29,7 +29,7 @@ final class TeamConfigExtractionCoverageTests: XCTestCase {
     func testExtractJSONObject_jsonFence_beatsAnEarlierBalancedObjectInTheProse() {
         let text = """
         Here is the shape I will use: {"note":"example"}
-
+        
         ```json
         {"name":"Payments Team","roles":[{"name":"Engineer"}]}
         ```
@@ -51,7 +51,7 @@ final class TeamConfigExtractionCoverageTests: XCTestCase {
     func testExtractJSONObject_untaggedFence_stillBeatsTheProse() {
         let text = """
         Draft, ignore this: {"note":"example"}
-
+        
         ```
         {"name":"Payments Team","roles":[{"name":"Engineer"}]}
         ```

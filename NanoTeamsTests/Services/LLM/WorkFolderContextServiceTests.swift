@@ -72,7 +72,7 @@ final class WorkFolderContextServiceTests: XCTestCase {
     func testProjectInputExcerptExtraction() async throws {
         let swiftContent = """
         import Foundation
-
+        
         class MyClass {
             func doSomething() {
                 print("Hello")

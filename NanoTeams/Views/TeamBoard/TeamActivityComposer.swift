@@ -7,11 +7,13 @@ import SwiftUI
 /// §Common API pitfalls), so `askingRoleID` is a computed projection of `stepID`
 /// rather than a stored field — this keeps the two values from ever drifting.
 ///
-/// `paired` carries the assistant turn that emitted the question — its `id`
-/// drives bubble-suppression in `ActivityFeedBuilder.emitItems` (so the same
-/// turn doesn't appear twice while the question is active) and its `thinking`
-/// feeds the composer's thinking disclosure. `paired == nil` means "no preamble
-/// turn" — there's no bubble to suppress and the thinking disclosure is hidden.
+/// `paired` carries the assistant turn that emitted the question. When that turn
+/// carried no prose, `isFullyRenderedByQuestionCard` is true: the feed suppresses
+/// its bubble (so the turn doesn't appear twice) and this card shows the turn's
+/// `thinking` in its disclosure. When the turn DID carry prose, the bubble stays
+/// in the feed and owns the reasoning row, so this card shows the question alone
+/// — otherwise the same reasoning would render twice. `paired == nil` means "no
+/// preamble turn": nothing to suppress, disclosure hidden.
 struct TeamActivityActiveQuestion: Equatable {
     let stepID: String
     let role: Role
@@ -22,6 +24,18 @@ struct TeamActivityActiveQuestion: Equatable {
     /// by design (`StepExecution.id == roleID`); exposed as a computed property
     /// so callers don't accidentally pass different values.
     var askingRoleID: String { stepID }
+
+    /// The reasoning row this card should render, if any.
+    ///
+    /// Non-nil only when the card owns the whole turn. A turn that also carried
+    /// prose keeps its feed bubble, and that bubble already renders the same
+    /// `thinking` via `MessageThinkingSection` — surfacing it here too would show
+    /// the reasoning twice, the second time in a height-constrained card. Reuses
+    /// `isFullyRenderedByQuestionCard`, the same predicate that decides feed
+    /// suppression, so the two surfaces cannot disagree about who owns the turn.
+    var cardThinking: String? {
+        paired.flatMap { $0.isFullyRenderedByQuestionCard ? $0.thinking : nil }
+    }
 
     /// Memberwise init expressed explicitly so `paired:` defaults to `nil` for
     /// routing/ordering tests that don't exercise the thinking-disclosure path.
@@ -114,8 +128,10 @@ struct TeamActivityComposer: View {
     /// Whether the question preview card is collapsed to a single header line.
     @State private var isQuestionCollapsed: Bool = false
     /// Whether the paired-message thinking disclosure is expanded. Only relevant
-    /// when `q.paired?.thinking != nil`. Default collapsed: thinking is
-    /// supplementary; user reaches for it only when the body alone is unclear.
+    /// when `q.cardThinking != nil` — i.e. when this card owns the turn; a
+    /// prose-carrying turn keeps its reasoning on the feed bubble instead.
+    /// Default collapsed: thinking is supplementary; user reaches for it only
+    /// when the body alone is unclear.
     @State private var isThinkingExpanded: Bool = false
 
     @Environment(NTMSOrchestrator.self) private var store
@@ -388,7 +404,7 @@ struct TeamActivityComposer: View {
         let askingColor = roleDefinitions.first(where: { $0.id == q.askingRoleID })?.resolvedTintColor ?? Colors.accent
         let chromeOverhead: CGFloat = 120
         let maxPreviewHeight: CGFloat = maxHeight.isFinite ? max(80, maxHeight - chromeOverhead) : 200
-        let thinking = q.paired?.thinking
+        let thinking = q.cardThinking
 
         return VStack(alignment: .leading, spacing: 0) {
             // Header: role icon + "Role asks:" + collapse chevron.

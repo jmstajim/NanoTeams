@@ -87,7 +87,7 @@ final class StableIDTests: XCTestCase {
         for role in team.roles {
             // Role IDs should be human-readable, not UUIDs
             XCTAssertFalse(role.id.contains("-") && role.id.count == 36,
-                          "Role '\(role.name)' has UUID-style ID: \(role.id)")
+                           "Role '\(role.name)' has UUID-style ID: \(role.id)")
         }
     }
 
@@ -144,9 +144,9 @@ final class StableIDTests: XCTestCase {
         let dup = team.duplicate(withName: "My Clone")
         for role in dup.roles {
             XCTAssertTrue(role.id.contains("my_clone"),
-                         "Duplicated role '\(role.name)' ID should contain team name: \(role.id)")
+                          "Duplicated role '\(role.name)' ID should contain team name: \(role.id)")
             XCTAssertFalse(role.id.contains("-") && role.id.count == 36,
-                          "Duplicated role '\(role.name)' has UUID-style ID: \(role.id)")
+                           "Duplicated role '\(role.name)' has UUID-style ID: \(role.id)")
         }
     }
 
@@ -244,7 +244,7 @@ final class StableIDTests: XCTestCase {
 
         for role in imported.roles {
             XCTAssertTrue(role.id.contains("my_import"),
-                         "Imported role '\(role.name)' ID should contain team name: \(role.id)")
+                          "Imported role '\(role.name)' ID should contain team name: \(role.id)")
         }
     }
 
@@ -259,21 +259,21 @@ final class StableIDTests: XCTestCase {
         // Hierarchy should reference new role IDs
         for (child, parent) in imported.settings.hierarchy.reportsTo {
             XCTAssertTrue(importedRoleIDs.contains(child),
-                         "Hierarchy child '\(child)' should be a valid imported role ID")
+                          "Hierarchy child '\(child)' should be a valid imported role ID")
             XCTAssertTrue(importedRoleIDs.contains(parent),
-                         "Hierarchy parent '\(parent)' should be a valid imported role ID")
+                          "Hierarchy parent '\(parent)' should be a valid imported role ID")
         }
 
         // Meeting coordinator should reference a new role ID
         if let coord = imported.settings.meetingCoordinatorRoleID {
             XCTAssertTrue(importedRoleIDs.contains(coord),
-                         "Meeting coordinator '\(coord)' should be a valid imported role ID")
+                          "Meeting coordinator '\(coord)' should be a valid imported role ID")
         }
 
         // Invitable roles should reference new role IDs
         for stepID in imported.settings.invitableRoles {
             XCTAssertTrue(importedRoleIDs.contains(stepID),
-                         "Invitable role '\(stepID)' should be a valid imported role ID")
+                          "Invitable role '\(stepID)' should be a valid imported role ID")
         }
     }
 
@@ -295,9 +295,9 @@ final class StableIDTests: XCTestCase {
         duplicated.id = NTMSID.from(name: "team:\(duplicated.name)")
 
         XCTAssertNotEqual(duplicated.id, original.id,
-                         "Duplicated role should have different ID from original")
+                          "Duplicated role should have different ID from original")
         XCTAssertTrue(duplicated.id.contains("copy"),
-                     "Duplicated role ID should contain 'copy': \(duplicated.id)")
+                      "Duplicated role ID should contain 'copy': \(duplicated.id)")
     }
 
     func testDuplicateArtifact_idDiffersFromOriginal() {
@@ -315,7 +315,7 @@ final class StableIDTests: XCTestCase {
         duplicated.id = TeamArtifact.slugify(duplicated.name)
 
         XCTAssertNotEqual(duplicated.id, original.id,
-                         "Duplicated artifact should have different ID from original")
+                          "Duplicated artifact should have different ID from original")
         XCTAssertEqual(duplicated.id, "design_spec_copy")
     }
 

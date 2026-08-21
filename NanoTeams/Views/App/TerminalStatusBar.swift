@@ -17,14 +17,10 @@ struct TerminalStatusBar: View {
     // the whole layout (sidebar + detail), not just this status strip.
     private var baseURL: String { config.llmBaseURLString }
 
-    private var hostAndPort: String {
-        // Strip scheme + trailing slash for the tmux-style `host:port` reading.
-        guard let url = URL(string: baseURL), let host = url.host else {
-            return baseURL.trimmingCharacters(in: .init(charactersIn: "/"))
-        }
-        if let port = url.port { return "\(host):\(port)" }
-        return host
-    }
+    /// Strip scheme + trailing slash for the tmux-style `host:port` reading. The rule itself lives
+    /// on `String` — the benchmark's target label and its leaderboard rows shorten endpoints the
+    /// same way, and three copies of it drifted apart on the fallback branch.
+    private var hostAndPort: String { baseURL.endpointHostLabel }
 
     var body: some View {
         VStack(spacing: 0) {

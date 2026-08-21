@@ -9,7 +9,7 @@ import SwiftUI
 /// (e.g. one surface raising the floor without the others) would cause
 /// inconsistent feel between the activity-feed dock, the QuickCapture
 /// overlay, and any future composer surface.
-enum MessageComposerLayout {
+nonisolated enum MessageComposerLayout {
 
     /// Default `maxTextFieldHeight` for `MessageComposer` — applied when no
     /// caller-supplied override is provided. Picked to match the legacy

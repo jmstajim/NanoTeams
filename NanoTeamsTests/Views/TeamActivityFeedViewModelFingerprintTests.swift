@@ -81,7 +81,7 @@ final class TeamActivityFeedViewModelFingerprintTests: XCTestCase {
     /// rebuild trigger doesn't fire when the composer state changes.
     ///
     /// This test fails against the pre-fix fingerprint predicate and passes
-    /// once the predicate is wired through `stepHasActiveSupervisorInput`.
+    /// once the predicate is wired through `StepExecution.hasActiveSupervisorInput`.
     func testTimelineFingerprint_multiRoundRace_stillCountsTrailingUnanswered() {
         let ask1 = StepToolCall(
             createdAt: MonotonicClock.shared.now(),

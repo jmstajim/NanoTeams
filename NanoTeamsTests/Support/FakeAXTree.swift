@@ -13,12 +13,10 @@ import Foundation
 final class FakeAXNode: @unchecked Sendable {
     var strings: [String: String] = [:]
     var flags: [String: Bool] = [:]
-    /// Named relations other than `children` — today only `kAXWindowsAttribute` (inspector) and the
-    /// focused-window / focused-element lookups (clipboard).
+    /// Named relations other than `children` — today only `kAXWindowsAttribute` (inspector).
     var related: [String: [FakeAXNode]] = [:]
     var frame: CGRect?
     var children: [FakeAXNode] = []
-    var selectedRange: AXTextRange?
 
     init(
         role: String? = nil,
@@ -50,9 +48,8 @@ final class FakeAXNode: @unchecked Sendable {
     }
 }
 
-/// Records every read and write so a test can assert what the walk ASKED for, not only what it
-/// returned — which is how "the path check runs before the expensive read" and "the enable is
-/// idempotent" become checkable at all.
+/// Records reads and writes so a test can assert what the walk ASKED for, not only what it
+/// returned — which is how "the enable is idempotent" becomes checkable at all.
 final class FakeAXReader: AXNodeReading, @unchecked Sendable {
     typealias Node = FakeAXNode
 
@@ -61,13 +58,11 @@ final class FakeAXReader: AXNodeReading, @unchecked Sendable {
     var fallbackRoot = FakeAXNode()
 
     private(set) var applicationNodeRequests: [pid_t] = []
-    private(set) var stringReads: [(attribute: String, node: ObjectIdentifier)] = []
     private(set) var setTrueCalls: [(attribute: String, node: ObjectIdentifier)] = []
     private(set) var messagingTimeouts: [Double] = []
     private(set) var childrenReads = 0
     private(set) var frameReads = 0
     private(set) var elementsReads: [String] = []
-    private(set) var selectedRangeReads = 0
 
     /// Ran on every `children(of:)` call — lets a test burn the walk's wall-clock deadline, or flip
     /// the cancellation flag, at a deterministic point in the traversal.
@@ -83,8 +78,7 @@ final class FakeAXReader: AXNodeReading, @unchecked Sendable {
     }
 
     func string(_ attribute: String, of node: FakeAXNode) -> String? {
-        stringReads.append((attribute, ObjectIdentifier(node)))
-        return node.strings[attribute]
+        node.strings[attribute]
     }
 
     func boolValue(_ attribute: String, of node: FakeAXNode) -> Bool? {
@@ -102,19 +96,9 @@ final class FakeAXReader: AXNodeReading, @unchecked Sendable {
         return node.children
     }
 
-    func element(_ attribute: String, of node: FakeAXNode) -> FakeAXNode? {
-        elementsReads.append(attribute)
-        return node.related[attribute]?.first
-    }
-
     func elements(_ attribute: String, of node: FakeAXNode) -> [FakeAXNode] {
         elementsReads.append(attribute)
         return node.related[attribute] ?? []
-    }
-
-    func selectedRange(of node: FakeAXNode) -> AXTextRange? {
-        selectedRangeReads += 1
-        return node.selectedRange
     }
 
     func setTrue(_ attribute: String, on node: FakeAXNode) {
@@ -124,12 +108,5 @@ final class FakeAXReader: AXNodeReading, @unchecked Sendable {
 
     func setMessagingTimeout(_ seconds: Double, on node: FakeAXNode) {
         messagingTimeouts.append(seconds)
-    }
-
-    // MARK: - Convenience assertions
-
-    func readAttributes(of node: FakeAXNode) -> [String] {
-        let id = ObjectIdentifier(node)
-        return stringReads.filter { $0.node == id }.map(\.attribute)
     }
 }

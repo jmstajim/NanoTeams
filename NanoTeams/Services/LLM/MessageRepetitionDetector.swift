@@ -173,8 +173,8 @@ nonisolated enum MessageRepetitionDetector {
             substring: best.substring,
             repeatCount: matchingPriors + 1,
             diagnostic: """
-                last message has \(Int(best.ratio * 100))% substring overlap with \(matchingPriors) of \(recent.count - 1) prior messages — strategic loop suspected. Common content: "\(truncate(best.substring, max: 80))"
-                """
+            last message has \(Int(best.ratio * 100))% substring overlap with \(matchingPriors) of \(recent.count - 1) prior messages — strategic loop suspected. Common content: "\(truncate(best.substring, max: 80))"
+            """
         )
     }
 

@@ -50,40 +50,46 @@ final class SidebarUnreadIndicatorTests: XCTestCase {
 
     // MARK: - hasUnreadInput derivation logic
 
-    /// Mirrors the logic in SidebarView.allTasks:
-    ///   hasUnread = isChatMode && status == .needsSupervisorInput && !seen
+    /// Calls PRODUCTION. Both of this file's ancestors re-implemented the predicate
+    /// here instead, which is why they stayed green through the change that moved the
+    /// indicator off `TaskStatus` onto the durable waiting fact (CLAUDE.md #57).
     private func computeHasUnread(
         isChatMode: Bool,
-        status: TaskStatus,
-        taskID: Int
+        waiting: Bool,
+        taskID: Int,
+        status: TaskStatus = .running
     ) -> Bool {
-        isChatMode
-            && status == .needsSupervisorInput
-            && !sut.seenSupervisorInputTaskIDs.contains(taskID)
+        var summary = TaskSummary(id: taskID, title: "t\(taskID)", status: status, isChatMode: isChatMode)
+        summary.hasPendingSupervisorInput = waiting
+        return SidebarViewLogic.buildSidebarTaskItems(
+            summaries: [summary],
+            seenSupervisorInputTaskIDs: sut.seenSupervisorInputTaskIDs,
+            engineStates: [:]
+        )[0].hasUnreadInput
     }
 
     func testHasUnread_chatModeWithUnansweredInput_returnsTrue() {
         let taskID = 0
-        let result = computeHasUnread(isChatMode: true, status: .needsSupervisorInput, taskID: taskID)
+        let result = computeHasUnread(isChatMode: true, waiting: true, taskID: taskID)
         XCTAssertTrue(result)
     }
 
     func testHasUnread_chatModeWithUnansweredInput_alreadySeen_returnsFalse() {
         let taskID = 0
         sut.markSupervisorInputSeen(taskID: taskID)
-        let result = computeHasUnread(isChatMode: true, status: .needsSupervisorInput, taskID: taskID)
+        let result = computeHasUnread(isChatMode: true, waiting: true, taskID: taskID)
         XCTAssertFalse(result)
     }
 
     func testHasUnread_chatModeRunning_returnsFalse() {
         let taskID = 0
-        let result = computeHasUnread(isChatMode: true, status: .running, taskID: taskID)
+        let result = computeHasUnread(isChatMode: true, waiting: false, taskID: taskID)
         XCTAssertFalse(result)
     }
 
     func testHasUnread_taskModeWithInput_returnsFalse() {
         let taskID = 0
-        let result = computeHasUnread(isChatMode: false, status: .needsSupervisorInput, taskID: taskID)
+        let result = computeHasUnread(isChatMode: false, waiting: true, taskID: taskID)
         XCTAssertFalse(result)
     }
 
@@ -93,7 +99,7 @@ final class SidebarUnreadIndicatorTests: XCTestCase {
         // Simulate: status left needsSupervisorInput (user answered) → remove from seen
         sut.unmarkSupervisorInputSeen(taskID: taskID)
         // Simulate: assistant replies again → new needsSupervisorInput
-        let result = computeHasUnread(isChatMode: true, status: .needsSupervisorInput, taskID: taskID)
+        let result = computeHasUnread(isChatMode: true, waiting: true, taskID: taskID)
         XCTAssertTrue(result)
     }
 

@@ -40,17 +40,17 @@ final class EnvelopeStatusHelperTests: XCTestCase {
 
     func testStatus_indeterminateOnMalformedJSON() {
         XCTAssertEqual(service.envelopeStatus(#"not even json"#), .indeterminate,
-            "Malformed JSON must not flip the card to error — treat as opaque success.")
+                       "Malformed JSON must not flip the card to error — treat as opaque success.")
     }
 
     func testStatus_indeterminateOnMissingOkField() {
         XCTAssertEqual(service.envelopeStatus(#"{"data":{}}"#), .indeterminate,
-            "An envelope without `ok` is not actionable — leave the card alone.")
+                       "An envelope without `ok` is not actionable — leave the card alone.")
     }
 
     func testStatus_indeterminateOnNonBoolOk() {
         XCTAssertEqual(service.envelopeStatus(#"{"ok":"true"}"#), .indeterminate,
-            "Non-Bool `ok` is malformed; don't flip.")
+                       "Non-Bool `ok` is malformed; don't flip.")
     }
 
     func testStatus_indeterminateOnEmptyString() {
@@ -59,7 +59,7 @@ final class EnvelopeStatusHelperTests: XCTestCase {
 
     func testStatus_indeterminateOnNonObjectRoot() {
         XCTAssertEqual(service.envelopeStatus("[]"), .indeterminate,
-            "Top-level array is not a tool envelope.")
+                       "Top-level array is not a tool envelope.")
     }
 
     // MARK: - Three-state distinction

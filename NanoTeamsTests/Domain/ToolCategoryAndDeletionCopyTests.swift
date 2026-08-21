@@ -58,7 +58,7 @@ final class ToolCategoryAndDeletionCopyTests: XCTestCase {
             duplicated.isEmpty,
             "a tool in two sections renders twice in the editor: "
                 + duplicated.map { "\($0.key) in \($0.value.joined(separator: "+"))" }
-                    .sorted().joined(separator: ", "))
+                .sorted().joined(separator: ", "))
     }
 
     func testDefinitionCategories_haveUniqueIdentifiersAndNoEmptySection() {

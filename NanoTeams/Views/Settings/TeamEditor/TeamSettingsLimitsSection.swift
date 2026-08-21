@@ -16,45 +16,45 @@ struct TeamSettingsLimitsSection: View {
             footer: "Limits prevent runaway collaboration costs. Adjust based on team complexity."
         ) {
             VStack(alignment: .leading, spacing: Spacing.m) {
-            DisclosureGroup(isExpanded: $consultationExpanded) {
-                limitsRow("Consultations per step", subtitle: "How many times a role can ask teammates",
-                          value: $limits.maxConsultationsPerStep, range: 1...20)
-                limitsRow("Same teammate asks", subtitle: "Maximum questions to one teammate per step",
-                          value: $limits.maxSameTeammateAsks, range: 1...10)
-                limitsRow("Meetings per run", subtitle: "Maximum team meetings in a single task run",
-                          value: $limits.maxMeetingsPerRun, range: 1...20)
-                limitsRow("Meeting turns", subtitle: "Maximum discussion turns per meeting",
-                          value: $limits.maxMeetingTurns, range: 5...50)
-                limitsRow("Meeting tool iterations", subtitle: "Tool calls per meeting turn",
-                          value: $limits.maxMeetingToolIterationsPerTurn, range: 1...10)
-            } label: {
-                Button {
-                    withAnimation(reduceMotion ? .none : Animations.quick) { consultationExpanded.toggle() }
+                DisclosureGroup(isExpanded: $consultationExpanded) {
+                    limitsRow("Consultations per step", subtitle: "How many times a role can ask teammates",
+                              value: $limits.maxConsultationsPerStep, range: 1...20)
+                    limitsRow("Same teammate asks", subtitle: "Maximum questions to one teammate per step",
+                              value: $limits.maxSameTeammateAsks, range: 1...10)
+                    limitsRow("Meetings per run", subtitle: "Maximum team meetings in a single task run",
+                              value: $limits.maxMeetingsPerRun, range: 1...20)
+                    limitsRow("Meeting turns", subtitle: "Maximum discussion turns per meeting",
+                              value: $limits.maxMeetingTurns, range: 5...50)
+                    limitsRow("Meeting tool iterations", subtitle: "Tool calls per meeting turn",
+                              value: $limits.maxMeetingToolIterationsPerTurn, range: 1...10)
                 } label: {
-                    Text("Consultation & Meetings")
-                        .foregroundStyle(Colors.textPrimary)
+                    Button {
+                        withAnimation(reduceMotion ? .none : Animations.quick) { consultationExpanded.toggle() }
+                    } label: {
+                        Text("Consultation & Meetings")
+                            .foregroundStyle(Colors.textPrimary)
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
-            }
 
-            DisclosureGroup(isExpanded: $changeRequestsExpanded) {
-                limitsRow("Change requests per run",
-                          subtitle: limits.maxChangeRequestsPerRun == 0 ? "Disabled" : "Peer revision requests per task run",
-                          value: $limits.maxChangeRequestsPerRun, range: 0...10,
-                          zeroLabel: "Off")
-                limitsRow("Amendments per step",
-                          subtitle: limits.maxAmendmentsPerStep == 0 ? "Disabled" : "Maximum revisions a step can receive",
-                          value: $limits.maxAmendmentsPerStep, range: 0...10,
-                          zeroLabel: "Off")
-            } label: {
-                Button {
-                    withAnimation(reduceMotion ? .none : Animations.quick) { changeRequestsExpanded.toggle() }
+                DisclosureGroup(isExpanded: $changeRequestsExpanded) {
+                    limitsRow("Change requests per run",
+                              subtitle: limits.maxChangeRequestsPerRun == 0 ? "Disabled" : "Peer revision requests per task run",
+                              value: $limits.maxChangeRequestsPerRun, range: 0...10,
+                              zeroLabel: "Off")
+                    limitsRow("Amendments per step",
+                              subtitle: limits.maxAmendmentsPerStep == 0 ? "Disabled" : "Maximum revisions a step can receive",
+                              value: $limits.maxAmendmentsPerStep, range: 0...10,
+                              zeroLabel: "Off")
                 } label: {
-                    Text("Change Requests")
-                        .foregroundStyle(Colors.textPrimary)
+                    Button {
+                        withAnimation(reduceMotion ? .none : Animations.quick) { changeRequestsExpanded.toggle() }
+                    } label: {
+                        Text("Change Requests")
+                            .foregroundStyle(Colors.textPrimary)
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
-            }
             }
         }
     }

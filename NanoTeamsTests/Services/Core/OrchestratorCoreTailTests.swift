@@ -1219,8 +1219,8 @@ final class OrchestratorCoreTailWorkFolderTests: NTMSOrchestratorTestBase, @unch
         guard let manager = await sut.createTask(title: "Manager", supervisorTask: "manage"),
               let worker = await sut.createTask(title: "Worker", supervisorTask: "work"),
               let child = await sut.createDelegatedTask(
-                parentTaskID: worker, parentRoleID: "agent", title: "Child",
-                supervisorTask: "sub", preferredTeamID: nil, depth: 1)
+                  parentTaskID: worker, parentRoleID: "agent", title: "Child",
+                  supervisorTask: "sub", preferredTeamID: nil, depth: 1)
         else {
             return XCTFail("task creation failed")
         }

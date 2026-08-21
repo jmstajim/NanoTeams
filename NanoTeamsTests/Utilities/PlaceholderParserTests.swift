@@ -181,7 +181,7 @@ final class PlaceholderParserTests: XCTestCase {
             resolvedValues: ["roleName": "X", "toolList": "Y"]
         )
         XCTAssertEqual(result.string, "XY",
-            "Adjacent placeholders must concatenate in order with no inserted whitespace")
+                       "Adjacent placeholders must concatenate in order with no inserted whitespace")
     }
 
     func testResolvedValues_emptyStringValue_rendersEmptyColoredRunNotChip() {
@@ -197,7 +197,7 @@ final class PlaceholderParserTests: XCTestCase {
         )
         XCTAssertEqual(result.string, "Artifacts: ")
         XCTAssertEqual(chipCount(result), 0,
-            "Empty-string value must NOT trigger the chip fallback — that's reserved for omitted keys")
+                       "Empty-string value must NOT trigger the chip fallback — that's reserved for omitted keys")
     }
 
     // MARK: - Helpers

@@ -61,20 +61,20 @@ final class ChangeRequestVotingFailureTests: XCTestCase {
         // THE pin: a change request whose vote never ran must NOT report success.
         // Pre-fix this returned `.ok("...TIED VOTE — auto-approved...")` (succeeded == true).
         XCTAssertFalse(reply.succeeded,
-            "A change request whose voting meeting failed to run must not auto-approve. got: \(reply.text)")
+                       "A change request whose voting meeting failed to run must not auto-approve. got: \(reply.text)")
         XCTAssertTrue(reply.text.lowercased().contains("vote") || reply.text.lowercased().contains("voting"),
-            "Failure reason should explain the vote did not run. got: \(reply.text)")
+                      "Failure reason should explain the vote did not run. got: \(reply.text)")
 
         // The recorded change request must not be marked approved.
         let recorded = mockDelegate.taskToMutate?.runs[0].changeRequests.last
         XCTAssertNotNil(recorded, "The change request must be recorded even when the vote fails.")
         XCTAssertNotEqual(recorded?.status, .approved,
-            "A non-running vote must not leave the change request APPROVED.")
+                          "A non-running vote must not leave the change request APPROVED.")
 
         // No silent amendment may have been executed against the target's completed work.
         let targetStep = mockDelegate.taskToMutate?.runs[0].steps.first { $0.id == targetStepID }
         XCTAssertEqual(targetStep?.amendments.count, 0,
-            "A failed vote must not silently amend the target role's deliverable.")
+                       "A failed vote must not silently amend the target role's deliverable.")
     }
 
     // MARK: - Helpers
@@ -138,5 +138,5 @@ private final class SilentLLMClient: LLMClient, @unchecked Sendable {
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         AsyncThrowingStream { $0.finish() }
     }
-    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
 }

@@ -43,66 +43,66 @@ struct TeamSettingsCollaborationSection: View {
             footer: "Configure how team members interact during meetings."
         ) {
             VStack(alignment: .leading, spacing: Spacing.m) {
-            Toggle("Supervisor can join meetings", isOn: $supervisorCanBeInvited)
-                .toggleStyle(.terminal)
+                Toggle("Supervisor can join meetings", isOn: $supervisorCanBeInvited)
+                    .toggleStyle(.terminal)
 
-            // Auto (= `meetingCoordinatorRoleID == nil`) means: no designated
-            // coordinator — the initiator of each meeting becomes its
-            // effective coordinator. See `TeamSettings`.
-            //
-            // `normalizedSelection` collapses orphan stored IDs (referenced
-            // role removed) to nil so the picker shows "Auto" instead of a
-            // blank selection, matching the runtime's silent self-heal in
-            // `LLMExecutionService.resolveCoordinatorRole`.
-            HStack {
-                Text("Meeting Coordinator")
-                Spacer()
-                TerminalPicker(
-                    selection: Binding<String?>(
-                        get: {
-                            MeetingCoordinatorPickerLogic.normalizedSelection(
-                                stored: team.settings.meetingCoordinatorRoleID,
-                                availableIDs: nonSupervisorRoles.map(\.id)
-                            )
-                        },
-                        set: { newRoleID in
-                            team.settings.meetingCoordinatorRoleID =
-                                MeetingCoordinatorPickerLogic.sanitizedSelection(newRoleID)
-                            onSave()
-                        }
-                    ),
-                    options: [(value: String?.none, label: "Auto")]
-                        + nonSupervisorRoles.map { (value: String?.some($0.id), label: $0.name) }
-                )
-            }
-
-            DisclosureGroup(isExpanded: $invitableRolesExpanded) {
-                VStack(alignment: .leading) {
-                    ForEach(nonSupervisorRoles) { role in
-                        Toggle(role.name, isOn: Binding(
-                            get: { team.settings.invitableRoles.contains(role.id) },
-                            set: { isOn in
-                                if isOn {
-                                    team.settings.invitableRoles.insert(role.id)
-                                } else {
-                                    team.settings.invitableRoles.remove(role.id)
-                                }
+                // Auto (= `meetingCoordinatorRoleID == nil`) means: no designated
+                // coordinator — the initiator of each meeting becomes its
+                // effective coordinator. See `TeamSettings`.
+                //
+                // `normalizedSelection` collapses orphan stored IDs (referenced
+                // role removed) to nil so the picker shows "Auto" instead of a
+                // blank selection, matching the runtime's silent self-heal in
+                // `LLMExecutionService.resolveCoordinatorRole`.
+                HStack {
+                    Text("Meeting Coordinator")
+                    Spacer()
+                    TerminalPicker(
+                        selection: Binding<String?>(
+                            get: {
+                                MeetingCoordinatorPickerLogic.normalizedSelection(
+                                    stored: team.settings.meetingCoordinatorRoleID,
+                                    availableIDs: nonSupervisorRoles.map(\.id)
+                                )
+                            },
+                            set: { newRoleID in
+                                team.settings.meetingCoordinatorRoleID =
+                                    MeetingCoordinatorPickerLogic.sanitizedSelection(newRoleID)
                                 onSave()
                             }
-                        ))
-                        .toggleStyle(.terminal)
+                        ),
+                        options: [(value: String?.none, label: "Auto")]
+                            + nonSupervisorRoles.map { (value: String?.some($0.id), label: $0.name) }
+                    )
+                }
+
+                DisclosureGroup(isExpanded: $invitableRolesExpanded) {
+                    VStack(alignment: .leading) {
+                        ForEach(nonSupervisorRoles) { role in
+                            Toggle(role.name, isOn: Binding(
+                                get: { team.settings.invitableRoles.contains(role.id) },
+                                set: { isOn in
+                                    if isOn {
+                                        team.settings.invitableRoles.insert(role.id)
+                                    } else {
+                                        team.settings.invitableRoles.remove(role.id)
+                                    }
+                                    onSave()
+                                }
+                            ))
+                            .toggleStyle(.terminal)
+                        }
                     }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            } label: {
-                Button {
-                    withAnimation(reduceMotion ? .none : Animations.quick) { invitableRolesExpanded.toggle() }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 } label: {
-                    Text("Invitable Roles")
-                        .foregroundStyle(Colors.textPrimary)
+                    Button {
+                        withAnimation(reduceMotion ? .none : Animations.quick) { invitableRolesExpanded.toggle() }
+                    } label: {
+                        Text("Invitable Roles")
+                            .foregroundStyle(Colors.textPrimary)
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
-            }
             }
         }
     }

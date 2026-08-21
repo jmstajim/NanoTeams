@@ -92,10 +92,10 @@ final class QuickCaptureStagedFileOwnershipCoverageTests: XCTestCase {
         sut.cancelDraft()
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: taskFile.url.path),
-            "cancelling an answer is not a retraction of the task draft — its chip is still "
-            + "on screen and it is still what a later submit will try to finalize")
+                      "cancelling an answer is not a retraction of the task draft — its chip is still "
+                          + "on screen and it is still what a later submit will try to finalize")
         XCTAssertEqual(sut.formState.attachments, [taskFile],
-            "unchanged: the fork never claimed to touch the task draft's list either")
+                       "unchanged: the fork never claimed to touch the task draft's list either")
     }
 
     /// Counter-test, so the fix cannot degenerate into "never delete anything": the answer's
@@ -111,7 +111,7 @@ final class QuickCaptureStagedFileOwnershipCoverageTests: XCTestCase {
         sut.cancelDraft()
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: answerFile.url.path),
-            "the cancelled answer's own staged copy has no other owner")
+                       "the cancelled answer's own staged copy has no other owner")
     }
 
     /// The sharper victim of the same delete: a saved answer draft for ANOTHER task. The user
@@ -135,10 +135,10 @@ final class QuickCaptureStagedFileOwnershipCoverageTests: XCTestCase {
         sut.cancelDraft()
 
         XCTAssertEqual(sut.formState._testAnswerDrafts[7]?.attachments, [keptFile],
-            "precondition: the draft entry still names the file")
+                       "precondition: the draft entry still names the file")
         XCTAssertTrue(FileManager.default.fileExists(atPath: keptFile.url.path),
-            "a draft the user deliberately kept must not lose its files because a DIFFERENT "
-            + "task's answer was cancelled")
+                      "a draft the user deliberately kept must not lose its files because a DIFFERENT "
+                          + "task's answer was cancelled")
     }
 
     /// An answer attachment that is an in-project file was never copied into staging — the
@@ -161,7 +161,7 @@ final class QuickCaptureStagedFileOwnershipCoverageTests: XCTestCase {
         sut.cancelDraft()
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: real.path),
-            "this is the user's own file in their own project, not a staged copy")
+                      "this is the user's own file in their own project, not a staged copy")
     }
 
     // MARK: - The thumbnail cache key
@@ -186,8 +186,8 @@ final class QuickCaptureStagedFileOwnershipCoverageTests: XCTestCase {
 
         XCTAssertNotNil(first)
         XCTAssertNotEqual(first, second,
-            "two different files, one relative path: the cache must not hand the second "
-            + "attachment a picture of the first")
+                          "two different files, one relative path: the cache must not hand the second "
+                              + "attachment a picture of the first")
     }
 
     /// Counter-test: the cache still caches. Without this the fix could degenerate into a key

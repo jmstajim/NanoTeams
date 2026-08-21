@@ -248,10 +248,27 @@ extension NTMSOrchestrator {
     /// pre-loop snapshot), so a banner set by a concurrent path during an
     /// earlier iteration's awaits isn't destroyed.
     func recoverStaleStatusesAcrossIndex(folderURL: URL) async {
+        // `TaskSummary` is a value type, so `filter` already hands back a snapshot —
+        // `mutateTask` re-sorts the live array mid-loop and must not be observed here.
+        // The second clause is the one-time backfill for `hasPendingSupervisorInput`:
+        // a `.paused` row can hide an unanswered question (recovery parks every waiting
+        // step) and so can `.failed` (it outranks `.needsSupervisorInput` in
+        // `Run.derivedTaskStatus`), while a row predating the field answers nothing at
+        // all. Self-terminating — the convergence write below stamps the field, so the
+        // row drops out of this filter on the next open.
         let staleEntries = (snapshot?.tasksIndex.tasks ?? [])
-            .filter { $0.status == .running || $0.status == .needsSupervisorInput }
-            .map { (id: $0.id, status: $0.status) }            // snapshot — mutateTask re-sorts the live array mid-loop
+            .filter {
+                $0.status == .running || $0.status == .needsSupervisorInput
+                    || (!$0.supervisorInputStateIsKnown
+                        && ($0.status == .paused || $0.status == .failed))
+            }
         guard !staleEntries.isEmpty else { return }
+        // The eviction guard's "active task's delegation subtree stays resident"
+        // set, computed ONCE for the sweep — per-row recomputation was the
+        // O(rows × index) half of this loop's cost on the MainActor.
+        let protectedDescendants = activeTaskID.map {
+            Set(snapshot?.tasksIndex.descendantIDs(of: $0) ?? [])
+        } ?? []
         var failedIDs: [Int] = []
         for entry in staleEntries {
             let taskID = entry.id
@@ -276,7 +293,23 @@ extension NTMSOrchestrator {
                 // snapshot moved across the await, and the two passes must decide
                 // identically or `persisted` would report on a different outcome.
                 let teamSettings = snapshot.map { TeamResolution.teamSettings(for: probe, in: $0.projection) } ?? nil
-                guard StatusRecoveryService.recoverStaleStatuses(in: &probe, teamSettings: teamSettings) else { continue }
+                guard StatusRecoveryService.recoverStaleStatuses(in: &probe, teamSettings: teamSettings) else {
+                    // Nothing to recover, but this row may be here only for the
+                    // `hasPendingSupervisorInput` backfill — converge the index so the
+                    // widened filter above does not re-select it on every open.
+                    if probe.toSummary() != entry {
+                        do {
+                            try repository.updateTaskOnly(at: folderURL, task: probe)
+                            // Disk alone is not convergence: the sidebar reads
+                            // `snapshot.tasksIndex`, and without this the in-memory
+                            // row keeps the stale/unknown summary until the NEXT
+                            // launch — the whole session the backfill was for.
+                            refreshBackgroundTaskInMemory(probe)
+                        }
+                        catch { failedIDs.append(taskID) }
+                    }
+                    continue
+                }
                 let persisted = await mutateTask(taskID: taskID) {
                     _ = StatusRecoveryService.recoverStaleStatuses(in: &$0, teamSettings: teamSettings)
                 }
@@ -310,12 +343,12 @@ extension NTMSOrchestrator {
                 // persisted, so the DISK index would stay stale and re-trigger
                 // this sweep on every open. Converge it with one narrow write
                 // (which doubles as the retry for a failed recovery persist).
-                if !persisted, loaded.toSummary().status != entry.status {
+                if !persisted, loaded.toSummary() != entry {
                     do { try repository.updateTaskOnly(at: folderURL, task: loaded) }
                     catch { failedIDs.append(taskID) }
                 }
             }
-            evictIfReclaimable(taskID)
+            evictIfReclaimable(taskID, protectedDescendants: protectedDescendants)
         }
         if !failedIDs.isEmpty {
             lastErrorMessage = "Could not recover status for \(failedIDs.count) task(s): " +

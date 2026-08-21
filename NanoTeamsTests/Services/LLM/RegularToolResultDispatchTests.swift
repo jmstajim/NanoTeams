@@ -90,21 +90,21 @@ final class RegularToolResultDispatchTests: XCTestCase {
         await runRegular(result, into: &conversation, outcome: &outcome)
 
         XCTAssertEqual(conversation.count, 1,
-            "A clean, non-error, non-signal result appends exactly one tool message.")
+                       "A clean, non-error, non-signal result appends exactly one tool message.")
         XCTAssertEqual(conversation[0].role, .tool)
         XCTAssertEqual(conversation[0].content, output,
-            "Passthrough must hand the model the envelope byte-for-byte.")
+                       "Passthrough must hand the model the envelope byte-for-byte.")
         XCTAssertEqual(conversation[0].toolCallID, "tc_ls",
-            "The tool result must carry the provider id, or the chain has an unanswered tool_call.")
+                       "The tool result must carry the provider id, or the chain has an unanswered tool_call.")
 
         let persisted = persistedConversation().last
         XCTAssertEqual(persisted?.role, .tool)
         XCTAssertTrue(persisted?.content.contains("[CALL] \(ToolNames.listFiles)") ?? false,
-            "got: \(persisted?.content ?? "nil")")
+                      "got: \(persisted?.content ?? "nil")")
         XCTAssertTrue(persisted?.content.contains(#"Arguments: {"path":"."}"#) ?? false,
-            "got: \(persisted?.content ?? "nil")")
+                      "got: \(persisted?.content ?? "nil")")
         XCTAssertTrue(persisted?.content.contains(output) ?? false,
-            "The persisted [RESULT] block is the RAW envelope. got: \(persisted?.content ?? "nil")")
+                      "The persisted [RESULT] block is the RAW envelope. got: \(persisted?.content ?? "nil")")
 
         XCTAssertNil(outcome.supervisorQuestion)
         XCTAssertFalse(outcome.shouldStopForSupervisor)
@@ -126,15 +126,15 @@ final class RegularToolResultDispatchTests: XCTestCase {
 
         let modelSaw = conversation[0].content ?? ""
         XCTAssertTrue(modelSaw.contains(#""tag":"<§R1§>""#),
-            "First read must be tagged R1. got: \(modelSaw)")
+                      "First read must be tagged R1. got: \(modelSaw)")
         XCTAssertTrue(modelSaw.contains("let answer = 42"),
-            "A first read still carries the full content. got: \(modelSaw)")
+                      "A first read still carries the full content. got: \(modelSaw)")
 
         let persisted = persistedConversation().last?.content ?? ""
         XCTAssertTrue(persisted.contains(output),
-            "The feed must show the raw tool envelope, not the tagged form.")
+                      "The feed must show the raw tool envelope, not the tagged form.")
         XCTAssertFalse(persisted.contains("<§R1§>"),
-            "Tags are a wire-compaction device; they must not leak into the persisted feed entry.")
+                       "Tags are a wire-compaction device; they must not leak into the persisted feed entry.")
     }
 
     /// The anti-dedup contract at the dispatcher level: an identical repeat read
@@ -149,23 +149,23 @@ final class RegularToolResultDispatchTests: XCTestCase {
         var conversation: [ChatMessage] = []
         var outcome = LLMExecutionService.ToolResultsOutcome()
         await runRegular(readResult(output: output),
-                       into: &conversation, outcome: &outcome)
+                         into: &conversation, outcome: &outcome)
         await runRegular(readResult(output: output, providerID: "tc_read_2"),
-                       into: &conversation, outcome: &outcome)
+                         into: &conversation, outcome: &outcome)
 
         XCTAssertEqual(conversation.count, 2)
         let second = conversation[1].content ?? ""
         XCTAssertTrue(second.contains(#""tag":"<§R2§>""#),
-            "The repeat mints its own tag. got: \(second)")
+                      "The repeat mints its own tag. got: \(second)")
         XCTAssertTrue(second.contains("let answer = 42"),
-            "The repeat carries the full body again. got: \(second)")
+                      "The repeat carries the full body again. got: \(second)")
         XCTAssertEqual(conversation[1].toolCallID, "tc_read_2",
-            "Every result must answer its own tool_call.")
+                       "Every result must answer its own tool_call.")
 
         // Both raw envelopes persist to the feed.
         let toolEntries = persistedConversation().filter { $0.role == .tool }
         XCTAssertEqual(toolEntries.count, 2,
-            "Both reads are real calls and both belong in the feed.")
+                       "Both reads are real calls and both belong in the feed.")
     }
 
     /// A read → edit → read sequence: each action gets its own tag in its own
@@ -176,22 +176,22 @@ final class RegularToolResultDispatchTests: XCTestCase {
         var conversation: [ChatMessage] = []
         var outcome = LLMExecutionService.ToolResultsOutcome()
         await runRegular(readResult(output: output),
-                       into: &conversation, outcome: &outcome)
+                         into: &conversation, outcome: &outcome)
         await runRegular(editResult(path: "src/Foo.swift"),
-                       into: &conversation, outcome: &outcome)
+                         into: &conversation, outcome: &outcome)
         await runRegular(readResult(output: output, providerID: "tc_read_3"),
-                       into: &conversation, outcome: &outcome)
+                         into: &conversation, outcome: &outcome)
 
         let editSaw = conversation[1].content ?? ""
         XCTAssertTrue(editSaw.contains(#""tag":"<§E1§>""#),
-            "A successful edit is tagged in the E series. got: \(editSaw)")
+                      "A successful edit is tagged in the E series. got: \(editSaw)")
         XCTAssertTrue(editSaw.contains(#""status":"success""#), "got: \(editSaw)")
 
         let rereadSaw = conversation[2].content ?? ""
         XCTAssertTrue(rereadSaw.contains(#""tag":"<§R2§>""#),
-            "The re-read gets the next read tag. got: \(rereadSaw)")
+                      "The re-read gets the next read tag. got: \(rereadSaw)")
         XCTAssertTrue(rereadSaw.contains("let answer = 42"),
-            "The re-read must carry the body.")
+                      "The re-read must carry the body.")
     }
 
     /// `git_status` rides a different processor (`BuildGitToolProcessor`) —
@@ -213,14 +213,14 @@ final class RegularToolResultDispatchTests: XCTestCase {
 
         let first = conversation[0].content ?? ""
         XCTAssertTrue(first.contains(#""tag":"<§G1§>""#),
-            "git_status is tagged in the G series. got: \(first)")
+                      "git_status is tagged in the G series. got: \(first)")
 
         let second = conversation[1].content ?? ""
         XCTAssertTrue(second.contains(#""tag":"<§G2§>""#),
-            "the repeat mints its own tag. got: \(second)")
+                      "the repeat mints its own tag. got: \(second)")
         // A valid-JSON body is spliced in raw, so the payload reads unescaped.
         XCTAssertTrue(second.contains(#""branch":"main""#),
-            "the full status payload ships every time, nested raw. got: \(second)")
+                      "the full status payload ships every time, nested raw. got: \(second)")
     }
 
     // MARK: - Error results: guidance on the wire, and durable but unattributed
@@ -249,30 +249,30 @@ final class RegularToolResultDispatchTests: XCTestCase {
         await runRegular(result, into: &conversation, outcome: &outcome)
 
         XCTAssertEqual(conversation.count, 2,
-            "An error appends the tool result AND a guidance turn.")
+                       "An error appends the tool result AND a guidance turn.")
         XCTAssertEqual(conversation[0].content, output,
-            "An errored read is never tagged — the tag store passes it through untouched.")
+                       "An errored read is never tagged — the tag store passes it through untouched.")
 
         XCTAssertEqual(conversation[1].role, .user,
-            "Guidance rides the user channel (a mid-conversation system turn would corrupt stateless rebuilds).")
+                       "Guidance rides the user channel (a mid-conversation system turn would corrupt stateless rebuilds).")
         let guidance = conversation[1].content ?? ""
         XCTAssertTrue(guidance.contains("[FILE_NOT_FOUND]"),
-            "Guidance must surface the typed code so the model can pick a recovery. got: \(guidance)")
+                      "Guidance must surface the typed code so the model can pick a recovery. got: \(guidance)")
         // The handler's message is the ENVELOPE's, and `conversation[0]` above is it —
         // the immediately preceding turn. Restating it in the guidance is the duplication
         // `ToolErrorNotePolicy` removed, so the assertion belongs on the tool turn.
         XCTAssertTrue(output.contains("File not found: missing.swift"), output)
         XCTAssertFalse(guidance.contains("File not found: missing.swift"),
-            "the direction must not restate the turn before it. got: \(guidance)")
+                       "the direction must not restate the turn before it. got: \(guidance)")
 
         let persisted = persistedConversation()
         XCTAssertEqual(persisted.last?.role, .user)
         XCTAssertEqual(persisted.last?.content, guidance,
-            "A replay rebuilt from the record must show the model the same steering the wire did.")
+                       "A replay rebuilt from the record must show the model the same steering the wire did.")
         XCTAssertNil(persisted.last?.sourceContext,
-            "Unattributed on purpose — the feed's no-source filter is what keeps this off screen.")
+                     "Unattributed on purpose — the feed's no-source filter is what keeps this off screen.")
         XCTAssertEqual(persisted.filter({ $0.role == .tool }).count, 1,
-            "Exactly one [CALL]…[RESULT] entry for one call.")
+                       "Exactly one [CALL]…[RESULT] entry for one call.")
     }
 
     /// The `tool_not_authorized` arm: the envelope carries the code as a TOP-LEVEL
@@ -297,13 +297,13 @@ final class RegularToolResultDispatchTests: XCTestCase {
 
         XCTAssertEqual(conversation.count, 2, "tool turn + direction")
         XCTAssertTrue((conversation[0].content ?? "").contains("is not available for this role"),
-            "The executor's scope-specific message reaches the model in the tool turn. got: \(conversation[0].content ?? "")")
+                      "The executor's scope-specific message reaches the model in the tool turn. got: \(conversation[0].content ?? "")")
 
         let guidance = conversation[1].content ?? ""
         XCTAssertTrue(guidance.contains("do not retry 'git_commit'"),
-            "An unauthorised tool is a schema fact, not an argument bug — the model must be told to stop. got: \(guidance)")
+                      "An unauthorised tool is a schema fact, not an argument bug — the model must be told to stop. got: \(guidance)")
         XCTAssertFalse(guidance.contains("is not available for this role"),
-            "the direction must not restate the turn before it. got: \(guidance)")
+                       "the direction must not restate the turn before it. got: \(guidance)")
     }
 
     // MARK: - Supervisor question merging
@@ -316,13 +316,13 @@ final class RegularToolResultDispatchTests: XCTestCase {
         let returned = await runRegular(result, into: &conversation, outcome: &outcome)
 
         XCTAssertEqual(outcome.supervisorQuestion, "Which database?",
-            "The question is trimmed before it reaches the Supervisor surfaces.")
+                       "The question is trimmed before it reaches the Supervisor surfaces.")
         XCTAssertEqual(outcome.supervisorToolCallProviderIDs.first, "tc_ask_1")
         XCTAssertTrue(outcome.shouldStopForSupervisor)
         XCTAssertFalse(returned,
-            "The stop rides `outcome.shouldStopForSupervisor`; the return value is not a stop signal.")
+                       "The stop rides `outcome.shouldStopForSupervisor`; the return value is not a stop signal.")
         XCTAssertEqual(conversation.count, 1,
-            "A supervisor question still appends its own tool result (chain protocol).")
+                       "A supervisor question still appends its own tool result (chain protocol).")
     }
 
     /// Two `ask_supervisor` calls in one batch merge into one question separated by
@@ -332,13 +332,13 @@ final class RegularToolResultDispatchTests: XCTestCase {
         var conversation: [ChatMessage] = []
         var outcome = LLMExecutionService.ToolResultsOutcome()
         await runRegular(supervisorResult(question: "First?", providerID: "tc_ask_1"),
-                       into: &conversation, outcome: &outcome)
+                         into: &conversation, outcome: &outcome)
         await runRegular(supervisorResult(question: "Second?", providerID: "tc_ask_2"),
-                       into: &conversation, outcome: &outcome)
+                         into: &conversation, outcome: &outcome)
 
         XCTAssertEqual(outcome.supervisorQuestion, "First?\n\nSecond?")
         XCTAssertEqual(outcome.supervisorToolCallProviderIDs.first, "tc_ask_1",
-            "The first non-empty question owns the provider id the answer is routed to.")
+                       "The first non-empty question owns the provider id the answer is routed to.")
         XCTAssertTrue(outcome.shouldStopForSupervisor)
     }
 
@@ -349,14 +349,14 @@ final class RegularToolResultDispatchTests: XCTestCase {
         var conversation: [ChatMessage] = []
         var outcome = LLMExecutionService.ToolResultsOutcome()
         await runRegular(supervisorResult(question: "   \n\t ", providerID: "tc_blank"),
-                       into: &conversation, outcome: &outcome)
+                         into: &conversation, outcome: &outcome)
 
         XCTAssertNil(outcome.supervisorQuestion)
         XCTAssertNil(outcome.supervisorToolCallProviderIDs.first)
         XCTAssertFalse(outcome.shouldStopForSupervisor,
-            "A blank question must not park the run.")
+                       "A blank question must not park the run.")
         XCTAssertEqual(conversation.count, 1,
-            "The tool result is still appended — the assistant's tool_call needs an answer either way.")
+                       "The tool result is still appended — the assistant's tool_call needs an answer either way.")
     }
 
     /// A blank question followed by a real one: the real one still lands, and it —
@@ -365,12 +365,12 @@ final class RegularToolResultDispatchTests: XCTestCase {
         var conversation: [ChatMessage] = []
         var outcome = LLMExecutionService.ToolResultsOutcome()
         await runRegular(supervisorResult(question: "  ", providerID: "tc_blank"),
-                       into: &conversation, outcome: &outcome)
+                         into: &conversation, outcome: &outcome)
         await runRegular(supervisorResult(question: "Real?", providerID: "tc_real"),
-                       into: &conversation, outcome: &outcome)
+                         into: &conversation, outcome: &outcome)
 
         XCTAssertEqual(outcome.supervisorQuestion, "Real?",
-            "A discarded blank must not become a leading empty line of the merged question.")
+                       "A discarded blank must not become a leading empty line of the merged question.")
         XCTAssertEqual(outcome.supervisorToolCallProviderIDs.first, "tc_real")
         XCTAssertTrue(outcome.shouldStopForSupervisor)
     }
@@ -398,12 +398,12 @@ final class RegularToolResultDispatchTests: XCTestCase {
 
         XCTAssertEqual(mockDelegate.taskToMutate?.runs[0].steps[0].scratchpad,
                        "1. read 2. edit 3. build",
-            "The plan must land on the step, not just in the transcript.")
+                       "The plan must land on the step, not just in the transcript.")
 
         XCTAssertEqual(conversation.count, 1,
-            "Tool result only. The plain acknowledgement left the wire: the tool's own envelope "
-            + "already confirms the write, so an app-authored `.user` turn on every scratchpad "
-            + "update bought nothing and cost a turn.")
+                       "Tool result only. The plain acknowledgement left the wire: the tool's own envelope "
+                           + "already confirms the write, so an app-authored `.user` turn on every scratchpad "
+                           + "update bought nothing and cost a turn.")
         XCTAssertEqual(conversation[0].role, .tool)
     }
 
@@ -435,9 +435,9 @@ final class RegularToolResultDispatchTests: XCTestCase {
         )
 
         XCTAssertEqual(conversation.count, 1,
-            "Chain protocol: the tool result is unconditional even after teardown.")
+                       "Chain protocol: the tool result is unconditional even after teardown.")
         XCTAssertFalse(mockDelegate.eventLog.contains(where: { $0.hasPrefix("mutate-begin") }),
-            "A torn-down step must not write into whatever currently answers to that task id.")
+                       "A torn-down step must not write into whatever currently answers to that task id.")
     }
 
     /// Same barrier, error variant: the guidance turn reaches the model (so it can
@@ -463,10 +463,10 @@ final class RegularToolResultDispatchTests: XCTestCase {
         )
 
         XCTAssertEqual(conversation.count, 2,
-            "Tool result + guidance still reach the in-flight conversation.")
+                       "Tool result + guidance still reach the in-flight conversation.")
         XCTAssertEqual(conversation[1].role, .user)
         XCTAssertFalse(mockDelegate.eventLog.contains(where: { $0.hasPrefix("mutate-begin") }),
-            "Nothing may be persisted for a torn-down step.")
+                       "Nothing may be persisted for a torn-down step.")
     }
 
     // MARK: - appendCollaborationResult: manager WRITE signals (reflectEnvelope)
@@ -494,15 +494,15 @@ final class RegularToolResultDispatchTests: XCTestCase {
 
             let card = persistedCard(toolCallID)
             XCTAssertEqual(card?.isError, false,
-                "\(toolName): a successful manager write must keep the card green.")
+                           "\(toolName): a successful manager write must keep the card green.")
             XCTAssertTrue(card?.resultJSON?.contains("did the thing") ?? false,
-                "\(toolName): the card must carry the action's real message. got: \(card?.resultJSON ?? "nil")")
+                          "\(toolName): the card must carry the action's real message. got: \(card?.resultJSON ?? "nil")")
             XCTAssertFalse(card?.resultJSON?.contains(#""status":"pending""#) ?? true,
-                "\(toolName): the synchronous placeholder must be replaced.")
+                           "\(toolName): the synchronous placeholder must be replaced.")
             XCTAssertEqual(mockDelegate.autovisorActions.count, 1,
-                "\(toolName): the signal must translate into exactly one AutovisorAction.")
+                           "\(toolName): the signal must translate into exactly one AutovisorAction.")
             XCTAssertTrue(conversation.last?.content?.contains("did the thing") ?? false,
-                "\(toolName): the LLM sees the same single envelope as the card.")
+                          "\(toolName): the LLM sees the same single envelope as the card.")
         }
     }
 
@@ -526,11 +526,11 @@ final class RegularToolResultDispatchTests: XCTestCase {
 
             let card = persistedCard(toolCallID)
             XCTAssertEqual(card?.isError, true,
-                "\(toolName): a rejected manager write must render red.")
+                           "\(toolName): a rejected manager write must render red.")
             XCTAssertTrue(card?.resultJSON?.contains(#""ok":false"#) ?? false,
-                "\(toolName): got \(card?.resultJSON ?? "nil")")
+                          "\(toolName): got \(card?.resultJSON ?? "nil")")
             XCTAssertTrue(card?.resultJSON?.contains("task 42 is not paused") ?? false,
-                "\(toolName): the rejection reason must reach the human. got: \(card?.resultJSON ?? "nil")")
+                          "\(toolName): the rejection reason must reach the human. got: \(card?.resultJSON ?? "nil")")
         }
     }
 
@@ -554,22 +554,22 @@ final class RegularToolResultDispatchTests: XCTestCase {
 
         let commits = mockDelegate.eventLog.filter { $0 == "mutate-begin:\(taskID)" }.count
         XCTAssertEqual(commits, 1,
-            "Card + tool message must land in ONE atomic mutateTask (no partial-persist window).")
+                       "Card + tool message must land in ONE atomic mutateTask (no partial-persist window).")
 
         let persisted = persistedConversation()
         XCTAssertEqual(persisted.count, 1,
-            "A manager result has no role to attribute, so only the [CALL]…[RESULT] entry is written.")
+                       "A manager result has no role to attribute, so only the [CALL]…[RESULT] entry is written.")
         guard let entry = persisted.first else {
             XCTFail("Expected the [CALL]…[RESULT] entry to be persisted")
             return
         }
         XCTAssertEqual(entry.role, .tool)
         XCTAssertTrue(entry.content.contains("[CALL] \(ToolNames.scheduleTask)"),
-            "got: \(entry.content)")
+                      "got: \(entry.content)")
         XCTAssertNil(entry.sourceContext,
-            "The tool entry is not an attribution bubble.")
+                     "The tool entry is not an attribution bubble.")
         XCTAssertNil(entry.sourceRole,
-            "A manager result is not attributed to any role.")
+                     "A manager result is not attributed to any role.")
     }
 
     /// Delegation SUCCESS reflects onto the card, persists the tool message, and writes no bubble
@@ -600,9 +600,9 @@ final class RegularToolResultDispatchTests: XCTestCase {
         let card = persistedCard(toolCallID)
         XCTAssertEqual(card?.isError, false)
         XCTAssertFalse(card?.resultJSON?.contains("\"status\":\"pending\"") ?? true,
-            "The card is the only durable record of a resolved delegation — the graph layers are torn down by the same path — so it must carry the real envelope. Got: \(card?.resultJSON ?? "nil")")
+                       "The card is the only durable record of a resolved delegation — the graph layers are torn down by the same path — so it must carry the real envelope. Got: \(card?.resultJSON ?? "nil")")
         XCTAssertTrue(card?.resultJSON?.contains(#""status":"cancelled""#) ?? false,
-            "got: \(card?.resultJSON ?? "nil")")
+                      "got: \(card?.resultJSON ?? "nil")")
 
         let persisted = persistedConversation()
         let callMarker = "[CALL] \(ToolNames.cancelDelegation)"
@@ -610,9 +610,9 @@ final class RegularToolResultDispatchTests: XCTestCase {
             persisted.contains(where: { $0.role == .tool && $0.content.contains(callMarker) }),
             "The card reflect must NOT displace the persisted tool message. got: \(persisted.map(\.content))")
         XCTAssertFalse(persisted.contains(where: { $0.sourceContext != nil }),
-            "Delegation has no attribution bubble.")
+                       "Delegation has no attribution bubble.")
         XCTAssertTrue(conversation.last?.content?.contains(#""status":"cancelled""#) ?? false,
-            "The LLM still receives the real envelope. got: \(conversation.last?.content ?? "nil")")
+                      "The LLM still receives the real envelope. got: \(conversation.last?.content ?? "nil")")
     }
 
     // MARK: - Helpers
@@ -766,5 +766,5 @@ private final class NeverStreamingStubClient: LLMClient, @unchecked Sendable {
         AsyncThrowingStream { $0.finish() }
     }
 
-    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [String] { [] }
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
 }

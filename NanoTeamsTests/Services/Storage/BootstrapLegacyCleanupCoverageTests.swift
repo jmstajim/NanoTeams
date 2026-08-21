@@ -69,7 +69,7 @@ final class BootstrapLegacyCleanupCoverageTests: XCTestCase, @unchecked Sendable
 
         XCTAssertEqual(fileManager.refusals.count, 1,
                        "the removal must actually have been attempted — otherwise this test passes "
-                       + "for the wrong reason; refusals: \(fileManager.refusals)")
+                           + "for the wrong reason; refusals: \(fileManager.refusals)")
         XCTAssertTrue(realFM.fileExists(atPath: legacy.path),
                       "the orphan survives; the point is that bootstrap does not die with it")
 

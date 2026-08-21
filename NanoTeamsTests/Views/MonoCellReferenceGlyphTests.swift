@@ -17,6 +17,12 @@ import XCTest
 /// These tests measure the real font rather than restating the numbers, so the
 /// day macOS changes its fallback chain they report it instead of going quietly
 /// stale.
+///
+/// The four tests that read `NTMSLoader`'s pools are `@MainActor` because those statics
+/// are — and `async` with it: a SYNC main-actor test method enters through a
+/// protocol-witness path that does not re-establish isolation, which is the shape that
+/// has aborted this process on CI before. The class itself stays nonisolated so the
+/// remaining tests, which touch no main-actor state, never acquire that shape.
 final class MonoCellReferenceGlyphTests: XCTestCase {
 
     /// The sizes `Typography` actually uses for cells: `term2xs` 10, `termXs`
@@ -63,7 +69,8 @@ final class MonoCellReferenceGlyphTests: XCTestCase {
     /// and the spinner it wraps stop agreeing on their source glyph, so a future
     /// font whose `M` and `│` differ in advance would silently off-centre every
     /// spinner in its own cell.
-    func testCellReference_isTheLoadersFirstRotationFrame() {
+    @MainActor
+    func testCellReference_isTheLoadersFirstRotationFrame() async {
         XCTAssertEqual(
             TerminalGlyph.cellReference,
             NTMSLoader.rotationFrames.first,
@@ -75,7 +82,8 @@ final class MonoCellReferenceGlyphTests: XCTestCase {
     /// → this fails, and the steady non-glitch spinner starts resizing its own
     /// row 12.5 times a second, which the cell cannot absorb because the cell is
     /// sized from a rotation frame.
-    func testEveryRotationFrame_isCoveredByTheMonoFace() {
+    @MainActor
+    func testEveryRotationFrame_isCoveredByTheMonoFace() async {
         for size in Self.cellSizes {
             for frame in NTMSLoader.rotationFrames {
                 XCTAssertTrue(
@@ -92,7 +100,8 @@ final class MonoCellReferenceGlyphTests: XCTestCase {
     /// fails, which is the intended signal: the pool would then be metric-safe
     /// on its own and the reader should be told the cell's stated justification
     /// no longer matches the data, rather than left with a stale comment.
-    func testGlitchPool_stillContainsGlyphsThatEscapeTheMonoFace() {
+    @MainActor
+    func testGlitchPool_stillContainsGlyphsThatEscapeTheMonoFace() async {
         let mono = monoFont(11)
         let escapers = NTMSLoader.glitchGlyphs.filter { !isCovered($0, by: mono) }
         XCTAssertFalse(
@@ -108,7 +117,8 @@ final class MonoCellReferenceGlyphTests: XCTestCase {
     /// RED: remove `≀` and `⁊` from `NTMSLoader.glitchGlyphs` → this fails,
     /// because those two are the only pool members that exceed the reference
     /// line height and therefore the only ones that could ever grow the row.
-    func testSomeGlitchGlyphs_areTallerThanTheReferenceCell() {
+    @MainActor
+    func testSomeGlitchGlyphs_areTallerThanTheReferenceCell() async {
         let reference = metrics(TerminalGlyph.cellReference, 11).height
         let taller = NTMSLoader.glitchGlyphs.filter { metrics($0, 11).height > reference + 0.001 }
         XCTAssertFalse(

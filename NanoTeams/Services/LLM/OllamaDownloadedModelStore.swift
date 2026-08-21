@@ -63,7 +63,7 @@ nonisolated struct OllamaDownloadedModelStore: DownloadedModelStore {
     private func fetchResidentNames(config: LLMConfig) async -> Set<String>? {
         guard let data = try? await get(path: "api/ps", timeout: 5, config: config),
               let decoded = try? JSONCoderFactory.makeWireDecoder()
-                  .decode(OllamaClient.PSResponse.self, from: data)
+              .decode(OllamaClient.PSResponse.self, from: data)
         else { return nil }
 
         var names: Set<String> = []

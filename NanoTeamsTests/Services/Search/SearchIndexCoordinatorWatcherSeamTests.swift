@@ -77,7 +77,7 @@ final class SearchIndexCoordinatorWatcherSeamTests: XCTestCase {
 
         XCTAssertNotNil(c.tokenCount,
                         "precondition: the index still builds when the watcher is dead — "
-                        + "if this is nil the test proves nothing about surviving a build")
+                            + "if this is nil the test proves nothing about surviving a build")
         XCTAssertEqual(c.watcherError, SearchIndexCoordinator.watcherUnavailableMessage)
         XCTAssertEqual(c.lastError, SearchIndexCoordinator.watcherUnavailableMessage,
                        "the card reads lastError; a warning that never reaches it is not a warning")
@@ -235,7 +235,7 @@ final class SearchIndexCoordinatorWatcherSeamTests: XCTestCase {
 
         XCTAssertEqual(c.fileCount, 2,
                        "a watcher event must drive a refresh — the coordinator's only reason to "
-                       + "hold a watcher at all")
+                           + "hold a watcher at all")
         await c.stop()
     }
 

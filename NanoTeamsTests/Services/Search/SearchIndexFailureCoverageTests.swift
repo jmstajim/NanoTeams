@@ -106,12 +106,12 @@ final class SearchIndexFailureCoverageTests: XCTestCase, @unchecked Sendable {
 
         let error = await service.lastLoadError
         XCTAssertNotNil(error, "an index that exists but cannot be read must be reported, or "
-                        + "search looks merely empty")
+            + "search looks merely empty")
         XCTAssertTrue(error?.contains("search_index.json") == true,
                       "the message must name the file so it can be deleted: \(error ?? "nil")")
         XCTAssertTrue(error?.localizedCaseInsensitiveContains("unreadable") == true,
                       "'unreadable' distinguishes an I/O failure from 'corrupt' (a decode failure) "
-                      + "and 'version mismatch' — three different remedies: \(error ?? "nil")")
+                          + "and 'version mismatch' — three different remedies: \(error ?? "nil")")
     }
 
     /// A corrupt-but-readable index takes a DIFFERENT arm with a different word, and conflating
@@ -163,7 +163,7 @@ final class SearchIndexFailureCoverageTests: XCTestCase, @unchecked Sendable {
         let persistError = await service.lastPersistError
         XCTAssertNotNil(persistError,
                         "an index that cannot be written must be reported — otherwise every "
-                        + "launch silently pays a full rebuild")
+                            + "launch silently pays a full rebuild")
 
         // …and the in-memory index still answers, which is why this is a warning and not
         // a failure.
@@ -229,10 +229,10 @@ final class SearchIndexFailureCoverageTests: XCTestCase, @unchecked Sendable {
         let skipped = await service.files(containing: ["gamma"])
         XCTAssertTrue(skipped.isEmpty,
                       "a file whose attributes cannot be read must be skipped, not stored "
-                      + "with a distantPast mTime that poisons the signature: \(skipped)")
+                          + "with a distantPast mTime that poisons the signature: \(skipped)")
         XCTAssertGreaterThan(counter.count, 0,
                              "arrange: the injected failure never fired, so this test proves "
-                             + "nothing")
+                                 + "nothing")
     }
 
     /// `files(containing:)` shares the same load path, so it must surface the same diagnosis

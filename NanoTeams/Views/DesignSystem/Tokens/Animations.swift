@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Reusable animation presets (respect Reduce Motion when applied via modifier).
-enum Animations {
+nonisolated enum Animations {
     /// Standard spring animation - primary interaction feedback
     static let spring = Animation.spring(response: 0.35, dampingFraction: 0.8)
     /// Quick animation for micro-interactions

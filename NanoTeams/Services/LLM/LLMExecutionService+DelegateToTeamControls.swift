@@ -203,7 +203,7 @@ extension LLMExecutionService {
         guard let parentRoleDef = parentTeam.findRole(byIdentifier: initiatingRole.baseID) else { return nil }
         guard let childTask = delegate.loadedTask(childTID),
               let childTeam = childTask.generatedTeam
-                ?? delegate.snapshot?.workFolder.teams.first(where: { $0.id == childTask.preferredTeamID })
+              ?? delegate.snapshot?.workFolder.teams.first(where: { $0.id == childTask.preferredTeamID })
         else { return nil }
         // Validate parentage — if a child's recorded `parentTaskID` doesn't
         // match the suspended handler's `parentTID`, something has gone

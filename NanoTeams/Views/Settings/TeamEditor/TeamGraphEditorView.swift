@@ -263,7 +263,7 @@ struct TeamGraphEditorView: View {
             // Recompute full layout from dependencies to place new roles correctly
             let autoLayout = TeamGraphLayout.autoLayout(for: team.roles)
             for pos in autoLayout.nodePositions where !existingPositions.contains(pos.roleID)
-                                                       && !team.graphLayout.hiddenRoleIDs.contains(pos.roleID) {
+                && !team.graphLayout.hiddenRoleIDs.contains(pos.roleID) {
                 team.graphLayout.setPosition(for: pos.roleID, x: pos.x, y: pos.y)
             }
         }

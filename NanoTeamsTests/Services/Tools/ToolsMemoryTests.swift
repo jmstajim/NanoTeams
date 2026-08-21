@@ -94,7 +94,7 @@ final class ToolsMemoryTests: XCTestCase {
         XCTAssertFalse(results[0].isError)
         // Empty content is valid - it clears the scratchpad
         XCTAssertTrue(results[0].outputJSON.contains("content_length\":0") ||
-                      results[0].outputJSON.contains("content_length\": 0"))
+            results[0].outputJSON.contains("content_length\": 0"))
     }
 
     func testUpdateScratchpad_missingContent() {
@@ -244,7 +244,7 @@ final class ToolsMemoryTests: XCTestCase {
 
         XCTAssertEqual(results.count, 1)
         XCTAssertTrue(results[0].outputJSON.contains("\"ok\":true") ||
-                      results[0].outputJSON.contains("\"ok\": true"))
+            results[0].outputJSON.contains("\"ok\": true"))
     }
 
     // MARK: - Error Cases

@@ -273,12 +273,12 @@ extension LLMExecutionService {
         // Build cleaned/guarded messages outside the closure (same Harmony-token
         // cleaning + non-empty guard as `appendLLMMessage`).
         let toolCallContent = ConversationRepairService.cleanHarmonyTokens("""
-            [CALL] \(toolName)
-            Arguments: \(argumentsJSON)
-
-            [RESULT]
-            \(llmEnvelope)
-            """)
+        [CALL] \(toolName)
+        Arguments: \(argumentsJSON)
+        
+        [RESULT]
+        \(llmEnvelope)
+        """)
         let toolMsg = toolCallContent.isEmpty
             ? nil
             : LLMMessage(role: .tool, content: toolCallContent)
@@ -370,12 +370,12 @@ extension LLMExecutionService {
                 toolCallID: result.providerID)
         )
         let toolCallContent = """
-            [CALL] \(result.toolName)
-            Arguments: \(result.argumentsJSON)
-
-            [RESULT]
-            \(result.outputJSON)
-            """
+        [CALL] \(result.toolName)
+        Arguments: \(result.argumentsJSON)
+        
+        [RESULT]
+        \(result.outputJSON)
+        """
         await appendLLMMessage(stepID: stepID, taskID: taskID, role: .tool, content: toolCallContent)
 
         // Process side effects (scratchpad, artifacts, error guidance) for ALL results,

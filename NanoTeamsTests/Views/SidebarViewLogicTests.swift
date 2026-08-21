@@ -15,12 +15,14 @@ final class SidebarViewLogicTests: XCTestCase {
         _ id: Int,
         status: TaskStatus,
         isChatMode: Bool = false,
-        recurring: Bool = false
+        recurring: Bool = false,
+        waiting: Bool? = false
     ) -> TaskSummary {
         TaskSummary(
             id: id, title: "task\(id)", status: status, updatedAt: t0,
             isChatMode: isChatMode,
-            nextRecurrenceFireAt: recurring ? t0 : nil
+            nextRecurrenceFireAt: recurring ? t0 : nil,
+            hasPendingSupervisorInput: waiting
         )
     }
 
@@ -32,7 +34,7 @@ final class SidebarViewLogicTests: XCTestCase {
 
     func testBuild_unreadLightsForUnseenChatModeSupervisorInput() {
         let items = SidebarViewLogic.buildSidebarTaskItems(
-            summaries: [summary(1, status: .needsSupervisorInput, isChatMode: true)],
+            summaries: [summary(1, status: .needsSupervisorInput, isChatMode: true, waiting: true)],
             seenSupervisorInputTaskIDs: [],
             engineStates: [:]
         )
@@ -41,7 +43,7 @@ final class SidebarViewLogicTests: XCTestCase {
 
     func testBuild_unreadOffWhenSeen() {
         let items = SidebarViewLogic.buildSidebarTaskItems(
-            summaries: [summary(1, status: .needsSupervisorInput, isChatMode: true)],
+            summaries: [summary(1, status: .needsSupervisorInput, isChatMode: true, waiting: true)],
             seenSupervisorInputTaskIDs: [1],
             engineStates: [:]
         )
@@ -50,16 +52,39 @@ final class SidebarViewLogicTests: XCTestCase {
 
     func testBuild_unreadRequiresChatMode() {
         let items = SidebarViewLogic.buildSidebarTaskItems(
-            summaries: [summary(1, status: .needsSupervisorInput, isChatMode: false)],
+            summaries: [summary(1, status: .needsSupervisorInput, isChatMode: false, waiting: true)],
             seenSupervisorInputTaskIDs: [],
             engineStates: [:]
         )
         XCTAssertFalse(items[0].hasUnreadInput, "Non-chat tasks never show the unread badge")
     }
 
-    func testBuild_unreadRequiresNeedsSupervisorInputStatus() {
+    func testBuild_unreadRequiresAPendingQuestion() {
         let items = SidebarViewLogic.buildSidebarTaskItems(
-            summaries: [summary(1, status: .running, isChatMode: true)],
+            summaries: [summary(1, status: .running, isChatMode: true, waiting: false)],
+            seenSupervisorInputTaskIDs: [],
+            engineStates: [:]
+        )
+        XCTAssertFalse(items[0].hasUnreadInput)
+    }
+
+    /// The restart shape: recovery parked the step, so the status says `.paused`, but
+    /// the question is still standing. Keyed on status this went dark — which is what
+    /// made an unanswered chat indistinguishable from an answered one after a relaunch.
+    func testBuild_unreadLightsForAParkedButWaitingChat() {
+        let items = SidebarViewLogic.buildSidebarTaskItems(
+            summaries: [summary(1, status: .paused, isChatMode: true, waiting: true)],
+            seenSupervisorInputTaskIDs: [],
+            engineStates: [:]
+        )
+        XCTAssertTrue(items[0].hasUnreadInput)
+    }
+
+    /// A legacy index row predating the field answers nothing, and "unknown" must not
+    /// light an indicator on its own.
+    func testBuild_unknownWaitState_doesNotLight() {
+        let items = SidebarViewLogic.buildSidebarTaskItems(
+            summaries: [summary(1, status: .paused, isChatMode: true, waiting: nil)],
             seenSupervisorInputTaskIDs: [],
             engineStates: [:]
         )
@@ -190,14 +215,14 @@ final class SidebarViewLogicTests: XCTestCase {
         XCTAssertNil(SidebarViewLogic.resolveManagerRowInfo(
             hasWorkFolder: false, isManagerActive: false,
             engineState: nil, isIdleParked: false),
-            "Default storage / no folder hides the row entirely — Autovisor is folder-scoped.")
+        "Default storage / no folder hides the row entirely — Autovisor is folder-scoped.")
     }
 
     func testManagerRow_noFolder_evenIfStaleActive_isNil() {
         XCTAssertNil(SidebarViewLogic.resolveManagerRowInfo(
             hasWorkFolder: false, isManagerActive: true,
             engineState: .running, isIdleParked: false),
-            "No-folder gate dominates a stale active flag — paranoia against transition races.")
+        "No-folder gate dominates a stale active flag — paranoia against transition races.")
     }
 
     func testManagerRow_folder_unconfigured_showsSetupRow() {

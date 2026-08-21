@@ -85,11 +85,11 @@ final class NativeLMStudioClientVisionCapabilityTests: XCTestCase {
         // the probe must be deterministic (first match), not order-dependent
         // on later duplicates.
         let verdict = await probe(body: #"""
-            {"models":[
-                {"key":"main-model","type":"vlm","capabilities":{"vision":true}},
-                {"key":"main-model","type":"llm","capabilities":{"vision":false}}
-            ]}
-            """#)
+        {"models":[
+            {"key":"main-model","type":"vlm","capabilities":{"vision":true}},
+            {"key":"main-model","type":"llm","capabilities":{"vision":false}}
+        ]}
+        """#)
         XCTAssertEqual(verdict, true)
     }
 

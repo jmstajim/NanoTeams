@@ -115,7 +115,7 @@ final class WirePreviewFallbackCoverageTests: XCTestCase {
                            "an unknown role has no SystemTemplates guidance to fall back to; kind \(kind)")
             XCTAssertNotNil(values["roleSkills"],
                             "skills are step-execution-only but must still be MAPPED, or a hand-typed "
-                            + "chip ships as a literal token; kind \(kind)")
+                                + "chip ships as a literal token; kind \(kind)")
         }
     }
 

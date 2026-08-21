@@ -166,7 +166,7 @@ final class AgentSkillsOrchestratorTests: NTMSOrchestratorTestBase, @unchecked S
 
         XCTAssertNotNil(sut.roleSkills,
                         "Skills must still resolve in default storage — global skills do not "
-                        + "depend on a work folder")
+                            + "depend on a work folder")
     }
 
     // MARK: - Failure modes (no silent drops)
