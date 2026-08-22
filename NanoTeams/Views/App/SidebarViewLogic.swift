@@ -60,15 +60,64 @@ enum SidebarViewLogic {
         }
     }
 
+    /// Counts for every filter pill, in ONE non-allocating pass.
+    ///
+    /// Replaces four `filterCount` calls made from inside
+    /// `ForEach(TaskFilter.allCases)`, three of which spelled the count as
+    /// `items.filter { … }.count` and so materialized an intermediate array of up
+    /// to T `SidebarTaskItem`s (each carrying a `title: String`, i.e. T
+    /// retain/release on top). The 2026-08-22 hoist removed nine re-BUILDS of
+    /// `items` and left these four re-SCANS of it; SidebarView is mounted for the
+    /// app's lifetime and reads `store.snapshot`, so the pass runs on every
+    /// `mutateTask`.
+    ///
+    /// One shared per-case predicate with `count(for:)` below, so the pill counts
+    /// and the row filter cannot drift into two hand-written copies.
+    struct FilterCounts: Equatable {
+        var all = 0
+        var running = 0
+        var done = 0
+        var recurring = 0
+
+        subscript(_ filter: TaskFilter) -> Int {
+            switch filter {
+            case .all:       return all
+            case .running:   return running
+            case .done:      return done
+            case .recurring: return recurring
+            }
+        }
+    }
+
+    /// The ONE definition of "does this item belong to this filter" — shared by
+    /// the single-pass counter and by `filterCount`.
+    static func matches(_ filter: TaskFilter, _ item: SidebarTaskItem) -> Bool {
+        switch filter {
+        case .all:       return true
+        case .running:   return item.status != .done
+        case .done:      return item.status == .done
+        case .recurring: return item.isRecurring
+        }
+    }
+
+    static func filterCounts(from items: [SidebarTaskItem]) -> FilterCounts {
+        var counts = FilterCounts()
+        for item in items {
+            counts.all += 1
+            if matches(.running, item) { counts.running += 1 }
+            if matches(.done, item) { counts.done += 1 }
+            if matches(.recurring, item) { counts.recurring += 1 }
+        }
+        return counts
+    }
+
     /// Count for a filter pill. `.running` is "not done" (covers running/paused/review),
     /// matching the row filter; `.recurring` keys on the schedule flag.
+    ///
+    /// Kept as the single-filter spelling for tests and one-off callers; the view
+    /// uses `filterCounts` so four pills cost one pass, not four allocating ones.
     static func filterCount(_ filter: TaskFilter, from items: [SidebarTaskItem]) -> Int {
-        switch filter {
-        case .all:       return items.count
-        case .running:   return items.filter { $0.status != .done }.count
-        case .done:      return items.filter { $0.status == .done }.count
-        case .recurring: return items.filter { $0.isRecurring }.count
-        }
+        items.reduce(0) { $0 + (matches(filter, $1) ? 1 : 0) }
     }
 
     /// Empty-state primary-button label: a live search clears first, then a non-`.all`

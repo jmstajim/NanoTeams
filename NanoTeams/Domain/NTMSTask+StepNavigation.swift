@@ -19,19 +19,6 @@ nonisolated extension NTMSTask {
         return StepLocation(runIndex: runIndex, stepIndex: stepIndex)
     }
 
-    /// Locates a step by ID in a specific run.
-    /// - Parameters:
-    ///   - stepID: The step ID to find.
-    ///   - runID: The run ID to search in.
-    /// - Returns: The step location, or nil if not found.
-    func locateStep(stepID: String, inRun runID: Int) -> StepLocation? {
-        guard let runIndex = runs.firstIndex(where: { $0.id == runID }) else { return nil }
-        guard let stepIndex = runs[runIndex].steps.firstIndex(where: { $0.id == stepID }) else {
-            return nil
-        }
-        return StepLocation(runIndex: runIndex, stepIndex: stepIndex)
-    }
-
     /// Gets the step at a given location.
     /// - Parameter location: The step location.
     /// - Returns: The step, or nil if the location is invalid.

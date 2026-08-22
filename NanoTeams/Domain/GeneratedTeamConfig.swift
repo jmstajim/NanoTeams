@@ -392,7 +392,9 @@ nonisolated struct GeneratedTeamConfig: Codable, Hashable {
             if sentence.count >= 20 { return sentence + "." }
         }
         // Fallback: first 80 chars + ellipsis if longer.
-        if prompt.count <= 80 { return prompt }
+        // `dropFirst(K).isEmpty` == `count <= K` but stops at K graphemes; `String.count` walks
+        // the WHOLE receiver to answer a bounded question (see `ModelTokenCleaner.isTokenSpan`).
+        if prompt.dropFirst(80).isEmpty { return prompt }
         return String(prompt.prefix(80)).trimmingCharacters(in: .whitespacesAndNewlines) + "…"
     }
 }

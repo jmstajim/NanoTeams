@@ -78,6 +78,24 @@ final class TeamActivityFeedViewModel {
     /// Cached timeline items, rebuilt only when TimelineFingerprint changes.
     private(set) var cachedTimelineItems: [ActivityFeedBuilder.TaggedItem] = []
 
+    /// Message ids that are the implicit stream target of a `.running` step —
+    /// at most one per running step, computed ONCE per rebuild.
+    ///
+    /// Lives here rather than at the bubble because the feed's `VStack` is
+    /// deliberately non-lazy (it realizes every row on every body pass), so the
+    /// per-bubble spelling walked the step's whole conversation once per bubble:
+    /// Θ(M²) per pass in chat mode, where one step holds the entire session.
+    /// Computed in `rebuildTimeline` — the single funnel every rebuild path goes
+    /// through — and NOT in `recomputeSteps`, which `scheduleStructuralRebuild`
+    /// bypasses; a set built there would go stale exactly on the streaming-commit
+    /// path that moves the target.
+    ///
+    /// The `isPreviewTarget` term is deliberately NOT folded in here: it flips
+    /// between rebuilds and the call site reads it live, so freezing it would
+    /// re-introduce a one-tick stale indicator at the streaming → committed
+    /// transition.
+    private(set) var implicitStreamTargetIDs: Set<UUID> = []
+
     /// Last fingerprint used for change detection. `recomputeAndRebuild` short-circuits when unchanged.
     private(set) var lastFingerprint: TimelineFingerprint?
 
@@ -238,6 +256,22 @@ final class TeamActivityFeedViewModel {
             isStreaming: isStreaming
         )
         if !cachedTimelineItems.isEmpty { hasEverHadContent = true }
+
+        // One pass per step, in lockstep with the items it annotates. The union
+        // over pools is safe because `LLMMessage.id` is globally unique, and it
+        // mirrors `steps(forOriginTaskID:)`, whose fallback is `cachedAllSteps`.
+        var targets: Set<UUID> = []
+        for step in cachedAllSteps {
+            if let id = TeamActivityFeedView.implicitStreamTargetID(in: step) { targets.insert(id) }
+        }
+        for pool in cachedStepsByTaskID.values {
+            for step in pool {
+                if let id = TeamActivityFeedView.implicitStreamTargetID(in: step) {
+                    targets.insert(id)
+                }
+            }
+        }
+        implicitStreamTargetIDs = targets
     }
 
     // MARK: - Artifact Content Cache

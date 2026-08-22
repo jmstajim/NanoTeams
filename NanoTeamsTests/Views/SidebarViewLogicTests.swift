@@ -279,3 +279,69 @@ final class SidebarViewLogicTests: XCTestCase {
         XCTAssertEqual(info, .init(isEnabled: true, running: false, needsInput: false))
     }
 }
+
+/// Pins the single-pass pill counter that replaced four per-filter passes inside
+/// `ForEach(TaskFilter.allCases)`, three of which materialized an intermediate
+/// array of up to T items on every body pass — i.e. on every `mutateTask`.
+@MainActor
+final class SidebarFilterCountsTests: XCTestCase {
+
+    private func item(id: Int, status: TaskStatus, recurring: Bool = false) -> SidebarTaskItem {
+        SidebarTaskItem(
+            id: id, title: "T\(id)", status: status,
+            updatedAt: Date(timeIntervalSince1970: TimeInterval(id)),
+            isChatMode: false, hasUnreadInput: false,
+            isEngineRunning: false, isRecurring: recurring,
+            hasPendingBashApproval: false)
+    }
+
+    private var mixed: [SidebarTaskItem] {
+        [item(id: 1, status: .running),
+         item(id: 2, status: .done),
+         item(id: 3, status: .paused, recurring: true),
+         item(id: 4, status: .done, recurring: true),
+         item(id: 5, status: .failed)]
+    }
+
+    /// Equivalence with the per-filter spelling it replaced, case by case.
+    func testCountsAgreeWithThePerFilterSpelling() {
+        let items = mixed
+        let counts = SidebarViewLogic.filterCounts(from: items)
+        for filter in TaskFilter.allCases {
+            XCTAssertEqual(counts[filter],
+                           SidebarViewLogic.filterCount(filter, from: items),
+                           "single-pass count disagrees for \(filter)")
+        }
+    }
+
+    /// Anti-vacuum: the fixture must actually distinguish the cases, or the
+    /// equivalence above would hold for any pair of wrong implementations.
+    func testFixtureDiscriminatesEveryFilter() {
+        let counts = SidebarViewLogic.filterCounts(from: mixed)
+        XCTAssertEqual(counts.all, 5)
+        XCTAssertEqual(counts.running, 3, "`.running` is NOT-done, not status == .running")
+        XCTAssertEqual(counts.done, 2)
+        XCTAssertEqual(counts.recurring, 2)
+        XCTAssertNotEqual(counts.running, counts.done)
+        XCTAssertNotEqual(counts.recurring, counts.all)
+    }
+
+    func testEmptyInput_isAllZeroes() {
+        XCTAssertEqual(SidebarViewLogic.filterCounts(from: []), SidebarViewLogic.FilterCounts())
+    }
+
+    /// The pill count and the row list must answer from the SAME predicate — a
+    /// pill promising N rows while the list shows M is the drift this shares
+    /// `matches(_:_:)` to prevent.
+    func testPillCountEqualsTheRowCountTheListShows() {
+        let items = mixed
+        let state = TaskManagementState()
+        for filter in TaskFilter.allCases {
+            state.taskFilter = filter
+            XCTAssertEqual(
+                state.filteredTasks(from: items).count,
+                SidebarViewLogic.filterCounts(from: items)[filter],
+                "pill and list disagree for \(filter)")
+        }
+    }
+}

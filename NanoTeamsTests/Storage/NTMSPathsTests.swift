@@ -274,3 +274,42 @@ final class NTMSPathsTests: XCTestCase {
         XCTAssertNotEqual(paths1, paths2)
     }
 }
+
+extension NTMSPathsTests {
+
+    /// `NTMSPaths.stepLogKey` is the registry identity `TaskStreamStore` uses to
+    /// answer "did this step change" without building a URL. It must name exactly
+    /// the file `stepLogJSONL` names — a cheaper key that disagreed would give one
+    /// file two diff baselines, and they would clobber each other's logs.
+    ///
+    /// Both halves of the equivalence are exercised: a work-folder root that is
+    /// NOT standardized (the reason the key is built over a standardized prefix)
+    /// and a role id that needs sanitizing (the reason the key routes through the
+    /// same `roleDirComponent` the path does).
+    func testStepLogKey_namesTheSameFileAsStepLogJSONL() {
+        let messyRoot = URL(fileURLWithPath: "/tmp/nt-key/./sub/../sub", isDirectory: true)
+        let paths = NTMSPaths(workFolderRoot: messyRoot)
+        for roleID in ["engineer", "a/b", "..evil", "team:seed/role", "плаń"] {
+            for (taskID, runID, ancestors) in [(1, 0, [Int]()), (7, 3, []), (9, 2, [4])] {
+                let canonical = paths.stepLogJSONL(
+                    taskID: taskID, runID: runID, roleID: roleID, ancestors: ancestors
+                ).standardizedFileURL.path
+                let cheap = NTMSPaths.stepLogKey(
+                    taskDirPath: paths.internalTaskDir(taskID: taskID, ancestors: ancestors)
+                        .standardizedFileURL.path,
+                    runID: runID,
+                    roleID: roleID)
+                XCTAssertEqual(cheap, canonical,
+                               "key and path disagree for role '\(roleID)' task \(taskID)")
+            }
+        }
+    }
+
+    /// Anti-vacuum for the loop above: the sanitizer must actually be doing
+    /// something for at least one of those role ids, otherwise the test would
+    /// pass against a key that ignored sanitization entirely.
+    func testStepLogKey_sanitizationIsLoadBearing() {
+        XCTAssertNotEqual(NTMSPaths.roleDirComponent("a/b"), "a/b")
+        XCTAssertNotEqual(NTMSPaths.roleDirComponent("..evil"), "..evil")
+    }
+}

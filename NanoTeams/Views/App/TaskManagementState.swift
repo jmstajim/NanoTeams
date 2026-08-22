@@ -155,16 +155,18 @@ import Foundation
         if !taskSearchText.isEmpty {
             // Search always spans ALL tasks, ignoring the active filter tab
             result = result.filter { $0.title.localizedCaseInsensitiveContains(taskSearchText) }
-        } else {
-            switch taskFilter {
-            case .running:   result = result.filter { $0.status != .done }
-            case .done:      result = result.filter { $0.status == .done }
-            case .recurring: result = result.filter { $0.isRecurring }
-            case .all:       break
-            }
+        } else if taskFilter != .all {
+            // Through `SidebarViewLogic.matches` on purpose: the pill COUNTS and
+            // the row filter answered the same question from two hand-written
+            // copies of the same three predicates. One home, so a pill can never
+            // promise a row count the list does not show.
+            result = result.filter { SidebarViewLogic.matches(taskFilter, $0) }
         }
 
-        return result.sorted { $0.updatedAt > $1.updatedAt }
+        // No sort, for the same reason as `TaskService.taskSummaries`: the order is
+        // established on the write side by `TasksIndex.upsert` and preserved by `filter`.
+        // This was the SECOND re-sort of the same already-sorted rows on one read path.
+        return result
     }
     nonisolated deinit {}
 }

@@ -135,18 +135,26 @@ nonisolated enum ToolHandlerRegistry {
     ]
 
     /// Tool names in a given category. Stable, single source of truth.
+    ///
+    /// Each derived set below is `static let`, not a computed `static var`: `allTypes` is
+    /// a compile-time list of ~60 metatypes, so a computed getter rebuilt the whole Set on
+    /// EVERY access — and the accesses are per tool call (`LLMExecutionService+ToolExecution`)
+    /// and per role row per body pass (`RoleToolBadgePolicy`, `ToolSelectionView`). Their
+    /// siblings above (`allSchemas`, `meetingExcluded`, `defaultStorageBlocked`,
+    /// `unavailableToRoles`) were already `static let`; the memoization had simply been
+    /// applied to one half of the family (CLAUDE.md #51/#52).
     static func names(in category: ToolCategory) -> Set<String> {
         Set(allTypes.filter { $0.category == category }.map { $0.name })
     }
 
     /// Read-only file system tools: `read_file`, `read_lines`, `list_files`, `search`.
-    static var fileReadTools: Set<String> { names(in: .fileRead) }
+    static let fileReadTools: Set<String> = names(in: .fileRead)
 
     /// Mutating file system tools: `write_file`, `edit_file`, `delete_file`.
-    static var fileWriteTools: Set<String> { names(in: .fileWrite) }
+    static let fileWriteTools: Set<String> = names(in: .fileWrite)
 
     /// All file system tools (read + write).
-    static var allFileTools: Set<String> { fileReadTools.union(fileWriteTools) }
+    static let allFileTools: Set<String> = fileReadTools.union(fileWriteTools)
 
     /// Tools that only OBSERVE the work folder: file reads plus git reads.
     ///
@@ -162,28 +170,28 @@ nonisolated enum ToolHandlerRegistry {
     /// command-blind set cannot express. Do not "fix" the asymmetry by adding `.shell` here:
     /// membership must stay phase-independent, or the next consumer of this set inherits a
     /// promise that only the planning phase's per-call narrowing keeps.
-    static var readOnlyTools: Set<String> { fileReadTools.union(gitReadTools) }
+    static let readOnlyTools: Set<String> = fileReadTools.union(gitReadTools)
 
     /// Read-only Git tools: `git_status`, `git_log`, `git_diff`, `git_branch_list`.
-    static var gitReadTools: Set<String> { names(in: .gitRead) }
+    static let gitReadTools: Set<String> = names(in: .gitRead)
 
     /// Mutating Git tools (add/commit/pull/stash/checkout/merge/branch).
-    static var gitWriteTools: Set<String> { names(in: .gitWrite) }
+    static let gitWriteTools: Set<String> = names(in: .gitWrite)
 
     /// Xcode build/test tools.
-    static var xcodeTools: Set<String> { names(in: .xcode) }
+    static let xcodeTools: Set<String> = names(in: .xcode)
 
     /// Vision analysis tools.
-    static var visionTools: Set<String> { names(in: .vision) }
+    static let visionTools: Set<String> = names(in: .vision)
 
     /// Shell-command tools (`bash` + `bash_output`). Excluded from meetings, but — unlike
     /// write/git/xcode tools — usable with no work folder open (sandboxed to the
     /// Application Support root).
-    static var shellTools: Set<String> { names(in: .shell) }
+    static let shellTools: Set<String> = names(in: .shell)
 
     /// Computer-use tools (`screen_capture` + `ui_click`/`ui_type`/`ui_key`/`ui_scroll`).
     /// Stripped from every role's LLM schema when `ComputerUsePolicy.mode == .off`.
-    static var computerUseTools: Set<String> { names(in: .computerUse) }
+    static let computerUseTools: Set<String> = names(in: .computerUse)
 
     // MARK: - Handler Instance Construction
 

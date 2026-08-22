@@ -321,3 +321,115 @@ final class WatchtowerTimelineBuilderTests: XCTestCase {
         XCTAssertEqual(events[0].displayText, "Chat with Assistant started")
     }
 }
+
+/// Pins the change-detector the Watchtower timeline is memoized on.
+///
+/// The memo replaced a plain computed property that `body` referenced five
+/// times, each rebuilding the whole task's history. The ONLY way that memo can
+/// be wrong is a key that fails to move when the built timeline would differ —
+/// so every field `buildTimeline` reads is pinned individually, and the trap
+/// `computeRunDataVersion` documents (a counts-only key freezing on a pure
+/// status flip) is pinned first.
+final class WatchtowerTimelineInputsVersionTests: XCTestCase {
+
+    private func task(status: StepStatus = .running, title: String = "T") -> NTMSTask {
+        var step = StepExecution(id: "engineer", role: .softwareEngineer, title: "Impl")
+        step.status = status
+        return NTMSTask(id: 1, title: title, supervisorTask: "s",
+                        runs: [Run(id: 0, steps: [step])])
+    }
+
+    private func version(
+        _ t: NTMSTask?, filter: Int? = nil, cleared: Date? = nil,
+        teamID: NTMSID? = nil, teamUpdatedAt: Date? = nil
+    ) -> Int {
+        WatchtowerTimelineBuilder.inputsVersion(
+            task: t, teamID: teamID, teamUpdatedAt: teamUpdatedAt,
+            taskFilter: filter, clearedUpTo: cleared)
+    }
+
+    func testIdenticalInputs_giveTheSameVersion() {
+        let t = task()
+        XCTAssertEqual(version(t), version(t),
+                       "anti-vacuum: an unstable key would make the memo useless, not wrong")
+    }
+
+    /// THE trap: a status flip appends a `.completed`/`.failed` event without
+    /// changing any COUNT. A counts-only key would freeze the timeline here.
+    ///
+    /// The task is built ONCE and copied, so `status` is the only field that
+    /// differs. Two separately-constructed fixtures would each get a fresh
+    /// `MonotonicClock` `createdAt`, and the assertion would pass on that
+    /// difference no matter what the key folded — CLAUDE.md #56, reading #3.
+    func testPureStatusFlip_movesTheVersion() {
+        let running = task(status: .running)
+        var done = running
+        done.runs[0].steps[0].status = .done
+        var failed = running
+        failed.runs[0].steps[0].status = .failed
+        XCTAssertEqual(running.runs[0].steps[0].createdAt,
+                       done.runs[0].steps[0].createdAt,
+                       "fixture must isolate `status`: every other field has to match")
+        XCTAssertNotEqual(version(running), version(done))
+        XCTAssertNotEqual(version(done), version(failed))
+    }
+
+    func testCompletedAtChange_movesTheVersion() {
+        var a = task(status: .done)
+        var b = a
+        b.runs[0].steps[0].completedAt = Date(timeIntervalSince1970: 10_000)
+        XCTAssertNotEqual(version(a), version(b))
+        a.runs[0].steps[0].completedAt = Date(timeIntervalSince1970: 20_000)
+        XCTAssertNotEqual(version(a), version(b))
+    }
+
+    func testUpdatedAtChange_movesTheVersion() {
+        let a = task(status: .done)
+        var b = a
+        b.runs[0].steps[0].updatedAt = Date(timeIntervalSince1970: 99_999)
+        XCTAssertNotEqual(version(a), version(b))
+    }
+
+    func testStepTitleAndTaskTitle_moveTheVersion() {
+        let a = task()
+        var b = a
+        b.runs[0].steps[0].title = "Renamed"
+        XCTAssertNotEqual(version(a), version(b))
+        XCTAssertNotEqual(version(a), version(task(title: "Renamed task")))
+    }
+
+    func testAddedRunOrStep_movesTheVersion() {
+        let a = task()
+        var b = a
+        b.runs.append(Run(id: 1, steps: []))
+        XCTAssertNotEqual(version(a), version(b))
+        var c = a
+        c.runs[0].steps.append(
+            StepExecution(id: "reviewer", role: .codeReviewer, title: "Review"))
+        XCTAssertNotEqual(version(a), version(c))
+    }
+
+    func testFilterAndClearedCutoff_moveTheVersion() {
+        let t = task()
+        XCTAssertNotEqual(version(t), version(t, filter: 1))
+        XCTAssertNotEqual(version(t), version(t, cleared: Date(timeIntervalSince1970: 5)))
+    }
+
+    /// The team supplies `roleDefinition` for every event (icon, colour, name),
+    /// and `Team.==` is an identity shortcut over `id` + `updatedAt` — so both
+    /// are folded, or a role rename would leave the timeline stale.
+    func testTeamIdentityAndEdits_moveTheVersion() {
+        let t = task()
+        let stamp = Date(timeIntervalSince1970: 1)
+        XCTAssertNotEqual(version(t, teamID: "a", teamUpdatedAt: stamp),
+                          version(t, teamID: "b", teamUpdatedAt: stamp))
+        XCTAssertNotEqual(version(t, teamID: "a", teamUpdatedAt: stamp),
+                          version(t, teamID: "a",
+                                  teamUpdatedAt: Date(timeIntervalSince1970: 2)))
+    }
+
+    func testNilTask_isStableAndDistinctFromATask() {
+        XCTAssertEqual(version(nil), version(nil))
+        XCTAssertNotEqual(version(nil), version(task()))
+    }
+}

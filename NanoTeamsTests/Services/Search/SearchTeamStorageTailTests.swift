@@ -265,21 +265,21 @@ final class SearchTeamStorageSearchTailTests: XCTestCase {
     // MARK: - SearchIndexService: query wrappers with no index at all
     // ------------------------------------------------------------------
 
-    /// `vocabulary` / `files` short-circuit on `cached ?? loadFromDisk()`. With
-    /// neither, they must return empty rather than triggering a build — a query
-    /// is not a build request, and building here would make an exploratory-search
+    /// `files(containing:)` short-circuits on `cached ?? loadFromDisk()`. With
+    /// neither, it must return empty rather than triggering a build — a query is
+    /// not a build request, and building here would make an exploratory-search
     /// lookup pay a full walk on a folder the user never indexed.
-    func testVocabulary_noCacheNoDiskIndex_returnsEmptyWithoutBuilding() async throws {
+    func testQuery_noCacheNoDiskIndex_returnsEmptyWithoutBuilding() async throws {
         try write("A.swift", content: "class ScrollViewController {}")
         let service = makeSearchIndexService()
 
-        let vocab = await service.vocabulary(matching: "scroll", limit: 10)
-        XCTAssertTrue(vocab.isEmpty,
+        let hits = await service.files(containing: ["scroll"])
+        XCTAssertTrue(hits.isEmpty,
                       "No cache and no on-disk index must yield [], not a lazy rebuild.")
 
         let indexFile = internalDir.appendingPathComponent("search_index.json")
         XCTAssertFalse(fm.fileExists(atPath: indexFile.path),
-                       "A vocabulary query must not persist an index as a side effect.")
+                       "A query must not persist an index as a side effect.")
     }
 
     func testFilesContaining_noCacheNoDiskIndex_returnsEmpty() async throws {

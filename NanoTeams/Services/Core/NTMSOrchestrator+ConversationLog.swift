@@ -2,14 +2,6 @@ import Foundation
 
 // MARK: - Write coordination
 
-/// Monotonic generation stamp assigned at render START (on the main actor, so the
-/// increment is serialized). A render that starts later always gets a higher stamp.
-@MainActor
-private enum ConversationLogGeneration {
-    private static var counter = 0
-    static func next() -> Int { counter += 1; return counter }
-}
-
 /// Render coalescing: at most ONE render in flight per task, plus one pending.
 ///
 /// The per-turn cadence re-renders the WHOLE run — every step, every message,
@@ -51,32 +43,22 @@ enum ConversationLogRenderCoalescer {
     #endif
 }
 
-/// Pure stale-drop decision for `conversation_log.md` writes. A render's generation stamp
-/// is monotonic (assigned at render START on the main actor), so a write should land only
-/// when it is at least as new as the last write recorded for that task. Extracted for unit
-/// testing; the actor owns the per-task state.
-nonisolated enum ConversationLogWritePolicy {
-    static func shouldWrite(generation: Int, lastWritten: Int?) -> Bool {
-        guard let lastWritten else { return true }
-        return generation >= lastWritten
-    }
-}
-
-/// Serializes `conversation_log.md` disk writes and DROPS stale snapshots. The per-turn
-/// render cadence + parallel role steps (CLAUDE.md #45) spawn concurrent `Task.detached`
-/// builds for the same run; without coordination a slow earlier build could land its
-/// (older-snapshot) write after a newer one, leaving a stale transcript — exactly the
-/// drift the audit pair exists to catch. Each write carries the render's generation stamp;
-/// the actor only writes when the stamp is newer than the last one written for that task.
+/// Serializes `conversation_log.md` disk writes.
+///
+/// It used to also DROP stale snapshots, keyed on a monotonic generation stamp.
+/// That mechanism was unreachable from the day `ConversationLogRenderCoalescer`
+/// landed: `begin` is the only entry to a render, `finish` releases the slot
+/// strictly AFTER the write, and both call sites are `@MainActor` — so render
+/// n+1 for a task cannot start until write n has landed, and the incoming stamp
+/// was always the newest. It was also the wrong lever for cost: the drop
+/// happened after `buildTimelineItems` and `render` had already run. Removed
+/// rather than left standing with a doc comment that made it read as live
+/// (CLAUDE.md #79/#90); the coalescer is the mechanism that actually holds the
+/// ordering, and it stays.
 private actor ConversationLogWriter {
     static let shared = ConversationLogWriter()
-    private var lastWrittenGeneration: [Int: Int] = [:]
 
-    func write(_ markdown: String, to url: URL, taskID: Int, generation: Int) {
-        guard ConversationLogWritePolicy.shouldWrite(
-            generation: generation, lastWritten: lastWrittenGeneration[taskID]
-        ) else { return }
-        lastWrittenGeneration[taskID] = generation
+    func write(_ markdown: String, to url: URL, taskID: Int) {
         do {
             try markdown.write(to: url, atomically: true, encoding: .utf8)
         } catch {
@@ -114,7 +96,6 @@ extension NTMSOrchestrator {
         // After the cheap guards, so a task that cannot render never occupies the slot.
         guard ConversationLogRenderCoalescer.begin(taskID) else { return }
 
-        let generation = ConversationLogGeneration.next()
         let teamRoles = resolvedTeam(for: task).roles
         let debug = configuration.debugModeEnabled
         let isChatMode = task.isChatMode
@@ -171,10 +152,9 @@ extension NTMSOrchestrator {
                 isChatMode: isChatMode,
                 generatedAt: Date()
             )
-            // Serialized + stale-drop write: a slower earlier render can't clobber a newer one.
-            await ConversationLogWriter.shared.write(
-                markdown, to: logURL, taskID: taskID, generation: generation
-            )
+            // Serialized write; the coalescer guarantees at most one render per task
+            // is in flight, so ordering needs no second mechanism.
+            await ConversationLogWriter.shared.write(markdown, to: logURL, taskID: taskID)
             // Release the slot; if turns landed mid-render, run ONE follow-up that
             // snapshots the now-current state (self is the long-lived orchestrator).
             await MainActor.run {

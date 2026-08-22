@@ -160,6 +160,40 @@ final class TaskServiceTests: XCTestCase {
 
     // MARK: - Task Summaries Filtering Tests
 
+    /// The sidebar's "newest first" order is established ONCE, on the write side, by
+    /// `TasksIndex.upsert` — `taskSummaries` only filters. This drives the real path
+    /// (create → `updateTaskOnly` → `upsert` → read back from disk) so the chain is pinned
+    /// where it actually holds, now that neither `taskSummaries` nor
+    /// `TaskManagementState.filteredTasks` re-sorts on every read.
+    ///
+    /// RED: revert `TasksIndex.upsert` to append-without-slot -> the touched task no
+    /// longer leads and the descending check fails.
+    func testTaskSummaries_orderIsMaintainedByTheIndex_notReDerivedOnRead() throws {
+        _ = try initializeProject()
+
+        var ids: [Int] = []
+        for title in ["First", "Second", "Third", "Fourth"] {
+            let created = try service.createTask(at: tempDir, title: title, supervisorTask: "Goal")
+            ids.append(created.taskID)
+        }
+
+        // Touch the OLDEST task through the ordinary persistence path.
+        var oldest = try repository.loadTask(at: tempDir, taskID: ids[0])
+        oldest.updatedAt = MonotonicClock.shared.now()
+        try repository.updateTaskOnly(at: tempDir, task: oldest)
+
+        let freshContext = try repository.openOrCreateWorkFolder(at: tempDir)
+        let summaries = service.taskSummaries(from: freshContext, filter: .all)
+
+        XCTAssertEqual(summaries.count, 4, "anti-vacuum: all four rows are present")
+        XCTAssertEqual(
+            summaries.first?.id, ids[0],
+            "the just-touched task must lead — that is what `upsert` moved it for")
+        XCTAssertEqual(
+            summaries.map(\.updatedAt), summaries.map(\.updatedAt).sorted(by: >),
+            "the read path does not sort, so this order came from the index itself")
+    }
+
     func testTaskSummariesFilterAll() throws {
         _ = try initializeProject()
 

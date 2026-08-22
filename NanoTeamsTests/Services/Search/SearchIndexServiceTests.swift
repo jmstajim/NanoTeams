@@ -240,25 +240,6 @@ final class SearchIndexServiceTests: XCTestCase {
         XCTAssertEqual(paths, [])
     }
 
-    // MARK: - Vocabulary ranking
-
-    func testVocabulary_exactMatchTierFirst() async throws {
-        try write("A.swift", content: "scroll scrollView makeScrollView scrollbar")
-        let service = makeService()
-        _ = await service.loadOrBuild()
-        let vocab = await service.vocabulary(matching: "scroll", limit: 10)
-        XCTAssertEqual(vocab.first, "scroll", "Exact match should come first")
-        XCTAssertTrue(vocab.contains("scrollview"))
-    }
-
-    func testVocabulary_empty_returnsEmpty() async throws {
-        try write("A.swift", content: "scroll")
-        let service = makeService()
-        _ = await service.loadOrBuild()
-        let vocab = await service.vocabulary(matching: "", limit: 10)
-        XCTAssertEqual(vocab, [])
-    }
-
     // MARK: - Signature-based rebuild detection
 
     func testSignatureDrift_fileAdded_reportsMismatch() async throws {

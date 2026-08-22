@@ -16,10 +16,28 @@ nonisolated struct ToolCallAccumulator {
 
     private var callsByIndex: [Int: Partial] = [:]
 
+    /// Appends each delta to its partial without copying the accumulated blob.
+    ///
+    /// The shape that stood here read the partial out of the dictionary with a plain
+    /// subscript, appended, and wrote it back — leaving `arguments` referenced twice, so
+    /// `+=` could never take its uniquely-referenced fast path. Every delta reallocated
+    /// and memcpy'd the whole blob, which the type's own doc measures in hundreds of KB:
+    /// Θ(args²) across a stream, the same defect as `StreamingPreviewManager.append`.
+    ///
+    /// Latent rather than live today: no shipping client emits `toolCallDeltas`
+    /// (`NativeLMStudioClient` / `OllamaClient` produce content, thinking, progress and
+    /// usage only — `ConversationReplay` says the same). Fixed because it is that same
+    /// class, not because it fires now.
     mutating func absorb(_ deltas: [StreamEvent.ToolCallDelta]) {
         for delta in deltas {
             let idx = delta.index ?? 0
-            var partial = callsByIndex[idx] ?? Partial(providerID: nil, name: "", arguments: "")
+            // `removeValue`, not a plain subscript READ: taking the partial out drops the
+            // dictionary's reference to its `arguments` buffer, so the `+=` below is
+            // uniquely referenced and appends in place. Reading a copy while the
+            // dictionary still holds one — the shape that stood here — made every delta
+            // reallocate and memcpy the whole accumulated blob.
+            var partial = callsByIndex.removeValue(forKey: idx)
+                ?? Partial(providerID: nil, name: "", arguments: "")
 
             if let id = delta.id, !id.isEmpty {
                 partial.providerID = id

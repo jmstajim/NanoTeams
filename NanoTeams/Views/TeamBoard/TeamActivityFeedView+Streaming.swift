@@ -1,4 +1,7 @@
 import SwiftUI
+#if DEBUG
+import Synchronization
+#endif
 
 // MARK: - Streaming Bubble Logic (pure, unit-testable)
 //
@@ -8,8 +11,36 @@ import SwiftUI
 // streaming/committed bubble state machine is testable without the view.
 extension TeamActivityFeedView {
 
-    /// Visible-message filter mirrors `ActivityFeedBuilder.emitItems` —
-    /// pinned by `testReturnsTrue_whenLatestVisibleMessage_evenIfToolTurnHasLaterTimestamp`.
+    /// The ONE message a `.running` step implicitly streams into: its latest
+    /// VISIBLE turn. Nil when the step is not running or has no visible turn.
+    ///
+    /// One pass, nothing materialized. The `max(by: createdAt)` law is kept
+    /// deliberately — `last` is NOT equivalent, because `commitStreamingContent`
+    /// re-stamps a committed turn forward and a tool turn can carry a later
+    /// timestamp than the assistant turn that produced it (pinned by
+    /// `testReturnsTrue_whenLatestVisibleMessage_evenIfToolTurnHasLaterTimestamp`).
+    /// Visible-message filter mirrors `ActivityFeedBuilder.emitItems`.
+    static func implicitStreamTargetID(in step: StepExecution) -> UUID? {
+        guard step.status == .running else { return nil }
+        var latest: LLMMessage?
+        for message in step.llmConversation
+        where message.role != .system && message.role != .tool {
+            #if DEBUG
+            ImplicitStreamTargetProbe.noteExamined()
+            #endif
+            if latest == nil || message.createdAt > latest!.createdAt { latest = message }
+        }
+        return latest?.id
+    }
+
+    /// Per-bubble spelling of the same question, kept as the unit-testable seam.
+    ///
+    /// NOT the production path any more: it was called once per rendered
+    /// `.llmMessage` row inside a deliberately non-lazy `VStack`, so a chat-mode
+    /// step — whose whole conversation lives in ONE step, `.running` for the
+    /// session — paid Θ(bubbles × messages) = Θ(M²) per body pass, i.e. per
+    /// `mutateTask`. The view now reads `TeamActivityFeedViewModel`'s
+    /// once-per-rebuild set instead.
     static func resolveImplicitStreamTarget(
         stepID: String,
         messageID: UUID,
@@ -18,10 +49,7 @@ extension TeamActivityFeedView {
     ) -> Bool {
         if isPreviewTarget { return false }
         guard let step = allSteps.first(where: { $0.id == stepID }) else { return false }
-        guard step.status == .running else { return false }
-        let visible = step.llmConversation.filter { $0.role != .system && $0.role != .tool }
-        guard let latest = visible.max(by: { $0.createdAt < $1.createdAt }) else { return false }
-        return latest.id == messageID
+        return implicitStreamTargetID(in: step) == messageID
     }
 
     // MARK: - Bubble inputs (testable resolver)
@@ -252,3 +280,19 @@ extension TeamActivityFeedView {
         )
     }
 }
+
+#if DEBUG
+/// Work-bound seam for the implicit-stream-target scan: conversation messages
+/// EXAMINED since the last reset.
+///
+/// The defect it pins is not a wrong answer but a wrong CADENCE — the scan used
+/// to run once per rendered bubble instead of once per step per rebuild — so a
+/// behavioural test cannot see it. Counter placed inside the scan, per
+/// CLAUDE.md #62.
+nonisolated enum ImplicitStreamTargetProbe {
+    private static let _examined = Atomic<Int>(0)
+    static func noteExamined() { _examined.wrappingAdd(1, ordering: .relaxed) }
+    static func _testExamined() -> Int { _examined.load(ordering: .relaxed) }
+    static func _testResetExamined() { _examined.store(0, ordering: .relaxed) }
+}
+#endif

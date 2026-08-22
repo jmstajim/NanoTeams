@@ -17,15 +17,7 @@ extension NTMSOrchestrator {
             snap.activeTaskID = task.id
 
             if updateIndex {
-                var tasksIndex = snap.tasksIndex
-                let summary = task.toSummary()
-                if let idx = tasksIndex.tasks.firstIndex(where: { $0.id == summary.id }) {
-                    tasksIndex.tasks[idx] = summary
-                } else {
-                    tasksIndex.tasks.append(summary)
-                }
-                tasksIndex.tasks.sort(by: { $0.updatedAt > $1.updatedAt })
-                snap.tasksIndex = tasksIndex
+                upsertTaskSummary(task.toSummary(), in: &snap)
             }
 
             snapshot = snap

@@ -95,8 +95,24 @@ struct GraphPanelView: View {
 
     /// Failure is anything pending but NOT live — see `GeneratedTeamPanelState.failed`,
     /// which owns the rule and its regression history.
+    ///
+    /// The `isPending` guard is MIRRORED here, ahead of the call, purely so the
+    /// arguments are never built for a task that cannot be a Generated Team.
+    /// Swift evaluates call arguments eagerly, so `generationToolCall` — which
+    /// walks every step's `toolCalls` and can only exit early when a `create_team`
+    /// call EXISTS, i.e. never on an ordinary task — used to run before the
+    /// callee's own leading `guard isPending else { return false }`. `toolCalls`
+    /// has no ceiling (`LLMConstants.maxToolIterations == 0`), and `body` reaches
+    /// this on every pass.
+    ///
+    /// Semantically identical by construction: `GeneratedTeamPanelState.failed`
+    /// returns `false` for `isPending == false` unconditionally. The rule stays
+    /// there, in one place; the view only stops paying for inputs the rule
+    /// discards. Pinned by `GeneratedTeamPanelStateTests`' truth table plus the
+    /// mirror test beside it.
     private var generationFailed: Bool {
-        GeneratedTeamPanelState.failed(
+        guard isGenerationPending else { return false }
+        return GeneratedTeamPanelState.failed(
             isPending: isGenerationPending,
             toolCallIsError: generationToolCall?.isError == true,
             stepStatus: generationStep?.status,
@@ -152,14 +168,20 @@ struct GraphPanelView: View {
         var layers: [DelegationLayer] = []
         var currentTask: NTMSTask? = task
         var safety = 0
-        let allTasks = store.allLoadedTasksIncludingChildren
         while let parent = currentTask, safety < DelegationConstants.maxDelegationDepth {
             guard let parentRun = parent.runs.last else { break }
             let delegatingStep = parentRun.steps.first { $0.activeDelegationChildID != nil }
             guard let step = delegatingStep,
                   let childID = step.activeDelegationChildID
             else { break }
-            guard let childTask = allTasks.first(where: { $0.id == childID }),
+            // `loadedTask(_:)` — an O(1) dictionary read — not a linear scan of a
+            // freshly materialized `allLoadedTasksIncludingChildren`. That array was built
+            // ABOVE the loop, so every render paid it even though the usual render has no
+            // delegation and breaks two lines in; and this is the first statement of
+            // `var body`, on a view whose `store.snapshot` read makes SwiftUI re-run it on
+            // every task mutation. The property's own doc reserves it for "internal
+            // lifecycle code … that genuinely needs the full set" (CLAUDE.md #79).
+            guard let childTask = store.loadedTask(childID),
                   let childRun = childTask.runs.last
             else { break }
 

@@ -20,6 +20,11 @@ final class StreamingPreviewManager {
     /// Current streaming previews keyed by (taskID, stepID).
     /// @ObservationIgnored — content changes do not trigger view re-evaluation.
     /// Views poll content via `TimelineView` instead.
+    ///
+    /// **Invariant: `.content` is always model-token-stripped.** Both writers uphold it,
+    /// and they must: `append` decides whether to strip from the TAIL of the buffer
+    /// (`ModelTokenCleaner.stripTokensInTail`), so a writer that seeded unstripped content
+    /// would leave sentinels no later delta can reach. A third writer must strip too.
     @ObservationIgnored private(set) var previews: [TaskStepKey: StepMessage] = [:]
 
     /// Maps (taskID, stepID) → messageID for messages currently being streamed.
@@ -146,19 +151,35 @@ final class StreamingPreviewManager {
     ///   - messageID: The message ID for the preview (used to update existing messages).
     ///   - role: The role of the message sender.
     ///   - content: The content to append.
+    ///
+    /// Costs `O(delta)`, not `O(accumulated buffer)`. Both halves of that are load-bearing
+    /// and both were `O(buffer)` until 2026-08-22:
+    ///
+    /// 1. **In-place append.** Reading the `StepMessage` OUT of the dictionary into a
+    ///    `var`, appending, and writing it back leaves the string buffer referenced twice,
+    ///    so `+=` can never take its uniquely-referenced fast path: every call reallocated
+    ///    and memcpy'd the whole accumulated reply. Going through the `default:` subscript's
+    ///    `_modify` accessor keeps it unique — the idiom `appendThinking` below already used.
+    /// 2. **Windowed gate.** `containsModelTokens` over the whole buffer ran on EVERY
+    ///    call, and a `<|` the cleaner deliberately keeps (a mangled `<|tool_call{`) makes
+    ///    the strip itself fire on every later call too — a gate costing what it gates,
+    ///    CLAUDE.md #106, the same defect `StreamMarkerWindow` was built for on the
+    ///    neighbouring Harmony path. `stripTokensInTail` moves only the DECISION into a
+    ///    delta-sized window; the strip it gates is still the whole-buffer one, so
+    ///    behaviour is unchanged (measured: 0 divergences in 400 009 randomized cases).
+    ///    Measured before the fix: a 100 000-character reply spent 336 ms on the MainActor
+    ///    here, 200 000 → 1 361 ms — input ×4, time ×16. After: 1.9 ms and 3.7 ms.
     func append(stepID: String, taskID: Int, messageID: UUID, role: Role, content: String) {
         guard !content.isEmpty else { return }
 
         let key = TaskStepKey(taskID: taskID, stepID: stepID)
         let isNew = previews[key] == nil
-        var message =
-            previews[key]
-                ?? StepMessage(id: messageID, createdAt: MonotonicClock.shared.now(), role: role, content: "")
-        message.content += content
-        if ModelTokenCleaner.containsModelTokens(message.content) {
-            message.content = ModelTokenCleaner.stripTokens(message.content)
-        }
-        previews[key] = message
+        previews[
+            key,
+            default: StepMessage(
+                id: messageID, createdAt: MonotonicClock.shared.now(), role: role, content: "")
+        ].content += content
+        ModelTokenCleaner.stripTokensInTail(&previews[key]!.content, newDeltaCount: content.count)
         if isNew { structuralVersion &+= 1 }
     }
 
@@ -167,19 +188,29 @@ final class StreamingPreviewManager {
     /// Used to rewind when a Harmony tool-call marker is detected mid-flush, so
     /// partial prefixes like `<` or `<|` don't linger on screen after the
     /// streaming service has already decided they belong to a tool-call envelope.
+    ///
+    /// Strips its own input, so the "content is always stripped" invariant on `previews`
+    /// is enforced BY THE TYPE rather than remembered by callers — `append`'s windowed
+    /// strip is only equivalent to a whole-buffer one while that holds. Idempotent, so the
+    /// rewind caller keeps its own `stripTokens` → `stripSurroundingWhitespace` pair (that
+    /// ORDER is load-bearing there: removing a token can expose fresh trailing space).
+    /// Runs units of times per stream, so the whole-buffer cost is not a per-delta one.
     func replaceContent(stepID: String, taskID: Int, messageID: UUID, role: Role, content: String) {
         let key = TaskStepKey(taskID: taskID, stepID: stepID)
-        if var message = previews[key] {
-            message.content = content
-            previews[key] = message
+        let stripped = ModelTokenCleaner.containsModelTokens(content)
+            ? ModelTokenCleaner.stripTokens(content) : content
+        if previews[key] != nil {
+            previews[key]!.content = stripped
             return
         }
         // No preview yet — only create one if rewinding to non-empty content,
-        // so a marker at position 0 doesn't materialize an empty bubble.
-        guard !content.isEmpty else { return }
+        // so a marker at position 0 doesn't materialize an empty bubble. Emptiness is
+        // judged on the INPUT: a rewind to nothing but sentinels is still a rewind to
+        // nothing, and the pre-strip test would have materialized a blank bubble for it.
+        guard !stripped.isEmpty else { return }
         previews[key] = StepMessage(
             id: messageID, createdAt: MonotonicClock.shared.now(),
-            role: role, content: content)
+            role: role, content: stripped)
         structuralVersion &+= 1
     }
 

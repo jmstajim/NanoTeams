@@ -131,6 +131,16 @@ struct TeamGraphLayoutCache {
     /// actually read. Coordinates are rounded to the nearest integer so
     /// floating-point jitter (sub-pixel layout passes) doesn't invalidate
     /// the cache when nothing visible changed.
+    ///
+    /// **Allocation-free.** This runs BEFORE the cache-hit check, so it is paid on
+    /// every call including every hit — and it used to allocate `2R+3` fresh
+    /// arrays getting there (`roleDefinitions.sorted`, two `sorted()` per role,
+    /// `teamMembers.sorted()`, `nodeSizes.sorted()`). The sorts existed only to
+    /// make the hash independent of iteration order, which a commutative fold
+    /// gives for free — see `unorderedHash`. The memo itself stays: its gate is
+    /// Θ(R·logR) against guarded work that nests four deep (Θ(N·a·R·p)), so the
+    /// margin widens with team size rather than closing; the defect was the
+    /// allocation, not the memo.
     private static func fingerprint(
         nodePositions: [TeamNodePosition],
         roleDefinitions: [TeamRoleDefinition],
@@ -141,6 +151,7 @@ struct TeamGraphLayoutCache {
         var hasher = Hasher()
 
         // nodePositions — collectConnections reads roleID + x + y per entry.
+        // Array order is itself an input here, so this stays positional.
         hasher.combine(nodePositions.count)
         for pos in nodePositions {
             hasher.combine(pos.roleID)
@@ -148,32 +159,56 @@ struct TeamGraphLayoutCache {
             hasher.combine(Int(pos.y.rounded()))
         }
 
-        // roleDefinitions — only id, isSupervisor, dependencies are read.
-        // Sort by id for deterministic hashing (input order shouldn't
-        // invalidate the cache).
+        // roleDefinitions — only id, isSupervisor, dependencies are read, and the
+        // ORDER they arrive in must not invalidate the cache.
         hasher.combine(roleDefinitions.count)
-        for role in roleDefinitions.sorted(by: { $0.id < $1.id }) {
-            hasher.combine(role.id)
-            hasher.combine(role.isSupervisor)
-            hasher.combine(role.dependencies.requiredArtifacts.sorted())
-            hasher.combine(role.dependencies.producesArtifacts.sorted())
+        var rolesFold = 0
+        for role in roleDefinitions {
+            var roleHasher = Hasher()
+            roleHasher.combine(role.id)
+            roleHasher.combine(role.isSupervisor)
+            roleHasher.combine(unorderedHash(role.dependencies.requiredArtifacts))
+            roleHasher.combine(unorderedHash(role.dependencies.producesArtifacts))
+            rolesFold = rolesFold &+ roleHasher.finalize()
         }
+        hasher.combine(rolesFold)
 
-        // teamMembers — hash sorted IDs (Set hash is not stable across
-        // launches; sorted-array hash is).
-        hasher.combine(teamMembers.sorted())
+        // teamMembers — a `Set`'s iteration order is not a function of its
+        // contents, which is exactly what the fold neutralizes.
+        hasher.combine(teamMembers.count)
+        hasher.combine(unorderedHash(teamMembers))
 
         // nodeSizes — width drives port spread.
         hasher.combine(nodeSizes.count)
-        for (id, size) in nodeSizes.sorted(by: { $0.key < $1.key }) {
-            hasher.combine(id)
-            hasher.combine(Int(size.width.rounded()))
-            hasher.combine(Int(size.height.rounded()))
+        var sizesFold = 0
+        for (id, size) in nodeSizes {
+            var sizeHasher = Hasher()
+            sizeHasher.combine(id)
+            sizeHasher.combine(Int(size.width.rounded()))
+            sizeHasher.combine(Int(size.height.rounded()))
+            sizesFold = sizesFold &+ sizeHasher.finalize()
         }
+        hasher.combine(sizesFold)
 
         // fallbackNodeWidth — used when nodeSizes lacks an entry.
         hasher.combine(Int(fallbackNodeWidth.rounded()))
 
         return hasher.finalize()
+    }
+
+    /// Commutative combination of per-element hashes: equal collections agree
+    /// regardless of iteration order, with no intermediate array.
+    ///
+    /// Wrapping ADDITION, not XOR: xor cancels duplicates, so `["a", "a"]` and
+    /// `[]` would collide, and an artifact list is not a set.
+    private static func unorderedHash<S: Sequence>(_ elements: S) -> Int
+    where S.Element: Hashable {
+        var accumulator = 0
+        for element in elements {
+            var hasher = Hasher()
+            hasher.combine(element)
+            accumulator = accumulator &+ hasher.finalize()
+        }
+        return accumulator
     }
 }

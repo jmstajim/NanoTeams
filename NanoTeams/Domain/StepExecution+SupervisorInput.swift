@@ -1,4 +1,7 @@
 import Foundation
+#if DEBUG
+import Synchronization
+#endif
 
 // MARK: - "Someone is waiting on the Supervisor's answer"
 
@@ -34,9 +37,9 @@ nonisolated extension StepExecution {
     /// `supervisorAnswer == nil` guard would misclassify that window (see
     /// `LLMExecutionService+StepLifecycle.swift`).
     var hasActiveSupervisorInput: Bool {
-        // The O(1) flag first: `activeAskCall`'s forward scan is O(conversation)
-        // exactly in the active case, and this predicate runs per step per
-        // recompute tick (fingerprint key, emitItems, the composer-chip guard).
+        // The O(1) flag first: `activeAskCall` still walks the conversation TAIL
+        // after the trailing ask, and this predicate runs per step per recompute
+        // tick (fingerprint key, emitItems, the composer-chip guard).
         needsSupervisorInput || activeAskCall != nil
     }
 
@@ -50,10 +53,35 @@ nonisolated extension StepExecution {
     /// the call" is equivalent to "still owed".
     private var activeAskCall: StepToolCall? {
         guard let last = toolCalls.last, last.name == ToolNames.askSupervisor else { return nil }
-        let answeredAfter = llmConversation.contains {
-            $0.sourceContext == .supervisorAnswer && $0.createdAt > last.createdAt
+        // REVERSE, stopping at the first message not newer than the ask.
+        //
+        // The predicate only cares about messages created AFTER the trailing ask,
+        // and `llmConversation` is `createdAt`-ascending: it is append-only, and
+        // the two writers that re-stamp (`applyRetryNotice`,
+        // `commitStreamingContent`) both move the TAIL element forward. So the
+        // candidates are a suffix, and everything before the break is provably
+        // older than the ask.
+        //
+        // The forward `contains` this replaces read the WHOLE conversation, and
+        // its cost was not per-answer but per-BODY-PASS: `activeSupervisorQuestionID`
+        // has no `needsSupervisorInput` short-circuit and is reached from
+        // `MainLayoutView.activeTaskObservation`, an `onChange` KEY — evaluated on
+        // every pass, i.e. on every `mutateTask`. Θ(messages) per append is Θ(N²)
+        // across a chat session, on the MainActor.
+        //
+        // Failure direction if the ordering invariant is ever broken: the walk
+        // stops early and MISSES an out-of-place answer, i.e. it reads "still
+        // waiting". It can never invent an answer, so the question stays on screen
+        // and the human can still reply. Pinned by
+        // `testAnswerScan_outOfOrderConversation_failsTowardStillWaiting`.
+        for message in llmConversation.reversed() {
+            #if DEBUG
+            SupervisorInputScanProbe.noteExamined()
+            #endif
+            guard message.createdAt > last.createdAt else { break }
+            if message.sourceContext == .supervisorAnswer { return nil }
         }
-        return answeredAfter ? nil : last
+        return last
     }
 
     /// Identity of the active `ask_supervisor` call, when there is one.
@@ -121,3 +149,25 @@ nonisolated extension NTMSTask {
         return runs.last?.activeSupervisorQuestionIDs ?? []
     }
 }
+
+#if DEBUG
+/// Work-bound seam for `activeAskCall`'s answer scan: how many conversation
+/// messages the scan EXAMINED since the last reset.
+///
+/// It lives inside the scan's closure, not beside a call site, for the reason
+/// CLAUDE.md #62 records: the defect being pinned is the scan reading the WHOLE
+/// conversation instead of the tail after the trailing ask, and a counter placed
+/// outside would report the conversation's length no matter what the scan
+/// actually walked.
+///
+/// A regression here is invisible in OUTPUT — a forward whole-conversation scan
+/// returns exactly the same answers, just Θ(N²) slower across a chat session,
+/// because this predicate is re-evaluated on every SwiftUI body pass through
+/// `MainLayoutView`'s `activeTaskObservation` `onChange` key.
+nonisolated enum SupervisorInputScanProbe {
+    private static let _examined = Atomic<Int>(0)
+    static func noteExamined() { _examined.wrappingAdd(1, ordering: .relaxed) }
+    static func _testExamined() -> Int { _examined.load(ordering: .relaxed) }
+    static func _testResetExamined() { _examined.store(0, ordering: .relaxed) }
+}
+#endif

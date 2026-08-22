@@ -107,8 +107,12 @@ extension LLMExecutionService {
         // quadratic across the stream, and unsaveable by the throttle because
         // the count WAS the throttle's input. Every buffer mutation below
         // reports its size to the gate (two `+=` sites, one truncation).
-        var loopScanGate = StreamScanCadenceGate(
-            cadence: LLMConstants.streamLoopScanCadenceChars)
+        // `.everyChars` is legal here because the probe behind it —
+        // `LoopScanner.scanStreaming` — truncates each channel to a fixed tail
+        // window before scanning, so its cost is constant in the accumulated
+        // length. The case name is that claim; see `StreamProbeCadence`.
+        var loopScanGate = StreamProbeGate(
+            cadence: .everyChars(LLMConstants.streamLoopScanCadenceChars))
         // Same principle for the CANONICAL duplicate-call probe: its input is the
         // growing args blob, so running it per `toolCallDeltas` event was O(args)
         // JSON work per delta (the raw fast path short-circuits only when a
@@ -116,8 +120,17 @@ extension LLMExecutionService {
         // to a full canonical pass every delta). The cheap byte-identity probe
         // (`hasRawDuplicate`, fed by running hashes) still runs per delta and
         // catches every observed loop; the canonical pass runs on this cadence.
-        var toolDeltaScanGate = StreamScanCadenceGate(
-            cadence: LLMConstants.streamLoopScanCadenceChars)
+        // GEOMETRIC, not arithmetic. The probe behind this one re-reads the WHOLE
+        // accumulated args blob (parse + canonicalize + hash, ~8 passes), so an
+        // arithmetic cadence summed to Θ(A²/cadence) across a stream — the exact
+        // asymmetry the harmony branch never had. Latent today (no shipping client
+        // emits `toolCallDeltas`), fixed here rather than left as a trap the first
+        // OpenAI-compatible client would spring. No unit clause here (`firstAtUnits:
+        // 0`, no `noteUnit()`): byte growth alone bounds Σ parse work at 3× the
+        // final blob, and there is no "many tiny envelopes" shape on this path —
+        // the per-delta byte-identity probe already catches it.
+        var toolDeltaScanGate = StreamProbeGate(
+            cadence: .geometric(growthNumerator: 3, growthDenominator: 2, firstAtUnits: 0))
 
         // Pre-create empty LLMMessage for inline streaming (no visual jump on commit)
         if isExecutionLive(stepID: stepID, taskID: taskID) {
@@ -239,22 +252,22 @@ extension LLMExecutionService {
         /// Returns `true` when the caller should break the stream (top-level loop).
         func scanForStreamLoop() -> Bool {
             guard loopScanEnabled else { return false }
-            guard loopScanGate.shouldScan else { return false }
+            guard loopScanGate.isDue else { return false }
             if loopScanIsTopLevel {
                 guard let signal = LoopScanner.scanStreaming(
                     thinking: thinkingCollected, content: "", scope: .thinkingOnly
-                ) else { loopScanGate.advance(); return false }
+                ) else { loopScanGate.recordProbe(); return false }
                 thinkingLoopSignal = signal
                 return true
             }
             guard let signal = LoopScanner.scanStreaming(
                 thinking: thinkingCollected, content: assistantCollected, scope: .thinkingAndContent
-            ) else { loopScanGate.advance(); return false }
+            ) else { loopScanGate.recordProbe(); return false }
             // Advance the throttle baseline only when the watcher says so (fired or
             // in cooldown). On the no-waiter race it returns false → hold so the next
             // growth window re-scans until the parent awaiter registers (I4).
             if delegate.noteStreamLoop(taskID: taskID, stepID: stepID, signal: signal) {
-                loopScanGate.advance()
+                loopScanGate.recordProbe()
             }
             return false
         }
@@ -263,7 +276,8 @@ extension LLMExecutionService {
         // duplicate probe: first fire at the second close marker (before that dedup is
         // impossible by definition), then geometric re-probes so the total parse work
         // stays amortized-linear in the stream. See `HarmonyProbeGrowthGate`.
-        var harmonyProbeGate = HarmonyProbeGrowthGate()
+        var harmonyProbeGate = StreamProbeGate(
+            cadence: .geometric(growthNumerator: 3, growthDenominator: 2, firstAtUnits: 2))
         // Three sites below `break` out of the for-await the moment the parser sees two
         // identical tool calls in one stream (canonical `name`+sortedKeys(args) signature).
         // The `break` IS the whole mechanism — the AsyncThrowingStream's `onTermination`
@@ -330,7 +344,7 @@ extension LLMExecutionService {
                         // for why the per-close probe was O(segments × buffer)
                         // and why a cursor cannot replace the whole-buffer parse.
                         if delta.contains(HarmonyToolCallParser.callMarker) || delta.contains("<|end|>") {
-                            harmonyProbeGate.noteClose()
+                            harmonyProbeGate.noteUnit()
                             if harmonyProbeGate.probeIsDue() {
                                 let extracted = harmonyParser.extractAllToolCalls(from: harmonyBuffer)
                                 if Self.containsDuplicateToolCalls(extracted) {
@@ -384,7 +398,7 @@ extension LLMExecutionService {
                             // when it HAD fired, so BOTH identical calls were dispatched.
                             harmonyProbeGate.seed(
                                 adoptedLength: harmonyBuffer.count,
-                                closes: Self.closeMarkerCount(in: harmonyBuffer))
+                                units: Self.closeMarkerCount(in: harmonyBuffer))
                             if harmonyProbeGate.probeIsDue(),
                                Self.containsDuplicateToolCalls(
                                    harmonyParser.extractAllToolCalls(from: harmonyBuffer)) {
@@ -491,8 +505,7 @@ extension LLMExecutionService {
                     toolDeltaScanGate.noteDelta(count: event.toolCallDeltas.reduce(0) {
                         $0 + ($1.argumentsDelta?.count ?? 0) + ($1.name?.count ?? 0)
                     })
-                    if toolDeltaScanGate.shouldScan {
-                        toolDeltaScanGate.advance()
+                    if toolDeltaScanGate.probeIsDue() {
                         if Self.containsDuplicateToolCalls(toolAccumulator.finalize()) {
                             break
                         }

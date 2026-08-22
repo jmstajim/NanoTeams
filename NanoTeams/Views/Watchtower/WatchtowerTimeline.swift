@@ -13,6 +13,13 @@ struct WatchtowerTimeline: View {
     @State private var visibleCount: Int = 30
     @Binding var clearedUpToDate: Date?
 
+    /// The built timeline, refreshed only when `WatchtowerTimelineBuilder.inputsVersion`
+    /// moves. Memoized rather than computed: `body` references it five times, this
+    /// pane is the Watchtower's default detail, and every reference used to walk
+    /// every run and step of the task, allocate an event per step, sort, and filter
+    /// twice — on every `mutateTask`.
+    @State private var cachedEvents: [TimelineEvent] = []
+
     var body: some View {
         VStack(spacing: 0) {
             // Filter header
@@ -22,13 +29,15 @@ struct WatchtowerTimeline: View {
             TerminalDivider()
 
             // Timeline content
-            if filteredEvents.isEmpty {
+            if cachedEvents.isEmpty {
                 emptyState
             } else {
                 timelineContent
             }
         }
         .background(Colors.surfaceOverlay)
+        .onAppear { rebuildEvents() }
+        .onChange(of: timelineInputsVersion) { _, _ in rebuildEvents() }
     }
 
     // MARK: - Components
@@ -74,7 +83,7 @@ struct WatchtowerTimeline: View {
             Spacer()
 
             // Clear button - hides displayed events without deleting data
-            ClearTimelineButton(isDisabled: filteredEvents.isEmpty) {
+            ClearTimelineButton(isDisabled: cachedEvents.isEmpty) {
                 clearedUpToDate = MonotonicClock.shared.now()
             }
         }
@@ -91,7 +100,7 @@ struct WatchtowerTimeline: View {
     private var timelineContent: some View {
         ScrollView {
             LazyVStack(spacing: 0) {
-                ForEach(Array(filteredEvents.prefix(visibleCount))) { event in
+                ForEach(Array(cachedEvents.prefix(visibleCount))) { event in
                     WatchtowerTimelineItem(
                         event: event,
                         onTap: { onTaskSelect(event.taskID) }
@@ -99,7 +108,7 @@ struct WatchtowerTimeline: View {
                 }
 
                 // Show more button
-                if filteredEvents.count > visibleCount {
+                if cachedEvents.count > visibleCount {
                     showMoreButton
                 }
             }
@@ -115,7 +124,7 @@ struct WatchtowerTimeline: View {
         } label: {
             HStack {
                 Spacer()
-                Text("Show more (\(filteredEvents.count - visibleCount) remaining)")
+                Text("Show more (\(cachedEvents.count - visibleCount) remaining)")
                     .font(Typography.termBase)
                     .foregroundStyle(Colors.accent)
                 Spacer()
@@ -157,9 +166,22 @@ struct WatchtowerTimeline: View {
         return []
     }
 
-    private var filteredEvents: [TimelineEvent] {
+    /// Cheap fold over everything `buildTimeline` reads — the only thing this
+    /// view evaluates per body pass now.
+    private var timelineInputsVersion: Int {
+        let team = store.activeTask.map { store.resolvedTeam(for: $0) }
+        return WatchtowerTimelineBuilder.inputsVersion(
+            task: store.activeTask,
+            teamID: team?.id,
+            teamUpdatedAt: team?.updatedAt,
+            taskFilter: selectedTaskFilter,
+            clearedUpTo: clearedUpToDate
+        )
+    }
+
+    private func rebuildEvents() {
         let roles = store.activeTask.map { store.resolvedTeam(for: $0).roles } ?? []
-        return WatchtowerTimelineBuilder.buildTimeline(
+        cachedEvents = WatchtowerTimelineBuilder.buildTimeline(
             task: store.activeTask,
             roleDefinitions: roles,
             taskFilter: selectedTaskFilter,

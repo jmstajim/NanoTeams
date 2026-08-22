@@ -30,9 +30,16 @@ nonisolated struct SearchIndex: Codable, Equatable {
     /// ids into this array (sorted ascending, deduplicated).
     let files: [IndexedFile]
 
-    /// Sorted unique lowercase tokens. Equal-as-set to `postings.keys`
-    /// (validated); kept explicit so the LLM vocabulary hint list is cheap
-    /// to slice without instantiating a `Set` from a dictionary's keys.
+    /// Sorted unique lowercase tokens. Equal-as-set to `postings.keys`, enforced
+    /// by the validating init and re-run on decode.
+    ///
+    /// The rationale here used to name the tiered `vocabulary` ranker's slicing
+    /// as the reason the field is stored — and that ranker is gone. Its real
+    /// production reader is `SearchIndexCoordinator`'s `tokenCount` telemetry,
+    /// plus `ExploratorySearchTrainer`'s vocabulary-recall measurement. Kept
+    /// stored rather than derived from `postings.keys`: it is a persisted
+    /// `CodingKey` in a versioned on-disk format, so dropping it is a format
+    /// change, not a cleanup.
     let tokens: [String]
 
     /// Inverted posting lists. Key is lowercase token; values are file ids
@@ -128,94 +135,22 @@ nonisolated struct IndexSignature: Codable, Equatable, Hashable {
 
 // MARK: - Queries (Information Expert)
 //
-// Ranking and posting-intersection live on the data type, not on the service
-// that persists it. Both `SearchIndexService` (actor) and
-// `LLMExecutionService+ExploratorySearch` (processor) call these directly; without
-// this split the ranking would need to be duplicated in both places.
+// Posting-intersection lives on the data type, not on the service that persists
+// it: `LLMExecutionService+ExploratorySearch` holds the `SearchIndex` VALUE
+// returned by `LLMExecutionDelegate.awaitSearchIndex()` and calls
+// `files(containing:)` on it directly, with no actor hop.
+//
+// A tiered `vocabulary(matching:limit:)` ranker used to live here too, and this
+// comment claimed the same two consumers for it. That was false from the commit
+// that introduced it: the processor never called it (it expands queries through
+// the vector path), and the actor wrapper had no production caller either — so
+// the whole tier-0..4 block, including its cross-script bridge and the
+// `sharesSubstring` helper only it called, was test-only code that this very
+// comment made read as live. Deleted 2026-08-22; the engineering-lessons entry
+// for that date records what it did, so a future exploratory-search wave can
+// reintroduce lexical fallback ranking deliberately instead of rediscovering it.
 
 nonisolated extension SearchIndex {
-
-    /// Ranked vocabulary candidates for `query`, tiered by match specificity:
-    /// 0. Exact case-insensitive equality.
-    /// 1. Prefix match either direction.
-    /// 2. Substring either direction.
-    /// 3. ≥ `fuzzyMinLength`-char shared substring (cheap fuzzy).
-    /// 4. Sparse-vocabulary top-up — only fires when tiers 0–3 fill fewer
-    ///    than half the limit:
-    ///    4a. Opposite-script tokens first (bridges cross-lingual gaps —
-    ///        Cyrillic ↔ ASCII, CJK ↔ ASCII, Arabic ↔ ASCII, etc. Scripts
-    ///        share no multi-char substrings so the tiered matcher can't
-    ///        find these on its own).
-    ///    4b. Same-script tokens as general top-up (gives the LLM semantic
-    ///        context when the tiered matcher misses abbreviations like
-    ///        `dnd`, `dbpool` that don't share 3-char substrings with the
-    ///        query). Large real-world indexes fill tiers 0–3 easily; this
-    ///        only fires on small / sparse ones.
-    ///
-    /// Stops early once `limit` distinct tokens are seen.
-    func vocabulary(matching query: String, limit: Int, fuzzyMinLength: Int = 3) -> [String] {
-        let tokensInQuery = TokenExtractor.extractTokens(from: query)
-        guard !tokensInQuery.isEmpty else { return [] }
-
-        var tier0: [String] = []
-        var tier1: [String] = []
-        var tier2: [String] = []
-        var tier3: [String] = []
-        var seen: Set<String> = []
-
-        for token in tokens {
-            for q in tokensInQuery {
-                if token == q {
-                    if seen.insert(token).inserted { tier0.append(token) }
-                    break
-                }
-                if token.hasPrefix(q) || q.hasPrefix(token) {
-                    if seen.insert(token).inserted { tier1.append(token) }
-                    break
-                }
-                if token.contains(q) || q.contains(token) {
-                    if seen.insert(token).inserted { tier2.append(token) }
-                    break
-                }
-                if SearchIndex.sharesSubstring(token, q, minLength: fuzzyMinLength) {
-                    if seen.insert(token).inserted { tier3.append(token) }
-                    break
-                }
-            }
-            if seen.count >= limit { break }
-        }
-
-        var ranked = Array((tier0 + tier1 + tier2 + tier3).prefix(limit))
-
-        // Tier 4: sparse-vocabulary top-up. Only when the tiered match is
-        // clearly sparse (< half the limit), first add opposite-script
-        // tokens (bridges cross-lingual gaps), then top up with same-script
-        // tokens (surfaces abbreviations the fuzzy matcher misses like
-        // `dnd` for "drag and drop" or `dbpool` for "database connection").
-        if ranked.count < limit / 2 {
-            let queryIsASCII = query.unicodeScalars.allSatisfy { $0.isASCII }
-
-            // Phase A: opposite-script first (translation candidates).
-            for token in tokens {
-                if ranked.count >= limit { break }
-                if seen.contains(token) { continue }
-                let tokenIsASCII = token.unicodeScalars.allSatisfy { $0.isASCII }
-                if tokenIsASCII == queryIsASCII { continue }
-                ranked.append(token)
-                seen.insert(token)
-            }
-
-            // Phase B: same-script top-up (semantic-context candidates).
-            for token in tokens {
-                if ranked.count >= limit { break }
-                if seen.contains(token) { continue }
-                ranked.append(token)
-                seen.insert(token)
-            }
-        }
-
-        return ranked
-    }
 
     /// Returns the relative file paths whose postings contain ANY of `terms`
     /// (union). Terms are lowercased via `en_US_POSIX` to match the tokenizer.
@@ -235,17 +170,5 @@ nonisolated extension SearchIndex {
             }
         }
         return ids.map { files[$0].path }.sorted()
-    }
-
-    /// True when the two strings share any substring of at least `minLength`.
-    /// O(n·m) but strings are short here (tokens are tens of chars at most).
-    static func sharesSubstring(_ a: String, _ b: String, minLength: Int) -> Bool {
-        guard a.count >= minLength, b.count >= minLength else { return false }
-        let aArr = Array(a)
-        for i in 0...(aArr.count - minLength) {
-            let needle = String(aArr[i..<(i + minLength)])
-            if b.contains(needle) { return true }
-        }
-        return false
     }
 }

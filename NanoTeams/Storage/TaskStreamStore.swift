@@ -42,24 +42,88 @@ nonisolated enum TaskStreamStore {
 
     private final class Entry {
         let queue = DispatchQueue(label: "com.nanoteams.taskstreamstore")
-        /// Last-flushed state — the diff baseline. `nil` = cold (nothing known
-        /// about the file in this process).
-        var lastFlushed: StepStreams?
         var nextSeq = 1
         var liveRecords = 0
         var deadRecords = 0
     }
 
+    /// Last-flushed state — the diff baseline — plus the stamp that state
+    /// produced. `nil` = cold (nothing known about the file in this process).
+    ///
+    /// Deliberately NOT a field on `Entry`: `splittingStreams` must be able to
+    /// ask "did this step change at all" WITHOUT the per-file queue hop, and a
+    /// field written inside the queue cannot be read outside it. Guarded by
+    /// `registryLock` alone, so `cachedCommitIfUnchanged` needs exactly one
+    /// uncontended lock and no `DispatchQueue.sync`. One home for the fact, not
+    /// two (CLAUDE.md #91): the queue block reads and writes it through the same
+    /// two accessors.
+    private struct Baseline {
+        var streams: StepStreams
+        var commit: StepLogCommit
+    }
+
     private static let registryLock = NSLock()
     nonisolated(unsafe) private static var entries: [String: Entry] = [:]
+    nonisolated(unsafe) private static var baselines: [String: Baseline] = [:]
 
-    private static func entry(for url: URL) -> Entry {
-        let key = url.standardizedFileURL.path
-        return registryLock.withLock {
+    private static func key(for url: URL) -> String { url.standardizedFileURL.path }
+
+    private static func entry(forKey key: String) -> Entry {
+        registryLock.withLock {
             if let existing = entries[key] { return existing }
             let fresh = Entry()
             entries[key] = fresh
             return fresh
+        }
+    }
+
+    private static func baseline(forKey key: String) -> Baseline? {
+        registryLock.withLock { baselines[key] }
+    }
+
+    private static func setBaseline(_ streams: StepStreams, commit: StepLogCommit, forKey key: String) {
+        registryLock.withLock { baselines[key] = Baseline(streams: streams, commit: commit) }
+    }
+
+    private static func clearBaseline(forKey key: String) {
+        registryLock.withLock { baselines[key] = nil }
+    }
+
+    /// The stamp a step already has, when its four streams are PROVABLY the ones
+    /// last flushed — a copy-on-write storage-identity test, O(1), no queue hop,
+    /// no URL.
+    ///
+    /// Sound in one direction only, deliberately. The store retains the
+    /// last-flushed arrays, so a shared buffer address means no in-place edit can
+    /// have happened since: any mutation through `_modify`
+    /// (`updateToolCallResult`, `commitStreamingContent`, `applyRetryNotice` —
+    /// the three writers that change CONTENT while leaving every count equal)
+    /// must copy first, and a retained buffer's address cannot be reused by a
+    /// different live array. The converse is not claimed: a replaced-but-equal
+    /// array (`saveLLMConversation` rebuilds the whole conversation) fails the
+    /// test and falls through to the real diff, which finds nothing and returns
+    /// the same stamp through `records.isEmpty`. The gate can only ever be
+    /// conservative, which is why a counts-based test — the shape DEBTS.md
+    /// proposed — was rejected: counts cannot see those three writers at all,
+    /// and skipping them would silently drop tool results from the log.
+    static func cachedCommitIfUnchanged(
+        _ streams: StepStreams, forKey key: String
+    ) -> StepLogCommit? {
+        guard let base = baseline(forKey: key) else { return nil }
+        guard sharesStorage(base.streams.conversation, streams.conversation),
+              sharesStorage(base.streams.wire, streams.wire),
+              sharesStorage(base.streams.toolCalls, streams.toolCalls),
+              sharesStorage(base.streams.messages, streams.messages)
+        else { return nil }
+        return base.commit
+    }
+
+    /// True when both arrays are backed by the same copy-on-write buffer (or are
+    /// both empty). Never a value comparison — that is the cost being avoided.
+    private static func sharesStorage<T>(_ a: [T], _ b: [T]) -> Bool {
+        guard a.count == b.count else { return false }
+        return a.withUnsafeBufferPointer { pa in
+            b.withUnsafeBufferPointer { pb in pa.baseAddress == pb.baseAddress }
         }
     }
 
@@ -81,10 +145,11 @@ nonisolated enum TaskStreamStore {
         fileManager: FileManager = .default,
         directoryAttributes: [FileAttributeKey: Any]? = nil
     ) -> StepLogCommit? {
-        let e = entry(for: url)
+        let key = key(for: url)
+        let e = entry(forKey: key)
         return e.queue.sync {
-            guard let base = e.lastFlushed else {
-                return rewriteWholeFile(streams, e: e, url: url,
+            guard let base = baseline(forKey: key)?.streams else {
+                return rewriteWholeFile(streams, e: e, key: key, url: url,
                                         fileManager: fileManager,
                                         directoryAttributes: directoryAttributes)
             }
@@ -103,13 +168,18 @@ nonisolated enum TaskStreamStore {
                            into: &records, dead: &dead)
 
             guard !records.isEmpty else {
-                // Nothing changed — the commit stamp is the current state.
-                return commit(for: streams, e: e)
+                // Nothing changed — the commit stamp is the current state. Re-seat
+                // the baseline on THIS value so the next flush's storage-identity
+                // gate can answer without a diff (a replaced-but-equal array
+                // arrives here, and only this assignment makes it cheap next time).
+                let stamp = commit(for: streams, e: e)
+                setBaseline(streams, commit: stamp, forKey: key)
+                return stamp
             }
 
             let compactionDue = (e.deadRecords + dead) > max(64, liveCount(streams))
             if compactionDue {
-                return rewriteWholeFile(streams, e: e, url: url,
+                return rewriteWholeFile(streams, e: e, key: key, url: url,
                                         fileManager: fileManager,
                                         directoryAttributes: directoryAttributes)
             }
@@ -129,13 +199,14 @@ nonisolated enum TaskStreamStore {
                             directoryAttributes: directoryAttributes) else {
                 // The seq counter advanced for records that may not have landed —
                 // go cold so the next flush rewrites from memory.
-                e.lastFlushed = nil
+                clearBaseline(forKey: key)
                 return nil
             }
-            e.lastFlushed = streams
             e.deadRecords += dead
             e.liveRecords = liveCount(streams)
-            return commit(for: streams, e: e)
+            let stamp = commit(for: streams, e: e)
+            setBaseline(streams, commit: stamp, forKey: key)
+            return stamp
         }
     }
 
@@ -152,7 +223,8 @@ nonisolated enum TaskStreamStore {
         expected: StepLogCommit?,
         fileManager: FileManager = .default
     ) -> (streams: StepStreams, commit: StepLogCommit)? {
-        let e = entry(for: url)
+        let key = key(for: url)
+        let e = entry(forKey: key)
         return e.queue.sync {
             guard fileManager.fileExists(atPath: url.path) else { return nil }
             let entries = JSONLFileLog.decodeLines(
@@ -198,24 +270,28 @@ nonisolated enum TaskStreamStore {
                 print("[TaskStreamStore] WARNING: \(url.lastPathComponent) seq \(lastSeq) "
                     + "vs metadata \(expected.seq) — resolving from the log")
             }
-            e.lastFlushed = streams
             e.nextSeq = lastSeq + 1
             e.liveRecords = live
             e.deadRecords = max(0, entries.count - live)
-            return (streams, StepLogCommit(
+            let stamp = StepLogCommit(
                 seq: lastSeq,
                 conversation: streams.conversation.count,
                 wire: streams.wire.count,
                 toolCalls: streams.toolCalls.count,
-                messages: streams.messages.count))
+                messages: streams.messages.count)
+            setBaseline(streams, commit: stamp, forKey: key)
+            return (streams, stamp)
         }
     }
 
     #if DEBUG
     /// Test isolation: forget everything about `url` (fresh-process behavior).
     static func _testResetEntry(for url: URL) {
-        let key = url.standardizedFileURL.path
-        registryLock.withLock { _ = entries.removeValue(forKey: key) }
+        let key = key(for: url)
+        registryLock.withLock {
+            _ = entries.removeValue(forKey: key)
+            _ = baselines.removeValue(forKey: key)
+        }
     }
 
     /// Work-bound seam: total log bytes written (appends + rewrites) since reset.
@@ -223,6 +299,18 @@ nonisolated enum TaskStreamStore {
     static func _testBytesWritten() -> Int { registryLock.withLock { _bytesWritten } }
     static func _testResetBytesWritten() { registryLock.withLock { _bytesWritten = 0 } }
     private static func countBytes(_ n: Int) { registryLock.withLock { _bytesWritten += n } }
+
+    /// Work-bound seam: stream ELEMENTS examined by the diff passes since reset.
+    ///
+    /// Bytes cannot see this defect — an unchanged step emits no records and
+    /// writes nothing, yet still pays a full comparison pass over its history.
+    /// The counter lives inside the diff loops rather than beside `flush`'s call
+    /// site for the reason CLAUDE.md #62 records: a counter outside would report
+    /// what the caller intended to diff, not what the diff actually walked.
+    nonisolated(unsafe) private static var _diffWork = 0
+    static func _testDiffWork() -> Int { registryLock.withLock { _diffWork } }
+    static func _testResetDiffWork() { registryLock.withLock { _diffWork = 0 } }
+    private static func countDiffWork(_ n: Int) { registryLock.withLock { _diffWork += n } }
     #endif
 
     // MARK: - Private
@@ -244,7 +332,7 @@ nonisolated enum TaskStreamStore {
     /// the compaction path, and the recovery path after a failed append. One
     /// implementation on purpose.
     private static func rewriteWholeFile(
-        _ streams: StepStreams, e: Entry, url: URL,
+        _ streams: StepStreams, e: Entry, key: String, url: URL,
         fileManager: FileManager,
         directoryAttributes: [FileAttributeKey: Any]?
     ) -> StepLogCommit? {
@@ -267,14 +355,15 @@ nonisolated enum TaskStreamStore {
         #endif
         guard JSONLFileLog.rewrite(url, with: payload, fileManager: fileManager,
                                    directoryAttributes: directoryAttributes) else {
-            e.lastFlushed = nil
+            clearBaseline(forKey: key)
             return nil
         }
-        e.lastFlushed = streams
         e.nextSeq = seq + 1
         e.liveRecords = seq
         e.deadRecords = 0
-        return commit(for: streams, e: e)
+        let stamp = commit(for: streams, e: e)
+        setBaseline(streams, commit: stamp, forKey: key)
+        return stamp
     }
 
     private static func appendRaw(
@@ -317,6 +406,9 @@ nonisolated enum TaskStreamStore {
         into records: inout [StepLogRecord],
         dead: inout Int
     ) where T.ID == UUID {
+        #if DEBUG
+        countDiffWork(max(old.count, new.count))
+        #endif
         if old.count == new.count, zip(old, new).allSatisfy({ $0.id == $1.id }) {
             for (o, n) in zip(old, new) where o != n {
                 records.append(wrap(n))
@@ -343,6 +435,9 @@ nonisolated enum TaskStreamStore {
         into records: inout [StepLogRecord],
         dead: inout Int
     ) {
+        #if DEBUG
+        countDiffWork(max(old.count, new.count))
+        #endif
         var lcp = 0
         while lcp < old.count && lcp < new.count && old[lcp] == new[lcp] {
             lcp += 1

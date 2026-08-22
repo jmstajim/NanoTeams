@@ -159,12 +159,31 @@ final class ToolCallAccumulatorTests: XCTestCase {
         guard let canonical = branch.range(of: "containsDuplicateToolCalls") else {
             return XCTFail("canonical probe vanished from the toolCallDeltas branch")
         }
-        guard let gate = branch.range(of: "toolDeltaScanGate.shouldScan") else {
+        guard let gate = branch.range(of: "toolDeltaScanGate.probeIsDue()") else {
             return XCTFail("cadence gate vanished from the toolCallDeltas branch")
         }
         XCTAssertTrue(gate.lowerBound < canonical.lowerBound,
                       "canonical probe runs before/without the cadence gate — the "
                           + "per-delta full JSON parse is back (CLAUDE.md #106)")
+
+        // The gate's CADENCE, not just its presence. This probe re-reads the whole
+        // accumulated args blob, so an arithmetic cadence in front of it sums to
+        // Θ(A²/cadence) across a stream — which is what stood here until
+        // 2026-08-22, while the symmetric harmony probe had a geometric gate all
+        // along (CLAUDE.md #52: one mechanism, two branches, guarded on one).
+        //
+        // This assertion replaced one anchored on `toolDeltaScanGate.shouldScan`,
+        // a symbol the fix deleted. Per CLAUDE.md #104 a pin whose anti-vacuum
+        // names a retired symbol must be re-aimed at the property that survives —
+        // here the COST CLASS — not weakened or dropped.
+        guard let construction = source.range(of: "var toolDeltaScanGate = StreamProbeGate(") else {
+            return XCTFail("the gate's construction moved — re-aim this pin")
+        }
+        let declaration = source[construction.lowerBound...].prefix(300)
+        XCTAssertTrue(declaration.contains(".geometric("),
+                      "the canonical duplicate probe re-reads the whole accumulator, so "
+                          + "its gate must be `.geometric` — `.everyChars` in front of an "
+                          + "O(buffer) probe is the quadratic shape: \(declaration.prefix(200))")
     }
 
     // MARK: - Multiple Tool Calls

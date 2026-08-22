@@ -85,7 +85,7 @@ final class SearchIndexFailureCoverageTests: XCTestCase, @unchecked Sendable {
     /// RED: set `lastLoadError` in the `!fileExists` branch → this fails.
     func testMissingIndexFile_reportsNoError() async {
         let service = makeService()
-        _ = await service.vocabulary(matching: "anything", limit: 5)
+        _ = await service.files(containing: ["anything"])
         let error = await service.lastLoadError
         XCTAssertNil(error, "a missing index is the first-launch case and must stay silent")
     }
@@ -101,8 +101,8 @@ final class SearchIndexFailureCoverageTests: XCTestCase, @unchecked Sendable {
         try FileManager.default.createDirectory(at: indexPath, withIntermediateDirectories: true)
 
         let service = makeService()
-        let vocabulary = await service.vocabulary(matching: "anything", limit: 5)
-        XCTAssertTrue(vocabulary.isEmpty, "an unreadable index yields no results")
+        let hits = await service.files(containing: ["anything"])
+        XCTAssertTrue(hits.isEmpty, "an unreadable index yields no results")
 
         let error = await service.lastLoadError
         XCTAssertNotNil(error, "an index that exists but cannot be read must be reported, or "
@@ -123,7 +123,7 @@ final class SearchIndexFailureCoverageTests: XCTestCase, @unchecked Sendable {
         try Data("{ not json at all".utf8).write(to: indexPath)
 
         let service = makeService()
-        _ = await service.vocabulary(matching: "anything", limit: 5)
+        _ = await service.files(containing: ["anything"])
         let corruptError = await service.lastLoadError
 
         XCTAssertNotNil(corruptError)
@@ -167,9 +167,11 @@ final class SearchIndexFailureCoverageTests: XCTestCase, @unchecked Sendable {
 
         // …and the in-memory index still answers, which is why this is a warning and not
         // a failure.
-        let vocabulary = await service.vocabulary(matching: "alph", limit: 5)
-        XCTAssertFalse(vocabulary.isEmpty,
-                       "search must keep working off the in-memory cache: \(vocabulary)")
+        // Exact token, not a prefix: `files(containing:)` is a posting lookup, unlike
+        // the retired `vocabulary(matching:)` ranker this used to call.
+        let hits = await service.files(containing: ["alpha"])
+        XCTAssertFalse(hits.isEmpty,
+                       "search must keep working off the in-memory cache: \(hits)")
     }
 
     /// A successful persist must CLEAR a previous error, or one transient failure leaves the
@@ -222,7 +224,7 @@ final class SearchIndexFailureCoverageTests: XCTestCase, @unchecked Sendable {
         _ = await service.loadOrBuild(force: true)
 
         // The stattable file's vocabulary is present…
-        let readable = await service.vocabulary(matching: "alph", limit: 5)
+        let readable = await service.files(containing: ["alpha"])
         XCTAssertFalse(readable.isEmpty, "the healthy file must still be indexed")
 
         // …and the unstattable one contributed nothing, rather than a zero-size entry.

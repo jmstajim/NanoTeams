@@ -3,18 +3,20 @@ import XCTest
 
 @testable import NanoTeams
 
-/// Performance pin for `TeamGraphCanvasGeometry`. The 4.41 s
-/// `inLiveResize` hang was caused in part by these helpers running
-/// inside `TeamGraphCanvas.body` (60-120 Hz during drag) with no
-/// caching. The fix wraps them in `TeamGraphLayoutCache` so identical
-/// inputs hit cache, but the underlying helpers also need to stay fast
-/// for the cache-miss path (first paint of a graph, after a node drag,
-/// after team edits).
+/// Performance pin for `TeamGraphCanvasGeometry`. The 4.41 s `inLiveResize` hang
+/// was caused in part by these helpers running inside `TeamGraphCanvas.body`
+/// (60-120 Hz during drag) with no caching. The fix wraps them in
+/// `TeamGraphLayoutCache` so identical inputs hit cache, but the underlying
+/// helpers also need to stay fast for the cache-miss path (first paint, after a
+/// node drag, after team edits).
 ///
-/// A regression here — say, an O(N³) accidentally introduced in a
-/// future "improvement" to `controlX` collision detection — would
-/// silently re-open the hang. This benchmark pins a 20-node team at
-/// well under 1 ms per pass.
+/// Both tests here used to be bare `measure {}` blocks, and neither could fail:
+/// `measure` reds only against a stored XCTest baseline and this repository has
+/// none, so their doc comments ("median < 0.5 ms", "cache hits negligible vs
+/// misses") asserted things nothing checked — and the second never measured a
+/// miss to compare against. They are now work-bound: a scaling ratio on a probe
+/// counter here, and the cache's own hit/compute counters next door in
+/// `TeamGraphLayoutCacheTests`.
 @MainActor
 final class TeamGraphCanvasGeometryBenchmark: XCTestCase {
 
@@ -32,84 +34,67 @@ final class TeamGraphCanvasGeometryBenchmark: XCTestCase {
         )
     }
 
-    /// Builds a 20-node fan-out + fan-in dependency graph: a root produces
-    /// `A0`, ten producers each consume `A0` and produce `Ai`, nine
-    /// consumers depend on subsets of `Ai`. Connection count ~30 — a
-    /// representative worst case for typical team sizes.
-    private func makeLargeTeam() -> ([TeamNodePosition], [TeamRoleDefinition], Set<String>) {
+    /// Scaling pin on WORK, not wall-clock. `collectConnections` is
+    /// Θ(N·A·R·P) by design — every quantity is team shape — and the regression
+    /// this guards is the one its predecessor named and could not catch: an
+    /// accidental extra nesting level in a future `controlX`-style change.
+    ///
+    /// It replaces a bare `measure {}` whose doc comment claimed "median < 0.5
+    /// ms". `measure` fails only against a stored XCTest baseline, and this repo
+    /// has none — so the block ran, printed a number, and passed unconditionally.
+    /// The doctrine it should have followed is written at
+    /// `SearchExecutorCounterTests`: express a performance pin as WORK DONE,
+    /// because the test target runs parallel and CI hardware is thermally
+    /// variable. The shape here is `TaskStreamSplitTests`': a ratio with a
+    /// generous constant.
+    ///
+    /// Doubling the roster quadruples the probes (two of the three nested scans
+    /// are Θ(R) inside a Θ(N) loop, and N == R here). A cubic regression would be
+    /// ~8×. The ceiling sits at 6× — clear of 4, well under 8.
+    func testCollectConnections_workGrowsQuadratically_notCubically() {
+        func probes(roles: Int) -> Int {
+            let (positions, defs, members) = makeTeam(producers: roles)
+            TeamGraphCanvasGeometry._testResetProbes()
+            _ = TeamGraphCanvasGeometry.collectConnections(
+                nodePositions: positions, roleDefinitions: defs, teamMembers: members)
+            return TeamGraphCanvasGeometry._testProbes()
+        }
+
+        let small = probes(roles: 10)
+        let large = probes(roles: 20)
+        XCTAssertGreaterThan(
+            small, 0,
+            "anti-vacuum: a counter that never increments satisfies any ceiling")
+        XCTAssertLessThan(
+            large, small * 6,
+            "doubling the roster must cost ~4x (quadratic by design), not ~8x "
+            + "(a new nesting level). got \(small) -> \(large)")
+    }
+
+    /// Builds a fan-out + fan-in graph: a root producing `A0`, `producers`
+    /// consumers of it each producing `Ai`, and `producers - 1` consumers each
+    /// requiring two adjacent `Ai`. Roster size is `2 * producers`.
+    private func makeTeam(
+        producers: Int
+    ) -> ([TeamNodePosition], [TeamRoleDefinition], Set<String>) {
         var roles: [TeamRoleDefinition] = []
         var positions: [TeamNodePosition] = []
 
-        // Root
         roles.append(makeRole(id: "root", requires: [], produces: ["A0"]))
         positions.append(TeamNodePosition(roleID: "root", x: 0, y: 0))
 
-        // 10 producers consuming A0, each producing Ai
-        for i in 1...10 {
+        for i in 1...producers {
             let pid = "producer\(i)"
             roles.append(makeRole(id: pid, requires: ["A0"], produces: ["A\(i)"]))
             positions.append(TeamNodePosition(roleID: pid, x: CGFloat(i) * 100, y: 200))
         }
 
-        // 9 consumers each requiring two adjacent producers' artifacts
-        for i in 1...9 {
+        for i in 1..<producers {
             let cid = "consumer\(i)"
             roles.append(makeRole(id: cid, requires: ["A\(i)", "A\(i + 1)"], produces: []))
             positions.append(TeamNodePosition(roleID: cid, x: CGFloat(i) * 100, y: 400))
         }
 
-        let members = Set(roles.map(\.id))
-        return (positions, roles, members)
-    }
-
-    /// Pin: `collectConnections + computePortOffsets` median < 0.5 ms.
-    /// XCTest's measure() runs the block 10 times and reports `meantime`
-    /// stable across runs. Setting baseline below the actual measure on
-    /// the dev machine lets CI breathe room.
-    func testPerformance_collectConnectionsPlusPortOffsets_under500us() async {
-        let (positions, roles, members) = makeLargeTeam()
-        measure {
-            for _ in 0..<100 {
-                let connections = TeamGraphCanvasGeometry.collectConnections(
-                    nodePositions: positions,
-                    roleDefinitions: roles,
-                    teamMembers: members
-                )
-                _ = TeamGraphCanvasGeometry.computePortOffsets(
-                    connections: connections,
-                    nodeSizes: [:],
-                    fallbackNodeWidth: 200
-                )
-            }
-        }
-    }
-
-    /// Pin that the cache amortizes: 100 cache hits should take negligible
-    /// time vs. 100 cache misses. If this ever regresses, the fingerprint
-    /// has likely started invalidating spuriously.
-    func testPerformance_cacheHits_negligibleVsMiss() async {
-        let (positions, roles, members) = makeLargeTeam()
-        let cache = TeamGraphLayoutCache()
-
-        // Warm the cache.
-        _ = cache.layout(
-            nodePositions: positions,
-            roleDefinitions: roles,
-            teamMembers: members,
-            nodeSizes: [:],
-            fallbackNodeWidth: 200
-        )
-
-        measure {
-            for _ in 0..<100 {
-                _ = cache.layout(
-                    nodePositions: positions,
-                    roleDefinitions: roles,
-                    teamMembers: members,
-                    nodeSizes: [:],
-                    fallbackNodeWidth: 200
-                )
-            }
-        }
+        return (positions, roles, Set(roles.map(\.id)))
     }
 }

@@ -428,12 +428,20 @@ final class TaskManagementStateTests: XCTestCase {
         XCTAssertEqual(result.count, 2)
     }
 
-    func testFilteredTasks_sortedByUpdatedAtDesc() {
+    /// `filteredTasks` PRESERVES its input's order and must not re-derive it.
+    ///
+    /// It used to end in `.sorted { $0.updatedAt > $1.updatedAt }`, re-sorting rows the
+    /// write side already keeps ordered (`TasksIndex.upsert`) — on a path `SidebarView`
+    /// reads several times per body pass, on a body invalidated by every `mutateTask`.
+    /// `makeTasks()` is deliberately ASCENDING, so a re-introduced sort flips this.
+    ///
+    /// The order the SIDEBAR shows is pinned end-to-end where it is actually established:
+    /// `TaskServiceTests.testTaskSummaries_orderIsMaintainedByTheIndex_notReDerivedOnRead`.
+    func testFilteredTasks_preservesInputOrder_doesNotReSort() {
         sut.taskFilter = .all
-        let result = sut.filteredTasks(from: makeTasks())
-        for i in 0..<(result.count - 1) {
-            XCTAssertGreaterThanOrEqual(result[i].updatedAt, result[i + 1].updatedAt)
-        }
+        let input = makeTasks()
+        let result = sut.filteredTasks(from: input)
+        XCTAssertEqual(result.map(\.id), input.map(\.id))
     }
 
     func testFilteredTasks_emptyInput() {

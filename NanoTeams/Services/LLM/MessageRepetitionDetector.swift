@@ -256,7 +256,9 @@ nonisolated enum MessageRepetitionDetector {
     }
 
     private static func truncate(_ s: String, max: Int) -> String {
-        if s.count <= max { return s.replacingOccurrences(of: "\n", with: " ") }
+        // `dropFirst(K).isEmpty` == `count <= K` but stops at K graphemes; `String.count` walks
+        // the WHOLE receiver to answer a bounded question (see `ModelTokenCleaner.isTokenSpan`).
+        if s.dropFirst(max).isEmpty { return s.replacingOccurrences(of: "\n", with: " ") }
         return String(s.prefix(max - 1)).replacingOccurrences(of: "\n", with: " ") + "…"
     }
 }

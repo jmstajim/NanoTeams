@@ -148,7 +148,9 @@ nonisolated enum ComputerUseAction: Hashable, Sendable {
     var summary: String {
         switch self {
         case .typeText(let text, _):
-            let shown = text.count > 60 ? String(text.prefix(60)) + "…" : text
+            // `dropFirst(K).isEmpty` == `count <= K` but stops at K graphemes; `String.count` walks
+            // the WHOLE receiver to answer a bounded question (see `ModelTokenCleaner.isTokenSpan`).
+            let shown = text.dropFirst(60).isEmpty ? text : String(text.prefix(60)) + "…"
             return "Type “\(shown)”"
         default:
             return detail

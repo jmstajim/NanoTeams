@@ -84,6 +84,129 @@ final class TaskStreamSplitTests: XCTestCase {
                               + "(quadratic shape: ~100×); got \(first) → \(second)")
     }
 
+    /// The frozen-history walk. `splittingStreams` visits every step of every run
+    /// on EVERY `updateTaskOnly`, and `task.runs` is append-only with no cap
+    /// (`RunService` is the only writer; a recurring task adds one run per
+    /// firing). Appending one message to one step must not cost comparison work
+    /// proportional to the whole task's history.
+    ///
+    /// Measured before the fix (`swiftc -O` model of the exact loop): 15.5 µs per
+    /// frozen step, i.e. 4.65 ms per single mutation at 30 runs × 10 roles — all
+    /// of it inside the process-global `tasksIndexLock`, where parallel roles
+    /// (CLAUDE.md #45) queue behind it.
+    ///
+    /// Bytes cannot see this: an unchanged step emits no records and writes
+    /// nothing. The bound is asserted on elements EXAMINED by the diff passes.
+    func testFlushWork_isBoundedByTheChangedStep_notByFrozenHistory() throws {
+        func diffWorkForAppend(frozenRuns: Int) throws -> Int {
+            let id = try makeTask()
+            var task = try repository.loadTask(at: root, taskID: id)
+            task.runs = (0..<frozenRuns).map { runIndex in
+                var run = Run(id: runIndex, steps: [
+                    StepExecution(id: "engineer", role: .softwareEngineer, title: "Work")
+                ])
+                run.steps[0].llmConversation = (0..<20).map {
+                    LLMMessage(role: .assistant, content: "run \(runIndex) turn \($0)")
+                }
+                return run
+            }
+            task.updatedAt = MonotonicClock.shared.now()
+            try repository.updateTaskOnly(at: root, task: task)
+
+            // Warm every step's diff baseline, then measure ONE append to the last run.
+            task = try repository.loadTask(at: root, taskID: id)
+            task.runs[frozenRuns - 1].steps[0].llmConversation.append(
+                LLMMessage(role: .assistant, content: "the only change"))
+            task.updatedAt = MonotonicClock.shared.now()
+            TaskStreamStore._testResetDiffWork()
+            try repository.updateTaskOnly(at: root, task: task)
+            return TaskStreamStore._testDiffWork()
+        }
+
+        let shallow = try diffWorkForAppend(frozenRuns: 2)
+        let deep = try diffWorkForAppend(frozenRuns: 20)
+        XCTAssertGreaterThan(
+            shallow, 0,
+            "anti-vacuum: a counter that never increments satisfies any ceiling")
+        XCTAssertLessThan(
+            deep, shallow * 2,
+            "10× the frozen history must not cost 10× the diff work — only the "
+            + "changed step can have anything to diff; got \(shallow) → \(deep)")
+    }
+
+    /// THE test the O(1) gate exists to survive. `updateToolCallResult` edits a
+    /// tool call IN PLACE — same element count, changed content — and so do
+    /// `commitStreamingContent` and `applyRetryNotice`. DEBTS.md proposed gating
+    /// the walk on `step.logCommit`, which carries only counts and a seq: that
+    /// gate would skip exactly these three writers and silently drop every tool
+    /// result from the log. The storage-identity gate cannot: the store retains
+    /// the flushed buffer, so an in-place edit copies first and the addresses
+    /// diverge.
+    func testInPlaceToolResultEdit_reachesTheLog_despiteUnchangedCounts() throws {
+        let id = try makeTask()
+        var task = try repository.loadTask(at: root, taskID: id)
+        let call = StepToolCall(name: ToolNames.readFile, argumentsJSON: #"{"path":"a.txt"}"#)
+        task.runs[0].steps[0].toolCalls = [call]
+        task.updatedAt = MonotonicClock.shared.now()
+        try repository.updateTaskOnly(at: root, task: task)
+
+        let flushed = try repository.loadTask(at: root, taskID: id)
+        let countBefore = flushed.runs[0].steps[0].toolCalls.count
+        XCTAssertNil(flushed.runs[0].steps[0].toolCalls[0].resultJSON)
+
+        var edited = flushed
+        TaskMutationService.updateToolCallResult(
+            toolCallID: call.id, resultJSON: #"{"ok":true}"#, isError: false,
+            stepID: "engineer", in: &edited)
+        edited.updatedAt = MonotonicClock.shared.now()
+        XCTAssertEqual(edited.runs[0].steps[0].toolCalls.count, countBefore,
+                       "fixture must be the counts-unchanged shape the gate has to see through")
+        try repository.updateTaskOnly(at: root, task: edited)
+
+        let reread = try repository.loadTask(at: root, taskID: id)
+        XCTAssertEqual(reread.runs[0].steps[0].toolCalls[0].resultJSON, #"{"ok":true}"#,
+                       "an in-place edit that moves no count must still reach step_log.jsonl")
+        XCTAssertEqual(reread.runs[0].steps[0].toolCalls[0].isError, false)
+    }
+
+    /// The other direction of the gate's one-sidedness: a whole-array REPLACEMENT
+    /// with equal content (`saveLLMConversation` rebuilds the conversation from
+    /// the wire) fails the identity test, falls through to the real diff, finds
+    /// nothing, and returns the same stamp through `records.isEmpty` — no
+    /// truncate, no duplicate records, no lost history.
+    func testReplacedButEqualArray_fallsThroughAndChangesNothing() throws {
+        let id = try makeTask()
+        var task = try repository.loadTask(at: root, taskID: id)
+        task.runs[0].steps[0].llmConversation = (0..<5).map {
+            LLMMessage(role: .assistant, content: "turn \($0)")
+        }
+        task.updatedAt = MonotonicClock.shared.now()
+        try repository.updateTaskOnly(at: root, task: task)
+
+        let flushed = try repository.loadTask(at: root, taskID: id)
+        var replaced = flushed
+        // A genuinely FRESH buffer with identical elements. `Array(existingArray)`
+        // is not enough — it can share storage, which sends this straight down the
+        // fast path and makes the test vacuous. (It did: the "nothing changed"
+        // branch this exists to reach showed up UNCOVERED in the coverage ratchet,
+        // which is how the vacuity was found.) `map { $0 }` allocates.
+        let original = flushed.runs[0].steps[0].llmConversation
+        let rebuilt = original.map { $0 }
+        XCTAssertFalse(
+            rebuilt.withUnsafeBufferPointer({ $0.baseAddress })
+                == original.withUnsafeBufferPointer({ $0.baseAddress }),
+            "fixture must build a DIFFERENT buffer, or it never reaches the diff")
+        XCTAssertEqual(rebuilt, original, "…carrying equal values")
+        replaced.runs[0].steps[0].llmConversation = rebuilt
+        replaced.updatedAt = MonotonicClock.shared.now()
+        try repository.updateTaskOnly(at: root, task: replaced)
+
+        let reread = try repository.loadTask(at: root, taskID: id)
+        XCTAssertEqual(reread.runs[0].steps[0].llmConversation.map(\.content),
+                       (0..<5).map { "turn \($0)" })
+        XCTAssertEqual(reread.runs[0].steps[0].logCommit?.conversation, 5)
+    }
+
     /// And the blob itself stops growing with the conversation.
     func testTaskJSON_sizeIsInvariantToConversationLength() throws {
         let id = try makeTask()

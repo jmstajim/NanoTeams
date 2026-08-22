@@ -254,17 +254,6 @@ nonisolated extension Run {
         }
     }
 
-    /// Roles the graph's "Finish Role" affordance is offered for. Routes the predicate
-    /// through `RoleFinishPolicy.canFinish` so this and the two view sites pin one rule.
-    func finishableAdvisoryRoles(definitions: [TeamRoleDefinition], isChatMode: Bool = false) -> [(roleID: String, roleName: String)] {
-        roleStatuses.compactMap { (roleID, status) -> (String, String)? in
-            guard let roleDef = definitions.first(where: { $0.id == roleID }),
-                  RoleFinishPolicy.canFinish(roleDef: roleDef, status: status, isChatMode: isChatMode)
-            else { return nil }
-            return (roleID, roleDef.name)
-        }
-        .sorted { $0.1 < $1.1 }
-    }
 
     /// Roles in needsAcceptance status with resolved display names.
     func rolesNeedingAcceptance(definitions: [TeamRoleDefinition]) -> [(roleID: String, roleName: String)] {

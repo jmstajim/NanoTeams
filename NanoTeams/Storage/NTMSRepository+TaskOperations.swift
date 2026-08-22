@@ -267,13 +267,7 @@ nonisolated extension NTMSRepository {
             let stripped = try splittingStreams(task, paths: paths, ancestors: ancestors)
             try store.write(stripped, to: taskURL)
 
-            let refreshed = task.toSummary()
-            if let idx = index.tasks.firstIndex(where: { $0.id == refreshed.id }) {
-                index.tasks[idx] = refreshed
-            } else {
-                index.tasks.append(refreshed)
-            }
-            index.tasks.sort(by: { $0.updatedAt > $1.updatedAt })
+            index.upsert(task.toSummary())
             try store.write(index, to: paths.tasksIndexJSON)
         }
     }
@@ -310,6 +304,16 @@ nonisolated extension NTMSRepository {
 
     /// Reads, mutates, sorts, and writes the tasks index — under `tasksIndexLock`.
     /// Returns the updated index for callers that need to pass it to `assembleContext`.
+    ///
+    /// **This sort is the boundary that ESTABLISHES the descending-`updatedAt` order, and
+    /// is why it may stay here while five per-mutation copies of it were removed.** `body`
+    /// is an arbitrary closure (create appends, delete removes, reconcile rewrites rows),
+    /// so order cannot be maintained incrementally here — and this runs at user cadence
+    /// (task create / delete / switch), not per LLM message. Every other writer of this
+    /// file goes through `TasksIndex.upsert`, which PRESERVES the order rather than
+    /// recomputing it; since both writers hold `tasksIndexLock` and an empty index is
+    /// trivially sorted, the file on disk is sorted by induction — which is what lets
+    /// `upsert`'s binary search be correct after a read.
     @discardableResult
     func mutateTasksIndex(paths: NTMSPaths, _ body: (inout TasksIndex) throws -> Void) throws -> TasksIndex {
         try Self.tasksIndexLock.withLock {

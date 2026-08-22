@@ -412,6 +412,55 @@ nonisolated struct TasksIndex: Codable, Hashable {
 }
 
 nonisolated extension TasksIndex {
+    /// Inserts or replaces `summary`, KEEPING `tasks` sorted by `updatedAt` descending.
+    ///
+    /// The single home for an operation that stood open-coded at five live sites (three
+    /// in-memory on the MainActor, two in the repository under `tasksIndexLock`), each
+    /// spelling it `firstIndex(where:)` → replace-or-append → `sort(by:)`. That is a full
+    /// `O(N log N)` re-sort per task mutation — and `mutateTask` runs on every LLM step,
+    /// message and status change, while `tasks` grows monotonically over months.
+    ///
+    /// The sort was answering a question already decided: the array is maintained sorted,
+    /// so at most ONE row is out of place. Binary-searching its slot and moving it is
+    /// `O(N)` with no comparisons beyond `log N`. It is also DETERMINISTIC where `sort`
+    /// was not — `Array.sort` is introsort, unstable, so rows sharing an `updatedAt`
+    /// (the recovery sweep re-summarizes without re-stamping) could reorder arbitrarily.
+    ///
+    /// Order is established once, at the boundary that loads the index; keeping it is
+    /// this method's job. Callers must not re-sort after calling it.
+    mutating func upsert(_ summary: TaskSummary) {
+        guard let existing = tasks.firstIndex(where: { $0.id == summary.id }) else {
+            tasks.insert(summary, at: insertionSlot(for: summary.updatedAt))
+            return
+        }
+        // An unchanged stamp is a CONVERGE write — the recovery sweep re-summarizing a row
+        // it did not touch — and it must not perturb the order at all. Removing and
+        // re-inserting would push the row to the back of its tie group, which is movement
+        // no caller asked for.
+        if tasks[existing].updatedAt == summary.updatedAt {
+            tasks[existing] = summary
+            return
+        }
+        tasks.remove(at: existing)
+        tasks.insert(summary, at: insertionSlot(for: summary.updatedAt))
+    }
+
+    /// First index whose `updatedAt` is strictly older than `date` — i.e. where a row
+    /// stamped `date` belongs under descending order. Ties land AFTER the existing rows,
+    /// so a genuinely new row never jumps ahead of equals already present. (A row whose
+    /// stamp did not move never reaches here — `upsert` replaces it in place.)
+    ///
+    /// Assumes `tasks` is already sorted descending; `upsert` is what keeps that true.
+    private func insertionSlot(for date: Date) -> Int {
+        var low = 0
+        var high = tasks.count
+        while low < high {
+            let mid = low + (high - low) / 2
+            if tasks[mid].updatedAt < date { high = mid } else { low = mid + 1 }
+        }
+        return low
+    }
+
     /// Walks `parentTaskID` links from `taskID` up to the root, returning ancestor
     /// IDs in root-first order. Empty array if the task is top-level (or unknown).
     /// Used by `NTMSPaths` to build nested storage paths

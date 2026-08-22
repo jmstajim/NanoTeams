@@ -160,3 +160,109 @@ final class TeamActivityFeedImplicitStreamTargetTests: XCTestCase {
         ))
     }
 }
+
+/// Pins the HOIST of the implicit-stream-target resolution out of the per-bubble
+/// path into `TeamActivityFeedViewModel`.
+///
+/// The feed's container is deliberately non-lazy (`TeamActivityFeedView` realizes
+/// every row on every body pass — see its rationale comment), so the per-bubble
+/// spelling walked the step's whole conversation once per bubble. In chat mode a
+/// single `.running` step holds the entire session, so bubbles ≈ messages and the
+/// cost was Θ(M²) per body pass, i.e. per `mutateTask`.
+@MainActor
+final class ImplicitStreamTargetHoistTests: XCTestCase, @unchecked Sendable {
+
+    private let stepID = "startup_software_engineer"
+    private let taskID = 1
+
+    private func role() -> TeamRoleDefinition {
+        TeamRoleDefinition(
+            id: stepID, name: "Software Engineer", prompt: "p",
+            toolIDs: [], usePlanningPhase: false, dependencies: RoleDependencies())
+    }
+
+    private func step(id: String, status: StepStatus, visibleTurns: Int) -> StepExecution {
+        var s = StepExecution(id: id, role: .softwareEngineer, title: "Impl", status: status)
+        s.llmConversation = (0..<visibleTurns).map {
+            LLMMessage(role: .assistant, content: "turn \($0)")
+        }
+        return s
+    }
+
+    private func context(run: Run) -> TeamActivityFeedViewModel.BuildContext {
+        TeamActivityFeedViewModel.BuildContext(
+            run: run,
+            roleDefinitions: [role()],
+            filterRoleID: nil,
+            activeTaskID: taskID,
+            supervisorBrief: nil,
+            supervisorBriefDate: nil,
+            supervisorTask: nil,
+            supervisorClippedTexts: [],
+            supervisorAttachmentPaths: [],
+            supervisorProjectFolderURL: nil,
+            workFolderURL: nil,
+            debugModeEnabled: true,
+            isStreaming: { _ in false },
+            descendantTasks: []
+        )
+    }
+
+    /// Parity with the per-bubble resolver it replaces — same answer for every
+    /// message, including the non-target ones.
+    func testSetAgreesWithThePerBubbleResolver() {
+        let s = step(id: stepID, status: .running, visibleTurns: 6)
+        let vm = TeamActivityFeedViewModel()
+        vm.recomputeAndRebuild(context: context(run: Run(id: 0, steps: [s])))
+
+        XCTAssertFalse(vm.implicitStreamTargetIDs.isEmpty,
+                       "anti-vacuum: an always-empty set would satisfy every negative case")
+        for msg in s.llmConversation {
+            let viaResolver = TeamActivityFeedView.resolveImplicitStreamTarget(
+                stepID: s.id, messageID: msg.id, isPreviewTarget: false, allSteps: [s])
+            XCTAssertEqual(vm.implicitStreamTargetIDs.contains(msg.id), viaResolver,
+                           "hoisted set disagrees with the resolver for \(msg.content)")
+        }
+    }
+
+    /// A step that is not `.running` contributes nothing — the guard the resolver
+    /// applied per bubble must survive the hoist.
+    func testNonRunningStepContributesNoTarget() {
+        let s = step(id: stepID, status: .done, visibleTurns: 3)
+        let vm = TeamActivityFeedViewModel()
+        vm.recomputeAndRebuild(context: context(run: Run(id: 0, steps: [s])))
+        XCTAssertTrue(vm.implicitStreamTargetIDs.isEmpty)
+    }
+
+    /// THE work bound. Reading the answer for every bubble must cost NOTHING
+    /// beyond the single per-rebuild pass — that is the property the non-lazy
+    /// container depends on. Red against the per-bubble spelling, where each read
+    /// re-walked the conversation.
+    func testReadingTheAnswerPerBubbleCostsNoAdditionalScan() {
+        let s = step(id: stepID, status: .running, visibleTurns: 200)
+        let vm = TeamActivityFeedViewModel()
+        vm.recomputeAndRebuild(context: context(run: Run(id: 0, steps: [s])))
+
+        ImplicitStreamTargetProbe._testResetExamined()
+        var hits = 0
+        for msg in s.llmConversation where vm.implicitStreamTargetIDs.contains(msg.id) { hits += 1 }
+        let examinedWhileRendering = ImplicitStreamTargetProbe._testExamined()
+
+        XCTAssertEqual(hits, 1, "exactly one bubble is the implicit target")
+        XCTAssertEqual(
+            examinedWhileRendering, 0,
+            "rendering B bubbles must not re-walk the conversation — the pass "
+            + "belongs to the rebuild, not to the row. examined=\(examinedWhileRendering)")
+    }
+
+    /// Anti-vacuum for the counter the assertion above rests on: the rebuild
+    /// itself MUST examine the conversation, or `examined == 0` would be
+    /// satisfied by a probe that never fires (CLAUDE.md #57).
+    func testRebuildItselfExaminesTheConversation() {
+        let s = step(id: stepID, status: .running, visibleTurns: 50)
+        let vm = TeamActivityFeedViewModel()
+        ImplicitStreamTargetProbe._testResetExamined()
+        vm.recomputeAndRebuild(context: context(run: Run(id: 0, steps: [s])))
+        XCTAssertGreaterThanOrEqual(ImplicitStreamTargetProbe._testExamined(), 50)
+    }
+}

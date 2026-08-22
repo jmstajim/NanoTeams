@@ -65,6 +65,55 @@ nonisolated enum WatchtowerTimelineBuilder {
             ?? roles.first(where: { $0.systemRoleID == id || $0.name == id })
     }
 
+    /// Cheap change-detector over EVERYTHING `buildTimeline` reads, so the view
+    /// can memoize the built timeline instead of rebuilding it per body pass.
+    ///
+    /// `WatchtowerView` is the DEFAULT detail pane, and `filteredEvents` was a
+    /// plain computed property referenced five times from one body pass — each
+    /// reference walking every run and every step, allocating a `TimelineEvent`
+    /// (with an interpolated id string) per step, sorting, and then filtering
+    /// twice more. `store.activeTask` is rewritten on every `mutateTask`, so that
+    /// was five full history rebuilds per LLM message.
+    ///
+    /// Folds every field `collectEvents` and the two filters actually read. A
+    /// counts-only key would freeze the timeline on a pure status flip — the trap
+    /// `TeamActivityFeedView+Logic.computeRunDataVersion` documents — so `status`,
+    /// `completedAt` and `updatedAt` are all in here. Same accepted trade-off as
+    /// that sibling: a hash collision costs one missed refresh, not wrong data.
+    static func inputsVersion(
+        task: NTMSTask?,
+        teamID: NTMSID?,
+        teamUpdatedAt: Date?,
+        taskFilter: Int?,
+        clearedUpTo: Date?
+    ) -> Int {
+        var hasher = Hasher()
+        hasher.combine(taskFilter)
+        hasher.combine(clearedUpTo)
+        hasher.combine(teamID)
+        hasher.combine(teamUpdatedAt)
+        guard let task else { return hasher.finalize() }
+        hasher.combine(task.id)
+        hasher.combine(task.title)
+        hasher.combine(task.isChatMode)
+        hasher.combine(task.runs.count)
+        for run in task.runs {
+            hasher.combine(run.id)
+            hasher.combine(run.steps.count)
+            for step in run.steps {
+                hasher.combine(step.id)
+                hasher.combine(step.effectiveRoleID)
+                hasher.combine(step.role)
+                hasher.combine(step.title)
+                hasher.combine(step.status)
+                hasher.combine(step.createdAt)
+                hasher.combine(step.completedAt)
+                hasher.combine(step.updatedAt)
+            }
+        }
+        return hasher.finalize()
+    }
+
     /// Build a sorted, filtered timeline from a task.
     /// - Parameters:
     ///   - task: The active task (nil = no events).

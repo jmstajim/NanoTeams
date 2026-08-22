@@ -62,13 +62,16 @@ struct TeamActivityFeedView: View {
     /// needs (run, team roles, team name, delegating role).
     private func resolvedDescendantTasks() -> [ActivityFeedBuilder.DescendantTask] {
         guard store.activeTaskID != nil, let run else { return [] }
-        let tasksByID: [Int: NTMSTask] = Dictionary(
-            uniqueKeysWithValues: store.allLoadedTasksIncludingChildren.map { ($0.id, $0) }
-        )
+        // `loadedTask(_:)` per id — an O(1) dictionary read — instead of materializing
+        // every loaded task (and every delegated child) into an array and then a map.
+        // This is reached from `runDataVersion`, which is the `onChange` value, so it ran
+        // on EVERY body pass, and a second time from `buildContext` whenever a rebuild
+        // fired. `loadedTasks` only ever grows within a session (eviction is
+        // opportunistic), and the walk looks up a handful of ids.
         return ActivityFeedBuilder.resolveRunScopedDescendants(
             displayedRun: run,
-            tasksByID: tasksByID,
-            resolveTeam: { store.resolvedTeam(for: $0) }
+            resolveTeam: { store.resolvedTeam(for: $0) },
+            resolveTask: { store.loadedTask($0) }
         )
     }
 
@@ -753,18 +756,16 @@ struct TeamActivityFeedView: View {
         // live so the streaming → committed transition doesn't lag behind
         // `streamingManager.commit` for up to one tick.
         let scheduleIsStreaming = streamingManager.isStreaming(messageID: msg.id)
-        // Hoisted outside the TimelineView for the same reason as
-        // `scheduleIsStreaming`: a per-bubble value invariant across heartbeat
-        // ticks; recomputed on parent body re-eval via `runDataVersion`.
-        let isImplicitStreamTarget = Self.resolveImplicitStreamTarget(
-            stepID: stepID,
-            messageID: msg.id,
-            isPreviewTarget: scheduleIsStreaming,
-            // The OWNING task's pool — stepID equals the role ID and is shared
-            // across same-team tasks, so a descendant bubble resolved against the
-            // active task's steps would match the WRONG task's step.
-            allSteps: viewModel.steps(forOriginTaskID: originTaskID)
-        )
+        // O(1) set membership. This used to call `resolveImplicitStreamTarget`,
+        // which walks the step's whole conversation — once per rendered bubble,
+        // inside a non-lazy `VStack`, i.e. Θ(M²) per body pass in chat mode. The
+        // walk now happens once per step per rebuild in the view model; the ids
+        // are globally unique UUIDs, so no per-task pool lookup is needed here.
+        // `isPreviewTarget` stays live at the call site: it flips between
+        // rebuilds, and freezing it into the set would lag the streaming →
+        // committed transition by a tick.
+        let isImplicitStreamTarget = !scheduleIsStreaming
+            && viewModel.implicitStreamTargetIDs.contains(msg.id)
         // During NSWindow live-resize, stretch the streaming heartbeat to
         // effectively infinity so the TimelineView arm is preserved (per
         // the structural-identity invariant documented below) but no new

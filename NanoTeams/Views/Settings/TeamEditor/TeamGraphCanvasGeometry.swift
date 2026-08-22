@@ -1,4 +1,7 @@
 import SwiftUI
+#if DEBUG
+import Synchronization
+#endif
 
 // MARK: - Team Graph Canvas Geometry
 
@@ -29,16 +32,25 @@ enum TeamGraphCanvasGeometry {
         var result: [ConnectionInfo] = []
         for nodePos in nodePositions {
             guard teamMembers.contains(nodePos.roleID) else { continue }
+            #if DEBUG
+            _probes.wrappingAdd(roleDefinitions.count, ordering: .relaxed)
+            #endif
             guard let roleDef = roleDefinitions.first(where: { $0.id == nodePos.roleID }) else { continue }
             // Skip incoming connections for Supervisor (user-controlled role)
             if roleDef.isSupervisor { continue }
 
             for requiredArtifact in roleDef.dependencies.requiredArtifacts {
+                #if DEBUG
+                _probes.wrappingAdd(roleDefinitions.count, ordering: .relaxed)
+                #endif
                 let producers = roleDefinitions.filter { producerDef in
                     teamMembers.contains(producerDef.id) &&
                         producerDef.dependencies.producesArtifacts.contains(requiredArtifact)
                 }
                 for producer in producers {
+                    #if DEBUG
+                    _probes.wrappingAdd(nodePositions.count, ordering: .relaxed)
+                    #endif
                     guard let fromPos = nodePositions.first(where: { $0.roleID == producer.id }) else { continue }
                     result.append(ConnectionInfo(
                         producerID: producer.id,
@@ -193,3 +205,22 @@ enum TeamGraphCanvasGeometry {
         return u * u * u * fromX + 3 * u * u * t * controlX + 3 * u * t * t * controlX + t * t * t * toX
     }
 }
+
+#if DEBUG
+extension TeamGraphCanvasGeometry {
+    /// Work-bound seam: linear probes performed by `collectConnections` since the
+    /// last reset.
+    ///
+    /// Replaces a `measure {}` block whose docstring claimed a "< 0.5 ms" pin.
+    /// `measure` fails only against a stored XCTest baseline and this repo has
+    /// none (`find` for `*.xcbaseline` returns nothing), so that pin could not go
+    /// red for any regression — including the O(N³) its own comment named. A
+    /// counter is machine-independent, which is the doctrine
+    /// `SearchExecutorCounterTests` already wrote down: the test target runs
+    /// parallel and CI hardware is thermally variable, so a wall-clock threshold
+    /// loose enough not to flake is too loose to catch anything.
+    nonisolated(unsafe) static let _probes = Atomic<Int>(0)
+    static func _testProbes() -> Int { _probes.load(ordering: .relaxed) }
+    static func _testResetProbes() { _probes.store(0, ordering: .relaxed) }
+}
+#endif

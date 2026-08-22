@@ -2,7 +2,9 @@ import XCTest
 @testable import NanoTeams
 
 /// Pins `RoleFinishPolicy.canFinish` — the single "Finish Role" affordance rule shared by
-/// `TeamGraphView`, `RoleNodeRuntimeView`, and `Run.finishableAdvisoryRoles`.
+/// `TeamGraphView` and `RoleNodeRuntimeView` (the two production consumers;
+/// `Run.finishableAdvisoryRoles` was a third spelling with no production caller and
+/// was deleted 2026-08-22).
 final class RoleFinishPolicyTests: XCTestCase {
 
     private func def(required: [String] = [], produces: [String] = []) -> TeamRoleDefinition {

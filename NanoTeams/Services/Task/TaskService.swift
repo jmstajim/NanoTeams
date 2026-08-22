@@ -65,7 +65,11 @@ final class TaskService {
             filtered = topLevelOnly
         }
 
-        return filtered.sorted(by: { $0.updatedAt > $1.updatedAt })
+        // No sort: `tasksIndex.tasks` is MAINTAINED in descending-`updatedAt` order by
+        // `TasksIndex.upsert`, and `filter` preserves order. This ran on every read —
+        // and `SidebarView` reads it ~9 times per body pass, on a body invalidated by
+        // every `mutateTask` — to re-derive an order the write side already guarantees.
+        return filtered
     }
     nonisolated deinit {}
 }

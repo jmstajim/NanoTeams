@@ -14,7 +14,7 @@ import XCTest
 /// 2. Chat task derivedStatus returns `.running` instead of
 ///    `.needsSupervisorAcceptance` when all steps are `.done`.
 /// 3. Closing a chat task transitions it to `.done`.
-/// 4. `finishableAdvisoryRoles` returns empty for chat mode — the
+/// 4. `RoleFinishPolicy.canFinish` returns false for chat mode — the
 ///    Supervisor cannot "finish" advisory roles manually (no Finish button).
 /// 5. After close, `closedAt` is set and `derivedStatus` returns `.done`.
 /// 6. Creating a task on a non-chat team → `task.isChatMode == false`.

@@ -17,45 +17,6 @@ import Foundation
 /// ```
 nonisolated enum TaskMutationService {
 
-    // MARK: - In-Memory Mutations
-
-    /// Applies a mutation to a task in-memory without persistence.
-    /// - Parameters:
-    ///   - task: The task to mutate.
-    ///   - mutation: The mutation to apply.
-    static func mutateInMemory(
-        task: inout NTMSTask,
-        mutation: (inout NTMSTask) -> Void
-    ) {
-        mutation(&task)
-    }
-
-    /// Updates a snapshot with the mutated task.
-    /// - Parameters:
-    ///   - snapshot: The snapshot to update.
-    ///   - task: The updated task.
-    ///   - updateIndex: Whether to update the tasks index.
-    static func updateSnapshot(
-        _ snapshot: inout WorkFolderContext,
-        with task: NTMSTask,
-        updateIndex: Bool = false
-    ) {
-        snapshot.activeTask = task
-        snapshot.activeTaskID = task.id
-
-        if updateIndex {
-            var tasksIndex = snapshot.tasksIndex
-            let summary = task.toSummary()
-            if let idx = tasksIndex.tasks.firstIndex(where: { $0.id == summary.id }) {
-                tasksIndex.tasks[idx] = summary
-            } else {
-                tasksIndex.tasks.append(summary)
-            }
-            tasksIndex.tasks.sort(by: { $0.updatedAt > $1.updatedAt })
-            snapshot.tasksIndex = tasksIndex
-        }
-    }
-
     // MARK: - Step Convenience Methods
 
     /// Appends a message to a step in a task.
@@ -99,9 +60,15 @@ nonisolated enum TaskMutationService {
             print("[TaskMutation] updateToolCallResult: step \(stepID) not found in latest run")
             return
         }
+        // `lastIndex`, not `firstIndex`: ids are unique so both find the same element, but
+        // a tool RESULT always belongs to a call appended moments earlier — the match sits
+        // at the tail, and `toolCalls` has no ceiling (`maxToolIterations == 0`, and
+        // nothing prunes the conversation), so a forward scan is O(k) per result and
+        // O(k²) per run. Same reasoning already recorded at
+        // `LLMExecutionService+ToolLoopState.swift`'s `lastIndex(where:)`.
         guard
             let callIndex = task.runs[location.runIndex].steps[location.stepIndex].toolCalls
-            .firstIndex(where: { $0.id == toolCallID })
+            .lastIndex(where: { $0.id == toolCallID })
         else {
             print("[TaskMutation] updateToolCallResult: tool call \(toolCallID) not found in step \(stepID)")
             return
@@ -254,13 +221,25 @@ nonisolated enum TaskMutationService {
     ) {
         guard let location = task.locateStepInLatestRun(stepID: stepID) else { return }
         let now = MonotonicClock.shared.now()
-        var conv = task.runs[location.runIndex].steps[location.stepIndex].llmConversation
+        // `&`-through the subscript chain, NOT `var conv = …` / assign-back: reading the
+        // array out into a local leaves it referenced twice, so the first mutation copies
+        // the WHOLE conversation — and `llmConversation` has no ceiling. The `_modify`
+        // accessors keep the buffer uniquely referenced, so this is O(1) amortized.
+        applyRetryNotice(
+            content, now: now,
+            to: &task.runs[location.runIndex].steps[location.stepIndex].llmConversation)
+        task.runs[location.runIndex].steps[location.stepIndex].updatedAt = now
+    }
 
+    /// The tail edit `appendOrReplaceRetryNotice` performs, over the conversation alone —
+    /// separated so it can be exercised without building a whole `NTMSTask`, and so the
+    /// in-place `inout` chain above has exactly one place to go wrong.
+    static func applyRetryNotice(_ content: String, now: Date, to conv: inout [LLMMessage]) {
         if let last = conv.indices.last,
            conv[last].role == .assistant,
            conv[last].content.isEmpty,
            conv[last].thinking?.isEmpty ?? true {
-            conv.remove(at: last)
+            conv.removeLast()
         }
 
         if let last = conv.indices.last, conv[last].sourceContext == .serverError {
@@ -269,9 +248,6 @@ nonisolated enum TaskMutationService {
         } else {
             conv.append(LLMMessage(role: .assistant, content: content, sourceContext: .serverError))
         }
-
-        task.runs[location.runIndex].steps[location.stepIndex].llmConversation = conv
-        task.runs[location.runIndex].steps[location.stepIndex].updatedAt = now
     }
 
     /// Removes an LLM message by id from a step's conversation. Used to drop the
@@ -305,8 +281,11 @@ nonisolated enum TaskMutationService {
         let si = location.stepIndex
         let now = MonotonicClock.shared.now()
 
-        // Update existing LLMMessage in llmConversation (pre-created by beginStreaming)
-        if let idx = task.runs[ri].steps[si].llmConversation.firstIndex(where: { $0.id == messageID }) {
+        // Update existing LLMMessage in llmConversation (pre-created by beginStreaming).
+        // `lastIndex`, not `firstIndex`: `beginStreaming` planted this message as the LAST
+        // element moments ago, and `llmConversation` has no ceiling — a forward scan is
+        // O(k) per turn, O(k²) per run. Ids are unique, so both spellings find the same one.
+        if let idx = task.runs[ri].steps[si].llmConversation.lastIndex(where: { $0.id == messageID }) {
             task.runs[ri].steps[si].llmConversation[idx].content = content
             if let thinking, !thinking.isEmpty {
                 task.runs[ri].steps[si].llmConversation[idx].thinking = thinking
@@ -325,8 +304,10 @@ nonisolated enum TaskMutationService {
             task.runs[ri].steps[si].llmConversation[idx].createdAt = now
         }
 
-        // Update or create StepMessage in step.messages (used by PromptBuilder and extractLatestStepOutput)
-        if let idx = task.runs[ri].steps[si].messages.firstIndex(where: { $0.id == messageID }) {
+        // Update or create StepMessage in step.messages (used by PromptBuilder and
+        // extractLatestStepOutput). `lastIndex` for the same reason as the conversation
+        // above: the target was appended by this very turn.
+        if let idx = task.runs[ri].steps[si].messages.lastIndex(where: { $0.id == messageID }) {
             task.runs[ri].steps[si].messages[idx].content = content
         } else if !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let stepMessage = StepMessage(id: messageID, createdAt: now, role: role, content: content)

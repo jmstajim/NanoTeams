@@ -173,6 +173,27 @@ nonisolated struct NTMSPaths: Hashable {
             .appendingPathComponent(Self.sanitizePathComponent(roleID), isDirectory: true)
     }
 
+    /// The directory-name form of a role ID — the ONE place a role id becomes a
+    /// path component, so anything that needs to identify a role's directory
+    /// without building a URL (see `stepLogKey`) collapses to the same string
+    /// the path itself uses.
+    static func roleDirComponent(_ roleID: String) -> String { sanitizePathComponent(roleID) }
+
+    /// Registry identity of a step's `step_log.jsonl`, built from a task
+    /// directory path the caller resolved ONCE.
+    ///
+    /// Exists because `splittingStreams` asks about every step of every run on
+    /// every mutation, and building a `URL` per step (six `appendPathComponent`
+    /// hops) plus `standardizedFileURL` was measured at 47% of that walk — paid
+    /// in full by frozen history that has nothing to flush. String concatenation
+    /// over an already-standardized prefix is the same identity for a fraction
+    /// of the cost: appending plain components introduces no `.`/`..`, so
+    /// standardizing the base and then appending equals appending and then
+    /// standardizing. Pinned by `NTMSPathsTests`.
+    static func stepLogKey(taskDirPath: String, runID: Int, roleID: String) -> String {
+        "\(taskDirPath)/runs/\(runID)/roles/\(roleDirComponent(roleID))/step_log.jsonl"
+    }
+
     /// Strips path traversal characters from a role ID used as a directory name.
     private static func sanitizePathComponent(_ value: String) -> String {
         value.replacingOccurrences(of: "/", with: "_")

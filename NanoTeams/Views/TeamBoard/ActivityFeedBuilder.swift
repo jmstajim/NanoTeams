@@ -152,10 +152,22 @@ nonisolated enum ActivityFeedBuilder {
     /// delegation child has exactly one run (created fresh on delegate; resume /
     /// forward / cancel reuse it; the recurrence scheduler skips child tasks), so
     /// `runs.last` is the run contemporaneous with `parentRun`.
+    /// Dictionary-shaped convenience for callers that already hold a map (the tests, and
+    /// anything that needs every task anyway). Production goes through the closure form:
+    /// only a handful of ids are ever looked up, so building a map of every loaded task
+    /// costs more than the walk it serves.
     static func runScopedDescendantIDs(
         parentRun: Run,
         tasksByID: [Int: NTMSTask],
         maxDepth: Int = DelegationConstants.maxDelegationDepth
+    ) -> Set<Int> {
+        runScopedDescendantIDs(parentRun: parentRun, maxDepth: maxDepth) { tasksByID[$0] }
+    }
+
+    static func runScopedDescendantIDs(
+        parentRun: Run,
+        maxDepth: Int = DelegationConstants.maxDelegationDepth,
+        resolveTask: (Int) -> NTMSTask?
     ) -> Set<Int> {
         var result: Set<Int> = []
         var frontier: [(run: Run, depth: Int)] = [(parentRun, 0)]
@@ -164,7 +176,7 @@ nonisolated enum ActivityFeedBuilder {
             for step in run.steps {
                 for childID in step.delegationChildIDs where !result.contains(childID) {
                     result.insert(childID)
-                    if let childRun = tasksByID[childID]?.runs.last {
+                    if let childRun = resolveTask(childID)?.runs.last {
                         frontier.append((childRun, depth + 1))
                     }
                 }
@@ -187,19 +199,32 @@ nonisolated enum ActivityFeedBuilder {
     /// A scoped id whose task isn't in `tasksByID`, or whose task has no runs,
     /// is skipped — it has no run to render (graceful degradation for an evicted
     /// child; matches the prior behavior).
+    /// Dictionary-shaped convenience — see `runScopedDescendantIDs(parentRun:tasksByID:)`.
     static func resolveRunScopedDescendants(
         displayedRun: Run,
         tasksByID: [Int: NTMSTask],
         resolveTeam: (NTMSTask) -> Team,
         maxDepth: Int = DelegationConstants.maxDelegationDepth
     ) -> [DescendantTask] {
-        let scopedIDs = runScopedDescendantIDs(parentRun: displayedRun, tasksByID: tasksByID, maxDepth: maxDepth)
+        resolveRunScopedDescendants(
+            displayedRun: displayedRun, resolveTeam: resolveTeam, maxDepth: maxDepth,
+            resolveTask: { tasksByID[$0] })
+    }
+
+    static func resolveRunScopedDescendants(
+        displayedRun: Run,
+        resolveTeam: (NTMSTask) -> Team,
+        maxDepth: Int = DelegationConstants.maxDelegationDepth,
+        resolveTask: (Int) -> NTMSTask?
+    ) -> [DescendantTask] {
+        let scopedIDs = runScopedDescendantIDs(
+            parentRun: displayedRun, maxDepth: maxDepth, resolveTask: resolveTask)
         guard !scopedIDs.isEmpty else { return [] }
 
         var descendants: [DescendantTask] = []
         descendants.reserveCapacity(scopedIDs.count)
         for childID in scopedIDs {
-            guard let childTask = tasksByID[childID],
+            guard let childTask = resolveTask(childID),
                   let childRun = childTask.runs.last
             else { continue }
             let childTeam = resolveTeam(childTask)
@@ -209,7 +234,7 @@ nonisolated enum ActivityFeedBuilder {
             // delegate_to_team.
             let parentRoleName: String?
             if let parentRoleID = childTask.parentRoleID,
-               let parentTask = tasksByID[childTask.parentTaskID ?? -1] {
+               let parentTask = resolveTask(childTask.parentTaskID ?? -1) {
                 parentRoleName = resolveTeam(parentTask).roles.roleName(for: parentRoleID)
             } else {
                 parentRoleName = nil
@@ -391,10 +416,19 @@ nonisolated enum ActivityFeedBuilder {
             // the user's answer vanish from the feed entirely, even though the LLM
             // had already consumed it.
             let askCallCount = step.toolCalls.filter { $0.name == ToolNames.askSupervisor }.count
-            let answerMessageIDs = step.llmConversation
-                .filter { $0.sourceContext == .supervisorAnswer }
-                .map(\.id)
-            let pairedAnswerIDs = Set(answerMessageIDs.prefix(askCallCount))
+            // Materialize the answer ids ONLY when a card can actually own one. With no
+            // `ask_supervisor` call — the overwhelming majority of steps — `prefix(0)`
+            // discarded the whole array, so the filter+map was a full pass over an
+            // UNBOUNDED conversation (`maxToolIterations == 0`; nothing prunes it) paid on
+            // every feed rebuild, i.e. on every appended turn. Same shape, same reason, as
+            // the `last(where:)`-not-`filter{}.last` note in
+            // `ActivityFeedBuilder+SupervisorQuestions` — that fix was never swept here.
+            let pairedAnswerIDs: Set<UUID> = askCallCount == 0 ? [] : Set(
+                step.llmConversation
+                    .lazy
+                    .filter { $0.sourceContext == .supervisorAnswer }
+                    .map(\.id)
+                    .prefix(askCallCount))
             let cardOwnedAnswerID = Self.escalationCard(for: step)?.answerMessage?.id
 
             for msg in step.llmConversation where msg.role != .system && msg.role != .tool {
@@ -414,7 +448,11 @@ nonisolated enum ActivityFeedBuilder {
                         continue  // rendered inside its ask card / the escalation Q&A card
                     }
                 }
-                if !debugModeEnabled && !msg.content.isEmpty
+                // `artifactContents.isEmpty` FIRST: `Set.contains` hashes the whole
+                // message body, so without this the rebuild re-hashed every message of
+                // every step on every appended turn — for a set that is empty on any step
+                // that produced no artifact.
+                if !debugModeEnabled && !artifactContents.isEmpty && !msg.content.isEmpty
                     && artifactContents.contains(msg.content) && !hasThinking
                 {
                     continue
@@ -471,7 +509,20 @@ nonisolated enum ActivityFeedBuilder {
         // skipped here. `StepExecution.hasActiveSupervisorInput` is the shared predicate.
         for step in steps {
             let askCalls = step.toolCalls.filter { $0.name == ToolNames.askSupervisor }
-            let answerMessages = step.llmConversation.filter { $0.sourceContext == .supervisorAnswer }
+            // Gated on the discriminator computed one line above, mirroring the
+            // fixed sibling ~80 lines up: `answerMessages` is read ONLY inside the
+            // `askCalls.enumerated()` loop below, so on a step with no ask call —
+            // the overwhelming majority — this whole pass was discarded. Emptiness
+            // only, never a `prefix`: the INDEX pairing between `askCalls` and
+            // `answerMessages` is load-bearing (see the note above `pairedAnswerIDs`),
+            // and narrowing the array would silently re-pair answers to asks.
+            //
+            // Honest weight: `emitItems` already walks `step.llmConversation`
+            // unconditionally in its first loop, and `items.sorted` dominates both,
+            // so this removes a constant factor under Θ(N log N) — not an order.
+            let answerMessages = askCalls.isEmpty
+                ? []
+                : step.llmConversation.filter { $0.sourceContext == .supervisorAnswer }
             let stepIsActive = step.hasActiveSupervisorInput
 
             // Built LAZILY — only a step that actually renders an ask card pays

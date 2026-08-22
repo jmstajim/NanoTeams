@@ -64,6 +64,11 @@ final class NTMSOrchestrator {
     /// Extracted engine state — views can observe this directly to avoid
     /// re-evaluating when unrelated orchestrator properties change.
     let engineState: OrchestratorEngineState
+
+    /// Per-task derived status + durable Supervisor-wait facts, maintained
+    /// incrementally so the shell's `onChange` keys are `Int` compares rather
+    /// than whole-index `Dictionary` rebuilds per body pass. See the type.
+    let taskFacts = TaskFactsProjection()
     /// Prompt-prefix (KV) cache-miss aggregate. Drives the always-on status-bar count and
     /// decides which misses earn the single-slot banner. Injected like the other observables so
     /// tests get a fresh one.
@@ -727,6 +732,9 @@ final class NTMSOrchestrator {
     // MARK: - Private
 
     func apply(_ snapshot: WorkFolderContext) {
+        // Whole-index replacement (folder open/switch, task delete, any path that
+        // rebuilds rather than upserts). O(T) once, on a path already O(T).
+        taskFacts.replaceAll(with: snapshot.tasksIndex.tasks)
         let previousTaskID = activeTaskID
         let previousFolderID = self.snapshot?.projection.id
         let previousActiveRunID = activeTask?.runs.last?.id
@@ -810,6 +818,9 @@ final class NTMSOrchestrator {
     /// Lives here, not in the extension, because `activeTaskID` is `private(set)` — its setter
     /// is file-scoped, so the inverse of `apply` has to sit beside `apply`.
     func discardWorkFolderState() {
+        // Folder-scoped ids: keeping them would let one folder's task 3 answer
+        // for another's, the same class as the QuickCapture cleanup below.
+        taskFacts.clear()
         snapshot = nil
         activeTaskID = nil
         activeTask = nil
@@ -833,14 +844,9 @@ final class NTMSOrchestrator {
         guard var snap = snapshot else { return }
         snap.activeTask = task
 
-        // Update index entry
-        let summary = task.toSummary()
-        if let idx = snap.tasksIndex.tasks.firstIndex(where: { $0.id == summary.id }) {
-            snap.tasksIndex.tasks[idx] = summary
-        } else {
-            snap.tasksIndex.tasks.append(summary)
-        }
-        snap.tasksIndex.tasks.sort(by: { $0.updatedAt > $1.updatedAt })
+        // Update index entry. `upsert` keeps the descending-`updatedAt` order without
+        // re-sorting the whole index on every task mutation — see `TasksIndex.upsert`.
+        upsertTaskSummary(task.toSummary(), in: &snap)
 
         self.snapshot = snap
 
@@ -851,6 +857,18 @@ final class NTMSOrchestrator {
         )
     }
 
+    /// The ONE way an in-memory index row is written.
+    ///
+    /// `tasksIndex` and `taskFacts` describe the same rows, so they must move
+    /// together or the shell reacts to a fact the index no longer holds. Three
+    /// call sites used to spell `snap.tasksIndex.upsert(task.toSummary())`
+    /// inline; routing them here is what makes a fourth one impossible to add
+    /// without noticing (CLAUDE.md #51).
+    func upsertTaskSummary(_ summary: TaskSummary, in snap: inout WorkFolderContext) {
+        snap.tasksIndex.upsert(summary)
+        taskFacts.apply(summary)
+    }
+
     private func syncSelectedRunID(
         task: NTMSTask?, previousActiveRunID: Int?, previousSelectedRunID: Int?
     ) {
@@ -859,10 +877,14 @@ final class NTMSOrchestrator {
             return
         }
 
-        let runIDs = Set(task.runs.map(\.id))
         let newActiveRunID = task.runs.last?.id
 
-        if let previousSelectedRunID, runIDs.contains(previousSelectedRunID) {
+        // A direct `contains` rather than `Set(task.runs.map(\.id))`: this runs on every
+        // active-task mutation (i.e. every LLM message), and the set was allocated — array
+        // plus hash table — to answer ONE membership question. `task.runs` grows
+        // monotonically for a recurring task (a daily recurrence is ~90 runs a quarter).
+        if let previousSelectedRunID,
+           task.runs.contains(where: { $0.id == previousSelectedRunID }) {
             if let previousActiveRunID, previousSelectedRunID == previousActiveRunID,
                previousActiveRunID != newActiveRunID
             {

@@ -27,6 +27,14 @@ nonisolated extension NTMSRepository {
         _ task: NTMSTask, paths: NTMSPaths, ancestors: [Int]
     ) throws -> NTMSTask {
         var stripped = task
+        // Resolved ONCE: this walk visits every step of every run on every
+        // mutation, and `task.runs` is append-only with no cap, so anything
+        // per-step is paid by the whole frozen history. Standardizing here and
+        // concatenating below is the same identity as standardizing each step's
+        // URL (see `NTMSPaths.stepLogKey`).
+        let taskDirPath = paths
+            .internalTaskDir(taskID: task.id, ancestors: ancestors)
+            .standardizedFileURL.path
         for r in stripped.runs.indices {
             let runID = stripped.runs[r].id
             for s in stripped.runs[r].steps.indices {
@@ -37,15 +45,33 @@ nonisolated extension NTMSRepository {
                     toolCalls: step.toolCalls,
                     messages: step.messages)
                 if streams.isEmpty && step.logCommit == nil { continue }
-                let url = paths.stepLogJSONL(
-                    taskID: task.id, runID: runID, roleID: step.id, ancestors: ancestors)
-                guard let commit = TaskStreamStore.flush(
-                    streams, to: url, fileManager: fileManager,
-                    directoryAttributes: Self.internalDirAttributes)
-                else {
-                    throw NTMSRepositoryError.stepLogWriteFailed(
-                        taskID: task.id, stepID: step.id)
+                let key = NTMSPaths.stepLogKey(
+                    taskDirPath: taskDirPath, runID: runID, roleID: step.id)
+
+                // Frozen history: the four arrays are the very buffers the store
+                // last flushed, so there is provably nothing to diff. Answered
+                // under one uncontended lock — no queue hop, no URL, no
+                // comparison pass. The stamp comes from the store rather than
+                // from `step.logCommit`, which is NOT a change signal: this
+                // function stamps only the returned copy, `updateTaskOnly` takes
+                // the task by value, and nothing writes it back.
+                let commit: StepLogCommit
+                if let cached = TaskStreamStore.cachedCommitIfUnchanged(streams, forKey: key) {
+                    commit = cached
+                } else {
+                    let url = paths.stepLogJSONL(
+                        taskID: task.id, runID: runID, roleID: step.id, ancestors: ancestors)
+                    guard let flushed = TaskStreamStore.flush(
+                        streams, to: url, fileManager: fileManager,
+                        directoryAttributes: Self.internalDirAttributes)
+                    else {
+                        throw NTMSRepositoryError.stepLogWriteFailed(
+                            taskID: task.id, stepID: step.id)
+                    }
+                    commit = flushed
                 }
+                // The strip runs on BOTH paths: skipping it would hand `task.json`
+                // back the 98.4% of bytes the split exists to remove.
                 stripped.runs[r].steps[s].logCommit = commit
                 stripped.runs[r].steps[s].llmConversation = []
                 stripped.runs[r].steps[s].wireTranscript = []

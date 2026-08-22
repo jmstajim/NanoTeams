@@ -29,7 +29,16 @@ struct SidebarView: View {
     // MARK: - Body
 
     var body: some View {
-        taskList
+        // Computed ONCE per body pass and threaded down. Both used to be computed
+        // PROPERTIES, which SwiftUI re-evaluates at every reference — measured 9
+        // references per pass (`tasksHeader`, 4× inside `ForEach(TaskFilter.allCases)`
+        // in `filterChips`, `expandedSearchField`, and 3× in `taskList`). Each
+        // evaluation rebuilt the whole `SidebarTaskItem` array from `tasksIndex`, and
+        // this view is always mounted and reads `store.snapshot` — so the pass ran on
+        // every `mutateTask`, i.e. on every LLM message.
+        let tasks = allTasks
+        let visibleTasks = taskState.filteredTasks(from: tasks)
+        taskList(visibleTasks)
             .safeAreaInset(edge: .top) {
                 VStack(spacing: 0) {
                     // Watchtower — primary nav (full-width flat row)
@@ -53,14 +62,14 @@ struct SidebarView: View {
                     }
 
                     // Tasks section header
-                    tasksHeader
+                    tasksHeader(tasks)
                         .padding(.leading, Spacing.m)
                         .padding(.trailing, Spacing.m)
                         .padding(.top, Spacing.m)
                         .padding(.bottom, Spacing.s)
 
-                    if !allTasks.isEmpty || taskState.taskFilter != .all || taskState.isSearchExpanded {
-                        taskFilterRow
+                    if !tasks.isEmpty || taskState.taskFilter != .all || taskState.isSearchExpanded {
+                        taskFilterRow(tasks, visibleTasks)
                             .padding(.horizontal, Spacing.m)
                             .padding(.bottom, Spacing.s)
                     }
@@ -177,10 +186,6 @@ struct SidebarView: View {
             bashApprovalTaskIDs: Set(store.bashApprovalRequests.keys.map(\.taskID)),
             engineStates: engineState.taskEngineStates
         )
-    }
-
-    private var filteredTasks: [SidebarTaskItem] {
-        taskState.filteredTasks(from: allTasks)
     }
 
     /// Live state for the Autovisor nav entry (resolution delegated to
@@ -308,11 +313,11 @@ struct SidebarView: View {
 
     // MARK: - Tasks Header & Search
 
-    private var tasksHeader: some View {
+    private func tasksHeader(_ tasks: [SidebarTaskItem]) -> some View {
         HStack(spacing: Spacing.xs) {
             MonoLabel(text: "Tasks", marker: true)
             // `(N)` count chip per the design's tmux ledger heading.
-            Text("(\(allTasks.count))")
+            Text("(\(tasks.count))")
                 .font(Typography.term2xs)
                 .foregroundStyle(Colors.textTertiary)
                 .monospacedDigit()
@@ -337,16 +342,18 @@ struct SidebarView: View {
         }
     }
 
-    private var taskFilterRow: some View {
+    private func taskFilterRow(
+        _ tasks: [SidebarTaskItem], _ visibleTasks: [SidebarTaskItem]
+    ) -> some View {
         ZStack {
             if taskState.isSearchExpanded {
-                expandedSearchField
+                expandedSearchField(visibleTasks)
                     .transition(.opacity)
             } else {
                 HStack(spacing: Spacing.xs) {
                     searchToggleButton
                         .fixedSize()
-                    filterChips
+                    filterChips(SidebarViewLogic.filterCounts(from: tasks))
                         .fixedSize()
                     Spacer()
                 }
@@ -356,13 +363,16 @@ struct SidebarView: View {
         .frame(height: 28)
     }
 
-    private var filterChips: some View {
+    /// Takes the already-counted pills rather than the item array: the `ForEach`
+    /// below runs its body once per filter, so a per-filter count here was four
+    /// whole-array passes (three of them allocating) per body pass.
+    private func filterChips(_ counts: SidebarViewLogic.FilterCounts) -> some View {
         HStack(spacing: Spacing.xs) {
             ForEach(TaskFilter.allCases, id: \.self) { filter in
                 SidebarFilterButton(
                     title: filter.displayName,
                     icon: filter.icon,
-                    count: SidebarViewLogic.filterCount(filter, from: allTasks),
+                    count: counts[filter],
                     isSelected: taskState.taskFilter == filter,
                     iconOnly: filter.isIconOnly
                 ) {
@@ -403,7 +413,7 @@ struct SidebarView: View {
     /// no rounded card. An accent hairline along the bottom marks the focused
     /// element; a mono `ESC` mini-label on the right doubles as a tap target
     /// AND teaches the keyboard shortcut (canonical terminal pattern).
-    private var expandedSearchField: some View {
+    private func expandedSearchField(_ visibleTasks: [SidebarTaskItem]) -> some View {
         HStack(spacing: Spacing.xs) {
             Text("/")
                 .font(Typography.termBase)
@@ -415,7 +425,7 @@ struct SidebarView: View {
                 .font(Typography.termSm)
                 .focused($isSearchFieldFocused)
                 .onSubmit {
-                    if let firstTask = filteredTasks.first {
+                    if let firstTask = visibleTasks.first {
                         selectedItem = .task(firstTask.id)
                     }
                 }
@@ -453,13 +463,13 @@ struct SidebarView: View {
 
     // MARK: - Task List
 
-    private var taskList: some View {
+    private func taskList(_ visibleTasks: [SidebarTaskItem]) -> some View {
         ScrollView {
             LazyVStack(spacing: Spacing.xxs) {
-                if filteredTasks.isEmpty {
+                if visibleTasks.isEmpty {
                     taskEmptyState
                 } else {
-                    ForEach(Array(filteredTasks.enumerated()), id: \.element.id) { offset, task in
+                    ForEach(Array(visibleTasks.enumerated()), id: \.element.id) { offset, task in
                         Button { selectedItem = .task(task.id) } label: {
                             SidebarTaskRow(
                                 task: task,

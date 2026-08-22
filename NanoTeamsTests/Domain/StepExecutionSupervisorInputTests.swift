@@ -218,6 +218,113 @@ final class StepExecutionSupervisorInputTests: XCTestCase {
         XCTAssertFalse(task.hasPendingSupervisorInput)
     }
 
+    // MARK: - Answer scan: equivalence corner cases
+
+    /// The scan must not stop at the first NON-answer message after the ask —
+    /// only at a message older than the ask. Directly discriminates a reverse
+    /// walk that breaks on "not an answer" from one that breaks on "older".
+    func testAnswerScan_nonAnswerMessagesAfterTheAsk_doNotHideTheAnswer() {
+        let ask = askCall("Q1")
+        let noise = LLMMessage(role: .assistant, content: "thinking out loud")
+        let noise2 = LLMMessage(role: .assistant, content: "still working")
+        let answer = answerMessage("A1")
+        let step = makeStep(
+            needsSupervisorInput: false,
+            toolCalls: [ask],
+            conversation: [noise, answer, noise2]
+        )
+        XCTAssertFalse(step.hasActiveSupervisorInput,
+                       "an answer after the ask resolves it even with later non-answer turns")
+    }
+
+    /// Strictly `>`: a message stamped at the same instant as the ask is not
+    /// "after" it. `MonotonicClock` makes this unreachable in production, but the
+    /// scan's break condition is written in terms of it, so it is pinned.
+    func testAnswerScan_answerAtTheSameInstantAsTheAsk_doesNotResolveIt() {
+        let ask = askCall("Q1")
+        var answer = answerMessage("A1")
+        answer.createdAt = ask.createdAt
+        let step = makeStep(needsSupervisorInput: false, toolCalls: [ask], conversation: [answer])
+        XCTAssertTrue(step.hasActiveSupervisorInput)
+    }
+
+    func testAnswerScan_emptyConversation_isWaiting() {
+        let step = makeStep(needsSupervisorInput: false, toolCalls: [askCall("Q1")], conversation: [])
+        XCTAssertTrue(step.hasActiveSupervisorInput)
+    }
+
+    func testAnswerScan_severalAnswersAfterTheAsk_resolveIt() {
+        let ask = askCall("Q1")
+        let step = makeStep(
+            needsSupervisorInput: false,
+            toolCalls: [ask],
+            conversation: [answerMessage("A1"), answerMessage("A2"), answerMessage("A3")]
+        )
+        XCTAssertFalse(step.hasActiveSupervisorInput)
+    }
+
+    /// The ordering assumption the tail-bounded scan rests on, and the DIRECTION
+    /// it fails in when violated. `llmConversation` is `createdAt`-ascending in
+    /// production (append-only; the only re-stamps — `applyRetryNotice` and
+    /// `commitStreamingContent` — move the TAIL element forward). If that ever
+    /// breaks, a tail-bounded scan can stop before an out-of-place newer answer
+    /// and read "still waiting" — it can never read "answered" when it is not.
+    /// Waiting is the conservative direction: the composer keeps showing the
+    /// question and the human can still reply. Pinned so the failure mode is a
+    /// recorded property rather than an accident.
+    func testAnswerScan_outOfOrderConversation_failsTowardStillWaiting() {
+        let ask = askCall("Q1")
+        let newerAnswer = answerMessage("A1")          // stamped after the ask
+        var older = LLMMessage(role: .assistant, content: "out of place")
+        older.createdAt = ask.createdAt.addingTimeInterval(-1)
+        // Deliberately non-ascending: the newer answer sits BEFORE an older turn.
+        let step = makeStep(
+            needsSupervisorInput: false,
+            toolCalls: [ask],
+            conversation: [newerAnswer, older]
+        )
+        XCTAssertTrue(step.hasActiveSupervisorInput,
+                      "a tail-bounded scan may miss an out-of-order answer; it must never "
+                      + "invent one — the conservative direction is STILL WAITING")
+    }
+
+    // MARK: - Work bound
+
+    /// The Θ(N²) defect this scan carried: `MainLayoutView.activeTaskObservation`
+    /// is an `onChange` KEY, so it is evaluated on EVERY body pass, i.e. on every
+    /// `mutateTask`; a forward whole-conversation scan therefore cost Θ(messages)
+    /// per append and Θ(N²) across a chat session, on the MainActor.
+    ///
+    /// Asserted as a SCALING RATIO on a work counter rather than wall-clock —
+    /// the test target runs parallel and CI hardware is thermally variable
+    /// (`SearchExecutorCounterTests`), and the shape follows
+    /// `TaskStreamSplitTests`' ratio-with-a-generous-constant.
+    func testAnswerScan_workIsBoundedByTheTailAfterTheAsk_notByTheConversation() {
+        let small = examinedScanningParkedStep(historyBefore: 100)
+        let large = examinedScanningParkedStep(historyBefore: 1000)
+        XCTAssertGreaterThan(
+            small, 0,
+            "anti-vacuum: a counter that never increments satisfies any ceiling")
+        XCTAssertLessThan(
+            large, small * 2,
+            "10x the history must not cost 10x the scan — the answer can only be "
+            + "newer than the trailing ask, so the walk is bounded by the tail after it. "
+            + "got \(small) -> \(large)")
+    }
+
+    /// Builds the PARKED shape — a trailing ask with no answer after it and
+    /// `historyBefore` older turns — and returns how many messages the scan
+    /// examined. History is constructed FIRST so `MonotonicClock` stamps every
+    /// message before the ask call.
+    private func examinedScanningParkedStep(historyBefore: Int) -> Int {
+        let history = (0..<historyBefore).map { LLMMessage(role: .assistant, content: "turn \($0)") }
+        let ask = askCall("Q")
+        let step = makeStep(needsSupervisorInput: false, toolCalls: [ask], conversation: history)
+        SupervisorInputScanProbe._testResetExamined()
+        XCTAssertNotNil(step.activeSupervisorQuestionID, "fixture must be in the parked shape")
+        return SupervisorInputScanProbe._testExamined()
+    }
+
     // MARK: - Fixtures
 
     private func askCall(_ question: String) -> StepToolCall {

@@ -44,7 +44,15 @@ struct MainLayoutView: View {
         // timeout on whichever line the solver gave up at. Two expressions solve
         // independently (CLAUDE.md #10, same failure mode as large array literals).
         mainContent
-            .onChange(of: allTaskWaitStates) { _, newStates in
+            // Keyed on a revision `Int`, not on the map: an `onChange` key is
+            // evaluated on EVERY body pass, and this one used to build a T-entry
+            // dictionary over the whole (append-only) task index to answer, in the
+            // common case, nothing — `reconcileSeenSet` early-returns while the
+            // seen-set is empty, and otherwise does |seenSet| lookups, typically 0–3.
+            // The map is read INSIDE the handler, which fires only when a wait fact
+            // actually moved.
+            .onChange(of: store.taskFacts.waitRevision) { _, _ in
+                let newStates = store.taskFacts.waitStateByTaskID
                 // Sweep seen flags for ALL tasks (not just the active one) so a
                 // backgrounded task that stops waiting re-triggers the dot on its next
                 // question. Its own observer, and keyed on the DURABLE wait state rather
@@ -134,7 +142,11 @@ struct MainLayoutView: View {
             // bootstrap completes.
             taskState.loadSeenSet(for: newID)
         }
-        .onChange(of: allTaskStatuses) { _, _ in
+        // Same reasoning as the wait sweep above, and this handler does not even
+        // read the value — it needs an EDGE. Two revisions, never merged: the
+        // comments on both handlers explain why (this one must keep firing on
+        // `.failed` / `.done`, which the wait fact does not distinguish).
+        .onChange(of: store.taskFacts.statusRevision) { _, _ in
             // Immediate Autovisor wake on ANY derived task-status change. The
             // itemizer (`autovisorAttentionItems`) reads BOTH live engine state
             // (needsSupervisor) AND derived summary status (failed / completed /
@@ -236,30 +248,19 @@ struct MainLayoutView: View {
         .modelResidencyHooks(store: store)
     }
 
-    /// Derived status from tasksIndex (updated on every mutateTask), not stored task.status.
+    /// Derived status from the index projection (updated on every mutateTask), not
+    /// stored `task.status` — CLAUDE.md #36 names this property as the reference
+    /// implementation of that distinction.
+    ///
+    /// An O(1) lookup now: this was a linear scan of the whole index evaluated as
+    /// an `onChange` KEY, i.e. on every body pass. Usually O(1) in effect (the
+    /// active row sits first, since the index is `updatedAt`-descending and the
+    /// row was just written) — but `activeTaskID` is the last task ever opened and
+    /// is never reset to nil, so with the user parked on the Watchtower and other
+    /// tasks churning, the row sinks toward the tail.
     private var activeTaskDerivedStatus: TaskStatus? {
         guard let taskID = store.activeTaskID else { return nil }
-        return store.snapshot?.tasksIndex.tasks.first { $0.id == taskID }?.status
-    }
-
-    /// All-tasks (id, status) dictionary used to drive the reconcile sweep. The
-    /// dictionary shape is intentionally Equatable-narrow: it changes only when
-    /// a task's status changes (or a task appears/disappears), not on every
-    /// `updatedAt` tick — so the `onChange` watcher doesn't churn.
-    private var allTaskStatuses: [Int: TaskStatus] {
-        guard let summaries = store.snapshot?.tasksIndex.tasks else { return [:] }
-        return Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0.status) })
-    }
-
-    /// Sibling of `allTaskStatuses`, carrying the DURABLE "is this task waiting on the
-    /// Supervisor" fact instead of the run-control status. Deliberately a separate
-    /// projection rather than a widening of the one above: that one drives the
-    /// Autovisor wake and must keep firing on `.failed` / `.done`, which this fact
-    /// does not distinguish. Equatable-narrow for the same reason — it flips only on
-    /// the fact, never on an `updatedAt` tick.
-    private var allTaskWaitStates: [Int: SupervisorWaitState] {
-        guard let summaries = store.snapshot?.tasksIndex.tasks else { return [:] }
-        return Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, SupervisorWaitState($0)) })
+        return store.taskFacts.statusByTaskID[taskID]
     }
 
     /// The active task's live question identities, for `SupervisorSeenPolicy`.

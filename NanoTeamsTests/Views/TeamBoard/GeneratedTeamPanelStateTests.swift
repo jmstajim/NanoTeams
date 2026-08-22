@@ -153,3 +153,48 @@ final class GeneratedTeamPanelStateTests: XCTestCase {
         }
     }
 }
+
+extension GeneratedTeamPanelStateTests {
+
+    /// `GraphPanelView.generationFailed` mirrors this rule's leading
+    /// `guard isPending` at the CALL site so Swift's eager argument evaluation
+    /// never builds `generationToolCall` (a walk over every step's `toolCalls`,
+    /// which has no ceiling) for a task that is not a pending Generated Team.
+    ///
+    /// The mirror is only safe while `isPending == false` implies `false` for
+    /// EVERY combination of the other inputs. Exhaustive over that space, so a
+    /// future edit that made some `!isPending` shape return `true` turns this
+    /// red instead of silently muting the view.
+    func testNotPending_isFalseForEveryOtherInput_soTheViewMayMirrorTheGuard() {
+        let statuses: [StepStatus?] = [nil, .pending, .running, .needsApproval,
+                                       .needsSupervisorInput, .paused, .failed, .done]
+        for toolCallIsError in [false, true] {
+            for stepStatus in statuses {
+                for hasRun in [false, true] {
+                    for inFlight in [false, true] {
+                        XCTAssertFalse(
+                            GeneratedTeamPanelState.failed(
+                                isPending: false,
+                                toolCallIsError: toolCallIsError,
+                                stepStatus: stepStatus,
+                                hasRun: hasRun,
+                                isGenerationInFlight: inFlight),
+                            "not pending must be false — the view mirrors this guard "
+                            + "(toolCallIsError: \(toolCallIsError), status: "
+                            + "\(String(describing: stepStatus)), hasRun: \(hasRun), "
+                            + "inFlight: \(inFlight))")
+                    }
+                }
+            }
+        }
+    }
+
+    /// Anti-vacuum for the sweep above: the same input space with `isPending`
+    /// TRUE must contain at least one `true`, or the exhaustive loop would be
+    /// satisfied by a function that always returns false.
+    func testPending_reachesTrueSomewhere() {
+        XCTAssertTrue(GeneratedTeamPanelState.failed(
+            isPending: true, toolCallIsError: true, stepStatus: nil,
+            hasRun: true, isGenerationInFlight: true))
+    }
+}

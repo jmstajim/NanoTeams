@@ -243,25 +243,6 @@ final class ChatModeTests: XCTestCase {
         XCTAssertFalse(decoded.isChatMode)
     }
 
-    // MARK: - Run.finishableAdvisoryRoles (chat mode)
-
-    func testFinishableAdvisoryRoles_chatMode_returnsEmpty() {
-        let defs = [makeWorkerRole(id: "advisor", name: "Advisor")]
-        let run = Run(id: 0, steps: [], roleStatuses: ["advisor": .working])
-
-        let result = run.finishableAdvisoryRoles(definitions: defs, isChatMode: true)
-        XCTAssertTrue(result.isEmpty, "Chat mode should suppress finishable advisory roles")
-    }
-
-    func testFinishableAdvisoryRoles_nonChatMode_returnsWorkingAdvisory() {
-        let defs = [makeWorkerRole(id: "advisor", name: "Advisor")]
-        let run = Run(id: 0, steps: [], roleStatuses: ["advisor": .working])
-
-        let result = run.finishableAdvisoryRoles(definitions: defs, isChatMode: false)
-        XCTAssertEqual(result.count, 1)
-        XCTAssertEqual(result[0].roleID, "advisor")
-    }
-
     // MARK: - TeamRoleDefinition.shouldAutoInjectAskSupervisor
 
     func testShouldAutoInject_advisoryRole_true() {

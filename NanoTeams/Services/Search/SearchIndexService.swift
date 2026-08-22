@@ -134,13 +134,6 @@ actor SearchIndexService {
     /// a successful clear.
     private(set) var lastClearError: String?
 
-    /// Vocabulary candidates ranked by relevance tiers.
-    /// Thin wrapper — the ranking lives on `SearchIndex` (Information Expert).
-    func vocabulary(matching query: String, limit: Int) -> [String] {
-        guard let index = cached ?? loadFromDisk() else { return [] }
-        return index.vocabulary(matching: query, limit: limit)
-    }
-
     /// Files whose postings contain ANY of `terms` (union).
     /// Thin wrapper — the intersection lives on `SearchIndex`.
     func files(containing terms: [String]) -> [String] {

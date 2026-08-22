@@ -143,7 +143,9 @@ nonisolated enum ToolCallSummarizer {
             // are listed as such in `toolsWithoutArgumentSummary`.
             TN.updateScratchpad: { dict in
                 let content = resolveContentString(dict) ?? ""
-                return content.count > 40 ? String(content.prefix(40)) + "..." : content
+                // `dropFirst(K).isEmpty` == `count <= K` but stops at K graphemes; `String.count` walks
+                // the WHOLE receiver to answer a bounded question (see `ModelTokenCleaner.isTokenSpan`).
+                return content.dropFirst(40).isEmpty ? content : String(content.prefix(40)) + "..."
             },
             // `create_artifact` has no entry by design — see `toolsWithoutArgumentSummary`.
             TN.analyzeImage: pathExtractor,
@@ -204,7 +206,9 @@ nonisolated enum ToolCallSummarizer {
             },
             TN.uiType: { dict in
                 let text = (dict["text"] as? String) ?? resolveContentString(dict) ?? ""
-                return text.count > 60 ? String(text.prefix(60)) + "…" : text
+                // `dropFirst(K).isEmpty` == `count <= K` but stops at K graphemes; `String.count` walks
+                // the WHOLE receiver to answer a bounded question (see `ModelTokenCleaner.isTokenSpan`).
+                return text.dropFirst(60).isEmpty ? text : String(text.prefix(60)) + "…"
             },
             TN.uiKey: { ($0["keys"] as? String) ?? ($0["key"] as? String) ?? "?" },
             TN.uiScroll: { dict in

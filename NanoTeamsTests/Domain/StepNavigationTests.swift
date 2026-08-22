@@ -109,59 +109,6 @@ final class StepNavigationTests: XCTestCase {
         XCTAssertNil(location)
     }
 
-    // MARK: - locateStep(stepID:inRun:) Tests
-
-    func testLocateStepInSpecificRun() {
-        let stepID = "test_step"
-        let runID = 0
-        let step = createStep(id: stepID)
-        let run = createRun(id: runID, steps: [step])
-        let task = createTask(runs: [run])
-
-        let location = task.locateStep(stepID: stepID, inRun: runID)
-
-        XCTAssertNotNil(location)
-        XCTAssertEqual(location?.runIndex, 0)
-        XCTAssertEqual(location?.stepIndex, 0)
-    }
-
-    func testLocateStepInSpecificRunNotFound() {
-        let runID = 0
-        let step = createStep()
-        let run = createRun(id: runID, steps: [step])
-        let task = createTask(runs: [run])
-
-        let location = task.locateStep(stepID: "test_step", inRun: runID)
-
-        XCTAssertNil(location)
-    }
-
-    func testLocateStepInWrongRun() {
-        let stepID = "test_step"
-        let run1ID = 0
-        let run2ID = 1
-
-        let step = createStep(id: stepID)
-        let run1 = createRun(id: run1ID, steps: [step])
-        let run2 = createRun(id: run2ID, steps: [])
-        let task = createTask(runs: [run1, run2])
-
-        // Step is in run1, looking in run2
-        let location = task.locateStep(stepID: stepID, inRun: run2ID)
-
-        XCTAssertNil(location)
-    }
-
-    func testLocateStepRunNotFound() {
-        let step = createStep()
-        let run = createRun(id: 0, steps: [step])
-        let task = createTask(runs: [run])
-
-        let location = task.locateStep(stepID: step.id, inRun: 99)
-
-        XCTAssertNil(location)
-    }
-
     // MARK: - step(at:) Tests
 
     func testStepAtValidLocation() {
@@ -478,9 +425,6 @@ final class StepNavigationTests: XCTestCase {
         XCTAssertNil(task.locateStepInLatestRun(stepID: step1ID)) // step1 is in run1, not latest
         XCTAssertNotNil(task.locateStepInLatestRun(stepID: step2ID))
         XCTAssertNotNil(task.locateStepInLatestRun(stepID: step3ID))
-
-        XCTAssertNotNil(task.locateStep(stepID: step1ID, inRun: run1ID))
-        XCTAssertNil(task.locateStep(stepID: step1ID, inRun: run2ID))
 
         // Test mutation
         let updated = task.withStep(stepID: step3ID) { step in

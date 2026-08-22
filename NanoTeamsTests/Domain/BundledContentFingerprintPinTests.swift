@@ -19,16 +19,14 @@ final class BundledContentFingerprintPinTests: XCTestCase {
     /// To update: run this test, copy the "got" value from the failure message,
     /// paste it here, and bump `MARKETING_VERSION` in `project.pbxproj` (BOTH
     /// app-target entries — the `1.0` pair belongs to the test target).
-    // 1.8.4 — the Autovisor manager gains `run_xcodebuild` / `run_xcodetests` as
-    // allowed-OPTIONAL tools (verification of the repo's state, not implementation of a
-    // change). Three bundled surfaces moved together: `managerOptionalToolIDs` (+ a new
-    // `managerOptionalToolGroups` entry, which is the only path that delivers them to an
-    // EXISTING folder), the role prompt's `### Boundaries` line — which claimed the read
-    // tools were "your only window into the repo" and became false — and the team
-    // template's `## Role`, which said "read plus management tools only".
-    // (The runners also joined the planning phase, but that set is derived at runtime from
-    // the registry and is not bundled content, so it does not move this hash.)
-    private static let expectedFingerprint = "e57da69fdf65bea6"
+    // 1.9.1 — b218095d unified the Autovisor glyph: the role template's icon literal
+    // (`folder.badge.person.crop`) became `AutovisorConstants.symbolName`
+    // (`bolt.badge.automatic`). One bundled surface moved — the Autovisor role
+    // template's `icon`; the other six sites in that commit are views/constants the
+    // fingerprint does not fold. The icon itself reaches existing folders on every
+    // open (`syncAutovisorTeamToTemplate` overwrites it from the template), so this
+    // bump settles the pin's contract rather than delivering the change.
+    private static let expectedFingerprint = "24dd06a952711873"
 
     func testBundledContent_hasNotChangedWithoutAVersionBump() {
         let actual = BundledContentFingerprint.current

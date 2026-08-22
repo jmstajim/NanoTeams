@@ -86,13 +86,7 @@ extension NTMSOrchestrator {
     func refreshBackgroundTaskInMemory(_ task: NTMSTask) {
         guard var snap = snapshot else { return }
         snap.loadedTasks[task.id] = task
-        let summary = task.toSummary()
-        if let idx = snap.tasksIndex.tasks.firstIndex(where: { $0.id == summary.id }) {
-            snap.tasksIndex.tasks[idx] = summary
-        } else {
-            snap.tasksIndex.tasks.append(summary)
-        }
-        snap.tasksIndex.tasks.sort(by: { $0.updatedAt > $1.updatedAt })
+        upsertTaskSummary(task.toSummary(), in: &snap)
         snapshot = snap
     }
 

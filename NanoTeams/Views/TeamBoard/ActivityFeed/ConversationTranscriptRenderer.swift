@@ -217,6 +217,8 @@ nonisolated enum ConversationTranscriptRenderer {
         let collapsed = text
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "\n", with: " ")
-        return collapsed.count > 200 ? String(collapsed.prefix(200)) + "…" : collapsed
+        // `dropFirst(K).isEmpty` == `count <= K` but stops at K graphemes; `String.count` walks
+        // the WHOLE receiver to answer a bounded question (see `ModelTokenCleaner.isTokenSpan`).
+        return collapsed.dropFirst(200).isEmpty ? collapsed : String(collapsed.prefix(200)) + "…"
     }
 }

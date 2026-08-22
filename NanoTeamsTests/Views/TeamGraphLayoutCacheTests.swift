@@ -287,3 +287,62 @@ final class TeamGraphLayoutCacheTests: XCTestCase {
         XCTAssertTrue(connections.contains(where: { $0.producerID == "pm" && $0.consumerID == "eng" }))
     }
 }
+extension TeamGraphLayoutCacheTests {
+
+    /// The property the removed `sorted()` calls bought, kept: input ORDER must
+    /// not invalidate the cache. It is now delivered by a commutative fold, which
+    /// costs no intermediate arrays — the fingerprint runs BEFORE the hit check,
+    /// so its `2R+3` allocations were paid on every hit too.
+    func testRoleOrderDoesNotInvalidateTheCache() {
+        let a = makeRole(id: "a", requiredArtifacts: ["X"], producesArtifacts: ["Y"])
+        let b = makeRole(id: "b", requiredArtifacts: ["Y"], producesArtifacts: ["Z"])
+        let positions = [TeamNodePosition(roleID: "a", x: 0, y: 0),
+                         TeamNodePosition(roleID: "b", x: 100, y: 100)]
+        let members: Set<String> = ["a", "b"]
+        let cache = TeamGraphLayoutCache()
+
+        _ = cache.layout(nodePositions: positions, roleDefinitions: [a, b],
+                         teamMembers: members, nodeSizes: [:], fallbackNodeWidth: 200)
+        _ = cache.layout(nodePositions: positions, roleDefinitions: [b, a],
+                         teamMembers: members, nodeSizes: [:], fallbackNodeWidth: 200)
+
+        XCTAssertEqual(cache._test_computeCount, 1,
+                       "reordering the SAME roles must hit cache, not recompute")
+        XCTAssertEqual(cache._test_hitCount, 1)
+    }
+
+    /// The same for a role's artifact lists, whose per-role `sorted()` calls were
+    /// `2R` of the removed allocations.
+    func testArtifactOrderWithinARoleDoesNotInvalidateTheCache() {
+        let positions = [TeamNodePosition(roleID: "a", x: 0, y: 0)]
+        let cache = TeamGraphLayoutCache()
+        for requires in [["X", "Y"], ["Y", "X"]] {
+            _ = cache.layout(
+                nodePositions: positions,
+                roleDefinitions: [makeRole(id: "a", requiredArtifacts: requires, producesArtifacts: ["Z"])],
+                teamMembers: ["a"], nodeSizes: [:], fallbackNodeWidth: 200)
+        }
+        XCTAssertEqual(cache._test_computeCount, 1)
+    }
+
+    /// Anti-vacuum for both: a fingerprint that ignored its inputs entirely would
+    /// satisfy every "must hit cache" assertion above. Real CONTENT changes must
+    /// still miss — including the duplicate case a naive XOR fold would collide
+    /// (`["X", "X"]` vs `[]`), which is why the fold adds rather than xors.
+    func testContentChangesStillMiss_includingDuplicates() {
+        let positions = [TeamNodePosition(roleID: "a", x: 0, y: 0)]
+        let cache = TeamGraphLayoutCache()
+        func layout(_ requires: [String]) {
+            _ = cache.layout(
+                nodePositions: positions,
+                roleDefinitions: [makeRole(id: "a", requiredArtifacts: requires, producesArtifacts: [])],
+                teamMembers: ["a"], nodeSizes: [:], fallbackNodeWidth: 200)
+        }
+        layout([])
+        layout(["X", "X"])
+        layout(["X"])
+        XCTAssertEqual(cache._test_computeCount, 3,
+                       "three distinct artifact lists must be three cache misses")
+        XCTAssertEqual(cache._test_hitCount, 0)
+    }
+}
