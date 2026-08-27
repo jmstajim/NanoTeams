@@ -41,7 +41,7 @@ final class ReadFileLineLimitTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func runReadFile(args: String, customLimit: Int? = nil) -> ToolExecutionResult {
+    private func runReadFile(args: String, customLimit: Int? = nil) async -> ToolExecutionResult {
         let activeRuntime: ToolRuntime
         if let customLimit {
             let paths = NTMSPaths(workFolderRoot: tempDir)
@@ -55,7 +55,7 @@ final class ReadFileLineLimitTests: XCTestCase {
             activeRuntime = runtime
         }
         let call = StepToolCall(name: "read_file", argumentsJSON: args)
-        return activeRuntime.executeAll(context: context, toolCalls: [call])[0]
+        return await activeRuntime.executeAll(context: context, toolCalls: [call])[0]
     }
 
     private func writeFile(name: String, contents: String) throws -> URL {
@@ -66,11 +66,11 @@ final class ReadFileLineLimitTests: XCTestCase {
 
     // MARK: - File within limit
 
-    func testReadFile_smallFile_returnsAllLinesUntruncated() throws {
+    func testReadFile_smallFile_returnsAllLinesUntruncated() async throws {
         let body = (1...50).map { "Line \($0)" }.joined(separator: "\n")
         _ = try writeFile(name: "small.txt", contents: body)
 
-        let r = runReadFile(args: "{\"path\": \"small.txt\"}")
+        let r = await runReadFile(args: "{\"path\": \"small.txt\"}")
 
         XCTAssertFalse(r.isError)
         let json = r.outputJSON
@@ -84,12 +84,12 @@ final class ReadFileLineLimitTests: XCTestCase {
         XCTAssertFalse(json.contains("\"truncated\":true") || json.contains("\"truncated\" : true"))
     }
 
-    func testReadFile_exactlyAtLimit_returnsFullContent() throws {
+    func testReadFile_exactlyAtLimit_returnsFullContent() async throws {
         let limit = AppDefaults.readFileMaxLines
         let body = (1...limit).map { "Line \($0)" }.joined(separator: "\n")
         _ = try writeFile(name: "atLimit.txt", contents: body)
 
-        let r = runReadFile(args: "{\"path\": \"atLimit.txt\"}")
+        let r = await runReadFile(args: "{\"path\": \"atLimit.txt\"}")
 
         XCTAssertFalse(r.isError, "file at exactly the limit must succeed")
         let json = r.outputJSON
@@ -100,13 +100,13 @@ final class ReadFileLineLimitTests: XCTestCase {
 
     // MARK: - File over limit
 
-    func testReadFile_oversizeFile_returnsErrorPointingToReadLines() throws {
+    func testReadFile_oversizeFile_returnsErrorPointingToReadLines() async throws {
         let limit = AppDefaults.readFileMaxLines
         let oversizeLines = limit + 100
         let body = (1...oversizeLines).map { "Line \($0)" }.joined(separator: "\n")
         _ = try writeFile(name: "big.txt", contents: body)
 
-        let r = runReadFile(args: "{\"path\": \"big.txt\"}")
+        let r = await runReadFile(args: "{\"path\": \"big.txt\"}")
 
         XCTAssertTrue(r.isError, "file over the limit must be rejected")
         let json = r.outputJSON
@@ -120,12 +120,12 @@ final class ReadFileLineLimitTests: XCTestCase {
         XCTAssertFalse(json.contains("Line 1\\nLine 2"))
     }
 
-    func testReadFile_oneLineOverLimit_returnsError() throws {
+    func testReadFile_oneLineOverLimit_returnsError() async throws {
         let limit = AppDefaults.readFileMaxLines
         let body = (1...(limit + 1)).map { "Line \($0)" }.joined(separator: "\n")
         _ = try writeFile(name: "overByOne.txt", contents: body)
 
-        let r = runReadFile(args: "{\"path\": \"overByOne.txt\"}")
+        let r = await runReadFile(args: "{\"path\": \"overByOne.txt\"}")
 
         XCTAssertTrue(r.isError)
         XCTAssertTrue(r.outputJSON.contains("\(limit + 1) lines"))
@@ -133,14 +133,14 @@ final class ReadFileLineLimitTests: XCTestCase {
 
     // MARK: - Custom limit threading
 
-    func testReadFile_customLimit_isHonored() throws {
+    func testReadFile_customLimit_isHonored() async throws {
         // 150-line file, registry built with limit=100 → must be rejected with
         // a message that mentions the configured 100 (proves the value flowed
         // all the way from `defaultRegistry(readFileMaxLines:)` into the handler).
         let body = (1...150).map { "Line \($0)" }.joined(separator: "\n")
         _ = try writeFile(name: "custom.txt", contents: body)
 
-        let r = runReadFile(args: "{\"path\": \"custom.txt\"}", customLimit: 100)
+        let r = await runReadFile(args: "{\"path\": \"custom.txt\"}", customLimit: 100)
 
         XCTAssertTrue(r.isError)
         let json = r.outputJSON
@@ -150,12 +150,12 @@ final class ReadFileLineLimitTests: XCTestCase {
 
     // MARK: - Unlimited sentinel (0)
 
-    func testReadFile_unlimitedSentinel_readsHugeFile() throws {
+    func testReadFile_unlimitedSentinel_readsHugeFile() async throws {
         // 5000-line file with limit=0 (unlimited) must succeed and return everything.
         let body = (1...5000).map { "Line \($0)" }.joined(separator: "\n")
         _ = try writeFile(name: "huge.txt", contents: body)
 
-        let r = runReadFile(args: "{\"path\": \"huge.txt\"}", customLimit: 0)
+        let r = await runReadFile(args: "{\"path\": \"huge.txt\"}", customLimit: 0)
 
         XCTAssertFalse(r.isError, "limit=0 must skip the size check entirely")
         let json = r.outputJSON
@@ -166,10 +166,10 @@ final class ReadFileLineLimitTests: XCTestCase {
 
     // MARK: - Empty file
 
-    func testReadFile_emptyFile_returnsZeroLines() throws {
+    func testReadFile_emptyFile_returnsZeroLines() async throws {
         _ = try writeFile(name: "empty.txt", contents: "")
 
-        let r = runReadFile(args: "{\"path\": \"empty.txt\"}")
+        let r = await runReadFile(args: "{\"path\": \"empty.txt\"}")
 
         XCTAssertFalse(r.isError)
         let json = r.outputJSON
@@ -179,13 +179,13 @@ final class ReadFileLineLimitTests: XCTestCase {
 
     // MARK: - Single super-long line (no defensive byte cap)
 
-    func testReadFile_singleLongLine_readsCompletely() throws {
+    func testReadFile_singleLongLine_readsCompletely() async throws {
         // Pathological file: one 50_000-char line. total_lines == 1 ≤ limit, so it
         // succeeds. No byte cap protects here — line semantics is the only contract.
         let oneLine = String(repeating: "x", count: 50_000)
         _ = try writeFile(name: "single.txt", contents: oneLine)
 
-        let r = runReadFile(args: "{\"path\": \"single.txt\"}")
+        let r = await runReadFile(args: "{\"path\": \"single.txt\"}")
 
         XCTAssertFalse(r.isError)
         let json = r.outputJSON
@@ -194,7 +194,7 @@ final class ReadFileLineLimitTests: XCTestCase {
 
     // MARK: - Non-UTF-8 file rejection (silent-failure regression)
 
-    func testReadFile_invalidUTF8_returnsErrorNotEmptyContent() throws {
+    func testReadFile_invalidUTF8_returnsErrorNotEmptyContent() async throws {
         // Bytes that cannot form a valid UTF-8 sequence (continuation bytes
         // without a leading byte, plus 0xFF which never appears in UTF-8).
         // Previous behavior: `try? String(contentsOf:) ?? ""` silently swallowed
@@ -205,7 +205,7 @@ final class ReadFileLineLimitTests: XCTestCase {
         let bytes: [UInt8] = [0xFF, 0xFE, 0x80, 0x81, 0xC0, 0xC1, 0xF5]
         try Data(bytes).write(to: url)
 
-        let r = runReadFile(args: "{\"path\": \"garbage.bin\"}")
+        let r = await runReadFile(args: "{\"path\": \"garbage.bin\"}")
 
         XCTAssertTrue(r.isError, "non-UTF-8 file must surface an error envelope")
         let json = r.outputJSON
@@ -216,7 +216,7 @@ final class ReadFileLineLimitTests: XCTestCase {
                        "must not return empty content as if the file were genuinely empty")
     }
 
-    func testReadFile_oversizeFile_nextHintTargetsCorrectPath() throws {
+    func testReadFile_oversizeFile_nextHintTargetsCorrectPath() async throws {
         // Pins the exact shape of the `next: read_lines` suggestion: path
         // echoes the rejected file, and `end_line` is the configured cap so
         // the LLM's retry stays within the limit read_lines itself enforces.
@@ -224,7 +224,7 @@ final class ReadFileLineLimitTests: XCTestCase {
         let body = (1...(limit + 5)).map { "Line \($0)" }.joined(separator: "\n")
         _ = try writeFile(name: "hint.txt", contents: body)
 
-        let r = runReadFile(args: "{\"path\": \"hint.txt\"}")
+        let r = await runReadFile(args: "{\"path\": \"hint.txt\"}")
 
         XCTAssertTrue(r.isError)
         let json = r.outputJSON

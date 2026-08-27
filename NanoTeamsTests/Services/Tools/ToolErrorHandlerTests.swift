@@ -6,10 +6,10 @@ final class ToolErrorHandlerTests: XCTestCase {
 
     // MARK: - Success Path Tests
 
-    func testExecuteReturnsResultOnSuccess() {
+    func testExecuteReturnsResultOnSuccess() async {
         let args: [String: Any] = ["path": "test.txt"]
 
-        let result = ToolErrorHandler.execute(toolName: "test_tool", args: args) {
+        let result = await ToolErrorHandler.execute(toolName: "test_tool", args: args) {
             return makeSuccessResult(
                 toolName: "test_tool",
                 args: args,
@@ -21,10 +21,10 @@ final class ToolErrorHandlerTests: XCTestCase {
         XCTAssertTrue(result.outputJSON.contains("true"))
     }
 
-    func testExecutePassesArgsCorrectly() {
+    func testExecutePassesArgsCorrectly() async {
         let args: [String: Any] = ["path": "/some/path", "content": "data"]
 
-        let result = ToolErrorHandler.execute(toolName: "write_file", args: args) {
+        let result = await ToolErrorHandler.execute(toolName: "write_file", args: args) {
             return makeSuccessResult(
                 toolName: "write_file",
                 args: args,
@@ -37,10 +37,10 @@ final class ToolErrorHandlerTests: XCTestCase {
 
     // MARK: - ToolArgumentError Tests
 
-    func testExecuteCatchesToolArgumentError() {
+    func testExecuteCatchesToolArgumentError() async {
         let args: [String: Any] = [:]
 
-        let result = ToolErrorHandler.execute(toolName: "read_file", args: args) {
+        let result = await ToolErrorHandler.execute(toolName: "read_file", args: args) {
             throw ToolArgumentError.missingRequired("path")
         }
 
@@ -48,10 +48,10 @@ final class ToolErrorHandlerTests: XCTestCase {
         XCTAssertTrue(result.outputJSON.contains("invalidArgs") || result.outputJSON.contains("INVALID_ARGS"))
     }
 
-    func testExecuteHandlesInvalidTypeError() {
+    func testExecuteHandlesInvalidTypeError() async {
         let args: [String: Any] = ["path": 123]
 
-        let result = ToolErrorHandler.execute(toolName: "read_file", args: args) {
+        let result = await ToolErrorHandler.execute(toolName: "read_file", args: args) {
             throw ToolArgumentError.missingRequired("path")
         }
 
@@ -60,10 +60,10 @@ final class ToolErrorHandlerTests: XCTestCase {
 
     // MARK: - SandboxPathError Tests
 
-    func testExecuteCatchesSandboxPathError() {
+    func testExecuteCatchesSandboxPathError() async {
         let args: [String: Any] = ["path": "../../../etc/passwd"]
 
-        let result = ToolErrorHandler.execute(toolName: "read_file", args: args) {
+        let result = await ToolErrorHandler.execute(toolName: "read_file", args: args) {
             throw SandboxPathError.outsideSandbox("../../../etc/passwd")
         }
 
@@ -73,14 +73,14 @@ final class ToolErrorHandlerTests: XCTestCase {
 
     // MARK: - Generic Error Tests
 
-    func testExecuteCatchesGenericError() {
+    func testExecuteCatchesGenericError() async {
         let args: [String: Any] = ["path": "test.txt"]
 
         struct CustomError: LocalizedError {
             var errorDescription: String? { "Custom error occurred" }
         }
 
-        let result = ToolErrorHandler.execute(toolName: "read_file", args: args) {
+        let result = await ToolErrorHandler.execute(toolName: "read_file", args: args) {
             throw CustomError()
         }
 
@@ -88,10 +88,10 @@ final class ToolErrorHandlerTests: XCTestCase {
         XCTAssertTrue(result.outputJSON.contains("Custom error occurred"))
     }
 
-    func testExecuteHandlesNSError() {
+    func testExecuteHandlesNSError() async {
         let args: [String: Any] = ["path": "nonexistent.txt"]
 
-        let result = ToolErrorHandler.execute(toolName: "read_file", args: args) {
+        let result = await ToolErrorHandler.execute(toolName: "read_file", args: args) {
             throw NSError(
                 domain: "TestDomain",
                 code: 404,
@@ -104,10 +104,10 @@ final class ToolErrorHandlerTests: XCTestCase {
 
     // MARK: - Error Code Mapping Tests
 
-    func testToolArgumentErrorMapsToInvalidArgsCode() {
+    func testToolArgumentErrorMapsToInvalidArgsCode() async {
         let args: [String: Any] = [:]
 
-        let result = ToolErrorHandler.execute(toolName: "test", args: args) {
+        let result = await ToolErrorHandler.execute(toolName: "test", args: args) {
             throw ToolArgumentError.missingRequired("required_field")
         }
 
@@ -123,10 +123,10 @@ final class ToolErrorHandlerTests: XCTestCase {
         }
     }
 
-    func testSandboxPathErrorMapsToPermissionDeniedCode() {
+    func testSandboxPathErrorMapsToPermissionDeniedCode() async {
         let args: [String: Any] = ["path": "/etc/passwd"]
 
-        let result = ToolErrorHandler.execute(toolName: "test", args: args) {
+        let result = await ToolErrorHandler.execute(toolName: "test", args: args) {
             throw SandboxPathError.outsideSandbox("/etc/passwd")
         }
 
@@ -135,11 +135,11 @@ final class ToolErrorHandlerTests: XCTestCase {
 
     // MARK: - Multiple Tool Names Tests
 
-    func testExecuteWorksWithDifferentToolNames() {
+    func testExecuteWorksWithDifferentToolNames() async {
         let toolNames = ["read_file", "write_file", "list_files", "search", "edit_file"]
 
         for toolName in toolNames {
-            let result = ToolErrorHandler.execute(toolName: toolName, args: [:]) {
+            let result = await ToolErrorHandler.execute(toolName: toolName, args: [:]) {
                 return makeSuccessResult(
                     toolName: toolName,
                     args: [:],
@@ -154,8 +154,8 @@ final class ToolErrorHandlerTests: XCTestCase {
 
     // MARK: - Edge Cases
 
-    func testExecuteWithEmptyArgs() {
-        let result = ToolErrorHandler.execute(toolName: "test", args: [:]) {
+    func testExecuteWithEmptyArgs() async {
+        let result = await ToolErrorHandler.execute(toolName: "test", args: [:]) {
             return makeSuccessResult(
                 toolName: "test",
                 args: [:],
@@ -166,7 +166,7 @@ final class ToolErrorHandlerTests: XCTestCase {
         XCTAssertTrue(result.outputJSON.contains("empty"))
     }
 
-    func testExecuteWithComplexArgs() {
+    func testExecuteWithComplexArgs() async {
         let args: [String: Any] = [
             "path": "/some/file.txt",
             "content": "Hello, World!",
@@ -174,7 +174,7 @@ final class ToolErrorHandlerTests: XCTestCase {
             "count": 42
         ]
 
-        let result = ToolErrorHandler.execute(toolName: "complex_tool", args: args) {
+        let result = await ToolErrorHandler.execute(toolName: "complex_tool", args: args) {
             return makeSuccessResult(
                 toolName: "complex_tool",
                 args: args,
@@ -185,10 +185,10 @@ final class ToolErrorHandlerTests: XCTestCase {
         XCTAssertTrue(result.outputJSON.contains("processed"))
     }
 
-    func testExecutePreservesToolNameInError() {
+    func testExecutePreservesToolNameInError() async {
         let args: [String: Any] = [:]
 
-        let result = ToolErrorHandler.execute(toolName: "my_custom_tool", args: args) {
+        let result = await ToolErrorHandler.execute(toolName: "my_custom_tool", args: args) {
             throw ToolArgumentError.missingRequired("important_key")
         }
 

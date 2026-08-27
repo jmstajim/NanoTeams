@@ -518,7 +518,6 @@ final class AOrchGeneratedTeamSkillsTests: NTMSOrchestratorTestBase, @unchecked 
             sut.snapshot?.loadedTasks[taskID],
             "precondition: the active task is deliberately absent from loadedTasks")
 
-        sut.roleSkillsLastScanAt = .distantPast
         await sut.refreshAgentSkills()
 
         XCTAssertEqual(
@@ -554,6 +553,9 @@ final class AOrchPersistRefusalTailTests: XCTestCase, @unchecked Sendable {
     }
 
     override func tearDown() async throws {
+        // Same reason as `NTMSOrchestratorTestBase.tearDown`: a task created here leaves the
+        // run's LAUNCH phase in the background, and `stopAllEngines` only CANCELS it.
+        await sut?.drainRunStartLaunches()
         sut?.stopAllEngines()
         sut = nil
         repo = nil
@@ -923,6 +925,9 @@ final class AOrchBundledUpdateSeverityTests: XCTestCase, @unchecked Sendable {
     }
 
     override func tearDown() async throws {
+        // Same reason as `NTMSOrchestratorTestBase.tearDown`: a task created here leaves the
+        // run's LAUNCH phase in the background, and `stopAllEngines` only CANCELS it.
+        await sut?.drainRunStartLaunches()
         sut?.stopAllEngines()
         sut = nil
         if let tempDir { try? fm.removeItem(at: tempDir) }
@@ -1017,6 +1022,9 @@ final class AOrchTaskCreationBootstrapTests: XCTestCase, @unchecked Sendable {
     }
 
     override func tearDown() async throws {
+        // Same reason as `NTMSOrchestratorTestBase.tearDown`: a task created here leaves the
+        // run's LAUNCH phase in the background, and `stopAllEngines` only CANCELS it.
+        await sut?.drainRunStartLaunches()
         sut?.stopAllEngines()
         sut = nil
         configuration = nil
@@ -1166,6 +1174,9 @@ final class AOrchQueuedMessageBackstopTests: XCTestCase, @unchecked Sendable {
 
     override func tearDown() async throws {
         QuickCaptureController.shared._testReset()
+        // Same reason as `NTMSOrchestratorTestBase.tearDown`: a task created here leaves the
+        // run's LAUNCH phase in the background, and `stopAllEngines` only CANCELS it.
+        await sut?.drainRunStartLaunches()
         sut?.stopAllEngines()
         sut = nil
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }

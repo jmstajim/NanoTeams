@@ -213,6 +213,96 @@ final class PromptPrefixFingerprintTests: XCTestCase {
         assertParity([system("s"), image, assistant("seen")])
     }
 
+    /// The premise the image fold rests on since 2026-08-25: the payload length is
+    /// read with `.utf8.count` (O(1) on a native String) instead of `.count`
+    /// (O(graphemes) — a walk of a multi-megabyte payload, once per image per wire
+    /// request, in the branch whose whole purpose is NOT to touch the payload).
+    ///
+    /// The substitution is only sound because base64 is ASCII-only, so the two
+    /// spellings agree. That is an assumption about the DATA, not about Swift, so it
+    /// is asserted rather than believed — over the full base64 alphabet including
+    /// padding, and over a payload long enough that a grapheme-breaking difference
+    /// would show.
+    ///
+    /// RED: change either fold site back to `.count` → these stay green (the values
+    /// agree, which is the point); change one site and not the other → `assertParity`
+    /// above diverges, which is the guard that matters.
+    func testImagePayloadLength_utf8CountAgreesWithCountOverTheBase64Alphabet() {
+        let alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
+        XCTAssertEqual(alphabet.count, alphabet.utf8.count,
+                       "base64 alphabet must be ASCII for .utf8.count to be a drop-in")
+        let payload = String(repeating: alphabet, count: 400)
+        XCTAssertEqual(payload.count, payload.utf8.count)
+
+        // And the fold really is by SHAPE: two different payloads of equal length
+        // produce the same chain, while a different length does not.
+        func chain(_ b64: String) -> [UInt64] {
+            PromptPrefixFingerprint.chain(messages: [
+                ChatMessage(role: .user, content: "look",
+                            imageContent: [ImageContent(base64Data: b64, mimeType: "image/png")])
+            ])
+        }
+        XCTAssertEqual(chain(String(repeating: "QUJD", count: 8)),
+                       chain(String(repeating: "WXYZ", count: 8)),
+                       "equal-length payloads must fold identically — the documented trade")
+        XCTAssertNotEqual(chain(String(repeating: "QUJD", count: 8)),
+                          chain(String(repeating: "QUJD", count: 9)),
+                          "a length change must move the chain, or the shape fold says nothing")
+    }
+
+    /// An image payload must not be WALKED to price it, on either surface.
+    ///
+    /// Both `chainAndTokens` (once per wire request, `PromptPrefixLedger:151`) and
+    /// `ContextBudgetPolicy.estimateTokens` (once per request via `PrefixCachePolicy`)
+    /// priced images with `WorkFolderContextPromptPlanner.estimateTokens(base64Data)`,
+    /// a full scalar walk — so a screenshot in the conversation was traversed at least
+    /// twice per request, forever, i.e. Θ(requests × payload) across a run.
+    ///
+    /// Base64's alphabet is ASCII-only by construction, so the two-class estimate needs
+    /// no walk at all: `ascii == utf8.count`, `nonAscii == 0`. The premise is asserted
+    /// below rather than believed.
+    ///
+    /// Measured through the planner's own work seam (`_testScalarWork`), the idiom
+    /// `Ratchet/WallClockPerformancePinTests` requires — work done, never wall-clock.
+    ///
+    /// RED: restore either `estimateTokens(image.base64Data)` call → the walked-scalar
+    /// count jumps by the payload length and both bounds fail.
+    func testImagePayloadIsPricedWithoutWalkingIt() {
+        typealias Planner = WorkFolderContextPromptPlanner
+        let payload = String(repeating: "QUJD", count: 25_000)   // 100k ASCII chars
+        let prose = "look at this"
+        let messages = [
+            ChatMessage(role: .user, content: prose,
+                        imageContent: [ImageContent(base64Data: payload, mimeType: "image/png")])
+        ]
+
+        // The premise the O(1) pricing rests on.
+        XCTAssertEqual(payload.count, payload.utf8.count,
+                       "base64 must be ASCII-only for the walk-free estimate to be exact")
+
+        Planner._testResetScalarWork()
+        let fused = PromptPrefixFingerprint.chainAndTokens(messages: messages)
+        let fusedWalk = Planner._testScalarWork()
+
+        Planner._testResetScalarWork()
+        let budget = ContextBudgetPolicy.estimateTokens(messages: messages)
+        let budgetWalk = Planner._testScalarWork()
+
+        // Parity is unchanged — this is a cost fix, not a pricing change.
+        XCTAssertEqual(fused.totalPromptTokens, budget,
+                       "the two surfaces must still agree to the token")
+
+        // Neither may walk the payload. The generous ceiling is the prose plus slack:
+        // what must NOT appear in the count is the 100k-character payload.
+        for (name, walked) in [("chainAndTokens", fusedWalk), ("ContextBudgetPolicy", budgetWalk)] {
+            XCTAssertLessThan(
+                walked, 1_000,
+                "\(name) walked \(walked) scalars for a message whose prose is "
+                    + "\(prose.count) characters — it is traversing the "
+                    + "\(payload.count)-character image payload to price it")
+        }
+    }
+
     func testFused_parityOnMultipleSystemMessages() {
         assertParity([system("first"), user("u"), system("second"), assistant("a")])
     }

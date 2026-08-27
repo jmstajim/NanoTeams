@@ -21,17 +21,26 @@ extension NTMSOrchestrator {
         let resident = await residentModelNames(baseURLString: config.baseURLString)
         guard !resident.isEmpty else { return models }
 
+        // A resident key nothing on disk explains means the two namespaces disagree, and then
+        // "not loaded" is a guess rather than an answer for EVERY row — the same residue
+        // argument `ModelReferenceResolver` makes, applied to residency instead of references.
+        let unexplainedResident = resident.filter { key in
+            !models.contains { m in m.referenceHints.contains { ChatModelEnsurer.sameModel($0, key) } }
+        }
+        let determinate = unexplainedResident.isEmpty
+
         return models.map { model in
             let isLoaded = model.referenceHints.contains { hint in
                 resident.contains { ChatModelEnsurer.sameModel($0, hint) }
             }
-            guard isLoaded else { return model }
+            guard isLoaded || !determinate else { return model }
             return DownloadedModel(
                 id: model.id,
                 displayName: model.displayName,
                 sizeBytes: model.sizeBytes,
                 detail: model.detail,
-                isLoaded: true,
+                isLoaded: isLoaded,
+                residencyIsDeterminate: determinate,
                 referenceHints: model.referenceHints
             )
         }
@@ -47,28 +56,54 @@ extension NTMSOrchestrator {
 
     // MARK: - Reference warning
 
-    /// One sentence naming what would break, or `nil` when nothing points at
-    /// this model.
+    /// One sentence naming what would break, a caution when it could not be determined, or
+    /// `nil` when nothing points at this model.
     ///
-    /// Both checks are the EXISTING single sources of truth, called as-is:
-    /// `StoreConfiguration.referencesModel` enumerates the settings slots (and
-    /// `StoreConfiguration+ModelResolution` documents that a caller-side copy of
-    /// that enumeration is exactly how three override slots were once missed),
-    /// while `modelIsStillReferenced` adds per-role overrides in `teams.json`
-    /// and generated-team rosters on loaded tasks. Subtracting the first from
-    /// the second is what distinguishes "your settings" from "a team role"
-    /// without duplicating either list.
-    func downloadedModelReferenceWarning(_ model: DownloadedModel, base: String) -> String? {
-        let inSettings = model.referenceHints.contains {
-            configuration.referencesModel($0, base: base)
+    /// Three states rather than two (2026-08-25). The old shape subtracted "settings slots" from
+    /// "everywhere" to label the source, and could only ever answer yes or no — so the measured
+    /// namespace mismatch (`lmstudio-community/gpt-oss-20b-GGUF` on disk vs the shipped default
+    /// `openai/gpt-oss-20b` in settings) produced NO warning, which the user reads as "nothing
+    /// uses this" while Remove sends ~11 GB to the Trash.
+    ///
+    /// The site enumeration is still a single source of truth — `referencedModelSites` is the
+    /// enumerating counterpart of `modelIsStillReferenced`, walking the same slots, role
+    /// overrides and generated rosters once.
+    /// `serverKeys` is supplied by the CALLER (the card holds `ModelCatalog`; the orchestrator
+    /// does not) and has no default: a missing value is the "server said nothing" state, and it
+    /// must be passed deliberately rather than defaulted into.
+    func downloadedModelReferenceWarning(
+        _ model: DownloadedModel, base: String, allFolders: [DownloadedModel],
+        serverKeys: Set<String>?
+    ) -> String? {
+        switch referenceVerdict(model, base: base, allFolders: allFolders, serverKeys: serverKeys) {
+        case .referenced(let where_):
+            // The site carries its own full sentence: "your LLM settings currently USE" and "a
+            // team role currently USES" disagree on the verb, so composing one here from a
+            // fragment gets one of the two wrong.
+            return where_.first ?? "Something currently uses this model."
+        case .notReferenced:
+            return nil
+        case .undetermined(let unresolved):
+            // The state the old Bool could not express, and the one the measured case lands in:
+            // a reference this app could not match to ANY folder on disk. Reported as caution
+            // rather than silence — absence of a warning reads as "nothing uses this".
+            return "Couldn't verify. This app references \(unresolved.joined(separator: ", ")), "
+                + "which it couldn't match to a folder on disk — this folder may be what backs it."
         }
-        if inSettings {
-            return "Your LLM settings currently use this model."
-        }
-        let anywhere = model.referenceHints.contains {
-            modelIsStillReferenced($0, base: base)
-        }
-        return anywhere ? "A team role currently uses this model." : nil
+    }
+
+    /// The three-state answer, shared by the warning, the post-delete notice and the unload gate
+    /// so they cannot disagree about what matched.
+    func referenceVerdict(
+        _ model: DownloadedModel, base: String, allFolders: [DownloadedModel],
+        serverKeys: Set<String>?
+    ) -> ModelReferenceResolver.Verdict {
+        ModelReferenceResolver.resolve(
+            folder: model,
+            allFolders: allFolders,
+            references: referencedModelSites(base: base),
+            serverKeys: serverKeys
+        )
     }
 
     // MARK: - Deletion
@@ -87,7 +122,12 @@ extension NTMSOrchestrator {
         // Only LM Studio needs this: its files are about to move out from under
         // a runtime that has them open. Ollama evicts server-side as part of
         // `DELETE /api/delete`.
-        if config.provider == .lmStudio, model.isLoaded {
+        // Gated on "residency is not a determinate NO", not on `model.isLoaded`. That flag is
+        // set by the SAME hint match this whole entry is about, so on the measured case it read
+        // `false` for a model that WAS loaded and the files were trashed out from under a live
+        // runtime with no unload. `unloadResidentInstances` is documented best-effort, so an
+        // unnecessary attempt costs nothing while a skipped one is unrecoverable.
+        if config.provider == .lmStudio, model.isLoaded || !model.residencyIsDeterminate {
             await unloadResidentInstances(
                 matching: model.referenceHints,
                 baseURLString: config.baseURLString

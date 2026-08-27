@@ -57,14 +57,14 @@ final class XcodeHandlerEnvelopeCoverageTests: XCTestCase {
     /// none, and shipping thousands of lines of compile chatter would displace real context.
     ///
     /// RED: change `log: success ? "" : log` to always `log` → the emptiness assertion fails.
-    func testBuild_success_reportsSuccessAndShipsNoLog() throws {
+    func testBuild_success_reportsSuccessAndShipsNoLog() async throws {
         let runner = RecordingXcodebuildRunner(responses: [.ok("""
         Building App
         ** BUILD SUCCEEDED **
         """)])
         let tool = RunXcodebuildTool(workFolderRoot: root, runner: runner)
 
-        let result = tool.handle(context: context, args: [:])
+        let result = await tool.handle(context: context, args: [:])
         let data = try decodedData(result)
 
         XCTAssertFalse(result.isError, result.outputJSON)
@@ -80,7 +80,7 @@ final class XcodeHandlerEnvelopeCoverageTests: XCTestCase {
     ///
     /// RED: drop the `parseIssues` call from `aggregateBuild` → `error_count` becomes 0 while
     /// the build is reported failed, i.e. "it broke and I can't tell you where".
-    func testBuild_failure_shipsLogExitCodeAndRelativizedIssues() throws {
+    func testBuild_failure_shipsLogExitCodeAndRelativizedIssues() async throws {
         let sourcePath = root.appendingPathComponent("Sources/Counter.swift").path
         let runner = RecordingXcodebuildRunner(responses: [.failed(65, stdout: """
         \(sourcePath):12:5: error: cannot find 'foo' in scope
@@ -89,7 +89,7 @@ final class XcodeHandlerEnvelopeCoverageTests: XCTestCase {
         """)])
         let tool = RunXcodebuildTool(workFolderRoot: root, runner: runner)
 
-        let result = tool.handle(context: context, args: [:])
+        let result = await tool.handle(context: context, args: [:])
         let data = try decodedData(result)
 
         XCTAssertFalse(result.isError, "a failed build is a successful tool call")
@@ -110,13 +110,13 @@ final class XcodeHandlerEnvelopeCoverageTests: XCTestCase {
 
     /// The line cap reaches `meta.truncated`, which is the only signal the model gets that
     /// what it is reading is a tail rather than the whole log.
-    func testBuild_longFailureLog_reportsTruncation() throws {
+    func testBuild_longFailureLog_reportsTruncation() async throws {
         let flood = (1...(XcodeBuildRunner.defaultMaxLogLines + 20))
             .map { "line \($0)" }.joined(separator: "\n")
         let runner = RecordingXcodebuildRunner(responses: [.failed(65, stdout: flood)])
         let tool = RunXcodebuildTool(workFolderRoot: root, runner: runner)
 
-        let result = tool.handle(context: context, args: [:])
+        let result = await tool.handle(context: context, args: [:])
         let data = try decodedData(result)
 
         XCTAssertTrue(result.outputJSON.contains("\"truncated\":true"), result.outputJSON)
@@ -128,23 +128,23 @@ final class XcodeHandlerEnvelopeCoverageTests: XCTestCase {
 
     /// A thrown `ProcessRunnerError` (timeout / cancellation / missing executable) becomes an
     /// error envelope, not a build that "failed".
-    func testBuild_processThrows_becomesAnErrorEnvelope() throws {
+    func testBuild_processThrows_becomesAnErrorEnvelope() async throws {
         let runner = RecordingXcodebuildRunner(
             thrown: ProcessRunnerError.timeout(600, stdout: "", stderr: ""))
         let tool = RunXcodebuildTool(workFolderRoot: root, runner: runner)
 
-        let result = tool.handle(context: context, args: [:])
+        let result = await tool.handle(context: context, args: [:])
 
         XCTAssertTrue(result.isError, result.outputJSON)
         XCTAssertTrue(result.outputJSON.contains("timed out"), result.outputJSON)
     }
 
-    func testBuild_noProject_reportsFileNotFoundWithTheRecoveryHint() throws {
+    func testBuild_noProject_reportsFileNotFoundWithTheRecoveryHint() async throws {
         try FileManager.default.removeItem(at: root.appendingPathComponent("App.xcodeproj"))
         let runner = ForbiddenXcodebuildRunner()
         let tool = RunXcodebuildTool(workFolderRoot: root, runner: runner)
 
-        let result = tool.handle(context: context, args: [:])
+        let result = await tool.handle(context: context, args: [:])
 
         XCTAssertTrue(result.isError)
         XCTAssertTrue(result.outputJSON.contains("FILE_NOT_FOUND"), result.outputJSON)
@@ -160,7 +160,7 @@ final class XcodeHandlerEnvelopeCoverageTests: XCTestCase {
     /// numbers. Nothing could catch that from a handler test, because no handler test existed.
     ///
     /// RED: drop `.caseInsensitive` from `parseTestOutcome`'s `count(_:)` → `passed` becomes 0.
-    func testTests_success_reportsTheParsedPassCountAndNoLog() throws {
+    func testTests_success_reportsTheParsedPassCountAndNoLog() async throws {
         let runner = RecordingXcodebuildRunner(responses: [.ok("""
         Test case 'AlphaTests.testOne()' passed on 'My Mac - NanoTeams (123)'
         Test case 'AlphaTests.testTwo()' passed on 'My Mac - NanoTeams (123)'
@@ -168,7 +168,7 @@ final class XcodeHandlerEnvelopeCoverageTests: XCTestCase {
         """)])
         let tool = RunXcodetestsTool(workFolderRoot: root, runner: runner)
 
-        let result = tool.handle(context: context, args: [:])
+        let result = await tool.handle(context: context, args: [:])
         let data = try decodedData(result)
 
         XCTAssertFalse(result.isError, result.outputJSON)
@@ -183,7 +183,7 @@ final class XcodeHandlerEnvelopeCoverageTests: XCTestCase {
     /// A failing test ships its failures with relativized paths, and `success` is false even
     /// though a failing suite still exits non-zero for a *different* reason than a build
     /// error would.
-    func testTests_failure_shipsFailureRecordsWithRelativePaths() throws {
+    func testTests_failure_shipsFailureRecordsWithRelativePaths() async throws {
         let testPath = root.appendingPathComponent("Tests/AlphaTests.swift").path
         let runner = RecordingXcodebuildRunner(responses: [.failed(65, stdout: """
         Test case 'AlphaTests.testOne()' passed on 'My Mac - NanoTeams (123)'
@@ -193,7 +193,7 @@ final class XcodeHandlerEnvelopeCoverageTests: XCTestCase {
         """)])
         let tool = RunXcodetestsTool(workFolderRoot: root, runner: runner)
 
-        let result = tool.handle(context: context, args: [:])
+        let result = await tool.handle(context: context, args: [:])
         let data = try decodedData(result)
 
         XCTAssertEqual(data["success"] as? Bool, false)
@@ -215,14 +215,14 @@ final class XcodeHandlerEnvelopeCoverageTests: XCTestCase {
     /// the model has no way to check.
     ///
     /// RED: change `exitedCleanly && failed == 0` to just `exitedCleanly` → this fails.
-    func testTests_zeroExitButParsedFailures_isNotReportedAsSuccess() throws {
+    func testTests_zeroExitButParsedFailures_isNotReportedAsSuccess() async throws {
         let runner = RecordingXcodebuildRunner(responses: [.ok("""
         Test case 'AlphaTests.testTwo()' failed on 'My Mac - NanoTeams (123)'
         /elsewhere/AlphaTests.swift:9: error: boom
         """)])
         let tool = RunXcodetestsTool(workFolderRoot: root, runner: runner)
 
-        let data = try decodedData(tool.handle(context: context, args: [:]))
+        let data = try decodedData(await tool.handle(context: context, args: [:]))
 
         XCTAssertEqual(data["success"] as? Bool, false)
         XCTAssertEqual(data["failed"] as? Int, 1)
@@ -232,25 +232,25 @@ final class XcodeHandlerEnvelopeCoverageTests: XCTestCase {
     /// A path outside the work folder stays ABSOLUTE rather than being truncated into a
     /// plausible-but-nonexistent relative one — the failure mode `relativizeIssuePath`
     /// documents, where a model chased a `read_file` that could never resolve.
-    func testTests_failureOutsideTheWorkFolder_keepsTheAbsolutePath() throws {
+    func testTests_failureOutsideTheWorkFolder_keepsTheAbsolutePath() async throws {
         let runner = RecordingXcodebuildRunner(responses: [.failed(65, stdout: """
         Test case 'X.testY()' failed on 'My Mac'
         /somewhere/else/Other.swift:3: error: nope
         """)])
         let tool = RunXcodetestsTool(workFolderRoot: root, runner: runner)
 
-        let data = try decodedData(tool.handle(context: context, args: [:]))
+        let data = try decodedData(await tool.handle(context: context, args: [:]))
         let failures = try XCTUnwrap(data["failures"] as? [[String: String]])
 
         XCTAssertEqual(failures.first?["file"], "/somewhere/else/Other.swift")
     }
 
-    func testTests_noProject_reportsFileNotFoundWithTheRecoveryHint() throws {
+    func testTests_noProject_reportsFileNotFoundWithTheRecoveryHint() async throws {
         try FileManager.default.removeItem(at: root.appendingPathComponent("App.xcodeproj"))
         let runner = ForbiddenXcodebuildRunner()
         let tool = RunXcodetestsTool(workFolderRoot: root, runner: runner)
 
-        let result = tool.handle(context: context, args: [:])
+        let result = await tool.handle(context: context, args: [:])
 
         XCTAssertTrue(result.isError)
         XCTAssertTrue(result.outputJSON.contains("FILE_NOT_FOUND"), result.outputJSON)

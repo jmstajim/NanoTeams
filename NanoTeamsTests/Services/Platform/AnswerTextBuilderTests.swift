@@ -166,7 +166,7 @@ final class AnswerTextBuilderTests: XCTestCase {
         let skill = skillClip("review", body: "skill body")
         let clips = [skill, "plain clip"]
         let sections = AnswerTextBuilder.clipSections(from: clips)
-        let task = NTMSTask(id: 1, title: "T", supervisorTask: "", clippedTexts: clips)
+        let task = NTMSTask(id: 1, title: "T", supervisorTask: "", clippedTexts: [Clip].minting(clips))
         // With no supervisorTask and no attachments, the brief is exactly the
         // shared clip sections joined — parity by construction.
         XCTAssertEqual(task.effectiveSupervisorBrief, sections.joined(separator: "\n\n"))
@@ -361,9 +361,41 @@ final class AnswerTextBuilderTests: XCTestCase {
         XCTAssertEqual(AnswerTextBuilder.embedSection(url: url), .failed(fileName: "gone.txt"))
     }
 
-    func testEmbedSection_extractorFailureMessage_returnsFailed() {
+    func testEmbedSection_unopenableDocument_returnsFailed() {
+        // A `.pdf` holding non-PDF bytes: `PDFDocument(url:)` refuses to open it, so the
+        // extractor reports a genuine failure. Named for what it actually exercises — the
+        // previous name claimed the failure-message check, which this fixture never reaches.
         let url = createTempFile(name: "broken.pdf", content: "[Could not extract text from broken.pdf: reason]")
         XCTAssertEqual(AnswerTextBuilder.embedSection(url: url), .failed(fileName: "broken.pdf"))
+    }
+
+    func testEmbedSection_documentFormat_embedsItsExtractedText() throws {
+        // The document branch, as distinct from the UTF-8 fallback below it: a `.rtf`
+        // attachment must arrive as its DECODED text, not its markup.
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("memo.rtf")
+        try #"{\rtf1\ansi Decoded memo body}"#.write(to: url, atomically: true, encoding: .utf8)
+
+        guard case .embedded(let section) = AnswerTextBuilder.embedSection(url: url) else {
+            return XCTFail("expected .embedded")
+        }
+        XCTAssertTrue(section.contains("Decoded memo body"))
+        XCTAssertFalse(section.contains("\\rtf1"), "markup must not reach the prompt")
+    }
+
+    func testEmbedSection_plainTextWhoseBodyLooksLikeAFailureMessage_isEmbedded() {
+        // `.txt` is not a document format, so this file is read verbatim through the UTF-8
+        // fallback — no extractor ever runs. Its BODY happening to read like an extraction
+        // failure says nothing about whether the read succeeded, and the file must embed.
+        let body = "[Could not extract text from other.pdf: PDF has no selectable text]"
+        let url = createTempFile(name: "log.txt", content: body)
+        XCTAssertEqual(
+            AnswerTextBuilder.embedSection(url: url),
+            .embedded(section: "## Attached File: log.txt\n\(body)"),
+            "a successful verbatim read must not be judged by what the bytes happen to say"
+        )
     }
 
     func testEmbedSection_uppercaseImageExtension_returnsSkippedBinary() {

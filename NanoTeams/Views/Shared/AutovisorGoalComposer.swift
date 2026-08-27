@@ -39,7 +39,7 @@ struct AutovisorGoalComposer: View {
     var maxTextFieldHeight: CGFloat = MessageComposerLayout.defaultMaxTextFieldHeight
 
     @State private var attachments: [StagedAttachment] = []
-    @State private var clips: [String] = []
+    @State private var clips: [Clip] = []
 
     var body: some View {
         MessageComposer(
@@ -65,8 +65,8 @@ struct AutovisorGoalComposer: View {
             Task { await store.setAutovisorGoalAttachmentPaths(paths) }
         }
         .onChange(of: clips) { _, new in
-            guard new != store.workFolder?.settings.autovisorGoalClips else { return }
-            Task { await store.setAutovisorGoalClips(new) }
+            guard new.texts != store.workFolder?.settings.autovisorGoalClips else { return }
+            Task { await store.setAutovisorGoalClips(new.texts) }
         }
     }
 
@@ -75,6 +75,6 @@ struct AutovisorGoalComposer: View {
     /// on re-appear is a no-op.
     private func seed() {
         attachments = store.autovisorGoalAttachments
-        clips = store.workFolder?.settings.autovisorGoalClips ?? []
+        clips = [Clip].minting(store.workFolder?.settings.autovisorGoalClips ?? [])
     }
 }

@@ -57,6 +57,82 @@ extension LLMExecutionService {
             return stop
         }
 
+        let stepKey = TaskStepKey(taskID: task.id, stepID: stepID)
+
+        // The model wrote a dispatchable envelope into the REASONING channel and nothing
+        // into the one that dispatches. The turn is already lost — no route reads reasoning
+        // for calls, and none is being added (see `performStreamingCall`) — but the CAUSE is
+        // known exactly here, so say it instead of guessing.
+        //
+        // Above the drift branch deliberately. Drift is a heuristic over LENGTH and fires at
+        // 10,000 chars; measured across 291 network logs of the MeditationApp folder, only 2
+        // of 30 reasoning-envelope turns were that long, so 28 of them reached the generic
+        // no-tool-call nudge at the very bottom of this function — the one branch whose text
+        // can say nothing about channels. Both facts can hold at once (`runs/273` #43: 11,789
+        // chars AND two envelopes); the specific diagnosis wins the branch, the generic one
+        // keeps its own streak.
+        //
+        // Names are filtered through `allowedToolNames` for the same reason the Harmony arms
+        // filter their examples: a model that rehearsed a tool it does not hold must not have
+        // that name confirmed back to it. An empty intersection drops the list, not the nudge.
+        // Gated on `!sawHarmonyMarker`, which is what makes this branch's claim TRUE rather
+        // than merely first. A content-channel marker means the model did aim at the channel
+        // that dispatches and its envelope failed to parse there; saying "you wrote it in your
+        // reasoning" would then name the wrong defect, and the Harmony classify-and-nudge
+        // branch below already names the right one. Deliberately a gate rather than a
+        // reordering: the branch must still sit above drift, and a gate says why in one line.
+        let reasoningCallNames = result.sawHarmonyMarker
+            ? []
+            : ConversationRepairService.reasoningChannelToolCallNames(in: result.thinkingContent)
+        if !reasoningCallNames.isEmpty {
+            let inRevision = isStepInRevision(stepID: stepID, taskID: task.id)
+            if inRevision {
+                // Mirrors the drift branch: the Supervisor is already driving, so no
+                // escalation recursion — and the pre-revision streak is cleared so the first
+                // post-revision turn of this shape starts from one, not from the cap.
+                executionStates[stepKey]?.consecutiveReasoningEnvelopeCount = 0
+            } else {
+                let newCount = (executionStates[stepKey]?.consecutiveReasoningEnvelopeCount ?? 0) + 1
+                executionStates[stepKey]?.consecutiveReasoningEnvelopeCount = newCount
+                if newCount >= 2 {
+                    // Reset so a post-supervisor restart starts clean.
+                    executionStates[stepKey]?.consecutiveReasoningEnvelopeCount = 0
+                    let question = """
+                    Role \(roleForMessage.displayName) wrote its tool call inside its reasoning \
+                    on two consecutive turns. Nothing dispatches from there, so both turns did \
+                    nothing — the model is not moving the call into its reply on its own. Please \
+                    advise how to proceed (give an explicit next step, restart the role with a \
+                    different model, or mark the step failed).
+                    """
+                    let escalated = await setNeedsSupervisorInput(
+                        stepID: stepID, taskID: task.id, question: question)
+                    // Same fallback as the drift and malformed-JSON caps: transitioning to
+                    // "needs Supervisor input" with no question rendered is strictly worse
+                    // than the loop the cap replaced.
+                    guard escalated else {
+                        return .toolFailure(message: "Reasoning-channel cap exceeded but Supervisor escalation failed to persist; aborting step. Question would have been: \(question)")
+                    }
+                    return .needsSupervisorInput(question: question)
+                }
+            }
+            let named = reasoningCallNames.filter(allowedToolNames.contains)
+            let wrote = named.isEmpty
+                ? ""
+                : " You wrote a call to \(named.map { "`\($0)`" }.joined(separator: ", ")) there."
+            let example = Self.toolNameExample(allowedToolNames: allowedToolNames) ?? "TOOL_NAME"
+            let nudge = """
+            Your previous turn wrote a tool call inside your reasoning, where nothing can run \
+            it — this step received no callable output, so nothing happened.\(wrote) Write the \
+            call in your reply instead of your reasoning, as a single envelope on its own line:
+            `<|call|>{"name":"\(example)","arguments":{"param":"value"}}<|end|>`
+            """
+            conversationMessages.append(ChatMessage(role: .user, content: nudge))
+            await appendLLMMessage(
+                stepID: stepID, taskID: task.id, role: .user, content: nudge,
+                sourceContext: .retryNudge)
+            return .continueLoop
+        }
+
         // Thinking-drift detection: the model produced a long reasoning trace with
         // no tool call and no user-visible content. First occurrence → targeted
         // nudge. Second consecutive → escalate to supervisor. The counter is kept
@@ -69,7 +145,6 @@ extension LLMExecutionService {
             contentLength: assistantTrimmedLen,
             toolCallCount: result.resolvedToolCalls.count
         )
-        let stepKey = TaskStepKey(taskID: task.id, stepID: stepID)
         if isDrift, !isStepInRevision(stepID: stepID, taskID: task.id) {
             let newCount = (executionStates[stepKey]?.consecutiveDriftTurnCount ?? 0) + 1
             executionStates[stepKey]?.consecutiveDriftTurnCount = newCount
@@ -156,14 +231,20 @@ extension LLMExecutionService {
         // usually whitespace that would otherwise match tokens-only and send an
         // unrelated retry.
         if result.sawHarmonyMarker {
-            // The raw envelope is in `harmonyBuffer` once a Harmony marker was seen mid-stream
-            // (or `thinkingContent` for the reasoning-channel fallback) — NOT `assistantContent`,
-            // which holds only the pre-marker prose. Classify and surface from there.
-            let envelopeSource: String = {
-                if !result.harmonyBuffer.isEmpty { return result.harmonyBuffer }
-                if result.thinkingContent.contains("<|") { return result.thinkingContent }
-                return result.assistantContent
-            }()
+            // The raw envelope is in `harmonyBuffer` once a Harmony marker was seen
+            // mid-stream — NOT `assistantContent`, which holds only the pre-marker prose.
+            // Classify and surface from there.
+            //
+            // `thinkingContent` is deliberately NOT consulted BY THIS BRANCH:
+            // `sawHarmonyMarker` is a CONTENT-channel fact, and a reasoning-channel envelope
+            // resolves nothing at all (see the route list in `performStreamingCall`), so a
+            // reasoning-only turn must not be diagnosed as a broken tool call. A WELL-FORMED
+            // reasoning envelope never gets here at all — the reasoning-channel branch above
+            // claims it first and names the real cause; what can still arrive is a reasoning
+            // channel whose envelope was too broken to parse, and that is exactly the turn
+            // this branch must not blame on the wrong channel.
+            let envelopeSource: String = result.harmonyBuffer.isEmpty
+                ? result.assistantContent : result.harmonyBuffer
             let issue = ToolCallParsingHelpers.classifyHarmonyCallIssue(in: envelopeSource)
             // Surface the failed attempt as a visible, errored feed card. Without this the
             // model's malformed / name-missing tool call never becomes a `StepToolCall` and is

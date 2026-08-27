@@ -19,14 +19,16 @@ final class BundledContentFingerprintPinTests: XCTestCase {
     /// To update: run this test, copy the "got" value from the failure message,
     /// paste it here, and bump `MARKETING_VERSION` in `project.pbxproj` (BOTH
     /// app-target entries — the `1.0` pair belongs to the test target).
-    // 1.9.1 — b218095d unified the Autovisor glyph: the role template's icon literal
-    // (`folder.badge.person.crop`) became `AutovisorConstants.symbolName`
-    // (`bolt.badge.automatic`). One bundled surface moved — the Autovisor role
-    // template's `icon`; the other six sites in that commit are views/constants the
-    // fingerprint does not fold. The icon itself reaches existing folders on every
-    // open (`syncAutovisorTeamToTemplate` overwrites it from the template), so this
-    // bump settles the pin's contract rather than delivering the change.
-    private static let expectedFingerprint = "24dd06a952711873"
+    // 1.9.3 — the manager's `hang` line now tells it apart from a long prefill: when the
+    // diagnostic says NO TOKENS AT ALL have arrived, the server may still be loading the
+    // model or processing the prompt, and a restart discards that work so the next attempt
+    // pays for it again (D-17). One bundled surface moved: the `autovisor` role prompt.
+    // Verified to be the ONLY cause by reverting just that file and watching this pin go
+    // green, so the bump delivers this change and nothing a concurrent edit slipped in.
+    //
+    // Like 1.9.2, this bump DOES deliver: a role prompt reaches an existing folder only
+    // through the version-gated reconcile.
+    private static let expectedFingerprint = "80fa39ce7b314ad3"
 
     func testBundledContent_hasNotChangedWithoutAVersionBump() {
         let actual = BundledContentFingerprint.current

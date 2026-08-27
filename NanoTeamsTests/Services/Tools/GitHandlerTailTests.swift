@@ -68,8 +68,8 @@ final class GitHandlerTailTests: XCTestCase {
     /// `git add nosuch.txt` exits 128 with `fatal: pathspec … did not match any
     /// files` on stderr, and the handler must pass that reason through — a bare
     /// "git add failed" leaves the model with nothing to correct.
-    func testGitAdd_nonexistentPathspec_reportsGitsReasonAndStagesNothing() throws {
-        let result = try call(ToolNames.gitAdd, ["paths": ["nosuch.txt"]])
+    func testGitAdd_nonexistentPathspec_reportsGitsReasonAndStagesNothing() async throws {
+        let result = try await call(ToolNames.gitAdd, ["paths": ["nosuch.txt"]])
 
         XCTAssertTrue(result.isError, "got: \(result.outputJSON)")
         XCTAssertTrue(result.outputJSON.contains("COMMAND_FAILED"), "got: \(result.outputJSON)")
@@ -85,8 +85,8 @@ final class GitHandlerTailTests: XCTestCase {
     /// the OBSERVABLE consequence — nothing outside the work folder ends up in the
     /// index — rather than the message, so a future move of the rejection into the
     /// resolver keeps this test green.
-    func testGitAdd_pathOutsideTheWorkFolder_isRejectedAndTheIndexStaysEmpty() throws {
-        let result = try call(ToolNames.gitAdd, ["paths": ["/etc/passwd"]])
+    func testGitAdd_pathOutsideTheWorkFolder_isRejectedAndTheIndexStaysEmpty() async throws {
+        let result = try await call(ToolNames.gitAdd, ["paths": ["/etc/passwd"]])
 
         XCTAssertTrue(result.isError,
                       "staging a path outside the work folder must fail: \(result.outputJSON)")
@@ -102,10 +102,10 @@ final class GitHandlerTailTests: XCTestCase {
     /// `dataOf` so this stays green if the empty list is later rejected outright.
     /// See `suspectedDefects`: reporting ok:true for a no-op is the same shape as
     /// the `git_pull data.success:false` regression fixed 2026-08-07.
-    func testGitAdd_emptyPathsArray_neverClaimsToHaveStagedAnything() throws {
+    func testGitAdd_emptyPathsArray_neverClaimsToHaveStagedAnything() async throws {
         try Data("x\n".utf8).write(to: tempDir.appendingPathComponent("unstaged.txt"))
 
-        let result = try call(ToolNames.gitAdd, ["paths": [String]()])
+        let result = try await call(ToolNames.gitAdd, ["paths": [String]()])
 
         XCTAssertFalse(result.outputJSON.contains("unstaged.txt"),
                        "an empty pathspec list must not name any file: \(result.outputJSON)")
@@ -119,11 +119,11 @@ final class GitHandlerTailTests: XCTestCase {
     /// The `amend: true` branch appends `--amend` to argv. A dropped flag fails
     /// SILENTLY — the commit still succeeds, it just adds a commit instead of
     /// rewriting one — so the assertion is on the resulting history shape.
-    func testGitCommit_amend_rewritesTheTipInsteadOfAddingACommit() throws {
+    func testGitCommit_amend_rewritesTheTipInsteadOfAddingACommit() async throws {
         try Data("more\n".utf8).write(to: tempDir.appendingPathComponent("extra.txt"))
         try git(["add", "."], in: tempDir)
 
-        let data = try dataOf(ToolNames.gitCommit, ["message": "amended", "amend": true])
+        let data = try await dataOf(ToolNames.gitCommit, ["message": "amended", "amend": true])
 
         XCTAssertEqual(data["message"] as? String, "amended")
         let log = try git(["log", "--oneline"], in: tempDir)
@@ -136,11 +136,11 @@ final class GitHandlerTailTests: XCTestCase {
     /// The post-commit `rev-parse HEAD` lookup. The hash is the only handle the
     /// model gets on the commit it just made (for a later `git_diff`/revert), so a
     /// stale or empty one is worse than useless.
-    func testGitCommit_reportsTheRealHeadHash() throws {
+    func testGitCommit_reportsTheRealHeadHash() async throws {
         try Data("c\n".utf8).write(to: tempDir.appendingPathComponent("committed.txt"))
         try git(["add", "."], in: tempDir)
 
-        let data = try dataOf(ToolNames.gitCommit, ["message": "second"])
+        let data = try await dataOf(ToolNames.gitCommit, ["message": "second"])
 
         let head = try git(["rev-parse", "HEAD"], in: tempDir)
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -155,10 +155,10 @@ final class GitHandlerTailTests: XCTestCase {
     /// on **stdout** (exit 1), which is exactly why the handler classifies over
     /// `stderr + stdout` — a stderr-only check would misroute this to
     /// COMMAND_FAILED with an empty message.
-    func testGitCommit_unbornRepoWithNothingStaged_isClassifiedAsNothingToCommit() throws {
+    func testGitCommit_unbornRepoWithNothingStaged_isClassifiedAsNothingToCommit() async throws {
         let scratch = try makeScratchRepo(initializeGit: true)
 
-        let result = try call(
+        let result = try await call(
             ToolNames.gitCommit, ["message": "first"],
             runtime: scratch.runtime, context: scratch.context)
 
@@ -175,10 +175,10 @@ final class GitHandlerTailTests: XCTestCase {
     ///
     /// The message must still name the remedy: reclassifying alone would have
     /// replaced git's "use git add" hint with a bare "Nothing to commit".
-    func testGitCommit_untrackedOnly_isTheSameFailureClassAndKeepsTheRemedy() throws {
+    func testGitCommit_untrackedOnly_isTheSameFailureClassAndKeepsTheRemedy() async throws {
         try Data("u\n".utf8).write(to: tempDir.appendingPathComponent("untracked.txt"))
 
-        let result = try call(ToolNames.gitCommit, ["message": "nope"])
+        let result = try await call(ToolNames.gitCommit, ["message": "nope"])
 
         XCTAssertTrue(result.isError, "got: \(result.outputJSON)")
         let error = try errorOf(result)
@@ -201,14 +201,14 @@ final class GitHandlerTailTests: XCTestCase {
     /// divergent pull outright ("Need to specify how to reconcile"), so the
     /// conflict arm would be unreachable and the test would silently measure a
     /// different failure.
-    func testGitPull_conflictingRemote_returnsConflictEnvelopeNamingTheFile() throws {
+    func testGitPull_conflictingRemote_returnsConflictEnvelopeNamingTheFile() async throws {
         try attachBareRemote()
         try git(["push", "-u", "origin", "main"], in: tempDir)
         try pushConflictingCommitFromASecondClone()
         try Data("local side\n".utf8).write(to: tempDir.appendingPathComponent("base.txt"))
         try git(["commit", "-am", "local edit"], in: tempDir)
 
-        let result = try call(ToolNames.gitPull, ["remote": "origin", "branch": "main"])
+        let result = try await call(ToolNames.gitPull, ["remote": "origin", "branch": "main"])
 
         XCTAssertTrue(result.isError, "got: \(result.outputJSON)")
         let error = try errorOf(result)
@@ -224,12 +224,12 @@ final class GitHandlerTailTests: XCTestCase {
     /// No arguments at all: `remote` falls back to "origin" and `branch` stays nil,
     /// so argv is a bare `git pull origin` relying on the tracking branch. Both
     /// defaults are load-bearing — the model routinely calls `git_pull {}`.
-    func testGitPull_withNoArguments_usesOriginAndTheTrackingBranch() throws {
+    func testGitPull_withNoArguments_usesOriginAndTheTrackingBranch() async throws {
         try attachBareRemote()
         try git(["push", "-u", "origin", "main"], in: tempDir)
         try pushExtraCommitFromASecondClone()
 
-        let data = try dataOf(ToolNames.gitPull, [:])
+        let data = try await dataOf(ToolNames.gitPull, [:])
 
         XCTAssertEqual(data["success"] as? Bool, true)
         XCTAssertTrue(
@@ -256,7 +256,7 @@ final class GitHandlerTailTests: XCTestCase {
     ///
     /// RED: move the conflict probe back above `guard result.success` → this fails with
     /// `CONFLICT`.
-    func testGitPull_fastForwardOfAFileNamedCONFLICT_isNotMisreadAsAConflict() throws {
+    func testGitPull_fastForwardOfAFileNamedCONFLICT_isNotMisreadAsAConflict() async throws {
         try attachBareRemote()
         try git(["push", "-u", "origin", "main"], in: tempDir)
         try inASecondClone { clone in
@@ -266,7 +266,7 @@ final class GitHandlerTailTests: XCTestCase {
             try git(["commit", "-m", "document the policy"], in: clone)
         }
 
-        let result = try call(ToolNames.gitPull, ["remote": "origin", "branch": "main"])
+        let result = try await call(ToolNames.gitPull, ["remote": "origin", "branch": "main"])
 
         XCTAssertFalse(result.isError,
                        "a clean fast-forward is not a conflict: \(result.outputJSON)")
@@ -293,7 +293,7 @@ final class GitHandlerTailTests: XCTestCase {
     ///
     /// RED: delete the `ls-files -u` check in `git_pull`'s success path → `isError` is
     /// false and the envelope reports `conflicts: []` over a conflicted index.
-    func testGitPull_autostashPopConflict_isReportedEvenThoughGitExitedZero() throws {
+    func testGitPull_autostashPopConflict_isReportedEvenThoughGitExitedZero() async throws {
         try attachBareRemote()
         try git(["push", "-u", "origin", "main"], in: tempDir)
         try git(["config", "merge.autoStash", "true"], in: tempDir)
@@ -304,7 +304,7 @@ final class GitHandlerTailTests: XCTestCase {
         // A local, uncommitted edit to the SAME file — what autostash exists to carry.
         try Data("local\n".utf8).write(to: tempDir.appendingPathComponent("base.txt"))
 
-        let result = try call(ToolNames.gitPull, ["remote": "origin", "branch": "main"])
+        let result = try await call(ToolNames.gitPull, ["remote": "origin", "branch": "main"])
 
         XCTAssertTrue(
             result.isError,
@@ -318,12 +318,12 @@ final class GitHandlerTailTests: XCTestCase {
     /// `push` with BOTH optional modifiers (`-u` and `-m`), then `list`, then
     /// `pop`. `include_untracked` is the one that fails silently if dropped: the
     /// tracked change is stashed either way and only the untracked file betrays it.
-    func testGitStash_pushWithMessageAndUntracked_thenPopRestoresBoth() throws {
+    func testGitStash_pushWithMessageAndUntracked_thenPopRestoresBoth() async throws {
         try Data("modified\n".utf8).write(to: tempDir.appendingPathComponent("base.txt"))
         let untracked = tempDir.appendingPathComponent("brand-new.txt")
         try Data("new\n".utf8).write(to: untracked)
 
-        let pushed = try dataOf(
+        let pushed = try await dataOf(
             ToolNames.gitStash,
             ["action": "push", "message": "wip stash", "include_untracked": true])
         XCTAssertEqual(pushed["action"] as? String, "push")
@@ -332,11 +332,11 @@ final class GitHandlerTailTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: untracked.path),
                        "include_untracked:true must stash the untracked file too")
 
-        let listed = try dataOf(ToolNames.gitStash, ["action": "list"])
+        let listed = try await dataOf(ToolNames.gitStash, ["action": "list"])
         XCTAssertTrue((listed["output"] as? String ?? "").contains("wip stash"),
                       "the stash message must round-trip: \(listed)")
 
-        let popped = try dataOf(ToolNames.gitStash, ["action": "pop"])
+        let popped = try await dataOf(ToolNames.gitStash, ["action": "pop"])
         XCTAssertEqual(popped["action"] as? String, "pop")
         XCTAssertEqual(try contents(of: "base.txt"), "modified\n")
         XCTAssertTrue(FileManager.default.fileExists(atPath: untracked.path),
@@ -345,19 +345,19 @@ final class GitHandlerTailTests: XCTestCase {
 
     /// The `apply` and `drop` argv branches, both carrying an explicit `index`
     /// formatted as `stash@{N}`.
-    func testGitStash_applyThenDropByIndex_leavesNoStashEntries() throws {
+    func testGitStash_applyThenDropByIndex_leavesNoStashEntries() async throws {
         try Data("modified\n".utf8).write(to: tempDir.appendingPathComponent("base.txt"))
         try git(["stash", "push", "-m", "entry"], in: tempDir)
 
-        let applied = try dataOf(ToolNames.gitStash, ["action": "apply", "index": 0])
+        let applied = try await dataOf(ToolNames.gitStash, ["action": "apply", "index": 0])
         XCTAssertEqual(applied["action"] as? String, "apply")
         XCTAssertEqual(try contents(of: "base.txt"), "modified\n",
                        "apply must restore the working-tree change")
 
-        let dropped = try dataOf(ToolNames.gitStash, ["action": "drop", "index": 0])
+        let dropped = try await dataOf(ToolNames.gitStash, ["action": "drop", "index": 0])
         XCTAssertEqual(dropped["action"] as? String, "drop")
 
-        let listed = try dataOf(ToolNames.gitStash, ["action": "list"])
+        let listed = try await dataOf(ToolNames.gitStash, ["action": "list"])
         XCTAssertEqual(listed["output"] as? String, "",
                        "apply+drop must leave the stash empty: \(listed)")
     }
@@ -366,8 +366,8 @@ final class GitHandlerTailTests: XCTestCase {
     /// also pins that git puts "No stash entries found." on STDERR. If it ever
     /// moved to stdout the model would get an error envelope with an empty message
     /// and nothing to act on.
-    func testGitStash_popWithNoEntries_returnsCommandFailedWithANonEmptyReason() throws {
-        let result = try call(ToolNames.gitStash, ["action": "pop"])
+    func testGitStash_popWithNoEntries_returnsCommandFailedWithANonEmptyReason() async throws {
+        let result = try await call(ToolNames.gitStash, ["action": "pop"])
 
         XCTAssertTrue(result.isError, "got: \(result.outputJSON)")
         let error = try errorOf(result)
@@ -388,11 +388,11 @@ final class GitHandlerTailTests: XCTestCase {
     /// own text is "log for 'stash' only has 1 entries", and `git_stash` passes
     /// stderr through verbatim (pinned above). Echoing the ref would be a new
     /// policy for one action, and the range git reports is the actionable part.
-    func testGitStash_index_isFormattedIntoTheStashRef() throws {
+    func testGitStash_index_isFormattedIntoTheStashRef() async throws {
         try Data("modified\n".utf8).write(to: tempDir.appendingPathComponent("base.txt"))
         try git(["stash", "push", "-m", "entry"], in: tempDir)
 
-        let outOfRange = try call(ToolNames.gitStash, ["action": "pop", "index": 9])
+        let outOfRange = try await call(ToolNames.gitStash, ["action": "pop", "index": 9])
         XCTAssertTrue(outOfRange.isError, "got: \(outOfRange.outputJSON)")
         let error = try errorOf(outOfRange)
         XCTAssertEqual(error["code"] as? String, "COMMAND_FAILED")
@@ -400,15 +400,15 @@ final class GitHandlerTailTests: XCTestCase {
         XCTAssertFalse(message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                        "an empty error message leaves the model nothing to act on")
 
-        let inRange = try call(ToolNames.gitStash, ["action": "pop", "index": 0])
+        let inRange = try await call(ToolNames.gitStash, ["action": "pop", "index": 0])
         XCTAssertFalse(inRange.isError,
                        "index 0 addresses the single entry: \(inRange.outputJSON)")
     }
 
     /// The `default:` arm of the action switch. The message must enumerate the
     /// valid actions — a bare "invalid action" sends a small model guessing.
-    func testGitStash_unknownAction_isInvalidArgsAndListsTheValidActions() throws {
-        let result = try call(ToolNames.gitStash, ["action": "squash"])
+    func testGitStash_unknownAction_isInvalidArgsAndListsTheValidActions() async throws {
+        let result = try await call(ToolNames.gitStash, ["action": "squash"])
 
         XCTAssertTrue(result.isError, "got: \(result.outputJSON)")
         let error = try errorOf(result)
@@ -424,11 +424,11 @@ final class GitHandlerTailTests: XCTestCase {
     /// The `...` branch of the branch-line parser. With an upstream configured the
     /// porcelain header is `## main...origin/main`, and the tool must report the
     /// bare local name — `main...origin/main` is not a branch anyone can check out.
-    func testGitStatus_withUpstream_reportsTheBareLocalBranchName() throws {
+    func testGitStatus_withUpstream_reportsTheBareLocalBranchName() async throws {
         try attachBareRemote()
         try git(["push", "-u", "origin", "main"], in: tempDir)
 
-        let data = try dataOf(ToolNames.gitStatus, [:])
+        let data = try await dataOf(ToolNames.gitStatus, [:])
 
         XCTAssertEqual(data["branch"] as? String, "main",
                        "the upstream suffix must be stripped: \(data)")
@@ -438,7 +438,7 @@ final class GitHandlerTailTests: XCTestCase {
     /// porcelain v1 columns. Three shapes at once so an off-by-one in either
     /// column index is caught: `A  ` (index only), ` D ` (worktree only), `MM `
     /// (both).
-    func testGitStatus_stagedAddedDeletedAndBothModified_reportEachCodeAndPath() throws {
+    func testGitStatus_stagedAddedDeletedAndBothModified_reportEachCodeAndPath() async throws {
         try Data("v1\n".utf8).write(to: tempDir.appendingPathComponent("keep.txt"))
         try Data("d\n".utf8).write(to: tempDir.appendingPathComponent("del.txt"))
         try git(["add", "."], in: tempDir)
@@ -451,7 +451,7 @@ final class GitHandlerTailTests: XCTestCase {
         try Data("v3\n".utf8).write(to: tempDir.appendingPathComponent("keep.txt"))
         try FileManager.default.removeItem(at: tempDir.appendingPathComponent("del.txt"))
 
-        let data = try dataOf(ToolNames.gitStatus, [:])
+        let data = try await dataOf(ToolNames.gitStatus, [:])
 
         XCTAssertEqual(data["clean"] as? Bool, false)
         let byPath = try statusesByPath(data)
@@ -464,13 +464,13 @@ final class GitHandlerTailTests: XCTestCase {
     /// Passing that through verbatim broke the house rule that every path a tool
     /// reports is usable as a `read_file`/`git_add` argument, so `path` now carries
     /// the NEW name and `old_path` the old one — both names still reach the model.
-    func testGitStatus_stagedRename_splitsThePathSoBothAreUsable() throws {
+    func testGitStatus_stagedRename_splitsThePathSoBothAreUsable() async throws {
         try Data("x\n".utf8).write(to: tempDir.appendingPathComponent("old.txt"))
         try git(["add", "."], in: tempDir)
         try git(["commit", "-m", "add old"], in: tempDir)
         try git(["mv", "old.txt", "new.txt"], in: tempDir)
 
-        let data = try dataOf(ToolNames.gitStatus, [:])
+        let data = try await dataOf(ToolNames.gitStatus, [:])
         let files = try XCTUnwrap(data["files"] as? [[String: Any]], "files array missing")
         let entry = try XCTUnwrap(
             files.first(where: { ($0["status"] as? String) == "R" }),
@@ -485,7 +485,7 @@ final class GitHandlerTailTests: XCTestCase {
     /// Mid-merge state: after a conflicting `git merge`, porcelain reports
     /// `UU base.txt`. Both columns are `U`, so the composed code is `UU` — the one
     /// signal telling the model the tree is unmergeable rather than merely dirty.
-    func testGitStatus_duringAMergeConflict_reportsTheUnmergedPath() throws {
+    func testGitStatus_duringAMergeConflict_reportsTheUnmergedPath() async throws {
         try git(["checkout", "-b", "feature"], in: tempDir)
         try Data("feature side\n".utf8).write(to: tempDir.appendingPathComponent("base.txt"))
         try git(["commit", "-am", "feature edit"], in: tempDir)
@@ -494,7 +494,7 @@ final class GitHandlerTailTests: XCTestCase {
         try git(["commit", "-am", "main edit"], in: tempDir)
         _ = gitAllowingFailure(["merge", "feature"], in: tempDir)
 
-        let data = try dataOf(ToolNames.gitStatus, [:])
+        let data = try await dataOf(ToolNames.gitStatus, [:])
 
         let byPath = try statusesByPath(data)
         XCTAssertEqual(byPath["base.txt"], "UU",
@@ -506,10 +506,10 @@ final class GitHandlerTailTests: XCTestCase {
     /// the success path with an empty file list. The branch string it reports for
     /// this state is called out under `suspectedDefects`; only the parts that are
     /// unambiguously right are asserted.
-    func testGitStatus_unbornRepo_succeedsAndReportsClean() throws {
+    func testGitStatus_unbornRepo_succeedsAndReportsClean() async throws {
         let scratch = try makeScratchRepo(initializeGit: true)
 
-        let data = try dataOf(
+        let data = try await dataOf(
             ToolNames.gitStatus, [:], runtime: scratch.runtime, context: scratch.context)
 
         XCTAssertEqual(data["clean"] as? Bool, true)
@@ -521,10 +521,10 @@ final class GitHandlerTailTests: XCTestCase {
     /// `currentBranch` is only ever assigned inside the `isCurrent` branch, so a
     /// regression there reports an empty `current` while the list itself still
     /// looks right.
-    func testGitBranchList_marksTheCheckedOutBranchAndReportsItAsCurrent() throws {
+    func testGitBranchList_marksTheCheckedOutBranchAndReportsItAsCurrent() async throws {
         try git(["branch", "sidebar"], in: tempDir)
 
-        let data = try dataOf(ToolNames.gitBranchList, [:])
+        let data = try await dataOf(ToolNames.gitBranchList, [:])
 
         XCTAssertEqual(data["current"] as? String, "main")
         let branches = try XCTUnwrap(data["branches"] as? [[String: Any]])
@@ -539,11 +539,11 @@ final class GitHandlerTailTests: XCTestCase {
     /// The `all: true` argv branch plus the `remotes/` prefix strip. The prefix
     /// matters: `remotes/origin/main` is not a name `git_checkout` accepts, so
     /// forwarding it unstripped would hand the model an unusable ref.
-    func testGitBranchList_all_stripsTheRemotesPrefixAndFlagsRemoteBranches() throws {
+    func testGitBranchList_all_stripsTheRemotesPrefixAndFlagsRemoteBranches() async throws {
         try attachBareRemote()
         try git(["push", "-u", "origin", "main"], in: tempDir)
 
-        let data = try dataOf(ToolNames.gitBranchList, ["all": true])
+        let data = try await dataOf(ToolNames.gitBranchList, ["all": true])
 
         let branches = try XCTUnwrap(data["branches"] as? [[String: Any]])
         let remote = try XCTUnwrap(
@@ -561,10 +561,10 @@ final class GitHandlerTailTests: XCTestCase {
 
     /// Unborn HEAD: `git branch -v` exits 0 with EMPTY output, so the parse loop
     /// never runs. The tool must report "no branches", not fail.
-    func testGitBranchList_unbornRepo_succeedsWithNoBranches() throws {
+    func testGitBranchList_unbornRepo_succeedsWithNoBranches() async throws {
         let scratch = try makeScratchRepo(initializeGit: true)
 
-        let data = try dataOf(
+        let data = try await dataOf(
             ToolNames.gitBranchList, [:], runtime: scratch.runtime, context: scratch.context)
 
         XCTAssertEqual((data["branches"] as? [[String: Any]])?.count, 0, "got: \(data)")
@@ -575,12 +575,12 @@ final class GitHandlerTailTests: XCTestCase {
     /// space-split parser mangles — see `suspectedDefects`. Asserted here: the tool
     /// still succeeds, and the detachment is at least VISIBLE in the payload, which
     /// is true both today and after any reasonable fix.
-    func testGitBranchList_detachedHead_succeedsAndTheDetachmentIsVisible() throws {
+    func testGitBranchList_detachedHead_succeedsAndTheDetachmentIsVisible() async throws {
         let head = try git(["rev-parse", "HEAD"], in: tempDir)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         try git(["checkout", head], in: tempDir)
 
-        let result = try call(ToolNames.gitBranchList, [:])
+        let result = try await call(ToolNames.gitBranchList, [:])
 
         XCTAssertFalse(result.isError, "got: \(result.outputJSON)")
         XCTAssertTrue(result.outputJSON.contains("HEAD"),
@@ -592,8 +592,8 @@ final class GitHandlerTailTests: XCTestCase {
     /// The `oneline: false` argv branch AND the whole `|`-delimited parse that only
     /// runs with it. This is the only way the model gets author/date, and every
     /// field comes from a different split index — so all four are asserted.
-    func testGitLog_notOneline_parsesHashMessageAuthorAndDate() throws {
-        let data = try dataOf(ToolNames.gitLog, ["oneline": false])
+    func testGitLog_notOneline_parsesHashMessageAuthorAndDate() async throws {
+        let data = try await dataOf(ToolNames.gitLog, ["oneline": false])
 
         let commits = try XCTUnwrap(data["commits"] as? [[String: Any]])
         let head = try XCTUnwrap(commits.first, "expected the seeded commit: \(data)")
@@ -610,12 +610,12 @@ final class GitHandlerTailTests: XCTestCase {
     /// `limit` — `ToolsGitTests.testGitLog_respectsLimit` passes `limit` (ignored)
     /// and its assertions pass under the default of 20 too, so this is the first
     /// test that actually constrains the count.
-    func testGitLog_max_limitsTheNumberOfCommitsReturned() throws {
+    func testGitLog_max_limitsTheNumberOfCommitsReturned() async throws {
         for i in 1...5 {
             try seedCommit(named: "f\(i).txt", contents: "\(i)\n", message: "commit \(i)")
         }
 
-        let data = try dataOf(ToolNames.gitLog, ["max": 2])
+        let data = try await dataOf(ToolNames.gitLog, ["max": 2])
 
         let commits = try XCTUnwrap(data["commits"] as? [[String: Any]])
         XCTAssertEqual(commits.count, 2, "got: \(commits)")
@@ -626,8 +626,8 @@ final class GitHandlerTailTests: XCTestCase {
 
     /// Boundary: `max: 0` is a valid `git log -0` (exit 0, no output), so the
     /// parse loop never runs.
-    func testGitLog_maxZero_succeedsWithNoCommits() throws {
-        let data = try dataOf(ToolNames.gitLog, ["max": 0])
+    func testGitLog_maxZero_succeedsWithNoCommits() async throws {
+        let data = try await dataOf(ToolNames.gitLog, ["max": 0])
 
         XCTAssertEqual((data["commits"] as? [[String: Any]])?.count, 0, "got: \(data)")
     }
@@ -635,12 +635,12 @@ final class GitHandlerTailTests: XCTestCase {
     /// Degenerate: a negative `max` interpolates into `--2`, which git rejects.
     /// The important half of the contract is that it does NOT silently fall back to
     /// dumping the whole history under a success envelope.
-    func testGitLog_negativeMax_isAnErrorRatherThanAnUnboundedLog() throws {
+    func testGitLog_negativeMax_isAnErrorRatherThanAnUnboundedLog() async throws {
         for i in 1...3 {
             try seedCommit(named: "n\(i).txt", contents: "\(i)\n", message: "commit \(i)")
         }
 
-        let result = try call(ToolNames.gitLog, ["max": -2])
+        let result = try await call(ToolNames.gitLog, ["max": -2])
 
         XCTAssertTrue(result.isError,
                       "a rejected argument must not read as a successful log: \(result.outputJSON)")
@@ -652,10 +652,10 @@ final class GitHandlerTailTests: XCTestCase {
     /// The classifier must NOT mistake that for a missing repository — the
     /// not-a-repo envelope tells the model to abandon git for the whole run, which
     /// is exactly the wrong recovery for a repo that just needs a first commit.
-    func testGitLog_unbornRepo_reportsNoCommitsNotAMissingRepository() throws {
+    func testGitLog_unbornRepo_reportsNoCommitsNotAMissingRepository() async throws {
         let scratch = try makeScratchRepo(initializeGit: true)
 
-        let result = try call(
+        let result = try await call(
             ToolNames.gitLog, [:], runtime: scratch.runtime, context: scratch.context)
 
         XCTAssertTrue(result.isError, "got: \(result.outputJSON)")
@@ -669,10 +669,10 @@ final class GitHandlerTailTests: XCTestCase {
     /// pins only that the commit is still IDENTIFIED (hash intact, envelope ok);
     /// the message/author/date mapping is knowingly wrong for this input and is
     /// reported under `suspectedDefects` rather than frozen here.
-    func testGitLog_pipeInSubject_stillIdentifiesTheCommit() throws {
+    func testGitLog_pipeInSubject_stillIdentifiesTheCommit() async throws {
         try seedCommit(named: "piped.txt", contents: "p\n", message: "feat: a | b")
 
-        let data = try dataOf(ToolNames.gitLog, ["oneline": false, "max": 1])
+        let data = try await dataOf(ToolNames.gitLog, ["oneline": false, "max": 1])
 
         let commits = try XCTUnwrap(data["commits"] as? [[String: Any]])
         XCTAssertEqual(commits.count, 1, "got: \(commits)")
@@ -687,10 +687,10 @@ final class GitHandlerTailTests: XCTestCase {
     /// The truncation arm and its `meta.truncated` flag. Truncation without the
     /// flag is the no-silent-caps violation this project keeps re-fixing: the model
     /// would read a half diff as the whole change.
-    func testGitDiff_maxLines_truncatesTheDiffAndFlagsIt() throws {
+    func testGitDiff_maxLines_truncatesTheDiffAndFlagsIt() async throws {
         try seedLargeChangedFile(lineCount: 80)
 
-        let truncatedResult = try call(ToolNames.gitDiff, ["max_lines": 10])
+        let truncatedResult = try await call(ToolNames.gitDiff, ["max_lines": 10])
         XCTAssertFalse(truncatedResult.isError, "got: \(truncatedResult.outputJSON)")
         let truncatedEnvelope = try envelopeOf(truncatedResult)
         let meta = try XCTUnwrap(truncatedEnvelope["meta"] as? [String: Any])
@@ -700,7 +700,7 @@ final class GitHandlerTailTests: XCTestCase {
         XCTAssertEqual(diff.split(separator: "\n", omittingEmptySubsequences: false).count, 10,
                        "exactly max_lines lines must survive")
 
-        let fullResult = try call(ToolNames.gitDiff, [:])
+        let fullResult = try await call(ToolNames.gitDiff, [:])
         let fullEnvelope = try envelopeOf(fullResult)
         let fullMeta = try XCTUnwrap(fullEnvelope["meta"] as? [String: Any])
         XCTAssertEqual(fullMeta["truncated"] as? Bool, false,
@@ -710,14 +710,14 @@ final class GitHandlerTailTests: XCTestCase {
     /// A binary file. git emits `Binary files a/… and b/… differ` instead of a
     /// hunk, so `files_changed` (counted off `diff --git` lines) is the only signal
     /// that anything changed — and the raw bytes must NOT end up in the payload.
-    func testGitDiff_binaryFile_reportsTheChangeWithoutItsBytes() throws {
+    func testGitDiff_binaryFile_reportsTheChangeWithoutItsBytes() async throws {
         let binary = tempDir.appendingPathComponent("blob.dat")
         try Data([0x00, 0x01, 0x02, 0xFF, 0xFE]).write(to: binary)
         try git(["add", "."], in: tempDir)
         try git(["commit", "-m", "add binary"], in: tempDir)
         try Data([0x00, 0x09, 0x08, 0x07, 0xFD, 0xFC]).write(to: binary)
 
-        let data = try dataOf(ToolNames.gitDiff, [:])
+        let data = try await dataOf(ToolNames.gitDiff, [:])
 
         XCTAssertEqual(data["files_changed"] as? Int, 1, "got: \(data)")
         let diff = try XCTUnwrap(data["diff"] as? String)
@@ -728,14 +728,14 @@ final class GitHandlerTailTests: XCTestCase {
 
     /// A staged rename. `cached: true` also skips the untracked probe entirely, so
     /// this covers the branch where `untracked_files` is left empty by design.
-    func testGitDiff_stagedRename_reportsRenameFromAndTo() throws {
+    func testGitDiff_stagedRename_reportsRenameFromAndTo() async throws {
         try Data("hello\nworld\n".utf8).write(to: tempDir.appendingPathComponent("before.txt"))
         try git(["add", "."], in: tempDir)
         try git(["commit", "-m", "add before"], in: tempDir)
         try git(["mv", "before.txt", "after.txt"], in: tempDir)
         try Data("stray\n".utf8).write(to: tempDir.appendingPathComponent("stray.txt"))
 
-        let data = try dataOf(ToolNames.gitDiff, ["cached": true])
+        let data = try await dataOf(ToolNames.gitDiff, ["cached": true])
 
         let diff = try XCTUnwrap(data["diff"] as? String)
         XCTAssertTrue(diff.contains("rename from before.txt"), "got: \(diff)")
@@ -748,8 +748,8 @@ final class GitHandlerTailTests: XCTestCase {
     /// Boundary: a clean tree. Empty diff, zero files, and specifically NOT
     /// flagged as truncated — a spurious flag would tell the model to go looking
     /// for changes that do not exist.
-    func testGitDiff_cleanTree_returnsAnEmptyUntruncatedDiff() throws {
-        let result = try call(ToolNames.gitDiff, [:])
+    func testGitDiff_cleanTree_returnsAnEmptyUntruncatedDiff() async throws {
+        let result = try await call(ToolNames.gitDiff, [:])
 
         XCTAssertFalse(result.isError, "got: \(result.outputJSON)")
         let envelope = try envelopeOf(result)
@@ -777,13 +777,13 @@ final class GitHandlerTailTests: XCTestCase {
     ///
     /// RED: restore the single-spelling `isNotARepository` → `git_diff` fails on the
     /// guidance assertion, and `--no-index` shows up in the envelope.
-    func testReadTools_inANonGitFolder_allReturnTheSkipGitGuidance() throws {
+    func testReadTools_inANonGitFolder_allReturnTheSkipGitGuidance() async throws {
         let scratch = try makeScratchRepo(initializeGit: false)
 
         for tool in [
             ToolNames.gitStatus, ToolNames.gitLog, ToolNames.gitDiff, ToolNames.gitBranchList,
         ] {
-            let result = try call(
+            let result = try await call(
                 tool, [:], runtime: scratch.runtime, context: scratch.context)
             XCTAssertTrue(result.isError, "\(tool) must fail outside a repo: \(result.outputJSON)")
             XCTAssertTrue(
@@ -806,13 +806,13 @@ final class GitHandlerTailTests: XCTestCase {
     /// looks at the worktree. The reason must reach the model verbatim — a generic
     /// "git status failed" leaves it nothing to act on, and the not-a-repo guidance would
     /// be an actively wrong diagnosis for a repo that exists.
-    func testGitStatus_gitFailsForANonRepoReason_passesTheReasonThrough() throws {
+    func testGitStatus_gitFailsForANonRepoReason_passesTheReasonThrough() async throws {
         let config = tempDir.appendingPathComponent(".git/config")
         let original = try Data(contentsOf: config)
         defer { try? original.write(to: config) }
         try Data((String(decoding: original, as: UTF8.self) + "[core\nbogus\n").utf8).write(to: config)
 
-        let result = try call(ToolNames.gitStatus, [:])
+        let result = try await call(ToolNames.gitStatus, [:])
 
         XCTAssertTrue(result.isError, "got: \(result.outputJSON)")
         XCTAssertTrue(result.outputJSON.contains("COMMAND_FAILED"), "got: \(result.outputJSON)")
@@ -825,7 +825,7 @@ final class GitHandlerTailTests: XCTestCase {
     /// Same arm in `git_branch_list`, induced differently on purpose: an unreadable
     /// `refs/heads` leaves the repo and its config intact, so this proves the branch is the
     /// tool's own guard and not a shared config short-circuit.
-    func testGitBranchList_gitFailsForANonRepoReason_passesTheReasonThrough() throws {
+    func testGitBranchList_gitFailsForANonRepoReason_passesTheReasonThrough() async throws {
         let heads = tempDir.appendingPathComponent(".git/refs/heads")
         try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: heads.path)
         // Restored before tearDown, or the recursive delete of tempDir fails on the
@@ -835,7 +835,7 @@ final class GitHandlerTailTests: XCTestCase {
                 [.posixPermissions: 0o755], ofItemAtPath: heads.path)
         }
 
-        let result = try call(ToolNames.gitBranchList, [:])
+        let result = try await call(ToolNames.gitBranchList, [:])
 
         XCTAssertTrue(result.isError, "got: \(result.outputJSON)")
         XCTAssertTrue(result.outputJSON.contains("COMMAND_FAILED"), "got: \(result.outputJSON)")
@@ -852,11 +852,11 @@ final class GitHandlerTailTests: XCTestCase {
         _ args: [String: Any],
         runtime overrideRuntime: ToolRuntime? = nil,
         context overrideContext: ToolExecutionContext? = nil
-    ) throws -> ToolExecutionResult {
+    ) async throws -> ToolExecutionResult {
         let payload = try JSONSerialization.data(withJSONObject: args)
         let json = try XCTUnwrap(String(data: payload, encoding: .utf8))
         let calls = [StepToolCall(name: tool, argumentsJSON: json)]
-        let results = (overrideRuntime ?? runtime!)
+        let results = await (overrideRuntime ?? runtime!)
             .executeAll(context: overrideContext ?? context!, toolCalls: calls)
         return try XCTUnwrap(results.first, "runtime returned no result for \(tool)")
     }
@@ -877,8 +877,8 @@ final class GitHandlerTailTests: XCTestCase {
         _ args: [String: Any],
         runtime overrideRuntime: ToolRuntime? = nil,
         context overrideContext: ToolExecutionContext? = nil
-    ) throws -> [String: Any] {
-        let result = try call(
+    ) async throws -> [String: Any] {
+        let result = try await call(
             tool, args, runtime: overrideRuntime, context: overrideContext)
         XCTAssertFalse(result.isError, "expected success, got \(result.outputJSON)")
         let envelope = try envelopeOf(result)

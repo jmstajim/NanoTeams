@@ -21,6 +21,11 @@ extension EditableMessageTextView {
         /// reset `selectedRange` to `text.count` after every keystroke.
         private(set) var lastAppliedText: String = ""
 
+        /// Edge trigger for the `InputSurface.stamp` re-run in `updateNSView`. Without it this
+        /// view survived theme switches only because every one of its ten hosts happens to sit
+        /// under an `.id(activeTheme)` rebuild — a property of the call sites, not of the view.
+        var themeLatch = ThemeStampLatch()
+
         private(set) var textBinding: Binding<String>?
         private(set) var isFocusedBinding: Binding<Bool>?
         private(set) var onReturnKey: ((_ hasShift: Bool, _ hasCommand: Bool) -> Bool)?

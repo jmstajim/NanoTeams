@@ -124,7 +124,7 @@ final class AutovisorGoalAttachmentTests: NTMSOrchestratorTestBase, @unchecked S
 
         XCTAssertEqual(settings()?.autovisorGoalClips, ["remember this"])
         let task = try XCTUnwrap(sut.loadedTask(mgrID))
-        XCTAssertEqual(task.clippedTexts, ["remember this"])
+        XCTAssertEqual(task.clippedTexts.texts, ["remember this"])
         XCTAssertTrue(task.effectiveSupervisorBrief.contains("remember this"),
                       "the clip renders in the brief via clipSections")
     }
@@ -250,7 +250,7 @@ final class AutovisorGoalAttachmentTests: NTMSOrchestratorTestBase, @unchecked S
         XCTAssertEqual(task.supervisorTask, "Second goal")
         XCTAssertEqual(task.attachmentPaths, [staged.stagedRelativePath],
                        "attachments survive a goal-text edit")
-        XCTAssertEqual(task.clippedTexts, ["a clip"], "clips survive a goal-text edit")
+        XCTAssertEqual(task.clippedTexts.texts, ["a clip"], "clips survive a goal-text edit")
     }
 
     /// Clearing the attachment list re-mirrors to an empty path list on the manager.

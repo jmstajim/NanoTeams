@@ -288,10 +288,14 @@ nonisolated enum PlanningPhasePolicy {
     /// `discardedSupervisorMessages` exists for.
     ///
     /// **Property 2 is why `bash` is here, and why it is CONDITIONAL.** `bash` cannot be argued
-    /// safe by inspecting the command: `BashConstants.readOnlyPrograms` is a 60-name allowlist
-    /// that omits `find`, `git` and `python` while admitting `command` (so `command rm -rf x`
-    /// reads as read-only) and `yq` (which has an in-place `-i`). Fine as a basis for skipping a
-    /// review prompt; hopeless as a boundary invariant. The enforcement is the SANDBOX: while
+    /// safe by inspecting the command, and the reason survives any repair to the allowlist:
+    /// `BashConstants.readOnlyPrograms` decides by program NAME, while what a program is
+    /// CAPABLE of is decided by its ARGUMENTS. `rg` is the standing proof — read-only by name,
+    /// a command wrapper the moment `--pre=COMMAND` appears — which is why it is gated on its
+    /// flags rather than trusted or removed. Fine as a basis for skipping a review prompt;
+    /// hopeless as a boundary invariant, and no amount of curating the list changes that. The
+    /// examples this paragraph used to cite (`command`, `yq`) were live defects rather than
+    /// illustrations and were removed on 2026-08-25. The enforcement is the SANDBOX: while
     /// the phase is live `BashTool` rebuilds its Seatbelt profile from the user's own
     /// `BashSandboxPermissions` with every write scope forced off (`withWritesDisabled()`), so
     /// the write clause carries only dev-node literals and `(deny default)` refuses every real

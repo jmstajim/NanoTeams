@@ -418,7 +418,7 @@ final class IterationTerminalArmsCoverageTests: XCTestCase {
         // A real handler, so the call actually emits `.supervisorQuestion`.
         let registry = ToolRegistry()
         registry.register(name: ToolNames.askSupervisor) { context, args in
-            AskSupervisorTool().handle(context: context, args: args)
+            await AskSupervisorTool().handle(context: context, args: args)
         }
         let runtime = ToolRuntime(registry: registry, logger: nil)
 
@@ -754,11 +754,11 @@ final class EditFileBlankAnchorCoverageTests: XCTestCase {
     /// still succeeds, and this test stays green. Recorded rather than deleted:
     /// this line has now produced two false REDs, and the next reader should not
     /// derive a third.
-    func testEditFile_anchorOfOnlyBlankLines_isNotRewrittenAndStillMatches() throws {
+    func testEditFile_anchorOfOnlyBlankLines_isNotRewrittenAndStillMatches() async throws {
         let file = workDir.appendingPathComponent("a.txt")
         try "alpha\nbeta".write(to: file, atomically: true, encoding: .utf8)
 
-        let result = EditFileTool(
+        let result = await EditFileTool(
             resolver: SandboxPathResolver(workFolderRoot: workDir), fileManager: fm
         ).handle(
             context: ToolExecutionContext(workFolderRoot: workDir, taskID: 1, runID: 0, roleID: "r"),
@@ -782,11 +782,11 @@ final class EditFileBlankAnchorCoverageTests: XCTestCase {
     ///
     /// RED: delete the occurrence count from `EditFileTool`'s exact path → the first newline is
     /// rewritten and the call reports `ok:true`, `replacements_made: 1`.
-    func testEditFile_blankAnchorMatchingSeveralLineBreaks_refusesRatherThanPickingOne() throws {
+    func testEditFile_blankAnchorMatchingSeveralLineBreaks_refusesRatherThanPickingOne() async throws {
         let file = workDir.appendingPathComponent("b.txt")
         try "alpha\nbeta\n".write(to: file, atomically: true, encoding: .utf8)
 
-        let result = EditFileTool(
+        let result = await EditFileTool(
             resolver: SandboxPathResolver(workFolderRoot: workDir), fileManager: fm
         ).handle(
             context: ToolExecutionContext(workFolderRoot: workDir, taskID: 1, runID: 0, roleID: "r"),
@@ -807,11 +807,11 @@ final class EditFileBlankAnchorCoverageTests: XCTestCase {
     /// RED: make `stripLineNumberPrefixes` return its input unchanged → the
     /// gutter-carrying anchor no longer matches and the edit fails, which is the
     /// paste-from-`read_lines` case the helper was written for.
-    func testEditFile_gutterPrefixedAnchor_isStrippedAndMatches() throws {
+    func testEditFile_gutterPrefixedAnchor_isStrippedAndMatches() async throws {
         let file = workDir.appendingPathComponent("b.txt")
         try "let x = 1\nlet y = 2\n".write(to: file, atomically: true, encoding: .utf8)
 
-        let result = EditFileTool(
+        let result = await EditFileTool(
             resolver: SandboxPathResolver(workFolderRoot: workDir), fileManager: fm
         ).handle(
             context: ToolExecutionContext(workFolderRoot: workDir, taskID: 1, runID: 0, roleID: "r"),

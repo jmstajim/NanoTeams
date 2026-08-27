@@ -37,9 +37,44 @@ nonisolated final class ToolRuntime: @unchecked Sendable {
         self.networkLogger = networkLogger
     }
 
-    func executeAll(context: ToolExecutionContext, toolCalls: [StepToolCall])
+    /// How many read-only tool calls of one batch run at once.
+    ///
+    /// Small on purpose, and the reason is compounding rather than throughput: `search` is one
+    /// of the tools admitted here, and it fans its own scan out `SearchExecutor
+    /// .defaultScanConcurrency` wide. Four concurrent searches is therefore up to 32 files
+    /// resident at `maxSearchableFileBytes` apiece. A model emits a handful of calls per turn
+    /// and rarely two searches in one, so the width buys the realistic case (several
+    /// `read_file`s, or a read beside a `git_diff`) without authorising the pathological one.
+    static let readOnlyBatchConcurrency = 4
+
+    /// Whether this batch may run concurrently.
+    ///
+    /// Membership comes from `ToolHandlerRegistry.readOnlyTools`, which is DERIVED from
+    /// `ToolCategory` (`.fileRead` ∪ `.gitRead`) rather than listed here — so a read-only tool
+    /// added later joins automatically, and a tool that changes category leaves. A hand-list
+    /// would be a second home for "which tools only observe the work folder", and the one that
+    /// drifts (CLAUDE.md #51).
+    ///
+    /// `bash` is deliberately absent even though most invocations only read: membership is a
+    /// property of the TOOL, decided without seeing the command, and `bash` writes or does not
+    /// depending on the string. `readOnlyTools`' own doc records the same reasoning for the same
+    /// reason.
+    ///
+    /// A signal-emitting tool is NOT excluded, and `search` is one. Signals are consumed later,
+    /// in call order, by `LLMExecutionService+ToolResultProcessing` — running the handler that
+    /// produced one concurrently changes nothing about when or in what order it is handled.
+    private static func isParallelisable(_ toolCalls: [StepToolCall]) -> Bool {
+        toolCalls.count > 1 && toolCalls.allSatisfy {
+            ToolHandlerRegistry.readOnlyTools.contains(ToolRegistry.resolveToolName($0.name))
+        }
+    }
+
+    func executeAll(context: ToolExecutionContext, toolCalls: [StepToolCall]) async
         -> [ToolExecutionResult]
     {
+        if Self.isParallelisable(toolCalls) {
+            return await executeReadOnlyBatch(context: context, toolCalls: toolCalls)
+        }
         var results: [ToolExecutionResult] = []
         results.reserveCapacity(toolCalls.count)
         for (i, call) in toolCalls.enumerated() {
@@ -57,12 +92,68 @@ nonisolated final class ToolRuntime: @unchecked Sendable {
                 }
                 return results
             }
-            results.append(executeOne(context: context, call: call))
+            results.append(await executeOne(context: context, call: call))
         }
         return results
     }
 
-    private func executeOne(context: ToolExecutionContext, call: StepToolCall)
+    /// Runs a batch of read-only calls concurrently, returning results in CALL order.
+    ///
+    /// Order is not cosmetic. The caller interleaves these back against the model's emission
+    /// positions by index, and `MemoryTagStore` then stamps them — `<§R1§>`, `<§R2§>` — in that
+    /// same order. Tags are handles the model refers back to across turns, so a batch that
+    /// numbered them by whichever read finished first would mint a different transcript on every
+    /// run for identical inputs. The stamping itself stays where it was, sequential and outside
+    /// this class; all that is required here is that the array come back in the order it went in.
+    ///
+    /// Cancellation differs from the sequential path, deliberately. There, `Task.isCancelled` is
+    /// consulted BETWEEN handlers and every remaining call gets a cancel envelope. Here every
+    /// call has already started, so the check happens once, before any of them do; a cancel that
+    /// lands mid-batch reaches each handler through its own `Task.isCancelled` (these are child
+    /// tasks) and the ones that check it — `search` reads it per file — stop early on their own.
+    /// The 1:1 result-per-call mapping the caller's `freshIdx` walk depends on holds either way.
+    private func executeReadOnlyBatch(
+        context: ToolExecutionContext, toolCalls: [StepToolCall]
+    ) async -> [ToolExecutionResult] {
+        if Task.isCancelled {
+            return toolCalls.map {
+                makeCancelledResult(
+                    toolName: $0.name,
+                    argumentsJSON: $0.argumentsJSON,
+                    providerID: $0.providerID ?? UUID().uuidString)
+            }
+        }
+
+        // Collected as (index, result) pairs and sorted at the end rather than written into a
+        // pre-sized optional array. Same order, but no "and if a slot were somehow empty" arm:
+        // the loop adds exactly `toolCalls.count` tasks and drains the group, so an empty slot
+        // was unreachable — and an unreachable fallback is a branch nothing can ever exercise
+        // sitting on the path a reader traces to answer "what happens if a tool call vanishes".
+        var collected: [(index: Int, result: ToolExecutionResult)] = []
+        collected.reserveCapacity(toolCalls.count)
+        await withTaskGroup(of: (Int, ToolExecutionResult).self) { group in
+            var next = 0
+            let window = min(Self.readOnlyBatchConcurrency, toolCalls.count)
+            while next < window {
+                let index = next
+                group.addTask { (index, await self.executeOne(context: context, call: toolCalls[index])) }
+                next += 1
+            }
+            while let (index, result) = await group.next() {
+                collected.append((index, result))
+                if next < toolCalls.count {
+                    let queued = next
+                    group.addTask {
+                        (queued, await self.executeOne(context: context, call: toolCalls[queued]))
+                    }
+                    next += 1
+                }
+            }
+        }
+        return collected.sorted { $0.index < $1.index }.map(\.result)
+    }
+
+    private func executeOne(context: ToolExecutionContext, call: StepToolCall) async
         -> ToolExecutionResult
     {
         let name = ToolRegistry.resolveToolName(call.name)
@@ -109,7 +200,7 @@ nonisolated final class ToolRuntime: @unchecked Sendable {
         do {
             let rawParsedArgs = try parseAndNormalizeArguments(rawArgs)
             let args = unwrapReentrantEnvelope(rawParsedArgs, expectedToolName: name)
-            var result = try handler(context, args)
+            var result = try await handler(context, args)
             result.providerID = providerID
             logger?.append(baseRecord.withResult(result: result, durationMS: elapsedMS()))
             appendNetworkRecord(context: context, call: call, result: result, errorMessage: nil)

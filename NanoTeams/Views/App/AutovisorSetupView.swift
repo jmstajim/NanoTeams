@@ -178,7 +178,7 @@ struct AutovisorSetupView: View {
 // MARK: - Previews
 
 #Preview("Autovisor Setup — Fresh") {
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
+    @Previewable @State var store = PreviewStore.make()
     AutovisorSetupView()
         .environment(store)
         .environment(store.engineState)

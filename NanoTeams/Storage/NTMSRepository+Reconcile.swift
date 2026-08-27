@@ -21,8 +21,14 @@ import Foundation
 //  * Teams whose roles are actively executing (any `roleStatus` in
 //    `.working`/`.needsAcceptance`/`.revisionRequested`) are deferred so
 //    mid-run changes to `role.toolIDs` can't break tool-call authorization.
-//    The watermark (`state.lastAppliedAppVersion`) is NOT advanced when any
-//    team is deferred — next open retries.
+//    The watermark (`state.lastAppliedAppVersion`) ALWAYS advances — the
+//    outstanding work is carried in `state.pendingReconcileTeamIDs` instead,
+//    which `bootstrapIfNeeded` retries independently of the version compare.
+//    Holding the watermark back would force a full `.allTemplated` pass (and a
+//    fresh clobber of every other team's stored prompts) on every launch for as
+//    long as one team stayed busy. The advancing site is
+//    `NTMSRepository+Bootstrap.swift`'s version gate; the contract is pinned by
+//    `NTMSRepositoryReconcileDeferralTests` ("watermark must not flap").
 
 nonisolated extension NTMSRepository {
 

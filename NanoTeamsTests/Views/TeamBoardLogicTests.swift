@@ -231,4 +231,43 @@ final class TeamBoardLogicTests: XCTestCase {
     func testIsAutovisorBoard_differentIDs_false() {
         XCTAssertFalse(TeamBoardView.isAutovisorBoard(taskID: 3, autovisorTaskID: 7))
     }
+
+    // MARK: - isHistoricalRun / isFinalReviewStage
+    //
+    // Both were computed properties on the view until 2026-08-25, so neither had a test:
+    // `isHistoricalRun` was evaluated ~16 times per body pass and `isFinalReviewStage`
+    // twice, each re-deriving `displayedRun`. Extracting them for the hoist made them
+    // testable; the hoist ITSELF is pinned as wiring in `Ratchet/BodyPassHoistPinTests`,
+    // because no behavioural test can count body-pass evaluations (CLAUDE.md #57).
+
+    /// Either side missing means "not historical" — a board with no run yet must not
+    /// render the amber "viewing historical run" banner or disable its live actions.
+    func testIsHistoricalRun_falseWhenEitherSideIsMissing() {
+        XCTAssertFalse(TeamBoardView.isHistoricalRun(displayedRunID: nil, activeRunID: nil))
+        XCTAssertFalse(TeamBoardView.isHistoricalRun(displayedRunID: nil, activeRunID: 2))
+        XCTAssertFalse(TeamBoardView.isHistoricalRun(displayedRunID: 2, activeRunID: nil))
+    }
+
+    func testIsHistoricalRun_trueOnlyWhenTheSelectedRunIsNotTheLatest() {
+        XCTAssertFalse(TeamBoardView.isHistoricalRun(displayedRunID: 3, activeRunID: 3))
+        XCTAssertTrue(TeamBoardView.isHistoricalRun(displayedRunID: 1, activeRunID: 3))
+        XCTAssertTrue(TeamBoardView.isHistoricalRun(displayedRunID: 0, activeRunID: 1),
+                      "run ids start at 0, so run 0 vs run 1 must not be confused with "
+                          + "the nil case above")
+    }
+
+    /// A historical run is never in final-review stage: accepting from a past run would
+    /// close the task on evidence the user is not looking at.
+    func testIsFinalReviewStage_isGatedOnBothTaskAndLiveRun() {
+        XCTAssertFalse(TeamBoardView.isFinalReviewStage(task: nil, isHistoricalRun: false))
+        var task = NTMSTask(id: 1, title: "t", supervisorTask: "s")
+        task.runs = []
+        XCTAssertFalse(TeamBoardView.isFinalReviewStage(task: task, isHistoricalRun: true),
+                       "historical runs are read-only — the review sheet must not open "
+                           + "from one even when the task itself is ready")
+        XCTAssertEqual(TeamBoardView.isFinalReviewStage(task: task, isHistoricalRun: false),
+                       task.isReadyForFinalAcceptance,
+                       "on a live run the answer IS the task's own readiness; a second "
+                           + "opinion here would be a place for the two to drift")
+    }
 }

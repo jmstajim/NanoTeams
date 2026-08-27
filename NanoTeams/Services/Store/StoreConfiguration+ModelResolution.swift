@@ -89,6 +89,17 @@ extension StoreConfiguration {
         // always a live slot.
         insertOverrideSlot(teamGenLLMOverride, into: &slots)
 
+        // The benchmark's target model. Added 2026-08-25: it carries its own model name and
+        // base URL and belonged to NO slot list, so deleting a model the benchmark targets
+        // produced no warning at all — in either namespace, and even on an exact match. This
+        // enumeration is the SSOT precisely so that omission is impossible to repeat.
+        if let benchmarkTarget, !benchmarkTarget.modelName.isEmpty {
+            slots.insert(ModelSlotReference(
+                modelName: benchmarkTarget.modelName,
+                normalizedBase: benchmarkTarget.baseURLString.normalizedBaseURL
+            ))
+        }
+
         return slots
     }
 

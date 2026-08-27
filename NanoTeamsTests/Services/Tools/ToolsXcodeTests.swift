@@ -58,9 +58,9 @@ final class ToolsXcodeTests: XCTestCase {
 
     // MARK: - run_xcodebuild Tests
 
-    func testRunXcodebuild_noProjectFound() {
+    func testRunXcodebuild_noProjectFound() async {
         let call = StepToolCall(name: "run_xcodebuild", argumentsJSON: "{}")
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertTrue(results[0].isError)
@@ -78,7 +78,7 @@ final class ToolsXcodeTests: XCTestCase {
     ///
     /// RED: swap the two `first(where:)` clauses in `findProject` → the argv carries
     /// `-project`.
-    func testRunXcodebuild_prefersWorkspaceOverProject() throws {
+    func testRunXcodebuild_prefersWorkspaceOverProject() async throws {
         try fileManager.createDirectory(
             at: tempDir.appendingPathComponent("App.xcworkspace"),
             withIntermediateDirectories: true
@@ -90,7 +90,7 @@ final class ToolsXcodeTests: XCTestCase {
         try writeSelectedScheme("App")
         let runner = RecordingXcodebuildRunner(responses: [.ok("** BUILD SUCCEEDED **")])
 
-        _ = RunXcodebuildTool(workFolderRoot: tempDir, runner: runner)
+        _ = await RunXcodebuildTool(workFolderRoot: tempDir, runner: runner)
             .handle(context: context, args: [:])
 
         let argv = try XCTUnwrap(runner.calls.first?.arguments)
@@ -105,14 +105,14 @@ final class ToolsXcodeTests: XCTestCase {
     /// holds in both worlds, so it could not distinguish "reported the problem" from
     /// "auto-detected something and built it". Which one happened depended on a real
     /// subprocess.
-    func testRunXcodebuild_noSchemesConfigured() throws {
+    func testRunXcodebuild_noSchemesConfigured() async throws {
         try fileManager.createDirectory(
             at: tempDir.appendingPathComponent("App.xcodeproj"),
             withIntermediateDirectories: true
         )
         let runner = RecordingXcodebuildRunner(responses: [.failed(66)])
 
-        let result = RunXcodebuildTool(workFolderRoot: tempDir, runner: runner)
+        let result = await RunXcodebuildTool(workFolderRoot: tempDir, runner: runner)
             .handle(context: context, args: [:])
 
         XCTAssertTrue(result.isError, result.outputJSON)
@@ -125,9 +125,9 @@ final class ToolsXcodeTests: XCTestCase {
 
     // MARK: - run_xcodetests Tests
 
-    func testRunTests_noProjectFound() {
+    func testRunTests_noProjectFound() async {
         let call = StepToolCall(name: "run_xcodetests", argumentsJSON: "{}")
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertTrue(results[0].isError)
@@ -137,14 +137,14 @@ final class ToolsXcodeTests: XCTestCase {
     /// Same as the build side, with the tool-specific phrasing that tells the user which
     /// action they were trying to run. Also previously a pass-either-way disjunction over a
     /// real subprocess.
-    func testRunTests_noTestTargetsConfigured() throws {
+    func testRunTests_noTestTargetsConfigured() async throws {
         try fileManager.createDirectory(
             at: tempDir.appendingPathComponent("App.xcodeproj"),
             withIntermediateDirectories: true
         )
         let runner = RecordingXcodebuildRunner(responses: [.failed(66)])
 
-        let result = RunXcodetestsTool(workFolderRoot: tempDir, runner: runner)
+        let result = await RunXcodetestsTool(workFolderRoot: tempDir, runner: runner)
             .handle(context: context, args: [:])
 
         XCTAssertTrue(result.isError, result.outputJSON)

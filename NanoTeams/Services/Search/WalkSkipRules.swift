@@ -22,6 +22,8 @@ nonisolated enum WalkSkipRules {
     /// names here collide with an agent-instruction root (`claude.md`, `agents.md`, `gemini.md`,
     /// `.cursorrules`, `.github/…`, `.windsurfrules`) or a skill source (`.claude`, `.codex`,
     /// `.cursor`, `.gemini`, `.github`, `.windsurf`, `.opencode`, `.codeium`).
+    ///
+    /// They reach it through `shouldSkip(name:)`, not through this property — see the note there.
     static let skipped: Set<String> = [
         // VCS + macOS noise
         ".DS_Store", ".git", ".svn", ".hg",
@@ -46,4 +48,35 @@ nonisolated enum WalkSkipRules {
     /// should be searchable. `internal/` is already excluded at walk time
     /// via `SandboxPathResolver.isWithin(internalDir)`.
     static let skippedInsideNanoteamsDir: Set<String> = [".gitignore"]
+
+    /// Bundle EXTENSIONS skipped at any depth, whatever the bundle is named.
+    ///
+    /// `skipped` above cannot express these: it matches a bare name exactly, and these bundles
+    /// are named by whoever produced them — `latest.xcresult`, `Test-NanoTeams-2026.08.21….
+    /// xcresult`. Measured on this work folder: 76 474 files, **73% of everything the walk
+    /// enumerated**, live inside four `.xcresult` directories that no rule here matched.
+    ///
+    /// They satisfy the same criterion as the names above — an extension that could never
+    /// plausibly be a hand-authored source directory — and the payoff is not the walk but the
+    /// READ: a sequential grep of this folder measured 8.69 s with the old rules and 0.73 s
+    /// without those bundles, which is a bigger factor than the parallel scan buys.
+    static let skippedBundleExtensions: Set<String> = ["xcresult", "xcappdata"]
+
+    /// The one question every walk asks about an entry.
+    ///
+    /// A predicate rather than an exported set, because the rule stopped being expressible as
+    /// one: five subsystems consume it (`SearchExecutor`, `list_files`, `SearchIndexService`,
+    /// `AgentInstructionsScanner`, `AgentSkillsScanner`) and each used to write its own
+    /// `WalkSkipRules.skipped.contains(name)`. Adding the extension rule to a SET would have
+    /// meant editing five call sites to ask two questions instead of one, and the sixth walk
+    /// written next year would ask one — which is CLAUDE.md #51 exactly. Now a new rule lands
+    /// here and every walk gets it.
+    static func shouldSkip(name: String) -> Bool {
+        if skipped.contains(name) { return true }
+        // `pathExtension` and not `hasSuffix(".xcresult")`: the suffix form also matches a file
+        // literally named `.xcresult`, and it is the spelling that invites `hasSuffix("result")`
+        // in the next edit.
+        return skippedBundleExtensions.contains(
+            (name as NSString).pathExtension.lowercased())
+    }
 }

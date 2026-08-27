@@ -79,6 +79,10 @@ final class RoleControlTeamGenerationGuardTests: NTMSOrchestratorTestBase, @unch
             run.roleStatuses = [roleID: .done]
             task.runs = [run]
         }
+        // "Non-regression: an ordinary role" is the claim — so the role has to BE ordinary,
+        // i.e. on the roster. Hand-built runs bypass `findOrCreateStep`; see
+        // `registerRolesOnActiveTeam`.
+        await registerRoles([roleID], onTeamOf: taskID)
 
         await sut.restartRole(taskID: taskID, roleID: roleID, comment: "again please")
 

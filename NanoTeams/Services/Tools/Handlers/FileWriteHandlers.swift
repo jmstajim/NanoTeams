@@ -22,15 +22,16 @@ nonisolated struct WriteFileTool: ToolHandler {
     static let blockedInDefaultStorage = true
 
     let resolver: SandboxPathResolver
-    let fileManager: FileManager
+    // `nonisolated(unsafe)`: see `ToolHandlerDependencies.fileManager`.
+    nonisolated(unsafe) let fileManager: FileManager
 
     
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self {
         Self(resolver: dependencies.resolver, fileManager: dependencies.fileManager)
     }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let path = try requiredString(args, "path")
             let content = try requiredString(args, "content")
             let createDirs = optionalBool(args, "create_dirs", default: true)
@@ -99,15 +100,16 @@ nonisolated struct EditFileTool: ToolHandler {
     static let blockedInDefaultStorage = true
 
     let resolver: SandboxPathResolver
-    let fileManager: FileManager
+    // `nonisolated(unsafe)`: see `ToolHandlerDependencies.fileManager`.
+    nonisolated(unsafe) let fileManager: FileManager
 
     
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self {
         Self(resolver: dependencies.resolver, fileManager: dependencies.fileManager)
     }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let path = try requiredString(args, "path")
             // Both stay on `requiredString`, for DIFFERENT reasons. `new_text`
             // because replacing a span with nothing is how a deletion is spelled.
@@ -1148,15 +1150,16 @@ nonisolated struct DeleteFileTool: ToolHandler {
     static let blockedInDefaultStorage = true
 
     let resolver: SandboxPathResolver
-    let fileManager: FileManager
+    // `nonisolated(unsafe)`: see `ToolHandlerDependencies.fileManager`.
+    nonisolated(unsafe) let fileManager: FileManager
 
     
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self {
         Self(resolver: dependencies.resolver, fileManager: dependencies.fileManager)
     }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let path = try requiredString(args, "path")
             let mustExist = optionalBool(args, "must_exist", default: true)
 

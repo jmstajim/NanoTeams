@@ -483,6 +483,37 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
                       "Short-circuit branch must still surface skipped_binary_count. Envelope: \(env)")
     }
 
+    /// `skipped_files` is folded by reason in BOTH envelopes, not just the `search` tool's.
+    ///
+    /// The two are separate `Codable` bodies assembled at separate sites, so folding one and
+    /// forgetting the other is a defence at one site out of two. This branch is the easier
+    /// one to forget: it rebuilds a `SearchExecutorOutput` by hand from four named
+    /// arguments, so it silently keeps whatever shape it was written with.
+    func testShortCircuit_skippedFiles_areFoldedByReasonHereToo() async throws {
+        service._testRegisterStepTask(stepID: "step1", taskID: 1)
+        installScriptedIndex()
+        mock.scriptedExpansion = .expanded(terms: [])
+
+        for name in ["one.doc", "two.doc"] {
+            try Data("legacy".utf8).write(to: tempDir.appendingPathComponent(name))
+        }
+
+        var convo: [ChatMessage] = []
+        await service.appendExploratorySearchResult(
+            result: makeExploratorySearchToolResult(query: "scroll"),
+            toolCallID: UUID(),
+            stepID: "step1",
+            taskID: 1,
+            conversationMessages: &convo
+        )
+
+        let env = convo.first?.content ?? ""
+        XCTAssertTrue(env.contains("\"count\":2"),
+                      "two legacy .doc files must fold into one entry with a count: \(env)")
+        XCTAssertFalse(env.contains("\"path\":\"one.doc\""),
+                       "the per-file shape must not survive here: \(env)")
+    }
+
     // MARK: - I2: tracker records the finalized envelope, not the interim
 
     /// The interim `SearchTool` result carries `{"status":"exploring"}` — if

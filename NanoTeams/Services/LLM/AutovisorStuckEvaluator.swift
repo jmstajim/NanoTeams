@@ -18,10 +18,26 @@ nonisolated enum AutovisorStuckEvaluator {
     /// "diagnostic is meaningful iff stuck" invariant is unrepresentable-when-violated
     /// (no bool + correlated optionals). `wireRow` confines the LLM-facing
     /// `"loop"`/`"hang"` string to the boundary; the in-memory model switches on cases.
+    /// Which side of the first token a hang was observed on.
+    ///
+    /// A case rather than a field because the two cannot be true at once —
+    /// `processingStatus != nil` partitions the space (#95) — and it lives in the VERDICT
+    /// rather than in the wire vocabulary. `wireRow` still says `"hang"`: the manager's remedy
+    /// set does not differ (steer or restart), and the kind strings have a second home in the
+    /// manager prompt, so a third kind is #91 drift plus prompt budget for a distinction the
+    /// consumer cannot act on differently. What DOES differ is the advice weighting, and that
+    /// rides in the diagnostic.
+    nonisolated enum HangPhase: Equatable, Hashable {
+        /// A request is in flight and no generation delta has arrived — model load or prefill.
+        case beforeFirstToken
+        /// Tokens were flowing and stopped.
+        case duringGeneration
+    }
+
     enum StuckVerdict: Equatable, Hashable {
         case notStuck
         case loop(signal: LoopSignal)
-        case hang(diagnostic: String)
+        case hang(phase: HangPhase, diagnostic: String)
 
         var isStuck: Bool {
             if case .notStuck = self { return false }
@@ -37,7 +53,7 @@ nonisolated enum AutovisorStuckEvaluator {
             switch self {
             case .notStuck: return nil
             case .loop(let s): return ("loop", s.diagnostic)
-            case .hang(let d): return ("hang", d)
+            case .hang(_, let d): return ("hang", d)
             }
         }
     }
@@ -64,12 +80,23 @@ nonisolated enum AutovisorStuckEvaluator {
     /// turn pre-creating an empty `llmConversation` entry must not unblock the
     /// stale-tool-call check, and vice-versa). The live buffer is inherently current,
     /// so it is not recency-gated.
+    /// `processingStatus` is the role's live prompt-processing state, and it is exactly the fact
+    /// the pre-token budget needs: `LLMExecutionService+Streaming` sets `.indeterminate` for
+    /// EVERY provider right after `beginStreaming`, and the first thinking or content delta
+    /// clears it, so non-nil ⟺ a request is in flight with zero generation deltas.
+    ///
+    /// Chosen over the obvious alternative `hasStreamActivity[key] != true`, which is also nil
+    /// when there is no stream AT ALL — between LLM turns, or during synchronous tool
+    /// execution — and would hand the larger budget to windows that are not prefill. Same fact,
+    /// two possible sources, and only one has the right lifetime (#91).
     static func evaluate(
         step: StepExecution,
         now: Date,
         lastStreamActivityAt: Date?,
         liveStreamText: String? = nil,
+        processingStatus: PromptProcessingStatus? = nil,
         hangSeconds: TimeInterval = AutovisorConstants.stuckHangSeconds,
+        prefillHangSeconds: TimeInterval = AutovisorConstants.stuckPrefillHangSeconds,
         loopRecencySeconds: TimeInterval = AutovisorConstants.stuckLoopRecencySeconds
     ) -> StuckVerdict {
         // Guard 1 (state) + Guard 2 (delegation): a role parked on `delegate_to_team`
@@ -94,13 +121,15 @@ nonisolated enum AutovisorStuckEvaluator {
         // stale pre-revision history (retained by `resetStepForRevision`) is excluded —
         // the same guard the old per-mode `lastCall`/`lastMsg` recency checks provided.
         let cutoff = now.addingTimeInterval(-loopRecencySeconds)
-        let recentAssistant = step.llmConversation
-            .filter { $0.role == .assistant }
-            .suffix(5)
-            .map { (thinking: $0.thinking, content: $0.content, createdAt: $0.createdAt) }
-        let recentCalls = step.toolCalls
-            .suffix(DelegationConstants.repetitionMinIdenticalToolCalls + 5)
-            .map { (name: $0.name, argsJSON: $0.argumentsJSON, createdAt: $0.createdAt) }
+        // Same tail walk as the `commitStreaming` caller, from the same home: the
+        // eager `filter { $0.role == .assistant }` this replaces materialised the whole
+        // assistant history to take its last five (CLAUDE.md #51 — the class had
+        // exactly two members and both are here).
+        let recentAssistant = CommittedScanInputs.recentAssistantTurns(
+            in: step.llmConversation, limit: 5)
+        let recentCalls = CommittedScanInputs.recentToolCalls(
+            in: step.toolCalls,
+            limit: DelegationConstants.repetitionMinIdenticalToolCalls + 5)
         // Bound the tool-call scan at the last UNSOLICITED arrival. Both callers evaluate
         // MANAGED tasks, never the manager itself (`autovisorWatchableTasks` excludes it,
         // and `task_status` inspects another task), so the arrival here is the manager's
@@ -109,8 +138,8 @@ nonisolated enum AutovisorStuckEvaluator {
         // it was pointed at is reacting, not spinning — but the count only RESTARTS at the
         // arrival, so a role that is told something and then really does spin still fires.
         if let signal = LoopScanner.scanCommitted(
-            recentAssistant: Array(recentAssistant),
-            toolCalls: Array(recentCalls),
+            recentAssistant: recentAssistant,
+            toolCalls: recentCalls,
             cutoffDate: cutoff,
             informationBoundary: ConversationInformationBoundary.lastArrival(in: step.llmConversation),
             scope: .thinkingAndContent
@@ -118,13 +147,24 @@ nonisolated enum AutovisorStuckEvaluator {
             return .loop(signal: signal)
         }
 
-        // HANG — token silence. Guard 3: suppress while a tool is legitimately running.
+        // HANG — token silence. Guard 3 (tool in flight) stays FIRST and the ordering is
+        // load-bearing: an in-flight tool wins regardless of the pre-token window, and the
+        // ordering must not depend on the coincidence that a tool running between LLM turns has
+        // no processing status anyway.
         if !AutovisorStatus.hasToolInFlight(step: step) {
             let idle = AutovisorStatus.idleSeconds(
                 step: step, now: now, lastStreamActivityAt: lastStreamActivityAt
             )
-            if idle > Int(hangSeconds) {
-                return .hang(diagnostic: "no tokens or output for \(idle)s while running")
+            // Guard 4: before the first token the server may still be loading or prefilling and
+            // emits nothing, so the general budget is the wrong yardstick. A larger one, not
+            // silence — see `stuckPrefillHangSeconds` for why suppression was refused.
+            let preToken = processingStatus != nil
+            if idle > Int(preToken ? prefillHangSeconds : hangSeconds) {
+                return .hang(
+                    phase: preToken ? .beforeFirstToken : .duringGeneration,
+                    diagnostic: preToken
+                        ? "no tokens at all for \(idle)s — the request is in flight but the server has not produced its first token, so it may still be loading the model or processing the prompt"
+                        : "no tokens or output for \(idle)s while running")
             }
         }
 
@@ -138,7 +178,9 @@ nonisolated enum AutovisorStuckEvaluator {
         now: Date,
         lastStreamActivityAt: (String) -> Date?,
         liveStreamText: (String) -> String? = { _ in nil },
+        processingStatus: (String) -> PromptProcessingStatus? = { _ in nil },
         hangSeconds: TimeInterval = AutovisorConstants.stuckHangSeconds,
+        prefillHangSeconds: TimeInterval = AutovisorConstants.stuckPrefillHangSeconds,
         loopRecencySeconds: TimeInterval = AutovisorConstants.stuckLoopRecencySeconds
     ) -> StuckVerdict {
         guard let run = task.runs.last else { return .notStuck }
@@ -147,7 +189,9 @@ nonisolated enum AutovisorStuckEvaluator {
                 step: step, now: now,
                 lastStreamActivityAt: lastStreamActivityAt(step.id),
                 liveStreamText: liveStreamText(step.id),
+                processingStatus: processingStatus(step.id),
                 hangSeconds: hangSeconds,
+                prefillHangSeconds: prefillHangSeconds,
                 loopRecencySeconds: loopRecencySeconds
             )
             if verdict.isStuck { return verdict }

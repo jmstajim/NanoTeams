@@ -87,16 +87,14 @@ struct MainLayoutView: View {
             HStack(spacing: 0) {
                 // Custom flat sidebar — replaces NavigationSplitView's native column
                 // (whose vibrancy material can't be removed with a SwiftUI background).
+                // The trailing hairline is NOT drawn here. `SidebarView` draws it, byte for byte
+                // the same rectangle on the same edge, and the scroll indicator's knob now rides
+                // ON that line — so the line and the thing that has to line up with it belong to
+                // one file. Two copies of it stood here until 2026-08-23.
                 SidebarView(taskState: taskState, selectedItem: $selectedItem)
                     .frame(width: WindowLayout.sidebarIdealWidth)
                     .frame(maxHeight: .infinity)
                     .background(Colors.surfaceBackground.ignoresSafeArea())
-                    .overlay(alignment: .trailing) {
-                        Rectangle()
-                            .fill(Colors.borderSubtle)
-                            .frame(width: 1)
-                            .ignoresSafeArea()
-                    }
 
                 // Detail in a NavigationStack so detail toolbars / titles still work.
                 NavigationStack {
@@ -230,6 +228,7 @@ struct MainLayoutView: View {
             // this one still has to fire on every status change for Quick Capture.
             QuickCaptureController.shared.refreshPanelIfVisible()
         }
+        .modifier(RunStartPanelRefresh(initializingRunTaskIDs: engineState.initializingRunTaskIDs))
         .onChange(of: engineState.taskEngineStates) {
             // Single handler: refreshes the panel + drives queue flush. The controller
             // owns both concerns so the wiring is testable without mounting the view.
@@ -374,7 +373,7 @@ struct MainLayoutView: View {
 // MARK: - Preview
 
 #Preview {
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
+    @Previewable @State var store = PreviewStore.make()
     MainLayoutView()
         .environment(store)
         .environment(store.engineState)
@@ -382,4 +381,29 @@ struct MainLayoutView: View {
         .environment(store.streamingPreviewManager)
         .environment(FolderAccessManager())
         .frame(width: 1000, height: 700)
+}
+
+// MARK: - Run Start Panel Refresh
+
+/// Re-resolves the Quick Capture mode when a task's run start begins or ends, so the
+/// panel shows `Initializing…` for exactly as long as the phase lasts.
+///
+/// A `ViewModifier` rather than one more `.onChange` on `mainContent`: that chain is
+/// already at the type-checker's limit and adding a link to it fails the build with
+/// "unable to type-check this expression in reasonable time" (CLAUDE.md #10 is the same
+/// limit met from the other side, in array literals). Extracting the observer keeps the
+/// wiring where it is legible instead of splitting `mainContent` arbitrarily.
+///
+/// Panel refresh ONLY — deliberately not `handleEngineStateChanged()`, which also drives
+/// the queued-message flush. A flush targets a running step, and during a run start there
+/// is none; the transition to `.running` fires that observer on its own, which is where
+/// the flush belongs.
+private struct RunStartPanelRefresh: ViewModifier {
+    let initializingRunTaskIDs: Set<Int>
+
+    func body(content: Content) -> some View {
+        content.onChange(of: initializingRunTaskIDs) {
+            QuickCaptureController.shared.refreshPanelIfVisible()
+        }
+    }
 }

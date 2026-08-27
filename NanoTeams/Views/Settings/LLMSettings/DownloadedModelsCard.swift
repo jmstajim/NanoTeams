@@ -208,7 +208,18 @@ struct DownloadedModelsCard: View {
         // will target — the reference check is base-URL-keyed, so using the
         // live URL here would answer about a different server.
         let base = listing?.config.baseURLString ?? config.llmBaseURLString
-        if let warning = store.downloadedModelReferenceWarning(model, base: base) {
+        // ALL listed folders, not just this row: the resolver decides "could not determine" by
+        // asking whether an unmatched reference is unresolved GLOBALLY or merely resolved to a
+        // sibling folder. Passing one folder would report every sibling's reference as
+        // unresolved and caution on rows that are fine.
+        // The keys the SERVER reports, from the catalog the picker already fills. They are what
+        // keeps the caution off rows that are fine: a reference this server does not serve
+        // cannot be backed by a folder here. An empty catalog is `nil` — the server said
+        // nothing, which is a third state, not a no.
+        let served = modelCatalog.models(for: base, provider: listedProvider)
+        if let warning = store.downloadedModelReferenceWarning(
+            model, base: base, allFolders: models,
+            serverKeys: served.isEmpty ? nil : Set(served)) {
             parts.append(warning)
         }
         if let detail = deletion.confirmationDetail {

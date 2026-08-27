@@ -44,7 +44,8 @@ final class MessageComposerDefaultsTests: XCTestCase {
         let composer = MessageComposer(
             text: .constant(""),
             attachments: .constant([]),
-            clips: nil,
+            clips: .constant([]),
+            showsSkillsPicker: false,
             placeholder: "",
             canSubmit: false,
             isSubmitting: false,
@@ -99,8 +100,8 @@ final class MessageComposerDefaultsTests: XCTestCase {
         XCTAssertFalse(convenience.isEditorField)
 
         let memberwise = MessageComposer(
-            text: .constant(""), attachments: .constant([]), clips: nil,
-            placeholder: "", canSubmit: false, isSubmitting: false,
+            text: .constant(""), attachments: .constant([]), clips: .constant([]),
+            showsSkillsPicker: false, placeholder: "", canSubmit: false, isSubmitting: false,
             onSubmit: {}, onStageAttachment: { _ in nil }, onRemoveAttachment: { _ in },
             filePickerBinding: nil, autofocusOnAppear: false, minLineCount: 1
         ) { EmptyView() }
@@ -205,7 +206,8 @@ final class MessageComposerDefaultsTests: XCTestCase {
         let composer = MessageComposer(
             text: .constant(""),
             attachments: .constant([]),
-            clips: nil,
+            clips: .constant([]),
+            showsSkillsPicker: false,
             placeholder: "",
             canSubmit: false,
             isSubmitting: false,
@@ -223,5 +225,49 @@ final class MessageComposerDefaultsTests: XCTestCase {
             MessageComposerLayout.defaultMaxTextFieldHeight,
             "Memberwise-init default must read from MessageComposerLayout — TeamActivityComposer and any caller passing a custom settingsMenu reach this path, not the convenience init. See CLAUDE.md."
         )
+    }
+
+    // MARK: - Action bar cell vs the pane-anchored chrome estimate
+
+    /// `paneAnchoredFieldChrome` is documented as "action bar + content spacing + bottom padding",
+    /// and until the cell became `actionButtonSize` that first term was a literal written out at
+    /// seven sites across five view files — so the estimate could not be checked against its own
+    /// largest component at all.
+    ///
+    /// Asserted as a RELATION, not an equality: an equality on a constant restates the constant
+    /// and is vacuous. What is real is that the bar must fit inside the allowance the two
+    /// pane-anchored consumers subtract (`QuickCaptureFormLogic`, `TeamActivityComposer`) — grow
+    /// the cell past it and the field's top edge overshoots the host's midline with nothing red.
+    func testActionButtonCell_fitsInsideThePaneAnchoredChromeEstimate() {
+        let bar = MessageComposerLayout.actionButtonSize.height + Spacing.xs
+        XCTAssertLessThanOrEqual(
+            bar, MessageComposerLayout.paneAnchoredFieldChrome,
+            """
+            The action bar (\(bar)pt) no longer fits inside the chrome estimate \
+            (\(MessageComposerLayout.paneAnchoredFieldChrome)pt) that QuickCaptureFormLogic and \
+            TeamActivityComposer subtract from a half-pane. Raise paneAnchoredFieldChrome with it.
+            """)
+    }
+
+    /// The floor a heavily-collapsed host clamps to must still leave room for the bar plus usable
+    /// typing space — if the cell ever grew past the floor, the clamp would guarantee a field with
+    /// no lines in it.
+    func testActionButtonCell_leavesTypingRoomAtThePaneAnchoredFloor() {
+        let bar = MessageComposerLayout.actionButtonSize.height + Spacing.xs
+        XCTAssertLessThan(
+            bar, MessageComposerLayout.minPaneAnchoredFieldHeight,
+            "the action bar must stay well under the collapsed-host floor, or the clamp yields "
+                + "a field with no usable line height")
+    }
+
+    /// Width and height are distinct and non-degenerate — a `CGSize` typo (`.zero`, or both
+    /// dimensions the same by accident) would otherwise sail through every relation above.
+    func testActionButtonCell_isANonDegenerateCell() {
+        let cell = MessageComposerLayout.actionButtonSize
+        XCTAssertGreaterThan(cell.width, 0)
+        XCTAssertGreaterThan(cell.height, 0)
+        XCTAssertGreaterThanOrEqual(
+            cell.width, cell.height,
+            "the composer cell is wider than it is tall — a swapped CGSize reads as a portrait cell")
     }
 }

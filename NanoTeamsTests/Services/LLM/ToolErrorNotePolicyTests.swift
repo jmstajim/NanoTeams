@@ -243,7 +243,7 @@ final class ToolErrorNotePolicyTests: XCTestCase {
     /// RED: return the envelope's message again instead of `nil` → the non-duplication pin
     /// below fires.
     func testAnchorNotFound_typedDiagnosis_addsNothing() async throws {
-        let result = try runEdit(
+        let result = try await runEdit(
             fileContents: "let a = 1\nlet b = 2\nlet c = 3\nlet d = 4\nlet e = 5\n",
             oldText: "struct NeverExisted {\n    let x: Int\n}")
 
@@ -263,7 +263,7 @@ final class ToolErrorNotePolicyTests: XCTestCase {
     /// RED: give `interiorWhitespaceMismatch` `key: nil` → the legacy character-level
     /// steering reappears and this assertion fails.
     func testAnchorNotFound_interiorDiagnosis_addsNothing() async throws {
-        let result = try runEdit(
+        let result = try await runEdit(
             fileContents: "let s = a  + b;\nlet s = a   + b;\n",
             oldText: "let s = a + b;")
 
@@ -283,7 +283,7 @@ final class ToolErrorNotePolicyTests: XCTestCase {
     ///
     /// RED: append `details.hint` unconditionally → the last assertion fails.
     func testAnchorNotFound_legacyHint_isNotRestated_becauseTheEnvelopeCarriesIt() async throws {
-        let result = try runEdit(fileContents: "a\nb\n", oldText: "a\nb\nc\nd")
+        let result = try await runEdit(fileContents: "a\nb\n", oldText: "a\nb\nc\nd")
 
         XCTAssertTrue(
             result.outputJSON.contains("more lines (4) than the file (2)"),
@@ -337,7 +337,7 @@ final class ToolErrorNotePolicyTests: XCTestCase {
     ///
     /// RED: return the envelope's message again → the non-duplication pin below fires.
     func testAnchorAmbiguous_addsNothing_whenTheEnvelopeCarriesTheMessage() async throws {
-        let result = try runEdit(
+        let result = try await runEdit(
             fileContents: "m  \nn\nz\nm\t\nn\n", oldText: "m\nn", fileName: "amb.txt")
 
         XCTAssertTrue(result.outputJSON.contains("ANCHOR_AMBIGUOUS"), result.outputJSON)
@@ -469,10 +469,10 @@ final class ToolErrorNotePolicyTests: XCTestCase {
 
     /// Every representative envelope, in the shape production emits it, paired with the
     /// message the model reads one turn earlier.
-    private func nonDuplicationTable() throws -> [(label: String, envelope: ToolExecutionResult)] {
+    private func nonDuplicationTable() async throws -> [(label: String, envelope: ToolExecutionResult)] {
         let write = StepToolCall(
             name: "write_file", argumentsJSON: #"{"path":"a.swift","content":"x"}"#)
-        var rows: [(String, ToolExecutionResult)] = [
+        var rows: [(String, ToolExecutionResult)] = await [
             ("identical_write_loop",
              LLMExecutionService.makeIdenticalWriteLoopResult(call: write)),
             ("INVALID_ARGS", ToolExecutionResult(
@@ -530,9 +530,9 @@ final class ToolErrorNotePolicyTests: XCTestCase {
     /// which is why the per-arm nil tests above are not redundant with this one.
     ///
     /// RED: restore any arm's `"\(intro) …"` composition → this fires and names the arm.
-    func testNoDirectionRestatesItsEnvelopesMessage() throws {
+    func testNoDirectionRestatesItsEnvelopesMessage() async throws {
         var directionsEmitted = 0
-        let table = try nonDuplicationTable()
+        let table = try await nonDuplicationTable()
 
         for row in table {
             let message = try XCTUnwrap(
@@ -560,23 +560,22 @@ final class ToolErrorNotePolicyTests: XCTestCase {
     /// The three arms that add nothing must KEEP adding nothing. Named separately from the
     /// pin above because that one is satisfied by silence, and silence is exactly what a
     /// regression here would reintroduce noise into.
-    func testTheThreeSilentArms_staySilent() throws {
+    func testTheThreeSilentArms_staySilent() async throws {
         let planRequired = LLMExecutionService.makeUnavailableToolResult(
             call: StepToolCall(name: "edit_file", argumentsJSON: "{}"),
             canonicalName: "edit_file", scope: "for this role",
             reason: .withheldUntilPlanRecorded)
+        // Hoisted out of the assertion: `XCTAssertNil` takes an autoclosure, which is not an
+        // async context, so `await` cannot appear inside the parentheses.
+        let anchorNotFound = try await runEdit(
+            fileContents: "let a = 1\nlet b = 2\nlet c = 3\n",
+            oldText: "struct NeverExisted {}")
+        let anchorAmbiguous = try await runEdit(
+            fileContents: "m  \nn\nz\nm\t\nn\n", oldText: "m\nn", fileName: "amb.txt")
 
         XCTAssertNil(ToolErrorNotePolicy.direction(for: planRequired), "plan_required")
-        XCTAssertNil(
-            ToolErrorNotePolicy.direction(
-                for: try runEdit(fileContents: "let a = 1\nlet b = 2\nlet c = 3\n",
-                                 oldText: "struct NeverExisted {}")),
-            "ANCHOR_NOT_FOUND (typed)")
-        XCTAssertNil(
-            ToolErrorNotePolicy.direction(
-                for: try runEdit(fileContents: "m  \nn\nz\nm\t\nn\n", oldText: "m\nn",
-                                 fileName: "amb.txt")),
-            "ANCHOR_AMBIGUOUS")
+        XCTAssertNil(ToolErrorNotePolicy.direction(for: anchorNotFound), "ANCHOR_NOT_FOUND (typed)")
+        XCTAssertNil(ToolErrorNotePolicy.direction(for: anchorAmbiguous), "ANCHOR_AMBIGUOUS")
     }
 
     // MARK: - Helpers
@@ -590,7 +589,7 @@ final class ToolErrorNotePolicyTests: XCTestCase {
     @discardableResult
     private func runEdit(
         fileContents: String, oldText: String, fileName: String = "m.swift"
-    ) throws -> ToolExecutionResult {
+    ) async throws -> ToolExecutionResult {
         let fm = FileManager.default
         let tempDir = fm.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -610,7 +609,7 @@ final class ToolErrorNotePolicyTests: XCTestCase {
         let args: [String: Any] = ["path": fileName, "old_text": oldText, "new_text": "z"]
         let argsJSON = String(
             data: try JSONSerialization.data(withJSONObject: args), encoding: .utf8)!
-        let result = runtime.executeAll(
+        let result = await runtime.executeAll(
             context: context, toolCalls: [StepToolCall(name: "edit_file", argumentsJSON: argsJSON)])[0]
         XCTAssertTrue(result.isError, "precondition: the edit must fail — \(result.outputJSON)")
         return result

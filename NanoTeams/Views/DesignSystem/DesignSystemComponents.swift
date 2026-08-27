@@ -118,35 +118,6 @@ struct NTMSSearchEmptyState: View {
     }
 }
 
-// MARK: - Bordered Text Editor
-
-/// A view modifier that applies standard bordered styling to TextEditor.
-/// Eliminates the duplicated background + overlay pattern used across sheets.
-///
-/// Pass `minHeight` to reserve initial editor size (the previous
-/// `autovisorEditorStyle(minHeight:)` site — consolidated here so the
-/// recessed-input look is one primitive across sheets + Autovisor surfaces).
-struct BorderedTextEditorStyle: ViewModifier {
-    let minHeight: CGFloat?
-
-    init(minHeight: CGFloat? = nil) { self.minHeight = minHeight }
-
-    func body(content: Content) -> some View {
-        content
-            .scrollContentBackground(.hidden)
-            .frame(minHeight: minHeight)
-            .padding(Spacing.xs)
-            .background(
-                RoundedRectangle.squircle(CornerRadius.small)
-                    .fill(Colors.surfacePrimary)
-            )
-            .overlay(
-                RoundedRectangle.squircle(CornerRadius.small)
-                    .strokeBorder(Colors.borderSubtle, lineWidth: 1)
-            )
-    }
-}
-
 // MARK: - Info Tip
 
 /// ⓘ button that shows a help popover with explanatory text.
@@ -269,24 +240,7 @@ struct InfoTip: View {
     .background(Colors.surfacePrimary)
 }
 
-#Preview("Bordered Text Editor") {
-    @Previewable @State var text = "You are a software engineer focused on clean, testable code..."
-    TextEditor(text: $text)
-        .frame(height: 120)
-        .borderedTextEditorStyle()
-        .padding()
-        .frame(width: 400)
-        .background(Colors.surfacePrimary)
-}
-
 extension View {
-    /// Apply standard bordered styling to a TextEditor.
-    /// `minHeight` (optional) reserves initial editor height; the enclosing
-    /// `ScrollView` / `.frame(maxHeight:)` handles overflow.
-    func borderedTextEditorStyle(minHeight: CGFloat? = nil) -> some View {
-        modifier(BorderedTextEditorStyle(minHeight: minHeight))
-    }
-
     /// Card style: surfaceCard fill, near-sharp corners, 1px hairline box border.
     /// The terminal pane look — depth is the border, not a shadow.
     /// Used by settings views (WorkFolder, LLM, General) for consistent card appearance.

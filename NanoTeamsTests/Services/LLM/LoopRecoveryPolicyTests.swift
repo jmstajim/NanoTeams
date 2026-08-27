@@ -115,20 +115,74 @@ final class LoopRecoveryPolicyTests: XCTestCase {
 
     // MARK: - Nudge content
 
-    /// The nudge carries the diagnostic and the stable marker prefix, so the persisted
-    /// turn is identifiable in `wireTranscript` / the feed after the fact.
-    func testNudge_carriesMarkerScopeAndDiagnostic() {
+    /// The nudge carries the stable marker prefix — so the persisted turn is identifiable in
+    /// `wireTranscript` / the feed after the fact — and NOTHING authored for another audience.
+    ///
+    /// Re-aimed 2026-08-24 (CLAUDE.md #104). It used to assert the opposite of its second and
+    /// third lines: that the nudge carries `signal.diagnostic` and `signal.scope`. Both are
+    /// written for a HUMAN or for a delegating parent role — `diagnostic`'s own doc comment says
+    /// it is "suitable for the paused envelope's `supervisor_message`" — and quoting them at the
+    /// model is what shipped `(within-message)` and an 80-char slice of the model's own looping
+    /// text into the prompt. Those two facts are still pinned, on the surfaces that want them,
+    /// by `testTerminalText_carriesSignalDiagnostic`.
+    func testNudge_carriesTheMarker_butNotTheHumanFacingDiagnostic() {
         let s = LoopSignal.withinMessage(diagnostic: "period 233 x6")
         guard case .retryWithNudge(let nudge) = LoopRecoveryPolicy.decide(
             signal: s, breakCount: 1, maxRetries: 2,
             supervisorMode: .autonomous, isChatMode: true,
             canParkForSupervisor: false, roleName: "Autovisor")
         else { return XCTFail("expected a nudge") }
-        // `contains`, not `hasPrefix`: the marker now sits INSIDE a delimited block so
+        // `contains`, not `hasPrefix`: the marker sits INSIDE a delimited block so
         // it survives the providers' merge of consecutive user turns.
         XCTAssertTrue(nudge.contains(LoopRecoveryPolicy.nudgePrefix))
-        XCTAssertTrue(nudge.contains("period 233 x6"), "nudge carries the diagnostic")
-        XCTAssertTrue(nudge.contains(s.scope), "nudge carries the scope")
+        XCTAssertFalse(nudge.contains("period 233 x6"),
+                       "the diagnostic is the human/parent-facing rendering — the model gets the "
+                           + "SHAPE of the repetition, never a quote of what it repeated")
+        XCTAssertFalse(nudge.contains(s.scope),
+                       "`\(s.scope)` is an internal classification label mirrored for the "
+                           + "delegation envelope, not text written for the model")
+    }
+
+    /// The whole point of the correction is to break a repetition, and it rides the prefix of
+    /// every remaining request of the step (stateless transport, nothing prunes the
+    /// conversation). Echoing the repeated text back re-primes exactly what it is discarding.
+    ///
+    /// RED against the pre-fix production: the diagnostic was interpolated verbatim.
+    func testNudge_doesNotEchoTheLoopedTextBackIntoThePrompt() {
+        let looped = "Wait! Looking at the list again"
+        let s = LoopSignal.withinMessage(
+            diagnostic: "substring \"\(looped)\" repeated 4 times consecutively")
+        guard case .retryWithNudge(let nudge) = LoopRecoveryPolicy.decide(
+            signal: s, breakCount: 1, maxRetries: 2,
+            supervisorMode: .autonomous, isChatMode: true,
+            canParkForSupervisor: false, roleName: "R")
+        else { return XCTFail("expected a nudge") }
+        XCTAssertFalse(nudge.contains(looped),
+                       "the model's own looping text must not return to its prompt")
+        XCTAssertFalse(nudge.contains(s.diagnostic))
+    }
+
+    /// Each signal shape gets its own clause, so the correction says something true about what
+    /// happened without reading a string composed for someone else. All three still carry the
+    /// greppable marker.
+    func testNudge_describesEachSignalShapeDistinctly() {
+        let signals: [LoopSignal] = [
+            .withinMessage(diagnostic: "d1"),
+            .acrossMessages(diagnostic: "d2"),
+            .identicalToolCallSequence(diagnostic: "d3"),
+        ]
+        var texts: Set<String> = []
+        for s in signals {
+            guard case .retryWithNudge(let n) = LoopRecoveryPolicy.decide(
+                signal: s, breakCount: 1, maxRetries: 2,
+                supervisorMode: .autonomous, isChatMode: true,
+                canParkForSupervisor: false, roleName: "R")
+            else { return XCTFail("expected a nudge for \(s)") }
+            XCTAssertTrue(n.contains(LoopRecoveryPolicy.nudgePrefix), "\(s) lost the marker")
+            texts.insert(n)
+        }
+        XCTAssertEqual(texts.count, signals.count,
+                       "a shared clause would tell the model 'something repeated' and nothing more")
     }
 
     /// Both providers flatten consecutive user-side turns into one message, so an
@@ -141,9 +195,9 @@ final class LoopRecoveryPolicyTests: XCTestCase {
             canParkForSupervisor: false, roleName: "R")
         else { return XCTFail("expected a nudge") }
 
-        XCTAssertTrue(nudge.hasPrefix(LoopRecoveryPolicy.nudgeBlockOpen + "\n"),
+        XCTAssertTrue(nudge.hasPrefix(MessageSourceContext.loopCorrectionBlockOpen + "\n"),
                       "the open marker must start its own line")
-        XCTAssertTrue(nudge.hasSuffix("\n" + LoopRecoveryPolicy.nudgeBlockClose),
+        XCTAssertTrue(nudge.hasSuffix("\n" + MessageSourceContext.loopCorrectionBlockClose),
                       "the close marker must end on its own line")
     }
 
@@ -182,10 +236,54 @@ final class LoopRecoveryPolicyTests: XCTestCase {
 
     /// Per-role toolsets differ, so steering toward a named sibling tool earns a
     /// `tool_not_authorized` ping-pong for any role that lacks it.
+    ///
+    /// **The fixture is the incident** (CLAUDE.md #56, reading #3). This test used the
+    /// class-level `signal` — `.withinMessage(diagnostic: "looped")` — until 2026-08-24. The
+    /// nudge TEMPLATE names no tool, so the interpolated diagnostic is the only channel by
+    /// which one can arrive, and a diagnostic without a tool name is the one input that cannot
+    /// violate the property. Meanwhile production shipped this, quoting the model's own text:
+    ///
+    ///     substring "'s call `read_file` for `scripts/core/frame_diff.gd`. Wait!…"
+    ///
+    /// i.e. a tool name AND a path, steering the role straight back at what it was looping on.
     func testNudge_namesNoSiblingTool() {
-        guard case .retryWithNudge(let nudge) = decide(breakCount: 1) else { return XCTFail() }
+        let s = LoopSignal.withinMessage(
+            diagnostic: "substring \"'s call `read_file` for `scripts/core/frame_diff.gd`.  "
+                + "Wait! Looking at the lis…\" repeated 4 times consecutively")
+        // Anti-vacuum: without a tool name in the fixture this asserts nothing at all —
+        // which is precisely how the pre-2026-08-24 version stayed green over the defect.
+        XCTAssertTrue(ToolNames.allNames.contains { s.diagnostic.contains($0) },
+                      "the fixture must carry a tool name for this pin to mean anything")
+
+        guard case .retryWithNudge(let nudge) = LoopRecoveryPolicy.decide(
+            signal: s, breakCount: 1, maxRetries: 2,
+            supervisorMode: .autonomous, isChatMode: true,
+            canParkForSupervisor: false, roleName: "R")
+        else { return XCTFail("expected a nudge") }
         for tool in ToolNames.allNames {
             XCTAssertFalse(nudge.contains(tool), "nudge must not name the tool '\(tool)'")
+        }
+    }
+
+    /// …and the property is total across the three shapes, including the one whose signal IS
+    /// about a tool call. Naming it would be defensible (the role obviously holds a tool it
+    /// just called three times) but pointless: the model can see its own calls, and an
+    /// exception here is an exception the next reader has to re-derive.
+    func testNudge_namesNoSiblingTool_forEverySignalShape() {
+        let quoted = "called `read_file` with identical arguments"
+        for s: LoopSignal in [
+            .withinMessage(diagnostic: quoted),
+            .acrossMessages(diagnostic: quoted),
+            .identicalToolCallSequence(diagnostic: quoted),
+        ] {
+            guard case .retryWithNudge(let nudge) = LoopRecoveryPolicy.decide(
+                signal: s, breakCount: 1, maxRetries: 2,
+                supervisorMode: .autonomous, isChatMode: true,
+                canParkForSupervisor: false, roleName: "R")
+            else { return XCTFail("expected a nudge for \(s)") }
+            for tool in ToolNames.allNames {
+                XCTAssertFalse(nudge.contains(tool), "\(s.scope): nudge names the tool '\(tool)'")
+            }
         }
     }
 }

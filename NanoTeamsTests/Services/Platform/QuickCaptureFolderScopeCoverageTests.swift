@@ -175,7 +175,7 @@ final class QuickCaptureFolderScopeCoverageTests: NTMSOrchestratorTestBase, @unc
             return XCTFail("task creation failed")
         }
         formState.enterAnswerMode(payload: payload(taskID: taskID, question: "which credentials?"))
-        formState.answerClippedTexts = ["secret-ish clip"]
+        formState.answerClippedTexts = [Clip].minting(["secret-ish clip"])
         XCTAssertTrue(formState.isInAnswerMode, "precondition")
 
         await sut.openWorkFolder(folderB)

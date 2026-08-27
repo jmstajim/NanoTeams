@@ -90,7 +90,7 @@ final class QuickCaptureChatComposerBucketCoverageTests: XCTestCase {
 
         await sut.captureClipboardContent(mode: chatWorking)
 
-        XCTAssertEqual(sut.formState.answerClippedTexts, ["stack trace"],
+        XCTAssertEqual(sut.formState.answerClippedTexts.texts, ["stack trace"],
                        "the chat-working composer binds the answer buckets, so that is where a "
                            + "capture has to land to be visible at all")
         XCTAssertTrue(sut.formState.clippedTexts.isEmpty,
@@ -124,7 +124,7 @@ final class QuickCaptureChatComposerBucketCoverageTests: XCTestCase {
 
         await sut.captureClipboardContent(mode: .overlay)
 
-        XCTAssertEqual(sut.formState.clippedTexts, ["prose"])
+        XCTAssertEqual(sut.formState.clippedTexts.texts, ["prose"])
         XCTAssertTrue(sut.formState.answerClippedTexts.isEmpty)
     }
 
@@ -137,7 +137,7 @@ final class QuickCaptureChatComposerBucketCoverageTests: XCTestCase {
 
         await sut.captureClipboardContent(mode: loaderWorking)
 
-        XCTAssertEqual(sut.formState.clippedTexts, ["prose"])
+        XCTAssertEqual(sut.formState.clippedTexts.texts, ["prose"])
         XCTAssertTrue(sut.formState.answerClippedTexts.isEmpty)
     }
 
@@ -149,7 +149,7 @@ final class QuickCaptureChatComposerBucketCoverageTests: XCTestCase {
 
         await sut.captureClipboardContent(mode: answerMode())
 
-        XCTAssertEqual(sut.formState.answerClippedTexts, ["selected prose"])
+        XCTAssertEqual(sut.formState.answerClippedTexts.texts, ["selected prose"])
         XCTAssertTrue(sut.formState.clippedTexts.isEmpty)
     }
 
@@ -169,13 +169,13 @@ final class QuickCaptureChatComposerBucketCoverageTests: XCTestCase {
     func testDismiss_inChatWorkingMode_keepsWhatTheComposerWasHolding() {
         let sut = makeController()
         sut.formState.answerText = "have a look at this"
-        sut.formState.answerClippedTexts = ["the failing assertion"]
+        sut.formState.answerClippedTexts = [Clip].minting(["the failing assertion"])
 
         sut.dismissPanel()
 
         XCTAssertEqual(sut.formState.answerText, "have a look at this",
                        "unchanged — the text was never the half that got dropped")
-        XCTAssertEqual(sut.formState.answerClippedTexts, ["the failing assertion"],
+        XCTAssertEqual(sut.formState.answerClippedTexts.texts, ["the failing assertion"],
                        "a dismiss is not a submit and not a task switch; the composer content "
                            + "belongs to a task the panel will reopen onto")
     }
@@ -192,7 +192,7 @@ final class QuickCaptureChatComposerBucketCoverageTests: XCTestCase {
             stepID: "r", taskID: 7, role: .softwareEngineer, roleDefinition: nil,
             question: "which?", messageContent: nil, thinking: nil, isChatMode: true))
         sut.formState.answerText = "half an answer"
-        sut.formState.answerClippedTexts = ["clip"]
+        sut.formState.answerClippedTexts = [Clip].minting(["clip"])
 
         sut.dismissPanel()
 

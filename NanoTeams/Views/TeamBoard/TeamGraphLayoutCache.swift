@@ -202,7 +202,7 @@ struct TeamGraphLayoutCache {
     /// Wrapping ADDITION, not XOR: xor cancels duplicates, so `["a", "a"]` and
     /// `[]` would collide, and an artifact list is not a set.
     private static func unorderedHash<S: Sequence>(_ elements: S) -> Int
-    where S.Element: Hashable {
+        where S.Element: Hashable {
         var accumulator = 0
         for element in elements {
             var hasher = Hasher()

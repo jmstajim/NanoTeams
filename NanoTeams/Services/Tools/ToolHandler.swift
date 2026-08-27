@@ -24,7 +24,15 @@ nonisolated enum ToolCategory: String, Codable {
 nonisolated struct ToolHandlerDependencies {
     let workFolderRoot: URL
     let resolver: SandboxPathResolver
-    let fileManager: FileManager
+    /// The file manager every handler that touches disk stores a copy of.
+    ///
+    /// `nonisolated(unsafe)` there rather than `@unchecked Sendable` on the handler STRUCT, and
+    /// the difference is the point: the struct-wide escape would also silence the next stored
+    /// property somebody adds, which is the whole reason `ToolHandler: Sendable` exists. The
+    /// promise is narrow and checkable — production passes `.default` (a process-global whose
+    /// operations these handlers use are documented thread-safe) and tests pass an instance with
+    /// no delegate, which is the ONLY thing that makes `FileManager` unsafe to share.
+    nonisolated(unsafe) let fileManager: FileManager
     let internalDir: URL
     /// When `true`, `SearchTool` treats a missing `exploratory` argument as
     /// `true`. User preference, surfaced from `StoreConfiguration` at
@@ -90,7 +98,13 @@ nonisolated struct ToolHandlerDependencies {
 ///   enabling schema lookup before any work folder is opened (bootstrap, settings UI).
 /// - Instance `handle(context:args:)` captures per-registry state (sandbox resolver,
 ///   file manager, work folder root) via `makeInstance`.
-nonisolated protocol ToolHandler {
+/// `Sendable` because a handler instance is captured into the registry closure and invoked
+/// from whichever task runs the batch — including, since the tool batch went parallel, two at
+/// once. That was already true before the compiler could see it: `ToolRegistry` is
+/// `@unchecked Sendable` and `ToolRuntime.executeAll` runs inside `Task.detached`. Stating it
+/// here is what turns "shared mutable state in a handler" from a silent race into a build error
+/// (`MemoryTagStore` is the specimen — see its counter).
+nonisolated protocol ToolHandler: Sendable {
     static var name: String { get }
     static var schema: ToolSchema { get }
     static var category: ToolCategory { get }
@@ -115,7 +129,13 @@ nonisolated protocol ToolHandler {
 
     /// Executes the tool. Errors are caught inside via `ToolErrorHandler.execute`,
     /// so this method is non-throwing by contract.
-    func handle(context: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult
+    ///
+    /// `async` for the ONE tool that needs it: `search` fans its per-file scan out across a
+    /// task group. Every other body stays synchronous — an `async` requirement a sync body
+    /// satisfies costs nothing. The alternative (a sync requirement plus a bridge inside
+    /// `search`) would have blocked a cooperative-pool thread on a semaphore, which is the
+    /// deadlock shape this seam exists to avoid.
+    func handle(context: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult
 }
 
 nonisolated extension ToolHandler {

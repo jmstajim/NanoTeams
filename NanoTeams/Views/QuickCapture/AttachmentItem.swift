@@ -1,25 +1,5 @@
 import SwiftUI
 
-// MARK: - Attachment Item (unified file + clip for display)
-
-/// Unifies file attachments and clipped text snippets for display in a single grid.
-nonisolated enum AttachmentItem: Identifiable {
-    case file(StagedAttachment)
-    case clip(index: Int, text: String)
-
-    var id: String {
-        switch self {
-        case .file(let a): return "file-\(a.id)"
-        case .clip(let i, let text): return "clip-\(i)-\(text.prefix(40))"
-        }
-    }
-
-    static func merge(clips: [String], files: [StagedAttachment]) -> [AttachmentItem] {
-        clips.enumerated().map { .clip(index: $0.offset, text: $0.element) }
-            + files.map { .file($0) }
-    }
-}
-
 // MARK: - Clip Cell Presentation
 
 /// Pure resolver deciding how a `clippedTexts` entry renders. A single branch

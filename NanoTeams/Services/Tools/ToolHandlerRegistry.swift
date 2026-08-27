@@ -13,7 +13,9 @@ nonisolated enum ToolHandlerRegistry {
 
     /// Every built-in tool type, in display order. Add a new tool by appending here
     /// and creating a conforming `ToolHandler` struct — no other edits required.
-    nonisolated(unsafe) static let allTypes: [any ToolHandler.Type] = [
+    ///
+    /// No `nonisolated(unsafe)`: `ToolHandler` refines `Sendable`, so the metatype array is too.
+    static let allTypes: [any ToolHandler.Type] = [
         // File read (always available)
         ReadFileTool.self,
         ReadLinesTool.self,

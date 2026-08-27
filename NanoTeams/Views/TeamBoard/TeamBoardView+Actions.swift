@@ -6,10 +6,6 @@ import SwiftUI
 /// Extracted from TeamBoardView.swift to keep the main view file focused on layout + state.
 extension TeamBoardView {
 
-    func supervisorReviewArtifacts() -> [String] {
-        resolvedTeam.supervisorRequiredArtifacts
-    }
-
     func autoSelectAttentionRole(statuses: [String: RoleExecutionStatus]) {
         // Find first role that needs Supervisor attention (sorted for deterministic selection)
         if let roleID = statuses.keys.sorted().first(where: { statuses[$0] == .needsAcceptance }) {

@@ -22,7 +22,7 @@ struct WatchtowerNotificationBanner: View {
 
     @State var answerText = ""
     @State var answerAttachments: [StagedAttachment] = []
-    @State var answerClippedTexts: [String] = []
+    @State var answerClippedTexts: [Clip] = []
     @State var isSubmitting = false
 
     /// Inbox-card styling, 1:1 with the design's `INBOX_CFG`: a terminal glyph +

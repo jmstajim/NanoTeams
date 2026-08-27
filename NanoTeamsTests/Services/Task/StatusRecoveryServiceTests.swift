@@ -52,8 +52,30 @@ final class StatusRecoveryServiceTests: XCTestCase {
         return task
     }
 
-    private static let finalOnly = TeamSettings(defaultAcceptanceMode: .finalOnly)
-    private static let afterEachRole = TeamSettings(defaultAcceptanceMode: .afterEachRole)
+    /// `recoverStaleStatuses` takes the resolved TEAM (2026-08-25) rather than bare settings:
+    /// it needs the roster too, to strip role statuses whose role no longer exists.
+    ///
+    /// The roster here must COVER the fixture's role ids, because that is what production
+    /// looks like — a resolved team is the team those statuses came from. A team built with an
+    /// empty roster would make every fixture's roles read as deleted, which is a different test.
+    /// `RoleRosterGuardTests` owns the deletion case deliberately.
+    private static func team(
+        _ settings: TeamSettings,
+        roles: [String] = [
+            "software_engineer", "test_step", "softwareEngineer", "productManager",
+            "uxDesigner", "sre", "tpm", "r",
+        ]
+    ) -> Team {
+        var team = Team(name: "Recovery Fixture")
+        team.settings = settings
+        team.roles = roles.map {
+            TeamRoleDefinition(id: $0, name: $0, prompt: "", toolIDs: [], usePlanningPhase: false, dependencies: RoleDependencies())
+        }
+        return team
+    }
+
+    private static let finalOnly = team(TeamSettings(defaultAcceptanceMode: .finalOnly))
+    private static let afterEachRole = team(TeamSettings(defaultAcceptanceMode: .afterEachRole))
 
     // MARK: - Torn-pair Settling (the restart-review bug)
 
@@ -63,7 +85,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
     func testRecoverWorkingRoleWithDoneStep_settlesToDone() {
         var task = makePairedTask(stepStatus: .done, roleStatus: .working)
 
-        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: Self.finalOnly)
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
 
         XCTAssertTrue(changed)
         XCTAssertEqual(task.runs[0].roleStatuses["software_engineer"], .done)
@@ -76,7 +98,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
     func testRecoverIdleRoleWithDoneStep_settlesToDone_finalOnly() {
         var task = makePairedTask(stepStatus: .done, roleStatus: .idle)
 
-        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: Self.finalOnly)
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
 
         XCTAssertTrue(changed)
         XCTAssertEqual(task.runs[0].roleStatuses["software_engineer"], .done)
@@ -86,7 +108,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
     func testRecoverIdleRoleWithDoneStep_settlesToNeedsAcceptance_afterEachRole() {
         var task = makePairedTask(stepStatus: .done, roleStatus: .idle)
 
-        StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: Self.afterEachRole)
+        StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.afterEachRole)
 
         XCTAssertEqual(task.runs[0].roleStatuses["software_engineer"], .needsAcceptance)
         // A role awaiting acceptance surfaces the per-role Accept card, not final review.
@@ -100,7 +122,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
     func testRecoverIdleRoleWithNeedsApprovalStep_settlesToNeedsAcceptance() {
         var task = makePairedTask(stepStatus: .needsApproval, roleStatus: .idle)
 
-        StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: Self.finalOnly)
+        StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
 
         XCTAssertEqual(task.runs[0].roleStatuses["software_engineer"], .needsAcceptance)
         XCTAssertEqual(task.runs[0].steps[0].status, .needsApproval, "step must not be rewritten")
@@ -113,7 +135,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
     func testRecoverIdleRoleWithFailedStep_settlesToFailed() {
         var task = makePairedTask(stepStatus: .failed, roleStatus: .idle)
 
-        StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: Self.finalOnly)
+        StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
 
         XCTAssertEqual(task.runs[0].roleStatuses["software_engineer"], .failed)
         XCTAssertEqual(task.derivedStatusFromActiveRun(), .failed, "a failure must read as failed, not Working")
@@ -124,7 +146,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
     func testRecoverNilTeamSettings_defaultsToVisibleGate() {
         var task = makePairedTask(stepStatus: .done, roleStatus: .working)
 
-        StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: nil)
+        StatusRecoveryService.recoverStaleStatuses(in: &task, team: nil)
 
         XCTAssertEqual(task.runs[0].roleStatuses["software_engineer"], .needsAcceptance)
     }
@@ -134,7 +156,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
     func testRecoverRevisionRequestedRoleWithDoneStep_untouched() {
         var task = makePairedTask(stepStatus: .done, roleStatus: .revisionRequested)
 
-        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: Self.finalOnly)
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
 
         XCTAssertFalse(changed)
         XCTAssertEqual(task.runs[0].roleStatuses["software_engineer"], .revisionRequested)
@@ -145,7 +167,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
     func testRecoverNeedsAcceptanceRoleWithDoneStep_untouched_evenInFinalOnly() {
         var task = makePairedTask(stepStatus: .done, roleStatus: .needsAcceptance)
 
-        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: Self.finalOnly)
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
 
         XCTAssertFalse(changed)
         XCTAssertEqual(task.runs[0].roleStatuses["software_engineer"], .needsAcceptance)
@@ -160,7 +182,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
         var task = makePairedTask(stepStatus: .done, roleStatus: .working)
         task.status = .running
 
-        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: Self.finalOnly)
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
 
         XCTAssertTrue(changed)
         XCTAssertEqual(task.status, .running, "settling a finished pair is not a park")
@@ -170,7 +192,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
         var task = makePairedTask(stepStatus: .running, roleStatus: .working)
         task.status = .running
 
-        StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: Self.finalOnly)
+        StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
 
         XCTAssertEqual(task.status, .paused)
         XCTAssertEqual(task.runs[0].steps[0].status, .paused)
@@ -193,7 +215,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
         task.runs = [oldRun, newRun]
 
         // `.afterEachRole` is the mode that WOULD settle to `.needsAcceptance`.
-        StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: Self.afterEachRole)
+        StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.afterEachRole)
 
         XCTAssertEqual(task.runs[0].roleStatuses["r"], .done, "historical run settles, but not to a gate")
         XCTAssertTrue(
@@ -207,7 +229,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
     func testActiveRun_stillSettlesToNeedsAcceptance() {
         var task = makePairedTask(stepStatus: .done, roleStatus: .working)
 
-        StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: Self.afterEachRole)
+        StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.afterEachRole)
 
         XCTAssertEqual(task.runs[0].roleStatuses["software_engineer"], .needsAcceptance)
     }
@@ -217,11 +239,11 @@ final class StatusRecoveryServiceTests: XCTestCase {
     func testRecoveryIsIdempotent() {
         var task = makePairedTask(stepStatus: .done, roleStatus: .working)
 
-        XCTAssertTrue(StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: Self.finalOnly))
+        XCTAssertTrue(StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly))
         let afterFirst = task.updatedAt
 
         XCTAssertFalse(
-            StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: Self.finalOnly),
+            StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly),
             "a second launch must not churn the task"
         )
         XCTAssertEqual(task.updatedAt, afterFirst)
@@ -232,7 +254,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
     func testRecoverRunningStepsToPaused() {
         var task = makeTask(stepStatuses: [.running, .done, .pending])
 
-        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
 
         XCTAssertTrue(changed)
         XCTAssertEqual(task.runs[0].steps[0].status, .paused)
@@ -244,7 +266,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
     func testRecoverNeedsSupervisorInputStepsToPaused() {
         var task = makeTask(stepStatuses: [.needsSupervisorInput, .done])
 
-        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
 
         XCTAssertTrue(changed)
         XCTAssertEqual(task.runs[0].steps[0].status, .paused)
@@ -255,7 +277,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
     func testRecoverMultipleStaleSteps() {
         var task = makeTask(stepStatuses: [.running, .needsSupervisorInput, .running])
 
-        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
 
         XCTAssertTrue(changed)
         XCTAssertEqual(task.runs[0].steps[0].status, .paused)
@@ -275,7 +297,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
             ]
         )
 
-        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
 
         XCTAssertTrue(changed)
         XCTAssertEqual(task.runs[0].roleStatuses["softwareEngineer"], .idle)
@@ -297,7 +319,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
         )
         let originalStatus = task.status
 
-        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
 
         XCTAssertFalse(changed)
         XCTAssertEqual(task.status, originalStatus, "task.status should not change when no recovery needed")
@@ -307,7 +329,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
         var task = NTMSTask(id: 0, title: "Empty", supervisorTask: "Goal")
         task.runs = []
 
-        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
 
         XCTAssertFalse(changed)
     }
@@ -318,7 +340,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
         var task = makeTask(stepStatuses: [.running])
         task.setStoredChatMode(true)
 
-        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
 
         XCTAssertTrue(changed)
         XCTAssertEqual(task.status, .paused)
@@ -340,7 +362,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
             ]
         )
 
-        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
 
         XCTAssertFalse(changed)
         XCTAssertEqual(task.runs[0].steps[0].status, .done)
@@ -361,7 +383,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
         let originalTaskUpdatedAt = task.updatedAt
         let originalStepUpdatedAt = task.runs[0].steps[0].updatedAt
 
-        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
 
         XCTAssertTrue(changed)
         XCTAssertGreaterThan(task.updatedAt, originalTaskUpdatedAt)
@@ -373,7 +395,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
         var task = makeTask(stepStatuses: [.done, .pending])
         let originalUpdatedAt = task.updatedAt
 
-        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
 
         XCTAssertFalse(changed)
         XCTAssertEqual(task.updatedAt, originalUpdatedAt)
@@ -391,7 +413,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
         var task = NTMSTask(id: 0, title: "Multi-run", supervisorTask: "Goal")
         task.runs = [run1, run2]
 
-        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
 
         XCTAssertTrue(changed)
         XCTAssertEqual(task.runs[0].steps[0].status, .paused)
@@ -424,7 +446,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
 
     func testDestroyedGenerationRecord_withNoTeam_settlesToPaused() {
         var task = makeWedgedGenerationTask()
-        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
 
         XCTAssertTrue(changed)
         XCTAssertEqual(
@@ -443,7 +465,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
         XCTAssertEqual(
             task.derivedStatusFromActiveRun(), .running, "precondition: the wedge")
 
-        _ = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
+        _ = StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
         XCTAssertEqual(task.derivedStatusFromActiveRun(), .paused)
     }
 
@@ -452,7 +474,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
     /// reaches Review.
     func testDestroyedGenerationRecord_afterAdoption_settlesToDone() {
         var task = makeWedgedGenerationTask(generatedTeam: TeamTemplateFactory.startup())
-        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
 
         XCTAssertTrue(changed)
         XCTAssertEqual(task.runs[0].steps[0].status, .done)
@@ -470,7 +492,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
         var task = makeWedgedGenerationTask()
         task.runs.insert(older, at: 0)
 
-        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
 
         XCTAssertTrue(changed)
         for (index, run) in task.runs.enumerated() {
@@ -484,7 +506,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
     /// `.paused` already drives the derived status.
     func testDestroyedGenerationRecord_doesNotArmTheRecoveryPauseLatch() {
         var task = makeWedgedGenerationTask(phantomRoleStatus: nil)
-        _ = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
+        _ = StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
         XCTAssertNotEqual(task.status, .paused)
     }
 
@@ -494,7 +516,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
     func testHonestGenerationStepStatuses_areLeftAlone() {
         for status in [StepStatus.paused, .failed, .done] {
             var task = makeWedgedGenerationTask(stepStatus: status, phantomRoleStatus: nil)
-            _ = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
+            _ = StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
             XCTAssertEqual(task.runs[0].steps[0].status, status, "status \(status) was rewritten")
         }
     }
@@ -503,7 +525,7 @@ final class StatusRecoveryServiceTests: XCTestCase {
     /// `.paused` AND arms the latch — the settle must not intercept it.
     func testRunningGenerationStep_isParkedByTheOrdinaryPass_andArmsTheLatch() {
         var task = makeWedgedGenerationTask(stepStatus: .running, phantomRoleStatus: nil)
-        _ = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
+        _ = StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
         XCTAssertEqual(task.runs[0].steps[0].status, .paused)
         XCTAssertEqual(task.status, .paused, "genuinely interrupted work arms the latch")
     }
@@ -512,16 +534,208 @@ final class StatusRecoveryServiceTests: XCTestCase {
     /// never be settled — only the synthetic generation prefix qualifies.
     func testPendingStepOfARealRole_isUntouched() {
         var task = makePairedTask(stepStatus: .pending, roleStatus: .idle)
-        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
         XCTAssertFalse(changed)
         XCTAssertEqual(task.runs[0].steps[0].status, .pending)
     }
 
     func testDestroyedGenerationRecord_isIdempotent() {
         var task = makeWedgedGenerationTask()
-        XCTAssertTrue(StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default))
+        XCTAssertTrue(StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly))
         XCTAssertFalse(
-            StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default),
+            StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly),
             "a second pass has nothing left to do")
+    }
+
+    // MARK: - Interrupted delegation closure
+    //
+    // A `delegate_to_team` handler suspends on a continuation that cannot survive a process
+    // restart, while `step.delegation.activeChildID` — persisted — can. So at recovery time the
+    // marker is stale BY CONSTRUCTION, and its only clearers live inside the dead handler.
+    // Left set, it made `pauseRun` skip both the cancel and the park for a step the engine had
+    // meanwhile restarted: Pause reported `.paused` while a bash- and file-editing agent kept
+    // calling the LLM.
+
+    private func makeDelegatingTask(
+        stepStatus: StepStatus = .running,
+        childID: Int = 777,
+        wireTranscript: [ChatMessage] = [],
+        toolCalls: [StepToolCall] = []
+    ) -> NTMSTask {
+        var step = StepExecution(
+            id: "software_engineer", role: .softwareEngineer, title: "Step", status: stepStatus,
+            toolCalls: toolCalls, llmConversation: [LLMMessage(role: .assistant, content: "delegating")]
+        )
+        step.setActiveDelegation(childID: childID)
+        step.wireTranscript = wireTranscript
+        let run = Run(id: 0, steps: [step], roleStatuses: ["software_engineer": .working])
+        var task = NTMSTask(id: 0, title: "T", supervisorTask: "Goal")
+        task.runs = [run]
+        return task
+    }
+
+    /// RED: drop `clearActiveDelegation()` → the recovered step still reports child #777, and
+    /// `pauseRun` keeps skipping it forever.
+    func testRecover_midDelegationStep_clearsTheActiveMarker() {
+        var task = makeDelegatingTask()
+        StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
+        XCTAssertNil(task.runs[0].steps[0].activeDelegationChildID)
+    }
+
+    /// RED: reset the whole `delegation` struct instead of calling the mutator → `history`
+    /// loses 777, and the graph's completed-delegation layer for that child disappears.
+    func testRecover_midDelegationStep_preservesTheDelegationHistory() {
+        var task = makeDelegatingTask()
+        StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
+        XCTAssertEqual(task.runs[0].steps[0].delegationChildIDs, [777],
+                       "the audit trail must survive the clear")
+    }
+
+    /// RED: skip the `llmConversation` append → the tail is still the assistant turn, so a
+    /// replay rebuilt from the display record shows the model its own `delegate_to_team` call
+    /// with nothing after it.
+    func testRecover_midDelegationStep_appendsTheClosureToLLMConversation() {
+        var task = makeDelegatingTask()
+        StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
+
+        let last = task.runs[0].steps[0].llmConversation.last
+        XCTAssertEqual(last?.role, .tool)
+        XCTAssertTrue(last?.content.contains("DELEGATION_INTERRUPTED") ?? false,
+                      "got: \(last?.content ?? "nil")")
+    }
+
+    /// RED: emit the bare envelope without the `[CALL] …` header → the message no longer names
+    /// what it answers, and the replayed transcript (which typically does NOT contain the call)
+    /// reads as an unattributed error.
+    func testRecover_closureNamesTheToolAndTheChild() {
+        var task = makeDelegatingTask()
+        StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
+
+        let content = task.runs[0].steps[0].llmConversation.last?.content ?? ""
+        XCTAssertTrue(content.contains("delegate_to_team"), "must name the tool: \(content)")
+        XCTAssertTrue(content.contains("777"), "must name the child: \(content)")
+    }
+
+    /// RED: skip the `wireTranscript` append → `ConversationReplay.resume` prefers the
+    /// transcript branch, replays it unchanged, and the closure never reaches the model.
+    func testRecover_nonEmptyWireTranscript_gainsTheClosure() {
+        var task = makeDelegatingTask(
+            wireTranscript: [ChatMessage(role: .user, content: "do the thing")])
+        StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
+
+        XCTAssertEqual(task.runs[0].steps[0].wireTranscript.count, 2)
+        XCTAssertEqual(task.runs[0].steps[0].wireTranscript.last?.role, .tool)
+    }
+
+    /// RED: append unconditionally → a one-message transcript that is just a tool result is
+    /// PREFERRED by `ConversationReplay.resume` over rebuilding from the display record, so the
+    /// entire conversation is discarded. Empty is the normal case here: the delegation await has
+    /// no `persistWireTranscript` arm.
+    func testRecover_emptyWireTranscript_staysEmpty() {
+        var task = makeDelegatingTask(wireTranscript: [])
+        StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
+        XCTAssertTrue(task.runs[0].steps[0].wireTranscript.isEmpty)
+    }
+
+    /// RED: skip the `StepToolCall` reflect → the card spins on `{"status":"pending"}` forever
+    /// and the human never learns the delegation died.
+    func testRecover_pendingDelegationCard_flipsToTheInterruptedEnvelope() {
+        var task = makeDelegatingTask(toolCalls: [
+            StepToolCall(name: ToolNames.delegateToTeam, argumentsJSON: "{}",
+                         resultJSON: "{\"status\":\"pending\"}")
+        ])
+        StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
+
+        let call = task.runs[0].steps[0].toolCalls.last
+        XCTAssertTrue(call?.isError ?? false, "the card must read as failed")
+        XCTAssertTrue(call?.resultJSON?.contains("DELEGATION_INTERRUPTED") ?? false,
+                      "got: \(call?.resultJSON ?? "nil")")
+    }
+
+    /// RED: nest the delegation pass inside the `.running` / `.needsSupervisorInput` branch →
+    /// a `.failed` step keeps its marker and stays permanently unrevivable, because
+    /// `resumeRun`'s revival guard refuses a failed step that still owns a delegation.
+    func testRecover_failedStepOwningAMarker_isAlsoCleared() {
+        var task = makeDelegatingTask(stepStatus: .failed)
+        StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
+        XCTAssertNil(task.runs[0].steps[0].activeDelegationChildID)
+    }
+
+    /// RED: set `parked = true` from the delegation pass → a task whose only repair was a
+    /// marker clear latches `task.status = .paused`, permanently arming the guard in
+    /// `derivedStatusFromActiveRun`.
+    ///
+    /// FIXTURE: the step is `.failed`, so the step-status pass above does NOT park it and
+    /// cannot arm the latch on this pass's behalf (CLAUDE.md #93 — a neighbour that arms the
+    /// same flag would catch the mutation on someone else's merit).
+    func testRecover_markerClearOnly_doesNotArmTheRecoveryPauseLatch() {
+        var task = makeDelegatingTask(stepStatus: .failed)
+        task.status = .running
+        StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
+        XCTAssertNotEqual(task.status, .paused,
+                          "nothing was interrupted — the latch would be a durable lie")
+    }
+
+    /// RED: drop the `activeDelegationChildID != nil` guard → a step that never delegated gains
+    /// a DELEGATION_INTERRUPTED tool result out of nowhere.
+    func testRecover_stepWithNoDelegation_isUntouched() {
+        var task = makePairedTask(stepStatus: .done, roleStatus: .done)
+        let before = task.runs[0].steps[0].llmConversation.count
+        StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
+        XCTAssertEqual(task.runs[0].steps[0].llmConversation.count, before)
+    }
+
+    /// RED: scope the delegation pass to the ACTIVE run → a superseded run renders a live
+    /// "delegating…" layer in run history forever.
+    func testRecover_historicalRunMarker_isAlsoCleared() {
+        var task = makeDelegatingTask()
+        task.runs.append(Run(id: 1, steps: [], roleStatuses: [:]))
+        StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
+        XCTAssertNil(task.runs[0].steps[0].activeDelegationChildID)
+    }
+
+    // MARK: - Orphan role statuses (roster strip)
+
+    /// RED: delete the roster-strip pass → the orphan survives the launch, `allRolesComplete`
+    /// (which iterates definitions) never sees it, and `derivedStatusFromActiveRun`'s `.done`
+    /// arm — which reads `roleStatuses` raw — pins the task at "Working" forever.
+    func testRecover_orphanRoleStatus_isStripped() {
+        var task = makePairedTask(stepStatus: .done, roleStatus: .done)
+        // No roster entry AND no step — nothing produced it, nothing can advance it.
+        task.runs[0].roleStatuses["deleted_role"] = .revisionRequested
+
+        StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
+
+        XCTAssertNil(task.runs[0].roleStatuses["deleted_role"])
+        XCTAssertNotNil(task.runs[0].roleStatuses["software_engineer"],
+                        "a role that IS on the roster must survive")
+    }
+
+    /// RED: treat a nil roster as an empty one → every role status on a task pinned to a
+    /// deleted team is stripped and the task silently reads Done (CLAUDE.md #97 — "could not
+    /// resolve" is not "not referenced").
+    func testRecover_unresolvableTeam_stripsNothing() {
+        var task = makePairedTask(stepStatus: .done, roleStatus: .done)
+        task.runs[0].roleStatuses["deleted_role"] = .revisionRequested
+
+        StatusRecoveryService.recoverStaleStatuses(in: &task, team: nil)
+
+        XCTAssertEqual(task.runs[0].roleStatuses["deleted_role"], .revisionRequested)
+    }
+
+    /// The safety half, and the reason the strip is NARROWER than D-13 asked for: a role WITH
+    /// a step really did run, so its status is a record of work. Deleting it because today's
+    /// roster no longer lists that role would destroy durable state on a heuristic — a task can
+    /// outlive a rename or a team edit. The D-13 shape is closed at the WRITE instead.
+    ///
+    /// RED: drop the `!stepIDsInRun.contains(roleID)` condition → this fails, and with it ~30
+    /// suites across the tree whose runs legitimately carry a role the active roster lacks.
+    func testRecover_offRosterRoleWithAStep_isNOTStripped() {
+        var task = makePairedTask(roleID: "ran_but_not_on_roster", stepStatus: .done, roleStatus: .done)
+
+        StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
+
+        XCTAssertNotNil(task.runs[0].roleStatuses["ran_but_not_on_roster"],
+                        "a role that RAN keeps its status even when the roster moved on")
     }
 }

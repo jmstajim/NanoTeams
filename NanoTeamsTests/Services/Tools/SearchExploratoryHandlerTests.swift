@@ -46,8 +46,8 @@ final class SearchExploratoryHandlerTests: XCTestCase {
 
     // MARK: - exploratory=true → signal
 
-    func testExpandTrue_emitsExploratorySearchSignal() {
-        let result = makeTool().handle(
+    func testExpandTrue_emitsExploratorySearchSignal() async {
+        let result = await makeTool().handle(
             context: ctx(),
             args: ["query": "scroll", "exploratory": true]
         )
@@ -59,8 +59,8 @@ final class SearchExploratoryHandlerTests: XCTestCase {
         XCTAssertFalse(result.isError)
     }
 
-    func testExploratoryTrue_placeholderEnvelopeMarksExploring() {
-        let result = makeTool().handle(
+    func testExploratoryTrue_placeholderEnvelopeMarksExploring() async {
+        let result = await makeTool().handle(
             context: ctx(),
             args: ["query": "scroll", "exploratory": true]
         )
@@ -68,8 +68,8 @@ final class SearchExploratoryHandlerTests: XCTestCase {
         XCTAssertTrue(result.outputJSON.contains("exploring"))
     }
 
-    func testExpandTrue_passesThroughParameters() {
-        let result = makeTool().handle(
+    func testExpandTrue_passesThroughParameters() async {
+        let result = await makeTool().handle(
             context: ctx(),
             args: [
                 "query": "scroll",
@@ -99,11 +99,11 @@ final class SearchExploratoryHandlerTests: XCTestCase {
 
     // MARK: - expand missing / false → plain search
 
-    func testExpandFalse_runsPlainSearch() throws {
+    func testExpandFalse_runsPlainSearch() async throws {
         let fileURL = tempDir.appendingPathComponent("a.swift")
         try "target here\n".write(to: fileURL, atomically: true, encoding: .utf8)
 
-        let result = makeTool().handle(
+        let result = await makeTool().handle(
             context: ctx(),
             args: ["query": "target", "exploratory": false]
         )
@@ -112,11 +112,11 @@ final class SearchExploratoryHandlerTests: XCTestCase {
         XCTAssertTrue(result.outputJSON.contains("\"matches\""))
     }
 
-    func testExpandMissing_runsPlainSearch() throws {
+    func testExpandMissing_runsPlainSearch() async throws {
         let fileURL = tempDir.appendingPathComponent("a.swift")
         try "target here\n".write(to: fileURL, atomically: true, encoding: .utf8)
 
-        let result = makeTool().handle(
+        let result = await makeTool().handle(
             context: ctx(),
             args: ["query": "target"]
         )
@@ -127,11 +127,11 @@ final class SearchExploratoryHandlerTests: XCTestCase {
     /// User toggle "Default `search` calls to exploratory" is plumbed through
     /// `ToolHandlerDependencies.searchExploratoryByDefault`. When ON, a missing
     /// `exploratory` arg is treated as `true` and the handler emits a signal.
-    func testExpandMissing_withExploratoryByDefault_emitsSignal() throws {
+    func testExpandMissing_withExploratoryByDefault_emitsSignal() async throws {
         let fileURL = tempDir.appendingPathComponent("a.swift")
         try "target here\n".write(to: fileURL, atomically: true, encoding: .utf8)
 
-        let result = makeTool(exploratoryByDefault: true).handle(
+        let result = await makeTool(exploratoryByDefault: true).handle(
             context: ctx(),
             args: ["query": "target"]
         )
@@ -142,11 +142,11 @@ final class SearchExploratoryHandlerTests: XCTestCase {
     }
 
     /// Explicit `exploratory: false` always wins over the user-toggle default.
-    func testExpandFalseExplicit_withExploratoryByDefault_runsPlainSearch() throws {
+    func testExpandFalseExplicit_withExploratoryByDefault_runsPlainSearch() async throws {
         let fileURL = tempDir.appendingPathComponent("a.swift")
         try "target here\n".write(to: fileURL, atomically: true, encoding: .utf8)
 
-        let result = makeTool(exploratoryByDefault: true).handle(
+        let result = await makeTool(exploratoryByDefault: true).handle(
             context: ctx(),
             args: ["query": "target", "exploratory": false]
         )
@@ -156,8 +156,8 @@ final class SearchExploratoryHandlerTests: XCTestCase {
 
     /// The old `expand` key is retired (pre-release rename). Asserting
     /// its absence ensures we don't accidentally re-introduce a silent alias.
-    func testLegacyExploratorySearchKey_isIgnored() {
-        let result = makeTool().handle(
+    func testLegacyExploratorySearchKey_isIgnored() async {
+        let result = await makeTool().handle(
             context: ctx(),
             args: ["query": "scroll", "exploratory_search": true]
         )

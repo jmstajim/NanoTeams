@@ -61,7 +61,7 @@ nonisolated struct ToolCallAccumulator {
     /// pair pays an exact `arguments` compare (hash collisions must not fabricate
     /// a duplicate — a wrong `true` here aborts the model's stream mid-envelope).
     /// This is the per-delta HALF of duplicate detection: the canonical half
-    /// (whitespace / key-order differences) runs behind a `StreamScanCadenceGate`
+    /// (whitespace / key-order differences) runs behind a `StreamProbeGate`
     /// at the call site, because no O(1) signature can over-approximate JSON
     /// canonical equality.
     var hasRawDuplicate: Bool {

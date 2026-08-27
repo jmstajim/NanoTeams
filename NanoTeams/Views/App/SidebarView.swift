@@ -106,6 +106,7 @@ struct SidebarView: View {
                 get: { taskState.taskToRename != nil },
                 set: { if !$0 { taskState.cancelRename() } }
             )) {
+                // ds:allow-custom-input native .alert accessory — SwiftUI owns this field's chrome
                 TextField("Task name", text: $taskState.renameText)
                 Button("Rename") { Task { await taskState.confirmRename(store: store) } }
                 Button("Cancel", role: .cancel) { taskState.cancelRename() }
@@ -184,7 +185,8 @@ struct SidebarView: View {
             summaries: store.taskSummaries(filter: .all),
             seenSupervisorInputTaskIDs: taskState.seenSupervisorInputTaskIDs,
             bashApprovalTaskIDs: Set(store.bashApprovalRequests.keys.map(\.taskID)),
-            engineStates: engineState.taskEngineStates
+            engineStates: engineState.taskEngineStates,
+            initializingTaskIDs: engineState.initializingRunTaskIDs
         )
     }
 
@@ -420,6 +422,9 @@ struct SidebarView: View {
                 .foregroundStyle(Colors.accent)
                 .accessibilityHidden(true)
 
+            // An accent bottom hairline IS the chrome here, deliberately not a box — see the
+            // doc comment on `expandedSearchField`.
+            // ds:allow-custom-input vim-`/` prompt line, deliberately unboxed
             TextField("search…", text: $taskState.taskSearchText)
                 .textFieldStyle(.plain)
                 .font(Typography.termSm)
@@ -756,7 +761,7 @@ private func makePreviewStore(
     tasks: [TaskSummary] = [],
     activeTaskID: Int? = nil
 ) -> NTMSOrchestrator {
-    let s = NTMSOrchestrator(repository: NTMSRepository())
+    let s = PreviewStore.make()
     s.workFolderURL = folder
     if !tasks.isEmpty {
         s.snapshot = WorkFolderContext(
@@ -815,7 +820,7 @@ private func makePreviewStoreWithAutovisor(
     autovisorEngineState: TeamEngineState? = nil,
     tasks: [TaskSummary] = []
 ) -> NTMSOrchestrator {
-    let store = NTMSOrchestrator(repository: NTMSRepository())
+    let store = PreviewStore.make()
     store.workFolderURL = folder
     var settings = ProjectSettings.defaults
     settings.autovisorEnabled = true

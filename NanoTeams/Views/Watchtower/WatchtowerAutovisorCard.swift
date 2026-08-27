@@ -12,7 +12,7 @@ struct WatchtowerAutovisorCard: View {
 
     @State private var messageDraft = ""
     @State private var attachments: [StagedAttachment] = []
-    @State private var clippedTexts: [String] = []
+    @State private var clippedTexts: [Clip] = []
     @State private var composerDraftID = UUID()
     @State private var goalDraft = ""
     @State private var goalSaveTask: Task<Void, Never>?
@@ -106,7 +106,7 @@ struct WatchtowerAutovisorCard: View {
             // ballooning the card inside the Watchtower ScrollView.
             TextEditor(text: $memoryDraft)
                 .font(Typography.termBase)
-                .borderedTextEditorStyle(minHeight: 100)
+                .inputSurface(.editor, minHeight: 100)
                 .frame(maxHeight: 180)
                 .onChange(of: memoryDraft) { _, newValue in commitMemory(newValue) }
         }
@@ -166,7 +166,7 @@ struct WatchtowerAutovisorCard: View {
             text: messageDraft,
             hasAttachments: !attachments.isEmpty,
             hasClips: !clippedTexts.isEmpty,
-            queue: { trimmed in store.sendMessageToAutovisor(trimmed, attachments: attachments, clippedTexts: clippedTexts) }
+            queue: { trimmed in store.sendMessageToAutovisor(trimmed, attachments: attachments, clippedTexts: clippedTexts.texts) }
         )
         guard outcome == .cleared else { return }
         messageDraft = ""

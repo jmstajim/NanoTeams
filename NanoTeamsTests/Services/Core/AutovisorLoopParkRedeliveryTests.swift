@@ -51,6 +51,56 @@ final class AutovisorLoopParkRedeliveryTests: NTMSOrchestratorTestBase, @uncheck
         .init(taskID: taskID, trigger: .failed)
     }
 
+    /// A question key in the ledger belongs to ONE episode. When that question is
+    /// answered the entry is spent for a condition that is over — keeping it would deny
+    /// the NEXT, genuinely distinct question its one free re-delivery.
+    private func nsKey(_ taskID: Int) -> NTMSOrchestrator.AutovisorAttentionKey {
+        .init(taskID: taskID, trigger: .needsSupervisor)
+    }
+
+    func testLedger_forgetsAResolvedQuestion_soANewOneGetsItsRollback() async {
+        let mgrID = await pinManager()
+        await parkManagerWithLoopQuestion(mgrID)
+        let chatID = await sut.createTask(title: "Chat", supervisorTask: "help", makeActive: false)!
+        await sut.ensureTaskLoaded(chatID)
+        await sut.mutateTask(taskID: chatID) { task in
+            let step = StepExecution(id: "r", role: .softwareEngineer, title: "Assistant",
+                                     status: .needsSupervisorInput, needsSupervisorInput: true,
+                                     supervisorQuestion: "Which database?")
+            task.runs = [Run(id: 0, steps: [step], roleStatuses: ["r": .working])]
+        }
+        sut.engineState[chatID] = .needsSupervisorInput
+
+        // Episode 1: baselined, rolled back once, recorded as spent.
+        sut.autovisorLastPassAttentionKeys = [nsKey(chatID)]
+        sut.noteAutovisorLoopPark(mgrID)
+        XCTAssertTrue(sut.autovisorLoopParkRedelivered.contains(nsKey(chatID)), "premise")
+
+        // The question is answered — episode 1 is over.
+        _ = await sut.answerSupervisorQuestion(stepID: "r", taskID: chatID, answer: "Postgres.")
+        sut.stopEngineForTask(chatID)
+
+        XCTAssertFalse(sut.autovisorLoopParkRedelivered.contains(nsKey(chatID)),
+                       "a spent entry for a finished question must not outlive it")
+    }
+
+    func testLedger_standingCondition_boundStillHolds() async {
+        // The bound exists for a STANDING condition, and a standing condition never leaves
+        // the ledger: a manager that loops every pass still rolls back only once.
+        let mgrID = await pinManager()
+        await parkManagerWithLoopQuestion(mgrID)
+        sut.autovisorLastPassAttentionKeys = [key(42)]
+
+        sut.noteAutovisorLoopPark(mgrID)
+        XCTAssertTrue(sut.autovisorLoopParkRedelivered.contains(key(42)))
+
+        sut.autovisorLastPassAttentionKeys = [key(42)]   // the next pass re-baselines it
+        sut.noteAutovisorLoopPark(mgrID)
+
+        XCTAssertTrue(sut.autovisorLastPassAttentionKeys.contains(key(42)),
+                      "the second loop park must roll back nothing — one extra pass per key per episode")
+    }
+
     // MARK: - The rollback
 
     func testLoopPark_rollsBackBaseline_soTheConditionIsFreshAgain() async {

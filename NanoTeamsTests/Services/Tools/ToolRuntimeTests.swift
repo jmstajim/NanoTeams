@@ -49,9 +49,9 @@ final class ToolRuntimeTests: XCTestCase, @unchecked Sendable {
         ToolExecutionContext(workFolderRoot: workFolderRoot, taskID: Int(), runID: 0, roleID: "test_role")
     }
 
-    private func executeTool(runtime: ToolRuntime, context: ToolExecutionContext, name: String, args: [String: Any]) -> ToolExecutionResult {
+    private func executeTool(runtime: ToolRuntime, context: ToolExecutionContext, name: String, args: [String: Any]) async -> ToolExecutionResult {
         let call = StepToolCall(name: name, argumentsJSON: jsonString(args))
-        return runtime.executeAll(context: context, toolCalls: [call]).first!
+        return await runtime.executeAll(context: context, toolCalls: [call]).first!
     }
 
     private func runGit(_ args: [String], in directory: URL) throws -> (Int, String, String) {
@@ -91,8 +91,8 @@ final class ToolRuntimeTests: XCTestCase, @unchecked Sendable {
         }
     }
 
-    func testDurationMS_presentWhenAHandlerRan() throws {
-        _ = executeTool(runtime: runtime, context: context, name: ToolNames.listFiles, args: ["path": "."])
+    func testDurationMS_presentWhenAHandlerRan() async throws {
+        _ = await executeTool(runtime: runtime, context: context, name: ToolNames.listFiles, args: ["path": "."])
 
         let records = try loggedRecords()
         XCTAssertEqual(records.count, 1)
@@ -101,9 +101,9 @@ final class ToolRuntimeTests: XCTestCase, @unchecked Sendable {
     }
 
     /// A tool that ran and FAILED still ran — the catch path times it too.
-    func testDurationMS_presentWhenTheHandlerThrew() throws {
-        _ = executeTool(runtime: runtime, context: context, name: ToolNames.readFile,
-                        args: ["path": "does_not_exist_\(UUID().uuidString).txt"])
+    func testDurationMS_presentWhenTheHandlerThrew() async throws {
+        _ = await executeTool(runtime: runtime, context: context, name: ToolNames.readFile,
+                              args: ["path": "does_not_exist_\(UUID().uuidString).txt"])
 
         let records = try loggedRecords()
         XCTAssertEqual(records.count, 1)
@@ -111,9 +111,9 @@ final class ToolRuntimeTests: XCTestCase, @unchecked Sendable {
     }
 
     /// No handler, no duration: an unknown tool never reached one.
-    func testDurationMS_absentWhenNoHandlerExists() throws {
-        let result = executeTool(runtime: runtime, context: context,
-                                 name: "definitely_not_a_tool", args: [:])
+    func testDurationMS_absentWhenNoHandlerExists() async throws {
+        let result = await executeTool(runtime: runtime, context: context,
+                                       name: "definitely_not_a_tool", args: [:])
         XCTAssertTrue(result.isError)
 
         let records = try loggedRecords()
@@ -137,14 +137,14 @@ final class ToolRuntimeTests: XCTestCase, @unchecked Sendable {
         try await super.tearDown()
     }
 
-    func testToolExecutionIsLogged() throws {
+    func testToolExecutionIsLogged() async throws {
         let fileURL = workFolderRoot.appendingPathComponent("hello.txt", isDirectory: false)
         try "hello".write(to: fileURL, atomically: true, encoding: .utf8)
 
         let args: [String: Any] = ["path": "."]
         let argsJSON = jsonString(args)
         let call = StepToolCall(name: "list_files", argumentsJSON: argsJSON)
-        let result = runtime.executeAll(context: context, toolCalls: [call]).first!
+        let result = await runtime.executeAll(context: context, toolCalls: [call]).first!
 
         let logText = try String(contentsOf: logURL, encoding: .utf8)
         let lines = logText.split(separator: "\n", omittingEmptySubsequences: true)
@@ -161,13 +161,13 @@ final class ToolRuntimeTests: XCTestCase, @unchecked Sendable {
         XCTAssertTrue(errorValue == nil || errorValue is NSNull)
     }
 
-    func testGitAddStagesFile() throws {
+    func testGitAddStagesFile() async throws {
         _ = try runGit(["init"], in: workFolderRoot)
 
         let fileURL = workFolderRoot.appendingPathComponent("hello.txt", isDirectory: false)
         try "hello".write(to: fileURL, atomically: true, encoding: .utf8)
 
-        let result = executeTool(runtime: runtime, context: context, name: "git_add", args: ["paths": ["hello.txt"]])
+        let result = await executeTool(runtime: runtime, context: context, name: "git_add", args: ["paths": ["hello.txt"]])
         let payload = decodeJSONObject(result.outputJSON)
         XCTAssertEqual(payload["ok"] as? Bool, true)
 
@@ -177,10 +177,10 @@ final class ToolRuntimeTests: XCTestCase, @unchecked Sendable {
 
     // MARK: - Tool Arguments Validation Tests
 
-    func testEmptyKeyInArgumentsIsStripped() {
+    func testEmptyKeyInArgumentsIsStripped() async {
         // Empty keys are silently stripped (LLMs like gpt-oss-20b emit {"":""} for no-param tools)
         let call = StepToolCall(name: "list_files", argumentsJSON: "{\"\": \"value\"}")
-        let result = runtime.executeAll(context: context, toolCalls: [call]).first!
+        let result = await runtime.executeAll(context: context, toolCalls: [call]).first!
 
         // Should succeed — empty key stripped, treated as {}
         let payload = decodeJSONObject(result.outputJSON)
@@ -188,10 +188,10 @@ final class ToolRuntimeTests: XCTestCase, @unchecked Sendable {
         XCTAssertFalse(errorMessage.contains("empty key"))
     }
 
-    func testWhitespaceOnlyKeyIsStripped() {
+    func testWhitespaceOnlyKeyIsStripped() async {
         // Whitespace-only keys are silently stripped after trimming
         let call = StepToolCall(name: "list_files", argumentsJSON: "{\"   \": \"value\"}")
-        let result = runtime.executeAll(context: context, toolCalls: [call]).first!
+        let result = await runtime.executeAll(context: context, toolCalls: [call]).first!
 
         // Should succeed — whitespace-only key stripped, treated as {}
         let payload = decodeJSONObject(result.outputJSON)
@@ -199,10 +199,10 @@ final class ToolRuntimeTests: XCTestCase, @unchecked Sendable {
         XCTAssertFalse(errorMessage.contains("empty key"))
     }
 
-    func testInvalidJSONRecoveredViaRawInput() {
+    func testInvalidJSONRecoveredViaRawInput() async {
         // Invalid JSON is recovered — raw string wrapped as __raw_input__ fallback
         let call = StepToolCall(name: "list_files", argumentsJSON: "{not valid json}")
-        let result = runtime.executeAll(context: context, toolCalls: [call]).first!
+        let result = await runtime.executeAll(context: context, toolCalls: [call]).first!
 
         // Tool handler receives {"__raw_input__": "{not valid json}"} and proceeds
         // (ls doesn't require string args via requiredString, so it won't use __raw_input__,
@@ -210,10 +210,10 @@ final class ToolRuntimeTests: XCTestCase, @unchecked Sendable {
         XCTAssertFalse(result.outputJSON.contains("isn't in the correct format"))
     }
 
-    func testEmptyJSONObjectIsValid() {
+    func testEmptyJSONObjectIsValid() async {
         // Empty JSON object {} should be valid
         let call = StepToolCall(name: "list_files", argumentsJSON: "{}")
-        let result = runtime.executeAll(context: context, toolCalls: [call]).first!
+        let result = await runtime.executeAll(context: context, toolCalls: [call]).first!
 
         // Should not be an error (though the tool itself might fail for other reasons)
         // The validation should pass for empty object
@@ -222,23 +222,23 @@ final class ToolRuntimeTests: XCTestCase, @unchecked Sendable {
         XCTAssertFalse(errorMessage.contains("empty key"))
     }
 
-    func testValidJSONArgsWork() throws {
+    func testValidJSONArgsWork() async throws {
         // Create a file so ls has something to list
         let fileURL = workFolderRoot.appendingPathComponent("test.txt", isDirectory: false)
         try "test".write(to: fileURL, atomically: true, encoding: .utf8)
 
         let call = StepToolCall(name: "list_files", argumentsJSON: "{\"path\": \".\"}")
-        let result = runtime.executeAll(context: context, toolCalls: [call]).first!
+        let result = await runtime.executeAll(context: context, toolCalls: [call]).first!
 
         XCTAssertFalse(result.isError)
         let payload = decodeJSONObject(result.outputJSON)
         XCTAssertEqual(payload["ok"] as? Bool, true)
     }
 
-    func testEmptyStringArgumentsIsValid() {
+    func testEmptyStringArgumentsIsValid() async {
         // Empty string args should be treated as empty object
         let call = StepToolCall(name: "list_files", argumentsJSON: "")
-        let result = runtime.executeAll(context: context, toolCalls: [call]).first!
+        let result = await runtime.executeAll(context: context, toolCalls: [call]).first!
 
         // Empty string should be converted to {} which is valid
         let payload = decodeJSONObject(result.outputJSON)
@@ -246,10 +246,10 @@ final class ToolRuntimeTests: XCTestCase, @unchecked Sendable {
         XCTAssertFalse(errorMessage.contains("empty key"))
     }
 
-    func testWhitespaceOnlyArgumentsIsValid() {
+    func testWhitespaceOnlyArgumentsIsValid() async {
         // Whitespace-only args should be treated as empty object
         let call = StepToolCall(name: "list_files", argumentsJSON: "   ")
-        let result = runtime.executeAll(context: context, toolCalls: [call]).first!
+        let result = await runtime.executeAll(context: context, toolCalls: [call]).first!
 
         // Whitespace should be converted to {} which is valid
         let payload = decodeJSONObject(result.outputJSON)
@@ -257,7 +257,7 @@ final class ToolRuntimeTests: XCTestCase, @unchecked Sendable {
         XCTAssertFalse(errorMessage.contains("empty key"))
     }
 
-    func testLiteralNewlinesInJSONArgsAreSanitized() throws {
+    func testLiteralNewlinesInJSONArgsAreSanitized() async throws {
         // LLMs stream markdown with literal newlines inside JSON string values.
         // ToolRuntime should sanitize these before JSON parsing so tools get correct args.
         let fileURL = workFolderRoot.appendingPathComponent("test.txt", isDirectory: false)
@@ -266,7 +266,7 @@ final class ToolRuntimeTests: XCTestCase, @unchecked Sendable {
         // Simulate LLM emitting JSON with literal newline inside a string value
         let argsWithLiteralNewline = "{\"path\":\"test.txt\",\"content\":\"line1\nline2\nline3\"}"
         let call = StepToolCall(name: "write_file", argumentsJSON: argsWithLiteralNewline)
-        let result = runtime.executeAll(context: context, toolCalls: [call]).first!
+        let result = await runtime.executeAll(context: context, toolCalls: [call]).first!
 
         // Should succeed — sanitize fixes the JSON before parsing
         XCTAssertFalse(result.isError, "write_file should succeed after sanitizing literal newlines")
@@ -295,7 +295,7 @@ final class ToolRuntimeTests: XCTestCase, @unchecked Sendable {
             StepToolCall(providerID: "p3", name: "list_files", argumentsJSON: #"{"path":"."}"#),
         ]
         let task = Task.detached { () -> [ToolExecutionResult] in
-            runtimeRef.executeAll(context: contextRef, toolCalls: calls)
+            await runtimeRef.executeAll(context: contextRef, toolCalls: calls)
         }
         task.cancel()
         let results = await task.value
@@ -329,7 +329,7 @@ final class ToolRuntimeTests: XCTestCase, @unchecked Sendable {
     /// that the cancellation loop in `executeAll` doesn't accidentally short-
     /// circuit the happy path (e.g. by reading a stale `Task.isCancelled` from
     /// a parent context that wasn't ours).
-    func testExecuteAll_uncancelled_executesEveryCall() throws {
+    func testExecuteAll_uncancelled_executesEveryCall() async throws {
         let fileURL = workFolderRoot.appendingPathComponent("present.txt")
         try "present".write(to: fileURL, atomically: true, encoding: .utf8)
 
@@ -337,7 +337,7 @@ final class ToolRuntimeTests: XCTestCase, @unchecked Sendable {
             StepToolCall(providerID: "p1", name: "list_files", argumentsJSON: #"{"path":"."}"#),
             StepToolCall(providerID: "p2", name: "read_file", argumentsJSON: #"{"path":"present.txt"}"#),
         ]
-        let results = runtime.executeAll(context: context, toolCalls: calls)
+        let results = await runtime.executeAll(context: context, toolCalls: calls)
         XCTAssertEqual(results.count, 2)
         for (idx, r) in results.enumerated() {
             XCTAssertFalse(r.isError,
@@ -349,7 +349,7 @@ final class ToolRuntimeTests: XCTestCase, @unchecked Sendable {
         }
     }
 
-    func testEscapeJSON_ControlCharacters_ProducesValidJSON() throws {
+    func testEscapeJSON_ControlCharacters_ProducesValidJSON() async throws {
         let root = try makeTempProjectRoot()
         let (rt, _) = makeRegistryAndRuntime(workFolderRoot: root)
         let ctx = makeContext(workFolderRoot: root)
@@ -361,7 +361,7 @@ final class ToolRuntimeTests: XCTestCase, @unchecked Sendable {
         // Call a non-existent tool whose name contains ANSI escape and null chars
         let badName = "tool\u{1b}_test\u{0}_end\u{1f}"
         let call = StepToolCall(name: badName, argumentsJSON: "{}")
-        let result = rt.executeAll(context: ctx, toolCalls: [call]).first!
+        let result = await rt.executeAll(context: ctx, toolCalls: [call]).first!
 
         // The outputJSON must be valid JSON (parseable by JSONSerialization)
         let data = result.outputJSON.data(using: .utf8)!

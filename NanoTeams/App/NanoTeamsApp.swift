@@ -35,7 +35,15 @@ struct NanoTeamsApp: App {
     /// Process-wide cache of LM Studio model lists. Shared across every
     /// settings surface that picks a model so opening multiple cards on
     /// the same server doesn't re-issue `/api/v1/models`.
-    @State private var modelCatalog = ModelCatalog()
+    ///
+    /// No default value, like `store` / `dictation` / `appUpdateState` above: `init` assigns
+    /// `_modelCatalog` directly, so a default here never runs (CLAUDE.md View Convention #26)
+    /// — and the one that stood here was a live `ModelCatalog()`, which read as the app's
+    /// construction site while being dead.
+    @State private var modelCatalog: ModelCatalog
+    /// The same, for embedding-model lists. A separate type rather than an axis on
+    /// `ModelCatalog` — see `EmbeddingModelCatalog`'s doc comment.
+    @State private var embeddingModelCatalog: EmbeddingModelCatalog
     /// The benchmark's measuring loop and its scan of what each provider has.
     ///
     /// Owned here rather than by `BenchmarkSettingsView` because a sweep over
@@ -70,6 +78,7 @@ struct NanoTeamsApp: App {
 
         let catalog = ModelCatalog()
         _modelCatalog = State(initialValue: catalog)
+        _embeddingModelCatalog = State(initialValue: EmbeddingModelCatalog())
         _benchmarkSweep = State(initialValue: Self.makeBenchmarkSweep(
             store: orchestrator, catalog: catalog))
     }
@@ -123,6 +132,7 @@ struct NanoTeamsApp: App {
                     .environment(dictation)
                     .environment(appUpdateState)
                     .environment(modelCatalog)
+                    .environment(embeddingModelCatalog)
                     .preferredColorScheme(activeTheme.preferredColorScheme)
                     .fontDesign(.monospaced)
                     // Drive native SwiftUI controls (focus rings, pickers, default
@@ -206,6 +216,7 @@ struct NanoTeamsApp: App {
                 .environment(dictation)
                 .environment(appUpdateState)
                 .environment(modelCatalog)
+                .environment(embeddingModelCatalog)
 
                 .environment(benchmarkSweep)
                 // Without this, Test Connection can report SUCCESS while the status

@@ -39,12 +39,12 @@ final class CreateArtifactFormatValidationTests: XCTestCase {
         try super.tearDownWithError()
     }
 
-    func testCreateArtifact_unsupportedFormat_returnsError() throws {
+    func testCreateArtifact_unsupportedFormat_returnsError() async throws {
         let call = StepToolCall(
             name: "create_artifact",
             argumentsJSON: "{\"name\":\"Code Review\",\"content\":\"# r\",\"format\":\"zip\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertTrue(results[0].isError, "zip must be rejected")
         let out = results[0].outputJSON
         XCTAssertTrue(out.contains("Unsupported format"), "Error message must be actionable")
@@ -59,7 +59,7 @@ final class CreateArtifactFormatValidationTests: XCTestCase {
     /// The team-level cleanup catches this in generated configs, but a runtime guard
     /// on `create_artifact` covers user-curated teams + LLMs that hallucinate
     /// file-shaped names regardless of their team's `produces_artifacts`.
-    func testCreateArtifact_fileShapedHTMLName_rejected() throws {
+    func testCreateArtifact_fileShapedHTMLName_rejected() async throws {
         // Realistic context: the role has a declared deliverable (`create_artifact`
         // is auto-injected only for roles with non-empty producesArtifacts).
         let ctx = ToolExecutionContext(
@@ -70,7 +70,7 @@ final class CreateArtifactFormatValidationTests: XCTestCase {
             name: "create_artifact",
             argumentsJSON: "{\"name\":\"index.html\",\"content\":\"<html></html>\"}"
         )
-        let results = runtime.executeAll(context: ctx, toolCalls: [call])
+        let results = await runtime.executeAll(context: ctx, toolCalls: [call])
         XCTAssertTrue(results[0].isError, "index.html must be rejected as file-shaped")
         let out = results[0].outputJSON
         XCTAssertTrue(out.contains("looks like a filename"), "Error must explain the rejection: \(out)")
@@ -78,7 +78,7 @@ final class CreateArtifactFormatValidationTests: XCTestCase {
                       "Error must surface the role's declared deliverable: \(out)")
     }
 
-    func testCreateArtifact_fileShapedSwiftName_rejected() throws {
+    func testCreateArtifact_fileShapedSwiftName_rejected() async throws {
         let ctx = ToolExecutionContext(
             workFolderRoot: tempDir, taskID: 0, runID: 0, roleID: "test_role",
             expectedArtifacts: ["Code Review"]
@@ -87,7 +87,7 @@ final class CreateArtifactFormatValidationTests: XCTestCase {
             name: "create_artifact",
             argumentsJSON: "{\"name\":\"Calculator.swift\",\"content\":\"struct C {}\"}"
         )
-        let results = runtime.executeAll(context: ctx, toolCalls: [call])
+        let results = await runtime.executeAll(context: ctx, toolCalls: [call])
         XCTAssertTrue(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("Code Review"))
     }
@@ -99,7 +99,7 @@ final class CreateArtifactFormatValidationTests: XCTestCase {
     /// The error message must surface the role's actual expected names so the
     /// model has a concrete fix-up list, not just a generic "use Implementation
     /// Notes" hint that doesn't apply to its team's chosen deliverable name.
-    func testCreateArtifact_fileShapedName_messageIncludesExpectedArtifacts() throws {
+    func testCreateArtifact_fileShapedName_messageIncludesExpectedArtifacts() async throws {
         let contextWithExpected = ToolExecutionContext(
             workFolderRoot: tempDir,
             taskID: 0, runID: 0, roleID: "architect_role",
@@ -109,7 +109,7 @@ final class CreateArtifactFormatValidationTests: XCTestCase {
             name: "create_artifact",
             argumentsJSON: "{\"name\":\"index.html\",\"content\":\"<html></html>\"}"
         )
-        let results = runtime.executeAll(context: contextWithExpected, toolCalls: [call])
+        let results = await runtime.executeAll(context: contextWithExpected, toolCalls: [call])
         XCTAssertTrue(results[0].isError)
         let out = results[0].outputJSON
         XCTAssertTrue(out.contains("looks like a filename"),
@@ -133,7 +133,7 @@ final class CreateArtifactFormatValidationTests: XCTestCase {
     /// through the bespoke "don't retry" guidance instead of the misleading
     /// generic "retry with correct arguments" suffix (which doesn't help — the
     /// args aren't the cause; the tool itself shouldn't be in the schema).
-    func testCreateArtifact_fileShapedNameWithEmptyExpected_surfacesConfigError() throws {
+    func testCreateArtifact_fileShapedNameWithEmptyExpected_surfacesConfigError() async throws {
         let ctx = ToolExecutionContext(
             workFolderRoot: tempDir, taskID: 0, runID: 0, roleID: "misconfigured_role",
             expectedArtifacts: []
@@ -142,7 +142,7 @@ final class CreateArtifactFormatValidationTests: XCTestCase {
             name: "create_artifact",
             argumentsJSON: "{\"name\":\"index.html\",\"content\":\"<html></html>\"}"
         )
-        let results = runtime.executeAll(context: ctx, toolCalls: [call])
+        let results = await runtime.executeAll(context: ctx, toolCalls: [call])
         XCTAssertTrue(results[0].isError)
         let out = results[0].outputJSON
         XCTAssertTrue(
@@ -165,7 +165,7 @@ final class CreateArtifactFormatValidationTests: XCTestCase {
     /// "don't retry" branch rather than the generic default. A `commandFailed`
     /// envelope here would route to "Retry the tool call with the correct
     /// arguments" — actively misleading because args aren't the cause.
-    func testCreateArtifact_emptyExpected_emitsToolNotAuthorizedShape() throws {
+    func testCreateArtifact_emptyExpected_emitsToolNotAuthorizedShape() async throws {
         let ctx = ToolExecutionContext(
             workFolderRoot: tempDir, taskID: 0, runID: 0, roleID: "misconfigured_role",
             expectedArtifacts: []
@@ -174,7 +174,7 @@ final class CreateArtifactFormatValidationTests: XCTestCase {
             name: "create_artifact",
             argumentsJSON: "{\"name\":\"index.html\",\"content\":\"<html></html>\"}"
         )
-        let results = runtime.executeAll(context: ctx, toolCalls: [call])
+        let results = await runtime.executeAll(context: ctx, toolCalls: [call])
         XCTAssertTrue(results[0].isError)
         let out = results[0].outputJSON
         XCTAssertTrue(
@@ -187,70 +187,70 @@ final class CreateArtifactFormatValidationTests: XCTestCase {
         )
     }
 
-    func testCreateArtifact_conceptualName_accepted() throws {
+    func testCreateArtifact_conceptualName_accepted() async throws {
         let call = StepToolCall(
             name: "create_artifact",
             argumentsJSON: "{\"name\":\"Implementation Notes\",\"content\":\"# notes\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError, "Conceptual name must be accepted: \(results[0].outputJSON)")
     }
 
-    func testCreateArtifact_markdownExtensionInName_accepted() throws {
+    func testCreateArtifact_markdownExtensionInName_accepted() async throws {
         // `report.md` is a valid artifact name (matches an allowed format extension).
         let call = StepToolCall(
             name: "create_artifact",
             argumentsJSON: "{\"name\":\"report.md\",\"content\":\"# r\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError, "report.md must be accepted: \(results[0].outputJSON)")
     }
 
     // MARK: - Original format-validation tests below
 
-    func testCreateArtifact_markdownFormat_accepted() throws {
+    func testCreateArtifact_markdownFormat_accepted() async throws {
         let call = StepToolCall(
             name: "create_artifact",
             argumentsJSON: "{\"name\":\"Plan\",\"content\":\"# plan\",\"format\":\"markdown\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
     }
 
-    func testCreateArtifact_mdAlias_accepted() throws {
+    func testCreateArtifact_mdAlias_accepted() async throws {
         let call = StepToolCall(
             name: "create_artifact",
             argumentsJSON: "{\"name\":\"Plan\",\"content\":\"# plan\",\"format\":\"md\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
     }
 
-    func testCreateArtifact_pdfFormat_accepted() throws {
+    func testCreateArtifact_pdfFormat_accepted() async throws {
         let call = StepToolCall(
             name: "create_artifact",
             argumentsJSON: "{\"name\":\"Plan\",\"content\":\"# plan\",\"format\":\"pdf\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
     }
 
     /// Case-insensitive match per whitelist design.
-    func testCreateArtifact_uppercaseFormat_accepted() throws {
+    func testCreateArtifact_uppercaseFormat_accepted() async throws {
         let call = StepToolCall(
             name: "create_artifact",
             argumentsJSON: "{\"name\":\"Plan\",\"content\":\"# plan\",\"format\":\"DOCX\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
     }
 
-    func testCreateArtifact_noFormat_accepted() throws {
+    func testCreateArtifact_noFormat_accepted() async throws {
         let call = StepToolCall(
             name: "create_artifact",
             argumentsJSON: "{\"name\":\"Plan\",\"content\":\"# plan\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
     }
 
@@ -262,10 +262,10 @@ final class CreateArtifactFormatValidationTests: XCTestCase {
     /// that deleting `unwrapReentrantEnvelope` fails this test — a loose
     /// `contains("CalculatorDemo")` would still pass because CalculatorDemo
     /// survives in `argumentsJSON`.
-    func testCreateArtifact_reentrantEnvelope_usesInnerName() throws {
+    func testCreateArtifact_reentrantEnvelope_usesInnerName() async throws {
         let argsJSON = "{\"name\":\"create_artifact\",\"arguments\":{\"name\":\"CalculatorDemo\",\"content\":\"# x\"}}"
         let call = StepToolCall(name: "create_artifact", argumentsJSON: argsJSON)
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
 
         // The signal carries the canonical artifact name — the persistence path
@@ -288,10 +288,10 @@ final class CreateArtifactFormatValidationTests: XCTestCase {
     /// Prefixed outer name (`functions.create_artifact`) must also unwrap.
     /// This is the C2 review fix: `unwrapReentrantEnvelope` now canonicalizes
     /// both sides of the name comparison.
-    func testCreateArtifact_reentrantEnvelope_prefixedOuterName_unwraps() throws {
+    func testCreateArtifact_reentrantEnvelope_prefixedOuterName_unwraps() async throws {
         let argsJSON = "{\"name\":\"functions.create_artifact\",\"arguments\":{\"name\":\"PlanDoc\",\"content\":\"...\"}}"
         let call = StepToolCall(name: "create_artifact", argumentsJSON: argsJSON)
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
         guard case .artifact(let name, _, _) = results[0].signal else {
             XCTFail("Expected .artifact signal")
@@ -439,7 +439,7 @@ final class CreateArtifactFormatValidationTests: XCTestCase {
     ///
     /// RED: restore `let content = resolveContentString(...) ?? ""` without the guard →
     /// `isError` is false and the artifact is persisted.
-    func testCreateArtifact_contentOmitted_isRejectedRatherThanSilentlyEmpty() throws {
+    func testCreateArtifact_contentOmitted_isRejectedRatherThanSilentlyEmpty() async throws {
         let ctx = ToolExecutionContext(
             workFolderRoot: tempDir, taskID: 0, runID: 0, roleID: "test_role",
             expectedArtifacts: ["Release Notes"]
@@ -449,7 +449,7 @@ final class CreateArtifactFormatValidationTests: XCTestCase {
             argumentsJSON: "{\"name\":\"Release Notes\"}"
         )
 
-        let results = runtime.executeAll(context: ctx, toolCalls: [call])
+        let results = await runtime.executeAll(context: ctx, toolCalls: [call])
 
         XCTAssertTrue(results[0].isError, "got: \(results[0].outputJSON)")
         let out = results[0].outputJSON
@@ -472,7 +472,7 @@ final class CreateArtifactFormatValidationTests: XCTestCase {
     ///
     /// RED: `excludeKeys: ["name", "format"]` → `["name"]` → every case here returns
     /// ok:true with the format string as the deliverable.
-    func testCreateArtifact_formatWithoutContent_isStillRejected() throws {
+    func testCreateArtifact_formatWithoutContent_isStillRejected() async throws {
         for format in ["markdown", "pdf", "docx"] {
             let ctx = ToolExecutionContext(
                 workFolderRoot: tempDir, taskID: 0, runID: 0, roleID: "test_role",
@@ -483,7 +483,7 @@ final class CreateArtifactFormatValidationTests: XCTestCase {
                 argumentsJSON: "{\"name\":\"Release Notes\",\"format\":\"\(format)\"}"
             )
 
-            let results = runtime.executeAll(context: ctx, toolCalls: [call])
+            let results = await runtime.executeAll(context: ctx, toolCalls: [call])
 
             XCTAssertTrue(
                 results[0].isError,
@@ -499,7 +499,7 @@ final class CreateArtifactFormatValidationTests: XCTestCase {
     ///
     /// RED: revert the `format` exclusion → two candidates survive, content resolves to
     /// nil, and this real body is rejected with "no content".
-    func testCreateArtifact_aliasedBodyBesideAFormat_isAccepted() throws {
+    func testCreateArtifact_aliasedBodyBesideAFormat_isAccepted() async throws {
         let ctx = ToolExecutionContext(
             workFolderRoot: tempDir, taskID: 0, runID: 0, roleID: "test_role",
             expectedArtifacts: ["Release Notes"]
@@ -510,7 +510,7 @@ final class CreateArtifactFormatValidationTests: XCTestCase {
             "{\"name\":\"Release Notes\",\"markdown\":\"# Real body\",\"format\":\"markdown\"}"
         )
 
-        let results = runtime.executeAll(context: ctx, toolCalls: [call])
+        let results = await runtime.executeAll(context: ctx, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError, "got: \(results[0].outputJSON)")
     }
@@ -520,7 +520,7 @@ final class CreateArtifactFormatValidationTests: XCTestCase {
     /// the model DID send the key. Same guard, same root.
     ///
     /// RED: revert the `format` exclusion → both return ok:true with the format as body.
-    func testCreateArtifact_nonStringContentBesideAFormat_isRejected() throws {
+    func testCreateArtifact_nonStringContentBesideAFormat_isRejected() async throws {
         for body in ["null", "[\"a\",\"b\"]"] {
             let ctx = ToolExecutionContext(
                 workFolderRoot: tempDir, taskID: 0, runID: 0, roleID: "test_role",
@@ -532,7 +532,7 @@ final class CreateArtifactFormatValidationTests: XCTestCase {
                 "{\"name\":\"Release Notes\",\"content\":\(body),\"format\":\"pdf\"}"
             )
 
-            let results = runtime.executeAll(context: ctx, toolCalls: [call])
+            let results = await runtime.executeAll(context: ctx, toolCalls: [call])
 
             XCTAssertTrue(results[0].isError,
                           "content=\(body): \(results[0].outputJSON)")
@@ -543,7 +543,7 @@ final class CreateArtifactFormatValidationTests: XCTestCase {
     /// "you must pass content" nudge with `"\n"` would otherwise walk straight back through.
     ///
     /// RED: change the guard to `content.isEmpty` → this passes the empty check and succeeds.
-    func testCreateArtifact_whitespaceOnlyContent_isRejectedToo() throws {
+    func testCreateArtifact_whitespaceOnlyContent_isRejectedToo() async throws {
         let ctx = ToolExecutionContext(
             workFolderRoot: tempDir, taskID: 0, runID: 0, roleID: "test_role",
             expectedArtifacts: ["Release Notes"]
@@ -553,7 +553,7 @@ final class CreateArtifactFormatValidationTests: XCTestCase {
             argumentsJSON: "{\"name\":\"Release Notes\",\"content\":\"  \\n\\t \"}"
         )
 
-        let results = runtime.executeAll(context: ctx, toolCalls: [call])
+        let results = await runtime.executeAll(context: ctx, toolCalls: [call])
 
         XCTAssertTrue(results[0].isError, "got: \(results[0].outputJSON)")
     }
@@ -564,7 +564,7 @@ final class CreateArtifactFormatValidationTests: XCTestCase {
     ///
     /// RED: same mutation as the two above, inverted — a guard that rejects non-empty content
     /// fails here.
-    func testCreateArtifact_minimalNonEmptyContent_stillSucceeds() throws {
+    func testCreateArtifact_minimalNonEmptyContent_stillSucceeds() async throws {
         let ctx = ToolExecutionContext(
             workFolderRoot: tempDir, taskID: 0, runID: 0, roleID: "test_role",
             expectedArtifacts: ["Release Notes"]
@@ -574,7 +574,7 @@ final class CreateArtifactFormatValidationTests: XCTestCase {
             argumentsJSON: "{\"name\":\"Release Notes\",\"content\":\"x\"}"
         )
 
-        let results = runtime.executeAll(context: ctx, toolCalls: [call])
+        let results = await runtime.executeAll(context: ctx, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError, "got: \(results[0].outputJSON)")
     }

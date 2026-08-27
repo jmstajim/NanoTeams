@@ -17,6 +17,18 @@ final class EndToEndPauseResumeTests: XCTestCase {
         try await super.tearDown()
     }
 
+    /// `recoverStaleStatuses` takes the resolved TEAM (2026-08-25); it needs the roster as well
+    /// as the settings. The roster must cover this suite's fixture role ids — a resolved team is
+    /// the team those statuses came from, and an empty one would make them read as deleted.
+    private static let defaultTeam: Team = {
+        var team = Team(name: "Pause/Resume Fixture")
+        team.settings = .default
+        team.roles = ["swe-role", "test_step", "software_engineer"].map {
+            TeamRoleDefinition(id: $0, name: $0, prompt: "", toolIDs: [], usePlanningPhase: false, dependencies: RoleDependencies())
+        }
+        return team
+    }()
+
     // MARK: - Test 1: Pause sets correct statuses
 
     func testPause_setsStepsAndRolesToCorrectStatuses() {
@@ -55,7 +67,7 @@ final class EndToEndPauseResumeTests: XCTestCase {
         var task = makeRunningTask()
 
         // Simulate app restart — steps stuck in .running without engine
-        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.defaultTeam)
 
         XCTAssertTrue(changed, "Should report changes made")
         XCTAssertEqual(task.runs[0].steps[0].status, .paused,
@@ -67,7 +79,7 @@ final class EndToEndPauseResumeTests: XCTestCase {
     func testStatusRecovery_staleNeedsSupervisorInput_becomesPaused() {
         var task = makeTaskWithSupervisorInput()
 
-        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.defaultTeam)
 
         XCTAssertTrue(changed)
         XCTAssertEqual(task.runs[0].steps[0].status, .paused,
@@ -80,7 +92,7 @@ final class EndToEndPauseResumeTests: XCTestCase {
         var task = makeRunningTask()
         task.runs[0].roleStatuses["swe-role"] = .working
 
-        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.defaultTeam)
 
         XCTAssertTrue(changed)
         XCTAssertEqual(task.runs[0].roleStatuses["swe-role"], .idle,
@@ -93,7 +105,7 @@ final class EndToEndPauseResumeTests: XCTestCase {
         var task = makeRunningTask()
         task.status = .running
 
-        StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
+        StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.defaultTeam)
 
         XCTAssertEqual(task.status, .paused,
                        "Task status should become .paused after recovery")
@@ -104,7 +116,7 @@ final class EndToEndPauseResumeTests: XCTestCase {
     func testStatusRecovery_doneSteps_notAffected() {
         var task = makeDoneTask()
 
-        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, teamSettings: .default)
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.defaultTeam)
 
         XCTAssertFalse(changed, "Done steps should not be changed")
         XCTAssertEqual(task.runs[0].steps[0].status, .done)

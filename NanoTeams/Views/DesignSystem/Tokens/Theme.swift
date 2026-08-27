@@ -89,12 +89,48 @@ nonisolated enum Theme: String, CaseIterable, Identifiable, Sendable {
 
     // MARK: - Active theme storage
 
-    /// Reads the active theme from `UserDefaults.standard`. Safe to call from
-    /// any thread — `UserDefaults.standard` is `Sendable`.
+    /// Where the active theme is read from. `UserDefaults.standard` in production.
+    ///
+    /// A SLOT rather than a parameter, because `current` is a static read with no caller
+    /// context — it is reached from AppKit's appearance-resolution thread through
+    /// `Colors.nsThemed`, which has nowhere to thread an argument from. The neighbouring
+    /// `migrateLegacyAppearanceIfNeeded(defaults:)` already takes its store as an argument;
+    /// this is the same idea where an argument is not available.
+    ///
+    /// It exists because `UserDefaults.standard` is a CROSS-PROCESS channel and the test target
+    /// runs parallel host processes that share one bundle-identifier defaults domain. A suite
+    /// flipping the theme to assert colour resolution was therefore visible to every other
+    /// worker, and `Colors.nsThemed` memoizes on a key containing `Theme.current` while minting
+    /// a fresh dynamic `NSColor` per miss — instances that compare unequal at identical RGB. A
+    /// flip landing between two lookups made two "identical" attributed strings differ, with no
+    /// visible cause. See `DEBTS.md` D-4.
+    ///
+    /// Guarded by a lock rather than left as `nonisolated(unsafe)`: the appearance thread is a
+    /// real concurrent reader.
+    private static let storageLock = NSLock()
+    nonisolated(unsafe) private static var _storage: any ConfigurationStorage = UserDefaults.standard
+
+    private static var storage: any ConfigurationStorage {
+        storageLock.withLock { _storage }
+    }
+
+    /// Reads the active theme. Safe to call from any thread.
     static var current: Theme {
-        let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.activeTheme) ?? defaultTheme.rawValue
+        let raw = storage.string(forKey: UserDefaultsKeys.activeTheme) ?? defaultTheme.rawValue
         return Theme(rawValue: raw) ?? defaultTheme
     }
+
+    #if DEBUG
+    /// Points `current` at a per-process store so a test can flip the theme without the write
+    /// reaching another worker. Pair with `_testResetStorage()` in `tearDown`.
+    static func _testUseIsolatedStorage(_ store: any ConfigurationStorage) {
+        storageLock.withLock { _storage = store }
+    }
+
+    static func _testResetStorage() {
+        storageLock.withLock { _storage = UserDefaults.standard }
+    }
+    #endif
 
     /// One-shot migration of legacy `appAppearance` UserDefaults value
     /// ("system" / "light" / "dark") into the unified `activeTheme` key.

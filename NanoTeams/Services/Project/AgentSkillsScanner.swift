@@ -3,8 +3,8 @@ import Foundation
 /// Snapshot of agent skills / slash-commands discovered from well-known
 /// AI-agent convention directories, in the open work folder and under the
 /// user's home dir.
-nonisolated struct AgentSkillsSnapshot: Hashable, Sendable {
-    nonisolated struct Item: Hashable, Sendable, Identifiable {
+nonisolated struct AgentSkillsSnapshot: Codable, Hashable, Sendable {
+    nonisolated struct Item: Codable, Hashable, Sendable, Identifiable {
         /// Collision-proof across agents, origins, and roots:
         /// `"<agentID>|<origin>|<relPathUnderRoot>"`. A project skill and a global
         /// skill with the same name are distinct items (origin differs).
@@ -253,7 +253,7 @@ nonisolated enum AgentSkillsScanner {
             guard let children = try? fileManager.contentsOfDirectory(atPath: rootURL.path) else { return [] }
             var entries: [Entry] = []
             let lowerSuffix = suffix.lowercased()
-            for name in children.sorted() where !WalkSkipRules.skipped.contains(name) {
+            for name in children.sorted() where !WalkSkipRules.shouldSkip(name: name) {
                 guard name.lowercased().hasSuffix(lowerSuffix) else { continue }
                 let fileURL = rootURL.appendingPathComponent(name)
                 var isDir: ObjCBool = false
@@ -298,7 +298,7 @@ nonisolated enum AgentSkillsScanner {
 
             guard let children = try? fileManager.contentsOfDirectory(atPath: dir.path) else { return }
             for name in children.sorted()
-                where !WalkSkipRules.skipped.contains(name) && !extraSkips.contains(name) {
+                where !WalkSkipRules.shouldSkip(name: name) && !extraSkips.contains(name) {
                 let childURL = dir.appendingPathComponent(name)
                 var isDir: ObjCBool = false
                 guard fileManager.fileExists(atPath: childURL.path, isDirectory: &isDir), isDir.boolValue else { continue }
@@ -323,7 +323,7 @@ nonisolated enum AgentSkillsScanner {
             visited.insert(canonical)
 
             guard let children = try? fileManager.contentsOfDirectory(atPath: dir.path) else { return }
-            for name in children.sorted() where !WalkSkipRules.skipped.contains(name) {
+            for name in children.sorted() where !WalkSkipRules.shouldSkip(name: name) {
                 let childURL = dir.appendingPathComponent(name)
                 var isDir: ObjCBool = false
                 guard fileManager.fileExists(atPath: childURL.path, isDirectory: &isDir) else { continue }

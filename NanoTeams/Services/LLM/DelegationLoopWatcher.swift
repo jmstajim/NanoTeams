@@ -105,6 +105,25 @@ final class DelegationLoopWatcher {
     /// No default, for the reason spelled out on `LoopScanner.scanCommitted`: `nil` is
     /// an assertion about the caller's conversation, not a policy this type can pick,
     /// and getting it wrong silently reverts the fix rather than failing.
+    /// Whether a committed scan on this task can do anything at all — the same first
+    /// question `considerCommitted` asks itself, exposed so a caller can skip BUILDING
+    /// the arguments.
+    ///
+    /// The arguments are not cheap. `NTMSOrchestrator.commitStreaming` walked the whole
+    /// conversation to build the assistant tail and again for the information boundary,
+    /// once per committed assistant turn, BEFORE this guard ran — Θ(N) per turn on an
+    /// uncapped conversation, i.e. Θ(N²) across a chat session, on the MainActor, for a
+    /// scan that returns immediately on every task that is not a delegation child.
+    ///
+    /// The policy stays HERE rather than being spelled `task.parentTaskID != nil` at the
+    /// call site: "which tasks does this watcher watch" has one home, and
+    /// `considerCommitted` still asks it itself — so a caller that forgets this is
+    /// slower, never wrong (CLAUDE.md #91).
+    func watchesCommitted(taskID: Int) -> Bool {
+        guard let orchestrator else { return false }
+        return isChildTask(taskID, in: orchestrator)
+    }
+
     func considerCommitted(
         taskID: Int,
         recentAssistant: [(thinking: String?, content: String, createdAt: Date)],

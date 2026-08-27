@@ -42,7 +42,7 @@ private enum QuickCapturePanelPreview {
     /// the chat preview silently falls through to the non-chat body and shows a
     /// plausible-but-wrong screen.
     static func makeStore(activeTask: NTMSTask? = nil) -> NTMSOrchestrator {
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = PreviewStore.make()
         store.snapshot = WorkFolderContext(
             projection: WorkFolderProjection(
                 state: WorkFolderState(name: "Preview"),
@@ -97,7 +97,7 @@ private enum QuickCapturePanelPreview {
         state.supervisorTask = supervisorTask
         state.answerText = answerText
         state.attachments = attachments
-        state.clippedTexts = clippedTexts
+        state.clippedTexts = [Clip].minting(clippedTexts)
         return state
     }
 

@@ -88,8 +88,8 @@ nonisolated struct CreateArtifactTool: ToolHandler {
         "markdown", "md", "pdf", "rtf", "docx",
     ]
 
-    func handle(context: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             // NOT the shared `requiredNonEmptyString` helper, deliberately — see the
             // rejection branch below, which is where an empty name is handled.
             let name = try requiredString(args, "name")

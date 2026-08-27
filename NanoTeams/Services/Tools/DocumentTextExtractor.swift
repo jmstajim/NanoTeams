@@ -15,14 +15,14 @@ import Foundation
 /// - DOC (legacy Word 97-2004 binary) — `LegacyDOCExtractor` (rejected with message)
 ///
 /// Anything not in `DocumentConstants.supportedReadExtensions` returns `nil`
-/// from `extractText`; callers then read the file as raw UTF-8. This is
+/// from `extract`; callers then read the file as raw UTF-8. This is
 /// intentional for source-like formats (`.html`, `.xml`, `.md`, `.json`,
 /// source code) — callers need verbatim markup for source-editing workflows.
 ///
 /// **Export**: PDF, RTF, DOCX (delegated to `DocumentExporter`, macOS-only).
 ///
-/// All extract methods return a silent fallback message on failure —
-/// `"[Could not extract text from <filename>: <reason>]"`.
+/// Outcomes are classified, never encoded into the returned text — see
+/// `DocumentExtractionOutcome`.
 nonisolated enum DocumentTextExtractor {
 
     /// Supported export formats for `create_artifact(format:)`.
@@ -52,7 +52,7 @@ nonisolated enum DocumentTextExtractor {
 
     // MARK: - Text Extraction
 
-    /// Process-lifetime cache for extracted document text. Keyed by absolute
+    /// Process-lifetime cache for extraction outcomes. Keyed by absolute
     /// path with a stored `(mtime, size)` so a file changed on disk reports a
     /// miss and re-extracts. `NSCache` is documented thread-safe; entries are
     /// fully immutable, so `nonisolated(unsafe)` is sound.
@@ -60,31 +60,38 @@ nonisolated enum DocumentTextExtractor {
     /// Bounds: `countLimit=128` AND `totalCostLimit≈256MB`. Without the cost
     /// limit, 128 entries of multi-MB Office documents could pin > 2 GB of
     /// RAM — `NSCache` only enforces count when no cost is set.
-    nonisolated(unsafe) private static let cache: NSCache<NSString, CachedDocumentText> = {
-        let c = NSCache<NSString, CachedDocumentText>()
+    nonisolated(unsafe) private static let cache: NSCache<NSString, CachedDocumentOutcome> = {
+        let c = NSCache<NSString, CachedDocumentOutcome>()
         c.countLimit = 128
         c.totalCostLimit = 256 * 1024 * 1024
         return c
     }()
 
-    nonisolated private final class CachedDocumentText: Sendable {
-        let text: String
+    nonisolated private final class CachedDocumentOutcome: Sendable {
+        let outcome: DocumentExtractionOutcome
         let mtime: Date
         let size: UInt64
-        init(text: String, mtime: Date, size: UInt64) {
-            self.text = text
+        init(outcome: DocumentExtractionOutcome, mtime: Date, size: UInt64) {
+            self.outcome = outcome
             self.mtime = mtime
             self.size = size
         }
     }
 
-    /// Reads `(mtime, size)` via `lstat`. Returns `nil` on permission errors,
-    /// missing files, or network-volume stalls. Loud diagnostic so a regression
-    /// that silently disables the cache for a whole class of files (e.g. a
-    /// new sandbox restriction) is visible in the network log.
+    /// Reads `(mtime, size)`. Returns `nil` on permission errors, missing files, or
+    /// network-volume stalls. Loud diagnostic so a regression that silently disables the
+    /// cache for a whole class of files (e.g. a new sandbox restriction) is visible in
+    /// the network log.
+    ///
+    /// Also `nil` for a DIRECTORY, which sounds like an edge case and is not: `.rtfd` is a
+    /// bundle, so the URL handed to the extractor is a directory whose mtime and size
+    /// describe the folder record, not `TXT.rtf`. Rewriting the inner file in place moves
+    /// neither, so the key cannot see the change — and an `.empty` verdict cached under it
+    /// would be a wrong answer that produces no output to notice.
     nonisolated private static func mtimeAndSize(for url: URL) -> (mtime: Date, size: UInt64)? {
         do {
             let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
+            guard (attrs[.type] as? FileAttributeType) != .typeDirectory else { return nil }
             guard let mtime = attrs[.modificationDate] as? Date else { return nil }
             let size = (attrs[.size] as? NSNumber)?.uint64Value ?? 0
             return (mtime, size)
@@ -96,9 +103,10 @@ nonisolated enum DocumentTextExtractor {
         }
     }
 
-    /// Returns extracted plain text, or a `[Could not extract text ...]` message on failure.
-    /// Returns `nil` only if the extension is not a supported document format (caller falls back to UTF-8).
-    static func extractText(from fileURL: URL) -> String? {
+    /// Extracts one document, applying the byte cap and the process-lifetime cache.
+    /// Returns `nil` only if the extension is not a supported document format (caller
+    /// falls back to reading raw UTF-8).
+    static func extract(from fileURL: URL) -> DocumentExtractionOutcome? {
         let ext = fileURL.pathExtension.lowercased()
         guard let extractor = extractors[ext] else { return nil }
 
@@ -113,35 +121,50 @@ nonisolated enum DocumentTextExtractor {
            cached.mtime == stat.mtime,
            cached.size == stat.size
         {
-            return cached.text
+            return cached.outcome
         }
 
-        let result = extractor.extract(from: fileURL)
+        let outcome = capped(extractor.extract(from: fileURL))
 
-        let maxBytes = DocumentConstants.maxExtractionBytes
-        let finalResult: String
-        if result.utf8.count > maxBytes {
-            let head = truncateToUTF8Bytes(result, maxBytes: maxBytes)
-            finalResult = head + "\n\n... (truncated at \(maxBytes) bytes)"
-        } else {
-            finalResult = result
-        }
-
-        // Only cache successful extractions. Failure messages are typically
-        // transient (locked file, disk error, malformed XML at boot time) —
-        // pinning them would defeat retry.
-        if let stat, !isFailureMessage(finalResult) {
+        // `.text` and `.empty` are both deterministic for a given `(mtime, size)`, so both
+        // cache: an image-only PDF re-runs PDFKit on every search otherwise. `.failure` does
+        // not — those are typically transient (locked file, disk error, malformed XML at
+        // boot time) and pinning one would defeat retry.
+        if let stat, outcome.isCacheable {
             cache.setObject(
-                CachedDocumentText(text: finalResult, mtime: stat.mtime, size: stat.size),
+                CachedDocumentOutcome(outcome: outcome, mtime: stat.mtime, size: stat.size),
                 forKey: key,
-                // Cost = UTF-8 byte count; pairs with `totalCostLimit`. NSCache
-                // evicts least-recently-used entries when the sum exceeds the
-                // cap, so an unexpectedly large doc can't pin the cache.
-                cost: finalResult.utf8.count
+                // Cost is the SOURCE file's size, not the result's: it stands for the work a
+                // hit avoids, and it keeps the two bounds consistent. Charging the result
+                // instead would price an `.empty` verdict at ~30 bytes — invisible to
+                // `totalCostLimit` while still occupying one of the 128 slots, so a folder of
+                // scanned PDFs would evict precisely the expensive entries the cache exists for.
+                cost: Int(min(stat.size, UInt64(Int.max)))
             )
         }
 
-        return finalResult
+        return outcome
+    }
+
+    /// Applies `DocumentConstants.maxExtractionBytes` to extracted text.
+    ///
+    /// The cut is recorded as a warning rather than only as a trailing marker inside the
+    /// string: the marker is prose, and the one consumer that most needs to know — the
+    /// byte-level search scanner — never reads the text as prose, so a 2 MB PDF was
+    /// searched through its first 500 KB in silence.
+    nonisolated private static func capped(_ outcome: DocumentExtractionOutcome) -> DocumentExtractionOutcome {
+        guard case .text(let text, let warnings) = outcome else { return outcome }
+        let maxBytes = DocumentConstants.maxExtractionBytes
+        guard text.utf8.count > maxBytes else { return outcome }
+        let head = truncateToUTF8Bytes(text, maxBytes: maxBytes)
+        return .text(head + "\n\n" + truncationMarker,
+                     warnings: warnings + ["extracted text truncated at \(maxBytes) bytes"])
+    }
+
+    /// Trailing marker appended to capped text. A reader looking at the text alone must be
+    /// able to see that it ends early.
+    static var truncationMarker: String {
+        "... (truncated at \(DocumentConstants.maxExtractionBytes) bytes)"
     }
 
     /// Truncates `s` to at most `maxBytes` UTF-8 bytes, snapping back to the
@@ -168,14 +191,14 @@ nonisolated enum DocumentTextExtractor {
         DocumentExporter.export(text: text, to: format)
     }
 
-    // MARK: - Failure Detection
+}
 
-    /// Prefix used in extraction failure messages. Callers can check this to distinguish
-    /// extraction failures from real content (e.g., to avoid caching failures as valid reads).
-    static let failurePrefix = DocumentExtractionFailure.prefix
-
-    /// Returns true if the string is an extraction failure message (not real content).
-    static func isFailureMessage(_ text: String) -> Bool {
-        DocumentExtractionFailure.isFailure(text)
+nonisolated private extension DocumentExtractionOutcome {
+    /// Whether this outcome is a stable property of the bytes on disk.
+    var isCacheable: Bool {
+        switch self {
+        case .text, .empty: return true
+        case .failure: return false
+        }
     }
 }

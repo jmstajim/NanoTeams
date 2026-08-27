@@ -205,6 +205,7 @@ struct BenchmarkSweepCard: View {
                         .font(Typography.caption)
                         .foregroundStyle(entry.isSelected ? Colors.accent : Colors.textTertiary)
                         .frame(width: SettingsLayout.toggleIconSize / 2)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(entry.target.modelName)

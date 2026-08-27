@@ -162,7 +162,7 @@ nonisolated enum BenchmarkMetricsPolicy {
         // moment it has done its job, so it carries a void every healthy run. Counting it here
         // would tell the user "1 sample could not be used and was excluded from the medians" after
         // every single successful run — about a sample that was never going to be in a median.
-        let voided = samples.filter { $0.phase == .measured && $0.void != nil }.count
+        let voided = samples.count { $0.phase == .measured && $0.void != nil }
 
         let sources = Set(usable.compactMap(\.prefillSource))
 

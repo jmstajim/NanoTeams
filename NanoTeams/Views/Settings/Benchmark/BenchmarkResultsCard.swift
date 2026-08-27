@@ -177,7 +177,7 @@ struct BenchmarkResultsCard: View {
 
     /// Runs excluded from the leaderboard because they were measured with a different prompt.
     private var hiddenRunCount: Int {
-        runs.filter { $0.promptVersion != BenchmarkPrompt.version }.count
+        runs.count { $0.promptVersion != BenchmarkPrompt.version }
     }
 
     // MARK: - Leaderboard
@@ -553,22 +553,23 @@ struct BenchmarkResultsCard: View {
     /// table, and "2 of 9" is what says it is not.
     private func filterField(visible: Int, total: Int) -> some View {
         HStack(spacing: Spacing.s) {
-            HStack(spacing: Spacing.xs) {
-                TextField(Self.filterPlaceholder, text: $query)
-                    .textFieldStyle(.plain)
-                if !query.isEmpty {
-                    Button {
-                        query = ""
-                    } label: {
-                        Image(systemName: "xmark.circle")
-                            .foregroundStyle(Colors.textSecondary)
+            TextField(Self.filterPlaceholder, text: $query)
+                .textFieldStyle(.plain)
+                .inputSurface(.field) {
+                    EmptyView()
+                } trailing: {
+                    if !query.isEmpty {
+                        Button {
+                            query = ""
+                        } label: {
+                            Image(systemName: "xmark.circle")
+                                .foregroundStyle(Colors.textSecondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Clear the filter")
                     }
-                    .buttonStyle(.plain)
-                    .help("Clear the filter")
                 }
-            }
-            .terminalField()
-            .frame(maxWidth: Self.filterFieldWidth)
+                .frame(maxWidth: Self.filterFieldWidth)
 
             if let label = Self.matchCountLabel(visible: visible, total: total, query: query) {
                 Text(label)

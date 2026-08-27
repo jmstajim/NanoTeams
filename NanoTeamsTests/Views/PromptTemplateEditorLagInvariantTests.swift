@@ -46,22 +46,41 @@ final class PromptTemplateEditorLagInvariantTests: XCTestCase {
         )
     }
 
-    /// Both `scrollView.drawsBackground` and the inner `NSClipView`'s
-    /// `drawsBackground` must be false. The clip view defaults to drawing
-    /// `controlBackgroundColor`; without disabling it, the textView's own
-    /// background is occluded. The outer scroll view's `drawsBackground`
-    /// being false is what lets the textView's `backgroundColor` be the
-    /// sole visible fill.
-    func testMakeNSView_neitherScrollViewNorClipViewDrawsBackground() {
+    /// RE-AIMED 2026-08-24, not weakened (CLAUDE.md #104).
+    ///
+    /// This test used to assert that NEITHER the scroll view nor its clip view drew a background,
+    /// because the fill lived on `textView.backgroundColor` and both would have occluded it. Both
+    /// halves have since retired, for two different reasons:
+    ///
+    ///   - the fill moved to the scroll view (`InputSurface.stamp`), because the text view's
+    ///     document is shorter than the viewport whenever the field holds fewer lines than its
+    ///     `minLineCount` — a textView fill painted only the top of the box;
+    ///   - `scrollView.drawsBackground` and `contentView.drawsBackground` were measured to be ONE
+    ///     flag with two spellings (setting either sets the other), so "neither draws" and "the
+    ///     scroll view draws" cannot both be assertable, and the old name described a state the
+    ///     API cannot represent independently.
+    ///
+    /// The property that survives is the one that mattered: **`controlBackgroundColor` must never
+    /// reach the screen.** It is asserted here for this editor and, more strongly, in
+    /// `InputSurfaceAppKitTests` for BOTH editable representables at once — which is broader
+    /// coverage than this test ever had, not less.
+    func testMakeNSView_backgroundIsTheInputFillNotAControlColor() {
         let scrollView = makeEditor()
 
-        XCTAssertFalse(
-            scrollView.drawsBackground,
-            "scrollView.drawsBackground must be false so the textView's own backgroundColor is the visible fill."
+        XCTAssertTrue(
+            scrollView.backgroundColor === Colors.nsSurfaceInput,
+            "the fill must be the design system's input surface, never NSColor.controlBackgroundColor."
         )
+        XCTAssertTrue(
+            scrollView.contentView.backgroundColor === Colors.nsSurfaceInput,
+            "NSClipView shares the scroll view's background — it must carry the input fill too."
+        )
+        guard let textView = scrollView.documentView as? NSTextView else {
+            return XCTFail("documentView is not an NSTextView")
+        }
         XCTAssertFalse(
-            scrollView.contentView.drawsBackground,
-            "scrollView.contentView (NSClipView) must NOT draw background — otherwise it paints controlBackgroundColor over the textView."
+            textView.drawsBackground,
+            "the text view must not be a second painter — it would cover only its document's height."
         )
     }
 

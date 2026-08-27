@@ -111,7 +111,7 @@ struct TeamActivityComposer: View {
 
     @State private var text: String = ""
     @State private var attachments: [StagedAttachment] = []
-    @State private var clippedTexts: [String] = []
+    @State private var clippedTexts: [Clip] = []
     /// `nil` = auto (first chip wins via `resolveEffectiveRecipient`); else explicit pick.
     @State private var selectedRecipient: Recipient? = nil
     /// Intrinsic height of the question preview content — used both to decide whether
@@ -142,53 +142,9 @@ struct TeamActivityComposer: View {
     // MARK: - Recipient
 
     /// `.answer` cannot exist without a step id — answering without a question is unrepresentable.
-    enum Recipient: Hashable {
+    nonisolated enum Recipient: Hashable {
         case answer(stepID: String)
         case role(id: String)
-    }
-
-    /// `nil` when there's no usable recipient (no question, no working role, no
-    /// candidate). The chip row collapses and `canSubmit` is `false` in that state.
-    private var effectiveRecipient: Recipient? {
-        Self.resolveEffectiveRecipient(
-            selected: selectedRecipient,
-            activeQuestions: activeQuestions,
-            selectableRoles: selectableRoles,
-            failedRoles: failedRoles,
-            candidateRoles: candidateRoles,
-            allowsRoleFallback: allowsRoleFallback
-        )
-    }
-
-    /// All role IDs currently asking a Supervisor question — excluded from queue-role
-    /// chips so the same role doesn't appear twice (once as Answer, once as queue target).
-    private var askingRoleIDs: Set<String> {
-        Set(activeQuestions.map(\.askingRoleID))
-    }
-
-    private var selectableRoles: [TeamRoleDefinition] {
-        Self.computeSelectableRoles(
-            roles: roleDefinitions,
-            workingRoleIDs: workingRoleIDs,
-            askingRoleIDs: askingRoleIDs
-        )
-    }
-
-    private var candidateRoles: [TeamRoleDefinition] {
-        Self.computeCandidateRoles(
-            roles: roleDefinitions,
-            askingRoleIDs: askingRoleIDs
-        )
-    }
-
-    /// `.failed` roles eligible as a named retry target — non-supervisor, non-observer,
-    /// not currently asking (askers route through their own Answer chip).
-    private var failedRoles: [TeamRoleDefinition] {
-        Self.computeFailedRoles(
-            roles: roleDefinitions,
-            failedRoleIDs: failedRoleIDs,
-            askingRoleIDs: askingRoleIDs
-        )
     }
 
     private func roleName(_ id: String) -> String {
@@ -201,26 +157,8 @@ struct TeamActivityComposer: View {
 
     // MARK: - Derived
 
-    private var canSubmit: Bool {
-        Self.computeCanSubmit(
-            text: text,
-            hasAttachments: !attachments.isEmpty,
-            hasClips: !clippedTexts.isEmpty,
-            effectiveRecipient: effectiveRecipient
-        )
-    }
-
     private var queuedMessages: [QuickCaptureFormState.QueuedChatMessage] {
         formState.queuedMessages(for: taskID)
-    }
-
-    private var placeholderText: String {
-        Self.placeholderText(
-            recipient: effectiveRecipient,
-            workingRoleIDs: workingRoleIDs,
-            failedRoleIDs: failedRoleIDs,
-            roleDefinitions: roleDefinitions
-        )
     }
 
     // MARK: - Body
@@ -232,10 +170,31 @@ struct TeamActivityComposer: View {
     }
 
     private var contentColumn: some View {
-        VStack(alignment: .leading, spacing: Spacing.s) {
-            recipientChipRow
+        // Derived ONCE per body pass. `effectiveRecipient` and `chipOptionsComputed` were
+        // computed properties that each re-derived the same three role arrays plus
+        // `askingRoleIDs`; `computeRouting` derives them together, so the chip row and the
+        // resolver now cannot disagree by construction rather than by convention.
+        //
+        // `chipRecipients` is hoisted OUT of the `.onChange` key below deliberately: an
+        // `onChange` key is evaluated on EVERY body pass whether or not the handler fires
+        // (CLAUDE.md #113), so a `.map(\.recipient)` spelled inside it is per-pass work
+        // wearing the look of "we only react to changes" — the shape the `a6` axis exists
+        // to catch, and the reason this site was in its baseline.
+        let routing = Self.computeRouting(
+            roles: roleDefinitions,
+            workingRoleIDs: workingRoleIDs,
+            failedRoleIDs: failedRoleIDs,
+            activeQuestions: activeQuestions,
+            allowsRoleFallback: allowsRoleFallback,
+            selected: selectedRecipient
+        )
+        let recipient = routing.effectiveRecipient
+        let chipRecipients = routing.chipOptions.map(\.recipient)
 
-            if case .answer(let stepID) = effectiveRecipient,
+        return VStack(alignment: .leading, spacing: Spacing.s) {
+            recipientChipRow(routing.chipOptions, selected: recipient)
+
+            if case .answer(let stepID) = recipient,
                let q = activeQuestions.first(where: { $0.stepID == stepID }) {
                 questionPreviewCard(q)
             }
@@ -247,10 +206,20 @@ struct TeamActivityComposer: View {
                 text: $text,
                 attachments: $attachments,
                 clips: $clippedTexts,
-                placeholder: placeholderText,
-                canSubmit: canSubmit,
+                placeholder: Self.placeholderText(
+                    recipient: recipient,
+                    workingRoleIDs: workingRoleIDs,
+                    failedRoleIDs: failedRoleIDs,
+                    roleDefinitions: roleDefinitions
+                ),
+                canSubmit: Self.computeCanSubmit(
+                    text: text,
+                    hasAttachments: !attachments.isEmpty,
+                    hasClips: !clippedTexts.isEmpty,
+                    effectiveRecipient: recipient
+                ),
                 isSubmitting: false,
-                onSubmit: handleSubmit,
+                onSubmit: { handleSubmit(recipient: recipient) },
                 onStageAttachment: { url in store.stageAttachment(url: url, draftID: UUID()) },
                 onRemoveAttachment: { staged in store.removeStagedAttachment(staged) },
                 minLineCount: 1,
@@ -266,7 +235,7 @@ struct TeamActivityComposer: View {
         .onChange(of: text) { oldText, newText in
             let wasEmpty = oldText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             let isEmpty = newText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            if wasEmpty, !isEmpty, selectedRecipient == nil, let auto = effectiveRecipient {
+            if wasEmpty, !isEmpty, selectedRecipient == nil, let auto = recipient {
                 selectedRecipient = auto
             }
         }
@@ -274,7 +243,7 @@ struct TeamActivityComposer: View {
         // after answering, role chip after the role finishes), clear the explicit
         // selection so `resolveEffectiveRecipient`'s auto-resolution kicks back in.
         // Without this the placeholder/avatar/submit reflect a stale selection.
-        .onChange(of: chipOptionsComputed.map(\.recipient)) { _, recipients in
+        .onChange(of: chipRecipients) { _, recipients in
             let prior = selectedRecipient
             // Retarget to the SAME role's other chip shape (`.role` ↔ `.answer`)
             // before treating the selection as lost. The Autovisor (and any
@@ -303,26 +272,16 @@ struct TeamActivityComposer: View {
 
     // MARK: - Recipient Chips (horizontal pill row)
 
-    private var chipOptionsComputed: [ChipOption] {
-        Self.computeChipOptions(
-            roles: roleDefinitions,
-            workingRoleIDs: workingRoleIDs,
-            failedRoleIDs: failedRoleIDs,
-            activeQuestions: activeQuestions,
-            allowsRoleFallback: allowsRoleFallback
-        )
-    }
-
     @ViewBuilder
-    private var recipientChipRow: some View {
-        if !chipOptionsComputed.isEmpty {
+    private func recipientChipRow(_ options: [ChipOption], selected: Recipient?) -> some View {
+        if !options.isEmpty {
             HStack(spacing: Spacing.xs) {
                 MonoLabel(text: "To", size: .xs)
                     .padding(.trailing, Spacing.xxs)
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: Spacing.xs) {
-                        ForEach(chipOptionsComputed) { option in
-                            chip(for: option)
+                        ForEach(options) { option in
+                            chip(for: option, isSelected: selected == option.recipient)
                         }
                     }
                     .padding(.vertical, Spacing.xxs)
@@ -347,8 +306,7 @@ struct TeamActivityComposer: View {
         }
     }
 
-    private func chip(for option: ChipOption) -> some View {
-        let isSelected = effectiveRecipient == option.recipient
+    private func chip(for option: ChipOption, isSelected: Bool) -> some View {
         let isHovered = hoveredChipRecipient == option.recipient
         // Answer chip uses the asking role's tint; others use accent.
         let selectedFill: Color = {
@@ -602,10 +560,16 @@ struct TeamActivityComposer: View {
 
     // MARK: - Submit
 
-    private func handleSubmit() {
+    /// Takes the recipient the body pass resolved rather than re-deriving it.
+    ///
+    /// Not only cheaper: `canSubmit` is computed from the pass-time recipient, so
+    /// re-resolving here could gate on one value and act on another. Every input to
+    /// `computeRouting` forces a body pass when it changes, so the captured value cannot
+    /// be stale by the time the button is tapped.
+    private func handleSubmit(recipient: Recipient?) {
         let built = AnswerTextBuilder.build(
             text: text,
-            clips: clippedTexts,
+            clips: clippedTexts.texts,
             attachments: attachments,
             embedFiles: config.embedFilesInPrompt
         )
@@ -613,12 +577,12 @@ struct TeamActivityComposer: View {
             store.lastErrorMessage = banner
         }
 
-        switch effectiveRecipient {
+        switch recipient {
         case .answer(let stepID):
             // Compile-guaranteed: `.answer` always carries a step id (no runtime guard).
             let finalized = attachments
             let snapshotText = text
-            let snapshotClips = clippedTexts
+            let snapshotClips = clippedTexts.texts
             Task {
                 await Self.performAnswerSubmit(
                     snapshotText: snapshotText,
@@ -634,7 +598,7 @@ struct TeamActivityComposer: View {
                     restore: { t, a, c in
                         text = t
                         attachments = a
-                        clippedTexts = c
+                        clippedTexts = [Clip].minting(c)
                     }
                 )
                 // On failure `answerSupervisorQuestion` already set `lastErrorMessage`
@@ -652,7 +616,7 @@ struct TeamActivityComposer: View {
             // "Correct Role…" sheet (routes through `NTMSOrchestrator.correctRole`).
             let isWorking = workingRoleIDs.contains(id)
             let queued = QuickCaptureController.shared.queueChatMessage(
-                text: text, attachments: attachments, clippedTexts: clippedTexts,
+                text: text, attachments: attachments, clippedTexts: clippedTexts.texts,
                 taskID: taskID,
                 targetRoleID: Self.queueTarget(roleID: id, workingRoleIDs: workingRoleIDs)
             )
@@ -670,13 +634,13 @@ struct TeamActivityComposer: View {
         let cleared = Self.clearedComposerState()
         text = cleared.text
         attachments = cleared.attachments
-        clippedTexts = cleared.clips
+        clippedTexts = [Clip].minting(cleared.clips)
         selectedRecipient = cleared.selectedRecipient
     }
 
     // MARK: - Chip Option (internal for test access)
 
-    struct ChipOption: Identifiable, Equatable {
+    nonisolated struct ChipOption: Identifiable, Equatable {
         let recipient: Recipient
         let label: String
         let icon: String

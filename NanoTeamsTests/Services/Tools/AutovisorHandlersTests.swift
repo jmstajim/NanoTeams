@@ -22,17 +22,17 @@ final class AutovisorHandlersTests: XCTestCase {
         return runtime
     }
 
-    private func invoke(_ runtime: ToolRuntime, _ name: String, _ args: [String: Any]) throws -> ToolExecutionResult {
+    private func invoke(_ runtime: ToolRuntime, _ name: String, _ args: [String: Any]) async throws -> ToolExecutionResult {
         let argsJSON = String(data: try JSONSerialization.data(withJSONObject: args), encoding: .utf8) ?? "{}"
-        return try invokeRaw(runtime, name, argsJSON)
+        return try await invokeRaw(runtime, name, argsJSON)
     }
 
     /// Drives a verbatim arguments string through `ToolRuntime` — exercises the
     /// real `parseAndNormalizeArguments` path (JSON `null` → NSNull, non-JSON
     /// plain text → `__raw_input__` wrap) instead of a pre-built dictionary.
-    private func invokeRaw(_ runtime: ToolRuntime, _ name: String, _ argsJSON: String) throws -> ToolExecutionResult {
+    private func invokeRaw(_ runtime: ToolRuntime, _ name: String, _ argsJSON: String) async throws -> ToolExecutionResult {
         let call = StepToolCall(name: name, argumentsJSON: argsJSON)
-        let results = runtime.executeAll(
+        let results = await runtime.executeAll(
             context: ToolExecutionContext(
                 workFolderRoot: FileManager.default.temporaryDirectory,
                 taskID: 1, runID: 0, roleID: AutovisorConstants.managerRoleSystemID
@@ -45,44 +45,44 @@ final class AutovisorHandlersTests: XCTestCase {
     // MARK: - Happy-path signals
 
     func testListTasks_emitsSignal() async throws {
-        let r = try invoke(makeRuntime(), ToolNames.listTasks, [:])
+        let r = try await invoke(makeRuntime(), ToolNames.listTasks, [:])
         XCTAssertFalse(r.isError)
         guard case .listTasks? = r.signal else { return XCTFail("expected .listTasks, got \(String(describing: r.signal))") }
     }
 
     func testTaskStatus_validID_emitsSignal() async throws {
-        let r = try invoke(makeRuntime(), ToolNames.taskStatus, ["task_id": 7])
+        let r = try await invoke(makeRuntime(), ToolNames.taskStatus, ["task_id": 7])
         XCTAssertFalse(r.isError)
         guard case .taskStatus(let id)? = r.signal, id == 7 else { return XCTFail("got \(String(describing: r.signal))") }
     }
 
     func testCreateManagedTask_valid_emitsSignal() async throws {
-        let r = try invoke(makeRuntime(), ToolNames.createManagedTask, ["title": "Fix bug", "brief": "Do X", "team_id": "faang"])
+        let r = try await invoke(makeRuntime(), ToolNames.createManagedTask, ["title": "Fix bug", "brief": "Do X", "team_id": "faang"])
         XCTAssertFalse(r.isError)
         guard case .createManagedTask(let t, let b, let team)? = r.signal else { return XCTFail() }
         XCTAssertEqual(t, "Fix bug"); XCTAssertEqual(b, "Do X"); XCTAssertEqual(team, "faang")
     }
 
     func testControlTask_validVerb_emitsSignal() async throws {
-        let r = try invoke(makeRuntime(), ToolNames.controlTask, ["task_id": 3, "action": "pause"])
+        let r = try await invoke(makeRuntime(), ToolNames.controlTask, ["task_id": 3, "action": "pause"])
         XCTAssertFalse(r.isError)
         guard case .controlTask(let id, let verb)? = r.signal, id == 3, verb == .pause else { return XCTFail() }
     }
 
     func testControlTask_rename_carriesTitleInVerb() async throws {
-        let r = try invoke(makeRuntime(), ToolNames.controlTask, ["task_id": 3, "action": "rename", "arg": "New name"])
+        let r = try await invoke(makeRuntime(), ToolNames.controlTask, ["task_id": 3, "action": "rename", "arg": "New name"])
         XCTAssertFalse(r.isError)
         guard case .controlTask(_, let verb)? = r.signal, verb == .rename(title: "New name") else { return XCTFail() }
     }
 
     func testControlTask_renameMissingTitle_errors() async throws {
-        let r = try invoke(makeRuntime(), ToolNames.controlTask, ["task_id": 3, "action": "rename"])
+        let r = try await invoke(makeRuntime(), ToolNames.controlTask, ["task_id": 3, "action": "rename"])
         XCTAssertTrue(r.isError)
         XCTAssertTrue(r.outputJSON.contains("INVALID_ARGS"))
     }
 
     func testManageRole_validVerb_emitsSignal() async throws {
-        let r = try invoke(makeRuntime(), ToolNames.manageRole, ["task_id": 3, "role_id": "engineer", "action": "restart", "comment": "redo"])
+        let r = try await invoke(makeRuntime(), ToolNames.manageRole, ["task_id": 3, "role_id": "engineer", "action": "restart", "comment": "redo"])
         XCTAssertFalse(r.isError)
         guard case .manageRole(let id, let role, let verb)? = r.signal else { return XCTFail() }
         XCTAssertEqual(id, 3); XCTAssertEqual(role, "engineer"); XCTAssertEqual(verb, .restart(comment: "redo"))
@@ -90,44 +90,44 @@ final class AutovisorHandlersTests: XCTestCase {
 
     func testManageRole_requestChangesMissingComment_errors() async throws {
         // request_changes requires a comment — the decode boundary rejects it.
-        let r = try invoke(makeRuntime(), ToolNames.manageRole, ["task_id": 3, "role_id": "r", "action": "request_changes"])
+        let r = try await invoke(makeRuntime(), ToolNames.manageRole, ["task_id": 3, "role_id": "r", "action": "request_changes"])
         XCTAssertTrue(r.isError)
         XCTAssertTrue(r.outputJSON.contains("INVALID_ARGS"))
     }
 
     func testAnswerTaskQuestion_valid_emitsSignal() async throws {
-        let r = try invoke(makeRuntime(), ToolNames.answerTaskQuestion, ["task_id": 2, "answer": "yes"])
+        let r = try await invoke(makeRuntime(), ToolNames.answerTaskQuestion, ["task_id": 2, "answer": "yes"])
         XCTAssertFalse(r.isError)
         guard case .answerTaskQuestion(let id, let a)? = r.signal, id == 2, a == "yes" else { return XCTFail() }
     }
 
     func testMessageTask_valid_emitsSignal() async throws {
-        let r = try invoke(makeRuntime(), ToolNames.messageTask, ["task_id": 2, "message": "focus on auth", "role_id": "pm"])
+        let r = try await invoke(makeRuntime(), ToolNames.messageTask, ["task_id": 2, "message": "focus on auth", "role_id": "pm"])
         XCTAssertFalse(r.isError)
         guard case .messageTask(let id, let m, let role)? = r.signal else { return XCTFail() }
         XCTAssertEqual(id, 2); XCTAssertEqual(m, "focus on auth"); XCTAssertEqual(role, "pm")
     }
 
     func testScheduleTask_valid_emitsSignal() async throws {
-        let r = try invoke(makeRuntime(), ToolNames.scheduleTask, ["task_id": 5, "interval_minutes": 30])
+        let r = try await invoke(makeRuntime(), ToolNames.scheduleTask, ["task_id": 5, "interval_minutes": 30])
         XCTAssertFalse(r.isError)
         guard case .scheduleTask(let id, let mins)? = r.signal, id == 5, mins == 30 else { return XCTFail() }
     }
 
     func testScheduleTask_zero_clears_emitsSignal() async throws {
-        let r = try invoke(makeRuntime(), ToolNames.scheduleTask, ["task_id": 5, "interval_minutes": 0])
+        let r = try await invoke(makeRuntime(), ToolNames.scheduleTask, ["task_id": 5, "interval_minutes": 0])
         XCTAssertFalse(r.isError)
         guard case .scheduleTask(_, let mins)? = r.signal, mins == 0 else { return XCTFail() }
     }
 
     func testSetWorkFolderContext_valid_emitsSignal() async throws {
-        let r = try invoke(makeRuntime(), ToolNames.setWorkFolderContext, ["content": "This is a Swift app."])
+        let r = try await invoke(makeRuntime(), ToolNames.setWorkFolderContext, ["content": "This is a Swift app."])
         XCTAssertFalse(r.isError)
         guard case .setWorkFolderContext(let c)? = r.signal, c == "This is a Swift app." else { return XCTFail() }
     }
 
     func testWaitForEvents_emitsSignal() async throws {
-        let r = try invoke(makeRuntime(), ToolNames.waitForEvents, [:])
+        let r = try await invoke(makeRuntime(), ToolNames.waitForEvents, [:])
         XCTAssertFalse(r.isError)
         guard case .waitForEvents? = r.signal else {
             return XCTFail("expected .waitForEvents, got \(String(describing: r.signal))")
@@ -137,13 +137,13 @@ final class AutovisorHandlersTests: XCTestCase {
     // MARK: - Invalid args → error envelopes (no signal acted on)
 
     func testTaskStatus_missingID_errors() async throws {
-        let r = try invoke(makeRuntime(), ToolNames.taskStatus, [:])
+        let r = try await invoke(makeRuntime(), ToolNames.taskStatus, [:])
         XCTAssertTrue(r.isError)
         XCTAssertTrue(r.outputJSON.contains("INVALID_ARGS"))
     }
 
     func testCreateManagedTask_emptyTitle_derivesFromShortBrief() async throws {
-        let r = try invoke(makeRuntime(), ToolNames.createManagedTask, ["title": "  ", "brief": "B"])
+        let r = try await invoke(makeRuntime(), ToolNames.createManagedTask, ["title": "  ", "brief": "B"])
         XCTAssertFalse(r.isError)
         guard case .createManagedTask(let t, let b, _)? = r.signal else { return XCTFail() }
         XCTAssertEqual(t, "B"); XCTAssertEqual(b, "B")
@@ -151,14 +151,14 @@ final class AutovisorHandlersTests: XCTestCase {
 
     func testCreateManagedTask_missingTitle_derivesFromBrief() async throws {
         let brief = "**Goal**: Add an onboarding tour with tooltips and a help overlay\nSecond line with details."
-        let r = try invoke(makeRuntime(), ToolNames.createManagedTask, ["brief": brief])
+        let r = try await invoke(makeRuntime(), ToolNames.createManagedTask, ["brief": brief])
         XCTAssertFalse(r.isError)
         guard case .createManagedTask(let t, _, _)? = r.signal else { return XCTFail() }
         XCTAssertEqual(t, "**Goal**: Add an onboarding to…")
     }
 
     func testCreateManagedTask_emptyBrief_errors() async throws {
-        let r = try invoke(makeRuntime(), ToolNames.createManagedTask, ["title": "T", "brief": "   "])
+        let r = try await invoke(makeRuntime(), ToolNames.createManagedTask, ["title": "T", "brief": "   "])
         XCTAssertTrue(r.isError)
         XCTAssertTrue(r.outputJSON.contains("INVALID_ARGS"))
     }
@@ -168,8 +168,8 @@ final class AutovisorHandlersTests: XCTestCase {
     /// JSON `null` title — the most common shape of the emission quirk. Must
     /// derive from brief, NOT coerce NSNull into a literal "<null>" task title.
     func testCreateManagedTask_nullTitle_derivesFromBrief() async throws {
-        let r = try invokeRaw(makeRuntime(), ToolNames.createManagedTask,
-                              #"{"title": null, "brief": "Fix the login bug"}"#)
+        let r = try await invokeRaw(makeRuntime(), ToolNames.createManagedTask,
+                                    #"{"title": null, "brief": "Fix the login bug"}"#)
         XCTAssertFalse(r.isError)
         guard case .createManagedTask(let t, _, _)? = r.signal else {
             return XCTFail("got \(String(describing: r.signal))")
@@ -179,8 +179,8 @@ final class AutovisorHandlersTests: XCTestCase {
 
     /// Non-string title (number) falls to derivation rather than stringifying "42".
     func testCreateManagedTask_numericTitle_derivesFromBrief() async throws {
-        let r = try invokeRaw(makeRuntime(), ToolNames.createManagedTask,
-                              #"{"title": 42, "brief": "B"}"#)
+        let r = try await invokeRaw(makeRuntime(), ToolNames.createManagedTask,
+                                    #"{"title": 42, "brief": "B"}"#)
         XCTAssertFalse(r.isError)
         guard case .createManagedTask(let t, _, _)? = r.signal else {
             return XCTFail("got \(String(describing: r.signal))")
@@ -191,8 +191,8 @@ final class AutovisorHandlersTests: XCTestCase {
     /// Multi-line brief with a SHORT first line — pins the first-line split
     /// independently of prefix(30): no embedded newline, no ellipsis.
     func testCreateManagedTask_multiLineBrief_shortFirstLine_usesFirstLineOnly() async throws {
-        let r = try invoke(makeRuntime(), ToolNames.createManagedTask,
-                           ["brief": "Fix login\nThe OAuth flow breaks on refresh tokens."])
+        let r = try await invoke(makeRuntime(), ToolNames.createManagedTask,
+                                 ["brief": "Fix login\nThe OAuth flow breaks on refresh tokens."])
         XCTAssertFalse(r.isError)
         guard case .createManagedTask(let t, _, _)? = r.signal else {
             return XCTFail("got \(String(describing: r.signal))")
@@ -203,7 +203,7 @@ final class AutovisorHandlersTests: XCTestCase {
     /// Exactly-30-char first line is used verbatim — no spurious ellipsis.
     func testCreateManagedTask_exactly30CharBrief_noEllipsis() async throws {
         let line30 = "123456789012345678901234567890"
-        let r = try invoke(makeRuntime(), ToolNames.createManagedTask, ["brief": line30])
+        let r = try await invoke(makeRuntime(), ToolNames.createManagedTask, ["brief": line30])
         XCTAssertFalse(r.isError)
         guard case .createManagedTask(let t, _, _)? = r.signal else {
             return XCTFail("got \(String(describing: r.signal))")
@@ -214,7 +214,7 @@ final class AutovisorHandlersTests: XCTestCase {
     /// 31-char first line truncates to 30 + ellipsis — the other side of the boundary.
     func testCreateManagedTask_31CharBrief_truncatesWithEllipsis() async throws {
         let line31 = "123456789012345678901234567890X"
-        let r = try invoke(makeRuntime(), ToolNames.createManagedTask, ["brief": line31])
+        let r = try await invoke(makeRuntime(), ToolNames.createManagedTask, ["brief": line31])
         XCTAssertFalse(r.isError)
         guard case .createManagedTask(let t, _, _)? = r.signal else {
             return XCTFail("got \(String(describing: r.signal))")
@@ -225,7 +225,7 @@ final class AutovisorHandlersTests: XCTestCase {
     /// prefix(30) counts grapheme clusters — multi-scalar emoji are never split.
     func testCreateManagedTask_emojiBrief_truncatesOnGraphemeBoundary() async throws {
         let brief = String(repeating: "👨‍👩‍👧‍👦", count: 31)
-        let r = try invoke(makeRuntime(), ToolNames.createManagedTask, ["brief": brief])
+        let r = try await invoke(makeRuntime(), ToolNames.createManagedTask, ["brief": brief])
         XCTAssertFalse(r.isError)
         guard case .createManagedTask(let t, _, _)? = r.signal else {
             return XCTFail("got \(String(describing: r.signal))")
@@ -235,8 +235,8 @@ final class AutovisorHandlersTests: XCTestCase {
 
     /// Explicit title with surrounding whitespace is trimmed, not derived.
     func testCreateManagedTask_paddedTitle_isTrimmedAndUsed() async throws {
-        let r = try invoke(makeRuntime(), ToolNames.createManagedTask,
-                           ["title": "  Fix bug  ", "brief": "Long brief about the login flow"])
+        let r = try await invoke(makeRuntime(), ToolNames.createManagedTask,
+                                 ["title": "  Fix bug  ", "brief": "Long brief about the login flow"])
         XCTAssertFalse(r.isError)
         guard case .createManagedTask(let t, _, _)? = r.signal else {
             return XCTFail("got \(String(describing: r.signal))")
@@ -247,7 +247,7 @@ final class AutovisorHandlersTests: XCTestCase {
     /// Model emits a plain non-JSON string as args → ToolRuntime wraps it in
     /// `__raw_input__`, `requiredString` recovers it as the brief, title derives.
     func testCreateManagedTask_rawPlainStringArgs_briefIsRawTextTitleDerived() async throws {
-        let r = try invokeRaw(makeRuntime(), ToolNames.createManagedTask, "Fix the login bug")
+        let r = try await invokeRaw(makeRuntime(), ToolNames.createManagedTask, "Fix the login bug")
         XCTAssertFalse(r.isError)
         guard case .createManagedTask(let t, let b, _)? = r.signal else {
             return XCTFail("got \(String(describing: r.signal))")
@@ -257,38 +257,38 @@ final class AutovisorHandlersTests: XCTestCase {
     }
 
     func testControlTask_unknownVerb_errors() async throws {
-        let r = try invoke(makeRuntime(), ToolNames.controlTask, ["task_id": 1, "action": "frobnicate"])
+        let r = try await invoke(makeRuntime(), ToolNames.controlTask, ["task_id": 1, "action": "frobnicate"])
         XCTAssertTrue(r.isError)
         XCTAssertTrue(r.outputJSON.contains("INVALID_ARGS"))
     }
 
     func testManageRole_unknownVerb_errors() async throws {
-        let r = try invoke(makeRuntime(), ToolNames.manageRole, ["task_id": 1, "role_id": "r", "action": "nope"])
+        let r = try await invoke(makeRuntime(), ToolNames.manageRole, ["task_id": 1, "role_id": "r", "action": "nope"])
         XCTAssertTrue(r.isError)
     }
 
     func testManageRole_missingRoleID_errors() async throws {
-        let r = try invoke(makeRuntime(), ToolNames.manageRole, ["task_id": 1, "action": "restart"])
+        let r = try await invoke(makeRuntime(), ToolNames.manageRole, ["task_id": 1, "action": "restart"])
         XCTAssertTrue(r.isError)
     }
 
     func testScheduleTask_negativeInterval_errors() async throws {
-        let r = try invoke(makeRuntime(), ToolNames.scheduleTask, ["task_id": 1, "interval_minutes": -5])
+        let r = try await invoke(makeRuntime(), ToolNames.scheduleTask, ["task_id": 1, "interval_minutes": -5])
         XCTAssertTrue(r.isError)
     }
 
     func testAnswerTaskQuestion_emptyAnswer_errors() async throws {
-        let r = try invoke(makeRuntime(), ToolNames.answerTaskQuestion, ["task_id": 1, "answer": "   "])
+        let r = try await invoke(makeRuntime(), ToolNames.answerTaskQuestion, ["task_id": 1, "answer": "   "])
         XCTAssertTrue(r.isError)
     }
 
     func testMessageTask_emptyMessage_errors() async throws {
-        let r = try invoke(makeRuntime(), ToolNames.messageTask, ["task_id": 1, "message": ""])
+        let r = try await invoke(makeRuntime(), ToolNames.messageTask, ["task_id": 1, "message": ""])
         XCTAssertTrue(r.isError)
     }
 
     func testSetWorkFolderContext_missingContent_errors() async throws {
-        let r = try invoke(makeRuntime(), ToolNames.setWorkFolderContext, [:])
+        let r = try await invoke(makeRuntime(), ToolNames.setWorkFolderContext, [:])
         XCTAssertTrue(r.isError)
     }
 

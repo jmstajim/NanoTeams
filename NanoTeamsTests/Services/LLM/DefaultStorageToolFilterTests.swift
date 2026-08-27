@@ -106,7 +106,7 @@ final class DefaultStorageToolFilterTests: XCTestCase {
 
     // MARK: - Registry behavior in default storage
 
-    func testDefaultStorageRegistry_fileReadToolsWork() {
+    func testDefaultStorageRegistry_fileReadToolsWork() async {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -126,13 +126,13 @@ final class DefaultStorageToolFilterTests: XCTestCase {
         )
 
         let call = StepToolCall(name: "list_files", argumentsJSON: "{\"path\": \".\"}")
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError, "list_files should work in default storage mode")
     }
 
-    func testDefaultStorageRegistry_writeToolsBlocked() {
+    func testDefaultStorageRegistry_writeToolsBlocked() async {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -152,14 +152,14 @@ final class DefaultStorageToolFilterTests: XCTestCase {
         )
 
         let call = StepToolCall(name: "write_file", argumentsJSON: "{\"path\": \"test.txt\", \"content\": \"hello\"}")
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertTrue(results[0].isError, "write_file should be blocked in default storage mode")
         XCTAssertTrue(results[0].outputJSON.contains("No work folder"), "Error should mention no work folder")
     }
 
-    func testDefaultStorageRegistry_bashRunsRealHandler() {
+    func testDefaultStorageRegistry_bashRunsRealHandler() async {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -182,7 +182,7 @@ final class DefaultStorageToolFilterTests: XCTestCase {
         )
 
         let call = StepToolCall(name: ToolNames.bash, argumentsJSON: "{\"command\": \"echo hello\"}")
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError, "bash should run (not the blocked stub) in default storage mode")

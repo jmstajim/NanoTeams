@@ -17,6 +17,30 @@ import Foundation
 /// ```
 nonisolated enum TaskMutationService {
 
+    // MARK: - Wire shapes
+
+    /// The `[CALL] … Arguments: … [RESULT] …` composite every persisted tool message carries.
+    ///
+    /// Extracted from `commitCollaborationOutcome`, which held it as a literal, when
+    /// `StatusRecoveryService` gained a second producer: two producers of one wire shape is
+    /// exactly the drift class (#51/#117), and here it would surface as a recovery-written tool
+    /// message rendering differently from every other tool message in the same feed.
+    ///
+    /// Self-describing on purpose. `ConversationReplay` records that `providerID` is nil in
+    /// essentially all production traffic, so a tool result is matched to its call by CONTENT,
+    /// not by an id — and the transcript being replayed may not contain the call at all.
+    static func toolResultComposite(
+        toolName: String, argumentsJSON: String, resultJSON: String
+    ) -> String {
+        """
+        [CALL] \(toolName)
+        Arguments: \(argumentsJSON)
+        
+        [RESULT]
+        \(resultJSON)
+        """
+    }
+
     // MARK: - Step Convenience Methods
 
     /// Appends a message to a step in a task.

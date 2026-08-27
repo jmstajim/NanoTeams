@@ -108,12 +108,12 @@ final class EditFileInteriorWhitespaceToleranceTests: XCTestCase {
 
     private func runEdit(
         path: String, oldText: String, newText: String, replaceAll: Bool? = nil
-    ) -> ToolExecutionResult {
+    ) async -> ToolExecutionResult {
         var args: [String: Any] = ["path": path, "old_text": oldText, "new_text": newText]
         if let replaceAll { args["replace_all"] = replaceAll }
         let data = try! JSONSerialization.data(withJSONObject: args)
         let call = StepToolCall(name: "edit_file", argumentsJSON: String(data: data, encoding: .utf8)!)
-        return runtime.executeAll(context: context, toolCalls: [call])[0]
+        return await runtime.executeAll(context: context, toolCalls: [call])[0]
     }
 
     private func envelope(_ result: ToolExecutionResult) -> [String: Any] {
@@ -162,10 +162,10 @@ final class EditFileInteriorWhitespaceToleranceTests: XCTestCase {
     ///
     /// RED: remove the tier-3.5 collapsed scan → the call returns ANCHOR_NOT_FOUND
     /// and every assertion below the first fails.
-    func testRealAttempt1_interiorDriftOnly_isRepairedWithTheFilesBytes() throws {
+    func testRealAttempt1_interiorDriftOnly_isRepairedWithTheFilesBytes() async throws {
         try writeFile("game.js", Self.constBlock)
 
-        let result = runEdit(path: "game.js", oldText: Self.anchor1, newText: Self.new1)
+        let result = await runEdit(path: "game.js", oldText: Self.anchor1, newText: Self.new1)
 
         XCTAssertFalse(result.isError, result.outputJSON)
         let disk = try readFile("game.js")
@@ -188,10 +188,10 @@ final class EditFileInteriorWhitespaceToleranceTests: XCTestCase {
     /// the indent and the code both correct — the sharpest form of the class.
     ///
     /// RED: same mutation as `testRealAttempt1_interiorDriftOnly_isRepairedWithTheFilesBytes`.
-    func testRealAttempt2_oneInteriorSpaceAway_isRepaired() throws {
+    func testRealAttempt2_oneInteriorSpaceAway_isRepaired() async throws {
         try writeFile("game.js", Self.constBlock)
 
-        let result = runEdit(path: "game.js", oldText: Self.anchor2, newText: Self.new2)
+        let result = await runEdit(path: "game.js", oldText: Self.anchor2, newText: Self.new2)
 
         XCTAssertFalse(result.isError, result.outputJSON)
         assertLine(try readFile("game.js"), at: 3, equals: Self.fileLineStepUp,
@@ -203,10 +203,10 @@ final class EditFileInteriorWhitespaceToleranceTests: XCTestCase {
     /// Control pair for attempts 1–2: the SAME anchor with the file's interior
     /// spacing matches on the exact tier with no disclosure at all — which attributes
     /// the run's failures to the interior bytes and to nothing else.
-    func testControl_anchorWithTheFilesInteriorSpacing_matchesExactly() throws {
+    func testControl_anchorWithTheFilesInteriorSpacing_matchesExactly() async throws {
         try writeFile("game.js", Self.constBlock)
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "game.js", oldText: Self.fileLineStepUp,
             newText: Self.fileLineStepUp + "\n  const GRAVITY     = 24;     // downward acceleration")
 
@@ -224,10 +224,10 @@ final class EditFileInteriorWhitespaceToleranceTests: XCTestCase {
     ///
     /// RED: hardcode `alsoReindented: false` in the tier-3.5 kind → the
     /// `matched_ignoring_indentation` assertion fails.
-    func testRealAttempt3_interiorPlusLeadingDrift_repairsAndDisclosesBoth() throws {
+    func testRealAttempt3_interiorPlusLeadingDrift_repairsAndDisclosesBoth() async throws {
         try writeFile("game.js", Self.constBlock)
 
-        let result = runEdit(path: "game.js", oldText: Self.anchor3, newText: Self.new3)
+        let result = await runEdit(path: "game.js", oldText: Self.anchor3, newText: Self.new3)
 
         XCTAssertFalse(result.isError, result.outputJSON)
         let disk = try readFile("game.js")
@@ -248,10 +248,10 @@ final class EditFileInteriorWhitespaceToleranceTests: XCTestCase {
     ///
     /// RED: remove the tier-3.5 collapsed scan → ANCHOR_NOT_FOUND again and the byte
     /// assertion never runs.
-    func testRealAttempt4_widestDrift_stillRepairs() throws {
+    func testRealAttempt4_widestDrift_stillRepairs() async throws {
         try writeFile("game.js", Self.constBlock)
 
-        let result = runEdit(path: "game.js", oldText: Self.anchor4, newText: Self.new4)
+        let result = await runEdit(path: "game.js", oldText: Self.anchor4, newText: Self.new4)
 
         XCTAssertFalse(result.isError, result.outputJSON)
         assertLine(try readFile("game.js"), at: 3, equals: Self.fileLineStepUp,
@@ -269,10 +269,10 @@ final class EditFileInteriorWhitespaceToleranceTests: XCTestCase {
     /// shape itself still works when its bytes are right.
     /// FIXTURE: attempt 5's verbatim fragment anchor — indent 0, five spaces after
     /// STEP_UP, comment tail dropped — against the aligned-const block.
-    func testCharacterization_fragmentAnchorWithInteriorDrift_staysAbsent() throws {
+    func testCharacterization_fragmentAnchorWithInteriorDrift_staysAbsent() async throws {
         try writeFile("game.js", Self.constBlock)
 
-        let result = runEdit(path: "game.js", oldText: Self.anchor5, newText: Self.anchor5)
+        let result = await runEdit(path: "game.js", oldText: Self.anchor5, newText: Self.anchor5)
 
         XCTAssertTrue(result.isError, result.outputJSON)
         XCTAssertTrue(message(result).contains("none of its lines appear"),
@@ -283,10 +283,10 @@ final class EditFileInteriorWhitespaceToleranceTests: XCTestCase {
     /// Control pair for class 6: the same fragment with the FILE's interior spacing
     /// is an exact substring and edits via tier 1 — the class is the drift inside
     /// the fragment, not the fragment shape.
-    func testControl_fragmentWithTheFilesInteriorSpacing_editsViaTheExactTier() throws {
+    func testControl_fragmentWithTheFilesInteriorSpacing_editsViaTheExactTier() async throws {
         try writeFile("game.js", Self.constBlock)
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "game.js",
             oldText: "const STEP_UP    = 1.05;",
             newText: "const STEP_UP    = 1.15;")
@@ -307,12 +307,12 @@ final class EditFileInteriorWhitespaceToleranceTests: XCTestCase {
     ///
     /// RED: take `matches[0]` when `matches.count > 1` → this becomes a silent
     /// wrong-location write and the isError assertion fails.
-    func testCollapseAmbiguousWindow_isRefusedWithTheFilesBytes_notAbsent() throws {
+    func testCollapseAmbiguousWindow_isRefusedWithTheFilesBytes_notAbsent() async throws {
         let lineA = "    let sideY = (dirY > 0 ? (eyeY - y)     : (y + 1 - eyeY))     * ddy;"
         let lineB = "      let sideY = (dirY > 0 ? (eyeY - y)   : (y + 1 - eyeY))     * ddy;"
         try writeFile("ray.js", lineA + "\n" + lineB + "\n")
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "ray.js",
             oldText: "let sideY = (dirY > 0 ? (eyeY - y)  : (y + 1 - eyeY))  * ddy;",
             newText: "let sideY = 0;")
@@ -329,12 +329,12 @@ final class EditFileInteriorWhitespaceToleranceTests: XCTestCase {
 
     /// Control pair: the same two lines with DISTINCT content collapse to distinct
     /// strings, the window is unique, and the same anchor repairs.
-    func testControl_sameShapeWithDistinctContent_isRepairedUniquely() throws {
+    func testControl_sameShapeWithDistinctContent_isRepairedUniquely() async throws {
         let lineA = "    let sideY = (dirY > 0 ? (eyeY - y)     : (y + 1 - eyeY))     * ddy;"
         let lineB = "      let sideZ = (dirZ > 0 ? (eyeZ - z)   : (z + 1 - eyeZ))     * ddz;"
         try writeFile("ray.js", lineA + "\n" + lineB + "\n")
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "ray.js",
             oldText: "let sideY = (dirY > 0 ? (eyeY - y)  : (y + 1 - eyeY))  * ddy;",
             newText: "let sideY = (dirY > 0 ? (eyeY - y)  : (y + 1 - eyeY))  * ddy; // hit")
@@ -352,12 +352,12 @@ final class EditFileInteriorWhitespaceToleranceTests: XCTestCase {
     ///
     /// RED: restore the conflicted-key `return nil` in `reindentToFileConvention` →
     /// the isError assert fails and nothing below runs.
-    func testUniqueWindowOverIrregularIndentation_landsWithTheModelsBytes() throws {
+    func testUniqueWindowOverIrregularIndentation_landsWithTheModelsBytes() async throws {
         let fileA = "    let a = 1;  // x"
         let fileB = "     let b = 2;  // y"
         try writeFile("odd.js", fileA + "\n" + fileB + "\n")
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "odd.js",
             oldText: "    let a = 1;   // x\n    let b = 2;   // y",
             newText: "    let a = 9;\n    let b = 9;")
@@ -375,12 +375,12 @@ final class EditFileInteriorWhitespaceToleranceTests: XCTestCase {
 
     /// Control pair: the same anchor against a REGULAR file (both lines at one
     /// depth) — the map is a function, and the edit repairs.
-    func testControl_sameAnchorAgainstRegularIndentation_repairs() throws {
+    func testControl_sameAnchorAgainstRegularIndentation_repairs() async throws {
         let fileA = "    let a = 1;  // x"
         let fileB = "    let b = 2;  // y"
         try writeFile("even.js", fileA + "\n" + fileB + "\n")
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "even.js",
             oldText: "    let a = 1;   // x\n    let b = 2;   // y",
             newText: "    let a = 9;\n    let b = 9;")
@@ -397,10 +397,10 @@ final class EditFileInteriorWhitespaceToleranceTests: XCTestCase {
     ///
     /// RED: drop the file-bytes pass → line 0 lands with the model's 3-space padding
     /// and the first byte-equality fails.
-    func testPureRewrite_reproducedLineKeepsFileBytes_changedLineTakesModels() throws {
+    func testPureRewrite_reproducedLineKeepsFileBytes_changedLineTakesModels() async throws {
         try writeFile("game.js", Self.constBlock)
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "game.js",
             oldText: "  const MAX_VIEW   = 16;   // max ray distance (also fog range)\n"
                 + "  const STEP_UP    = 1.05;   // max height change the player climbs automatically",
@@ -423,11 +423,11 @@ final class EditFileInteriorWhitespaceToleranceTests: XCTestCase {
     /// RED: drop the greedy branch of the pairing in `reindentToFileConvention`
     /// (positional only) → the surviving line pairs with nothing and lands with
     /// the model's padding.
-    func testDeleteLineEdit_survivingLineKeepsFileBytes() throws {
+    func testDeleteLineEdit_survivingLineKeepsFileBytes() async throws {
         try writeFile("game.js", Self.constBlock)
         let driftedMaxView = "  const MAX_VIEW    = 16;   // max ray distance (also fog range)"
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "game.js",
             oldText: driftedMaxView + "\n" + Self.anchor2,
             newText: Self.anchor2)
@@ -447,12 +447,12 @@ final class EditFileInteriorWhitespaceToleranceTests: XCTestCase {
     /// the opposite. The greedy in-order pairing must see through the insertion.
     ///
     /// RED: same mutation as `testDeleteLineEdit_survivingLineKeepsFileBytes`.
-    func testMidInsertionGrow_reproducedLinesKeepFileBytes() throws {
+    func testMidInsertionGrow_reproducedLinesKeepFileBytes() async throws {
         try writeFile("game.js", Self.constBlock)
         let driftedMaxView = "  const MAX_VIEW    = 16;   // max ray distance (also fog range)"
         let inserted = "  const NEW_CONST  = 7;    // inserted between"
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "game.js",
             oldText: driftedMaxView + "\n" + Self.anchor2,
             newText: driftedMaxView + "\n" + inserted + "\n" + Self.anchor2)
@@ -474,10 +474,10 @@ final class EditFileInteriorWhitespaceToleranceTests: XCTestCase {
     ///
     /// RED: make the rewrite clause unconditional again → the NotContains assertion
     /// fails.
-    func testIdentityMapWithPassthrough_warningDoesNotClaimARewrite() throws {
+    func testIdentityMapWithPassthrough_warningDoesNotClaimARewrite() async throws {
         try writeFile("game.js", Self.constBlock)
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "game.js",
             oldText: Self.anchor2,
             newText: Self.anchor2 + "\n  function step() {\n    return 1;\n  }")
@@ -496,10 +496,10 @@ final class EditFileInteriorWhitespaceToleranceTests: XCTestCase {
     /// a formatting-intent model retries forever with no error to react to.
     ///
     /// RED: drop the unchanged-content warning → the warning assertion fails.
-    func testPureSpacingEdit_disclosesTheNoOp() throws {
+    func testPureSpacingEdit_disclosesTheNoOp() async throws {
         try writeFile("pad.js", "let a =  1;\nlet z = 0;\n")
 
-        let result = runEdit(path: "pad.js", oldText: "let a = 1;", newText: "let a =      1;")
+        let result = await runEdit(path: "pad.js", oldText: "let a = 1;", newText: "let a =      1;")
 
         XCTAssertFalse(result.isError, result.outputJSON)
         XCTAssertEqual(try readFile("pad.js"), "let a =  1;\nlet z = 0;\n",
@@ -513,10 +513,10 @@ final class EditFileInteriorWhitespaceToleranceTests: XCTestCase {
     /// and the real blocker is that the occurrences differ in their spacing.
     ///
     /// RED: advise uniqueness on every ambiguous route → the NotContains fails.
-    func testReplaceAllOverDriftedDuplicates_refusalNamesTheRealCure() throws {
+    func testReplaceAllOverDriftedDuplicates_refusalNamesTheRealCure() async throws {
         try writeFile("dup.js", "let s = a  + b;\nlet s = a   + b;\n")
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "dup.js", oldText: "let s = a + b;", newText: "let s = a - b;",
             replaceAll: true)
 
@@ -534,10 +534,10 @@ final class EditFileInteriorWhitespaceToleranceTests: XCTestCase {
     ///
     /// RED: run the collapsed scan before the trailing-trim scan → the trailing flag
     /// disappears and the interior flag appears.
-    func testTrailingOnlyDrift_stillTakesTier2() throws {
+    func testTrailingOnlyDrift_stillTakesTier2() async throws {
         try writeFile("game.js", Self.constBlock)
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "game.js", oldText: Self.fileLineStepUp + "   ",
             newText: Self.fileLineStepUp)
 
@@ -552,11 +552,11 @@ final class EditFileInteriorWhitespaceToleranceTests: XCTestCase {
     ///
     /// RED: splice the file bytes WITH their trailing CR kept → the repaired line
     /// ends "\r\r\n" and both assertions fail.
-    func testCRLFFile_interiorRepair_preservesLineEndings() throws {
+    func testCRLFFile_interiorRepair_preservesLineEndings() async throws {
         let crlf = Self.constBlock.replacingOccurrences(of: "\n", with: "\r\n")
         try writeFile("game.js", crlf)
 
-        let result = runEdit(path: "game.js", oldText: Self.anchor2, newText: Self.anchor2)
+        let result = await runEdit(path: "game.js", oldText: Self.anchor2, newText: Self.anchor2)
 
         XCTAssertFalse(result.isError, result.outputJSON)
         let disk = try readFile("game.js")
@@ -573,9 +573,9 @@ final class EditFileInteriorWhitespaceToleranceTests: XCTestCase {
     ///
     /// RED: drop the transfer line in `processEdit` → the envelope still carries the
     /// key while the wire content loses it.
-    func testInteriorDisclosure_survivesTheMemoryTagStore() throws {
+    func testInteriorDisclosure_survivesTheMemoryTagStore() async throws {
         try writeFile("game.js", Self.constBlock)
-        let result = runEdit(path: "game.js", oldText: Self.anchor1, newText: Self.new1)
+        let result = await runEdit(path: "game.js", oldText: Self.anchor1, newText: Self.new1)
         XCTAssertFalse(result.isError, result.outputJSON)
 
         guard case .tagged(let wire, _) = MemoryTagStore().processToolResult(result) else {
@@ -589,9 +589,9 @@ final class EditFileInteriorWhitespaceToleranceTests: XCTestCase {
     /// envelope or wire.
     ///
     /// RED: forward the key unconditionally → the wire assertion fails.
-    func testCleanExactEdit_carriesNoInteriorDisclosure() throws {
+    func testCleanExactEdit_carriesNoInteriorDisclosure() async throws {
         try writeFile("game.js", Self.constBlock)
-        let result = runEdit(
+        let result = await runEdit(
             path: "game.js", oldText: Self.fileLineStepUp, newText: Self.fileLineStepUp)
         XCTAssertFalse(result.isError, result.outputJSON)
         XCTAssertNil(dataField(result, "matched_ignoring_interior_whitespace"), result.outputJSON)
@@ -610,10 +610,10 @@ final class EditFileInteriorWhitespaceToleranceTests: XCTestCase {
     /// anchor that reaches it. A control, not a mutation target: no single-line
     /// mutation of the tier can make THIS anchor match (its words exist nowhere in
     /// the fixture), so the pin's job is to hold the message steady.
-    func testGenuinelyAbsentAnchor_staysAbsent_messageUntouched() throws {
+    func testGenuinelyAbsentAnchor_staysAbsent_messageUntouched() async throws {
         try writeFile("game.js", Self.constBlock)
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "game.js",
             oldText: "struct NeverExisted {\n    let x: Int\n}",
             newText: "x")

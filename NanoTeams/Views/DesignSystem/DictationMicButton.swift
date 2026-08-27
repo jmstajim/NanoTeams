@@ -6,6 +6,7 @@ struct DictationMicButton: View {
 
     @Binding var text: String
     @Environment(DictationService.self) private var dictation
+    @Environment(\.isEnabled) private var isEnabled
     /// Handed to `SettingsNavigation`, which owns the tab write — an environment action
     /// can only be read from the view that declares it.
     @Environment(\.openWindow) private var openWindow
@@ -24,8 +25,14 @@ struct DictationMicButton: View {
         return false
     }
 
+    /// Reads `\.isEnabled`, not just its own `isAvailable`, because hosts disable this button from
+    /// the OUTSIDE too — `MessageComposer` does it for the length of a prompt improvement, since
+    /// dictation and the improve stream write into the same `text` binding. Without that term the
+    /// mic sat inert in full `Colors.accent` for the whole improve, reading as available; and
+    /// `ComposerIconButtonStyle` deliberately ships no disabled opacity (it would double-dim the
+    /// three sites that already encode disabled in their tint), so nothing else would have said so.
     private var iconTint: Color {
-        if !isAvailable { return Colors.textTertiary }
+        if !isEnabled || !isAvailable { return Colors.textTertiary }
         if dictation.lastErrorMessage != nil && !isListeningHere { return Colors.error }
         if isListeningHere { return Colors.error }
         return Colors.accent
@@ -34,13 +41,11 @@ struct DictationMicButton: View {
     var body: some View {
         Button(action: handleTap) {
             Image(systemName: "mic")
-                .font(Typography.termBase.weight(.medium))
                 .foregroundStyle(iconTint)
-                .frame(width: 28, height: 24)
                 .symbolEffect(.pulse, options: .repeating, isActive: isListeningHere)
                 .contentTransition(.symbolEffect(.replace))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.composerIcon)
         .disabled(!isAvailable)
         .help(tooltip)
         .accessibilityLabel("Dictate")

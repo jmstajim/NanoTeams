@@ -26,8 +26,11 @@ nonisolated extension SearchExecutor {
         case cancelled
         /// Over `maxSearchableFileBytes`. Deliberately NOT `.binary`: an oversize file may be
         /// perfectly good text, and reporting it as an unreadable blob would be a lie. Surfaces
-        /// in `skipped_files` with a reason, so the omission is visible rather than silent.
-        case tooLarge(bytes: Int)
+        /// in `skipped_files` with a reason naming the LIMIT rather than this file's size, so
+        /// oversize files fold into one entry instead of one apiece — which is also why the
+        /// file's own size is not carried here: nothing reads it, and a payload that exists
+        /// invites putting it back into the reason.
+        case tooLarge
     }
 
     /// Files larger than this are reported rather than read.
@@ -71,7 +74,7 @@ nonisolated extension SearchExecutor {
         // placeholder file in the tree.
         if let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize {
             if size == 0 { return .text(Data()) }
-            if size > maxSearchableFileBytes { return .tooLarge(bytes: size) }
+            if size > maxSearchableFileBytes { return .tooLarge }
         }
 
         var buffer = Data()

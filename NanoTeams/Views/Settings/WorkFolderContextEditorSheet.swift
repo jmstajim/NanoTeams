@@ -25,18 +25,10 @@ struct WorkFolderContextEditorSheet: View {
                     .font(Typography.caption)
                     .foregroundStyle(Colors.textTertiary)
 
-                HStack(alignment: .top, spacing: Spacing.xs) {
-                    PromptMarker()
-                    TextEditor(text: $contextDraft)
-                        .font(Typography.termBase)
-                        .scrollContentBackground(.hidden)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-                .padding(Spacing.s)
-                .background(
-                    RoundedRectangle.squircle(CornerRadius.small)
-                        .fill(Colors.surfaceElevated)
-                )
+                TextEditor(text: $contextDraft)
+                    .font(Typography.termBase)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .inputSurface(.editor) { PromptMarker() }
             }
             .padding(Spacing.xl)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)

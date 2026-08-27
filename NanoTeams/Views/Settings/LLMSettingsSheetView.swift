@@ -136,8 +136,8 @@ struct LLMSettingsView: View {
 }
 
 #Preview {
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
-    @Previewable @State var catalog = ModelCatalog()
+    @Previewable @State var store = PreviewStore.make()
+    @Previewable @State var catalog = PreviewStore.catalog()
     LLMSettingsView()
         .environment(store)
         .environment(store.configuration)

@@ -24,6 +24,20 @@ final class ModelCatalogTests: XCTestCase {
         /// can race the in-flight dedup check.
         var fetchDelayNanos: UInt64 = 0
 
+        var detailsToReturn: ModelLoadDetails? = ModelLoadDetails(
+            fields: [.init(label: "Format", value: "gguf")])
+        var detailsFetchCount = 0
+        var lastDetailsConfig: LLMConfig?
+
+        func modelLoadDetails(config: LLMConfig) async -> ModelLoadDetails? {
+            detailsFetchCount += 1
+            lastDetailsConfig = config
+            if fetchDelayNanos > 0 {
+                try? await Task.sleep(for: .nanoseconds(fetchDelayNanos))
+            }
+            return detailsToReturn
+        }
+
         func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [LLMModelInfo] {
             fetchCount += 1
             lastVisionOnly = visionOnly
@@ -491,5 +505,116 @@ final class ModelCatalogTests: XCTestCase {
         XCTAssertFalse(catalog.isFetching("http://x:1234", provider: .ollama))
 
         _ = await inFlight
+    }
+
+    // MARK: - Per-model load details
+
+    /// The details probe deliberately does NOT serve from cache: the card that reads it
+    /// reports what the server has loaded RIGHT NOW, and a model can be evicted or re-loaded
+    /// at a different context length between two looks at the same picker.
+    func testLoadDetails_refetchesEveryTime_ratherThanCaching() async {
+        let stub = StubClient()
+        let catalog = ModelCatalog(clientFactory: { stub })
+        let config = LLMConfig(provider: .lmStudio, baseURLString: "http://x:1234", modelName: "m")
+
+        await catalog.loadDetails(for: config)
+        await catalog.loadDetails(for: config)
+
+        XCTAssertEqual(stub.detailsFetchCount, 2)
+        XCTAssertEqual(catalog.details(for: config)?.fields.first?.value, "gguf")
+    }
+
+    /// The probe is a real request, so the caller's timeout / keep-alive settings must ride
+    /// along — only the identity triple becomes the key.
+    func testLoadDetails_passesTheWholeConfigThrough() async {
+        let stub = StubClient()
+        let catalog = ModelCatalog(clientFactory: { stub })
+        let config = LLMConfig(
+            provider: .ollama, baseURLString: "http://x:11434", modelName: "m",
+            requestTimeoutSeconds: 42)
+
+        await catalog.loadDetails(for: config)
+
+        XCTAssertEqual(stub.lastDetailsConfig?.requestTimeoutSeconds, 42)
+        XCTAssertEqual(stub.lastDetailsConfig?.provider, .ollama)
+    }
+
+    /// Keyed by `(url, provider, model)` — which is what replaced the card's generation
+    /// counter (CLAUDE.md #38). A slow probe for one selection lands in its own slot.
+    func testLoadDetails_isKeyedPerModelEndpointAndProvider() async {
+        let stub = StubClient()
+        let catalog = ModelCatalog(clientFactory: { stub })
+        let a = LLMConfig(provider: .lmStudio, baseURLString: "http://x:1234", modelName: "a")
+        let b = LLMConfig(provider: .lmStudio, baseURLString: "http://x:1234", modelName: "b")
+
+        stub.detailsToReturn = ModelLoadDetails(fields: [.init(label: "Format", value: "for-a")])
+        await catalog.loadDetails(for: a)
+        stub.detailsToReturn = ModelLoadDetails(fields: [.init(label: "Format", value: "for-b")])
+        await catalog.loadDetails(for: b)
+
+        XCTAssertEqual(catalog.details(for: a)?.fields.first?.value, "for-a")
+        XCTAssertEqual(catalog.details(for: b)?.fields.first?.value, "for-b")
+        XCTAssertFalse(catalog.hasLoadedDetails(
+            for: LLMConfig(provider: .ollama, baseURLString: "http://x:1234", modelName: "a")))
+    }
+
+    /// A trimmed model name is the same model — the card hands over whatever is in the field.
+    func testLoadDetails_trimsTheModelNameIntoTheKey() async {
+        let stub = StubClient()
+        let catalog = ModelCatalog(clientFactory: { stub })
+
+        await catalog.loadDetails(
+            for: LLMConfig(provider: .lmStudio, baseURLString: "http://x:1234", modelName: " m "))
+
+        XCTAssertTrue(catalog.hasLoadedDetails(
+            for: LLMConfig(provider: .lmStudio, baseURLString: "HTTP://X:1234/", modelName: "m")))
+    }
+
+    /// Nothing selected, or no server, is not a probe. The card renders its own empty row for
+    /// the first, and the second cannot be asked at all.
+    func testLoadDetails_isANoOpWithoutAModelOrAURL() async {
+        let stub = StubClient()
+        let catalog = ModelCatalog(clientFactory: { stub })
+
+        await catalog.loadDetails(
+            for: LLMConfig(provider: .lmStudio, baseURLString: "http://x:1234", modelName: "  "))
+        await catalog.loadDetails(
+            for: LLMConfig(provider: .lmStudio, baseURLString: "", modelName: "m"))
+
+        XCTAssertEqual(stub.detailsFetchCount, 0)
+    }
+
+    /// `nil` is an ANSWER — "the server told us nothing about this model" — so it must replace
+    /// the previous values rather than leave stale ones on screen, while still counting as
+    /// loaded so the card can tell it apart from "never asked".
+    func testLoadDetails_nilAnswerReplacesTheOldValue_andCountsAsLoaded() async {
+        let stub = StubClient()
+        let catalog = ModelCatalog(clientFactory: { stub })
+        let config = LLMConfig(provider: .lmStudio, baseURLString: "http://x:1234", modelName: "m")
+        await catalog.loadDetails(for: config)
+        XCTAssertNotNil(catalog.details(for: config))
+
+        stub.detailsToReturn = nil
+        await catalog.loadDetails(for: config)
+
+        XCTAssertNil(catalog.details(for: config))
+        XCTAssertTrue(catalog.hasLoadedDetails(for: config))
+    }
+
+    func testLoadDetails_concurrentProbesCoalesce_andDriveIsLoading() async {
+        let stub = StubClient()
+        stub.fetchDelayNanos = 200_000_000
+        let catalog = ModelCatalog(clientFactory: { stub })
+        let config = LLMConfig(provider: .lmStudio, baseURLString: "http://x:1234", modelName: "m")
+
+        XCTAssertFalse(catalog.isLoadingDetails(for: config))
+        async let first: Void = catalog.loadDetails(for: config)
+        try? await Task.sleep(for: .milliseconds(30))
+        XCTAssertTrue(catalog.isLoadingDetails(for: config))
+        async let second: Void = catalog.loadDetails(for: config)
+        _ = await (first, second)
+
+        XCTAssertEqual(stub.detailsFetchCount, 1)
+        XCTAssertFalse(catalog.isLoadingDetails(for: config))
     }
 }

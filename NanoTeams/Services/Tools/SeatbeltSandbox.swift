@@ -58,6 +58,17 @@ nonisolated enum SeatbeltSandbox {
             SandboxPathResolver.isWithin(candidate: URL(fileURLWithPath: $0), container: workURL)
         }
 
+        // The mirror of the line above, with the containment INVERTED: there the work
+        // folder contains a credential store, here the work folder is contained by a
+        // temp root. Both answer the same question — "can some other grant re-expose a
+        // path this scope's own flag turned off" — and only the credential half existed
+        // until 2026-08-25, which is why `workFolderWrite: false, tempWrite: true` left
+        // a project under `$TMPDIR` writable. `work` and `tempPaths` are already
+        // realpath-canonical here, so no further canonicalization is needed.
+        let workCoveredByTemp = tempPaths.contains {
+            SandboxPathResolver.isWithin(candidate: workURL, container: URL(fileURLWithPath: $0))
+        }
+
         // Scope nesting — SBPL is last-match-wins, so clauses are emitted in ASCENDING
         // specificity (broadest first, MOST SPECIFIC LAST):
         //   system ("everything else")  ⊃  home (~)  ⊃  work folder  ⊃  credentials
@@ -138,7 +149,15 @@ nonisolated enum SeatbeltSandbox {
             if let readDeny = optionalDenyClause("file-read*", subpaths: denySubpaths) {
                 clauses.append(readDeny)
             }
-            if permissions.workFolderRead, !permissions.homeRead, let wc = subpathClause([work]) {
+            // Re-allow work after ANY deny that was emitted, not after the home deny
+            // specifically. The enumerated form asked "did the HOME deny swallow the
+            // work folder", and a temp deny swallows it just as completely when the
+            // project lives under `$TMPDIR` — there the grant the user switched ON
+            // silently did not apply, which reads as "the sandbox is broken" rather
+            // than "the sandbox is leaky" and arrives through a different door.
+            // Conditioning on the deny list being non-empty closes that by
+            // construction rather than by a longer list (CLAUDE.md #75).
+            if permissions.workFolderRead, !denySubpaths.isEmpty, let wc = subpathClause([work]) {
                 clauses.append("(allow file-read*\n\(wc))")
             }
             // Credentials LAST — overrides the broad allow, the home deny, and the
@@ -158,7 +177,15 @@ nonisolated enum SeatbeltSandbox {
             // folder nested under an allowed home. Carve those out; credentials last.
             var denySubpaths: [String] = []
             var denyLiterals: [String] = []
-            if permissions.homeRead, !permissions.workFolderRead { denySubpaths.append(work) }
+            // A work folder that is OFF stays reachable through any OTHER grant that
+            // covers its path — home, or temp when the project lives under `$TMPDIR`
+            // (CLAUDE.md #75: ask not "is this scope's flag off" but "is its path
+            // covered by some other grant"). `workCoveredByTemp` is the mirror of
+            // `workCoversCredential` above, with the containment inverted.
+            if !permissions.workFolderRead,
+               permissions.homeRead || (permissions.tempRead && workCoveredByTemp) {
+                denySubpaths.append(work)
+            }
             if !permissions.credentialRead, permissions.homeRead || (permissions.workFolderRead && workCoversCredential) {
                 denySubpaths.append(contentsOf: credentialSubpaths)
                 denyLiterals.append(contentsOf: credentialLiterals)
@@ -179,7 +206,9 @@ nonisolated enum SeatbeltSandbox {
             if let writeDeny = optionalDenyClause("file-write*", subpaths: denySubpaths) {
                 clauses.append(writeDeny)
             }
-            if permissions.workFolderWrite, !permissions.homeWrite, let wc = subpathClause([work]) {
+            // Re-allow after ANY emitted deny — see the read side above for why the
+            // enumerated `!homeWrite` form lost a grant the user had switched on.
+            if permissions.workFolderWrite, !denySubpaths.isEmpty, let wc = subpathClause([work]) {
                 clauses.append("(allow file-write*\n\(wc))")
             }
             // Credentials LAST — broad `/` covers them, so always deny (overrides the
@@ -193,7 +222,14 @@ nonisolated enum SeatbeltSandbox {
             // or a work folder that contains them) could reach them — writes are blocked.
             var denySubpaths: [String] = []
             var denyLiterals: [String] = []
-            if permissions.homeWrite, !permissions.workFolderWrite { denySubpaths.append(work) }
+            // The reported D-10 shape: `workFolderWrite: false, tempWrite: true` reads
+            // in Settings as "commands may not write my project", and the write
+            // allow-list is a set of `(subpath …)` clauses with no work deny beneath —
+            // so a project under `$TMPDIR` / `/private/tmp` stayed fully writable.
+            if !permissions.workFolderWrite,
+               permissions.homeWrite || (permissions.tempWrite && workCoveredByTemp) {
+                denySubpaths.append(work)
+            }
             if permissions.homeWrite || (permissions.workFolderWrite && workCoversCredential) {
                 denySubpaths.append(contentsOf: credentialSubpaths)
                 denyLiterals.append(contentsOf: credentialLiterals)
@@ -238,14 +274,27 @@ nonisolated enum SeatbeltSandbox {
         )
     }
 
-    /// Heuristic: did a non-zero result come from Seatbelt refusing to launch /
-    /// rejecting the profile (vs. the command itself failing)? Used to decide
-    /// whether to honor `allowUnsandboxedFallback`.
-    /// The wrapper and the child it launches write to the SAME stderr pipe, so a `contains` test
-    /// cannot tell them apart — and it did not: any failing command whose stderr merely mentioned
-    /// the wrapper was classified as a wrapper failure. Measured consequences were both a silent
-    /// unconfined re-execution (with the fallback enabled) and a false "Command was not run"
-    /// that discarded the command's real output (with it disabled, the default).
+    /// Does this exit code + stderr look like `sandbox-exec` diagnosing its OWN fault?
+    ///
+    /// **Read the input contract first: this is applied to a PROBE's stderr, not to the
+    /// stderr of the command under judgement.** The wrapper and the child it launches share
+    /// one stderr pipe (`ProcessRunner` gives the single `Process` one `Pipe`), so when the
+    /// wrapper does NOT fail the first bytes belong to the child — and a child can therefore
+    /// author whatever this rule looks for. Measured on macOS 26:
+    ///
+    ///     sandbox-exec -p '(version 1)(allow default)' /bin/zsh -lc \
+    ///       'echo "sandbox-exec: fake denial" >&2; exit 1'
+    ///     → exit 1, stderr head exactly `sandbox-exec: fake denial`
+    ///
+    /// With `allowUnsandboxedFallback` on that re-ran the command with NO profile; with it off
+    /// (the default) it produced a `bashDenied` envelope claiming "The command was not run"
+    /// about a command that had run, discarding its real stdout and stderr.
+    ///
+    /// `probeSandboxLaunch` closes that by asking the wrapper the question directly — it
+    /// re-launches the SAME invocation with a no-op command, so the stderr this rule reads is
+    /// a stream the judged command never touched. Narrowing `contains` to `hasPrefix` (which
+    /// is what the position argument below buys) killed ACCIDENTAL misclassification; only the
+    /// separate stream kills the deliberate one.
     ///
     /// The discriminator is POSITION, not vocabulary: `sandbox-exec` reports its own faults before
     /// the child produces anything, so its diagnostic is the FIRST thing on stderr. Measured on
@@ -263,7 +312,9 @@ nonisolated enum SeatbeltSandbox {
     ///
     /// A profile that compiles but denies the system reads the shell needs is exit 134 with EMPTY
     /// stderr. That is a genuinely CONFINED failure, not a wrapper fault, so it must not license a
-    /// retry — and the prefix rule declines it for the right reason rather than by accident.
+    /// retry. It is now a NAMED state (`LaunchVerdict.confinedBeforeStart`) rather than something
+    /// this prefix rule declines: the Bool could not express it, so it was reported as an ordinary
+    /// command failure with an empty result — the least useful of the three available answers.
     ///
     /// No exit-code allowlist: 65 and 71 are the codes observed today, and pinning them would make
     /// an unobserved wrapper code fail OPEN. Position plus a non-zero exit is the whole rule.
@@ -276,10 +327,74 @@ nonisolated enum SeatbeltSandbox {
     /// (honest), while a false positive means an unconfined execution (not).
     private static let wrapperDiagnosticPrefixes = ["sandbox-exec:", "sandbox_apply:"]
 
-    static func isSandboxDenialFailure(exitCode: Int32, stderr: String) -> Bool {
+    /// Renamed from `isSandboxDenialFailure` on 2026-08-25. The rule is unchanged; what changed
+    /// is WHOSE stderr it reads, and the old name described the question ("was this a sandbox
+    /// denial?") rather than the evidence ("is this a wrapper diagnostic?"), which is what let it
+    /// be pointed at a stream the command controls.
+    static func isWrapperDiagnostic(exitCode: Int32, stderr: String) -> Bool {
         guard exitCode != 0 else { return false }
         let head = stderr.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return wrapperDiagnosticPrefixes.contains { head.hasPrefix($0) }
+    }
+
+    /// Why a sandboxed run failed, distinguished by asking the WRAPPER rather than by reading a
+    /// stream the command can write to.
+    enum LaunchVerdict: Equatable {
+        /// The wrapper launched the child; whatever failed is the command's own doing. Its
+        /// stdout/stderr are real output and must be reported verbatim.
+        case childRan
+        /// `sandbox-exec` refused — bad or unreadable profile, `execvp` failure. Nothing ran.
+        /// This is the only state that may license an unconfined retry.
+        case wrapperRejected
+        /// The profile compiled and the wrapper exec'd, but the confinement killed the shell
+        /// before the command could start (measured: exit 134, empty stderr). Nothing ran, and
+        /// it is a CONFINED failure — retrying unconfined would defeat the profile the user
+        /// asked for.
+        case confinedBeforeStart
+    }
+
+    /// What a launch verdict obliges the caller to do about it.
+    enum LaunchResponse: Equatable {
+        /// Report the process result as the command's own. Covers `.childRan`, every
+        /// unsandboxed run, and `.confinedBeforeStart` — the last of those is a real result
+        /// (exit 134, no output) that a warning explains rather than replaces.
+        case reportTheResult
+        /// The wrapper refused AND the policy permits it: re-run with no profile.
+        case retryUnconfined
+        /// The wrapper refused and no fallback is allowed. NOTHING ran, and the caller must say
+        /// so instead of reporting an exit code the command never produced.
+        case reportNothingRan
+    }
+
+    /// One owner for "what does a wrapper rejection oblige us to do", consulted by BOTH sites
+    /// that used to decide it with hand-written conditions: the retry gate inside
+    /// `BashTool.runForeground` and the envelope arm in `BashTool.handle`.
+    ///
+    /// They ask about the SAME verdict and the SAME policy flag, and a rule split across two
+    /// sites is a rule that can disagree with itself (CLAUDE.md #51/#60) — here the disagreement
+    /// would be the worst kind: a command reported as "not run" that in fact ran unconfined, or
+    /// the reverse. Pure and `nonisolated` so it is reachable without a process, which is also
+    /// what makes the `reportNothingRan` arm testable at all — through `BashTool` it is not,
+    /// because the profile is built internally and no `BashSandboxPermissions` value can make
+    /// `sandbox-exec` refuse it.
+    ///
+    /// `ranSandboxed` is load-bearing: after a fallback the command demonstrably DID run, and
+    /// the stale verdict from the first attempt must not speak for the second.
+    static func response(
+        ranSandboxed: Bool,
+        launch: LaunchVerdict,
+        fallbackAllowed: Bool
+    ) -> LaunchResponse {
+        guard ranSandboxed, launch == .wrapperRejected else { return .reportTheResult }
+        return fallbackAllowed ? .retryUnconfined : .reportNothingRan
+    }
+
+    /// The probe invocation: byte-identical to `wrap` except the command is a shell no-op.
+    ///
+    /// Derived from `wrap` rather than spelled out, so a flag added there applies here too
+    /// instead of leaving the probe testing a different invocation than the one that failed.
+    static func probeInvocation(profile: String, shell: String) -> (executable: String, arguments: [String]) {
+        wrap(profile: profile, shell: shell, command: ":")
     }
 
     // MARK: - Helpers

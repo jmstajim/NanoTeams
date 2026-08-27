@@ -1,5 +1,8 @@
 import Foundation
 import Observation
+#if DEBUG
+import Synchronization
+#endif
 
 // MARK: - Team Activity Feed View Model
 
@@ -206,8 +209,8 @@ final class TeamActivityFeedViewModel {
             // on which steps are actively waiting. The naive
             // `needsSupervisorInput && supervisorAnswer == nil` predicate
             // misses the multi-round race window (see `StepExecution.hasActiveSupervisorInput`).
-            supervisorInputCount: steps.filter(\.hasActiveSupervisorInput).count,
-            failedStepCount: steps.filter { $0.status == .failed }.count,
+            supervisorInputCount: steps.count(where: \.hasActiveSupervisorInput),
+            failedStepCount: steps.count { $0.status == .failed },
             descendantSummary: DescendantSummary.compute(descendants),
             composerVisible: composerVisible
         )
@@ -230,6 +233,9 @@ final class TeamActivityFeedViewModel {
         composerVisible: Bool = true,
         isStreaming: @escaping (UUID) -> Bool
     ) {
+        #if DEBUG
+        TimelineRebuildProbe.notePerformed()
+        #endif
         timelineVersion += 1
         // Suppress the paired-message bubble ONLY when the composer is rendered
         // to surface it. When the composer is hidden (engine `.failed`, read-only
@@ -260,9 +266,24 @@ final class TeamActivityFeedViewModel {
         // One pass per step, in lockstep with the items it annotates. The union
         // over pools is safe because `LLMMessage.id` is globally unique, and it
         // mirrors `steps(forOriginTaskID:)`, whose fallback is `cachedAllSteps`.
+        //
+        // `cachedAllSteps` is walked here ONLY when the pools cannot already contain it.
+        // `recomputeSteps` files `cachedAllSteps` into `cachedStepsByTaskID` under the
+        // active task id, so walking both unconditionally walked the ACTIVE task's whole
+        // conversation TWICE on every rebuild — and `implicitStreamTargetID` is itself a
+        // walk of `step.llmConversation`, which grows with the session. The fallback arm
+        // survives because the map has no key to file the steps under when
+        // `context.activeTaskID` is nil, which is exactly when `steps(forOriginTaskID:)`
+        // falls back to `cachedAllSteps` too — the two must agree or a bubble resolves
+        // against a pool the resolver never saw.
         var targets: Set<UUID> = []
-        for step in cachedAllSteps {
-            if let id = TeamActivityFeedView.implicitStreamTargetID(in: step) { targets.insert(id) }
+        let activePoolIsFiled = cachedActiveTaskID.map { cachedStepsByTaskID[$0] != nil } ?? false
+        if !activePoolIsFiled {
+            for step in cachedAllSteps {
+                if let id = TeamActivityFeedView.implicitStreamTargetID(in: step) {
+                    targets.insert(id)
+                }
+            }
         }
         for pool in cachedStepsByTaskID.values {
             for step in pool {
@@ -292,13 +313,32 @@ final class TeamActivityFeedViewModel {
     /// `RoleName.TeamName` labels on child-team items.
     private(set) var teamNameByTaskID: [Int: String] = [:]
 
+    /// Per-task roster INDEX — the same rosters as `roleDefinitionsByTaskID`, keyed for
+    /// O(1) lookup instead of two linear scans.
+    ///
+    /// `findRoleDefinition` is called once or twice per rendered timeline item, and the
+    /// feed's `VStack` is deliberately NON-lazy (see the note at its `ForEach`), so every
+    /// item is realized on every body pass. Two `first(where:)` scans of the roster per
+    /// item made that Θ(items × roles) per pass, with `items` growing with the whole
+    /// conversation and the pass driven by `store.snapshot` — i.e. every `mutateTask`.
+    /// Built once per rebuild here, where the rosters already arrive.
+    private(set) var roleIndexByTaskID: [Int: RoleRosterIndex] = [:]
+
     /// Stash the per-task lookup tables out of the BuildContext so the dispatcher
     /// can read them at render time without rebuilding the context. Called from
     /// `recomputeAndRebuild` and `refreshAndRebuild`.
     func updatePerTaskLookups(from context: BuildContext) {
         roleDefinitionsByTaskID = context.roleDefinitionsByTaskID
         teamNameByTaskID = context.teamNameByTaskID
+        roleIndexByTaskID = context.roleDefinitionsByTaskID
+            .mapValues { RoleRosterIndex(roster: $0) }
+        activeRoleIndex = RoleRosterIndex(roster: context.roleDefinitions)
     }
+
+    /// Index of the ACTIVE team's roster — the fallback `findRoleDefinition` uses when a
+    /// timeline item's origin task has no entry (a descendant that unloaded while a
+    /// tagged item is still in the cached timeline).
+    private(set) var activeRoleIndex = RoleRosterIndex(roster: [])
 
     // MARK: - Scroll Position Tracking
 
@@ -681,3 +721,27 @@ final class TeamActivityFeedViewModel {
 
     nonisolated deinit {}
 }
+
+#if DEBUG
+/// Work-bound seam for the activity feed: how many FULL timeline rebuilds have actually
+/// been performed since the last reset.
+///
+/// Deliberately NOT `timelineVersion`. That counter is the view's sole rebuild-driven
+/// scroll trigger, and the existing coalescing test asserts on it — its own docstring
+/// records the trap: it "relies on `rebuildTimeline` bumping unconditionally (no
+/// fingerprint guard on the scheduled path) — if that changes, this assertion no longer
+/// distinguishes coalescing from a no-op second rebuild". Gating the scheduled path
+/// while pinning the same counter would have turned that test VACUOUSLY GREEN rather
+/// than red, so the count of performed work gets a home of its own (CLAUDE.md #104).
+///
+/// `buildTimelineItems` walks every message, tool call, artifact, meeting turn and change
+/// request of the displayed run plus every loaded descendant, and sorts the result with a
+/// comparator that calls an escaping `isStreaming` closure twice per comparison — so a
+/// rebuild is the unit of cost worth counting.
+nonisolated enum TimelineRebuildProbe {
+    private static let _performed = Atomic<Int>(0)
+    static func notePerformed() { _performed.wrappingAdd(1, ordering: .relaxed) }
+    static func performed() -> Int { _performed.load(ordering: .relaxed) }
+    static func reset() { _performed.store(0, ordering: .relaxed) }
+}
+#endif

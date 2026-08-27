@@ -44,6 +44,16 @@ nonisolated enum ModelReplyChannels {
     /// Content wins when both channels speak. The reasoning channel is a fallback, not
     /// a second source: a model that thinks out loud and then answers must not have its
     /// deliberation delivered as the decision.
+    ///
+    /// **Not to be swept together with the role tool loop.** `performStreamingCall` refuses
+    /// to read reasoning at all, because there a `<|call|>` envelope is a rehearsal and
+    /// dispatching it acts on a thought; the turn resolves nothing and the next iteration
+    /// nudges. The callers here have no next iteration: they are ONE-SHOT exchanges whose
+    /// whole reply is the answer (a `create_team` config, a Supervisor's decision), so the
+    /// envelope is the transport for that answer, not an action on the work folder.
+    /// Applying the tool-loop rule here would not stop an action — it would discard the
+    /// answer and surface the raw envelope as the reply, which is the regression each
+    /// caller's own comment records.
     static func answer(
         content: String,
         reasoning: String,

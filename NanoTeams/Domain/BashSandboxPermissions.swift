@@ -95,15 +95,18 @@ nonisolated struct BashSandboxPermissions: Codable, Hashable, Sendable {
     /// shell needs broad reads to run anything at all), and the only reason to narrow writes is
     /// to stop MUTATION, which reads cannot cause.
     ///
-    /// `tempWrite` goes off with the rest, and that is load-bearing rather than tidiness.
-    /// `SeatbeltSandbox` emits the write allow-list as `(subpath …)` clauses and its narrow-write
-    /// branch emits no work-folder deny, so a work folder living under `$TMPDIR` or
-    /// `/private/tmp` stays writable through the TEMP grant even with `workFolderWrite: false` —
-    /// a property `SeatbeltSandboxTests.testProfile_workFolderWriteOff_blocksInsideWrite` already
-    /// works around by placing its fixture under HOME. With every scope off the write clause
-    /// carries only the dev-node literals and `(deny default)` answers everything else, so "no
-    /// writes" is checkable by reading the profile instead of by re-deriving a containment
-    /// argument each time a scope is added.
+    /// `tempWrite` goes off with the rest, and the reason is now the plain one: temp writes ARE
+    /// writes, and this method's contract is that none survive. With every scope off the write
+    /// clause carries only the dev-node literals and `(deny default)` answers everything else,
+    /// so "no writes" is checkable by reading the profile instead of by re-deriving a
+    /// containment argument each time a scope is added.
+    ///
+    /// It used to be justified by a DEFECT instead: the narrow-write branch emitted no
+    /// work-folder deny, so a project under `$TMPDIR` stayed writable through the temp grant
+    /// even with `workFolderWrite: false`, and turning temp off here was what accidentally
+    /// covered it. That hole was closed on 2026-08-25 (`workCoveredByTemp`), so the rationale
+    /// is retired while the code stays — a live doc comment naming a dead defect is what makes
+    /// the next reader believe the defect is still there (CLAUDE.md #104).
     ///
     /// Credential writes need no mention: `SeatbeltSandbox` denies them unconditionally.
     func withWritesDisabled() -> BashSandboxPermissions {

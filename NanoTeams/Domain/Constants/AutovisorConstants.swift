@@ -143,6 +143,29 @@ nonisolated enum AutovisorConstants {
     /// watchdog's job (`NTMSTask.runTimeoutSeconds`), not the stuck-detector's.
     static let stuckHangSeconds: TimeInterval = 180
 
+    /// The hang budget while a request is in flight and NOT ONE generation delta has arrived —
+    /// the server is still loading the model or prefilling the prompt.
+    ///
+    /// Separate from `stuckHangSeconds` because that one is calibrated on a server that is
+    /// already producing tokens, and a prefill emits nothing at all. Ollama sends no progress
+    /// frames during prefill, so its activity clock stands at the single `beginStreaming` stamp;
+    /// measured in this project's own lessons (2026-08-16): model reload 2.1 s plus a COLD
+    /// prefill of 103.5 s at 38.5k prompt tokens, i.e. ≈2.69 ms/token on the machine of record.
+    /// Against that rate 600 s covers ≈223k prompt tokens — about 5.8× the measured context,
+    /// with room left for a cold model load this project has NOT measured, which is why the
+    /// headroom is stated as slack rather than as arithmetic.
+    ///
+    /// Deliberately NOT provider-gated. LM Studio looks immune because its
+    /// `prompt_processing.*` SSE frames refresh the clock — but DEBTS D-B3 records that some
+    /// builds send no such frames, and on those it is exactly as exposed as Ollama.
+    ///
+    /// And deliberately a LARGER BUDGET rather than a suppression. Suppressing the hang verdict
+    /// for the whole pre-token window (the shape D-17 originally proposed) blinds the detector
+    /// precisely where "prefilling" and "server wedged" are indistinguishable by construction,
+    /// since neither emits a signal. 600 s of total silence before the server's first byte is
+    /// worth telling the manager about; it just is not worth telling it at 180 s.
+    static let stuckPrefillHangSeconds: TimeInterval = 600
+
     /// A tool/output loop only counts as "live" if the role produced the repeating
     /// signal within this window of now. Without it, `resetStepForRevision` (which
     /// retains `step.toolCalls` + `llmConversation` for audit) would let a stale

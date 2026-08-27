@@ -3,6 +3,13 @@ import SwiftUI
 // MARK: - Pure Routing Helpers (unit-testable)
 
 extension TeamActivityComposer {
+
+    /// The two routing answers a body pass needs, derived together — see `computeRouting`.
+    nonisolated struct Routing: Equatable {
+        let chipOptions: [ChipOption]
+        let effectiveRecipient: Recipient?
+    }
+
     /// Banner to surface to `lastErrorMessage` when some files failed inline embedding.
     /// `AnswerTextBuilder.build` falls back to path-attachment when inline embed fails,
     /// so the files ARE still delivered — the wording must signal that, otherwise users
@@ -90,7 +97,7 @@ extension TeamActivityComposer {
             // Counted through `isMessageableRole` so this agrees with the chip row: when
             // exactly one role is addressable the fallback chip names it, and a placeholder
             // that went role-agnostic there would contradict the chip beside it.
-            if roleDefinitions.filter(isMessageableRole).count <= 1 {
+            if roleDefinitions.count(where: isMessageableRole) <= 1 {
                 return "Send a message to \(name)…"
             }
             return "Send a message…"
@@ -283,14 +290,33 @@ extension TeamActivityComposer {
         allowsRoleFallback: Bool = false
     ) -> [ChipOption] {
         let askingRoleIDs = Set(activeQuestions.map(\.askingRoleID))
-        let selectable = computeSelectableRoles(
-            roles: roles, workingRoleIDs: workingRoleIDs, askingRoleIDs: askingRoleIDs
+        return chipOptions(
+            roles: roles,
+            workingRoleIDs: workingRoleIDs,
+            activeQuestions: activeQuestions,
+            allowsRoleFallback: allowsRoleFallback,
+            selectable: computeSelectableRoles(
+                roles: roles, workingRoleIDs: workingRoleIDs, askingRoleIDs: askingRoleIDs),
+            failed: computeFailedRoles(
+                roles: roles, failedRoleIDs: failedRoleIDs, askingRoleIDs: askingRoleIDs),
+            candidates: computeCandidateRoles(roles: roles, askingRoleIDs: askingRoleIDs)
         )
-        let failed = computeFailedRoles(
-            roles: roles, failedRoleIDs: failedRoleIDs, askingRoleIDs: askingRoleIDs
-        )
-        let candidates = computeCandidateRoles(roles: roles, askingRoleIDs: askingRoleIDs)
+    }
 
+    /// The chip-assembly half of `computeChipOptions`, over role sets a caller has ALREADY
+    /// derived. Split out so `computeRouting` can derive `askingRoleIDs` / `selectable` /
+    /// `failed` / `candidates` once and feed both the chip row and the recipient resolver —
+    /// which is also what makes `computeFailedRoles`'s "the resolver and the chip row can
+    /// never disagree" a structural property rather than a convention.
+    static func chipOptions(
+        roles: [TeamRoleDefinition],
+        workingRoleIDs: Set<String>,
+        activeQuestions: [TeamActivityActiveQuestion],
+        allowsRoleFallback: Bool,
+        selectable: [TeamRoleDefinition],
+        failed: [TeamRoleDefinition],
+        candidates: [TeamRoleDefinition]
+    ) -> [ChipOption] {
         var options: [ChipOption] = []
         for q in activeQuestions {
             let askingName = roles.first(where: { $0.id == q.askingRoleID })?.name ?? q.askingRoleID
@@ -318,5 +344,48 @@ extension TeamActivityComposer {
             options.append(.init(recipient: .role(id: only.id), label: only.name, icon: only.icon))
         }
         return options
+    }
+
+    /// Both per-pass routing answers from ONE derivation of the shared role sets.
+    ///
+    /// The composer used to compute `chipOptionsComputed` and `effectiveRecipient` as
+    /// separate computed properties, each independently deriving `askingRoleIDs` (a `.map`
+    /// array plus a `Set`) and the three filtered role arrays. Swift evaluates all six of
+    /// `resolveEffectiveRecipient`'s argument expressions eagerly, so every READ paid ~9
+    /// heap allocations even when the resolver returned on its first line — ~8 reads per
+    /// body pass (3 direct plus one per chip), plus 3 more for the chip options.
+    static func computeRouting(
+        roles: [TeamRoleDefinition],
+        workingRoleIDs: Set<String>,
+        failedRoleIDs: Set<String>,
+        activeQuestions: [TeamActivityActiveQuestion],
+        allowsRoleFallback: Bool,
+        selected: Recipient?
+    ) -> Routing {
+        let askingRoleIDs = Set(activeQuestions.map(\.askingRoleID))
+        let selectable = computeSelectableRoles(
+            roles: roles, workingRoleIDs: workingRoleIDs, askingRoleIDs: askingRoleIDs)
+        let failed = computeFailedRoles(
+            roles: roles, failedRoleIDs: failedRoleIDs, askingRoleIDs: askingRoleIDs)
+        let candidates = computeCandidateRoles(roles: roles, askingRoleIDs: askingRoleIDs)
+        return Routing(
+            chipOptions: chipOptions(
+                roles: roles,
+                workingRoleIDs: workingRoleIDs,
+                activeQuestions: activeQuestions,
+                allowsRoleFallback: allowsRoleFallback,
+                selectable: selectable,
+                failed: failed,
+                candidates: candidates
+            ),
+            effectiveRecipient: resolveEffectiveRecipient(
+                selected: selected,
+                activeQuestions: activeQuestions,
+                selectableRoles: selectable,
+                failedRoles: failed,
+                candidateRoles: candidates,
+                allowsRoleFallback: allowsRoleFallback
+            )
+        )
     }
 }

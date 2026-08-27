@@ -14,9 +14,8 @@ import Foundation
 /// `{"name":"wait_for_events","arguments":{}}`, the bare identifier, and an empty-bodied
 /// channel envelope.
 ///
-/// This is the LAST resort: it runs only when the accumulator, the Harmony buffer and the
-/// reasoning-channel fallback have all produced nothing, and only on the CONTENT channel
-/// (never on reasoning — see the asymmetry note below). Because there is no marker to
+/// This is the LAST resort: it runs only when the accumulator and the Harmony buffer have
+/// both produced nothing, and only on the CONTENT channel. Because there is no marker to
 /// establish intent, the guards below stand in for one: **the permissiveness of shape
 /// recognition scales with the strength of the intent signal.** Inside an envelope,
 /// `ToolCallShapeRecognizer` may infer a tool from an argument signature or promote a flat
@@ -46,10 +45,11 @@ nonisolated enum BareToolCallSalvage {
     private static let argumentKeys = ["arguments", "args", "parameters", "params"]
 
     /// - Parameter text: the assistant's CONTENT for this turn — never its reasoning.
-    ///   Route 3 accepts Harmony envelopes out of `thinkingCollected`, and the asymmetry
-    ///   is principled rather than an oversight: a `<|…|>` marker IS the commitment
-    ///   signal, so it means the same thing wherever it appears, whereas bare JSON in the
-    ///   reasoning channel is a model *considering* a call.
+    ///   No route reads reasoning any more, framed or bare: the CHANNEL is itself part of
+    ///   the intent signal. A model writing in `reasoning.delta` is *considering* a call,
+    ///   and a `<|…|>` marker does not upgrade deliberation into action — an earlier route
+    ///   accepted Harmony envelopes out of `thinkingCollected` on the opposite reading and
+    ///   executed what the model was only rehearsing.
     /// - Parameter advertised: the schemas actually sent this iteration. Used only by
     ///   Rule B, to confirm the role really holds the tool.
     ///
@@ -82,7 +82,7 @@ nonisolated enum BareToolCallSalvage {
     /// able to disagree about what counts as an attempt. Every future tightening (a new
     /// reserved name, a different resolver, an added shape rejection) then applies to both
     /// at once — a divergence here would either make the planning nudge fire for payloads
-    /// route 4 dispatches, or leave a dispatched call unrecognised as an attempt.
+    /// route 3 dispatches, or leave a dispatched call unrecognised as an attempt.
     static func looksLikeToolCallAttempt(_ text: String) -> Bool {
         let cleaned = unwrappingFence(
             ModelTokenCleaner.clean(text).trimmingCharacters(in: .whitespacesAndNewlines))

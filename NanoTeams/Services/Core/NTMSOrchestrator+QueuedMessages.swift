@@ -6,20 +6,39 @@ import Foundation
 /// in the UI layer) into the LLM execution pipeline. When a role's
 /// `runOneLLMToolIteration` asks for queued input, this method **drains** every
 /// eligible entry for that role (role-targeted FIFO, then untargeted FIFO),
-/// finalizes attachments, and persists a single combined user turn into
-/// `step.llmConversation` so the activity feed renders one Supervisor bubble.
+/// finalizes attachments, and persists the batch into `step.llmConversation`.
 ///
-/// Batching shape (what the LLM sees in the request input):
+/// The batch is grouped into runs of CONSECUTIVE same-`kind` entries, in queue order, and
+/// each run is composed by its own rules — because the queue carries two different things
+/// (`QueuedChatMessage.Kind`): a Supervisor speaking, and the app reporting that folder
+/// state moved. A batch of one kind, which is every human path, produces exactly what it
+/// always did.
+///
+/// Batching shape (what the LLM sees in the request input — ONE `.user` turn, since
+/// `injectQueuedSupervisorMessage` appends the returned string as a single `ChatMessage`):
 /// ```
 /// Supervisor:
-/// <message 1 body>
-/// <message 2 body>
-/// <message 3 body>
+/// <speech 1 body>
+/// <speech 2 body>
+///
+/// Event update while you are reviewing — new since this pass started:
+/// - Task #35 "…" is waiting for a supervisor answer (answer_task_question).
 /// ```
-/// The `Supervisor:` header line is the attribution marker for the LLM — a
-/// `role: .user` turn is otherwise indistinguishable from tool results and
-/// memory blocks mixed into the same `input` string. The activity feed strips
-/// the header at render time via `LLMMessage.displayContent`.
+/// The `Supervisor:` line is the attribution marker for the LLM — a `role: .user` turn is
+/// otherwise indistinguishable from tool results and memory blocks mixed into the same
+/// `input` string. The activity feed strips it at render time via `LLMMessage.displayContent`.
+///
+/// The event run carries NO such marker, matching every other system notice (`retryNudge`,
+/// `toolAcknowledgement`, `runtimeWarning` all ship as bare `.user` turns): the app is not
+/// the Supervisor, and wearing that badge is what made the feed draw a crowned bubble the
+/// human never typed. What separates it on a wire both providers flatten is the blank line
+/// between runs plus its own opening header
+/// (`MessageSourceContext.autovisorEventNoticeHeader`).
+///
+/// Feed side, one `LLMMessage` per run: `.supervisorMessage`/`sourceRole: .supervisor` for
+/// speech, `.autovisorEvent`/`sourceRole: nil` for the notice — nil because every other
+/// system notice is written unattributed, which is what makes the feed file the collapsed
+/// row under the WORKING role instead of under a Supervisor who did not speak.
 ///
 /// Separation-of-concerns: finalization + persistence belong here (not inline
 /// in `LLMExecutionService`) so the service stays free of repository and
@@ -113,45 +132,57 @@ extension NTMSOrchestrator {
             bodies.append(body)
         }
 
-        let prompt = MessageSourceContext.supervisorMessagePrefix + bodies.joined(separator: "\n")
-
-        // The FEED shows only what the user has not already seen. A redelivery is a message that
-        // was delivered once, rendered once, and came back only because the wire it rode was
-        // discarded (the planning-phase boundary keeps just the task statement and the
-        // scratchpad). It still has to reach the model — the implementation phase never saw it —
-        // but persisting a second bubble would show the user their own message twice for something
-        // they typed once.
+        // Group into consecutive same-kind runs and compose each by its own rules. The
+        // redelivery split lives inside: the FEED shows only what the user has not already
+        // seen. A redelivery is a message that was delivered once, rendered once, and came
+        // back only because the wire it rode was discarded (the planning-phase boundary keeps
+        // just the task statement and the scratchpad). It still has to reach the model — the
+        // implementation phase never saw it — but persisting a second bubble would show the
+        // user their own message twice for something they typed once.
         //
-        // Computed per message rather than per batch: a redelivery can be drained together with a
-        // genuinely new message, and the new one must still appear.
-        let freshBodies = zip(popped, bodies).compactMap { $0.0.isRedelivery ? nil : $0.1 }
-        guard !freshBodies.isEmpty else {
+        // Resolved per message rather than per batch: a redelivery can be drained together
+        // with a genuinely new message, and the new one must still appear.
+        let delivery = Self.composeQueuedDelivery(
+            zip(popped, bodies).map { message, body in
+                QueuedDeliveryEntry(
+                    kind: message.kind, body: body, isRedelivery: message.isRedelivery
+                )
+            }
+        )
+
+        guard !delivery.displayTurns.isEmpty else {
             // Nothing new to show. Delivery is the return value below; there is no persistence to
             // guard, and no data to lose — the user has seen this text and the model already acted
             // on it once.
-            return prompt
+            return delivery.wirePrompt
         }
-        let displayPrompt = MessageSourceContext.supervisorMessagePrefix
-            + freshBodies.joined(separator: "\n")
 
-        // Persist one LLMMessage carrying the combined batch. Use a captured
-        // flag (not `mutateTask`'s return value) — the closure may short-circuit
-        // via its own `locateStepInLatestRun` guard while `mutateTask` still
-        // returns `true` for a no-op (CLAUDE.md §7). On closure-guard failure,
-        // re-queue the whole batch so no data is silently lost.
+        // Persist one LLMMessage per run, in queue order, inside ONE mutation — the batch is
+        // a single arrival and a partially-applied one would leave the feed inconsistent with
+        // the turn the model just got. `LLMMessage.createdAt` defaults to
+        // `MonotonicClock.shared.now()`, evaluated per construction, so the array is already
+        // strictly increasing and the feed's sort keeps queue order.
+        //
+        // Use a captured flag (not `mutateTask`'s return value) — the closure may
+        // short-circuit via its own `locateStepInLatestRun` guard while `mutateTask` still
+        // returns `true` for a no-op (CLAUDE.md §7). On closure-guard failure, re-queue the
+        // whole batch so no data is silently lost.
         //
         // `step.messages` is intentionally left alone — it has no UI consumer
         // and mid-iteration writes don't affect this run's `fullConversation`.
-        let message = LLMMessage(
-            role: .user,
-            content: displayPrompt,
-            sourceRole: .supervisor,
-            sourceContext: .supervisorMessage
-        )
+        let messages = delivery.displayTurns.map { turn in
+            LLMMessage(
+                role: .user,
+                content: turn.content,
+                sourceRole: turn.sourceRole,
+                sourceContext: turn.sourceContext
+            )
+        }
         var didPersist = false
         await mutateTask(taskID: taskID) { task in
             guard let location = task.locateStepInLatestRun(stepID: stepID) else { return }
-            task.runs[location.runIndex].steps[location.stepIndex].llmConversation.append(message)
+            task.runs[location.runIndex].steps[location.stepIndex].llmConversation
+                .append(contentsOf: messages)
             task.runs[location.runIndex].steps[location.stepIndex].updatedAt = MonotonicClock.shared.now()
             didPersist = true
         }
@@ -173,7 +204,114 @@ extension NTMSOrchestrator {
             lastInfoMessage = "\(allFailedFiles.count) file(s) couldn't be embedded inline — attached as paths: \(allFailedFiles.joined(separator: ", "))."
         }
 
-        return prompt
+        return delivery.wirePrompt
+    }
+
+    // MARK: - Composition
+
+    /// One popped entry reduced to what composition needs.
+    nonisolated struct QueuedDeliveryEntry: Equatable {
+        let kind: QuickCaptureFormState.QueuedChatMessage.Kind
+        /// The body AFTER attachment finalization, clip inlining and embedding.
+        let body: String
+        let isRedelivery: Bool
+    }
+
+    /// One turn to persist: a run of consecutive same-kind entries that has something the
+    /// user has not already seen.
+    nonisolated struct QueuedDeliveryTurn: Equatable {
+        let content: String
+        let sourceContext: MessageSourceContext
+        let sourceRole: Role?
+    }
+
+    nonisolated struct QueuedDelivery: Equatable {
+        /// What the model gets — one string, because `injectQueuedSupervisorMessage` appends
+        /// it as a single `ChatMessage`. Carries redeliveries too: the model may never have
+        /// seen them.
+        let wirePrompt: String
+        /// What the feed gets — one per run with fresh content, in queue order. Empty when
+        /// the whole batch is redelivery, which is the caller's signal to skip persistence.
+        let displayTurns: [QueuedDeliveryTurn]
+    }
+
+    /// Splits a drained batch into consecutive same-kind runs and composes each.
+    ///
+    /// Consecutive rather than partitioned-by-kind on purpose: FIFO is the contract the
+    /// whole queue is built on, and reordering a Supervisor's two sentences around an event
+    /// notice that arrived between them would rewrite what the human said. A single-kind
+    /// batch — every human path, and the Autovisor notice on its own — collapses to exactly
+    /// one run, which is why the existing drain tests are the regression pin for this.
+    ///
+    /// Pure and `nonisolated`, same shape as `composeAutovisorEventNotice`: the interesting
+    /// part is string composition, and it should be testable without standing up an
+    /// orchestrator.
+    nonisolated static func composeQueuedDelivery(
+        _ entries: [QueuedDeliveryEntry]
+    ) -> QueuedDelivery {
+        var wireSections: [String] = []
+        var displayTurns: [QueuedDeliveryTurn] = []
+
+        var runStart = entries.startIndex
+        while runStart < entries.endIndex {
+            let kind = entries[runStart].kind
+            var runEnd = runStart
+            while runEnd < entries.endIndex, entries[runEnd].kind == kind { runEnd += 1 }
+            let run = entries[runStart..<runEnd]
+            runStart = runEnd
+
+            // ONE pass over the run rather than map + filter + contains. The three-pass
+            // form was linear overall too (the slices partition `entries`), but it reads as
+            // a scan inside a loop — which is the shape the complexity gate ranks and the
+            // shape a later edit turns quadratic by accident.
+            var allParts: [String] = []
+            var freshParts: [String] = []
+            var hasFresh = false
+            for entry in run {
+                allParts.append(entry.body)
+                guard !entry.isRedelivery else { continue }
+                freshParts.append(entry.body)
+                // Tracked separately from `freshParts.isEmpty`: an entry carrying only an
+                // attachment can compose an empty body, and it is still something the user
+                // has not seen.
+                hasFresh = true
+            }
+            let allBodies = allParts.joined(separator: "\n")
+            let freshBodies = freshParts.joined(separator: "\n")
+
+            switch kind {
+            case .supervisorSpeech:
+                let prefix = MessageSourceContext.supervisorMessagePrefix
+                wireSections.append(prefix + allBodies)
+                if hasFresh {
+                    displayTurns.append(QueuedDeliveryTurn(
+                        content: prefix + freshBodies,
+                        sourceContext: .supervisorMessage,
+                        sourceRole: .supervisor
+                    ))
+                }
+            case .autovisorEventNotice:
+                // No attribution marker: the app is not the Supervisor, and every other
+                // system notice ships bare. `sourceRole: nil` for the same reason — the feed
+                // then files the collapsed row under the working role.
+                wireSections.append(allBodies)
+                if hasFresh {
+                    displayTurns.append(QueuedDeliveryTurn(
+                        content: freshBodies,
+                        sourceContext: .autovisorEvent,
+                        sourceRole: nil
+                    ))
+                }
+            }
+        }
+
+        // A blank line between runs — the only separation a mixed batch gets, since the
+        // notice carries no delimiters. Within a run the join stays "\n", byte-identical to
+        // what a single-kind batch has always produced.
+        return QueuedDelivery(
+            wirePrompt: wireSections.joined(separator: "\n\n"),
+            displayTurns: displayTurns
+        )
     }
 
     /// Re-inserts a batch of popped messages at the **head** of the queue,
@@ -223,6 +361,13 @@ extension NTMSOrchestrator {
     /// `targetRoleID` is set so the redelivery goes to the same role rather than to whichever role
     /// asks first: this message was already routed once, and re-routing it on the way back would
     /// silently change who the human was talking to.
+    ///
+    /// `kind` takes its `.supervisorSpeech` default, and cannot be anything else: the caller
+    /// finds re-queueable turns with `PlanningPhasePolicy.discardedSupervisorMessages`, which
+    /// matches on the `Supervisor:` prefix — so an `.autovisorEvent` run, which ships unmarked,
+    /// is never handed back here. That is a boundary the Autovisor structurally cannot reach
+    /// anyway (`PlanningPhasePolicy.isEligible` carries `!isAutovisor`), and a still-standing
+    /// condition re-notifies on the next fresh-pass wake regardless.
     // periphery:ignore - protocol conformance (LLMStateDelegate)
     func requeueSupervisorMessageAtHead(taskID: Int, roleID: String, text: String) {
         guard let formState = quickCaptureFormState,

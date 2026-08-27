@@ -31,6 +31,13 @@ struct GenerateTeamSheet: View {
         .frame(width: 380)
         .background(Colors.surfaceBackground)
         .task { isFocused = true }
+        // HAZARD (CLAUDE.md #50): a `.background { ViewBuilder }` holding a focusable,
+        // responder-participating view on an ANCESTOR is a measured per-CA-frame hitch — the
+        // `.keyboardShortcut` keeps this Button live in SwiftUI's display list, and `.hidden()`
+        // suppresses paint, not display-list cost. Harmless today because the input below is a
+        // SwiftUI `TextField`; it becomes the hitch the moment this sheet hosts an
+        // `NSScrollView`-backed representable. If that happens, do what `QuickCaptureFormView`
+        // did: delete this and host Escape on the AppKit side (`NSPanel.cancelOperation`).
         .background {
             Button("", action: cancel)
                 .keyboardShortcut(.cancelAction)
@@ -77,26 +84,18 @@ struct GenerateTeamSheet: View {
     // MARK: - Input
 
     private var inputField: some View {
-        HStack(alignment: .top, spacing: Spacing.xs) {
-            PromptMarker(cursor: true)
-            TextField(
-                "e.g. Build a REST API with auth, or A team for weekly content planning…",
-                text: $taskDescription,
-                axis: .vertical
-            )
-            .lineLimit(5...15)
-            .textFieldStyle(.plain)
-            .font(Typography.termBase)
-            .foregroundStyle(Colors.textPrimary)
-            .focused($isFocused)
-            .disabled(isGenerating)
-        }
-        .padding(Spacing.s)
-        .frame(minHeight: 220, alignment: .topLeading)
-        .background(
-            RoundedRectangle.squircle(CornerRadius.small)
-                .fill(Colors.surfaceElevated)
+        TextField(
+            "e.g. Build a REST API with auth, or A team for weekly content planning…",
+            text: $taskDescription,
+            axis: .vertical
         )
+        .lineLimit(5...15)
+        .textFieldStyle(.plain)
+        .font(Typography.termBase)
+        .foregroundStyle(Colors.textPrimary)
+        .focused($isFocused)
+        .disabled(isGenerating)
+        .inputSurface(.editor, minHeight: 220, alignment: .topLeading) { PromptMarker(cursor: true) }
     }
 
     private func errorBanner(_ message: String) -> some View {

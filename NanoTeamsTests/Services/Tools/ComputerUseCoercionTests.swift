@@ -108,7 +108,7 @@ final class ComputerUseCoercionTests: XCTestCase {
         XCTAssertEqual(gx, 501, "gate x")
         XCTAssertEqual(gy, 7, "gate y")
 
-        let r = UIClickTool().handle(context: ctx(), args: ["x": "501", "y": "7"])
+        let r = await UIClickTool().handle(context: ctx(), args: ["x": "501", "y": "7"])
         guard case .click(let hx, let hy, _, _, _)? = signalAction(r) else {
             return XCTFail("handler must emit a .click for quoted coordinates, got: \(r.outputJSON)")
         }
@@ -125,7 +125,7 @@ final class ComputerUseCoercionTests: XCTestCase {
         XCTAssertEqual(gx, 501)
         XCTAssertEqual(gy, 7)
 
-        let r = UIClickTool().handle(context: ctx(), args: ["x": " 501 ", "y": "\t7\n"])
+        let r = await UIClickTool().handle(context: ctx(), args: ["x": " 501 ", "y": "\t7\n"])
         guard case .click(let hx, let hy, _, _, _)? = signalAction(r) else {
             return XCTFail("handler must trim whitespace, got: \(r.outputJSON)")
         }
@@ -145,7 +145,7 @@ final class ComputerUseCoercionTests: XCTestCase {
         XCTAssertEqual(gx, 834, "834.9 must truncate to 834, not round to 835")
         XCTAssertEqual(gy, -2, "-2.9 must truncate toward zero to -2, not to -3")
 
-        let r = UIClickTool().handle(context: ctx(), args: ["x": "834.9", "y": "-2.9"])
+        let r = await UIClickTool().handle(context: ctx(), args: ["x": "834.9", "y": "-2.9"])
         guard case .click(let hx, let hy, _, _, _)? = signalAction(r) else {
             return XCTFail("handler must accept a fractional quoted coordinate, got: \(r.outputJSON)")
         }
@@ -163,7 +163,7 @@ final class ComputerUseCoercionTests: XCTestCase {
         XCTAssertEqual(gx, -5)
         XCTAssertEqual(gy, -9)
 
-        let r = UIClickTool().handle(context: ctx(), args: ["x": "-5", "y": "-9"])
+        let r = await UIClickTool().handle(context: ctx(), args: ["x": "-5", "y": "-9"])
         guard case .click(let hx, let hy, _, _, _)? = signalAction(r) else {
             return XCTFail("handler must parse a negative quoted coordinate, got: \(r.outputJSON)")
         }
@@ -180,7 +180,7 @@ final class ComputerUseCoercionTests: XCTestCase {
         }
         XCTAssertTrue(gDouble, "gate must honor a quoted boolean")
 
-        let r = UIClickTool().handle(context: ctx(), args: ["x": 1, "y": 1, "double": "true"])
+        let r = await UIClickTool().handle(context: ctx(), args: ["x": 1, "y": 1, "double": "true"])
         guard case .click(_, _, _, let hDouble, _)? = signalAction(r) else {
             return XCTFail("expected a .click from the handler")
         }
@@ -204,7 +204,7 @@ final class ComputerUseCoercionTests: XCTestCase {
         }
         XCTAssertEqual([gx, gy, gdx, gdy], [5, 6, -120, 40], "gate scroll x/y/dx/dy")
 
-        let r = UIScrollTool().handle(
+        let r = await UIScrollTool().handle(
             context: ctx(), args: ["x": "5", "y": "6", "dx": "-120", "dy": "40"])
         guard case .scroll(let hx, let hy, let hdx, let hdy, _)? = signalAction(r) else {
             return XCTFail("handler must parse quoted scroll arguments, got: \(r.outputJSON)")
@@ -298,7 +298,7 @@ final class ComputerUseCoercionTests: XCTestCase {
             gateAction(ToolNames.uiClick, #"{"x":"1e300","y":7}"#),
             "an out-of-Int-range coordinate must not resolve")
 
-        let r = UIClickTool().handle(context: ctx(), args: ["x": "1e300", "y": 7])
+        let r = await UIClickTool().handle(context: ctx(), args: ["x": "1e300", "y": 7])
         XCTAssertTrue(r.isError, "the handler must reject an out-of-range coordinate")
         XCTAssertNil(r.signal, "a rejected coordinate must not emit a computer-use signal")
     }
@@ -307,12 +307,12 @@ final class ComputerUseCoercionTests: XCTestCase {
     /// be reported as missing — that sends it hunting for a phantom omission instead of
     /// fixing the type. Asserting only `error is ToolArgumentError` would pass for both.
     func testCoordinateErrors_distinguishAbsentFromUncoercible() async {
-        let absent = UIClickTool().handle(context: ctx(), args: ["y": 10])
+        let absent = await UIClickTool().handle(context: ctx(), args: ["y": 10])
         XCTAssertTrue(
             absent.outputJSON.contains("Missing required argument: x"),
             "an omitted coordinate must report as missing, got: \(absent.outputJSON)")
 
-        let garbage = UIClickTool().handle(context: ctx(), args: ["x": "501abc", "y": 10])
+        let garbage = await UIClickTool().handle(context: ctx(), args: ["x": "501abc", "y": 10])
         XCTAssertTrue(
             garbage.outputJSON.contains("Argument 'x' must be an integer"),
             "a present-but-uncoercible coordinate must report the type, got: \(garbage.outputJSON)")
@@ -321,7 +321,7 @@ final class ComputerUseCoercionTests: XCTestCase {
             "an argument the model sent must never be reported as missing")
 
         // JSON null is treated as an omission, not a malformed value.
-        let null = UIClickTool().handle(context: ctx(), args: ["x": NSNull(), "y": 10])
+        let null = await UIClickTool().handle(context: ctx(), args: ["x": NSNull(), "y": 10])
         XCTAssertTrue(
             null.outputJSON.contains("Missing required argument: x"),
             "a null coordinate counts as absent, got: \(null.outputJSON)")
@@ -334,7 +334,7 @@ final class ComputerUseCoercionTests: XCTestCase {
             gateAction(ToolNames.uiScroll, #"{"x":"","y":"6","dx":0,"dy":-3}"#),
             "an empty-string coordinate must not resolve to 0")
 
-        let r = UIScrollTool().handle(context: ctx(), args: ["x": "", "y": "6"])
+        let r = await UIScrollTool().handle(context: ctx(), args: ["x": "", "y": "6"])
         XCTAssertTrue(r.isError, "the handler must reject an empty-string coordinate")
         XCTAssertNil(r.signal, "a rejected scroll must not emit a computer-use signal")
     }

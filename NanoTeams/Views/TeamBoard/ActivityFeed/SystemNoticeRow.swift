@@ -54,6 +54,42 @@ struct SystemNoticeRow: View {
     }
 }
 
+/// The correction `LoopRecoveryPolicy` really emits, read through `LLMMessage.displayContent`
+/// — the same two steps `TeamActivityFeedView.bubbleInputs` takes before handing a body to
+/// `MessageBubbleView`.
+///
+/// Hand-written prose stood here until 2026-08-24, and because no code path emits that shape
+/// the canvas could not show what the row actually rendered: the real body opens with
+/// `--- LOOP CORRECTION ---`, so `previewLine` (first non-empty line) reduced the row to
+/// `system: loop correction   --- LOOP CORRECTION ---` — a preview duplicating its own label.
+// periphery:ignore - used in #Preview macros
+private let systemNoticeRowPreviewLoopCorrection: String = {
+    guard case .retryWithNudge(let nudge) = LoopRecoveryPolicy.decide(
+        signal: .withinMessage(diagnostic: "substring \"Wait! Looking at the lis…\" repeated 4 times"),
+        breakCount: 1,
+        maxRetries: LLMConstants.maxThinkingLoopBreaks,
+        supervisorMode: .autonomous,
+        isChatMode: true,
+        canParkForSupervisor: false,
+        roleName: "Coding Agent"
+    ) else { return "" }
+    return LLMMessage(role: .user, content: nudge, sourceContext: .loopCorrection).displayContent
+}()
+
+/// The mid-review notice the Autovisor really receives, composed by the production renderer.
+///
+/// Same lesson as the loop correction above, one step further: this body opens with a banner
+/// (`Event update while you are reviewing…`) that the row's own `system: event` label already
+/// states, so `SystemNoticePresentation` skips it and the preview shows the first bullet. The
+/// canvas is where that is worth looking at — a hand-written fixture would show a row nothing
+/// emits.
+// periphery:ignore - used in #Preview macros
+private let systemNoticeRowPreviewAutovisorEvent: String =
+    NTMSOrchestrator.composeAutovisorEventNotice([
+        .init(taskID: 35, title: "M15 — Fix streak counter", trigger: .needsSupervisor),
+        .init(taskID: 12, title: "Ratchet sweep", trigger: .failed),
+    ])
+
 // MARK: - Preview
 
 #Preview("System notices") {
@@ -80,14 +116,24 @@ struct SystemNoticeRow: View {
             fullText: "…"
         )
 
-        systemNoticeRowPreviewLabel("loop correction")
+        systemNoticeRowPreviewLabel("loop correction — the real nudge, read as the feed reads it")
         SystemNoticeRow(
             notice: SystemNoticePresentation.resolve(
                 context: .loopCorrection,
-                content: "Your previous response repeated the same block and was discarded."
+                content: systemNoticeRowPreviewLoopCorrection
             )!,
             messageID: UUID(),
-            fullText: "…"
+            fullText: systemNoticeRowPreviewLoopCorrection
+        )
+
+        systemNoticeRowPreviewLabel("autovisor event — banner skipped, first bullet shown")
+        SystemNoticeRow(
+            notice: SystemNoticePresentation.resolve(
+                context: .autovisorEvent,
+                content: systemNoticeRowPreviewAutovisorEvent
+            )!,
+            messageID: UUID(),
+            fullText: systemNoticeRowPreviewAutovisorEvent
         )
 
         systemNoticeRowPreviewLabel("server error — red label")

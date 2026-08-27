@@ -126,6 +126,9 @@ struct CommandPaletteView: View {
         return VStack(spacing: 0) {
             HStack {
                 PromptMarker(cursor: false)
+                // A full-width surfaceCard header over a divider, not a boxed field; the prompt
+                // marker and the divider are its chrome.
+                // ds:allow-custom-input palette prompt line, deliberately unboxed
                 TextField("type a command…", text: $searchText)
                     .textFieldStyle(.plain)
                     .font(Typography.termXl)
@@ -197,7 +200,7 @@ struct CommandPaletteView: View {
 // MARK: - Previews
 
 #Preview("Default") {
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
+    @Previewable @State var store = PreviewStore.make()
     @Previewable @State var selected: MainLayoutView.NavigationItem? = .watchtower
     @Previewable @State var isPresented = true
     CommandPaletteView(selectedItem: $selected, isPresented: $isPresented)
@@ -205,7 +208,7 @@ struct CommandPaletteView: View {
 }
 
 #Preview("With Search") {
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
+    @Previewable @State var store = PreviewStore.make()
     @Previewable @State var selected: MainLayoutView.NavigationItem? = nil
     @Previewable @State var isPresented = true
     CommandPaletteView(selectedItem: $selected, isPresented: $isPresented)

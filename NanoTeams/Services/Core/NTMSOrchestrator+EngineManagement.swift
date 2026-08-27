@@ -85,14 +85,14 @@ extension NTMSOrchestrator {
     @discardableResult
     func wakeEngine(taskID: Int) -> Bool {
         // A run already being created will start the engine itself. `startRun` clears its
-        // engine-state guard, inserts `startingRunTaskIDs`, and only THEN suspends across
+        // engine-state guard, takes the run-start claim, and only THEN suspends across
         // `refreshAgentInstructions` / `ensureTaskLoaded` / `createNewRun`. Racing that window
         // registers and starts an engine against the OLD run; `startRun`'s own `start()` is then
         // swallowed by its `guard state != .running`, leaving one loop reconciled against a
         // replaced run — with `TaskStepKey` colliding across runs because
         // `StepExecution.id == roleID`. `engineForTask` is a WRITE, not a read; that is the whole
         // difference from the nil-swallow this method replaces.
-        guard !startingRunTaskIDs.contains(taskID), !forcingRunTaskIDs.contains(taskID) else {
+        guard !engineState.isInitializingRun(taskID), !forcingRunTaskIDs.contains(taskID) else {
             return false
         }
 
@@ -125,6 +125,11 @@ extension NTMSOrchestrator {
     }
 
     func stopEngine(for taskID: Int) {
+        // A background run launch must not outlive the verb that says this task's engine
+        // is gone: still suspended in the prompt warm-up, it would resume and create a
+        // NEW one after this returns. Cancel only — the launch's own `defer` owns the
+        // registry entry and the run-start claim.
+        cancelRunStartLaunch(taskID: taskID)
         taskEngines[taskID]?.stop()
         taskEngines.removeValue(forKey: taskID)
         engineState.removeEngine(for: taskID)
@@ -138,6 +143,12 @@ extension NTMSOrchestrator {
     }
 
     func stopAllEngines() {
+        // Same reason as in `stopEngine`, and here it is load-bearing rather than tidy:
+        // this verb runs on the work-folder boundary, and `NTMSTask.id` is sequential
+        // PER FOLDER — a launch resuming after the switch would find the new folder's
+        // task of the same id and start it. Guarding one of the two verbs would be a
+        // coincidence, not a defence (CLAUDE.md #51).
+        cancelAllRunStartLaunches()
         for (_, engine) in taskEngines {
             engine.stop()
         }

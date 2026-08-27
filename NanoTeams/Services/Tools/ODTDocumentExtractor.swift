@@ -6,20 +6,27 @@ import Foundation
 /// `<text:span>` elements, with paragraph and heading boundaries becoming
 /// newlines.
 nonisolated struct ODTDocumentExtractor: DocumentFormatExtractor {
-    func extract(from url: URL) -> String {
+    func extract(from url: URL) -> DocumentExtractionOutcome {
         let data: Data?
         do {
             data = try ZIPReader.readEntry(named: "content.xml", from: url)
         } catch {
-            return DocumentExtractionFailure.message(url, reason: String(describing: error))
+            return .failure(reason: String(describing: error))
         }
         guard let contentXML = data else {
-            return DocumentExtractionFailure.message(url, reason: "content.xml missing")
+            return .failure(reason: "content.xml missing")
         }
-        let text = ODTTextCollector.collect(data: contentXML)
-        return text.isEmpty
-            ? DocumentExtractionFailure.message(url, reason: "ODT contains no text")
-            : text
+        let collected = ODTTextCollector.collect(data: contentXML)
+        if collected.text.isEmpty {
+            // A parse that aborted before any content is a FAILURE, not a blank document.
+            if let parseError = collected.parseError {
+                return .failure(reason: parseError)
+            }
+            // Only `content.xml` was opened — see the note in `DOCXDocumentExtractor`.
+            return .empty(reason: "ODT contains no text",
+                          scope: .mainPartOnly(unread: "headers, footers and notes"))
+        }
+        return .text(collected.text, warnings: collected.parseError.map { [$0] } ?? [])
     }
 }
 
@@ -48,18 +55,17 @@ nonisolated private final class ODTTextCollector: NSObject, XMLParserDelegate {
         "text:p", "text:h", "text:span",
     ]
 
-    static func collect(data: Data) -> String {
+    /// Returns extracted plain text alongside the parse abort, if any, as separate values —
+    /// see the note on `DOCXTextCollector.collect(data:)` for why they are not one string.
+    static func collect(data: Data) -> (text: String, parseError: String?) {
         let collector = ODTTextCollector()
         let parser = XMLParser(data: data)
         parser.delegate = collector
         let parsed = parser.parse()
         let text = collector.accumulator.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !parsed {
-            let reason = parser.parserError?.localizedDescription ?? "malformed XML"
-            let warning = "[Warning: XML parse stopped early — \(reason); content may be truncated]"
-            return text.isEmpty ? warning : text + "\n\n" + warning
-        }
-        return text
+        guard !parsed else { return (text, nil) }
+        let reason = parser.parserError?.localizedDescription ?? "malformed XML"
+        return (text, "XML parse stopped early — \(reason); content may be truncated")
     }
 
     func parser(

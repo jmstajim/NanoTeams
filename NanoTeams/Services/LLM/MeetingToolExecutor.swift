@@ -103,7 +103,7 @@ enum MeetingToolExecutor {
                         errorMessage: "tool not authorized in this meeting"
                     )
                 }
-                return runtime.executeAll(context: toolContext, toolCalls: validCalls)
+                return await runtime.executeAll(context: toolContext, toolCalls: validCalls)
             }
             cancellationRegistrar?(batchTask)
             let freshResults = await batchTask.value

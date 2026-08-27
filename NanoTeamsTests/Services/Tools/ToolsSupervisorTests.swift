@@ -55,25 +55,25 @@ final class ToolsSupervisorTests: XCTestCase {
 
     // MARK: - ask_supervisor Basic Functionality
 
-    func testAskSupervisor_withQuestion() {
+    func testAskSupervisor_withQuestion() async {
         let call = StepToolCall(
             name: "ask_supervisor",
             argumentsJSON: "{\"question\": \"Should we proceed with the refactoring?\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
         XCTAssertEqual(results[0].signal, .supervisorQuestion("Should we proceed with the refactoring?"))
     }
 
-    func testAskSupervisor_alwaysPauses() {
+    func testAskSupervisor_alwaysPauses() async {
         // Even if LLM passes "required": false, the step always pauses
         let call = StepToolCall(
             name: "ask_supervisor",
             argumentsJSON: "{\"question\": \"Any preferences?\", \"required\": false}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
@@ -84,12 +84,12 @@ final class ToolsSupervisorTests: XCTestCase {
 
     // MARK: - ask_supervisor Error Cases
 
-    func testAskSupervisor_missingQuestion() {
+    func testAskSupervisor_missingQuestion() async {
         let call = StepToolCall(
             name: "ask_supervisor",
             argumentsJSON: "{}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertTrue(results[0].isError)
@@ -113,12 +113,12 @@ final class ToolsSupervisorTests: XCTestCase {
     /// RED: revert `ask_supervisor` to `requiredString` → the call succeeds and
     /// emits `.supervisorQuestion("")`, which is exactly what the old assertions
     /// pinned.
-    func testAskSupervisor_emptyQuestion_isRejected() {
+    func testAskSupervisor_emptyQuestion_isRejected() async {
         let call = StepToolCall(
             name: "ask_supervisor",
             argumentsJSON: "{\"question\": \"\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertTrue(results[0].isError, "got \(results[0].outputJSON)")
@@ -127,13 +127,13 @@ final class ToolsSupervisorTests: XCTestCase {
         XCTAssertNil(results[0].signal, "a rejected call must not emit a park signal")
     }
 
-    func testAskSupervisor_invalidJSON_recoversViaRawInput() {
+    func testAskSupervisor_invalidJSON_recoversViaRawInput() async {
         // Invalid JSON is recovered — plain string treated as the question
         let call = StepToolCall(
             name: "ask_supervisor",
             argumentsJSON: "invalid json"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
@@ -142,35 +142,35 @@ final class ToolsSupervisorTests: XCTestCase {
 
     // MARK: - ask_supervisor Output Format
 
-    func testAskSupervisor_outputContainsPendingStatus() {
+    func testAskSupervisor_outputContainsPendingStatus() async {
         let call = StepToolCall(
             name: "ask_supervisor",
             argumentsJSON: "{\"question\": \"Test question?\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertTrue(results[0].outputJSON.contains("pending"))
     }
 
-    func testAskSupervisor_outputContainsQuestion() {
+    func testAskSupervisor_outputContainsQuestion() async {
         let question = "What color should the button be?"
         let call = StepToolCall(
             name: "ask_supervisor",
             argumentsJSON: "{\"question\": \"\(question)\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertTrue(results[0].outputJSON.contains(question))
     }
 
-    func testAskSupervisor_outputIsValidJSON() {
+    func testAskSupervisor_outputIsValidJSON() async {
         let call = StepToolCall(
             name: "ask_supervisor",
             argumentsJSON: "{\"question\": \"Test?\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
 
@@ -181,7 +181,7 @@ final class ToolsSupervisorTests: XCTestCase {
 
     // MARK: - ask_supervisor with Special Characters
 
-    func testAskSupervisor_questionWithSpecialCharacters() {
+    func testAskSupervisor_questionWithSpecialCharacters() async {
         let question = "Should we use 'single quotes' or \"double quotes\"?"
         let escapedQuestion = question
             .replacingOccurrences(of: "\\", with: "\\\\")
@@ -191,32 +191,32 @@ final class ToolsSupervisorTests: XCTestCase {
             name: "ask_supervisor",
             argumentsJSON: "{\"question\": \"\(escapedQuestion)\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
         XCTAssertEqual(results[0].signal, .supervisorQuestion(question))
     }
 
-    func testAskSupervisor_questionWithNewlines() {
+    func testAskSupervisor_questionWithNewlines() async {
         let question = "Line 1\\nLine 2\\nLine 3"
         let call = StepToolCall(
             name: "ask_supervisor",
             argumentsJSON: "{\"question\": \"\(question)\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
     }
 
-    func testAskSupervisor_questionWithUnicode() {
+    func testAskSupervisor_questionWithUnicode() async {
         let question = "Should we support emoji? 🎉"
         let call = StepToolCall(
             name: "ask_supervisor",
             argumentsJSON: "{\"question\": \"\(question)\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)

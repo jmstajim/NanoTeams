@@ -57,6 +57,11 @@ struct TeamPromptsDetailView: View {
                 placeholders: selectedTemplate.placeholders
             )
             .frame(maxHeight: .infinity)
+            // Before the border: it has to land on the NSScrollView's own edge, and a padded
+            // ancestor would float it off. This editor had no border at all until 2026-08-24 —
+            // it filled `surfaceCard` on a `surfacePrimary` pane, the opposite polarity from
+            // every other input in the tree.
+            .inputSurfaceBorder()
             .padding(.horizontal, Spacing.s)
             .padding(.vertical, Spacing.xs)
             .onChange(of: templateBinding.wrappedValue) { _, _ in onSave() }
@@ -192,7 +197,8 @@ struct TeamPromptsDetailView: View {
 
 #Preview("Prompts Editor") {
     @Previewable @State var team = Team.default
+    @Previewable @State var previewStore = PreviewStore.make()
     TeamPromptsDetailView(team: $team, onSave: {})
         .frame(width: 600, height: 500)
-        .environment(NTMSOrchestrator(repository: NTMSRepository()))
+        .environment(previewStore)
 }

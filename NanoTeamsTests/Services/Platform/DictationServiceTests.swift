@@ -474,15 +474,37 @@ final class DictationServiceTests: XCTestCase {
 
     // MARK: - Toggle
 
+    /// `toggle`'s only branch that does NOT route into `start()`: same owner, already
+    /// listening → `stop()`.
+    ///
+    /// Reached through `_testInstallEngine`, the seam the rest of this file's engine tests
+    /// already use, rather than `await sut.start(ownerID:)`. `start()` requires real
+    /// microphone authorization, which a CLI test host does not have — so the previous
+    /// spelling left `isListening` false and threw `XCTSkip("Dictation not available in
+    /// this environment.")` on EVERY run, here and everywhere else. It was not gated on
+    /// macOS 26 like its neighbours; it was gated on a mic, and so never executed a line
+    /// of `toggle`. The branch itself is pure state (`isListening && activeOwnerID ==
+    /// ownerID`) and needs no audio at all.
+    ///
+    /// The sibling branch — toggle by a DIFFERENT owner — is deliberately not pinned here:
+    /// it falls through to `start()`, so any assertion about it would measure the host's
+    /// mic permission rather than the service.
     func testToggle_whenSameOwnerListening_stops() async throws {
-        let owner = UUID()
-        await sut.start(ownerID: owner)
-        guard sut.isListening else {
-            throw XCTSkip("Dictation not available in this environment.")
+        guard #available(macOS 26, iOS 26, visionOS 26, *) else {
+            throw XCTSkip("DictationEngineProtocol requires macOS 26+.")
         }
+        let owner = UUID()
+        let fake = FakeDictationEngine(locales: [Locale(identifier: "en_US")])
+        sut._testInstallEngine(fake, ownerID: owner)
+        XCTAssertTrue(sut.isListening, "fixture precondition: the fake engine must leave the service listening")
+        XCTAssertEqual(sut.activeOwnerID, owner)
+
         await sut.toggle(ownerID: owner)
+
         XCTAssertFalse(sut.isListening)
         XCTAssertNil(sut.activeOwnerID)
+        XCTAssertEqual(fake.stopCallCount, 1,
+                       "toggle must stop through the engine, not merely clear the published state")
     }
 
     // MARK: - Preview helper

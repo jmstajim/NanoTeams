@@ -117,7 +117,7 @@ struct TeamSettingsDetailView: View {
                     TextEditor(text: $draftDescription)
                         .font(Typography.termBase)
                         .frame(minHeight: 60, maxHeight: 120)
-                        .borderedTextEditorStyle()
+                        .inputSurface(.editor)
                         .focused($focusedField, equals: .description)
                 }
             }

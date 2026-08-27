@@ -44,8 +44,8 @@ final class SearchExecutorCounterTests: XCTestCase {
 
     private func run(
         _ queries: [String], fileGlob: String? = nil, maxResults: Int = 100
-    ) throws -> SearchExecutorOutput {
-        try SearchExecutor.run(SearchExecutorInput(
+    ) async throws -> SearchExecutorOutput {
+        try await SearchExecutor.run(SearchExecutorInput(
             workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
             queries: queries, fileGlob: fileGlob, maxResults: maxResults,
             internalDir: internalDir))
@@ -56,18 +56,18 @@ final class SearchExecutorCounterTests: XCTestCase {
     /// With no `file_glob` the executor must not build a regex at all. The pre-rewrite code
     /// passed `input.fileGlob ?? "*"` into a function that escaped, rewrote and compiled `^.*$`
     /// for EVERY walked file.
-    func testNoGlob_compilesZeroRegexes() throws {
+    func testNoGlob_compilesZeroRegexes() async throws {
         for i in 0..<25 { try write("f\(i).swift", content: "NEEDLE\n") }
 
-        let out = try run(["NEEDLE"])
+        let out = try await run(["NEEDLE"])
         XCTAssertEqual(out.stats.globCompilations, 0)
     }
 
     /// With a glob, exactly one compile per run — not one per candidate.
-    func testGlob_compiledExactlyOncePerRun() throws {
+    func testGlob_compiledExactlyOncePerRun() async throws {
         for i in 0..<25 { try write("f\(i).swift", content: "NEEDLE\n") }
 
-        let out = try run(["NEEDLE"], fileGlob: "*.swift")
+        let out = try await run(["NEEDLE"], fileGlob: "*.swift")
         XCTAssertEqual(out.stats.globCompilations, 1)
         XCTAssertEqual(out.matches.count, 25, "and the glob still selects correctly")
     }
@@ -76,36 +76,36 @@ final class SearchExecutorCounterTests: XCTestCase {
 
     /// Binaries are classified from an 8 KB sniff, so their bytes never reach the scanner. The
     /// old path read every `.png` in full and UTF-8-validated it just to increment a counter.
-    func testBinaryFiles_areNotFullyRead() throws {
+    func testBinaryFiles_areNotFullyRead() async throws {
         try write("small.txt", content: "NEEDLE\n")
         // 64 KB of NUL-bearing bytes — far more than the 8 KB sniff window.
         var blob = Data([0xFF, 0xFE, 0x00, 0xFD])
         blob.append(Data(repeating: 0x41, count: 65_536))
         try blob.write(to: tempDir.appendingPathComponent("blob.bin"))
 
-        let out = try run(["NEEDLE"])
+        let out = try await run(["NEEDLE"])
         XCTAssertEqual(out.skippedBinaryCount, 1)
         XCTAssertLessThan(out.stats.bytesScanned, 1_000,
                           "the 64 KB blob must not reach the scanner")
     }
 
     /// A `file_glob` must exclude files from being READ, not merely from the results.
-    func testGlob_excludesFilesFromBeingRead() throws {
+    func testGlob_excludesFilesFromBeingRead() async throws {
         try write("keep.swift", content: "NEEDLE\n")
         for i in 0..<20 { try write("drop\(i).md", content: String(repeating: "filler\n", count: 200)) }
 
-        let out = try run(["NEEDLE"], fileGlob: "*.swift")
+        let out = try await run(["NEEDLE"], fileGlob: "*.swift")
         XCTAssertEqual(out.stats.filesRead, 1, "the 20 .md files must never be opened")
     }
 
     /// Directories in `WalkSkipRules` are not descended into.
-    func testSkippedDirectories_areNotEnumerated() throws {
+    func testSkippedDirectories_areNotEnumerated() async throws {
         try write("a.swift", content: "NEEDLE\n")
         try write("node_modules/pkg/deep/x.js", content: "NEEDLE\n")
         try write("__pycache__/y.pyc", content: "NEEDLE\n")
         try write("src/b.swift", content: "NEEDLE\n")
 
-        let out = try run(["NEEDLE"])
+        let out = try await run(["NEEDLE"])
         // root + src only. `.nanoteams` and `.nanoteams/internal` are excluded by prefix, but
         // the walk still enumerates `.nanoteams` itself before rejecting its child.
         XCTAssertLessThanOrEqual(out.stats.dirsEnumerated, 3,
@@ -117,14 +117,14 @@ final class SearchExecutorCounterTests: XCTestCase {
 
     /// The one pin a stopwatch cannot replace: a scan that lost its early stop can still be
     /// faster in wall-clock while doing far more work.
-    func testEarlyStop_stopsScanningOncePageIsFull() throws {
+    func testEarlyStop_stopsScanningOncePageIsFull() async throws {
         // 60 files of 200 matching lines each — 12,000 potential matches.
         for i in 0..<60 {
             try write(String(format: "f%02d.swift", i),
                       content: String(repeating: "NEEDLE\n", count: 200))
         }
 
-        let out = try run(["NEEDLE"], maxResults: 5)
+        let out = try await run(["NEEDLE"], maxResults: 5)
         XCTAssertEqual(out.matches.count, 5)
         XCTAssertTrue(out.truncated)
         XCTAssertEqual(out.stats.filesRead, 1, "5 matches all live in the first file")
@@ -133,13 +133,13 @@ final class SearchExecutorCounterTests: XCTestCase {
     }
 
     /// Paging deeper costs proportionally more work — and still stops.
-    func testEarlyStop_offsetScansOnlyAsFarAsNeeded() throws {
+    func testEarlyStop_offsetScansOnlyAsFarAsNeeded() async throws {
         for i in 0..<60 {
             try write(String(format: "f%02d.swift", i),
                       content: String(repeating: "NEEDLE\n", count: 200))
         }
 
-        let deep = try SearchExecutor.run(SearchExecutorInput(
+        let deep = try await SearchExecutor.run(SearchExecutorInput(
             workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
             queries: ["NEEDLE"], maxResults: 5, offset: 400, internalDir: internalDir))
 
@@ -151,19 +151,19 @@ final class SearchExecutorCounterTests: XCTestCase {
     // MARK: - The ICU slow path
 
     /// Pure-ASCII content must never reach ICU — that is the whole point of the byte scan.
-    func testASCIICorpus_makesNoICUCalls() throws {
+    func testASCIICorpus_makesNoICUCalls() async throws {
         for i in 0..<20 {
             try write("f\(i).swift", content: "let value = \(i)\nfunc run() {}\nNEEDLE\n")
         }
 
-        let out = try run(["NEEDLE"])
+        let out = try await run(["NEEDLE"])
         XCTAssertEqual(out.stats.icuComparisons, 0)
         XCTAssertEqual(out.matches.count, 20)
     }
 
     /// ICU is entered per NON-ASCII LINE, not per file. A per-file rule would send whole files
     /// down the slow path over a single accented character in a comment.
-    func testMixedFile_onlyNonASCIILinesReachICU() throws {
+    func testMixedFile_onlyNonASCIILinesReachICU() async throws {
         try write("mixed.swift", content: """
         let a = 1
         let b = 2
@@ -172,19 +172,19 @@ final class SearchExecutorCounterTests: XCTestCase {
         NEEDLE
         """)
 
-        let out = try run(["NEEDLE"])
+        let out = try await run(["NEEDLE"])
         XCTAssertEqual(out.stats.icuComparisons, 1, "exactly the one Cyrillic line")
         XCTAssertEqual(out.stats.linesScanned, 5)
     }
 
     /// The whole-buffer prefilter must eliminate files that cannot match, without a per-line pass.
-    func testPrefilter_skipsFilesThatCannotMatch() throws {
+    func testPrefilter_skipsFilesThatCannotMatch() async throws {
         for i in 0..<20 {
             try write("f\(i).swift", content: String(repeating: "unrelated content\n", count: 100))
         }
         try write("hit.swift", content: "NEEDLE\n")
 
-        let out = try run(["NEEDLE"])
+        let out = try await run(["NEEDLE"])
         XCTAssertEqual(out.stats.filesPrefiltered, 20, "all 20 non-matching files short-circuit")
         XCTAssertEqual(out.matches.count, 1)
     }

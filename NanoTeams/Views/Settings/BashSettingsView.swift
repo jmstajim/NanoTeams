@@ -199,10 +199,11 @@ struct BashSettingsView: View {
 
 #Preview("Bash Settings") {
     @Previewable @State var config = StoreConfiguration()
-    @Previewable @State var catalog = ModelCatalog()
+    @Previewable @State var catalog = PreviewStore.catalog()
+    @Previewable @State var previewStore = PreviewStore.make()
     BashSettingsView()
         .environment(config)
         .environment(catalog)
-        .environment(NTMSOrchestrator(repository: NTMSRepository()))
+        .environment(previewStore)
         .frame(width: 560, height: 800)
 }

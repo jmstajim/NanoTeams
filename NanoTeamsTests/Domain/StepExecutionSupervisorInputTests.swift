@@ -285,7 +285,7 @@ final class StepExecutionSupervisorInputTests: XCTestCase {
         )
         XCTAssertTrue(step.hasActiveSupervisorInput,
                       "a tail-bounded scan may miss an out-of-order answer; it must never "
-                      + "invent one — the conservative direction is STILL WAITING")
+                          + "invent one — the conservative direction is STILL WAITING")
     }
 
     // MARK: - Work bound
@@ -308,8 +308,8 @@ final class StepExecutionSupervisorInputTests: XCTestCase {
         XCTAssertLessThan(
             large, small * 2,
             "10x the history must not cost 10x the scan — the answer can only be "
-            + "newer than the trailing ask, so the walk is bounded by the tail after it. "
-            + "got \(small) -> \(large)")
+                + "newer than the trailing ask, so the walk is bounded by the tail after it. "
+                + "got \(small) -> \(large)")
     }
 
     /// Builds the PARKED shape — a trailing ask with no answer after it and

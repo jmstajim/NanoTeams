@@ -57,7 +57,7 @@ final class ToolsTeammateTests: XCTestCase {
 
     // MARK: - ask_teammate Tests
 
-    func testAskTeammate_validRequest() {
+    func testAskTeammate_validRequest() async {
         let call = StepToolCall(
             name: "ask_teammate",
             argumentsJSON: """
@@ -67,14 +67,14 @@ final class ToolsTeammateTests: XCTestCase {
             }
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
         XCTAssertEqual(results[0].signal, .teammateConsultation(id: "softwareEngineer", question: "How should I implement the caching layer?", context: nil))
     }
 
-    func testAskTeammate_withContext() {
+    func testAskTeammate_withContext() async {
         let call = StepToolCall(
             name: "ask_teammate",
             argumentsJSON: """
@@ -85,14 +85,14 @@ final class ToolsTeammateTests: XCTestCase {
             }
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
         XCTAssertEqual(results[0].signal, .teammateConsultation(id: "uxDesigner", question: "What color palette should we use?", context: "We're building a finance app for professionals."))
     }
 
-    func testAskTeammate_allValidRoles() {
+    func testAskTeammate_allValidRoles() async {
         let validRoles = ["productManager", "tpm", "uxDesigner", "softwareEngineer", "sre", "codeReviewer"]
 
         for role in validRoles {
@@ -105,7 +105,7 @@ final class ToolsTeammateTests: XCTestCase {
                 }
                 """
             )
-            let results = runtime.executeAll(context: context, toolCalls: [call])
+            let results = await runtime.executeAll(context: context, toolCalls: [call])
 
             XCTAssertEqual(results.count, 1, "Failed for role: \(role)")
             XCTAssertFalse(results[0].isError, "Failed for role: \(role)")
@@ -113,7 +113,7 @@ final class ToolsTeammateTests: XCTestCase {
         }
     }
 
-    func testAskTeammate_unknownRole_passesToServiceLayer() {
+    func testAskTeammate_unknownRole_passesToServiceLayer() async {
         // Tool layer no longer validates role IDs — that's handled by the service layer
         // which has access to team context and supports built-in IDs, UUIDs, and names.
         let call = StepToolCall(
@@ -125,38 +125,38 @@ final class ToolsTeammateTests: XCTestCase {
             }
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
         if case .teammateConsultation(let id, _, _) = results[0].signal { XCTAssertEqual(id, "invalidRole") } else { XCTFail("Expected teammateConsultation signal") }
     }
 
-    func testAskTeammate_missingTeammate() {
+    func testAskTeammate_missingTeammate() async {
         let call = StepToolCall(
             name: "ask_teammate",
             argumentsJSON: "{\"question\": \"Test?\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertTrue(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("INVALID_ARGS"))
     }
 
-    func testAskTeammate_missingQuestion() {
+    func testAskTeammate_missingQuestion() async {
         let call = StepToolCall(
             name: "ask_teammate",
             argumentsJSON: "{\"teammate\": \"designer\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertTrue(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("INVALID_ARGS"))
     }
 
-    func testAskTeammate_outputContainsPendingStatus() {
+    func testAskTeammate_outputContainsPendingStatus() async {
         let call = StepToolCall(
             name: "ask_teammate",
             argumentsJSON: """
@@ -166,14 +166,14 @@ final class ToolsTeammateTests: XCTestCase {
             }
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertTrue(results[0].outputJSON.contains("pending"))
     }
 
     // MARK: - request_team_meeting Tests
 
-    func testRequestTeamMeeting_validRequest() {
+    func testRequestTeamMeeting_validRequest() async {
         let call = StepToolCall(
             name: "request_team_meeting",
             argumentsJSON: """
@@ -183,14 +183,14 @@ final class ToolsTeammateTests: XCTestCase {
             }
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
         XCTAssertEqual(results[0].signal, .teamMeeting(topic: "Architecture discussion", participants: ["softwareEngineer", "uxDesigner"], context: nil))
     }
 
-    func testRequestTeamMeeting_withContext() {
+    func testRequestTeamMeeting_withContext() async {
         let call = StepToolCall(
             name: "request_team_meeting",
             argumentsJSON: """
@@ -201,14 +201,14 @@ final class ToolsTeammateTests: XCTestCase {
             }
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
         if case .teamMeeting(_, _, let context) = results[0].signal { XCTAssertEqual(context, "Need to align on Q2 priorities") } else { XCTFail("Expected teamMeeting signal") }
     }
 
-    func testRequestTeamMeeting_singleParticipant() {
+    func testRequestTeamMeeting_singleParticipant() async {
         let call = StepToolCall(
             name: "request_team_meeting",
             argumentsJSON: """
@@ -218,14 +218,14 @@ final class ToolsTeammateTests: XCTestCase {
             }
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
         if case .teamMeeting(_, let participants, _) = results[0].signal { XCTAssertEqual(participants.count, 1) } else { XCTFail("Expected teamMeeting signal") }
     }
 
-    func testRequestTeamMeeting_emptyParticipants() {
+    func testRequestTeamMeeting_emptyParticipants() async {
         let call = StepToolCall(
             name: "request_team_meeting",
             argumentsJSON: """
@@ -235,7 +235,7 @@ final class ToolsTeammateTests: XCTestCase {
             }
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertTrue(results[0].isError)
@@ -243,7 +243,7 @@ final class ToolsTeammateTests: XCTestCase {
         XCTAssertTrue(results[0].outputJSON.contains("At least one participant"))
     }
 
-    func testRequestTeamMeeting_anyParticipant_passesToServiceLayer() {
+    func testRequestTeamMeeting_anyParticipant_passesToServiceLayer() async {
         // Tool layer no longer validates participant IDs — that's handled by the service layer
         // which has access to team context and supports built-in IDs, UUIDs, and names.
         let call = StepToolCall(
@@ -255,29 +255,29 @@ final class ToolsTeammateTests: XCTestCase {
             }
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
     }
 
-    func testRequestTeamMeeting_missingTopic() {
+    func testRequestTeamMeeting_missingTopic() async {
         let call = StepToolCall(
             name: "request_team_meeting",
             argumentsJSON: "{\"participants\": [\"designer\"]}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertTrue(results[0].isError)
     }
 
-    func testRequestTeamMeeting_missingParticipants() {
+    func testRequestTeamMeeting_missingParticipants() async {
         let call = StepToolCall(
             name: "request_team_meeting",
             argumentsJSON: "{\"topic\": \"Test\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertTrue(results[0].isError)
@@ -285,7 +285,7 @@ final class ToolsTeammateTests: XCTestCase {
 
     // MARK: - conclude_meeting Tests
 
-    func testConcludeMeeting_validRequest() {
+    func testConcludeMeeting_validRequest() async {
         let call = StepToolCall(
             name: "conclude_meeting",
             argumentsJSON: """
@@ -294,7 +294,7 @@ final class ToolsTeammateTests: XCTestCase {
             }
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
@@ -302,7 +302,7 @@ final class ToolsTeammateTests: XCTestCase {
         XCTAssertTrue(results[0].outputJSON.contains("concluded"))
     }
 
-    func testConcludeMeeting_withRationale() {
+    func testConcludeMeeting_withRationale() async {
         let call = StepToolCall(
             name: "conclude_meeting",
             argumentsJSON: """
@@ -312,14 +312,14 @@ final class ToolsTeammateTests: XCTestCase {
             }
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("Better tooling support"))
     }
 
-    func testConcludeMeeting_withNextSteps() {
+    func testConcludeMeeting_withNextSteps() async {
         let call = StepToolCall(
             name: "conclude_meeting",
             argumentsJSON: """
@@ -329,14 +329,14 @@ final class ToolsTeammateTests: XCTestCase {
             }
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("Design cache layer"))
     }
 
-    func testConcludeMeeting_fullDetails() {
+    func testConcludeMeeting_fullDetails() async {
         let call = StepToolCall(
             name: "conclude_meeting",
             argumentsJSON: """
@@ -347,7 +347,7 @@ final class ToolsTeammateTests: XCTestCase {
             }
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
@@ -356,12 +356,12 @@ final class ToolsTeammateTests: XCTestCase {
         XCTAssertTrue(results[0].outputJSON.contains("Update project templates"))
     }
 
-    func testConcludeMeeting_missingDecision() {
+    func testConcludeMeeting_missingDecision() async {
         let call = StepToolCall(
             name: "conclude_meeting",
             argumentsJSON: "{\"rationale\": \"Some reason\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertTrue(results[0].isError)
@@ -405,7 +405,7 @@ final class ToolsTeammateTests: XCTestCase {
 
     // MARK: - request_changes Tests (Round 2 regression)
 
-    func testRequestChanges_customUUID_passesToServiceLayer() {
+    func testRequestChanges_customUUID_passesToServiceLayer() async {
         let customUUID = UUID().uuidString
         let call = StepToolCall(
             name: "request_changes",
@@ -417,7 +417,7 @@ final class ToolsTeammateTests: XCTestCase {
             }
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError, "Custom UUID should pass tool layer validation")
@@ -427,7 +427,7 @@ final class ToolsTeammateTests: XCTestCase {
         )
     }
 
-    func testRequestChanges_validRequest() {
+    func testRequestChanges_validRequest() async {
         let call = StepToolCall(
             name: "request_changes",
             argumentsJSON: """
@@ -438,7 +438,7 @@ final class ToolsTeammateTests: XCTestCase {
             }
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
@@ -451,7 +451,7 @@ final class ToolsTeammateTests: XCTestCase {
         }
     }
 
-    func testRequestChanges_missingChangesField() {
+    func testRequestChanges_missingChangesField() async {
         let call = StepToolCall(
             name: "request_changes",
             argumentsJSON: """
@@ -461,7 +461,7 @@ final class ToolsTeammateTests: XCTestCase {
             }
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertTrue(results[0].isError, "Missing 'changes' field should produce an error")

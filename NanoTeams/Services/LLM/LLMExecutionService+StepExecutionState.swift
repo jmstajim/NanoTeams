@@ -182,6 +182,26 @@ extension LLMExecutionService {
         /// on the next attempt.
         var consecutiveHarmonyParseFailureCount: Int = 0
 
+        /// Count of consecutive turns where the model wrote a well-formed Harmony envelope
+        /// into the REASONING channel and nothing into the channel that dispatches, so the
+        /// turn resolved zero tool calls. First → a nudge naming that exact cause; second
+        /// consecutive → escalate, because a model that cannot switch channels twice in a
+        /// row will not be talked out of it by a third nudge.
+        ///
+        /// Separate from `consecutiveDriftTurnCount` on purpose, not as a duplicate of it:
+        /// the two facts can be true AT ONCE (CLAUDE.md #95). Measured on `tasks/0/runs/273`
+        /// #43 of the MeditationApp folder — 11,789 chars of reasoning (over the drift
+        /// threshold) AND two envelopes in it. One counter would have to pick a diagnosis;
+        /// two let the specific one win the branch and the generic one keep its own streak.
+        ///
+        /// Reset paths (mirror `consecutiveDriftTurnCount`):
+        /// 1. Tool calls about to execute (`resetCountersOnParseableToolCall`).
+        /// 2. Inside the supervisor-escalation branch, so a post-supervisor restart is clean.
+        /// 3. On a revision-mode turn, so a pre-revision streak cannot pre-arm the first
+        ///    post-revision one.
+        /// 4. `cleanup()`.
+        var consecutiveReasoningEnvelopeCount: Int = 0
+
         /// Most-recent computer-use screenshot for this step: the conversion metadata
         /// (region origin/size, pixel size) the `.click`/`.scroll` finalizers need, plus
         /// the base64 for the approval-card preview. In-memory only — never persisted.
@@ -264,6 +284,7 @@ extension LLMExecutionService {
             consecutiveThinkingLoopBreaks = 0
             consecutiveNonProductiveTurns = 0
             consecutiveHarmonyParseFailureCount = 0
+            consecutiveReasoningEnvelopeCount = 0
             lastComputerUseCapture = nil
             lastComputerUseElements = []
             computerUseActionsSinceCapture = 0

@@ -4,19 +4,19 @@ import Foundation
 /// `<a:t>` runs into a labelled section. Slides are ordered by their numeric
 /// suffix (`slide12.xml` → 12) rather than lexically.
 nonisolated struct PPTXDocumentExtractor: DocumentFormatExtractor {
-    func extract(from url: URL) -> String {
+    func extract(from url: URL) -> DocumentExtractionOutcome {
         let entryNames: [String]
         do {
             entryNames = try ZIPReader.listEntries(at: url).map(\.name)
         } catch {
-            return DocumentExtractionFailure.message(url, reason: String(describing: error))
+            return .failure(reason: String(describing: error))
         }
         let slideEntries = entryNames
             .filter { $0.hasPrefix("ppt/slides/slide") && $0.hasSuffix(".xml") }
             .sorted { Self.slideNumber($0) < Self.slideNumber($1) }
 
         guard !slideEntries.isEmpty else {
-            return DocumentExtractionFailure.message(url, reason: "no slide content found")
+            return .failure(reason: "no slide content found")
         }
 
         var sections: [String] = []
@@ -40,9 +40,19 @@ nonisolated struct PPTXDocumentExtractor: DocumentFormatExtractor {
         }
 
         if sections.isEmpty {
-            return DocumentExtractionFailure.message(url, reason: capturedError ?? "no text content in slides")
+            // A slide that could not be read is a failure; slides that read cleanly and hold
+            // no text are an emptiness — but only over the slides themselves, which is all
+            // this reader opens.
+            if let capturedError {
+                return .failure(reason: capturedError)
+            }
+            return .empty(reason: "no text content in slides",
+                          scope: .mainPartOnly(unread: "speaker notes, slide masters and layouts"))
         }
-        return sections.joined(separator: "\n\n")
+        // An unreadable slide alongside readable ones used to vanish entirely — the text
+        // came back as if every slide had been read.
+        return .text(sections.joined(separator: "\n\n"),
+                     warnings: capturedError.map { ["slide unreadable: \($0)"] } ?? [])
     }
 
     /// Extract slide number from path like "ppt/slides/slide12.xml" → 12.

@@ -40,14 +40,14 @@ final class SearchExecutorEdgeCasesTests: XCTestCase {
 
     // MARK: - Invalid file_glob → typed throw
 
-    func testInvalidFileGlob_throwsTypedError() throws {
+    func testInvalidFileGlob_throwsTypedError() async throws {
         // Drop a real file so the executor would otherwise return matches for
         // the literal query — proves the throw fires *before* the walk runs
         // and isn't just an artifact of an empty corpus.
         try write("hit.swift", content: "needle")
 
-        XCTAssertThrowsError(
-            try SearchExecutor.run(SearchExecutorInput(
+        await XCTAssertThrowsErrorAsync(
+            try await SearchExecutor.run(SearchExecutorInput(
                 workFolderRoot: tempDir,
                 resolver: resolver,
                 fileManager: fm,
@@ -95,17 +95,17 @@ final class SearchExecutorEdgeCasesTests: XCTestCase {
 
     // MARK: - Empty input
 
-    func testEmptyFile_noMatches() throws {
+    func testEmptyFile_noMatches() async throws {
         try write("empty.swift", content: "")
-        let out = try SearchExecutor.run(SearchExecutorInput(
+        let out = try await SearchExecutor.run(SearchExecutorInput(
             workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
             queries: ["anything"], internalDir: internalDir
         ))
         XCTAssertEqual(out.matches.count, 0)
     }
 
-    func testEmptyWorkFolder_noMatches() throws {
-        let out = try SearchExecutor.run(SearchExecutorInput(
+    func testEmptyWorkFolder_noMatches() async throws {
+        let out = try await SearchExecutor.run(SearchExecutorInput(
             workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
             queries: ["anything"], internalDir: internalDir
         ))
@@ -116,11 +116,11 @@ final class SearchExecutorEdgeCasesTests: XCTestCase {
 
     // MARK: - Single-line files (no newlines)
 
-    func testSingleLineNoNewline_stillMatches() throws {
+    func testSingleLineNoNewline_stillMatches() async throws {
         // No trailing newline.
         let url = tempDir.appendingPathComponent("oneline.swift")
         try "target found here and here".write(to: url, atomically: true, encoding: .utf8)
-        let out = try SearchExecutor.run(SearchExecutorInput(
+        let out = try await SearchExecutor.run(SearchExecutorInput(
             workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
             queries: ["target"], internalDir: internalDir
         ))
@@ -130,9 +130,9 @@ final class SearchExecutorEdgeCasesTests: XCTestCase {
 
     // MARK: - Case-insensitive substring across scripts
 
-    func testUnicodeSubstring_substringMode_caseInsensitive() throws {
+    func testUnicodeSubstring_substringMode_caseInsensitive() async throws {
         try write("a.swift", content: "ПрокРуткА — scroll view")
-        let out = try SearchExecutor.run(SearchExecutorInput(
+        let out = try await SearchExecutor.run(SearchExecutorInput(
             workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
             queries: ["прокрутка"], internalDir: internalDir
         ))
@@ -147,9 +147,9 @@ final class SearchExecutorEdgeCasesTests: XCTestCase {
     /// LLM can distinguish "no matches in corpus" from "your pattern is
     /// malformed". `try?` ate this signal silently — the LLM kept retrying
     /// with the same broken pattern.
-    func testInvalidRegexPattern_throwsTypedError() throws {
+    func testInvalidRegexPattern_throwsTypedError() async throws {
         try write("a.swift", content: "literal text")
-        XCTAssertThrowsError(try SearchExecutor.run(SearchExecutorInput(
+        await XCTAssertThrowsErrorAsync(try await SearchExecutor.run(SearchExecutorInput(
             workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
             queries: ["[unbalanced("],
             mode: .regex,
@@ -166,11 +166,11 @@ final class SearchExecutorEdgeCasesTests: XCTestCase {
 
     // MARK: - Non-UTF8 bytes count as binary
 
-    func testNonUTF8_countedAsBinary_notSkippedEntry() throws {
+    func testNonUTF8_countedAsBinary_notSkippedEntry() async throws {
         let url = tempDir.appendingPathComponent("bytes.txt")
         try Data([0xFF, 0xFE, 0xFD]).write(to: url)
         try write("a.swift", content: "hit\n")
-        let out = try SearchExecutor.run(SearchExecutorInput(
+        let out = try await SearchExecutor.run(SearchExecutorInput(
             workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
             queries: ["hit"], internalDir: internalDir
         ))
@@ -189,14 +189,14 @@ final class SearchExecutorEdgeCasesTests: XCTestCase {
     /// must surface via `skipped_files` — NOT silently collapse into the
     /// binary-count aggregate. The LLM needs the path + reason so it can
     /// distinguish "no textual match" from "this file was unreadable".
-    func testCorruptDocxFile_surfacesInSkippedFiles() throws {
+    func testCorruptDocxFile_surfacesInSkippedFiles() async throws {
         let badDocx = tempDir.appendingPathComponent("broken.docx")
         // .docx is supposed to be a ZIP; write random bytes so the
         // extractor fails at the zip-open step.
         try Data([0x00, 0x01, 0x02, 0x03, 0x04]).write(to: badDocx)
         try write("a.swift", content: "target\n")
 
-        let out = try SearchExecutor.run(SearchExecutorInput(
+        let out = try await SearchExecutor.run(SearchExecutorInput(
             workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
             queries: ["target"], internalDir: internalDir
         ))
@@ -209,7 +209,7 @@ final class SearchExecutorEdgeCasesTests: XCTestCase {
 
     // MARK: - .build, node_modules, Pods are all skipped
 
-    func testMultipleSkippedDirs_allHonored() throws {
+    func testMultipleSkippedDirs_allHonored() async throws {
         try write(".build/x.swift", content: "target\n")
         try write("node_modules/pkg/y.swift", content: "target\n")
         try write("Pods/z.swift", content: "target\n")
@@ -219,7 +219,7 @@ final class SearchExecutorEdgeCasesTests: XCTestCase {
         try write(".swiftpm/a.swift", content: "target\n")
         try write("src/ok.swift", content: "target\n")
 
-        let out = try SearchExecutor.run(SearchExecutorInput(
+        let out = try await SearchExecutor.run(SearchExecutorInput(
             workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
             queries: ["target"], internalDir: internalDir
         ))
@@ -229,9 +229,9 @@ final class SearchExecutorEdgeCasesTests: XCTestCase {
 
     // MARK: - constrainToFiles with path outside work folder is ignored
 
-    func testConstrainToFiles_parentTraversal_skipped() throws {
+    func testConstrainToFiles_parentTraversal_skipped() async throws {
         try write("a.swift", content: "target\n")
-        let out = try SearchExecutor.run(SearchExecutorInput(
+        let out = try await SearchExecutor.run(SearchExecutorInput(
             workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
             queries: ["target"],
             constrainToFiles: ["../../../etc/hosts", "a.swift"],
@@ -243,12 +243,12 @@ final class SearchExecutorEdgeCasesTests: XCTestCase {
         XCTAssertEqual(out.matches[0].path, "a.swift")
     }
 
-    func testConstrainToFiles_withDirectory_skipsNonRTFD() throws {
+    func testConstrainToFiles_withDirectory_skipsNonRTFD() async throws {
         // A real directory in constrainToFiles should be skipped (not scanned).
         let dir = tempDir.appendingPathComponent("mydir")
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
         try write("a.swift", content: "target\n")
-        let out = try SearchExecutor.run(SearchExecutorInput(
+        let out = try await SearchExecutor.run(SearchExecutorInput(
             workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
             queries: ["target"],
             constrainToFiles: ["mydir", "a.swift"],
@@ -260,9 +260,9 @@ final class SearchExecutorEdgeCasesTests: XCTestCase {
 
     // MARK: - fileGlob edge cases
 
-    func testFileGlob_noMatches_returnsEmpty() throws {
+    func testFileGlob_noMatches_returnsEmpty() async throws {
         try write("a.swift", content: "target\n")
-        let out = try SearchExecutor.run(SearchExecutorInput(
+        let out = try await SearchExecutor.run(SearchExecutorInput(
             workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
             queries: ["target"],
             fileGlob: "*.rust",
@@ -279,11 +279,11 @@ final class SearchExecutorEdgeCasesTests: XCTestCase {
     /// genuinely empty. The new throw lets the caller put the reason in
     /// the result envelope's `search_error` field. See also
     /// `testInvalidFileGlob_throwsTypedError` above for the dedicated assertion.
-    func testFileGlob_compileFailure_throwsTypedError() throws {
+    func testFileGlob_compileFailure_throwsTypedError() async throws {
         try write("a.swift", content: "target\n")
         try write("b.m", content: "target\n")
-        XCTAssertThrowsError(
-            try SearchExecutor.run(SearchExecutorInput(
+        await XCTAssertThrowsErrorAsync(
+            try await SearchExecutor.run(SearchExecutorInput(
                 workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
                 queries: ["target"],
                 fileGlob: CompiledGlob._testUncompilableGlobSentinel,
@@ -299,11 +299,11 @@ final class SearchExecutorEdgeCasesTests: XCTestCase {
         }
     }
 
-    func testFileGlob_withMultipleStars() throws {
+    func testFileGlob_withMultipleStars() async throws {
         try write("utils/helpers.swift", content: "target\n")
         try write("utils/consts.swift", content: "target\n")
         // "*.swift" matches anything ending in .swift (name only, not path).
-        let out = try SearchExecutor.run(SearchExecutorInput(
+        let out = try await SearchExecutor.run(SearchExecutorInput(
             workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
             queries: ["target"],
             fileGlob: "*.swift",
@@ -314,9 +314,9 @@ final class SearchExecutorEdgeCasesTests: XCTestCase {
 
     // MARK: - Multi-query fairness
 
-    func testMultiQuery_oneQueryHasZeroHits_otherFills() throws {
+    func testMultiQuery_oneQueryHasZeroHits_otherFills() async throws {
         try write("a.swift", content: "alpha\nbeta\ngamma\n")
-        let out = try SearchExecutor.run(SearchExecutorInput(
+        let out = try await SearchExecutor.run(SearchExecutorInput(
             workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
             queries: ["alpha", "zzzzz"],  // second query finds nothing
             maxResults: 10,
@@ -327,9 +327,9 @@ final class SearchExecutorEdgeCasesTests: XCTestCase {
         XCTAssertEqual(out.matches[0].text, "alpha")
     }
 
-    func testMultiQuery_zeroTotalHits_returnsEmpty() throws {
+    func testMultiQuery_zeroTotalHits_returnsEmpty() async throws {
         try write("a.swift", content: "alpha\n")
-        let out = try SearchExecutor.run(SearchExecutorInput(
+        let out = try await SearchExecutor.run(SearchExecutorInput(
             workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
             queries: ["zzz", "qqq"],
             internalDir: internalDir
@@ -340,9 +340,9 @@ final class SearchExecutorEdgeCasesTests: XCTestCase {
 
     // MARK: - Context bounds at file start / end
 
-    func testContextBefore_atFileStart_clamped() throws {
+    func testContextBefore_atFileStart_clamped() async throws {
         try write("a.swift", content: "target\nafter1\n")
-        let out = try SearchExecutor.run(SearchExecutorInput(
+        let out = try await SearchExecutor.run(SearchExecutorInput(
             workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
             queries: ["target"],
             contextBefore: 3,
@@ -351,9 +351,9 @@ final class SearchExecutorEdgeCasesTests: XCTestCase {
         XCTAssertEqual(out.matches.first?.context_before?.count, 0)
     }
 
-    func testContextAfter_atFileEnd_clamped() throws {
+    func testContextAfter_atFileEnd_clamped() async throws {
         try write("a.swift", content: "before1\ntarget")
-        let out = try SearchExecutor.run(SearchExecutorInput(
+        let out = try await SearchExecutor.run(SearchExecutorInput(
             workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
             queries: ["target"],
             contextAfter: 5,
@@ -366,11 +366,11 @@ final class SearchExecutorEdgeCasesTests: XCTestCase {
 
     // MARK: - Massive line count but small matches
 
-    func testVeryManyLinesButFewMatches_doesNotTruncate() throws {
+    func testVeryManyLinesButFewMatches_doesNotTruncate() async throws {
         let junk = String(repeating: "filler\n", count: 500)
         let body = junk + "target\n" + junk
         try write("a.swift", content: body)
-        let out = try SearchExecutor.run(SearchExecutorInput(
+        let out = try await SearchExecutor.run(SearchExecutorInput(
             workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
             queries: ["target"],
             maxResults: 20,
@@ -382,9 +382,9 @@ final class SearchExecutorEdgeCasesTests: XCTestCase {
 
     // MARK: - Paths parameter: non-existent directory
 
-    func testPaths_nonexistent_silentlySkipped() throws {
+    func testPaths_nonexistent_silentlySkipped() async throws {
         try write("a.swift", content: "target\n")
-        let out = try SearchExecutor.run(SearchExecutorInput(
+        let out = try await SearchExecutor.run(SearchExecutorInput(
             workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
             queries: ["target"],
             paths: ["doesnotexist"],

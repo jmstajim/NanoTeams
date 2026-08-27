@@ -21,7 +21,7 @@ import XCTest
 /// / stream-activity hooks.
 ///
 /// **No engine is ever started and nothing reaches the network.** The verbs that could
-/// (`start`, `message_task`'s wake) are driven either through `startingRunTaskIDs` — so
+/// (`start`, `message_task`'s wake) are driven either through `initializingRunTaskIDs` — so
 /// `startRun` is a no-op and the honest-failure arm is what gets pinned — or through
 /// `makeEngineFreeStartableTask()`, whose contract is documented at the helper.
 /// `resume` is deliberately absent: every path through `resumeRun` ends in
@@ -78,6 +78,13 @@ final class AutovisorActionDispatchTests: NTMSOrchestratorTestBase, @unchecked S
         await sut.mutateTask(taskID: taskID) { task in
             task.runs = [Run(id: 0, steps: steps, roleStatuses: statuses)]
         }
+        // The roles this run names must EXIST on the task's pinned team. Role-verb guards
+        // refuse an id that is not on the roster (2026-08-25), and before that guard these
+        // fixtures were describing a shape production cannot produce: a run whose steps came
+        // from one team while the task is pinned to another. Registering them keeps the
+        // fixture honest without weakening what each test asserts — the deletion case has its
+        // own suite (`RoleRosterGuardTests`) rather than riding along here by accident.
+        await registerRolesOnActiveTeam(steps.map(\.id) + Array(statuses.keys))
     }
 
     private func latestRun(_ taskID: Int) -> Run? { sut.loadedTask(taskID)?.runs.last }
@@ -405,8 +412,8 @@ final class AutovisorActionDispatchTests: NTMSOrchestratorTestBase, @unchecked S
 
         // `startRun`'s re-entrancy guard: makes it a deterministic no-op with no engine,
         // no run and no error banner — exactly the silent-no-op shape being pinned.
-        sut.startingRunTaskIDs.insert(id)
-        defer { sut.startingRunTaskIDs.remove(id) }
+        _ = sut.engineState.beginRunStart(id)
+        defer { sut.engineState.endRunStart(id) }
 
         let inactive: [TeamEngineState?] = [nil, .pending, .paused, .done, .failed]
         for state in inactive {
@@ -737,5 +744,122 @@ final class AutovisorActionDispatchTests: NTMSOrchestratorTestBase, @unchecked S
                      "same step id on another task must not inherit the timestamp")
         XCTAssertNil(sut.streamLastActivityAt(stepID: "other", taskID: 7),
                      "another step on the same task must not inherit it either")
+    }
+    // MARK: - Honest results: resume / schedule / create (D-16)
+
+    /// `resumeRun` exits silently on a closed task and sets no error, so `reportingError` —
+    /// which reports ok whenever no error surfaces — called it success.
+    ///
+    /// RED: delete the closed pre-check from the `.resume` arm → `ok:true` with "Resumed task
+    /// #N" for a task `resumeRun` returned from at its own `closedAt` guard.
+    func testControlTaskResume_closedTask_reportsFailureWithTheRemedy() async {
+        _ = await pinManager()
+        guard let id = await makeWorkerTask() else { return }
+        await injectRun(taskID: id, steps: [
+            StepExecution(id: "r", role: .softwareEngineer, title: "R", status: .done)
+        ], statuses: ["r": .done])
+        await sut.mutateTask(taskID: id) { $0.closedAt = MonotonicClock.shared.now() }
+
+        let r = await sut.performAutovisorAction(.controlTask(taskID: id, verb: .resume))
+
+        XCTAssertFalse(r.ok, "a closed task cannot be resumed")
+        XCTAssertTrue(r.message.contains("closed"), "got \(r.message)")
+        XCTAssertNil(sut.taskEngines[id], "and no engine may be created for it")
+    }
+
+    /// The second silent exit, and it needs its OWN fixture: the closed check above returns
+    /// first, so a single task cannot exercise both (CLAUDE.md #58).
+    ///
+    /// RED: delete the no-run pre-check → the same false success by the other exit.
+    func testControlTaskResume_taskWithNoRun_reportsFailure() async {
+        _ = await pinManager()
+        guard let id = await makeWorkerTask() else { return }
+        await sut.mutateTask(taskID: id) { $0.runs = [] }
+
+        let r = await sut.performAutovisorAction(.controlTask(taskID: id, verb: .resume))
+
+        XCTAssertFalse(r.ok, "there is no run to resume")
+        XCTAssertTrue(r.message.contains("control_task start"),
+                      "the refusal must name the verb that makes it possible; got \(r.message)")
+    }
+
+    /// `setTaskRecurrence` is `Void` with silent guards, so the old message restated what the
+    /// manager ASKED for rather than what landed.
+    ///
+    /// RED: build the message from `intervalMinutes` without re-reading `task.recurrence` → a
+    /// `setTaskRecurrence` that no-opped still reports "will now run every N min", and nothing
+    /// ever fires.
+    func testScheduleTask_reportsThePersistedInterval() async {
+        _ = await pinManager()
+        guard let id = await makeWorkerTask() else { return }
+
+        let r = await sut.performAutovisorAction(.scheduleTask(taskID: id, intervalMinutes: 15))
+
+        XCTAssertTrue(r.ok, r.message)
+        XCTAssertTrue(r.message.contains("15"), "got \(r.message)")
+        guard case .interval(let seconds)? = sut.loadedTask(id)?.recurrence?.rule else {
+            return XCTFail("recurrence was not persisted")
+        }
+        XCTAssertEqual(seconds, 15 * 60, "the durable value is what the message must describe")
+    }
+
+    /// RED: report the cleared message without re-reading → a clear that did not land reports
+    /// "Cleared schedule" while the task keeps firing.
+    func testScheduleTask_clear_verifiesRecurrenceIsNil() async {
+        _ = await pinManager()
+        guard let id = await makeWorkerTask() else { return }
+        _ = await sut.performAutovisorAction(.scheduleTask(taskID: id, intervalMinutes: 15))
+
+        let r = await sut.performAutovisorAction(.scheduleTask(taskID: id, intervalMinutes: 0))
+
+        XCTAssertTrue(r.ok, r.message)
+        XCTAssertNil(sut.loadedTask(id)?.recurrence)
+    }
+
+    /// "and started" was unverified. The verdict stays `.success` deliberately — the task DOES
+    /// exist and occupies the manager's one-task-in-flight budget, so `.failure` would invite a
+    /// duplicate and would drop `createdTaskID` with it (CLAUDE.md #95). What changes is that
+    /// the message stops asserting the second fact when it did not happen.
+    ///
+    /// The no-op is forced deterministically with `initializingRunTaskIDs`, the same device
+    /// `testControlTaskStart_inactiveStates_…` uses.
+    ///
+    /// RED: keep the unconditional "Created and started" message → a dead task is reported as
+    /// running, consumes the budget, and nothing ever starts it.
+    func testCreateManagedTask_startNoOps_saysCreatedButNotStarted() async {
+        _ = await pinManager()
+        guard let nextID = sut.snapshot?.tasksIndex.nextTaskID else {
+            return XCTFail("no tasks index")
+        }
+        _ = sut.engineState.beginRunStart(nextID)
+        defer { sut.engineState.endRunStart(nextID) }
+
+        let r = await sut.performAutovisorAction(
+            .createManagedTask(title: "T", brief: "b",
+                               teamID: DelegationConstants.generatedTeamSentinel))
+
+        XCTAssertTrue(r.ok, "the task exists — reporting failure would invite a duplicate")
+        XCTAssertEqual(r.createdTaskID, nextID, "and the id must survive so the manager can act")
+        XCTAssertTrue(r.message.contains("did NOT start"), "got \(r.message)")
+        XCTAssertTrue(r.message.contains("control_task start"),
+                      "the message must name the remedy; got \(r.message)")
+    }
+
+    /// The success twin, so the failure test above cannot be satisfied by "always says
+    /// not started".
+    ///
+    /// RED: report the not-started message unconditionally → every healthy creation tells the
+    /// manager to call `control_task start` on a task already running, which the start guard
+    /// then refuses as "already running" — a two-verb loop.
+    func testCreateManagedTask_startSucceeds_saysStarted() async {
+        _ = await pinManager()
+
+        let r = await sut.performAutovisorAction(
+            .createManagedTask(title: "T", brief: "b",
+                               teamID: DelegationConstants.generatedTeamSentinel))
+
+        XCTAssertTrue(r.ok, r.message)
+        XCTAssertTrue(r.message.contains("Created and started"), "got \(r.message)")
+        if let id = r.createdTaskID { sut.stopEngine(for: id) }
     }
 }

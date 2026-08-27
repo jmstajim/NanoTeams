@@ -126,17 +126,24 @@ extension NTMSOrchestrator {
         // `repetitionMinIdenticalToolCalls = 3` threshold accounts for this (fire on
         // the 4th emitted identical call). The +5 suffix buffer keeps the scanner's
         // `createdAt > cutoff` filter from stranding the suffix below `minRepeats`.
-        if let task = loadedTask(taskID),
+        // `watchesCommitted` FIRST: everything below is argument construction for a
+        // scan that only child tasks can ever use, and `considerCommitted`'s own first
+        // question is the same one. Asking it here is what keeps a task with no
+        // delegation — the overwhelmingly common case, and every chat-mode task — from
+        // walking its conversation once per committed turn to build tuples the callee
+        // discards. The streaming half of this same watcher already resolves
+        // `parentTaskID` once before its scan (`LLMExecutionService+Streaming.swift`),
+        // so the guard stood on one of two branches (CLAUDE.md #52).
+        if delegationLoopWatcher.watchesCommitted(taskID: taskID),
+           let task = loadedTask(taskID),
            let run = task.runs.last,
            let step = run.steps.first(where: { $0.id == stepID })
         {
-            let recentAssistant = step.llmConversation
-                .filter { $0.role == .assistant }
-                .suffix(5)
-                .map { (thinking: $0.thinking, content: $0.content, createdAt: $0.createdAt) }
-            let recentCalls = step.toolCalls
-                .suffix(DelegationConstants.repetitionMinIdenticalToolCalls + 5)
-                .map { (name: $0.name, argsJSON: $0.argumentsJSON, createdAt: $0.createdAt) }
+            let recentAssistant = CommittedScanInputs.recentAssistantTurns(
+                in: step.llmConversation, limit: 5)
+            let recentCalls = CommittedScanInputs.recentToolCalls(
+                in: step.toolCalls,
+                limit: DelegationConstants.repetitionMinIdenticalToolCalls + 5)
             // Read off the UNFILTERED conversation: the boundary is a `.user` turn, so
             // the `.assistant` slice above cannot see it, and the watcher only ever
             // receives tuples. Bounds the tool-call scan so a child that was handed
@@ -144,8 +151,8 @@ extension NTMSOrchestrator {
             // acting on it.
             delegationLoopWatcher.considerCommitted(
                 taskID: taskID,
-                recentAssistant: Array(recentAssistant),
-                toolCalls: Array(recentCalls),
+                recentAssistant: recentAssistant,
+                toolCalls: recentCalls,
                 informationBoundary: ConversationInformationBoundary.lastArrival(in: step.llmConversation)
             )
         }

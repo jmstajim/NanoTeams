@@ -56,9 +56,10 @@ final class AgentSkillsOrchestratorTests: NTMSOrchestratorTestBase, @unchecked S
         }
     }
 
-    /// The refresh memo skips a rescan when inputs are unchanged within the TTL.
-    private func expireScanTTL() {
-        sut.roleSkillsLastScanAt = .distantPast
+    /// When the cached catalogue was last taken — the observable that says whether
+    /// a WALK happened, as opposed to a body re-read.
+    private func catalogueStamp() -> Date? {
+        sut.skillsCatalogueStore.load(projectRoot: tempDir)?.scannedAt
     }
 
     // MARK: - Open / refresh
@@ -78,7 +79,6 @@ final class AgentSkillsOrchestratorTests: NTMSOrchestratorTestBase, @unchecked S
         await sut.openWorkFolder(tempDir)
 
         await attach([id])
-        expireScanTTL()
         await sut.refreshAgentSkills()
 
         XCTAssertEqual(sut.roleSkills?.bodies[id], "# TDD\nWrite the test first.")
@@ -93,7 +93,6 @@ final class AgentSkillsOrchestratorTests: NTMSOrchestratorTestBase, @unchecked S
         await sut.openWorkFolder(tempDir)
 
         await attach([attached])
-        expireScanTTL()
         await sut.refreshAgentSkills()
 
         XCTAssertNotNil(sut.roleSkills?.bodies[attached])
@@ -105,54 +104,134 @@ final class AgentSkillsOrchestratorTests: NTMSOrchestratorTestBase, @unchecked S
         let id = try writeProjectSkill("tdd", body: "v1")
         await sut.openWorkFolder(tempDir)
         await attach([id])
-        expireScanTTL()
         await sut.refreshAgentSkills()
         XCTAssertEqual(sut.roleSkills?.bodies[id], "v1")
 
         try "v2".write(to: skillURL("tdd"), atomically: true, encoding: .utf8)
-        expireScanTTL()
         await sut.refreshAgentSkills()
 
         XCTAssertEqual(sut.roleSkills?.bodies[id], "v2",
                        "Each run start re-reads bodies, so a SKILL.md edited since open is picked up")
     }
 
-    // MARK: - Memo
+    // MARK: - Catalogue is cached, content is not
 
-    func testRefresh_withinTTL_sameInputs_skipsRescan() async throws {
+    /// The split the 5-second memo could not express. It gated BOTH halves, so a
+    /// second send within five seconds saw neither a new skill nor an edited one —
+    /// and a send more than five seconds later (i.e. every real one) paid the whole
+    /// walk. Now the walk is cached and the bytes are not.
+    func testRefresh_rereadsBodies_withoutRewalkingTheCatalogue() async throws {
         let id = try writeProjectSkill("tdd", body: "v1")
         await sut.openWorkFolder(tempDir)
         await attach([id])
-        expireScanTTL()
         await sut.refreshAgentSkills()
         XCTAssertEqual(sut.roleSkills?.bodies[id], "v1")
+        let stampBefore = catalogueStamp()
 
-        // Disk changed, inputs identical, last scan just landed → memo skips.
         try "v2".write(to: skillURL("tdd"), atomically: true, encoding: .utf8)
         await sut.refreshAgentSkills()
 
-        XCTAssertEqual(sut.roleSkills?.bodies[id], "v1",
-                       "Back-to-back run starts collapse into one scan")
+        XCTAssertEqual(sut.roleSkills?.bodies[id], "v2",
+                       "An edited SKILL.md must reach the very next prompt")
+        XCTAssertEqual(catalogueStamp(), stampBefore,
+                       "…and it must not have cost a walk of every skill root")
     }
 
-    /// The key carries the attached ids, so changing an attachment bypasses the
-    /// memo WITHOUT expiring the TTL — otherwise attaching a skill and opening
-    /// the prompt preview within 5s would render the previous snapshot.
-    func testRefresh_attachmentChange_bypassesTTL() async throws {
+    /// The other side of the same split, and the deliberate staleness: a skill
+    /// installed since the catalogue was taken is invisible until someone asks.
+    func testRefresh_doesNotDiscoverASkillInstalledSinceTheCatalogueWasTaken() async throws {
+        await sut.openWorkFolder(tempDir)
+        let late = try writeProjectSkill("late", body: "late body")
+
+        await sut.refreshAgentSkills()
+
+        XCTAssertFalse(sut.roleSkills?.items.contains { $0.id == late } ?? true,
+                       "Discovery is cached; nothing on the run-start path re-walks")
+    }
+
+    /// …and the verb that resolves it. This is what the Refresh control beside both
+    /// catalogue lists calls.
+    func testRescanCatalogue_discoversASkillInstalledSinceTheCatalogueWasTaken() async throws {
+        await sut.openWorkFolder(tempDir)
+        let late = try writeProjectSkill("late", body: "late body")
+
+        await sut.rescanAgentSkillCatalogue()
+
+        XCTAssertTrue(sut.roleSkills?.items.contains { $0.id == late } ?? false)
+    }
+
+    /// Attaching a skill must make its body available immediately — the prompt
+    /// preview and the Role editor's cost banner both read it on the next tick.
+    func testAttachingASkill_readsItsBody_withoutRewalking() async throws {
         let tdd = try writeProjectSkill("tdd", body: "TDD body")
         let review = try writeProjectSkill("review", body: "Review body")
         await sut.openWorkFolder(tempDir)
 
         await attach([tdd])
-        expireScanTTL()
         await sut.refreshAgentSkills()
         XCTAssertNil(sut.roleSkills?.bodies[review])
+        let stampBefore = catalogueStamp()
 
-        // No expireScanTTL() here — the changed id set must be enough.
         await attach([tdd, review])
         await sut.refreshAgentSkills()
 
         XCTAssertEqual(sut.roleSkills?.bodies[review], "Review body")
+        XCTAssertEqual(catalogueStamp(), stampBefore,
+                       "Both ids were already in the catalogue — nothing to re-walk")
+    }
+
+    /// The whole reason a submit used to spend seconds here: no bundled template
+    /// ships `attachedSkillIDs`, so on a default install the run-start path has
+    /// nothing to read and must touch no file at all.
+    func testRefresh_withNothingAttached_readsNoBodies() async throws {
+        try writeProjectSkill("tdd", body: "body")
+        await sut.openWorkFolder(tempDir)
+        let stampBefore = catalogueStamp()
+
+        await sut.refreshAgentSkills()
+
+        XCTAssertEqual(sut.roleSkills?.bodies, [:])
+        XCTAssertEqual(sut.roleSkills?.unresolvedIDs, [])
+        XCTAssertEqual(catalogueStamp(), stampBefore)
+    }
+
+    // MARK: - The bounded retry
+
+    /// A skill installed AND attached since the catalogue was taken would otherwise
+    /// read as unresolved forever: the cache is wrong and nothing asks it to look
+    /// again. One retry closes that.
+    func testAttachedID_missingFromTheCatalogue_triggersARescan() async throws {
+        await sut.openWorkFolder(tempDir)
+        let late = try writeProjectSkill("late", body: "late body")
+
+        await attach([late])
+        await sut.refreshAgentSkills()
+
+        XCTAssertEqual(sut.roleSkills?.bodies[late], "late body",
+                       "An id the cache does not know earns one fresh look")
+    }
+
+    /// …bounded to ONE look per attachment set. A dangling attachment (file deleted
+    /// after the role attached it) is unresolvable by definition, so an unbounded
+    /// retry would walk every skill root on every run start — reintroducing the
+    /// exact cost the cache removes, and silently, because the OUTCOME is identical
+    /// either way. Only the walk count can tell the two apart.
+    func testDanglingAttachment_doesNotRewalkOnEveryRefresh() async throws {
+        let id = try writeProjectSkill("tdd", body: "body")
+        await sut.openWorkFolder(tempDir)
+        await attach([id])
+        await sut.refreshAgentSkills()
+
+        try FileManager.default.removeItem(
+            at: tempDir.appendingPathComponent(".claude/skills/tdd"))
+        await sut.refreshAgentSkills()
+        let stampAfterFirst = catalogueStamp()
+        await sut.refreshAgentSkills()
+        await sut.refreshAgentSkills()
+
+        XCTAssertTrue(sut.roleSkills?.unresolvedIDs.contains(id) ?? false)
+        XCTAssertEqual(catalogueStamp(), stampAfterFirst,
+                       "Repeated refreshes of an unresolvable set must not keep re-walking")
     }
 
     // MARK: - Default storage (the divergence from agent instructions)
@@ -175,13 +254,11 @@ final class AgentSkillsOrchestratorTests: NTMSOrchestratorTestBase, @unchecked S
         let id = try writeProjectSkill("tdd", body: "body")
         await sut.openWorkFolder(tempDir)
         await attach([id])
-        expireScanTTL()
         await sut.refreshAgentSkills()
         XCTAssertNotNil(sut.roleSkills?.bodies[id])
 
         try FileManager.default.removeItem(
             at: tempDir.appendingPathComponent(".claude/skills/tdd"))
-        expireScanTTL()
         await sut.refreshAgentSkills()
 
         XCTAssertNil(sut.roleSkills?.bodies[id])
@@ -195,7 +272,6 @@ final class AgentSkillsOrchestratorTests: NTMSOrchestratorTestBase, @unchecked S
         await attach([id])
 
         try Data([0xFF, 0xFE, 0x00, 0x01]).write(to: skillURL("binary"))
-        expireScanTTL()
         await sut.refreshAgentSkills()
 
         XCTAssertNil(sut.roleSkills?.bodies[id])
@@ -210,7 +286,6 @@ final class AgentSkillsOrchestratorTests: NTMSOrchestratorTestBase, @unchecked S
         await sut.openWorkFolder(tempDir)
 
         await attach([review, tdd])   // deliberately not alphabetical
-        expireScanTTL()
         await sut.refreshAgentSkills()
 
         let resolved = sut.roleSkills?.resolve([review, tdd]) ?? []
@@ -241,7 +316,6 @@ final class AgentSkillsOrchestratorTests: NTMSOrchestratorTestBase, @unchecked S
         let id = try writeProjectSkill("tdd", body: "cached body")
         await sut.openWorkFolder(tempDir)
         await attach([id])
-        expireScanTTL()
         await sut.refreshAgentSkills()
         XCTAssertEqual(sut.roleSkills?.bodies[id], "cached body")
 
@@ -256,7 +330,6 @@ final class AgentSkillsOrchestratorTests: NTMSOrchestratorTestBase, @unchecked S
         let fresh = try writeProjectSkill("fresh", body: "fresh body")
         await sut.openWorkFolder(tempDir)
         await attach([saved])
-        expireScanTTL()
         await sut.refreshAgentSkills()
 
         let fetched = await sut.skillBodies(forIDs: [saved, fresh])

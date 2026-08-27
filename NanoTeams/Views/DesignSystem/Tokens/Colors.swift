@@ -140,11 +140,19 @@ nonisolated enum Colors {
 
     /// Deepest background — sidebar / window chrome (void)
     static var surfaceBackground: Color { themed(\.surfaceBackground) }
-    /// Primary content area — graph canvas, main content, window (terminal bg)
+    /// Primary content area — graph canvas, main content, window (terminal bg).
+    /// Also, via `inputSurfaceLevel`, the fill of every text-entry surface in the tree.
     static var surfacePrimary: Color { themed(\.surfacePrimary) }
     /// Cards, panels — activity feed, settings sections (surface)
     static var surfaceCard: Color { themed(\.surfaceCard) }
-    /// Elevated — inputs, popovers, selected row (elevated)
+    /// Elevated — popovers, selected row, hover (elevated).
+    ///
+    /// Says nothing about INPUTS, deliberately. It read "inputs, popovers, selected row" until
+    /// 2026-08-24, and no shipping primitive had ever agreed — both the multi-line and the
+    /// single-line input chrome filled `surfacePrimary`. Four sites hand-rolled a `surfaceElevated`
+    /// fill with no border because their authors followed this sentence (CLAUDE.md #55: the fact
+    /// lived in code and prose, and the prose is what drifted). Text-entry fills come from
+    /// `inputSurfaceLevel`, and no view names either token directly — see `InputSurface`.
     static var surfaceElevated: Color { themed(\.surfaceElevated) }
     /// Subtler elevated tint — used by inheritance/disabled rows that need
     /// to read as "less prominent than an editable field" without falling
@@ -157,6 +165,30 @@ nonisolated enum Colors {
     static var surfaceOverlay: Color { themed(\.surfaceOverlay) }
     /// Strong overlay for blocking content (loading/failure overlays atop the canvas)
     static var surfaceOverlayStrong: Color { themed(\.surfaceOverlayStrong) }
+
+    // MARK: - Semantic Surfaces
+
+    /// The palette level a TEXT-ENTRY surface is drawn at — the single written answer.
+    ///
+    /// A keyPath rather than two independent accessors so the SwiftUI `Color` and the AppKit
+    /// `NSColor` below cannot answer differently. They already had: the AppKit accessor filled
+    /// `PromptTemplateEditor` while every SwiftUI input filled `surfacePrimary`, which is one fact
+    /// with two homes (CLAUDE.md #91) — and the home that drifted was the AppKit one, because it
+    /// is the one nobody re-reads.
+    ///
+    /// Deliberately NOT a `ThemePalette` field: all 22 palettes would today write their own
+    /// `surfacePrimary` hex into it, which is 22 places to keep in lockstep with nothing enforcing
+    /// it. Promote it to a field the day one palette wants an input fill that is NOT its
+    /// `surfacePrimary` — the live candidate is `oledDark`, where all four surface levels are
+    /// #000000 and the input is carried entirely by `borderSubtle`.
+    /// `nonisolated(unsafe)` because Swift 6 cannot prove a `KeyPath` Sendable — same reason
+    /// `nsColorCache` above carries it. Safe here in the strongest sense available: a `let` bound
+    /// to a literal keyPath, never reassigned, and read-only for the life of the process.
+    nonisolated(unsafe) static let inputSurfaceLevel: KeyPath<ThemePalette, UInt64> = \.surfacePrimary
+
+    /// Text-entry fill. Read only by `InputSurface`; call sites apply the primitive, never a colour
+    /// (pinned by `Ratchet/InputSurfacePinTests`).
+    static var surfaceInput: Color { themed(inputSurfaceLevel) }
 
     /// Fade gradient — transparent variant of `surfacePrimary` for fade-out
     /// gradients above banners. Uses `themed(...)` with explicit alpha so it
@@ -258,8 +290,13 @@ nonisolated enum Colors {
 
     /// Primary text as NSColor — for NSTextView, NSAttributedString.
     nonisolated static var nsTextPrimary: NSColor { nsThemed(\.textPrimary) }
-    /// Surface card as NSColor — for NSTextView backgrounds.
-    nonisolated static var nsSurfaceCard: NSColor { nsThemed(\.surfaceCard) }
+    /// Text-entry fill as NSColor — the AppKit half of `inputSurfaceLevel`, painted onto the
+    /// `NSScrollView` of both editable representables by `InputSurface.stamp`.
+    ///
+    /// Same keyPath as `surfaceInput` ⇒ the SAME `nsColorCache` slot as `surfacePrimary`: no new
+    /// cache entry, no second instance, and `===` identity holds by the existing memoization
+    /// rather than by a new promise.
+    nonisolated static var nsSurfaceInput: NSColor { nsThemed(inputSurfaceLevel) }
     /// Secondary text as NSColor — for NSTextAttachment fallbacks etc.
     nonisolated static var nsTextSecondary: NSColor { nsThemed(\.textSecondary) }
 

@@ -172,6 +172,7 @@ struct WirePreviewUnavailableView: View {
 // MARK: - Previews
 
 #Preview("Prompt Preview") {
+    @Previewable @State var previewStore = PreviewStore.make()
     let team = Team.default
     let role = team.nonSupervisorRoles.first!
     PromptPreviewSheet(
@@ -180,6 +181,6 @@ struct WirePreviewUnavailableView: View {
         workFolder: nil
     )
     .environment(StoreConfiguration())
-    .environment(NTMSOrchestrator(repository: NTMSRepository()))
+    .environment(previewStore)
     .frame(width: 700, height: 1100)
 }

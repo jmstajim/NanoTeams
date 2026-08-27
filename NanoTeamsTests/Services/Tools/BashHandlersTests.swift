@@ -62,8 +62,8 @@ final class BashHandlersTests: XCTestCase {
 
     // MARK: - Foreground
 
-    func testEcho_success() {
-        let r = makeTool().handle(context: context(), args: ["command": "echo hello"])
+    func testEcho_success() async {
+        let r = await makeTool().handle(context: context(), args: ["command": "echo hello"])
         XCTAssertFalse(r.isError)
         let data = successData(r.outputJSON)
         XCTAssertEqual(data?["exit_code"] as? Int, 0)
@@ -71,65 +71,65 @@ final class BashHandlersTests: XCTestCase {
         XCTAssertEqual(data?["sandboxed"] as? Bool, false)
     }
 
-    func testNonZeroExit_isNotToolError() {
-        let r = makeTool().handle(context: context(), args: ["command": "exit 3"])
+    func testNonZeroExit_isNotToolError() async {
+        let r = await makeTool().handle(context: context(), args: ["command": "exit 3"])
         XCTAssertFalse(r.isError, "a non-zero exit is normal output, not a tool error")
         XCTAssertEqual(successData(r.outputJSON)?["exit_code"] as? Int, 3)
     }
 
-    func testStderrCaptured() {
-        let r = makeTool().handle(context: context(), args: ["command": "echo oops 1>&2"])
+    func testStderrCaptured() async {
+        let r = await makeTool().handle(context: context(), args: ["command": "echo oops 1>&2"])
         XCTAssertTrue((successData(r.outputJSON)?["stderr"] as? String ?? "").contains("oops"))
     }
 
-    func testPipesAndGlobs() {
-        let r = makeTool().handle(context: context(), args: ["command": "printf 'a\\nb\\nc\\n' | grep b"])
+    func testPipesAndGlobs() async {
+        let r = await makeTool().handle(context: context(), args: ["command": "printf 'a\\nb\\nc\\n' | grep b"])
         XCTAssertEqual(successData(r.outputJSON)?["exit_code"] as? Int, 0)
         XCTAssertTrue((successData(r.outputJSON)?["stdout"] as? String ?? "").contains("b"))
     }
 
-    func testWorkingDirectory() throws {
+    func testWorkingDirectory() async throws {
         let sub = workDir.appendingPathComponent("sub")
         try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
-        let r = makeTool().handle(
+        let r = await makeTool().handle(
             context: context(), args: ["command": "pwd", "working_directory": "sub"])
         XCTAssertTrue((successData(r.outputJSON)?["stdout"] as? String ?? "").contains("sub"))
     }
 
-    func testWorkingDirectory_missing_isNotADirectory() {
-        let r = makeTool().handle(
+    func testWorkingDirectory_missing_isNotADirectory() async {
+        let r = await makeTool().handle(
             context: context(), args: ["command": "pwd", "working_directory": "does-not-exist"])
         XCTAssertTrue(r.isError)
     }
 
-    func testMissingCommand_isError() {
-        let r = makeTool().handle(context: context(), args: [:])
+    func testMissingCommand_isError() async {
+        let r = await makeTool().handle(context: context(), args: [:])
         XCTAssertTrue(r.isError)
     }
 
-    func testAlternativeKeyCommand_runs() {
+    func testAlternativeKeyCommand_runs() async {
         // The handler resolves the command via the shared resolver, so a command
         // under `text` (no `command` key) still runs — and the gate sees the same.
-        let r = makeTool().handle(context: context(), args: ["text": "echo viaText"])
+        let r = await makeTool().handle(context: context(), args: ["text": "echo viaText"])
         XCTAssertFalse(r.isError)
         XCTAssertTrue((successData(r.outputJSON)?["stdout"] as? String ?? "").contains("viaText"))
     }
 
     // MARK: - Timeout
 
-    func testNegativeTimeout_isInvalidArgs() {
-        let r = makeTool().handle(context: context(), args: ["command": "echo x", "timeout": -5000])
+    func testNegativeTimeout_isInvalidArgs() async {
+        let r = await makeTool().handle(context: context(), args: ["command": "echo x", "timeout": -5000])
         XCTAssertTrue(r.isError, "a negative timeout must be rejected, not silently clamped to 1s")
     }
 
-    func testZeroTimeout_isInvalidArgs() {
-        let r = makeTool().handle(context: context(), args: ["command": "echo x", "timeout": 0])
+    func testZeroTimeout_isInvalidArgs() async {
+        let r = await makeTool().handle(context: context(), args: ["command": "echo x", "timeout": 0])
         XCTAssertTrue(r.isError)
     }
 
-    func testTimeout_returnsPartialOutput() {
+    func testTimeout_returnsPartialOutput() async {
         // Prints a marker immediately, then sleeps past the (floored) 1s timeout.
-        let r = makeTool().handle(
+        let r = await makeTool().handle(
             context: context(),
             args: ["command": "echo PARTIAL_MARKER; sleep 5", "timeout": 500])
         XCTAssertFalse(r.isError, "a timeout is a success envelope with timed_out:true")
@@ -142,8 +142,8 @@ final class BashHandlersTests: XCTestCase {
 
     // MARK: - Background
 
-    func testBackground_returnsCommandIDAndReadsOutput() throws {
-        let start = makeTool().handle(
+    func testBackground_returnsCommandIDAndReadsOutput() async throws {
+        let start = await makeTool().handle(
             context: context(),
             args: ["command": "echo bgline", "run_in_background": true])
         XCTAssertFalse(start.isError)
@@ -155,27 +155,27 @@ final class BashHandlersTests: XCTestCase {
         // Poll up to ~3s for the background process to flush and exit.
         var sawOutput = false
         for _ in 0..<30 {
-            let read = outputTool.handle(context: context(), args: ["command_id": commandID])
+            let read = await outputTool.handle(context: context(), args: ["command_id": commandID])
             let data = successData(read.outputJSON)
             let out = (data?["output"] as? String ?? "")
             if out.contains("bgline") { sawOutput = true; break }
-            Thread.sleep(forTimeInterval: 0.1)
+            try? await Task.sleep(nanoseconds: 100_000_000)
         }
         XCTAssertTrue(sawOutput, "bash_output should eventually return the background command's output")
     }
 
-    func testBashOutput_unknownID_isError() {
-        let r = BashOutputTool().handle(context: context(), args: ["command_id": "bg_does_not_exist"])
+    func testBashOutput_unknownID_isError() async {
+        let r = await BashOutputTool().handle(context: context(), args: ["command_id": "bg_does_not_exist"])
         XCTAssertTrue(r.isError)
     }
 
-    func testBashOutput_stopAction_marksNotRunning() throws {
-        let start = makeTool().handle(
+    func testBashOutput_stopAction_marksNotRunning() async throws {
+        let start = await makeTool().handle(
             context: context(), args: ["command": "sleep 5", "run_in_background": true])
         guard let commandID = successData(start.outputJSON)?["command_id"] as? String else {
             return XCTFail("expected a command_id")
         }
-        let stop = BashOutputTool().handle(
+        let stop = await BashOutputTool().handle(
             context: context(), args: ["command_id": commandID, "action": "stop"])
         XCTAssertFalse(stop.isError)
         let data = successData(stop.outputJSON)
@@ -183,47 +183,47 @@ final class BashHandlersTests: XCTestCase {
         XCTAssertEqual(data?["status"] as? String, "stopped")
     }
 
-    func testBashOutput_missingCommandID_isError() {
-        let r = BashOutputTool().handle(context: context(), args: [:])
+    func testBashOutput_missingCommandID_isError() async {
+        let r = await BashOutputTool().handle(context: context(), args: [:])
         XCTAssertTrue(r.isError, "bash_output without a command_id must error")
     }
 
     // MARK: - Working directory / command validation
 
-    func testWorkingDirectory_absoluteOutsideWorkFolder_isError() {
-        let r = makeTool().handle(
+    func testWorkingDirectory_absoluteOutsideWorkFolder_isError() async {
+        let r = await makeTool().handle(
             context: context(), args: ["command": "pwd", "working_directory": "/etc"])
         XCTAssertTrue(r.isError, "an absolute working_directory outside the work folder must be rejected")
     }
 
-    func testWorkingDirectory_parentTraversal_isError() {
-        let r = makeTool().handle(
+    func testWorkingDirectory_parentTraversal_isError() async {
+        let r = await makeTool().handle(
             context: context(), args: ["command": "pwd", "working_directory": "../.."])
         XCTAssertTrue(r.isError, "a parent-traversal working_directory must be rejected")
     }
 
-    func testWorkingDirectory_whitespaceOnly_runsInWorkFolderRoot() {
+    func testWorkingDirectory_whitespaceOnly_runsInWorkFolderRoot() async {
         // The resolver (`SandboxPathResolver.resolveFileURL`) trims whitespace, so a
         // whitespace-only working_directory is treated as "none" — the command runs in
         // the work folder root rather than erroring.
-        let r = makeTool().handle(
+        let r = await makeTool().handle(
             context: context(), args: ["command": "pwd", "working_directory": "   "])
         XCTAssertFalse(r.isError, "a whitespace-only working_directory is trimmed to the work folder root")
         let out = successData(r.outputJSON)?["stdout"] as? String ?? ""
         XCTAssertTrue(out.contains(workDir.lastPathComponent), "runs in the work folder root")
     }
 
-    func testNonStringCommand_isMissingCommandError() {
+    func testNonStringCommand_isMissingCommandError() async {
         // A numeric command resolves to nil via the shared resolver → missing command.
-        let r = makeTool().handle(context: context(), args: ["command": 123])
+        let r = await makeTool().handle(context: context(), args: ["command": 123])
         XCTAssertTrue(r.isError, "a non-string command resolves to nil → missing command error")
     }
 
-    func testRunInBackground_ambiguousValue_runsForeground() {
+    func testRunInBackground_ambiguousValue_runsForeground() async {
         // Coercion honors only unambiguous boolean spellings; anything else
         // keeps the default (false → foreground, so an exit_code comes back
         // rather than a background command_id).
-        let r = makeTool().handle(
+        let r = await makeTool().handle(
             context: context(), args: ["command": "echo fg", "run_in_background": "later"])
         XCTAssertFalse(r.isError)
         let data = successData(r.outputJSON)
@@ -232,11 +232,11 @@ final class BashHandlersTests: XCTestCase {
         XCTAssertTrue((data?["stdout"] as? String ?? "").contains("fg"))
     }
 
-    func testRunInBackground_stringEncodedTrue_runsInBackground() {
+    func testRunInBackground_stringEncodedTrue_runsInBackground() async {
         // `"yes"` / `"true"` are the quoting habit, not a different intent —
         // silently running in the foreground would strand a model that expects
         // a command_id to poll.
-        let r = makeTool().handle(
+        let r = await makeTool().handle(
             context: context(), args: ["command": "echo bg", "run_in_background": "yes"])
         XCTAssertFalse(r.isError)
         let data = successData(r.outputJSON)
@@ -254,8 +254,8 @@ final class BashHandlersTests: XCTestCase {
     ///
     /// RED: delete the `context.isPlanningPhase, runInBackground` guard → the envelope becomes a
     /// success carrying a `command_id` and all three assertions fail.
-    func testRunInBackground_duringPlanning_isRefusedWithPlanRequired() {
-        let r = makeTool().handle(
+    func testRunInBackground_duringPlanning_isRefusedWithPlanRequired() async {
+        let r = await makeTool().handle(
             context: context(isPlanningPhase: true),
             args: ["command": "sleep 5", "run_in_background": true])
 
@@ -269,8 +269,8 @@ final class BashHandlersTests: XCTestCase {
     /// Control: the refusal is scoped to the phase, not a permanent regression.
     ///
     /// RED: make the guard unconditional → the background start is refused outside the phase too.
-    func testRunInBackground_outsidePlanning_stillStarts() {
-        let r = makeTool().handle(
+    func testRunInBackground_outsidePlanning_stillStarts() async {
+        let r = await makeTool().handle(
             context: context(), args: ["command": "echo bg", "run_in_background": true])
         XCTAssertFalse(r.isError)
         XCTAssertNotNil(successData(r.outputJSON)?["command_id"])
@@ -280,8 +280,8 @@ final class BashHandlersTests: XCTestCase {
     /// sandbox refusal from a filesystem one without parsing stderr.
     ///
     /// RED: pass `nil` instead of `true` in the planning arm → `writes_blocked` is absent.
-    func testForegroundEnvelope_duringPlanning_carriesWritesBlocked() {
-        let r = makeTool().handle(
+    func testForegroundEnvelope_duringPlanning_carriesWritesBlocked() async {
+        let r = await makeTool().handle(
             context: context(isPlanningPhase: true), args: ["command": "echo hi"])
         XCTAssertEqual(successData(r.outputJSON)?["writes_blocked"] as? Bool, true)
     }
@@ -292,8 +292,8 @@ final class BashHandlersTests: XCTestCase {
     ///
     /// RED: make `BashResult.writes_blocked` non-optional `Bool` → the key appears and the
     /// absence assertion fails.
-    func testForegroundEnvelope_outsidePlanning_omitsWritesBlocked() {
-        let r = makeTool().handle(context: context(), args: ["command": "echo hi"])
+    func testForegroundEnvelope_outsidePlanning_omitsWritesBlocked() async {
+        let r = await makeTool().handle(context: context(), args: ["command": "echo hi"])
         let data = successData(r.outputJSON)
         XCTAssertNotNil(data, "precondition: the call succeeded")
         XCTAssertNil(data?["writes_blocked"])
@@ -306,8 +306,8 @@ final class BashHandlersTests: XCTestCase {
     ///
     /// RED: delete the `meta:` argument from the `.completed` success result → no warning reaches
     /// the envelope.
-    func testPlanningWriteDenial_teachesTheRetryContract() {
-        let r = makeTool().handle(
+    func testPlanningWriteDenial_teachesTheRetryContract() async {
+        let r = await makeTool().handle(
             context: context(isPlanningPhase: true),
             args: ["command": "echo 'x: Operation not permitted' >&2; exit 1"])
         let warnings = meta(r.outputJSON)?["warnings"] as? [String] ?? []
@@ -320,8 +320,8 @@ final class BashHandlersTests: XCTestCase {
     ///
     /// RED: drop the `isPlanningPhase` term from `planningWriteDenialMeta`'s guard → the warning
     /// fires outside the phase and the emptiness assertion fails.
-    func testWriteDenialWarning_neverFiresOutsidePlanning() {
-        let r = makeTool().handle(
+    func testWriteDenialWarning_neverFiresOutsidePlanning() async {
+        let r = await makeTool().handle(
             context: context(),
             args: ["command": "echo 'x: Operation not permitted' >&2; exit 1"])
         XCTAssertTrue((meta(r.outputJSON)?["warnings"] as? [String] ?? []).isEmpty)

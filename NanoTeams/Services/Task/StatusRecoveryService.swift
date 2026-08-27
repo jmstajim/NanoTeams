@@ -29,18 +29,29 @@ nonisolated enum StatusRecoveryService {
     /// - Roles whose step is terminal → the status `RoleStepReconciler` derives
     /// - Roles in `.working` whose step is genuinely mid-flight (or absent) → `.idle`
     ///
-    /// - Parameter teamSettings: settings of the task's effective team, for the per-role
-    ///   acceptance gate. Resolve via `TeamResolution.teamSettings(for:in:)`. Deliberately
-    ///   has NO default value: a `= nil` default is exactly the "resolves outward
-    ///   silently" trap of CLAUDE.md gotcha #49 — every call site must state where its
-    ///   settings came from. See `AcceptanceService.Gate` for what `nil` means.
+    /// - Parameter team: the task's effective team, resolved via `TeamResolution.team(for:in:)`.
+    ///   Supplies BOTH the per-role acceptance gate (its `settings`) and the roster used to
+    ///   strip orphan role statuses. Deliberately has NO default value: a `= nil` default is
+    ///   exactly the "resolves outward silently" trap of CLAUDE.md gotcha #49 — every call site
+    ///   must state where its team came from. `nil` means the team could NOT be resolved (pinned
+    ///   team deleted, or none), which is a third state, not an empty roster: see
+    ///   `RoleRosterGuard.orphanRoleIDs` and `AcceptanceService.Gate`.
+    ///
+    ///   Replaced a `teamSettings:` parameter rather than joining it, so one resolution feeds
+    ///   both uses — a second resolve could disagree with the first if the snapshot moved across
+    ///   an `await`, which `recoverStaleStatusesAcrossIndex`'s own comment already worried about.
+    ///
+    /// **Precondition, and the licence for the unconditional delegation clear below: no engine
+    /// is running for this task.** All three callers guarantee it — `openWorkFolder` runs after
+    /// `stopAllEngines()`, the index sweep is gated on `taskEngines[taskID] == nil`, and
+    /// `ensureTaskLoaded` returns early when the task is already in memory.
     /// - Returns: `true` if any changes were made.
     @discardableResult
     static func recoverStaleStatuses(
         in task: inout NTMSTask,
-        teamSettings: TeamSettings?
+        team: Team?
     ) -> Bool {
-        let gate = AcceptanceService.Gate(task: task, teamSettings: teamSettings)
+        let gate = AcceptanceService.Gate(task: task, teamSettings: team?.settings)
         var changed = false
         // Tracked separately from `changed`: the `task.status = .paused` latch means
         // "a launch found work parked mid-flight". A pass that only settled a torn
@@ -63,6 +74,36 @@ nonisolated enum StatusRecoveryService {
                 $0.hasPrefix(StepExecution.teamGenerationIDPrefix)
             }
             for roleID in phantomRoleIDs {
+                task.runs[runIndex].roleStatuses.removeValue(forKey: roleID)
+                runChanged = true
+            }
+
+            // Orphan role statuses: a status for a role that is on NO roster AND ran NO step.
+            // Same unambiguous class as the phantom strip above — nothing produced it and
+            // nothing can advance it — and it must also run BEFORE the role pass, or the
+            // reconciler settles it first and the strip becomes a no-op on a lying value.
+            //
+            // The "no step" half is the whole safety argument, and it is deliberately NARROWER
+            // than D-13 asked for. A role WITH a step really did run: its status is a record of
+            // work, and deleting it because today's roster no longer lists that role would
+            // destroy durable state on a heuristic — a task can outlive a rename, a team edit,
+            // or a roster the run was pinned to. The D-13 shape (an orphan written by
+            // `requestRevision`) is closed at the WRITE instead, by the roster guards on
+            // `requestRevision` and `restartRole`, so no new orphan of that kind can appear.
+            //
+            // Strip the STATUS, keep the STEP: the step is the audit trail, the run-history
+            // graph and the activity feed render it, and `derivedStatusFromActiveRun` reads step
+            // statuses through `stepStatusSummary()` where a settled orphan step is harmless. An
+            // orphan STATUS is not: it is invisible to `Run.activeWorkRoleIDs` (which iterates
+            // definitions) while `derivedStatusFromActiveRun`'s `.done` arm reads `roleStatuses`
+            // raw, so the engine retires the run while the task reads "Working" forever.
+            //
+            // Roster-GATED: `orphanRoleIDs` returns nothing for an unresolvable team, so a task
+            // pinned to a deleted team keeps every status (#97).
+            let stepIDsInRun = Set(task.runs[runIndex].steps.map(\.effectiveRoleID))
+            for roleID in RoleRosterGuard.orphanRoleIDs(
+                roleStatuses: task.runs[runIndex].roleStatuses, team: team
+            ) where !stepIDsInRun.contains(roleID) {
                 task.runs[runIndex].roleStatuses.removeValue(forKey: roleID)
                 runChanged = true
             }
@@ -111,6 +152,69 @@ nonisolated enum StatusRecoveryService {
                     // mid-flight", and nothing was interrupted here. The step's own
                     // `.paused` already drives the derived status.
                 }
+            }
+
+            // Close any delegation that was in flight when the process ended.
+            //
+            // The marker is stale BY CONSTRUCTION here: its only writer is
+            // `setActiveDelegation`, called from inside a live `delegate_to_team` handler, and
+            // that handler's continuation cannot survive a restart. So this needs no "is the
+            // child still alive" test — the precondition on this function (no engine running)
+            // is the whole argument.
+            //
+            // Deliberately NOT nested in the `.running` / `.needsSupervisorInput` branch above:
+            // a `.failed` step can own a marker (`ResumeFailedStepTests` pins exactly that
+            // shape), and nesting it there would leave those permanently unrevivable, since
+            // `resumeRun`'s revival guard refuses a failed step that still owns a delegation.
+            //
+            // Runs AFTER the step-status pass so a `.running` step is already parked when its
+            // marker clears, and BEFORE `stepsByRoleBaseID()` so the role pass reads the
+            // rewritten steps.
+            for stepIndex in task.runs[runIndex].steps.indices {
+                guard let childID = task.runs[runIndex].steps[stepIndex].activeDelegationChildID
+                else { continue }
+
+                // 1. The model-facing closure. Written to `llmConversation` unconditionally —
+                //    it is the display record AND `ConversationReplay`'s fallback source.
+                task.runs[runIndex].steps[stepIndex].llmConversation.append(
+                    LLMMessage(role: .tool,
+                               content: DelegationInterruptionEnvelope.toolMessage(childTaskID: childID)))
+
+                // 2. The wire transcript, but ONLY when it is non-empty. `ConversationReplay`
+                //    PREFERS a non-empty transcript over rebuilding from the display record, so
+                //    appending to an empty one would hand the model a one-message conversation
+                //    that is just a tool result and discard everything else. Empty or stale is
+                //    the normal case here: the delegation await has no `persistWireTranscript`
+                //    arm, so what is on disk predates the call.
+                if !task.runs[runIndex].steps[stepIndex].wireTranscript.isEmpty {
+                    task.runs[runIndex].steps[stepIndex].wireTranscript.append(
+                        ChatMessage(role: .tool,
+                                    content: DelegationInterruptionEnvelope.toolMessage(childTaskID: childID)))
+                }
+
+                // 3. The human-facing card. Without this the delegation tool call spins on its
+                //    `{"status":"pending"}` placeholder forever and nothing ever says the
+                //    delegation died.
+                let delegationTools: Set<String> = [
+                    ToolNames.delegateToTeam, ToolNames.resumeDelegation, ToolNames.forwardToTeam,
+                ]
+                if let callIndex = task.runs[runIndex].steps[stepIndex].toolCalls.lastIndex(where: {
+                    delegationTools.contains($0.name)
+                        && ($0.resultJSON?.contains("\"status\"") ?? true)
+                }) {
+                    task.runs[runIndex].steps[stepIndex].toolCalls[callIndex].resultJSON =
+                        DelegationInterruptionEnvelope.envelope(childTaskID: childID)
+                    task.runs[runIndex].steps[stepIndex].toolCalls[callIndex].isError = true
+                }
+
+                // 4. Finally the marker, preserving `delegation.history` so the graph keeps
+                //    rendering the child as a history layer and the audit trail survives.
+                task.runs[runIndex].steps[stepIndex].clearActiveDelegation()
+                task.runs[runIndex].steps[stepIndex].updatedAt = MonotonicClock.shared.now()
+                runChanged = true
+                // Deliberately NOT `parked`: the latch means "a launch found work mid-flight",
+                // and a `.running` step's own parking above already armed it. Arming it for a
+                // `.failed` step's marker clear would be a durable lie.
             }
 
             let stepMap = task.runs[runIndex].stepsByRoleBaseID()

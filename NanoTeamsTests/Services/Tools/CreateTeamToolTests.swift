@@ -51,7 +51,7 @@ final class CreateTeamToolTests: XCTestCase {
 
     // MARK: - Valid Config
 
-    func testCreateTeam_validProducingTeam_returnsSignal() {
+    func testCreateTeam_validProducingTeam_returnsSignal() async {
         let call = StepToolCall(
             name: ToolNames.createTeam,
             argumentsJSON: """
@@ -76,7 +76,7 @@ final class CreateTeamToolTests: XCTestCase {
             }
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
@@ -91,7 +91,7 @@ final class CreateTeamToolTests: XCTestCase {
         }
     }
 
-    func testCreateTeam_chatTeam_validConfig() {
+    func testCreateTeam_chatTeam_validConfig() async {
         let call = StepToolCall(
             name: ToolNames.createTeam,
             argumentsJSON: """
@@ -114,7 +114,7 @@ final class CreateTeamToolTests: XCTestCase {
             }
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         if case .teamCreation(let config) = results[0].signal {
@@ -125,7 +125,7 @@ final class CreateTeamToolTests: XCTestCase {
         }
     }
 
-    func testCreateTeam_successEnvelope_containsTeamName() {
+    func testCreateTeam_successEnvelope_containsTeamName() async {
         let call = StepToolCall(
             name: ToolNames.createTeam,
             argumentsJSON: """
@@ -140,7 +140,7 @@ final class CreateTeamToolTests: XCTestCase {
             }
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertTrue(results[0].outputJSON.contains("MyTeam"))
         XCTAssertTrue(results[0].outputJSON.contains("created"))
@@ -148,19 +148,19 @@ final class CreateTeamToolTests: XCTestCase {
 
     // MARK: - Invalid Config
 
-    func testCreateTeam_missingTeamConfig_returnsError() {
+    func testCreateTeam_missingTeamConfig_returnsError() async {
         let call = StepToolCall(
             name: ToolNames.createTeam,
             argumentsJSON: "{}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertTrue(results[0].isError)
         XCTAssertNil(results[0].signal)
     }
 
-    func testCreateTeam_invalidJSON_returnsError() {
+    func testCreateTeam_invalidJSON_returnsError() async {
         let call = StepToolCall(
             name: ToolNames.createTeam,
             argumentsJSON: """
@@ -171,13 +171,13 @@ final class CreateTeamToolTests: XCTestCase {
             }
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertTrue(results[0].isError)
         XCTAssertNil(results[0].signal)
     }
 
-    func testCreateTeam_emptyRoles_returnsError() {
+    func testCreateTeam_emptyRoles_returnsError() async {
         let call = StepToolCall(
             name: ToolNames.createTeam,
             argumentsJSON: """
@@ -192,14 +192,14 @@ final class CreateTeamToolTests: XCTestCase {
             }
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertTrue(results[0].isError)
         XCTAssertNil(results[0].signal)
         XCTAssertTrue(results[0].outputJSON.contains("at least one role"))
     }
 
-    func testCreateTeam_snakeCaseKeys_camelCaseTolerated() {
+    func testCreateTeam_snakeCaseKeys_camelCaseTolerated() async {
         // The decoder is snake_case — camelCase keys on role/supervisor fields
         // are silently ignored and fall back to `[]` defaults. After recovery
         // (auto-synthesize orphan produces into `artifacts[]` and promote to
@@ -227,7 +227,7 @@ final class CreateTeamToolTests: XCTestCase {
             }
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError,
                        "camelCase keys should be tolerated: \(results[0].outputJSON)")
@@ -259,7 +259,7 @@ final class CreateTeamToolTests: XCTestCase {
 
     // MARK: - String-form team_config (LLMs that pass tool args as escaped JSON strings)
 
-    func testCreateTeam_stringFormTeamConfig_decodesSuccessfully() {
+    func testCreateTeam_stringFormTeamConfig_decodesSuccessfully() async {
         // Some providers encode object args as JSON-string literals. The handler
         // accepts both forms; this pins the string-form path.
         let escapedConfig = #"{\"name\":\"StringTeam\",\"description\":\"x\",\"roles\":[{\"name\":\"E\",\"prompt\":\"p\",\"produces_artifacts\":[\"X\"],\"requires_artifacts\":[\"Supervisor Task\"],\"tools\":[]}],\"artifacts\":[{\"name\":\"X\",\"description\":\"d\"}],\"supervisor_requires\":[\"X\"]}"#
@@ -269,7 +269,7 @@ final class CreateTeamToolTests: XCTestCase {
             {"team_config": "\(escapedConfig)"}
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError, "String-form team_config should decode successfully")
@@ -282,7 +282,7 @@ final class CreateTeamToolTests: XCTestCase {
 
     // MARK: - New decode-time validation
 
-    func testCreateTeam_orphanArtifactReference_rewritesToSupervisorTask() {
+    func testCreateTeam_orphanArtifactReference_rewritesToSupervisorTask() async {
         // A role requires an artifact that no role produces. Rather than fail
         // (engine would stall on "no roles ready"), the decoder rewrites the
         // phantom dependency to the implicit Supervisor Task so the role can
@@ -303,7 +303,7 @@ final class CreateTeamToolTests: XCTestCase {
             }
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError,
                        "Phantom dependency should be rewritten, not rejected: \(results[0].outputJSON)")
         guard case .teamCreation(let config) = results[0].signal else {
@@ -314,7 +314,7 @@ final class CreateTeamToolTests: XCTestCase {
                        "Phantom requires should be rewritten to Supervisor Task.")
     }
 
-    func testCreateTeam_invalidSupervisorMode_returnsError() {
+    func testCreateTeam_invalidSupervisorMode_returnsError() async {
         // Typo in supervisor_mode — strong-typed decode rejects.
         let call = StepToolCall(
             name: ToolNames.createTeam,
@@ -331,14 +331,14 @@ final class CreateTeamToolTests: XCTestCase {
             }
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertTrue(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("supervisor_mode"))
     }
 
     // MARK: - Signal payload integrity
 
-    func testCreateTeam_signalCarriesParsedConfig_notRawArgs() {
+    func testCreateTeam_signalCarriesParsedConfig_notRawArgs() async {
         // The signal must carry the typed `GeneratedTeamConfig`, not just the raw args —
         // any consumer of the signal can call GeneratedTeamBuilder.build directly.
         let call = StepToolCall(
@@ -357,7 +357,7 @@ final class CreateTeamToolTests: XCTestCase {
             }
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         guard case .teamCreation(let config) = results[0].signal else {
             XCTFail("Expected .teamCreation signal"); return
         }
@@ -382,14 +382,14 @@ final class CreateTeamToolTests: XCTestCase {
     ///
     /// RED: drop the `isValidJSONObject` guard → this test does not fail, it CRASHES the
     /// worker, which is the whole point.
-    func testCreateTeam_objectJSONSerializationCannotExpress_saysSo() {
+    func testCreateTeam_objectJSONSerializationCannotExpress_saysSo() async {
         let tool = CreateTeamTool.makeInstance(dependencies: ToolHandlerDependencies(
             workFolderRoot: tempDir, resolver: SandboxPathResolver(workFolderRoot: tempDir),
             fileManager: .default, internalDir: tempDir.appendingPathComponent(".nanoteams"),
             searchExploratoryByDefault: false, readFileMaxLines: 500,
             searchMaxResults: 100, searchContextBefore: 0, searchContextAfter: 0))
 
-        let result = tool.handle(
+        let result = await tool.handle(
             context: context,
             args: ["team_config": ["name": Double.nan]])
 

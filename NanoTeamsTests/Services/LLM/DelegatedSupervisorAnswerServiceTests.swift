@@ -96,8 +96,9 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
         func lastErrorMessageForTask(_ taskID: Int) -> String? { nil }
         func streamLastActivityAt(stepID _: String, taskID _: Int) -> Date? { nil }
         func streamLiveText(stepID _: String, taskID _: Int) -> String? { nil }
+        func streamProcessingStatus(stepID _: String, taskID _: Int) -> PromptProcessingStatus? { nil }
         func stopEngineForTask(_ taskID: Int) {}
-        func pauseRun(taskID _: Int) async {}
+        func pauseRun(taskID _: Int) async -> Bool { true }
         func resumeRun(taskID _: Int) async {}
         func activeDelegationChildID(taskID _: Int, roleID _: String) -> Int? { nil }
 

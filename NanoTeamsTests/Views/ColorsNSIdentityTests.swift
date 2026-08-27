@@ -21,9 +21,20 @@ final class ColorsNSIdentityTests: XCTestCase {
                       "Colors.nsTextSecondary must be a memoized singleton.")
     }
 
-    func testNSSurfaceCard_isStableInstance() {
-        XCTAssertTrue(Colors.nsSurfaceCard === Colors.nsSurfaceCard,
-                      "Colors.nsSurfaceCard must be a memoized singleton.")
+    func testNSSurfaceInput_isStableInstance() {
+        XCTAssertTrue(Colors.nsSurfaceInput === Colors.nsSurfaceInput,
+                      "Colors.nsSurfaceInput must be a memoized singleton.")
+    }
+
+    /// The two representations of one decision must land in the SAME cache slot — that is the
+    /// property `Colors.inputSurfaceLevel` exists to buy, and asserting it by IDENTITY rather
+    /// than by value is what makes it catch a re-pointed keyPath. A value assertion would pass
+    /// on oledDark, where surfacePrimary and surfaceCard are both #000000.
+    func testNSSurfaceInput_isTheSameInstanceAsItsPaletteLevel() {
+        XCTAssertTrue(Colors.nsSurfaceInput === Colors.nsThemed(Colors.inputSurfaceLevel),
+                      "nsSurfaceInput must resolve through inputSurfaceLevel, not a parallel keyPath.")
+        XCTAssertFalse(Colors.nsSurfaceInput === Colors.nsThemed(\.surfaceElevated),
+                       "the input fill is the primary surface level, not the elevated one.")
     }
 
     /// Two `PlaceholderParser` builds of the same template must produce equal

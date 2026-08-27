@@ -195,8 +195,8 @@ final class AutovisorRunNowForceTests: NTMSOrchestratorTestBase, @unchecked Send
     /// dead if that start then hits one of `startRun`'s silent early-returns.
     func testForce_startAlreadyInFlight_doesNotTearDownOrDoubleCreate() async {
         let mgrID = await runningManager()
-        sut.startingRunTaskIDs.insert(mgrID)
-        defer { sut.startingRunTaskIDs.remove(mgrID) }
+        _ = sut.engineState.beginRunStart(mgrID)
+        defer { sut.engineState.endRunStart(mgrID) }
         let before = runCount(mgrID)
 
         await sut.startAutovisorPass(taskID: mgrID, force: true)
@@ -248,7 +248,7 @@ final class AutovisorRunNowForceTests: NTMSOrchestratorTestBase, @unchecked Send
     /// 3s bound), and `TeamEngine.pause()` writes `.paused` on its LAST line — so
     /// for the whole suspension the engine mirror still reads `.running` and the
     /// second click sees exactly the state the first one did. A read-only check
-    /// against `startingRunTaskIDs` (which only `startRun` ever inserts into, well
+    /// against `initializingRunTaskIDs` (which only `startRun` ever inserts into, well
     /// after this point) cannot serialize them: both would tear down and both would
     /// `createNewRun`, and the loser's `stopEngineForTask` would kill the engine the
     /// winner had just started — the double-`createNewRun` the ordering exists to

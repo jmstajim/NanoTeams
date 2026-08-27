@@ -158,7 +158,7 @@ struct SettingsToggleRow: View {
 // MARK: - Previews
 
 #Preview("General Settings") {
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
+    @Previewable @State var store = PreviewStore.make()
     @Previewable @State var config = StoreConfiguration()
     GeneralSettingsView()
         .environment(store)

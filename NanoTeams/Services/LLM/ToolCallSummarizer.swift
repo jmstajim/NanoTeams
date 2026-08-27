@@ -417,8 +417,21 @@ nonisolated enum ToolCallSummarizer {
         argumentSummarizers[toolName] != nil
     }
 
+    /// Forwarder kept for the ~40 call sites that hold only the raw JSON. Parses, then
+    /// defers to the primitive below — one implementation, two entry points, so the two
+    /// can never become a second opinion (CLAUDE.md #91).
     static func summarizeArguments(toolName: String, json: String, resolveRoleName: ((String) -> String)? = nil) -> String {
-        guard let dict = ToolCallDataUtils.parseJSON(json) else { return "?" }
+        summarizeArguments(toolName: toolName,
+                           arguments: ToolCallDataUtils.parseJSON(json),
+                           resolveRoleName: resolveRoleName)
+    }
+
+    /// The primitive: takes arguments a caller has ALREADY parsed, so a view that also
+    /// needs the dictionary for something else pays one `JSONSerialization` pass instead
+    /// of two. `nil` means "unparseable", which is the `"?"` the string form has always
+    /// returned for malformed JSON.
+    static func summarizeArguments(toolName: String, arguments: [String: Any]?, resolveRoleName: ((String) -> String)? = nil) -> String {
+        guard let dict = arguments else { return "?" }
 
         // Role-aware summarizers (prefer resolved names when available).
         //
@@ -466,44 +479,62 @@ nonisolated enum ToolCallSummarizer {
         isError: Bool,
         resolveRoleName: ((String) -> String)? = nil
     ) -> String {
-        if toolName == TN.editFile, !isError, let resultJSON,
-           let span = editedLineSpan(resultJSON) {
-            let path = editedPath(resultJSON)
-                ?? ToolCallDataUtils.parseJSON(argumentsJSON).flatMap { extractString($0, "path") }
-                ?? "?"
-            // Under `replace_all` the pair is a BOUNDING span over N scattered regions, not
-            // one contiguous run — `12-412` alone would read as four hundred changed lines.
-            // The count is already in the envelope, so honesty costs no new field.
-            let count = editedReplacementCount(resultJSON)
-            return count > 1 ? "\(path) \(span) ×\(count)" : "\(path) \(span)"
+        cardSummary(toolName: toolName,
+                    arguments: ToolCallDataUtils.parseJSON(argumentsJSON),
+                    resultJSON: resultJSON,
+                    isError: isError,
+                    resolveRoleName: resolveRoleName)
+    }
+
+    /// Dict-taking twin, for a caller that already parsed the arguments.
+    ///
+    /// `resultJSON`'s `data` envelope is parsed EXACTLY ONCE here and handed to the three
+    /// `edited*` readers. Each of them used to parse it itself, so the `edit_file` happy
+    /// path — the commonest card in a coding run — ran three full `JSONSerialization`
+    /// passes over one string, per card, per body pass.
+    static func cardSummary(
+        toolName: String,
+        arguments: [String: Any]?,
+        resultJSON: String?,
+        isError: Bool,
+        resolveRoleName: ((String) -> String)? = nil
+    ) -> String {
+        if toolName == TN.editFile, !isError, let resultJSON {
+            let data = ToolCallDataUtils.parseJSON(resultJSON)?["data"] as? [String: Any]
+            if let span = editedLineSpan(data) {
+                let path = editedPath(data)
+                    ?? arguments.flatMap { extractString($0, "path") }
+                    ?? "?"
+                // Under `replace_all` the pair is a BOUNDING span over N scattered regions, not
+                // one contiguous run — `12-412` alone would read as four hundred changed lines.
+                // The count is already in the envelope, so honesty costs no new field.
+                let count = editedReplacementCount(data)
+                return count > 1 ? "\(path) \(span) ×\(count)" : "\(path) \(span)"
+            }
         }
         return summarizeArguments(
-            toolName: toolName, json: argumentsJSON, resolveRoleName: resolveRoleName)
+            toolName: toolName, arguments: arguments, resolveRoleName: resolveRoleName)
     }
 
     /// `42-51`, or `42` when the change sits on one line. Nil when the handler reported no
     /// span — a byte-level no-op edit, where pointing at a line would contradict the
     /// envelope's own "the edit left the file unchanged" warning, so the caller falls back
     /// to the anchor.
-    private static func editedLineSpan(_ resultJSON: String) -> String? {
-        guard let data = ToolCallDataUtils.parseJSON(resultJSON)?["data"] as? [String: Any],
+    private static func editedLineSpan(_ data: [String: Any]?) -> String? {
+        guard let data,
               let start = data["start_line"] as? Int,
               let end = data["end_line"] as? Int
         else { return nil }
         return start == end ? "\(start)" : "\(start)-\(end)"
     }
 
-    private static func editedReplacementCount(_ resultJSON: String) -> Int {
-        guard let data = ToolCallDataUtils.parseJSON(resultJSON)?["data"] as? [String: Any],
-              let count = data["replacements_made"] as? Int
-        else { return 1 }
+    private static func editedReplacementCount(_ data: [String: Any]?) -> Int {
+        guard let data, let count = data["replacements_made"] as? Int else { return 1 }
         return count
     }
 
-    private static func editedPath(_ resultJSON: String) -> String? {
-        guard let data = ToolCallDataUtils.parseJSON(resultJSON)?["data"] as? [String: Any],
-              let path = data["path"] as? String, !path.isEmpty
-        else { return nil }
+    private static func editedPath(_ data: [String: Any]?) -> String? {
+        guard let data, let path = data["path"] as? String, !path.isEmpty else { return nil }
         return path
     }
 

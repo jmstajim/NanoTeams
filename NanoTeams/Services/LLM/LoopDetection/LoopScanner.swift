@@ -36,7 +36,7 @@ nonisolated enum LoopScanner {
     /// the combine concat and `detectTailLoop`'s leading whitespace-trim + count
     /// ran over the WHOLE accumulated buffer per invocation — O(N²/cadence)
     /// across a stream. The cadence gate bounds how OFTEN this runs, not what a
-    /// run costs (the same split `StreamScanCadenceGate` fixed for the gate
+    /// run costs (the same split `StreamProbeGate` fixed for the gate
     /// itself). The suffix is taken from `endIndex` — O(bound), not O(buffer).
     static func scanStreaming(thinking: String, content: String, scope: Scope) -> LoopSignal? {
         let bound = DelegationConstants.repetitionTailWindowChars + streamingSuffixSlack

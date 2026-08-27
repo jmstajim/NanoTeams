@@ -164,3 +164,23 @@ extension TeamEngineState {
         }
     }
 }
+
+// MARK: - Run Initialization Display
+
+/// The one word for the window between "the Supervisor pressed Send / Play" and
+/// `engine.start()` — the agent-instruction and role-skill rescans that feed the first
+/// prompt, then the engine coming up.
+///
+/// One constant because two surfaces render it — the activity feed's trailing loader row
+/// and the Quick Capture working header — and a word spelled twice is a word that drifts
+/// (CLAUDE.md #123). The decision belongs to the value; the surfaces only draw it
+/// (CLAUDE.md #107). `RunInitializationDisplayPinTests` holds the literal to this file, so
+/// a third surface inherits the same word rather than inventing one.
+///
+/// Vocabulary it sits in, all of it already on screen for the phases either side of this
+/// one: `Thinking…`, `Waiting`, `Processing 42%`, `Generating…`. The trailing ellipsis is
+/// that family's "a process is live" mark — the sidebar, which shows only the braille
+/// spinner and keeps its own `TaskStatus` label, deliberately renders no text from here.
+nonisolated enum RunInitializationDisplay {
+    static let caption = "Initializing…"
+}

@@ -126,6 +126,13 @@ final class ResumeTeamGenerationTests: NTMSOrchestratorTestBase, @unchecked Send
             task.runs = [Run(id: 0)]
             task.status = .paused
         }
+        // The resume cascade is filtered on `hasWaiters` (2026-08-25): a child nothing awaits
+        // is an orphan left by a restart, and reviving it burns LLM cycles for no one. This
+        // test's subject is the ORDERING of the generation branch against the cascade, so the
+        // fixture has to be a child the cascade actually visits — otherwise it would assert
+        // the very behaviour the filter removed.
+        let handler = await registerSuspendedDelegationHandler(on: sut, childID: childID)
+        defer { sut.completionAwaiter.cancelAll(taskID: childID); handler.cancel() }
 
         await sut.resumeRun(taskID: parentID)
         await drainGeneration(taskID: parentID)

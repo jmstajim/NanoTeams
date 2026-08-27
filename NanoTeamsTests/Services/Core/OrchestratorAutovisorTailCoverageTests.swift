@@ -225,6 +225,9 @@ final class BOrchRoleControlVerifyArmTests: NTMSOrchestratorTestBase, @unchecked
         await sut.mutateTask(taskID: id) { task in
             task.runs = [Run(id: 0, steps: steps, roleStatuses: statuses)]
         }
+        // Hand-built run — see `registerRolesOnActiveTeam`. Only ids that actually HAVE a step
+        // or a status are registered, so the deliberate phantom (`ghostRole`) stays a phantom.
+        await registerRoles(steps.map(\.effectiveRoleID) + Array(statuses.keys), onTeamOf: id)
         return id
     }
 
@@ -271,6 +274,40 @@ final class BOrchRoleControlVerifyArmTests: NTMSOrchestratorTestBase, @unchecked
                        "the requester is deliberately not cancelled and is not a stranding; got \(banner)")
         XCTAssertEqual(latestRun(id)?.roleStatuses["peerRole"], .working,
                        "premise: the mutation really did not land, so the stranding is real")
+    }
+
+    /// The tail of `holdDownstreamForRevision`: after queuing the peers it must WAKE the
+    /// engine, or the roles it just marked `.revisionRequested` sit there with nothing
+    /// scheduled to pick them up — a hold that holds forever.
+    ///
+    /// The condition is `state != .running && state != .pending`, i.e. wake only an engine that
+    /// is not already driving itself. A `.done` engine is the shape that matters: the run
+    /// retired, and a revision request is exactly what should bring it back.
+    ///
+    /// RED: delete the `engine.notifyExternalEvent()` call → the engine stays `.done` and the
+    /// second assertion fails.
+    func testHoldDownstream_wakesAnIdleEngineSoTheQueuedRolesActuallyRun() async {
+        guard let id = await openWithRun(
+            [StepExecution(id: "peerRole", role: .techLead, title: "TL", status: .running),
+             StepExecution(id: "requesterRole", role: .codeReviewer, title: "CR", status: .running)],
+            statuses: ["peerRole": .working, "requesterRole": .working]
+        ) else { return }
+        let engine = sut.engineForTask(id)
+        engine.transition(to: .done)
+        sut.lastErrorMessage = nil
+
+        await sut.holdDownstreamForRevision(
+            taskID: id,
+            runningRoleIDs: ["peerRole", "requesterRole"],
+            requesterRoleID: "requesterRole")
+
+        XCTAssertNil(sut.lastErrorMessage,
+                     "premise: the hold landed, so nothing is stranded — got \(sut.lastErrorMessage ?? "nil")")
+        XCTAssertEqual(latestRun(id)?.roleStatuses["peerRole"], .revisionRequested)
+        XCTAssertNotEqual(
+            engine.state, .done,
+            "an engine left `.done` never picks up the roles the hold just queued")
+        sut.stopEngine(for: id)
     }
 
     /// `requestRevision` flips the role AND records the feedback in one closure. If
@@ -366,8 +403,8 @@ final class BOrchSchedulingTailTests: NTMSOrchestratorTestBase, @unchecked Senda
         XCTAssertNil(sut.loadedTask(id)?.recurrence?.lastFiredAt, "premise: never fired yet")
 
         // `startRun` becomes a deterministic no-op: no run, no engine, no banner.
-        sut.startingRunTaskIDs.insert(id)
-        defer { sut.startingRunTaskIDs.remove(id) }
+        _ = sut.engineState.beginRunStart(id)
+        defer { sut.engineState.endRunStart(id) }
         sut.lastErrorMessage = nil
         let runsBefore = sut.loadedTask(id)?.runs.count ?? -1
 
@@ -452,6 +489,75 @@ final class BOrchSchedulingTailTests: NTMSOrchestratorTestBase, @unchecked Senda
         XCTAssertNil(sut.loadedTask(other),
                      "a reclaimable background task must really be dropped from memory")
         await sweep?.value
+    }
+}
+
+// MARK: - Live-stream delegate hooks
+
+/// The two `LLMStateDelegate` accessors `AutovisorStuckEvaluator` consults before calling a
+/// role stuck. They are the ONLY window it has into a request that is in flight, so a wrong
+/// answer here is a restart of work that was fine.
+@MainActor
+final class BOrchStreamAccessorTests: NTMSOrchestratorTestBase, @unchecked Sendable {
+
+    private let stepID = "swe"
+    private let taskID = 5
+
+    /// Nothing streaming is `nil`, not `""` — the evaluator's `hangSeconds` arm distinguishes
+    /// "no text yet" from "no request", and an empty string would answer the first for both.
+    ///
+    /// RED: return `thinking + "\n" + content` unconditionally → this returns "\n" and fails.
+    func testStreamLiveText_withNothingStreaming_isNil() {
+        XCTAssertNil(sut.streamLiveText(stepID: stepID, taskID: taskID))
+    }
+
+    /// Thinking alone counts as liveness: a model that reasons for minutes before its first
+    /// visible token is working, not hung.
+    func testStreamLiveText_thinkingOnly_countsAsLiveText() {
+        sut.streamingPreviewManager.appendThinking(
+            stepID: stepID, taskID: taskID, content: "weighing the options")
+
+        let live = sut.streamLiveText(stepID: stepID, taskID: taskID)
+        XCTAssertNotNil(live, "thinking is output — a role producing it is not hung")
+        XCTAssertTrue(live?.contains("weighing the options") ?? false, live ?? "nil")
+    }
+
+    func testStreamLiveText_contentOnly_countsAsLiveText() {
+        sut.streamingPreviewManager.append(
+            stepID: stepID, taskID: taskID, messageID: UUID(), role: .softwareEngineer,
+            content: "writing the file")
+
+        XCTAssertTrue(
+            sut.streamLiveText(stepID: stepID, taskID: taskID)?.contains("writing the file")
+                ?? false)
+    }
+
+    /// Keyed by `TaskStepKey`, so the same step id on another task must not answer for this
+    /// one (invariant #5 — step ids are role names and repeat across tasks).
+    func testStreamLiveText_isTaskScoped() {
+        sut.streamingPreviewManager.appendThinking(
+            stepID: stepID, taskID: taskID, content: "task 5 is thinking")
+
+        XCTAssertNil(sut.streamLiveText(stepID: stepID, taskID: taskID + 1),
+                     "a sibling task's step must not inherit this one's stream")
+    }
+
+    /// Non-nil is exactly "a request is in flight and the server has produced no token yet" —
+    /// the fact the pre-token hang budget is keyed on (D-17). `nil` means either no request or
+    /// tokens already flowing, and those two need no distinguishing here: both take the
+    /// ordinary budget.
+    func testStreamProcessingStatus_reflectsTheManagersSlot_andIsTaskScoped() {
+        XCTAssertNil(sut.streamProcessingStatus(stepID: stepID, taskID: taskID),
+                     "no request in flight")
+
+        sut.streamingPreviewManager.updateProcessingStatus(
+            stepID: stepID, taskID: taskID, status: .indeterminate)
+        XCTAssertNotNil(sut.streamProcessingStatus(stepID: stepID, taskID: taskID))
+        XCTAssertNil(sut.streamProcessingStatus(stepID: stepID, taskID: taskID + 1))
+
+        sut.streamingPreviewManager.clearProcessingStatus(stepID: stepID, taskID: taskID)
+        XCTAssertNil(sut.streamProcessingStatus(stepID: stepID, taskID: taskID),
+                     "the first delta clears it — after that the ordinary budget applies")
     }
 }
 

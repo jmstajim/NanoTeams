@@ -1034,12 +1034,13 @@ private final class StreamPersistingMockDelegate: LLMExecutionDelegate {
 
     func streamLastActivityAt(stepID: String, taskID: Int) -> Date? { nil }
     func streamLiveText(stepID: String, taskID: Int) -> String? { nil }
+    func streamProcessingStatus(stepID _: String, taskID _: Int) -> PromptProcessingStatus? { nil }
 
     var stopEngineCalls: [Int] = []
     func stopEngineForTask(_ taskID: Int) { stopEngineCalls.append(taskID) }
 
     var pauseRunCalls: [Int] = []
-    func pauseRun(taskID: Int) async { pauseRunCalls.append(taskID) }
+    func pauseRun(taskID: Int) async -> Bool { pauseRunCalls.append(taskID); return true }
 
     var resumeRunCalls: [Int] = []
     func resumeRun(taskID: Int) async { resumeRunCalls.append(taskID) }

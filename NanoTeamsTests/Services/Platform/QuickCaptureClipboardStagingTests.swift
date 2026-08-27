@@ -73,7 +73,7 @@ final class QuickCaptureClipboardStagingTests: NTMSOrchestratorTestBase, @unchec
     func testTaskMode_clipLandsInTheTaskBucket() {
         controller.stageCapturedContent(capture(text: "let x = 1"), to: UUID(), answerMode: false)
 
-        XCTAssertEqual(formState.clippedTexts, ["let x = 1"])
+        XCTAssertEqual(formState.clippedTexts.texts, ["let x = 1"])
         XCTAssertTrue(formState.answerClippedTexts.isEmpty,
                       "a task-mode capture must not leak into the answer draft")
     }
@@ -81,7 +81,7 @@ final class QuickCaptureClipboardStagingTests: NTMSOrchestratorTestBase, @unchec
     func testAnswerMode_clipLandsInTheAnswerBucket() {
         controller.stageCapturedContent(capture(text: "let x = 1"), to: UUID(), answerMode: true)
 
-        XCTAssertEqual(formState.answerClippedTexts, ["let x = 1"])
+        XCTAssertEqual(formState.answerClippedTexts.texts, ["let x = 1"])
         XCTAssertTrue(formState.clippedTexts.isEmpty,
                       "an answer-mode capture must not land in the new-task draft")
     }
@@ -92,7 +92,7 @@ final class QuickCaptureClipboardStagingTests: NTMSOrchestratorTestBase, @unchec
         controller.stageCapturedContent(capture(text: "first"), to: UUID(), answerMode: false)
         controller.stageCapturedContent(capture(text: "second"), to: UUID(), answerMode: false)
 
-        XCTAssertEqual(formState.clippedTexts, ["first", "second"])
+        XCTAssertEqual(formState.clippedTexts.texts, ["first", "second"])
     }
 
     /// The two buckets are genuinely independent — switching modes mid-session must not merge
@@ -101,8 +101,8 @@ final class QuickCaptureClipboardStagingTests: NTMSOrchestratorTestBase, @unchec
         controller.stageCapturedContent(capture(text: "task"), to: UUID(), answerMode: false)
         controller.stageCapturedContent(capture(text: "answer"), to: UUID(), answerMode: true)
 
-        XCTAssertEqual(formState.clippedTexts, ["task"])
-        XCTAssertEqual(formState.answerClippedTexts, ["answer"])
+        XCTAssertEqual(formState.clippedTexts.texts, ["task"])
+        XCTAssertEqual(formState.answerClippedTexts.texts, ["answer"])
     }
 
     // MARK: - Degenerate captures
@@ -217,7 +217,7 @@ final class QuickCaptureClipboardStagingTests: NTMSOrchestratorTestBase, @unchec
         controller.stageCapturedContent(
             capture(text: "fallback", files: [file]), to: UUID(), answerMode: false)
 
-        XCTAssertEqual(formState.clippedTexts, ["fallback"])
+        XCTAssertEqual(formState.clippedTexts.texts, ["fallback"])
         XCTAssertTrue(formState.attachments.isEmpty)
     }
 
@@ -226,6 +226,6 @@ final class QuickCaptureClipboardStagingTests: NTMSOrchestratorTestBase, @unchec
 
         controller.stageCapturedContent(capture(text: "note"), to: UUID(), answerMode: true)
 
-        XCTAssertEqual(formState.answerClippedTexts, ["note"])
+        XCTAssertEqual(formState.answerClippedTexts.texts, ["note"])
     }
 }

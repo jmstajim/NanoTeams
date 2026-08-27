@@ -2,6 +2,17 @@ import XCTest
 
 @testable import NanoTeams
 
+/// Capture slots for probe handlers.
+///
+/// `ToolRegistry.ToolHandler` is `@Sendable` — the registry hands one closure to whichever
+/// task runs the batch — so a probe can no longer scribble on a captured `var`. These are the
+/// same shape as `ToolExecutionTests.ThreadCaptureBox`, kept local because a probe slot is not
+/// a fixture: sharing one would couple two suites' capture types for no reuse.
+private final class ProbeBox<T>: @unchecked Sendable {
+    var value: T
+    init(_ value: T) { self.value = value }
+}
+
 final class ToolRegistryTests: XCTestCase {
     private var registry: ToolRegistry!
     private var context: ToolExecutionContext!
@@ -54,24 +65,24 @@ final class ToolRegistryTests: XCTestCase {
         XCTAssertNotNil(registry.handler(for: "tool_c"))
     }
 
-    func testRegister_overwritesExisting() {
-        var callCount = 0
+    func testRegister_overwritesExisting() async {
+        let callCount = ProbeBox(0)
 
         registry.register(name: "my_tool") { _, _ in
-            callCount = 1
+            callCount.value = 1
             return ToolExecutionResult(toolName: "my_tool", argumentsJSON: "{}", outputJSON: "{}", isError: false)
         }
 
         // Overwrite with new handler
         registry.register(name: "my_tool") { _, _ in
-            callCount = 2
+            callCount.value = 2
             return ToolExecutionResult(toolName: "my_tool", argumentsJSON: "{}", outputJSON: "{}", isError: false)
         }
 
         // Execute the handler
-        _ = try? registry.handler(for: "my_tool")?(context, [:])
+        _ = try? await registry.handler(for: "my_tool")?(context, [:])
 
-        XCTAssertEqual(callCount, 2, "Should use the overwritten handler")
+        XCTAssertEqual(callCount.value, 2, "Should use the overwritten handler")
     }
 
     // MARK: - Handler Lookup Tests
@@ -127,11 +138,11 @@ final class ToolRegistryTests: XCTestCase {
 
     // MARK: - Handler Execution Tests
 
-    func testHandler_executesWithCorrectArguments() throws {
-        var receivedArgs: [String: Any]?
+    func testHandler_executesWithCorrectArguments() async throws {
+        let receivedArgs = ProbeBox<[String: Any]?>(nil)
 
         registry.register(name: "capture_tool") { _, args in
-            receivedArgs = args
+            receivedArgs.value = args
             return ToolExecutionResult(
                 toolName: "capture_tool",
                 argumentsJSON: "{}",
@@ -141,18 +152,18 @@ final class ToolRegistryTests: XCTestCase {
         }
 
         let args: [String: Any] = ["path": "/test/file.txt", "maxBytes": 1000]
-        _ = try registry.handler(for: "capture_tool")?(context, args)
+        _ = try await registry.handler(for: "capture_tool")?(context, args)
 
-        XCTAssertNotNil(receivedArgs)
-        XCTAssertEqual(receivedArgs?["path"] as? String, "/test/file.txt")
-        XCTAssertEqual(receivedArgs?["maxBytes"] as? Int, 1000)
+        XCTAssertNotNil(receivedArgs.value)
+        XCTAssertEqual(receivedArgs.value?["path"] as? String, "/test/file.txt")
+        XCTAssertEqual(receivedArgs.value?["maxBytes"] as? Int, 1000)
     }
 
-    func testHandler_executesWithCorrectContext() throws {
-        var receivedContext: ToolExecutionContext?
+    func testHandler_executesWithCorrectContext() async throws {
+        let receivedContext = ProbeBox<ToolExecutionContext?>(nil)
 
         registry.register(name: "context_tool") { ctx, _ in
-            receivedContext = ctx
+            receivedContext.value = ctx
             return ToolExecutionResult(
                 toolName: "context_tool",
                 argumentsJSON: "{}",
@@ -173,16 +184,16 @@ final class ToolRegistryTests: XCTestCase {
             roleID: roleID
         )
 
-        _ = try registry.handler(for: "context_tool")?(customContext, [:])
+        _ = try await registry.handler(for: "context_tool")?(customContext, [:])
 
-        XCTAssertNotNil(receivedContext)
-        XCTAssertEqual(receivedContext?.workFolderRoot, workFolderRoot)
-        XCTAssertEqual(receivedContext?.taskID, taskID)
-        XCTAssertEqual(receivedContext?.runID, runID)
-        XCTAssertEqual(receivedContext?.roleID, roleID)
+        XCTAssertNotNil(receivedContext.value)
+        XCTAssertEqual(receivedContext.value?.workFolderRoot, workFolderRoot)
+        XCTAssertEqual(receivedContext.value?.taskID, taskID)
+        XCTAssertEqual(receivedContext.value?.runID, runID)
+        XCTAssertEqual(receivedContext.value?.roleID, roleID)
     }
 
-    func testHandler_returnsResult() throws {
+    func testHandler_returnsResult() async throws {
         registry.register(name: "result_tool") { _, _ in
             ToolExecutionResult(
                 toolName: "result_tool",
@@ -192,7 +203,7 @@ final class ToolRegistryTests: XCTestCase {
             )
         }
 
-        let result = try registry.handler(for: "result_tool")?(context, [:])
+        let result = try await registry.handler(for: "result_tool")?(context, [:])
 
         XCTAssertNotNil(result)
         XCTAssertEqual(result?.toolName, "result_tool")
@@ -200,12 +211,22 @@ final class ToolRegistryTests: XCTestCase {
         XCTAssertTrue(result?.outputJSON.contains("success") ?? false)
     }
 
-    func testHandler_canThrowError() {
+    func testHandler_canThrowError() async {
         registry.register(name: "throwing_tool") { _, _ in
             throw ToolArgumentError.missingRequired("required_arg")
         }
 
-        XCTAssertThrowsError(try registry.handler(for: "throwing_tool")?(context, [:]))
+        // `XCTAssertThrowsError` takes an autoclosure, which is not an async context.
+        do {
+            _ = try await registry.handler(for: "throwing_tool")?(context, [:])
+            XCTFail("handler must rethrow")
+        } catch let error as ToolArgumentError {
+            XCTAssertTrue(
+                error.localizedDescription.contains("required_arg"),
+                "got: \(error.localizedDescription)")
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
     }
 
     // MARK: - Alias Tests
@@ -321,17 +342,17 @@ final class ToolRegistryTests: XCTestCase {
     /// End-to-end through `handler(for:)`: register a handler under the canonical
     /// name, then look it up via a `repo_browser.` prefix. Proves the runtime
     /// dispatch path resolves the prefix.
-    func testHandler_dispatchesAfterPrefixStrip() {
-        var callCount = 0
+    func testHandler_dispatchesAfterPrefixStrip() async {
+        let callCount = ProbeBox(0)
         registry.register(name: "search") { _, _ in
-            callCount += 1
+            callCount.value += 1
             return ToolExecutionResult(toolName: "search", argumentsJSON: "{}", outputJSON: "{}", isError: false)
         }
         let resolved = ToolRegistry.resolveToolName("repo_browser.search")
         let handler = registry.handler(for: resolved)
         XCTAssertNotNil(handler, "Handler must be found after prefix strip")
-        _ = try? handler?(context, [:])
-        XCTAssertEqual(callCount, 1)
+        _ = try? await handler?(context, [:])
+        XCTAssertEqual(callCount.value, 1)
     }
 }
 

@@ -49,6 +49,88 @@ final class TeamActivityComposerRoutingTests: XCTestCase {
         )
     }
 
+    // MARK: - computeRouting — the aggregator the composer body calls
+
+    /// `computeRouting` derives `askingRoleIDs` and the three role arrays ONCE and feeds
+    /// both the chip row and the recipient resolver. That is a perf fix (the composer used
+    /// to re-derive them ~11 times per body pass, ~9 heap allocations each), but the
+    /// property worth pinning is the STRUCTURAL one: `computeFailedRoles`' doc comment
+    /// claims the resolver and the chip row "can never disagree on which roles count as
+    /// failed", and until this aggregator existed that was true only by convention —
+    /// two independent derivations that happened to call the same helper.
+    ///
+    /// The table below runs the shapes the rest of this file already covers and asserts
+    /// `computeRouting` agrees with BOTH original entry points on every one. RED: drop
+    /// `askingRoleIDs` from one of `computeRouting`'s three derivations, or reorder its
+    /// chip assembly — the fixtures with an asking role diverge.
+    func testComputeRouting_agreesWithBothEntryPointsItReplaces() {
+        let pm = normalRole(id: "pm", name: "PM")
+        let tl = normalRole(id: "tl", name: "TL")
+        let obs = observerRole(id: "obs")
+        let sup = supervisorRole()
+        let roster = [sup, pm, tl, obs]
+        let q = question(stepID: "pm")
+
+        let cases: [(String, [TeamRoleDefinition], Set<String>, Set<String>,
+                     [TeamActivityActiveQuestion], Bool, TeamActivityComposer.Recipient?)] = [
+            ("idle team, no fallback",        roster, [],           [],     [],  false, nil),
+            ("idle team, fallback on",        roster, [],           [],     [],  true,  nil),
+            ("one working role",              roster, ["tl"],       [],     [],  false, nil),
+            ("asking role excluded from queue", roster, ["pm"],     [],     [q], false, nil),
+            ("failed retry target",           roster, [],           ["tl"], [],  false, nil),
+            ("failed AND asking",             roster, [],           ["pm"], [q], false, nil),
+            ("explicit selection held",       roster, ["tl"],       [],     [q], false, .role(id: "tl")),
+            ("selection on the answer chip",  roster, ["tl"],       [],     [q], false, .answer(stepID: "pm")),
+            ("empty roster",                  [],     [],           [],     [],  true,  nil),
+            // Selects the CANDIDATE derivation specifically: fallback on, the only
+            // messageable role is the one asking, so `candidates` must be EMPTY and no
+            // fallback chip may appear. Added after a mutation of `computeRouting`'s
+            // `askingRoleIDs` argument produced zero reds — the table above never reached
+            // that branch, which is CLAUDE.md #56 reading 3, not a redundant pin.
+            ("fallback on, sole role is asking", [sup, pm], [],      [],     [q], true,  nil),
+        ]
+
+        for (label, roles, working, failed, questions, fallback, selected) in cases {
+            let routing = TeamActivityComposer.computeRouting(
+                roles: roles, workingRoleIDs: working, failedRoleIDs: failed,
+                activeQuestions: questions, allowsRoleFallback: fallback, selected: selected)
+
+            XCTAssertEqual(
+                routing.chipOptions,
+                TeamActivityComposer.computeChipOptions(
+                    roles: roles, workingRoleIDs: working, failedRoleIDs: failed,
+                    activeQuestions: questions, allowsRoleFallback: fallback),
+                "chip options diverged from `computeChipOptions` — \(label)")
+
+            let asking = Set(questions.map(\.askingRoleID))
+            XCTAssertEqual(
+                routing.effectiveRecipient,
+                TeamActivityComposer.resolveEffectiveRecipient(
+                    selected: selected,
+                    activeQuestions: questions,
+                    selectableRoles: TeamActivityComposer.computeSelectableRoles(
+                        roles: roles, workingRoleIDs: working, askingRoleIDs: asking),
+                    failedRoles: TeamActivityComposer.computeFailedRoles(
+                        roles: roles, failedRoleIDs: failed, askingRoleIDs: asking),
+                    candidateRoles: TeamActivityComposer.computeCandidateRoles(
+                        roles: roles, askingRoleIDs: asking),
+                    allowsRoleFallback: fallback),
+                "effective recipient diverged from `resolveEffectiveRecipient` — \(label)")
+        }
+    }
+
+    /// Anti-vacuum for the table above: if every case produced an empty chip row and a nil
+    /// recipient, the equality assertions would hold for a `computeRouting` that returned
+    /// nothing at all (CLAUDE.md #104).
+    func testComputeRouting_actuallyProducesChipsAndRecipients() {
+        let pm = normalRole(id: "pm", name: "PM")
+        let routing = TeamActivityComposer.computeRouting(
+            roles: [supervisorRole(), pm], workingRoleIDs: ["pm"], failedRoleIDs: [],
+            activeQuestions: [], allowsRoleFallback: false, selected: nil)
+        XCTAssertEqual(routing.chipOptions.map(\.recipient), [.role(id: "pm")])
+        XCTAssertEqual(routing.effectiveRecipient, .role(id: "pm"))
+    }
+
     // MARK: - resolveEffectiveRecipient — priority chain
 
     func testResolveEffectiveRecipient_explicitSelectionWins() {

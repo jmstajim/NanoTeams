@@ -23,8 +23,8 @@ nonisolated struct RunXcodebuildTool: ToolHandler {
         Self(workFolderRoot: dependencies.workFolderRoot, runner: SystemXcodebuildRunner())
     }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             switch try XcodeBuildRunner.sweep(
                 workFolderRoot: workFolderRoot,
                 toolName: Self.name, args: args,
@@ -70,8 +70,8 @@ nonisolated struct RunXcodetestsTool: ToolHandler {
         Self(workFolderRoot: dependencies.workFolderRoot, runner: SystemXcodebuildRunner())
     }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             switch try XcodeBuildRunner.sweep(
                 workFolderRoot: workFolderRoot,
                 toolName: Self.name, args: args,

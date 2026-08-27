@@ -209,6 +209,46 @@ nonisolated enum AgentInstructionsScanner {
         return AgentInstructionsSnapshot(items: items)
     }
 
+    /// Re-reads the CONTENT of an existing snapshot's items without walking the
+    /// folder, dropping any whose file has since disappeared.
+    ///
+    /// The split this exists for: `scan` answers "which instruction files are
+    /// there", which changes when someone creates or deletes one; a run start needs
+    /// "what do they say right now", which changes every time the user saves. Only
+    /// the second is on the path to a first prompt, and it costs one read per
+    /// injected file instead of a recursive walk of the whole work folder.
+    ///
+    /// Identity, order, `source` and `isExcluded` are preserved exactly — this is
+    /// the same snapshot with fresh bytes. A file that has become unreadable (turned
+    /// binary, emptied) demotes from content-injected to path-listed, which is what
+    /// a full `scan` would also produce for it; a file that is GONE is dropped
+    /// entirely, because listing a path the role cannot read is a lie the prompt
+    /// would carry until the next walk.
+    static func reread(
+        _ snapshot: AgentInstructionsSnapshot,
+        workFolderRoot: URL,
+        fileManager: FileManager = .default
+    ) -> AgentInstructionsSnapshot {
+        let root = workFolderRoot.standardizedFileURL
+        var items: [AgentInstructionsSnapshot.Item] = []
+        for item in snapshot.items {
+            let url = root.appendingPathComponent(item.relativePath)
+            var isDir: ObjCBool = false
+            guard fileManager.fileExists(atPath: url.path, isDirectory: &isDir),
+                  !isDir.boolValue else { continue }
+            // Only files that WERE content-injected get re-read: a path-listed item
+            // carries no bytes, and promoting one here would inject content the user
+            // never asked for (that decision belongs to `injectedPaths`, an input of
+            // the walk).
+            let content = item.injectedContent == nil
+                ? nil
+                : readInjectableText(at: url, fileManager: fileManager)
+            items.append(.init(relativePath: item.relativePath, source: item.source,
+                               isExcluded: item.isExcluded, injectedContent: content))
+        }
+        return AgentInstructionsSnapshot(items: items)
+    }
+
     // MARK: - Candidate reading
 
     /// Returns the file's trimmed full content when it reads as non-empty UTF-8
@@ -271,7 +311,7 @@ nonisolated enum AgentInstructionsScanner {
         }
 
         for name in contents {
-            guard !WalkSkipRules.skipped.contains(name) else { continue }
+            guard !WalkSkipRules.shouldSkip(name: name) else { continue }
             // App storage is never an instruction source (a CLAUDE.md attached
             // to a task must not govern the folder).
             guard name != ".nanoteams" else { continue }
@@ -299,7 +339,7 @@ nonisolated enum AgentInstructionsScanner {
                     url: itemURL,
                     lowerPath: rel.lowercased(),
                     priorityRank: rank,
-                    depth: rel.filter { $0 == "/" }.count
+                    depth: rel.count { $0 == "/" }
                 ))
             }
         }

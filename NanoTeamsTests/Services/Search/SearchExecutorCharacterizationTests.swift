@@ -59,8 +59,8 @@ final class SearchExecutorCharacterizationTests: XCTestCase {
         contextAfter: Int = 0,
         maxResults: Int = 20,
         offset: Int = 0
-    ) throws -> SearchExecutorOutput {
-        try SearchExecutor.run(SearchExecutorInput(
+    ) async throws -> SearchExecutorOutput {
+        try await SearchExecutor.run(SearchExecutorInput(
             workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
             queries: queries,
             contextBefore: contextBefore,
@@ -84,7 +84,7 @@ final class SearchExecutorCharacterizationTests: XCTestCase {
     /// the tool that then reads it, and the model would be handed a line that resolves elsewhere.
     ///
     /// FIXTURE: one file per separator, `alpha<sep>NEEDLE<sep>omega`.
-    func testCharacterization_lineNumbering_eachSeparatorSplitsOnce() throws {
+    func testCharacterization_lineNumbering_eachSeparatorSplitsOnce() async throws {
         let separators: [(name: String, scalar: String)] = [
             ("LF", "\u{000A}"),
             ("VT", "\u{000B}"),
@@ -97,7 +97,7 @@ final class SearchExecutorCharacterizationTests: XCTestCase {
         for (name, sep) in separators {
             let file = "sep_\(name).txt"
             try write(file, content: "alpha\(sep)NEEDLE\(sep)omega\n")
-            let out = try run(["NEEDLE"])
+            let out = try await run(["NEEDLE"])
             let match = try XCTUnwrap(
                 out.matches.first { $0.path == file },
                 "\(name) (U+\(String(format: "%04X", sep.unicodeScalars.first!.value))) must split lines"
@@ -120,10 +120,10 @@ final class SearchExecutorCharacterizationTests: XCTestCase {
     ///
     /// FIXTURE: `alpha\r\nNEEDLE\r\nomega\r\n`, read back with `contextBefore: 2` so the empty
     /// line is asserted directly rather than inferred from the number.
-    func testCharacterization_lineNumbering_crlfIsTwoSeparators() throws {
+    func testCharacterization_lineNumbering_crlfIsTwoSeparators() async throws {
         try write("crlf.txt", content: "alpha\r\nNEEDLE\r\nomega\r\n")
 
-        let out = try run(["NEEDLE"], contextBefore: 2)
+        let out = try await run(["NEEDLE"], contextBefore: 2)
         let match = try XCTUnwrap(out.matches.first)
         XCTAssertEqual(match.line, 3, "CR and LF each split, so line 2 is the empty string between them")
 
@@ -141,10 +141,10 @@ final class SearchExecutorCharacterizationTests: XCTestCase {
     /// number past the last content line would disagree between the two tools.
     ///
     /// FIXTURE: `"NEEDLE\n"` read with `contextAfter: 3`.
-    func testCharacterization_trailingSeparator_producesEmptyFinalLine() throws {
+    func testCharacterization_trailingSeparator_producesEmptyFinalLine() async throws {
         try write("trail.txt", content: "NEEDLE\n")
 
-        let out = try run(["NEEDLE"], contextAfter: 3)
+        let out = try await run(["NEEDLE"], contextAfter: 3)
         let match = try XCTUnwrap(out.matches.first)
         XCTAssertEqual(match.line, 1)
 
@@ -162,10 +162,10 @@ final class SearchExecutorCharacterizationTests: XCTestCase {
     /// only layer that knows what the caller asked for.
     ///
     /// FIXTURE: `"alpha\nNEEDLE"` — no terminator — read with `contextAfter: 3`.
-    func testCharacterization_noTrailingSeparator_lastLineIsContent() throws {
+    func testCharacterization_noTrailingSeparator_lastLineIsContent() async throws {
         try write("notrail.txt", content: "alpha\nNEEDLE")
 
-        let out = try run(["NEEDLE"], contextAfter: 3)
+        let out = try await run(["NEEDLE"], contextAfter: 3)
         let match = try XCTUnwrap(out.matches.first)
         XCTAssertEqual(match.line, 2)
         // Non-nil but EMPTY: `contextAfter > 0` always installs an array, even when the window
@@ -189,12 +189,12 @@ final class SearchExecutorCharacterizationTests: XCTestCase {
     ///
     /// FIXTURE: six filenames straddling ASCII punctuation, Latin-1 and Cyrillic — exactly the
     /// range where the two comparators disagree.
-    func testCharacterization_directoryOrder_isUnicodeScalarNotLocalized() throws {
+    func testCharacterization_directoryOrder_isUnicodeScalarNotLocalized() async throws {
         for name in ["Z.swift", "a.swift", "Ä.swift", "_.swift", "B.swift", "б.swift"] {
             try write(name, content: "NEEDLE\n")
         }
 
-        let out = try run(["NEEDLE"])
+        let out = try await run(["NEEDLE"])
         XCTAssertEqual(
             out.matches.map(\.path),
             ["B.swift", "Z.swift", "_.swift", "a.swift", "Ä.swift", "б.swift"],
@@ -214,11 +214,11 @@ final class SearchExecutorCharacterizationTests: XCTestCase {
     ///
     /// FIXTURE: a zero-byte file beside a matching one, so "no hits from empty.txt" is
     /// distinguishable from "the walk never ran".
-    func testCharacterization_emptyFile_isTextNotBinary() throws {
+    func testCharacterization_emptyFile_isTextNotBinary() async throws {
         try write("empty.txt", content: "")
         try write("other.txt", content: "NEEDLE\n")
 
-        let out = try run(["NEEDLE"])
+        let out = try await run(["NEEDLE"])
         XCTAssertEqual(out.skippedBinaryCount, 0, "an empty file is not a binary")
         XCTAssertTrue(out.skipped.isEmpty, "nor is it a skipped file")
         XCTAssertEqual(out.matches.count, 1)
@@ -236,11 +236,11 @@ final class SearchExecutorCharacterizationTests: XCTestCase {
     ///
     /// FIXTURE: three bytes, `FF FE FD` — invalid UTF-8 with no NUL, so the 8 KB NUL sniff cannot
     /// classify it and it must fall through to the decode.
-    func testCharacterization_invalidUTF8WithoutNUL_isBinaryNotSkipped() throws {
+    func testCharacterization_invalidUTF8WithoutNUL_isBinaryNotSkipped() async throws {
         let url = tempDir.appendingPathComponent("bytes.txt")
         try Data([0xFF, 0xFE, 0xFD]).write(to: url)
 
-        let out = try run(["anything"])
+        let out = try await run(["anything"])
         XCTAssertEqual(out.skippedBinaryCount, 1)
         XCTAssertTrue(out.skipped.isEmpty, "binaries are counted in aggregate, never listed individually")
     }
@@ -259,27 +259,31 @@ final class SearchExecutorCharacterizationTests: XCTestCase {
     ///
     /// FIXTURE: four files, one per disagreement — combining acute, eszett, KELVIN SIGN, and a
     /// plain-ASCII file probed with a non-ASCII needle.
-    func testCharacterization_nonASCIILines_followICUNotByteFolding() throws {
+    func testCharacterization_nonASCIILines_followICUNotByteFolding() async throws {
         // Byte scan would say YES (the literal bytes "cafe" are present), ICU says NO because the
         // grapheme is "é", not "e".
+        // Every result is hoisted into a local: `XCTAssert*` takes an autoclosure, and an
+        // autoclosure is not an async context.
         try write("combining.txt", content: "cafe\u{0301}\n")
-        XCTAssertTrue(try run(["cafe"]).matches.isEmpty,
+        let combining = try await run(["cafe"])
+        XCTAssertTrue(combining.matches.isEmpty,
                       "'cafe' + combining acute is not a match for 'cafe' under ICU")
 
         // Byte scan would say NO, ICU says YES because full case folding maps ß to ss.
         try write("eszett.txt", content: "stra\u{00DF}e\n")
-        XCTAssertEqual(try run(["strasse"]).matches.count, 1,
-                       "ICU full case folding expands ß to ss")
+        let eszett = try await run(["strasse"])
+        XCTAssertEqual(eszett.matches.count, 1, "ICU full case folding expands ß to ss")
 
         // Byte scan would say NO, ICU says YES: U+212A KELVIN SIGN folds to 'k'.
         try write("kelvin.txt", content: "\u{212A}elvin\n")
-        XCTAssertEqual(try run(["kelvin"]).matches.count, 1,
-                       "U+212A folds to 'k' under ICU")
+        let kelvin = try await run(["kelvin"])
+        XCTAssertEqual(kelvin.matches.count, 1, "U+212A folds to 'k' under ICU")
 
         // A non-ASCII needle legitimately matches ASCII content, so a non-ASCII query can never
         // take the byte fast path.
         try write("plain.txt", content: "kelvin\n")
-        XCTAssertEqual(try run(["\u{212A}elvin"]).matches.count, 2,
+        let nonASCIINeedle = try await run(["\u{212A}elvin"])
+        XCTAssertEqual(nonASCIINeedle.matches.count, 2,
                        "matches both the ASCII file and the U+212A one")
     }
 
@@ -292,14 +296,19 @@ final class SearchExecutorCharacterizationTests: XCTestCase {
     /// implementation — `c | 0x20`, which also maps `[`→`{`, `@`→`` ` ``, `^`→`~` and NUL→space —
     /// and that implementation was actually written and shipped in a draft (CLAUDE.md, Грабли
     /// 2026-08-01). Labelling it a choice is how a defect gets cemented by a green test.
-    func testASCIIPunctuation_isNotCaseFolded() throws {
+    func testASCIIPunctuation_isNotCaseFolded() async throws {
         try write("brackets.swift", content: "let a = arr[0]\n")
 
-        XCTAssertTrue(try run(["arr{0}"]).matches.isEmpty,
+        let braces = try await run(["arr{0}"])
+        let at = try await run(["@"])
+        let caret = try await run(["^"])
+        let upper = try await run(["ARR[0]"])
+
+        XCTAssertTrue(braces.matches.isEmpty,
                       "'[' and '{' differ by 0x20 but are distinct characters")
-        XCTAssertTrue(try run(["@"]).matches.isEmpty)
-        XCTAssertTrue(try run(["^"]).matches.isEmpty)
-        XCTAssertEqual(try run(["ARR[0]"]).matches.count, 1,
+        XCTAssertTrue(at.matches.isEmpty)
+        XCTAssertTrue(caret.matches.isEmpty)
+        XCTAssertEqual(upper.matches.count, 1,
                        "letters DO fold, so the query matches case-insensitively")
     }
 
@@ -316,10 +325,10 @@ final class SearchExecutorCharacterizationTests: XCTestCase {
     ///
     /// FIXTURE: the mixed array `["beta", ""]` — mixed on purpose, since an all-empty array is
     /// list mode and never reaches this path.
-    func testCharacterization_emptyNeedleInMixedArray_matchesNothing() throws {
+    func testCharacterization_emptyNeedleInMixedArray_matchesNothing() async throws {
         try write("a.swift", content: "alpha\nbeta\n")
 
-        let out = try run(["beta", ""])
+        let out = try await run(["beta", ""])
         XCTAssertEqual(out.matches.count, 1, "only the non-empty query matches")
         XCTAssertEqual(out.matches[0].text, "beta")
     }
@@ -331,11 +340,11 @@ final class SearchExecutorCharacterizationTests: XCTestCase {
     /// Before the rewrite a hardcoded 40-line budget (`maxMatchLines`) stopped the walk first: at
     /// context 2+3 each match cost ~6 lines, so this same call returned **8** matches and reported
     /// `truncated`, leaving 12 of the 20 requested slots unused.
-    func testMaxResults_isTheOnlyLimitOnCount() throws {
+    func testMaxResults_isTheOnlyLimitOnCount() async throws {
         let lines = (1...40).map { "NEEDLE \($0)" }.joined(separator: "\n")
         try write("many.swift", content: lines + "\n")
 
-        let out = try run(["NEEDLE"], contextBefore: 2, contextAfter: 3, maxResults: 20)
+        let out = try await run(["NEEDLE"], contextBefore: 2, contextAfter: 3, maxResults: 20)
         XCTAssertEqual(out.matches.count, 20, "the page size governs, not a line budget")
         XCTAssertTrue(out.truncated, "40 matches exist, so more pages remain")
     }
@@ -343,12 +352,12 @@ final class SearchExecutorCharacterizationTests: XCTestCase {
     /// Context width no longer changes the number of matches. Previously the same corpus and the
     /// same `maxResults` returned 20 matches at context 0 and only 4 at context 8+8 — raising a
     /// display setting silently shrank the result set.
-    func testContextWidth_doesNotChangeResultCount() throws {
+    func testContextWidth_doesNotChangeResultCount() async throws {
         let lines = (1...40).map { "NEEDLE \($0)" }.joined(separator: "\n")
         try write("many.swift", content: lines + "\n")
 
-        let noContext = try run(["NEEDLE"], maxResults: 20)
-        let wideContext = try run(["NEEDLE"], contextBefore: 8, contextAfter: 8, maxResults: 20)
+        let noContext = try await run(["NEEDLE"], maxResults: 20)
+        let wideContext = try await run(["NEEDLE"], contextBefore: 8, contextAfter: 8, maxResults: 20)
 
         XCTAssertEqual(noContext.matches.count, 20)
         XCTAssertEqual(wideContext.matches.count, 20, "context is presentation, not budget")
@@ -359,13 +368,13 @@ final class SearchExecutorCharacterizationTests: XCTestCase {
     // MARK: - Pagination
 
     /// Consecutive pages partition the result set: no overlap, no gap.
-    func testPagination_pagesPartitionTheResultSet() throws {
+    func testPagination_pagesPartitionTheResultSet() async throws {
         let lines = (1...40).map { "NEEDLE \($0)" }.joined(separator: "\n")
         try write("many.swift", content: lines + "\n")
 
-        let whole = try run(["NEEDLE"], maxResults: 20)
-        let firstHalf = try run(["NEEDLE"], maxResults: 10)
-        let secondHalf = try run(["NEEDLE"], maxResults: 10, offset: 10)
+        let whole = try await run(["NEEDLE"], maxResults: 20)
+        let firstHalf = try await run(["NEEDLE"], maxResults: 10)
+        let secondHalf = try await run(["NEEDLE"], maxResults: 10, offset: 10)
 
         XCTAssertEqual(firstHalf.matches.map(\.line) + secondHalf.matches.map(\.line),
                        whole.matches.map(\.line),
@@ -375,24 +384,24 @@ final class SearchExecutorCharacterizationTests: XCTestCase {
     /// `total_matches` is reported only when it is actually known — the walk ran out of corpus
     /// before it ran out of page. Otherwise the number would be "how many we bothered to
     /// collect", which is not a total.
-    func testPagination_totalIsExactOnlyWhenTheWalkCompleted() throws {
+    func testPagination_totalIsExactOnlyWhenTheWalkCompleted() async throws {
         let lines = (1...7).map { "NEEDLE \($0)" }.joined(separator: "\n")
         try write("few.swift", content: lines + "\n")
 
-        let complete = try run(["NEEDLE"], maxResults: 50)
+        let complete = try await run(["NEEDLE"], maxResults: 50)
         XCTAssertEqual(complete.totalMatches, 7)
         XCTAssertFalse(complete.truncated)
 
-        let partial = try run(["NEEDLE"], maxResults: 3)
+        let partial = try await run(["NEEDLE"], maxResults: 3)
         XCTAssertNil(partial.totalMatches, "more matches exist beyond the page")
         XCTAssertTrue(partial.truncated)
     }
 
     /// Paging past the end is an empty page, not an error.
-    func testPagination_offsetBeyondEnd_returnsEmptyPage() throws {
+    func testPagination_offsetBeyondEnd_returnsEmptyPage() async throws {
         try write("a.swift", content: "NEEDLE\n")
 
-        let out = try run(["NEEDLE"], maxResults: 10, offset: 500)
+        let out = try await run(["NEEDLE"], maxResults: 10, offset: 500)
         XCTAssertTrue(out.matches.isEmpty)
         XCTAssertFalse(out.truncated)
     }
@@ -403,31 +412,31 @@ final class SearchExecutorCharacterizationTests: XCTestCase {
     /// `Int(Double(Int.max).rounded(.up))`, and `Double(Int.max)` rounds to exactly 2^63 — one
     /// past `Int.max` — which traps. A trap is not catchable by `ToolErrorHandler`, so a single
     /// malformed tool call took the app down.
-    func testArgumentHygiene_intMaxResults_isClampedNotCrashing() throws {
+    func testArgumentHygiene_intMaxResults_isClampedNotCrashing() async throws {
         try write("a.swift", content: "NEEDLE\n")
 
-        let out = try run(["NEEDLE"], maxResults: Int.max)
+        let out = try await run(["NEEDLE"], maxResults: Int.max)
         XCTAssertEqual(out.matches.count, 1)
     }
 
     /// `max_results: 0` used to return an empty result with `truncated: false` — a silent zero
     /// indistinguishable from "nothing matched". Negative values did the same and additionally
     /// reported `truncated: true` on the empty result.
-    func testArgumentHygiene_zeroAndNegativeMaxResults_areClampedToOne() throws {
+    func testArgumentHygiene_zeroAndNegativeMaxResults_areClampedToOne() async throws {
         try write("a.swift", content: "NEEDLE one\nNEEDLE two\n")
 
         for value in [0, -5] {
-            let out = try run(["NEEDLE"], maxResults: value)
+            let out = try await run(["NEEDLE"], maxResults: value)
             XCTAssertEqual(out.matches.count, 1, "clamped to a one-result page (max_results: \(value))")
             XCTAssertTrue(out.truncated, "and the second match is honestly reported as more")
         }
     }
 
     /// Negative offsets clamp to 0 rather than shifting the page backwards.
-    func testArgumentHygiene_negativeOffset_isClampedToZero() throws {
+    func testArgumentHygiene_negativeOffset_isClampedToZero() async throws {
         try write("a.swift", content: "NEEDLE one\nNEEDLE two\n")
 
-        let out = try run(["NEEDLE"], maxResults: 10, offset: -3)
+        let out = try await run(["NEEDLE"], maxResults: 10, offset: -3)
         XCTAssertEqual(out.matches.count, 2)
     }
 
@@ -436,21 +445,21 @@ final class SearchExecutorCharacterizationTests: XCTestCase {
     /// `offset: Int.max` the addition TRAPS, and a trap is not catchable by `ToolErrorHandler`,
     /// so one malformed tool call takes the app down. Same class as the `max_results: Int.max`
     /// crash, reachable through the other argument.
-    func testArgumentHygiene_intMaxOffset_doesNotCrash() throws {
+    func testArgumentHygiene_intMaxOffset_doesNotCrash() async throws {
         try write("a.swift", content: "NEEDLE one\nNEEDLE two\n")
 
-        let out = try run(["NEEDLE"], maxResults: 10, offset: Int.max)
+        let out = try await run(["NEEDLE"], maxResults: 10, offset: Int.max)
         XCTAssertTrue(out.matches.isEmpty, "paging past the end is an empty page, not a crash")
         XCTAssertFalse(out.truncated)
     }
 
     /// A large-but-sane offset still pages correctly rather than being clamped to something small
     /// — "infinitely many pages" has to actually hold.
-    func testPagination_veryLargeOffset_isHonouredNotClamped() throws {
+    func testPagination_veryLargeOffset_isHonouredNotClamped() async throws {
         let lines = (1...50).map { "NEEDLE \($0)" }.joined(separator: "\n")
         try write("many.swift", content: lines + "\n")
 
-        let out = try run(["NEEDLE"], maxResults: 10, offset: 45)
+        let out = try await run(["NEEDLE"], maxResults: 10, offset: 45)
         XCTAssertEqual(out.matches.count, 5, "matches 46...50")
         XCTAssertEqual(out.matches.first?.line, 46)
     }
@@ -461,7 +470,7 @@ final class SearchExecutorCharacterizationTests: XCTestCase {
     /// These had already drifted: Settings capped at 500, the schema said "max 500", and the
     /// executor clamped at 1000 — so a model asking for 800 got 800 while being told it could
     /// not. A number stated to the LLM is a contract; three copies of it is three chances to lie.
-    func testArgumentHygiene_advertisedPageCeiling_matchesTheEnforcedOne() throws {
+    func testArgumentHygiene_advertisedPageCeiling_matchesTheEnforcedOne() async throws {
         XCTAssertEqual(ExploratorySearchPayload.maxAllowedResults, AppDefaults.searchMaxResultsMax,
                        "runtime clamp and Settings range must be one number")
 
@@ -474,7 +483,7 @@ final class SearchExecutorCharacterizationTests: XCTestCase {
 
         // And it is actually enforced end-to-end.
         try write("many.swift", content: String(repeating: "NEEDLE\n", count: 600))
-        let out = try run(["NEEDLE"], maxResults: 900)
+        let out = try await run(["NEEDLE"], maxResults: 900)
         XCTAssertEqual(out.matches.count, AppDefaults.searchMaxResultsMax)
     }
 
@@ -483,22 +492,22 @@ final class SearchExecutorCharacterizationTests: XCTestCase {
     /// Deliberate divergence introduced with the 8 KB NUL sniff: a file that is valid UTF-8 but
     /// carries a literal NUL early on now classifies as binary. Same heuristic git and ripgrep
     /// use — it trades a freak case for not reading every `.mp4` in the tree in full.
-    func testBinaryGate_utf8FileWithEmbeddedNUL_classifiedAsBinary() throws {
+    func testBinaryGate_utf8FileWithEmbeddedNUL_classifiedAsBinary() async throws {
         try write("weird.txt", content: "NEEDLE\u{0000}more text\n")
 
-        let out = try run(["NEEDLE"])
+        let out = try await run(["NEEDLE"])
         XCTAssertTrue(out.matches.isEmpty)
         XCTAssertEqual(out.skippedBinaryCount, 1)
     }
 
     /// An oversize file is REPORTED, not silently dropped and not miscounted as a binary blob.
-    func testBinaryGate_oversizeFile_surfacesAsSkippedNotBinary() throws {
+    func testBinaryGate_oversizeFile_surfacesAsSkippedNotBinary() async throws {
         let url = tempDir.appendingPathComponent("huge.txt")
         // One byte past the cap, all printable so nothing else could classify it as binary.
         let data = Data(repeating: UInt8(ascii: "a"), count: SearchExecutor.maxSearchableFileBytes + 1)
         try data.write(to: url)
 
-        let out = try run(["NEEDLE"])
+        let out = try await run(["NEEDLE"])
         XCTAssertEqual(out.skippedBinaryCount, 0, "an oversize text file is not a binary")
         XCTAssertEqual(out.skipped.count, 1)
         XCTAssertEqual(out.skipped[0].path, "huge.txt")
@@ -507,11 +516,11 @@ final class SearchExecutorCharacterizationTests: XCTestCase {
 
     /// A text file with an unfamiliar extension stays searchable. This is why the gate sniffs
     /// content instead of copying the indexer's extension allowlist.
-    func testBinaryGate_unknownExtensionWithTextContent_isStillSearched() throws {
+    func testBinaryGate_unknownExtensionWithTextContent_isStillSearched() async throws {
         try write("script.zig", content: "const NEEDLE = 1;\n")
         try write("Makefile", content: "NEEDLE: ; echo hi\n")
 
-        let out = try run(["NEEDLE"])
+        let out = try await run(["NEEDLE"])
         XCTAssertEqual(Set(out.matches.map(\.path)), ["script.zig", "Makefile"])
     }
 }

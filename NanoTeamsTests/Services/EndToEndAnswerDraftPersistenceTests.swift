@@ -193,16 +193,16 @@ final class EndToEndAnswerDraftPersistenceTests: XCTestCase {
 
     func testSwitchAnswerTask_clipsIsolatedPerTask() {
         formState.enterAnswerMode(payload: payload(taskID: 1))
-        formState.answerClippedTexts = ["clip A1", "clip A2"]
+        formState.answerClippedTexts = [Clip].minting(["clip A1", "clip A2"])
 
         formState.switchAnswerTask(from: 1, to: payload(taskID: 2))
         XCTAssertTrue(formState.answerClippedTexts.isEmpty,
                       "Task 2 starts with no clips")
 
-        formState.answerClippedTexts = ["clip B1"]
+        formState.answerClippedTexts = [Clip].minting(["clip B1"])
         formState.switchAnswerTask(from: 2, to: payload(taskID: 1))
 
-        XCTAssertEqual(formState.answerClippedTexts, ["clip A1", "clip A2"],
+        XCTAssertEqual(formState.answerClippedTexts.texts, ["clip A1", "clip A2"],
                        "Task 1's clips preserved during the switch")
     }
 
@@ -222,7 +222,7 @@ final class EndToEndAnswerDraftPersistenceTests: XCTestCase {
 
         formState.answerText = "queued composition"
         formState.answerAttachments = [attachment]
-        formState.answerClippedTexts = ["clip-1", "clip-2"]
+        formState.answerClippedTexts = [Clip].minting(["clip-1", "clip-2"])
 
         formState.captureLiveComposerAsAnswerDraft(taskID: 77)
 
@@ -235,7 +235,7 @@ final class EndToEndAnswerDraftPersistenceTests: XCTestCase {
 
         XCTAssertEqual(formState.answerText, "queued composition")
         XCTAssertEqual(formState.answerAttachments, [attachment])
-        XCTAssertEqual(formState.answerClippedTexts, ["clip-1", "clip-2"])
+        XCTAssertEqual(formState.answerClippedTexts.texts, ["clip-1", "clip-2"])
     }
 
     // MARK: - Scenario 10: a dismissed answer comes back on re-entry
@@ -247,7 +247,7 @@ final class EndToEndAnswerDraftPersistenceTests: XCTestCase {
     func testDismissedAnswer_comesBackOnReEntry() {
         formState.enterAnswerMode(payload: payload(taskID: 99))
         formState.answerText = "Panel-dismiss draft"
-        formState.answerClippedTexts = ["keep me"]
+        formState.answerClippedTexts = [Clip].minting(["keep me"])
 
         formState.exitAnswerMode()
 
@@ -258,7 +258,7 @@ final class EndToEndAnswerDraftPersistenceTests: XCTestCase {
         formState.enterAnswerMode(payload: payload(taskID: 99))
         XCTAssertEqual(formState.answerText, "Panel-dismiss draft",
                        "Draft was saved before clear — restored on re-entry")
-        XCTAssertEqual(formState.answerClippedTexts, ["keep me"],
+        XCTAssertEqual(formState.answerClippedTexts.texts, ["keep me"],
                        "Clips restored along with text")
     }
 }

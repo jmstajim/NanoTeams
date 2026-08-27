@@ -63,6 +63,7 @@ final class QuickCaptureModeCoordinatorTests: XCTestCase {
             isTaskSelected: true,
             activeTask: makeTask(withQuestion: true),
             engineState: .running,
+            isInitializingRun: false,
             activeTeam: makeTeam(),
             forceNewTaskMode: true
         )
@@ -76,6 +77,7 @@ final class QuickCaptureModeCoordinatorTests: XCTestCase {
             isTaskSelected: false,
             activeTask: makeTask(withQuestion: true),
             engineState: .running,
+            isInitializingRun: false,
             activeTeam: makeTeam(),
             forceNewTaskMode: false
         )
@@ -87,6 +89,7 @@ final class QuickCaptureModeCoordinatorTests: XCTestCase {
             isTaskSelected: true,
             activeTask: nil,
             engineState: nil,
+            isInitializingRun: false,
             activeTeam: makeTeam(),
             forceNewTaskMode: false
         )
@@ -99,6 +102,7 @@ final class QuickCaptureModeCoordinatorTests: XCTestCase {
             isTaskSelected: true,
             activeTask: task,
             engineState: .needsSupervisorInput,
+            isInitializingRun: false,
             activeTeam: makeTeam(),
             forceNewTaskMode: false
         )
@@ -116,6 +120,7 @@ final class QuickCaptureModeCoordinatorTests: XCTestCase {
             isTaskSelected: true,
             activeTask: makeTask(withQuestion: true),
             engineState: .running,
+            isInitializingRun: false,
             activeTeam: makeTeam(),
             forceNewTaskMode: false
         )
@@ -129,6 +134,7 @@ final class QuickCaptureModeCoordinatorTests: XCTestCase {
             isTaskSelected: true,
             activeTask: makeTask(withQuestion: false),
             engineState: .running,
+            isInitializingRun: false,
             activeTeam: makeTeam(),
             forceNewTaskMode: false
         )
@@ -144,6 +150,7 @@ final class QuickCaptureModeCoordinatorTests: XCTestCase {
             isTaskSelected: true,
             activeTask: makeTask(withQuestion: false),
             engineState: .done,
+            isInitializingRun: false,
             activeTeam: makeTeam(),
             forceNewTaskMode: false
         )
@@ -155,6 +162,7 @@ final class QuickCaptureModeCoordinatorTests: XCTestCase {
             isTaskSelected: true,
             activeTask: makeTask(withQuestion: false, isChatMode: true),
             engineState: .running,
+            isInitializingRun: false,
             activeTeam: makeTeam(),
             forceNewTaskMode: false
         )
@@ -174,6 +182,7 @@ final class QuickCaptureModeCoordinatorTests: XCTestCase {
             isTaskSelected: true,
             activeTask: task,
             engineState: .running,
+            isInitializingRun: false,
             activeTeam: team,
             forceNewTaskMode: false
         )
@@ -202,6 +211,7 @@ final class QuickCaptureModeCoordinatorTests: XCTestCase {
             isTaskSelected: true,
             activeTask: task,
             engineState: .running,
+            isInitializingRun: false,
             activeTeam: wrongTeam,
             forceNewTaskMode: false
         )
@@ -240,6 +250,7 @@ final class QuickCaptureModeCoordinatorTests: XCTestCase {
             isTaskSelected: true,
             activeTask: task,
             engineState: .running,
+            isInitializingRun: false,
             activeTeam: correctTeam,
             forceNewTaskMode: false
         )
@@ -256,6 +267,7 @@ final class QuickCaptureModeCoordinatorTests: XCTestCase {
             isTaskSelected: true,
             activeTask: task,
             engineState: .needsSupervisorInput,
+            isInitializingRun: false,
             activeTeam: makeTeam(),
             forceNewTaskMode: false
         )
@@ -304,8 +316,8 @@ final class QuickCaptureModeCoordinatorTests: XCTestCase {
         // QC surface
         let qcMode = sut.resolveMode(
             isTaskSelected: true, activeTask: task,
-            engineState: .needsSupervisorInput, activeTeam: makeTeam(),
-            forceNewTaskMode: false
+            engineState: .needsSupervisorInput, isInitializingRun: false,
+            activeTeam: makeTeam(), forceNewTaskMode: false
         )
         guard case .supervisorAnswer(let qcPayload) = qcMode else {
             XCTFail("Expected .supervisorAnswer mode"); return
@@ -355,8 +367,8 @@ final class QuickCaptureModeCoordinatorTests: XCTestCase {
 
         let qcMode = sut.resolveMode(
             isTaskSelected: true, activeTask: task,
-            engineState: .needsSupervisorInput, activeTeam: makeTeam(),
-            forceNewTaskMode: false
+            engineState: .needsSupervisorInput, isInitializingRun: false,
+            activeTeam: makeTeam(), forceNewTaskMode: false
         )
         guard case .supervisorAnswer(let qcPayload) = qcMode else {
             XCTFail("Expected .supervisorAnswer mode"); return
@@ -382,5 +394,119 @@ final class QuickCaptureModeCoordinatorTests: XCTestCase {
             thinking: nil, isChatMode: false
         )
         XCTAssertEqual(QuickCaptureVisualMode(.supervisorAnswer(payload: payload)), .answer)
+    }
+
+    // MARK: - Initializing
+
+    /// The branch the reported bug was missing. With the run start claimed and no engine
+    /// yet, the resolver used to fall through to `.overlay` — so the panel flipped back
+    /// to the new-task composer on the first refresh after Send, telling the user their
+    /// message had gone nowhere while the run was in fact starting.
+    ///
+    /// RED: delete the `isInitializingRun` branch → `.overlay`, which is the bug verbatim.
+    func testResolveMode_runStartClaimed_returnsInitializing() {
+        let mode = sut.resolveMode(
+            isTaskSelected: true,
+            activeTask: makeTask(withQuestion: false),
+            engineState: nil,
+            isInitializingRun: true,
+            activeTeam: makeTeam(),
+            forceNewTaskMode: false
+        )
+        guard case .taskInitializing = mode else {
+            return XCTFail("Expected .taskInitializing, got \(mode)")
+        }
+    }
+
+    /// Ordering, stated as an assertion rather than left to the reading. A task parked on
+    /// a question while a NEW start is claimed must still show the question — losing it
+    /// would strand the run behind a spinner nobody can answer.
+    func testResolveMode_supervisorQuestionOutranksInitializing() {
+        let mode = sut.resolveMode(
+            isTaskSelected: true,
+            activeTask: makeTask(withQuestion: true),
+            engineState: nil,
+            isInitializingRun: true,
+            activeTeam: makeTeam(),
+            forceNewTaskMode: false
+        )
+        guard case .supervisorAnswer = mode else {
+            return XCTFail("The question outranks the phase, got \(mode)")
+        }
+    }
+
+    /// The other end of the ordering: once the engine reports `.running` its answer wins,
+    /// because the claim is still held for the tick in which `engine.start()` returns
+    /// (CLAUDE.md #95). A caption reading `Initializing…` over a working role is the
+    /// failure this pins.
+    func testResolveMode_runningOutranksAStillHeldClaim() {
+        let mode = sut.resolveMode(
+            isTaskSelected: true,
+            activeTask: makeTask(withQuestion: false),
+            engineState: .running,
+            isInitializingRun: true,
+            activeTeam: makeTeam(),
+            forceNewTaskMode: false
+        )
+        guard case .taskWorking = mode else {
+            return XCTFail("Expected .taskWorking, got \(mode)")
+        }
+    }
+
+    /// `forceNewTaskMode` is the user asking for the new-task composer explicitly — it
+    /// short-circuits ahead of everything, this phase included.
+    func testResolveMode_forceNewTaskMode_beatsInitializing() {
+        let mode = sut.resolveMode(
+            isTaskSelected: true,
+            activeTask: makeTask(withQuestion: false),
+            engineState: nil,
+            isInitializingRun: true,
+            activeTeam: makeTeam(),
+            forceNewTaskMode: true
+        )
+        guard case .overlay = mode else {
+            return XCTFail("Expected .overlay, got \(mode)")
+        }
+    }
+
+    // MARK: - What the new case carries
+
+    /// Everything a live-task mode does with the composer, `.taskInitializing` does
+    /// identically — the six sites that used to destructure `.taskWorking` alone now ask
+    /// `liveTaskChatMode`, and this is that contract stated once.
+    func testInitializingMode_behavesAsALiveTaskModeForTheComposer() {
+        let chat = QuickCaptureMode.taskInitializing(isChatMode: true)
+        let nonChat = QuickCaptureMode.taskInitializing(isChatMode: false)
+
+        XCTAssertEqual(chat.liveTaskChatMode, true)
+        XCTAssertEqual(nonChat.liveTaskChatMode, false)
+        XCTAssertNil(QuickCaptureMode.overlay.liveTaskChatMode,
+                     "Anti-vacuum: the accessor must DISTINGUISH, not answer true for all")
+
+        XCTAssertTrue(chat.expectsFocusableField)
+        XCTAssertFalse(nonChat.expectsFocusableField,
+                       "Loader-only working is the one legitimate no-field case")
+        XCTAssertTrue(chat.composerBindsAnswerBuckets)
+
+        XCTAssertEqual(QuickCapturePresentationPolicy.submitAction(for: chat), .queueChatMessage,
+                       "The next prompt during initialization is the FIRST one — the most "
+                           + "useful moment to line a message up")
+        XCTAssertEqual(QuickCapturePresentationPolicy.submitAction(for: nonChat), .disabled)
+    }
+
+    /// A distinct render identity from "working with no role name yet". Collapsing them
+    /// would leave the panel showing `Initializing…` after the engine came up, because
+    /// the controller rebuilds content only when the identity changes.
+    func testInitializingMode_hasItsOwnRenderIdentity() {
+        let initializing = QuickCapturePresentationPolicy.renderIdentity(
+            of: .taskInitializing(isChatMode: true))
+        let anonymousWorking = QuickCapturePresentationPolicy.renderIdentity(
+            of: .taskWorking(roleName: "", isChatMode: true))
+
+        XCTAssertNotEqual(initializing, anonymousWorking)
+        XCTAssertNotEqual(
+            initializing,
+            QuickCapturePresentationPolicy.renderIdentity(of: .taskInitializing(isChatMode: false)),
+            "Chat mode changes what the surface renders, so it must change the identity")
     }
 }

@@ -729,29 +729,30 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
                        "No braced body → the whole raw buffer is stored verbatim (fallback path)")
     }
 
-    func testMissingToolName_envelopeOnlyInThinking_recordsCardFromThinkingSource() async {
-        // Reasoning-channel fallback: the envelope lands in `thinkingContent`, not
-        // `harmonyBuffer`. Pins the second `envelopeSource` branch (`thinkingContent.contains("<|")`)
-        // routes to the card — not just to the retry nudge.
+    /// Re-aimed pin (CLAUDE.md #104). It used to assert the opposite — that an envelope
+    /// found only in `thinkingContent` was sourced into an errored card — which pinned the
+    /// `envelopeSource` arm that read reasoning. That arm is gone with the reasoning-channel
+    /// route, and its fixture was never production-faithful anyway: `sawHarmonyMarker` is
+    /// raised only together with `harmonyBuffer = uiBuffer`, so `(true, "")` cannot occur.
+    /// What survives the deletion is the property worth pinning — a rehearsed call in the
+    /// reasoning channel produces NO failed-attempt card, because nothing was attempted on
+    /// the channel that dispatches.
+    func testMissingToolName_envelopeOnlyInThinking_recordsNoCard() async {
         let thinking = "<|call|>{\"arguments\":{\"content\":\"X\",\"name\":\"Design Spec\"}}<|end|>"
         var messages: [ChatMessage] = []
         _ = await service._testHandleNoToolCalls(
             stepID: stepID,
             assistantContent: "",
-            sawHarmonyMarker: true,
+            sawHarmonyMarker: false,
             task: task,
             roleDefinition: nil,
             conversationMessages: &messages,
             thinkingContent: thinking,
             harmonyBuffer: ""
         )
-        let cards = latestToolCalls()
-        XCTAssertEqual(cards.count, 1, "Card must be sourced from thinkingContent when harmonyBuffer is empty")
-        XCTAssertEqual(cards.first?.name, "create_artifact")
-        XCTAssertEqual(cards.first?.isError, true)
-        XCTAssertTrue(cards.first?.resultJSON?.contains("MISSING_TOOL_NAME") == true)
-        XCTAssertTrue(cards.first?.argumentsJSON.contains("Design Spec") == true,
-                      "Arguments must be extracted from the thinking-channel envelope")
+        XCTAssertTrue(latestToolCalls().isEmpty,
+                      "A reasoning-channel envelope is deliberation — it must not surface as a failed call")
+        XCTAssertEqual(messages.count, 1, "…but the turn still nudges")
     }
 
     func testMissingToolName_unrecognizableShape_recordsUnknownToolCard() async {
@@ -990,5 +991,279 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
             (messages.first?.content ?? "").contains("reasoning alone cannot"),
             "Drift nudge must not be sent during revision"
         )
+    }
+
+    // MARK: - Reasoning-channel envelopes are not tool-call attempts
+
+    /// A `<|call|>` envelope that lived only in the reasoning channel arrives here with
+    /// `sawHarmonyMarker == false` (a content-channel fact) and empty `assistantContent`.
+    /// The Harmony classify-and-nudge branch must NOT fire: nothing was attempted on the
+    /// channel that dispatches, so telling the model its JSON was malformed would blame a
+    /// defect that does not exist. The turn takes the ordinary no-tool-call path.
+    ///
+    /// This is the pin for dropping `thinkingContent` from `envelopeSource` — with that arm
+    /// restored the classifier would read the reasoning buffer instead.
+    func testReasoningOnlyEnvelope_takesGenericNudge_notTheHarmonyBranch() async {
+        var messages: [ChatMessage] = []
+        let stop = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: "",
+            sawHarmonyMarker: false,
+            task: task,
+            roleDefinition: nil,
+            conversationMessages: &messages,
+            thinkingContent: ##"Let me try. <|call|>{"name":"write_file","arguments":{"path":"x""##,
+            allowedToolNames: [ToolNames.askSupervisor]
+        )
+
+        guard case .continueLoop = stop else {
+            XCTFail("Expected .continueLoop, got \(stop)")
+            return
+        }
+        XCTAssertEqual(messages.count, 1)
+        let retry = messages[0].content ?? ""
+        XCTAssertFalse(retry.contains("malformed JSON"),
+                       "A rehearsed call is not a broken call — got: \(retry)")
+        XCTAssertFalse(retry.contains("missing the top-level `name` field"),
+                       "Harmony classification must not run for a reasoning-only envelope")
+        XCTAssertTrue(retry.contains("did not call any tools"),
+                      "Expected the generic no-tool-call nudge, got: \(retry)")
+    }
+
+    /// A tokens-only CONTENT channel takes its own branch: that diagnosis reads `content`
+    /// and nothing else, so reasoning-channel prose — however tool-shaped — cannot steer it.
+    ///
+    /// The fixture deliberately carries a TRUNCATED envelope in reasoning. A well-formed one
+    /// is claimed by the reasoning-channel branch above (see the sibling test below), so
+    /// using one here would pin branch ORDER while pretending to pin channel independence.
+    func testTokensOnlyContent_withUnparseableReasoningEnvelope_takesTokensOnlyBranch() async {
+        var messages: [ChatMessage] = []
+        _ = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: "<|foo|>",
+            sawHarmonyMarker: false,
+            task: task,
+            roleDefinition: nil,
+            conversationMessages: &messages,
+            thinkingContent: ##"<|call|>{"name":"write_file","arguments":{"path":"x"##
+        )
+
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertTrue((messages[0].content ?? "").contains("only model-internal tokens"),
+                      "got: \(messages[0].content ?? "")")
+    }
+
+    // MARK: - Reasoning-channel envelope: the nudge that names the channel
+
+    // Measured across 291 network logs of the MeditationApp work folder (9–25 Aug 2026):
+    // 33 responses carried a `<|call|>` envelope inside `[reasoning]`, and before the
+    // reasoning ROUTE was removed 39 such envelopes really executed — 15 of them mutating.
+    // The route is gone and stays gone; these tests pin the replacement, which only changes
+    // WHAT the model is told once the turn has already resolved zero calls.
+
+    /// A well-formed envelope in reasoning while `content` is empty. Short thinking, so the
+    /// drift branch cannot fire — this is the 28-of-30 case from the logs, which until now
+    /// fell all the way through to a nudge that could say nothing about channels.
+    ///
+    /// Uses a PRODUCING role: the artifact-missing nudge is what this turn would otherwise
+    /// get, so seeing the channel nudge instead pins that the branch runs above it.
+    func testReasoningEnvelope_shortThinking_sendsChannelNudgeAndIncrementsCounter() async {
+        let role = makeProducingRole(artifactName: "Design Spec")
+        var messages: [ChatMessage] = []
+        XCTAssertEqual(service._testReasoningEnvelopeCounter(stepID: stepID, taskID: task.id), 0)
+
+        let stop = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: "",
+            sawHarmonyMarker: false,
+            task: task,
+            roleDefinition: role,
+            conversationMessages: &messages,
+            thinkingContent: ##"""
+            I should record the plan now.
+            <|call|>{"name":"update_scratchpad","arguments":{"content":"# ledger"}}<|end|>
+            """##,
+            allowedToolNames: [ToolNames.updateScratchpad, ToolNames.readFile]
+        )
+
+        guard case .continueLoop = stop else {
+            XCTFail("Expected .continueLoop, got \(stop)")
+            return
+        }
+        XCTAssertEqual(messages.count, 1)
+        let nudge = messages[0].content ?? ""
+        XCTAssertTrue(nudge.contains("inside your reasoning"),
+                      "Nudge must name the channel that swallowed the call, got: \(nudge)")
+        XCTAssertTrue(nudge.contains("`update_scratchpad`"),
+                      "Nudge should quote the name the model wrote, got: \(nudge)")
+        XCTAssertFalse(nudge.contains("Missing deliverables"),
+                       "Channel nudge must pre-empt the producing-role artifact nudge")
+        XCTAssertEqual(service._testReasoningEnvelopeCounter(stepID: stepID, taskID: task.id), 1)
+    }
+
+    /// Verbatim shape of `tasks/0/runs/273` #43 (2026-08-25) — the one well-formed
+    /// reasoning-channel turn observed AFTER the route was removed: two envelopes
+    /// (`manage_role`, `update_scratchpad`), empty content, and 11,789 chars of reasoning,
+    /// which is OVER `thinkingDriftLengthThreshold`. Both diagnoses are true at once
+    /// (CLAUDE.md #95); the specific one must win the branch.
+    func testReasoningEnvelope_overDriftThreshold_takesChannelNudge_notDriftNudge() async {
+        let padding = String(repeating: "The worker's claim needs verifying. ", count: 330)
+        let thinking = padding + ##"""
+        
+        Let me write the request_changes comment.
+        <|call|>{"name":"manage_role","arguments":{"task_id":35,"action":"request_changes"}}<|end|>
+        <|call|>{"name":"update_scratchpad","arguments":{"content":"# ledger"}}<|end|>
+        """##
+        XCTAssertGreaterThan(
+            thinking.trimmingCharacters(in: .whitespacesAndNewlines).count,
+            ConversationRepairService.thinkingDriftLengthThreshold,
+            "Fixture must clear the drift threshold, or this pins nothing about precedence")
+
+        var messages: [ChatMessage] = []
+        _ = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: "",
+            sawHarmonyMarker: false,
+            task: task,
+            roleDefinition: nil,
+            conversationMessages: &messages,
+            thinkingContent: thinking,
+            allowedToolNames: [ToolNames.updateScratchpad]
+        )
+
+        let nudge = messages[0].content ?? ""
+        XCTAssertTrue(nudge.contains("inside your reasoning"), "got: \(nudge)")
+        XCTAssertFalse(nudge.contains("reasoning alone cannot"),
+                       "The drift nudge must not win over the specific channel diagnosis")
+        XCTAssertEqual(service._testDriftCounter(stepID: stepID, taskID: task.id), 0,
+                       "Drift streak is untouched when the channel branch claims the turn")
+        XCTAssertEqual(service._testReasoningEnvelopeCounter(stepID: stepID, taskID: task.id), 1)
+    }
+
+    /// Two consecutive turns of the same shape: the model is not moving the call into its
+    /// reply on its own, and a third identical nudge would not change that.
+    func testSecondReasoningEnvelope_escalatesToSupervisor() async {
+        let thinking = ##"<|call|>{"name":"read_file","arguments":{"path":"a.swift"}}<|end|>"##
+        var first: [ChatMessage] = []
+        _ = await service._testHandleNoToolCalls(
+            stepID: stepID, assistantContent: "", sawHarmonyMarker: false,
+            task: task, roleDefinition: nil,
+            conversationMessages: &first, thinkingContent: thinking)
+        XCTAssertEqual(service._testReasoningEnvelopeCounter(stepID: stepID, taskID: task.id), 1)
+
+        var second: [ChatMessage] = []
+        let stop = await service._testHandleNoToolCalls(
+            stepID: stepID, assistantContent: "", sawHarmonyMarker: false,
+            task: task, roleDefinition: nil,
+            conversationMessages: &second, thinkingContent: thinking)
+
+        guard case .needsSupervisorInput(let question) = stop else {
+            XCTFail("Second consecutive reasoning-channel turn should escalate, got \(stop)")
+            return
+        }
+        XCTAssertTrue(question.contains("inside its reasoning"), "got: \(question)")
+        XCTAssertTrue(question.contains("two consecutive"), "got: \(question)")
+        XCTAssertEqual(service._testReasoningEnvelopeCounter(stepID: stepID, taskID: task.id), 0,
+                       "Counter resets so a supervisor-driven restart starts clean")
+    }
+
+    /// During revision the Supervisor is already driving, so escalating would recurse. The
+    /// nudge is still cheap and still accurate, so it is still sent — and the pre-revision
+    /// streak is cleared so the first post-revision turn cannot start pre-armed.
+    func testReasoningEnvelope_duringRevision_nudgesWithoutEscalating_counterReset() async {
+        let thinking = ##"<|call|>{"name":"read_file","arguments":{"path":"a.swift"}}<|end|>"##
+        var pre: [ChatMessage] = []
+        _ = await service._testHandleNoToolCalls(
+            stepID: stepID, assistantContent: "", sawHarmonyMarker: false,
+            task: task, roleDefinition: nil,
+            conversationMessages: &pre, thinkingContent: thinking)
+        XCTAssertEqual(service._testReasoningEnvelopeCounter(stepID: stepID, taskID: task.id), 1)
+
+        mockDelegate.taskToMutate?.runs[0].steps[0].revisionComment = "Please redo X"
+
+        var messages: [ChatMessage] = []
+        let stop = await service._testHandleNoToolCalls(
+            stepID: stepID, assistantContent: "", sawHarmonyMarker: false,
+            task: task, roleDefinition: nil,
+            conversationMessages: &messages, thinkingContent: thinking)
+
+        if case .needsSupervisorInput = stop {
+            XCTFail("Reasoning-channel turn during revision must not escalate")
+            return
+        }
+        XCTAssertTrue((messages.first?.content ?? "").contains("inside your reasoning"),
+                      "The nudge itself is still correct during revision")
+        XCTAssertEqual(service._testReasoningEnvelopeCounter(stepID: stepID, taskID: task.id), 0,
+                       "Pre-revision streak must not pre-arm the post-revision one")
+    }
+
+    /// The model rehearsed a tool the role does not hold. Confirming that name back to it
+    /// would teach a vocabulary the runtime rejects — the same reason the Harmony arms filter
+    /// their examples. The nudge survives without the list; only the list is dropped.
+    func testReasoningEnvelopeNudge_omitsToolNamesTheRoleDoesNotHold() async {
+        var messages: [ChatMessage] = []
+        _ = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: "",
+            sawHarmonyMarker: false,
+            task: task,
+            roleDefinition: nil,
+            conversationMessages: &messages,
+            thinkingContent: ##"<|call|>{"name":"launch_missiles","arguments":{}}<|end|>"##,
+            allowedToolNames: [ToolNames.readFile]
+        )
+
+        let nudge = messages[0].content ?? ""
+        XCTAssertTrue(nudge.contains("inside your reasoning"),
+                      "The diagnosis holds even when the rehearsed tool is unknown")
+        XCTAssertFalse(nudge.contains("launch_missiles"),
+                       "A tool the role does not hold must not be confirmed back, got: \(nudge)")
+    }
+
+    /// A content-channel marker means the model DID aim at the dispatching channel and its
+    /// envelope failed there. Blaming the reasoning channel would name the wrong defect, so
+    /// the gate hands the turn to the Harmony classifier even though a reasoning envelope
+    /// also exists.
+    func testHarmonyMarkerInContent_withReasoningEnvelope_takesHarmonyBranch() async {
+        var messages: [ChatMessage] = []
+        _ = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: "",
+            sawHarmonyMarker: true,
+            task: task,
+            roleDefinition: nil,
+            conversationMessages: &messages,
+            thinkingContent: ##"<|call|>{"name":"read_file","arguments":{"path":"a.swift"}}<|end|>"##,
+            harmonyBuffer: ##"<|call|>{"arguments":{"path":"a.swift"}}<|end|>"##,
+            allowedToolNames: [ToolNames.readFile]
+        )
+
+        let nudge = messages[0].content ?? ""
+        XCTAssertTrue(nudge.contains("missing the top-level `name` field"),
+                      "Expected the content-channel diagnosis, got: \(nudge)")
+        XCTAssertFalse(nudge.contains("inside your reasoning"),
+                       "Must not blame the reasoning channel when content carried the attempt")
+        XCTAssertEqual(service._testReasoningEnvelopeCounter(stepID: stepID, taskID: task.id), 0)
+    }
+
+    /// Reasoning that only TALKS about tools is the ordinary case for every thinking model —
+    /// it must keep taking the ordinary path, or the nudge fires on healthy turns.
+    func testReasoningProseWithoutEnvelope_takesGenericNudge() async {
+        var messages: [ChatMessage] = []
+        _ = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: "",
+            sawHarmonyMarker: false,
+            task: task,
+            roleDefinition: nil,
+            conversationMessages: &messages,
+            thinkingContent: "I should call read_file on ContentView.swift, then run the build.",
+            allowedToolNames: [ToolNames.askSupervisor]
+        )
+
+        let nudge = messages[0].content ?? ""
+        XCTAssertFalse(nudge.contains("inside your reasoning"), "got: \(nudge)")
+        XCTAssertTrue(nudge.contains("did not call any tools"), "got: \(nudge)")
+        XCTAssertEqual(service._testReasoningEnvelopeCounter(stepID: stepID, taskID: task.id), 0)
     }
 }

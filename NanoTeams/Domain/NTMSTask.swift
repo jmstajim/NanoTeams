@@ -1,4 +1,7 @@
 import Foundation
+#if DEBUG
+import Synchronization
+#endif
 
 nonisolated struct NTMSTask: Codable, Identifiable, Hashable {
     var id: Int
@@ -6,7 +9,12 @@ nonisolated struct NTMSTask: Codable, Identifiable, Hashable {
     /// Supervisor's task/brief for this task.
     var supervisorTask: String
     /// Clipped text entries captured during task creation (multiple clips supported).
-    var clippedTexts: [String]
+    ///
+    /// `[Clip]`, not `[String]`: these are rendered in a `ForEach` and deleted
+    /// positionally, and every content- or position-derived identity gets one of
+    /// those two operations wrong (CLAUDE.md #22/#23). Decoding accepts all three
+    /// historical shapes — see `init(from:)`.
+    var clippedTexts: [Clip]
     /// Persisted status (kept for quick summaries). UI should prefer derived status for the active task.
     var status: TaskStatus
     var createdAt: Date
@@ -131,7 +139,7 @@ nonisolated struct NTMSTask: Codable, Identifiable, Hashable {
         id: Int,
         title: String,
         supervisorTask: String,
-        clippedTexts: [String] = [],
+        clippedTexts: [Clip] = [],
         status: TaskStatus = .running,
         createdAt: Date = MonotonicClock.shared.now(),
         updatedAt: Date = MonotonicClock.shared.now(),
@@ -213,11 +221,18 @@ nonisolated struct NTMSTask: Codable, Identifiable, Hashable {
         self.id = try container.decode(Int.self, forKey: .id)
         self.title = try container.decode(String.self, forKey: .title)
         self.supervisorTask = try container.decodeIfPresent(String.self, forKey: .supervisorTask) ?? ""
-        if let clips = try container.decodeIfPresent([String].self, forKey: .clippedTexts) {
+        // Three shapes, newest first. There is no `schemaVersion` on this type to
+        // bump (the one in this file belongs to `TasksIndex`), so the fallback chain
+        // IS the migration and CLAUDE.md #48 has nothing to rot here.
+        if let clips = (try? container.decodeIfPresent([Clip].self, forKey: .clippedTexts)) ?? nil {
             self.clippedTexts = clips
+        } else if let texts = try container.decodeIfPresent([String].self, forKey: .clippedTexts) {
+            // Pre-identity shape: mint ids now and persist them on the next write, so
+            // a task converts once rather than re-minting on every load.
+            self.clippedTexts = [Clip].minting(texts)
         } else if let legacy = try container.decodeIfPresent(String.self, forKey: .clippedText),
                   !legacy.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            self.clippedTexts = [legacy]
+            self.clippedTexts = [Clip(text: legacy)]
         } else {
             self.clippedTexts = []
         }
@@ -480,6 +495,9 @@ nonisolated extension TasksIndex {
     /// `tasks.first(where:)` exactly, so the two spellings of the walk can
     /// never nest one task's storage at two different paths.
     func parentLinks() -> [Int: Int] {
+        #if DEBUG
+        TasksIndexWorkProbe.noteParentLinksBuild()
+        #endif
         var links: [Int: Int] = [:]
         var seen = Set<Int>()
         links.reserveCapacity(tasks.count)
@@ -649,7 +667,7 @@ nonisolated struct TaskSummary: Codable, Identifiable, Hashable {
 nonisolated extension NTMSTask {
     var hasInitialInput: Bool {
         let trimmedTask = supervisorTask.trimmingCharacters(in: .whitespacesAndNewlines)
-        let hasClips = clippedTexts.contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        let hasClips = clippedTexts.contains { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         return !trimmedTask.isEmpty || hasClips || !attachmentPaths.isEmpty
     }
 
@@ -663,7 +681,7 @@ nonisolated extension NTMSTask {
 
         // Shared with AnswerTextBuilder.build so skill + clip section formatting
         // stays identical across the live-submit and persisted-task paths.
-        sections.append(contentsOf: AnswerTextBuilder.clipSections(from: clippedTexts))
+        sections.append(contentsOf: AnswerTextBuilder.clipSections(from: clippedTexts.texts))
 
         if !attachmentPaths.isEmpty {
             let pathList = attachmentPaths
@@ -785,3 +803,21 @@ nonisolated extension NTMSTask {
         )
     }
 }
+
+#if DEBUG
+/// Work-bound seam for `TasksIndex.parentLinks()` — how many times the whole-index hop
+/// map has been BUILT since the last reset.
+///
+/// `parentLinks()` allocates a `[Int: Int]` and a `Set<Int>` over every task the work
+/// folder has ever held (the index is append-only — `closeTask` keeps the row and
+/// delegation adds child rows), so building it twice to answer two questions about the
+/// same task is the whole cost, twice. It sits INSIDE the builder rather than beside a
+/// caller for the reason CLAUDE.md #62 records: a counter outside would report how many
+/// times someone asked, not how many maps were built.
+nonisolated enum TasksIndexWorkProbe {
+    private static let _builds = Atomic<Int>(0)
+    static func noteParentLinksBuild() { _builds.wrappingAdd(1, ordering: .relaxed) }
+    static func parentLinksBuilds() -> Int { _builds.load(ordering: .relaxed) }
+    static func reset() { _builds.store(0, ordering: .relaxed) }
+}
+#endif

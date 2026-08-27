@@ -31,9 +31,10 @@ final class ClientSeamTailCoverageTests: XCTestCase {
     }
 
     /// `LLMClientRouter.init(tokenResolver:)` builds BOTH provider clients with the injected
-    /// resolver. Its only production caller is `ExploratorySearchEmbeddingsCard`, which lives in
-    /// `Views/` and therefore never runs under test — so until now nothing checked that the
-    /// Ollama half was wired at all.
+    /// resolver. Its only production caller is `EmbeddingModelCatalog`'s default client factory
+    /// — it was `ExploratorySearchEmbeddingsCard` until 2026-08-24, when the fetch moved out of
+    /// the view. That move is why the CALLER is now testable; this test stays because it pins
+    /// the router init itself, which the catalog's own tests reach only through a stub factory.
     ///
     /// That is not a hypothetical omission in this codebase: the Ollama client was retrofitted
     /// into a router that had only ever spoken to LM Studio, and CLAUDE.md's 2026-07-26 entry

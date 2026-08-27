@@ -31,6 +31,21 @@ nonisolated struct DownloadedModel: Identifiable, Sendable, Hashable {
     /// positive claim that the model is unloaded.
     let isLoaded: Bool
 
+    /// Whether `isLoaded == false` is a determinate NO.
+    ///
+    /// `isLoaded` is decided by matching this folder's `referenceHints` against the keys the
+    /// server reports, and those two live in DIFFERENT namespaces — a folder can be loaded and
+    /// still read `isLoaded == false` because no hint equals the server's key (measured:
+    /// `lmstudio-community/gpt-oss-20b-GGUF` on disk vs `openai/gpt-oss-20b` on the wire).
+    /// Delete's unload gate must therefore ask "is this a determinate no", not "is it false":
+    /// skipping the unload on an undetermined row trashes files under a live runtime.
+    ///
+    /// `true` when the residency probe answered AND every resident key was matched to some
+    /// folder — i.e. nothing was left unexplained. Defaults to `true` so a store that has no
+    /// notion of the distinction (Ollama, whose namespaces coincide by construction) behaves
+    /// exactly as before.
+    var residencyIsDeterminate: Bool = true
+
     /// Candidate model identifiers this download could be referenced by in
     /// settings or team roles.
     ///
@@ -47,6 +62,7 @@ nonisolated struct DownloadedModel: Identifiable, Sendable, Hashable {
         sizeBytes: Int64? = nil,
         detail: String? = nil,
         isLoaded: Bool = false,
+        residencyIsDeterminate: Bool = true,
         referenceHints: [String] = []
     ) {
         self.id = id
@@ -54,6 +70,7 @@ nonisolated struct DownloadedModel: Identifiable, Sendable, Hashable {
         self.sizeBytes = sizeBytes
         self.detail = detail
         self.isLoaded = isLoaded
+        self.residencyIsDeterminate = residencyIsDeterminate
         self.referenceHints = referenceHints.isEmpty ? [id] : referenceHints
     }
 }

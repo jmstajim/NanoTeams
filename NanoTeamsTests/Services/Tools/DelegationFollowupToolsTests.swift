@@ -21,9 +21,9 @@ final class DelegationFollowupToolsTests: XCTestCase {
 
     // MARK: - cancel_delegation
 
-    func testCancelDelegation_emitsSignalWithIDAndReason() {
+    func testCancelDelegation_emitsSignalWithIDAndReason() async {
         let tool = CancelDelegationTool()
-        let result = tool.handle(
+        let result = await tool.handle(
             context: makeContext(),
             args: ["child_task_id": 42, "reason": "looping"]
         )
@@ -35,9 +35,9 @@ final class DelegationFollowupToolsTests: XCTestCase {
         XCTAssertEqual(reason, "looping")
     }
 
-    func testCancelDelegation_reasonOptional() {
+    func testCancelDelegation_reasonOptional() async {
         let tool = CancelDelegationTool()
-        let result = tool.handle(context: makeContext(), args: ["child_task_id": 7])
+        let result = await tool.handle(context: makeContext(), args: ["child_task_id": 7])
         XCTAssertFalse(result.isError)
         guard case let .cancelDelegation(_, reason) = result.signal else {
             return XCTFail("Expected .cancelDelegation signal")
@@ -45,17 +45,17 @@ final class DelegationFollowupToolsTests: XCTestCase {
         XCTAssertNil(reason, "reason is optional — handler must accept missing key")
     }
 
-    func testCancelDelegation_missingChildID_returnsInvalidArgs() {
+    func testCancelDelegation_missingChildID_returnsInvalidArgs() async {
         let tool = CancelDelegationTool()
-        let result = tool.handle(context: makeContext(), args: ["reason": "x"])
+        let result = await tool.handle(context: makeContext(), args: ["reason": "x"])
         XCTAssertTrue(result.isError, "Missing required child_task_id must surface as INVALID_ARGS")
     }
 
     // MARK: - resume_delegation
 
-    func testResumeDelegation_emitsSignalWithID() {
+    func testResumeDelegation_emitsSignalWithID() async {
         let tool = ResumeDelegationTool()
-        let result = tool.handle(context: makeContext(), args: ["child_task_id": 99])
+        let result = await tool.handle(context: makeContext(), args: ["child_task_id": 99])
         XCTAssertFalse(result.isError)
         guard case let .resumeDelegation(childID) = result.signal else {
             return XCTFail("Expected .resumeDelegation signal, got \(String(describing: result.signal))")
@@ -63,17 +63,17 @@ final class DelegationFollowupToolsTests: XCTestCase {
         XCTAssertEqual(childID, 99)
     }
 
-    func testResumeDelegation_missingChildID_returnsInvalidArgs() {
+    func testResumeDelegation_missingChildID_returnsInvalidArgs() async {
         let tool = ResumeDelegationTool()
-        let result = tool.handle(context: makeContext(), args: [:])
+        let result = await tool.handle(context: makeContext(), args: [:])
         XCTAssertTrue(result.isError)
     }
 
     // MARK: - forward_to_team
 
-    func testForwardToTeam_emitsSignalWithIDAndMessage() {
+    func testForwardToTeam_emitsSignalWithIDAndMessage() async {
         let tool = ForwardToTeamTool()
-        let result = tool.handle(
+        let result = await tool.handle(
             context: makeContext(),
             args: ["child_task_id": 7, "message": "use library X instead"]
         )
@@ -85,9 +85,9 @@ final class DelegationFollowupToolsTests: XCTestCase {
         XCTAssertEqual(message, "use library X instead")
     }
 
-    func testForwardToTeam_emptyMessage_returnsInvalidArgs() {
+    func testForwardToTeam_emptyMessage_returnsInvalidArgs() async {
         let tool = ForwardToTeamTool()
-        let result = tool.handle(
+        let result = await tool.handle(
             context: makeContext(),
             args: ["child_task_id": 7, "message": "   "]
         )
@@ -95,15 +95,15 @@ final class DelegationFollowupToolsTests: XCTestCase {
                       "Empty message after trim must surface as INVALID_ARGS — forwarding nothing is meaningless")
     }
 
-    func testForwardToTeam_missingMessage_returnsInvalidArgs() {
+    func testForwardToTeam_missingMessage_returnsInvalidArgs() async {
         let tool = ForwardToTeamTool()
-        let result = tool.handle(context: makeContext(), args: ["child_task_id": 7])
+        let result = await tool.handle(context: makeContext(), args: ["child_task_id": 7])
         XCTAssertTrue(result.isError)
     }
 
-    func testForwardToTeam_trimsLeadingTrailingWhitespace() {
+    func testForwardToTeam_trimsLeadingTrailingWhitespace() async {
         let tool = ForwardToTeamTool()
-        let result = tool.handle(
+        let result = await tool.handle(
             context: makeContext(),
             args: ["child_task_id": 7, "message": "  use X  \n"]
         )

@@ -110,8 +110,8 @@ final class RequiredNonEmptyArgumentCoverageTests: XCTestCase {
             ),
         ]
 
-    private func run(_ tool: String, _ argumentsJSON: String) -> ToolExecutionResult {
-        runtime.executeAll(
+    private func run(_ tool: String, _ argumentsJSON: String) async -> ToolExecutionResult {
+        await runtime.executeAll(
             context: context,
             toolCalls: [StepToolCall(name: tool, argumentsJSON: argumentsJSON)]
         )[0]
@@ -134,9 +134,9 @@ final class RequiredNonEmptyArgumentCoverageTests: XCTestCase {
     /// nothing. `ask_supervisor` is the sharpest: its envelope says `ok: true`
     /// while `+ToolResultDispatching` declines to park, so the step keeps looping
     /// until the non-productive-turn ceiling kills it.
-    func testEveryGuardedArgument_rejectsAnEmptyValue() {
+    func testEveryGuardedArgument_rejectsAnEmptyValue() async {
         for c in Self.guardedArguments {
-            let result = run(c.tool, c.empty)
+            let result = await run(c.tool, c.empty)
             XCTAssertTrue(
                 result.isError,
                 "\(c.tool).\(c.key): an empty required argument must be rejected, not carried")
@@ -152,7 +152,7 @@ final class RequiredNonEmptyArgumentCoverageTests: XCTestCase {
     /// is recorded verbatim as the question / topic / reasoning. (Same two-row
     /// caveat as above: `analyze_image` and `create_artifact` reject a
     /// whitespace-only value for their own reasons.)
-    func testEveryGuardedArgument_rejectsAWhitespaceOnlyValue() {
+    func testEveryGuardedArgument_rejectsAWhitespaceOnlyValue() async {
         for c in Self.guardedArguments {
             // Spelled with escapes, not a raw string: `#":""#` does NOT contain
             // `:""` — a raw string closes at the first `"#`, so the literal ends
@@ -164,7 +164,7 @@ final class RequiredNonEmptyArgumentCoverageTests: XCTestCase {
             XCTAssertNotNil(
                 try? JSONSerialization.jsonObject(with: Data(padded.utf8)),
                 "precondition: the padded fixture must still be valid JSON — \(padded)")
-            let result = run(c.tool, padded)
+            let result = await run(c.tool, padded)
             XCTAssertTrue(
                 result.isError,
                 "\(c.tool).\(c.key): a whitespace-only required argument must be rejected")
@@ -179,9 +179,9 @@ final class RequiredNonEmptyArgumentCoverageTests: XCTestCase {
     ///
     /// RED: throw `.missingRequired(key)` instead → the message reads "Missing
     /// required argument: reasoning" for an argument that was present.
-    func testTheRejectionNamesTheArgumentAndSaysEmpty() {
+    func testTheRejectionNamesTheArgumentAndSaysEmpty() async {
         for c in Self.guardedArguments {
-            let out = run(c.tool, c.empty).outputJSON
+            let out = await run(c.tool, c.empty).outputJSON
             XCTAssertTrue(
                 out.contains(c.key),
                 "\(c.tool): the error must name `\(c.key)` — got \(out)")
@@ -199,9 +199,9 @@ final class RequiredNonEmptyArgumentCoverageTests: XCTestCase {
     ///
     /// RED: leave a required key out of any `filled` fixture → that row's error
     /// names an argument and the negative control catches the bad fixture.
-    func testTheFilledVariants_clearArgumentValidation() {
+    func testTheFilledVariants_clearArgumentValidation() async {
         for c in Self.guardedArguments {
-            let out = run(c.tool, c.filled).outputJSON
+            let out = await run(c.tool, c.filled).outputJSON
             XCTAssertFalse(
                 out.contains("must not be empty"),
                 "\(c.tool).\(c.key): the filled fixture must not trip the empty guard — got \(out)")
@@ -234,8 +234,8 @@ final class RequiredNonEmptyArgumentCoverageTests: XCTestCase {
     /// → the empty anchor falls through to the generic "matches exactly including
     /// whitespace" steering, which is a treadmill instruction for an anchor the
     /// model never supplied, and this assertion fails.
-    func testEditFile_emptyOldText_isDiagnosedSpecificallyNotGenerically() {
-        let out = run("edit_file", #"{"path":"edit.txt","old_text":"","new_text":"x"}"#)
+    func testEditFile_emptyOldText_isDiagnosedSpecificallyNotGenerically() async {
+        let out = await run("edit_file", #"{"path":"edit.txt","old_text":"","new_text":"x"}"#)
         XCTAssertTrue(out.isError)
         XCTAssertTrue(
             out.outputJSON.contains("whitespace-only"),
@@ -249,8 +249,8 @@ final class RequiredNonEmptyArgumentCoverageTests: XCTestCase {
     ///
     /// RED: apply `requiredNonEmptyString` to `write_file`'s `content` → this
     /// fails and the model loses the only way to create an empty file.
-    func testWriteFile_emptyContent_isStillAccepted() throws {
-        let result = run("write_file", #"{"path":"empty.txt","content":""}"#)
+    func testWriteFile_emptyContent_isStillAccepted() async throws {
+        let result = await run("write_file", #"{"path":"empty.txt","content":""}"#)
         XCTAssertFalse(result.isError, "an empty file is a legitimate write: \(result.outputJSON)")
         let written = try String(
             contentsOf: tempDir.appendingPathComponent("empty.txt"), encoding: .utf8)
@@ -261,11 +261,11 @@ final class RequiredNonEmptyArgumentCoverageTests: XCTestCase {
     ///
     /// RED: apply `requiredNonEmptyString` to `edit_file`'s `new_text` → this
     /// fails and deletion becomes unexpressible.
-    func testEditFile_emptyNewText_stillDeletesTheSpan() throws {
+    func testEditFile_emptyNewText_stillDeletesTheSpan() async throws {
         let file = tempDir.appendingPathComponent("edit.txt")
         try "keep DROP keep".write(to: file, atomically: true, encoding: .utf8)
 
-        let result = run("edit_file", #"{"path":"edit.txt","old_text":"DROP ","new_text":""}"#)
+        let result = await run("edit_file", #"{"path":"edit.txt","old_text":"DROP ","new_text":""}"#)
         XCTAssertFalse(result.isError, "empty new_text is a deletion: \(result.outputJSON)")
         XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "keep keep")
     }
@@ -324,8 +324,8 @@ final class RequiredNonEmptyArgumentCoverageTests: XCTestCase {
     /// name falls into the filename branch and this assertion fails on the
     /// message, while `testEveryGuardedArgument_rejectsAnEmptyValue` stays green
     /// (it IS rejected — just for a reason that isn't true).
-    func testCreateArtifact_emptyName_isNotBlamedOnAFileExtension() {
-        let out = run("create_artifact", #"{"name":"","content":"body text"}"#).outputJSON
+    func testCreateArtifact_emptyName_isNotBlamedOnAFileExtension() async {
+        let out = await run("create_artifact", #"{"name":"","content":"body text"}"#).outputJSON
         XCTAssertFalse(
             out.contains("looks like a filename"),
             "an empty name has no extension to blame — got \(out)")
@@ -344,9 +344,9 @@ final class RequiredNonEmptyArgumentCoverageTests: XCTestCase {
     /// The filename message is reachable only when the role HAS declared
     /// deliverables — with none, the handler answers `tool_not_authorized`
     /// instead, which is a config complaint rather than a naming one.
-    func testCreateArtifact_fileShapedName_stillGetsTheFilenameMessage() {
+    func testCreateArtifact_fileShapedName_stillGetsTheFilenameMessage() async {
         context.expectedArtifacts = ["Release Notes"]
-        let out = run("create_artifact", #"{"name":"index.html","content":"<p/>"}"#).outputJSON
+        let out = await run("create_artifact", #"{"name":"index.html","content":"<p/>"}"#).outputJSON
         XCTAssertTrue(out.contains("looks like a filename"), "got \(out)")
     }
 
@@ -357,9 +357,9 @@ final class RequiredNonEmptyArgumentCoverageTests: XCTestCase {
     /// RED: revert `create_artifact`'s `name` to `requiredString` → the empty
     /// name is told to pick one of the role's artifacts because it "looks like a
     /// filename".
-    func testCreateArtifact_emptyName_withDeclaredArtifacts_isNotBlamedOnAnExtension() {
+    func testCreateArtifact_emptyName_withDeclaredArtifacts_isNotBlamedOnAnExtension() async {
         context.expectedArtifacts = ["Release Notes"]
-        let out = run("create_artifact", #"{"name":"","content":"<p/>"}"#).outputJSON
+        let out = await run("create_artifact", #"{"name":"","content":"<p/>"}"#).outputJSON
         XCTAssertFalse(out.contains("looks like a filename"), "got \(out)")
         XCTAssertTrue(out.contains("must not be empty"), "got \(out)")
     }
@@ -390,12 +390,12 @@ final class RequiredNonEmptyArgumentCoverageTests: XCTestCase {
     /// and the model is told `ok: true` for staging nothing. Delete
     /// `request_team_meeting`'s participants guard → a meeting is convened with
     /// no participants.
-    func testTheTwoRequiredArrayCallSites_rejectAnEmptyListThemselves() {
+    func testTheTwoRequiredArrayCallSites_rejectAnEmptyListThemselves() async {
         for (tool, json) in [
             ("git_add", #"{"paths":[]}"#),
             ("request_team_meeting", #"{"topic":"Schema","participants":[]}"#),
         ] {
-            let out = run(tool, json)
+            let out = await run(tool, json)
             XCTAssertTrue(out.isError, "\(tool) must reject an empty required list")
             XCTAssertTrue(
                 out.outputJSON.lowercased().contains("empty")

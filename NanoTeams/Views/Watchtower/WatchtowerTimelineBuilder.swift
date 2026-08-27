@@ -10,10 +10,20 @@ nonisolated enum WatchtowerTimelineBuilder {
     static func collectEvents(from task: NTMSTask, roleDefinitions: [TeamRoleDefinition]) -> [TimelineEvent] {
         var events: [TimelineEvent] = []
         let isChatMode = task.isChatMode
+        // Built ONCE, here, where the roster arrives — the loop below is
+        // runs x steps and the lookup used to be two `first(where:)` scans of the
+        // roster per step, i.e. Theta(runs x steps x roles) per rebuild.
+        // `RoleRosterIndex` preserves that scan's exact precedence (id beats both
+        // fallbacks outright; within the fallback, first in roster order wins across
+        // `systemRoleID` AND `name` as a single pass) — the type exists precisely
+        // because those two properties are not obvious, and it was written for the
+        // activity feed's identical pair. This is the second of the two sites; the
+        // sweep it was extracted for stopped at the first (CLAUDE.md #51).
+        let roster = RoleRosterIndex(roster: roleDefinitions)
 
         for run in task.runs {
             for step in run.steps {
-                let roleDef = findRoleDefinition(for: step, in: roleDefinitions)
+                let roleDef = roster.role(forBaseID: step.effectiveRoleID)
                 let startedID = TimelineEvent.stableID(taskID: task.id, runID: run.id, stepID: step.id, eventType: .started)
 
                 events.append(TimelineEvent(
@@ -57,12 +67,6 @@ nonisolated enum WatchtowerTimelineBuilder {
         }
 
         return events
-    }
-
-    private static func findRoleDefinition(for step: StepExecution, in roles: [TeamRoleDefinition]) -> TeamRoleDefinition? {
-        let id = step.effectiveRoleID
-        return roles.first(where: { $0.id == id })
-            ?? roles.first(where: { $0.systemRoleID == id || $0.name == id })
     }
 
     /// Cheap change-detector over EVERYTHING `buildTimeline` reads, so the view

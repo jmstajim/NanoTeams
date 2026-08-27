@@ -288,7 +288,7 @@ struct ToolDetailEditor: View {
                         TextEditor(text: Binding(get: { promptDraft }, set: { onPromptChange($0) }))
                             .font(.system(.body, design: .monospaced))
                             .frame(minHeight: 80)
-                            .borderedTextEditorStyle()
+                            .inputSurface(.editor)
                     }
                 }
 
@@ -303,7 +303,7 @@ struct ToolDetailEditor: View {
                             TextEditor(text: Binding(get: { parametersDraft }, set: { onParametersChange($0) }))
                                 .font(.system(.body, design: .monospaced))
                                 .frame(minHeight: 120)
-                                .borderedTextEditorStyle()
+                                .inputSurface(.editor)
                         }
 
                         if let parametersError {
@@ -369,6 +369,7 @@ private struct ToolDefinitionListRow: View {
 }
 
 #Preview {
+    @Previewable @State var previewStore = PreviewStore.make()
     ToolDefinitionEditorView()
-        .environment(NTMSOrchestrator(repository: NTMSRepository()))
+        .environment(previewStore)
 }

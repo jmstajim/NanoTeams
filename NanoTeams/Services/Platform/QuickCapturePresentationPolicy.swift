@@ -59,9 +59,11 @@ nonisolated enum QuickCapturePresentationPolicy {
         switch mode {
         case .supervisorAnswer:
             return .submitSupervisorAnswer
-        case .taskWorking(_, let isChatMode):
+        case .taskWorking(_, let isChatMode), .taskInitializing(let isChatMode):
             // Chat-mode working lets the user queue a message for the next
-            // prompt. Non-chat working is loader-only.
+            // prompt — and during `.taskInitializing` that next prompt is the
+            // FIRST one, which is the most useful moment to line something up.
+            // Non-chat working is loader-only.
             return isChatMode ? .queueChatMessage : .disabled
         case .overlay:
             return .createTask
@@ -105,7 +107,7 @@ nonisolated enum QuickCapturePresentationPolicy {
         resolvedMode: QuickCaptureMode,
         newTaskID: Int?
     ) -> ChatComposerHandoff {
-        guard case .taskWorking(_, let isChatMode) = resolvedMode, isChatMode,
+        guard resolvedMode.liveTaskChatMode == true,
               let from = liveFieldsOwnerTaskID,
               let to = newTaskID,
               from != to
@@ -156,6 +158,11 @@ nonisolated enum QuickCapturePresentationPolicy {
             ] as [String]).joined(separator: sep)
         case .taskWorking(let roleName, let isChatMode):
             return (["working", roleName, isChatMode ? "1" : "0"] as [String]).joined(separator: sep)
+        case .taskInitializing(let isChatMode):
+            // A separate identity from "working with no role name", not a synonym: the
+            // two render different captions, so collapsing them would leave the panel
+            // showing `Initializing…` after the engine came up.
+            return (["initializing", isChatMode ? "1" : "0"] as [String]).joined(separator: sep)
         }
     }
 

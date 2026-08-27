@@ -46,8 +46,8 @@ struct GenerateTeamSettingsView: View {
 
 #Preview("Generate Team Settings") {
     @Previewable @State var config = StoreConfiguration()
-    @Previewable @State var catalog = ModelCatalog()
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
+    @Previewable @State var catalog = PreviewStore.catalog()
+    @Previewable @State var store = PreviewStore.make()
     GenerateTeamSettingsView()
         .environment(config)
         .environment(catalog)

@@ -75,6 +75,7 @@ enum TestOrchestrator {
         teamGenerationClient: (any LLMClient)? = nil,
         chatModelEnsurer: ChatModelEnsurer? = nil,
         downloadedModelStore: (any DownloadedModelStore)? = nil,
+        skillsCatalogueStore: AgentSkillsCatalogueStore? = nil,
         stepExecutionClient: (any LLMClient)? = nil,
         automationTickInterval: TimeInterval? = nil
     ) -> NTMSOrchestrator {
@@ -120,6 +121,15 @@ enum TestOrchestrator {
             // Unstubbed, the LM Studio half of the real router walks — and can
             // Trash — directories under the developer's `~/.lmstudio/models`.
             downloadedModelStore: downloadedModelStore ?? StubDownloadedModelStore(),
+            // A per-orchestrator temp directory, never `.shared`. Unstubbed, the
+            // catalogue store's default resolves to the developer's real
+            // `~/Library/Application Support/NanoTeams/skills/` — so a suite would
+            // both READ the machine's installed skills (making assertions depend on
+            // whose laptop ran them) and WRITE its own fixtures over that cache.
+            skillsCatalogueStore: skillsCatalogueStore ?? AgentSkillsCatalogueStore(
+                directory: FileManager.default.temporaryDirectory
+                    .appendingPathComponent("nt-skills-catalogue-\(UUID().uuidString)",
+                                            isDirectory: true)),
             // `nil` on the ORCHESTRATOR's init means "production cadence" (wall-clock
             // minute boundaries) — the nondeterminism source, so the factory never
             // forwards it. See `automationTickNever`.
@@ -193,14 +203,31 @@ final class StubDownloadedModelStore: DownloadedModelStore, @unchecked Sendable 
 }
 
 /// In-memory `ConfigurationStorage` isolating tests from `UserDefaults.standard`.
-final class InMemoryConfigurationStorage: ConfigurationStorage, @unchecked Sendable {
+///
+/// Locked, because `@unchecked Sendable` is a PROMISE and an unsynchronized dictionary cannot
+/// keep it. The promise became load-bearing on 2026-08-25, when `ConfigurationStorage` became
+/// `nonisolated` so `Theme.current` could read it from AppKit's appearance-resolution thread:
+/// before that the conformance inherited `@MainActor` from the protocol and the main actor was
+/// doing the serializing. The production conformer (`UserDefaults`) is thread-safe on its own,
+/// so this double had been riding a guarantee it never actually had.
+nonisolated final class InMemoryConfigurationStorage: ConfigurationStorage, @unchecked Sendable {
+    private let lock = NSLock()
     private var store: [String: Any] = [:]
-    func string(forKey key: String) -> String? { store[key] as? String }
-    func bool(forKey key: String) -> Bool { (store[key] as? Bool) ?? false }
-    func data(forKey key: String) -> Data? { store[key] as? Data }
-    func object(forKey key: String) -> Any? { store[key] }
-    func set(_ value: Any?, forKey key: String) {
-        if let value { store[key] = value } else { store.removeValue(forKey: key) }
+
+    private func withLock<T>(_ body: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body()
     }
-    func removeObject(forKey key: String) { store.removeValue(forKey: key) }
+
+    func string(forKey key: String) -> String? { withLock { store[key] as? String } }
+    func bool(forKey key: String) -> Bool { withLock { (store[key] as? Bool) ?? false } }
+    func data(forKey key: String) -> Data? { withLock { store[key] as? Data } }
+    func object(forKey key: String) -> Any? { withLock { store[key] } }
+    func set(_ value: Any?, forKey key: String) {
+        withLock {
+            if let value { store[key] = value } else { store.removeValue(forKey: key) }
+        }
+    }
+    func removeObject(forKey key: String) { withLock { store.removeValue(forKey: key) } }
 }

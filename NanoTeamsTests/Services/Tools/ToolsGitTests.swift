@@ -100,35 +100,35 @@ final class ToolsGitTests: XCTestCase {
 
     // MARK: - git_status Tests
 
-    func testGitStatus_emptyRepo() {
+    func testGitStatus_emptyRepo() async {
         let call = StepToolCall(name: "git_status", argumentsJSON: "{}")
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("clean\":true") || results[0].outputJSON.contains("clean\": true"))
     }
 
-    func testGitStatus_withUntrackedFile() throws {
+    func testGitStatus_withUntrackedFile() async throws {
         // Create an untracked file
         try "New content".write(to: tempDir.appendingPathComponent("untracked.txt"), atomically: true, encoding: .utf8)
 
         let call = StepToolCall(name: "git_status", argumentsJSON: "{}")
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("untracked.txt"))
         XCTAssertTrue(results[0].outputJSON.contains("clean\":false") || results[0].outputJSON.contains("clean\": false"))
     }
 
-    func testGitStatus_showsBranchName() throws {
+    func testGitStatus_showsBranchName() async throws {
         // Create initial commit to have a branch
         try "Initial".write(to: tempDir.appendingPathComponent("initial.txt"), atomically: true, encoding: .utf8)
         _ = try runGitCommand(["add", "initial.txt"])
         _ = try runGitCommand(["commit", "-m", "Initial commit"])
 
         let call = StepToolCall(name: "git_status", argumentsJSON: "{}")
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         // Should contain branch name (main or master)
@@ -138,14 +138,14 @@ final class ToolsGitTests: XCTestCase {
 
     // MARK: - git_add Tests
 
-    func testGitAdd_stagesFile() throws {
+    func testGitAdd_stagesFile() async throws {
         try "Content".write(to: tempDir.appendingPathComponent("to_stage.txt"), atomically: true, encoding: .utf8)
 
         let call = StepToolCall(
             name: "git_add",
             argumentsJSON: "{\"paths\": [\"to_stage.txt\"]}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("to_stage.txt"))
@@ -155,7 +155,7 @@ final class ToolsGitTests: XCTestCase {
         XCTAssertTrue(statusOutput.contains("A  to_stage.txt") || statusOutput.contains("A to_stage.txt"))
     }
 
-    func testGitAdd_stagesMultipleFiles() throws {
+    func testGitAdd_stagesMultipleFiles() async throws {
         try "A".write(to: tempDir.appendingPathComponent("file_a.txt"), atomically: true, encoding: .utf8)
         try "B".write(to: tempDir.appendingPathComponent("file_b.txt"), atomically: true, encoding: .utf8)
 
@@ -163,27 +163,27 @@ final class ToolsGitTests: XCTestCase {
             name: "git_add",
             argumentsJSON: "{\"paths\": [\"file_a.txt\", \"file_b.txt\"]}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("file_a.txt"))
         XCTAssertTrue(results[0].outputJSON.contains("file_b.txt"))
     }
 
-    func testGitAdd_singularPathAlias() throws {
+    func testGitAdd_singularPathAlias() async throws {
         try "content".write(to: tempDir.appendingPathComponent("alias_test.txt"), atomically: true, encoding: .utf8)
 
         let call = StepToolCall(
             name: "git_add",
             argumentsJSON: "{\"path\": \"alias_test.txt\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("alias_test.txt"))
     }
 
-    func testGitAdd_filesArrayAlias() throws {
+    func testGitAdd_filesArrayAlias() async throws {
         try "A".write(to: tempDir.appendingPathComponent("files_alias_a.txt"), atomically: true, encoding: .utf8)
         try "B".write(to: tempDir.appendingPathComponent("files_alias_b.txt"), atomically: true, encoding: .utf8)
 
@@ -191,21 +191,21 @@ final class ToolsGitTests: XCTestCase {
             name: "git_add",
             argumentsJSON: "{\"files\": [\"files_alias_a.txt\", \"files_alias_b.txt\"]}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("files_alias_a.txt"))
         XCTAssertTrue(results[0].outputJSON.contains("files_alias_b.txt"))
     }
 
-    func testGitAdd_fileSingularAlias() throws {
+    func testGitAdd_fileSingularAlias() async throws {
         try "content".write(to: tempDir.appendingPathComponent("file_alias.txt"), atomically: true, encoding: .utf8)
 
         let call = StepToolCall(
             name: "git_add",
             argumentsJSON: "{\"file\": \"file_alias.txt\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("file_alias.txt"))
@@ -215,14 +215,14 @@ final class ToolsGitTests: XCTestCase {
 
     /// An absolute path under the repo root stages the file AND reports the repo-relative
     /// form in `staged:` (not the absolute string).
-    func testGitAdd_absolutePathUnderRoot_stagesRelativeAndReportsRelative() throws {
+    func testGitAdd_absolutePathUnderRoot_stagesRelativeAndReportsRelative() async throws {
         try fileManager.createDirectory(
             at: tempDir.appendingPathComponent("sub"), withIntermediateDirectories: true)
         let fileURL = tempDir.appendingPathComponent("sub/file.txt")
         try "content".write(to: fileURL, atomically: true, encoding: .utf8)
 
         let call = StepToolCall(name: "git_add", argumentsJSON: "{\"paths\": [\"\(fileURL.path)\"]}")
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         // The envelope JSON-escapes `/` as `\/`; normalize before substring checks.
         let out = results[0].outputJSON.replacingOccurrences(of: "\\/", with: "/")
@@ -234,11 +234,11 @@ final class ToolsGitTests: XCTestCase {
     }
 
     /// A redundant leading work-folder-name component is stripped end-to-end through the handler.
-    func testGitAdd_redundantWorkFolderNamePrefix_stripsAndStages() throws {
+    func testGitAdd_redundantWorkFolderNamePrefix_stripsAndStages() async throws {
         try "content".write(to: tempDir.appendingPathComponent("redundant.txt"), atomically: true, encoding: .utf8)
         let prefix = tempDir.lastPathComponent
         let call = StepToolCall(name: "git_add", argumentsJSON: "{\"paths\": [\"\(prefix)/redundant.txt\"]}")
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError, "got: \(results[0].outputJSON)")
         XCTAssertTrue(results[0].outputJSON.contains("redundant.txt"))
@@ -247,11 +247,11 @@ final class ToolsGitTests: XCTestCase {
     }
 
     /// A glob pathspec passes through untouched so git itself expands it.
-    func testGitAdd_globPathspec_passesThroughAndStagesMatches() throws {
+    func testGitAdd_globPathspec_passesThroughAndStagesMatches() async throws {
         try "A".write(to: tempDir.appendingPathComponent("g1.txt"), atomically: true, encoding: .utf8)
         try "B".write(to: tempDir.appendingPathComponent("g2.txt"), atomically: true, encoding: .utf8)
         let call = StepToolCall(name: "git_add", argumentsJSON: "{\"paths\": [\"*.txt\"]}")
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError, "got: \(results[0].outputJSON)")
         let status = try runGitCommand(["status", "--porcelain"])
@@ -265,7 +265,7 @@ final class ToolsGitTests: XCTestCase {
     /// the raw `<rootName>/scoped.txt` git finds nothing (literal nonexistent path); only
     /// `relativizePathspec` stripping the prefix to `scoped.txt` surfaces the change — so
     /// this test fails if the `.map { relativizePathspec }` is dropped from git_diff.
-    func testGitDiff_redundantPrefixScope_normalizes() throws {
+    func testGitDiff_redundantPrefixScope_normalizes() async throws {
         try "v1\n".write(to: tempDir.appendingPathComponent("scoped.txt"), atomically: true, encoding: .utf8)
         _ = try runGitCommand(["add", "scoped.txt"])
         _ = try runGitCommand(["commit", "-m", "init"])
@@ -273,7 +273,7 @@ final class ToolsGitTests: XCTestCase {
 
         let scoped = "\(tempDir.lastPathComponent)/scoped.txt"
         let call = StepToolCall(name: "git_diff", argumentsJSON: "{\"paths\": [\"\(scoped)\"]}")
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError, "got: \(results[0].outputJSON)")
         XCTAssertTrue(results[0].outputJSON.contains("scoped.txt"),
@@ -284,23 +284,23 @@ final class ToolsGitTests: XCTestCase {
     /// sibling for why absolute would be tautological): raw `<rootName>/logged.txt` finds no
     /// commits; only `relativizePathspec` stripping to `logged.txt` surfaces the commit, so
     /// this fails if the `.map { relativizePathspec }` is dropped from git_log.
-    func testGitLog_redundantPrefixScope_normalizes() throws {
+    func testGitLog_redundantPrefixScope_normalizes() async throws {
         try "x\n".write(to: tempDir.appendingPathComponent("logged.txt"), atomically: true, encoding: .utf8)
         _ = try runGitCommand(["add", "logged.txt"])
         _ = try runGitCommand(["commit", "-m", "add logged file"])
 
         let scoped = "\(tempDir.lastPathComponent)/logged.txt"
         let call = StepToolCall(name: "git_log", argumentsJSON: "{\"paths\": [\"\(scoped)\"]}")
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError, "got: \(results[0].outputJSON)")
         XCTAssertTrue(results[0].outputJSON.contains("add logged file"),
                       "git_log scoped by a redundant-prefix path should find the commit: \(results[0].outputJSON)")
     }
 
-    func testGitAdd_missingPathsArgument() {
+    func testGitAdd_missingPathsArgument() async {
         let call = StepToolCall(name: "git_add", argumentsJSON: "{}")
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertTrue(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("INVALID_ARGS"))
@@ -318,7 +318,7 @@ final class ToolsGitTests: XCTestCase {
 
     // MARK: - git_commit Tests
 
-    func testGitCommit_commitsStaged() throws {
+    func testGitCommit_commitsStaged() async throws {
         try "Content".write(to: tempDir.appendingPathComponent("commit_me.txt"), atomically: true, encoding: .utf8)
         _ = try runGitCommand(["add", "commit_me.txt"])
 
@@ -326,7 +326,7 @@ final class ToolsGitTests: XCTestCase {
             name: "git_commit",
             argumentsJSON: "{\"message\": \"Test commit message\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
 
@@ -335,7 +335,7 @@ final class ToolsGitTests: XCTestCase {
         XCTAssertTrue(logOutput.contains("Test commit message"))
     }
 
-    func testGitCommit_nothingToCommit() throws {
+    func testGitCommit_nothingToCommit() async throws {
         // Create initial commit first
         try "Initial".write(to: tempDir.appendingPathComponent("initial.txt"), atomically: true, encoding: .utf8)
         _ = try runGitCommand(["add", "initial.txt"])
@@ -346,7 +346,7 @@ final class ToolsGitTests: XCTestCase {
             name: "git_commit",
             argumentsJSON: "{\"message\": \"Empty commit\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertTrue(results[0].isError)
         XCTAssertTrue(
@@ -355,9 +355,9 @@ final class ToolsGitTests: XCTestCase {
         )
     }
 
-    func testGitCommit_missingMessage() {
+    func testGitCommit_missingMessage() async {
         let call = StepToolCall(name: "git_commit", argumentsJSON: "{}")
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertTrue(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("INVALID_ARGS"))
@@ -365,7 +365,7 @@ final class ToolsGitTests: XCTestCase {
 
     // MARK: - git_diff Tests
 
-    func testGitDiff_showsUnstagedChanges() throws {
+    func testGitDiff_showsUnstagedChanges() async throws {
         // Create and commit a file
         try "Original".write(to: tempDir.appendingPathComponent("diff_test.txt"), atomically: true, encoding: .utf8)
         _ = try runGitCommand(["add", "diff_test.txt"])
@@ -375,7 +375,7 @@ final class ToolsGitTests: XCTestCase {
         try "Modified".write(to: tempDir.appendingPathComponent("diff_test.txt"), atomically: true, encoding: .utf8)
 
         let call = StepToolCall(name: "git_diff", argumentsJSON: "{}")
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("diff_test.txt"))
@@ -385,7 +385,7 @@ final class ToolsGitTests: XCTestCase {
     /// deletions in the tracked diff, and wrote a factually wrong review claiming SWE's
     /// calculator files didn't exist — they were untracked. `git_diff` must expose
     /// untracked files so downstream reviewers aren't blind to them.
-    func testGitDiff_includesUntrackedFilesInResult() throws {
+    func testGitDiff_includesUntrackedFilesInResult() async throws {
         // Seed a committed file so the repo has history
         try "seed".write(to: tempDir.appendingPathComponent("seed.txt"), atomically: true, encoding: .utf8)
         _ = try runGitCommand(["add", "seed.txt"])
@@ -395,7 +395,7 @@ final class ToolsGitTests: XCTestCase {
         try "brand new".write(to: tempDir.appendingPathComponent("NewCalculator.swift"), atomically: true, encoding: .utf8)
 
         let call = StepToolCall(name: "git_diff", argumentsJSON: "{}")
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         let out = results[0].outputJSON
@@ -406,7 +406,7 @@ final class ToolsGitTests: XCTestCase {
     /// With `paths` scope, the untracked probe scopes to those same paths so the
     /// `untracked_files` field still reflects the caller's query. Untracked files
     /// under the scoped path must appear; untracked files outside must not.
-    func testGitDiff_withPathsScope_scopesUntrackedProbe() throws {
+    func testGitDiff_withPathsScope_scopesUntrackedProbe() async throws {
         try "seed".write(to: tempDir.appendingPathComponent("seed.txt"), atomically: true, encoding: .utf8)
         _ = try runGitCommand(["add", "seed.txt"])
         _ = try runGitCommand(["commit", "-m", "Initial"])
@@ -417,7 +417,7 @@ final class ToolsGitTests: XCTestCase {
         try "outside".write(to: tempDir.appendingPathComponent("OutsideScope.swift"), atomically: true, encoding: .utf8)
 
         let call = StepToolCall(name: "git_diff", argumentsJSON: "{\"paths\": [\"subdir\"]}")
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         let out = results[0].outputJSON
@@ -430,7 +430,7 @@ final class ToolsGitTests: XCTestCase {
 
     /// When `cached:true`, the user wants a staging-only view — untracked files would
     /// be confusing and double-counted. Skip the `ls-files --others` probe entirely.
-    func testGitDiff_cached_omitsUntrackedListing() throws {
+    func testGitDiff_cached_omitsUntrackedListing() async throws {
         try "seed".write(to: tempDir.appendingPathComponent("seed.txt"), atomically: true, encoding: .utf8)
         _ = try runGitCommand(["add", "seed.txt"])
         _ = try runGitCommand(["commit", "-m", "Initial"])
@@ -438,7 +438,7 @@ final class ToolsGitTests: XCTestCase {
         try "brand new".write(to: tempDir.appendingPathComponent("Untracked.swift"), atomically: true, encoding: .utf8)
 
         let call = StepToolCall(name: "git_diff", argumentsJSON: "{\"cached\": true}")
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         let out = results[0].outputJSON
@@ -446,7 +446,7 @@ final class ToolsGitTests: XCTestCase {
         XCTAssertFalse(out.contains("Untracked.swift"), "cached diff must not list untracked files: \(out)")
     }
 
-    func testGitDiff_stagedChanges() throws {
+    func testGitDiff_stagedChanges() async throws {
         try "Original".write(to: tempDir.appendingPathComponent("staged.txt"), atomically: true, encoding: .utf8)
         _ = try runGitCommand(["add", "staged.txt"])
         _ = try runGitCommand(["commit", "-m", "Initial"])
@@ -458,7 +458,7 @@ final class ToolsGitTests: XCTestCase {
             name: "git_diff",
             argumentsJSON: "{\"cached\": true}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("staged.txt"))
@@ -466,7 +466,7 @@ final class ToolsGitTests: XCTestCase {
 
     // MARK: - git_log Tests
 
-    func testGitLog_showsCommitHistory() throws {
+    func testGitLog_showsCommitHistory() async throws {
         // Create some commits
         for i in 1...3 {
             try "Content \(i)".write(to: tempDir.appendingPathComponent("file\(i).txt"), atomically: true, encoding: .utf8)
@@ -475,7 +475,7 @@ final class ToolsGitTests: XCTestCase {
         }
 
         let call = StepToolCall(name: "git_log", argumentsJSON: "{}")
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("Commit 1"))
@@ -483,7 +483,7 @@ final class ToolsGitTests: XCTestCase {
         XCTAssertTrue(results[0].outputJSON.contains("Commit 3"))
     }
 
-    func testGitLog_respectsLimit() throws {
+    func testGitLog_respectsLimit() async throws {
         for i in 1...5 {
             try "Content \(i)".write(to: tempDir.appendingPathComponent("file\(i).txt"), atomically: true, encoding: .utf8)
             _ = try runGitCommand(["add", "file\(i).txt"])
@@ -494,7 +494,7 @@ final class ToolsGitTests: XCTestCase {
             name: "git_log",
             argumentsJSON: "{\"limit\": 2}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         // Should only show 2 commits (most recent)
@@ -505,7 +505,7 @@ final class ToolsGitTests: XCTestCase {
 
     // MARK: - git_branch_list Tests
 
-    func testGitBranchList_showsBranches() throws {
+    func testGitBranchList_showsBranches() async throws {
         // Create initial commit
         try "Content".write(to: tempDir.appendingPathComponent("init.txt"), atomically: true, encoding: .utf8)
         _ = try runGitCommand(["add", "init.txt"])
@@ -515,7 +515,7 @@ final class ToolsGitTests: XCTestCase {
         _ = try runGitCommand(["branch", "feature-branch"])
 
         let call = StepToolCall(name: "git_branch_list", argumentsJSON: "{}")
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("feature-branch"))
@@ -523,7 +523,7 @@ final class ToolsGitTests: XCTestCase {
 
     // MARK: - git_checkout Tests
 
-    func testGitCheckout_switchesBranch() throws {
+    func testGitCheckout_switchesBranch() async throws {
         // Create initial commit
         try "Content".write(to: tempDir.appendingPathComponent("init.txt"), atomically: true, encoding: .utf8)
         _ = try runGitCommand(["add", "init.txt"])
@@ -536,7 +536,7 @@ final class ToolsGitTests: XCTestCase {
             name: "git_checkout",
             argumentsJSON: "{\"branch\": \"new-branch\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
 
@@ -545,7 +545,7 @@ final class ToolsGitTests: XCTestCase {
         XCTAssertTrue(branchOutput.contains("new-branch"))
     }
 
-    func testGitCheckout_createNewBranch() throws {
+    func testGitCheckout_createNewBranch() async throws {
         // Create initial commit
         try "Content".write(to: tempDir.appendingPathComponent("init.txt"), atomically: true, encoding: .utf8)
         _ = try runGitCommand(["add", "init.txt"])
@@ -555,7 +555,7 @@ final class ToolsGitTests: XCTestCase {
             name: "git_checkout",
             argumentsJSON: "{\"branch\": \"created-branch\", \"create\": true}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
 
@@ -566,7 +566,7 @@ final class ToolsGitTests: XCTestCase {
 
     // MARK: - git_stash Tests
 
-    func testGitStash_stashesChanges() throws {
+    func testGitStash_stashesChanges() async throws {
         // Create initial commit
         try "Original".write(to: tempDir.appendingPathComponent("stash.txt"), atomically: true, encoding: .utf8)
         _ = try runGitCommand(["add", "stash.txt"])
@@ -579,7 +579,7 @@ final class ToolsGitTests: XCTestCase {
             name: "git_stash",
             argumentsJSON: "{\"action\": \"push\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
 
@@ -588,7 +588,7 @@ final class ToolsGitTests: XCTestCase {
         XCTAssertEqual(content, "Original")
     }
 
-    func testGitStash_listStashes() throws {
+    func testGitStash_listStashes() async throws {
         // Create initial commit
         try "Original".write(to: tempDir.appendingPathComponent("stash.txt"), atomically: true, encoding: .utf8)
         _ = try runGitCommand(["add", "stash.txt"])
@@ -602,7 +602,7 @@ final class ToolsGitTests: XCTestCase {
             name: "git_stash",
             argumentsJSON: "{\"action\": \"list\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("Test stash"))
@@ -610,7 +610,7 @@ final class ToolsGitTests: XCTestCase {
 
     // MARK: - git_branch Tests
 
-    func testGitBranch_createsBranch() throws {
+    func testGitBranch_createsBranch() async throws {
         // Create initial commit
         try "Content".write(to: tempDir.appendingPathComponent("init.txt"), atomically: true, encoding: .utf8)
         _ = try runGitCommand(["add", "init.txt"])
@@ -620,7 +620,7 @@ final class ToolsGitTests: XCTestCase {
             name: "git_branch",
             argumentsJSON: "{\"name\": \"my-feature\", \"action\": \"create\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
 
@@ -629,7 +629,7 @@ final class ToolsGitTests: XCTestCase {
         XCTAssertTrue(branchOutput.contains("my-feature"))
     }
 
-    func testGitBranch_deletesBranch() throws {
+    func testGitBranch_deletesBranch() async throws {
         // Create initial commit and branch
         try "Content".write(to: tempDir.appendingPathComponent("init.txt"), atomically: true, encoding: .utf8)
         _ = try runGitCommand(["add", "init.txt"])
@@ -640,7 +640,7 @@ final class ToolsGitTests: XCTestCase {
             name: "git_branch",
             argumentsJSON: "{\"name\": \"to-delete\", \"action\": \"delete\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
 
@@ -696,7 +696,7 @@ final class ToolsGitTests: XCTestCase {
         )
     }
 
-    func testGitAdd_inNonRepoFolder_returnsActionableError() throws {
+    func testGitAdd_inNonRepoFolder_returnsActionableError() async throws {
         // Create a fresh non-git folder (don't init).
         let nonRepoDir = fileManager.temporaryDirectory
             .appendingPathComponent("nonrepo-\(UUID().uuidString)", isDirectory: true)
@@ -719,7 +719,7 @@ final class ToolsGitTests: XCTestCase {
             name: ToolNames.gitAdd,
             argumentsJSON: #"{"paths":["a.txt"]}"#
         )
-        let results = nonRepoRuntime.executeAll(context: nonRepoContext, toolCalls: [call])
+        let results = await nonRepoRuntime.executeAll(context: nonRepoContext, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertTrue(results[0].isError)

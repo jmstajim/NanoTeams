@@ -105,7 +105,9 @@ nonisolated enum LoopRecoveryPolicy {
     /// and is written into `wireTranscript` — an unbounded "be brief" here would bias
     /// a step that may still run for dozens of iterations. Names no tool: per-role
     /// toolsets differ, and steering toward one the role does not have earns a
-    /// `tool_not_authorized` ping-pong.
+    /// `tool_not_authorized` ping-pong. That is a property of the whole string, not just of
+    /// this template — which is why nothing interpolated here may carry model-authored text;
+    /// see `shapeClause` for the interpolation that used to, and what it cost.
     ///
     /// Every sentence is anchored to this note's own position rather than to the reader's
     /// present, because a step can accumulate one per loop episode (see `nudgePrefix`) and each
@@ -114,16 +116,7 @@ nonisolated enum LoopRecoveryPolicy {
     /// KV prefix from that point — trading a recurring full re-prefill for ~115 saved tokens,
     /// in the one part of this codebase whose entire purpose is to keep that prefix intact.
     /// A note that stays TRUE at any distance costs nothing.
-    /// Delimiters around the nudge. Both providers FLATTEN consecutive user-side turns
-    /// into one message (`OllamaClient.buildRequest` joins them with a blank line; the
-    /// LM Studio builder renders the same flat shape), so an undelimited nudge arrives
-    /// as a trailing paragraph of the preceding `[Tool Result]` block rather than as a
-    /// turn of its own. Delimiting in the TEXT fixes both providers at once; changing
-    /// the merge would not — many chat templates render or drop consecutive user
-    /// messages badly, and diverging the two wire builders is its own bug source.
-    static let nudgeBlockOpen = "--- LOOP CORRECTION ---"
-    static let nudgeBlockClose = "--- END LOOP CORRECTION ---"
-
+    ///
     /// - Parameter attempt: which consecutive break this is (1 = first). The retry
     ///   budget is spent on RE-SAMPLING, so each attempt must differ from the last or
     ///   it is not a retry at all. Nudges accumulate rather than being retired (see
@@ -138,11 +131,51 @@ nonisolated enum LoopRecoveryPolicy {
             + "already in this conversation and continue with a tool call. If you genuinely "
             + "cannot decide, say in one sentence what is blocking you."
         return """
-        \(nudgeBlockOpen)
-        \(nudgePrefix) (\(signal.scope)): \(signal.diagnostic). You were not shown it.\
+        \(MessageSourceContext.loopCorrectionBlockOpen)
+        \(nudgePrefix)\(shapeClause(signal)) You were not shown it.\
         \(escalation)
-        \(nudgeBlockClose)
+        \(MessageSourceContext.loopCorrectionBlockClose)
         """
+    }
+
+    /// How the discarded turn repeated itself, derived from the signal's CASE.
+    ///
+    /// Deliberately NOT `signal.diagnostic` + `signal.scope`, which this used to interpolate.
+    /// Both are written for a different audience — `diagnostic`'s own doc comment scopes it to
+    /// "the paused envelope's `supervisor_message`", and `scope` mirrors the legacy
+    /// `fireInterrupt` strings for the delegating parent — and both stay exactly as they are for
+    /// those readers (`stuckQuestion`, the `failStep` message, `DelegationLoopWatcher`,
+    /// `AutovisorStuckEvaluator`). Three things went wrong when the model read them instead:
+    ///
+    ///  - **the loop came back into the prompt.** `makeDiagnostic` quotes up to 80 characters of
+    ///    the repeated block verbatim, cut wherever the slice lands — and nudges are never
+    ///    retired (see the note above about the KV prefix), so that fragment rides the prefix of
+    ///    every remaining request of the step. The one turn whose job is to break a repetition
+    ///    was re-seeding it.
+    ///  - **it named tools and paths.** A real correction shipped ``substring "'s call
+    ///    `read_file` for `scripts/core/frame_diff.gd`…"`` — steering the role straight back at
+    ///    what it had been looping on, and falsifying `nudgeText`'s own "names no tool" promise
+    ///    from a value composed in another module.
+    ///  - **it leaked `(within-message)`**, an internal classification label, into text the
+    ///    model reads. No `handleNoToolCalls` nudge shows one.
+    ///
+    /// The repeat COUNT goes with them. It is recoverable only by widening `LoopSignal` (the
+    /// structured `substring` / `repeatCount` are dropped at `LoopScanner`), and the note already
+    /// carries one N — the attempt counter in `escalation`. Two different Ns in four lines read
+    /// worse than none, and the audience that wants the exact figure is the human one, which
+    /// still gets it.
+    ///
+    /// Exhaustive on purpose: a fourth detection shape must be given words here rather than
+    /// silently inheriting another's.
+    private static func shapeClause(_ signal: LoopSignal) -> String {
+        switch signal {
+        case .withinMessage:
+            return " — the same block of text, several times in a row."
+        case .acrossMessages:
+            return " — restating content from its earlier turns almost verbatim."
+        case .identicalToolCallSequence:
+            return " — the same tool call with identical arguments, several times in a row."
+        }
     }
 
     private static func stuckQuestion(signal: LoopSignal, roleName: String) -> String {

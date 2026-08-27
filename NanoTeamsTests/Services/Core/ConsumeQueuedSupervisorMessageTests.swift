@@ -97,16 +97,28 @@ final class ConsumeQueuedSupervisorMessageTests: NTMSOrchestratorTestBase, @unch
         text: String = "доложи статус",
         targetRoleID: String? = nil,
         attachments: [StagedAttachment] = [],
-        clippedTexts: [String] = []
+        clippedTexts: [String] = [],
+        kind: QuickCaptureFormState.QueuedChatMessage.Kind = .supervisorSpeech,
+        isRedelivery: Bool = false
     ) -> UUID {
         let msg = QuickCaptureFormState.QueuedChatMessage(
             text: text,
             attachments: attachments,
             clippedTexts: clippedTexts,
-            targetRoleID: targetRoleID
+            targetRoleID: targetRoleID,
+            kind: kind,
+            isRedelivery: isRedelivery
         )!
         formState.appendQueuedMessage(msg, for: taskID)
         return msg.id
+    }
+
+    /// A realistic event notice, built by the PRODUCTION composer so the shape under test is
+    /// the one that actually ships.
+    private func eventNoticeText(taskID: Int = 35, title: String = "M15") -> String {
+        NTMSOrchestrator.composeAutovisorEventNotice(
+            [.init(taskID: taskID, title: title, trigger: .needsSupervisor)]
+        )
     }
 
     // MARK: - Happy path: text only
@@ -686,5 +698,239 @@ final class ConsumeQueuedSupervisorMessageTests: NTMSOrchestratorTestBase, @unch
 
         XCTAssertEqual(delivered, MessageSourceContext.supervisorMessagePrefix + "    indented paste",
                        "leading indentation is content; trailing whitespace is not")
+    }
+
+    // MARK: - Per-kind runs (.autovisorEventNotice)
+
+    /// The Autovisor's mid-review notice on its own: unmarked on the wire, `.autovisorEvent`
+    /// in the record, unattributed — which together are what make the feed collapse it to a
+    /// `system: event` row instead of drawing the crowned Supervisor bubble it used to.
+    ///
+    /// RED: drop the `.autovisorEventNotice` arm from `composeQueuedDelivery` → the notice
+    /// gets the `Supervisor:` marker and `.supervisorMessage` back, and the row becomes a
+    /// bubble again.
+    func testConsume_eventNoticeOnly_isUnmarkedAndSystemAuthored() async {
+        let (taskID, stepID) = await createTaskWithRunningStep()
+        let notice = eventNoticeText()
+        _ = queue(taskID: taskID, text: notice, targetRoleID: "pm", kind: .autovisorEventNotice)
+
+        let prompt = await sut.consumeQueuedSupervisorMessage(
+            taskID: taskID, roleID: "pm", stepID: stepID
+        )
+
+        XCTAssertEqual(prompt, notice, "no `Supervisor:` marker — the app is not the Supervisor")
+        XCTAssertFalse(prompt?.hasPrefix(MessageSourceContext.supervisorMessagePrefix) ?? true)
+
+        let convo = sut.activeTask?.runs.last?.steps.first?.llmConversation ?? []
+        XCTAssertEqual(convo.count, 2, "prior turn + the notice")
+        XCTAssertEqual(convo.last?.role, .user, "never `.system` — that corrupts stateless rebuilds")
+        XCTAssertEqual(convo.last?.sourceContext, .autovisorEvent)
+        XCTAssertNil(convo.last?.sourceRole,
+                     "unattributed, like every other system notice, so the feed files the row "
+                         + "under the WORKING role rather than under a Supervisor who never spoke")
+        XCTAssertEqual(convo.last?.content, notice, "persisted == what was sent; replay depends on it")
+    }
+
+    /// The rendering-side half of the wiring, asserted against the production resolver rather
+    /// than restated: a persisted notice must actually classify as a system notice.
+    ///
+    /// Without this the drain could persist a context the feed does not collapse, and every
+    /// assertion above would still pass.
+    func testConsume_eventNotice_resolvesToASystemNoticeRow() async {
+        let (taskID, stepID) = await createTaskWithRunningStep()
+        _ = queue(taskID: taskID, text: eventNoticeText(), targetRoleID: "pm",
+                  kind: .autovisorEventNotice)
+
+        _ = await sut.consumeQueuedSupervisorMessage(taskID: taskID, roleID: "pm", stepID: stepID)
+
+        guard let persisted = sut.activeTask?.runs.last?.steps.first?.llmConversation.last else {
+            return XCTFail("notice was not persisted")
+        }
+        let resolved = SystemNoticePresentation.resolve(
+            context: persisted.sourceContext, content: persisted.displayContent
+        )
+        XCTAssertEqual(resolved?.rowLabel, "system: event")
+        XCTAssertEqual(resolved?.preview,
+                       "- Task #35 \"M15\" is waiting for a supervisor answer (answer_task_question).",
+                       "the row shows the news, not the banner the label already states")
+    }
+
+    /// A mixed batch: the human keeps their marker and their bubble, the notice keeps neither.
+    /// Two persisted turns, in queue order, from ONE arrival.
+    func testConsume_mixedBatch_splitsIntoTwoTurns_inQueueOrder() async {
+        let (taskID, stepID) = await createTaskWithRunningStep()
+        let notice = eventNoticeText()
+        _ = queue(taskID: taskID, text: "посмотри парсер", targetRoleID: "pm")
+        _ = queue(taskID: taskID, text: notice, targetRoleID: "pm", kind: .autovisorEventNotice)
+
+        let prompt = await sut.consumeQueuedSupervisorMessage(
+            taskID: taskID, roleID: "pm", stepID: stepID
+        )
+
+        XCTAssertEqual(
+            prompt,
+            MessageSourceContext.supervisorMessagePrefix + "посмотри парсер" + "\n\n" + notice,
+            "runs joined by a blank line — the only separation a mixed batch gets")
+
+        let convo = sut.activeTask?.runs.last?.steps.first?.llmConversation ?? []
+        XCTAssertEqual(convo.count, 3, "prior turn + one per run")
+        XCTAssertEqual(convo[1].sourceContext, .supervisorMessage)
+        XCTAssertEqual(convo[1].sourceRole, .supervisor)
+        XCTAssertEqual(convo[2].sourceContext, .autovisorEvent)
+        XCTAssertNil(convo[2].sourceRole)
+        XCTAssertLessThan(convo[1].createdAt, convo[2].createdAt,
+                          "MonotonicClock keeps the feed's sort in queue order")
+    }
+
+    /// Runs are CONSECUTIVE, not partitioned by kind: reordering a Supervisor's two sentences
+    /// around a notice that arrived between them would rewrite what the human said.
+    ///
+    /// RED: group by kind instead of by run → two turns appear instead of three and the
+    /// second sentence jumps ahead of the notice.
+    func testConsume_interleavedBatch_keepsThreeRuns_neverRegrouped() async {
+        let (taskID, stepID) = await createTaskWithRunningStep()
+        _ = queue(taskID: taskID, text: "first", targetRoleID: "pm")
+        _ = queue(taskID: taskID, text: eventNoticeText(), targetRoleID: "pm",
+                  kind: .autovisorEventNotice)
+        _ = queue(taskID: taskID, text: "second", targetRoleID: "pm")
+
+        _ = await sut.consumeQueuedSupervisorMessage(taskID: taskID, roleID: "pm", stepID: stepID)
+
+        let convo = sut.activeTask?.runs.last?.steps.first?.llmConversation ?? []
+        XCTAssertEqual(convo.count, 4, "prior turn + three runs")
+        XCTAssertEqual(convo[1].displayContent, "first")
+        XCTAssertEqual(convo[2].sourceContext, .autovisorEvent)
+        XCTAssertEqual(convo[3].displayContent, "second")
+    }
+
+    /// Two notices drained together are ONE run, so they share a turn — the same coalescing
+    /// two Supervisor messages have always had.
+    func testConsume_twoEventNotices_shareOneTurn() async {
+        let (taskID, stepID) = await createTaskWithRunningStep()
+        let first = eventNoticeText(taskID: 1, title: "A")
+        let second = eventNoticeText(taskID: 2, title: "B")
+        _ = queue(taskID: taskID, text: first, targetRoleID: "pm", kind: .autovisorEventNotice)
+        _ = queue(taskID: taskID, text: second, targetRoleID: "pm", kind: .autovisorEventNotice)
+
+        let prompt = await sut.consumeQueuedSupervisorMessage(
+            taskID: taskID, roleID: "pm", stepID: stepID
+        )
+
+        XCTAssertEqual(prompt, first + "\n" + second, "within a run the join stays \"\\n\"")
+        let convo = sut.activeTask?.runs.last?.steps.first?.llmConversation ?? []
+        XCTAssertEqual(convo.count, 2)
+        XCTAssertEqual(convo.last?.sourceContext, .autovisorEvent)
+    }
+
+    /// Redelivery is resolved per run: the already-seen speech reaches the model again but
+    /// draws no second bubble, while the fresh notice still appears.
+    func testConsume_redeliveredSpeechPlusFreshNotice_persistsOnlyTheNotice() async {
+        let (taskID, stepID) = await createTaskWithRunningStep()
+        let notice = eventNoticeText()
+        _ = queue(taskID: taskID, text: "seen once", targetRoleID: "pm", isRedelivery: true)
+        _ = queue(taskID: taskID, text: notice, targetRoleID: "pm", kind: .autovisorEventNotice)
+
+        let prompt = await sut.consumeQueuedSupervisorMessage(
+            taskID: taskID, roleID: "pm", stepID: stepID
+        )
+
+        XCTAssertEqual(
+            prompt,
+            MessageSourceContext.supervisorMessagePrefix + "seen once" + "\n\n" + notice,
+            "the model gets both — it never saw the redelivery on THIS wire")
+        let convo = sut.activeTask?.runs.last?.steps.first?.llmConversation ?? []
+        XCTAssertEqual(convo.count, 2, "prior turn + the notice only")
+        XCTAssertEqual(convo.last?.sourceContext, .autovisorEvent)
+    }
+
+    /// An all-redelivery batch still returns the wire prompt and persists nothing — the
+    /// generalization of the old `freshBodies.isEmpty` early return, now across runs.
+    func testConsume_allRedelivery_acrossBothKinds_persistsNothing() async {
+        let (taskID, stepID) = await createTaskWithRunningStep()
+        _ = queue(taskID: taskID, text: "seen", targetRoleID: "pm", isRedelivery: true)
+        _ = queue(taskID: taskID, text: eventNoticeText(), targetRoleID: "pm",
+                  kind: .autovisorEventNotice, isRedelivery: true)
+
+        let prompt = await sut.consumeQueuedSupervisorMessage(
+            taskID: taskID, roleID: "pm", stepID: stepID
+        )
+
+        XCTAssertNotNil(prompt, "delivery still happens")
+        let convo = sut.activeTask?.runs.last?.steps.first?.llmConversation ?? []
+        XCTAssertEqual(convo.count, 1, "prior turn only — nothing new to show")
+        XCTAssertFalse(formState.hasQueuedMessage(for: taskID), "queue drained either way")
+    }
+
+    /// Persistence failure must return the WHOLE mixed batch to the queue head — a partial
+    /// requeue would lose the human's message while keeping the notice, or the reverse.
+    func testConsume_mixedBatch_persistFailure_requeuesEverything() async {
+        let (taskID, stepID) = await createTaskWithRunningStep()
+        _ = queue(taskID: taskID, text: "посмотри парсер", targetRoleID: "pm")
+        _ = queue(taskID: taskID, text: eventNoticeText(), targetRoleID: "pm",
+                  kind: .autovisorEventNotice)
+
+        let prompt = await sut.consumeQueuedSupervisorMessage(
+            taskID: taskID, roleID: "pm", stepID: "no-such-step"
+        )
+
+        XCTAssertNil(prompt)
+        let requeued = formState.queuedMessages(for: taskID)
+        XCTAssertEqual(requeued.count, 2, "both entries kept")
+        XCTAssertEqual(requeued.map(\.kind), [.supervisorSpeech, .autovisorEventNotice],
+                       "and in their original FIFO order")
+        XCTAssertNotNil(sut.lastErrorMessage)
+    }
+
+    // MARK: - composeQueuedDelivery (pure)
+
+    /// The regression pin for the whole grouping change: a single-kind batch — every human
+    /// path — must compose byte-identically to what it always did.
+    func testComposeQueuedDelivery_allSpeech_isByteIdenticalToTheOldShape() {
+        let delivery = NTMSOrchestrator.composeQueuedDelivery([
+            .init(kind: .supervisorSpeech, body: "one", isRedelivery: false),
+            .init(kind: .supervisorSpeech, body: "two", isRedelivery: false),
+        ])
+        XCTAssertEqual(delivery.wirePrompt,
+                       MessageSourceContext.supervisorMessagePrefix + "one\ntwo")
+        XCTAssertEqual(delivery.displayTurns.count, 1)
+        XCTAssertEqual(delivery.displayTurns.first?.content,
+                       MessageSourceContext.supervisorMessagePrefix + "one\ntwo")
+        XCTAssertEqual(delivery.displayTurns.first?.sourceContext, .supervisorMessage)
+        XCTAssertEqual(delivery.displayTurns.first?.sourceRole, .supervisor)
+    }
+
+    /// Degenerate input. Production guards `!popped.isEmpty` upstream, so this pins the shape
+    /// rather than a reachable path: no runs, no turns, nothing to persist.
+    func testComposeQueuedDelivery_empty_isEmpty() {
+        let delivery = NTMSOrchestrator.composeQueuedDelivery([])
+        XCTAssertEqual(delivery.wirePrompt, "")
+        XCTAssertTrue(delivery.displayTurns.isEmpty)
+    }
+
+    /// A run that is entirely redelivery contributes to the wire but not to the feed, and
+    /// must not shift the runs around it.
+    func testComposeQueuedDelivery_redeliveredRunBetweenFreshOnes_keepsWireAndDropsOnlyItsTurn() {
+        let delivery = NTMSOrchestrator.composeQueuedDelivery([
+            .init(kind: .autovisorEventNotice, body: "notice A", isRedelivery: false),
+            .init(kind: .supervisorSpeech, body: "seen", isRedelivery: true),
+            .init(kind: .autovisorEventNotice, body: "notice B", isRedelivery: false),
+        ])
+        XCTAssertEqual(
+            delivery.wirePrompt,
+            "notice A\n\n" + MessageSourceContext.supervisorMessagePrefix + "seen" + "\n\nnotice B")
+        XCTAssertEqual(delivery.displayTurns.map(\.content), ["notice A", "notice B"])
+        XCTAssertEqual(delivery.displayTurns.map(\.sourceContext), [.autovisorEvent, .autovisorEvent])
+    }
+
+    /// Partially-redelivered run: the wire carries both bodies, the feed only the fresh one.
+    func testComposeQueuedDelivery_partiallyRedeliveredRun_splitsWireFromDisplay() {
+        let delivery = NTMSOrchestrator.composeQueuedDelivery([
+            .init(kind: .supervisorSpeech, body: "seen", isRedelivery: true),
+            .init(kind: .supervisorSpeech, body: "new", isRedelivery: false),
+        ])
+        XCTAssertEqual(delivery.wirePrompt,
+                       MessageSourceContext.supervisorMessagePrefix + "seen\nnew")
+        XCTAssertEqual(delivery.displayTurns.first?.content,
+                       MessageSourceContext.supervisorMessagePrefix + "new")
     }
 }

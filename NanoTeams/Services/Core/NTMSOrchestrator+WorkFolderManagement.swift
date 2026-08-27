@@ -81,8 +81,8 @@ extension NTMSOrchestrator {
             // recovered values. The team therefore resolves off the raw snapshot, whose
             // teams `openOrCreateWorkFolder` has already populated.
             if var activeTask = snapshot.activeTask {
-                let teamSettings = TeamResolution.teamSettings(for: activeTask, in: snapshot.projection)
-                if StatusRecoveryService.recoverStaleStatuses(in: &activeTask, teamSettings: teamSettings) {
+                let team = TeamResolution.team(for: activeTask, in: snapshot.projection)
+                if StatusRecoveryService.recoverStaleStatuses(in: &activeTask, team: team) {
                     snapshot.activeTask = activeTask
                     // NON-FATAL, and the `try` that used to be here was the whole defect: this
                     // persists a COSMETIC repair (a step left `.running` by a kill becomes
@@ -292,8 +292,8 @@ extension NTMSOrchestrator {
                 // probe and the mutation — a second resolve could disagree if the
                 // snapshot moved across the await, and the two passes must decide
                 // identically or `persisted` would report on a different outcome.
-                let teamSettings = snapshot.map { TeamResolution.teamSettings(for: probe, in: $0.projection) } ?? nil
-                guard StatusRecoveryService.recoverStaleStatuses(in: &probe, teamSettings: teamSettings) else {
+                let team = snapshot.map { TeamResolution.team(for: probe, in: $0.projection) } ?? nil
+                guard StatusRecoveryService.recoverStaleStatuses(in: &probe, team: team) else {
                     // Nothing to recover, but this row may be here only for the
                     // `hasPendingSupervisorInput` backfill — converge the index so the
                     // widened filter above does not re-select it on every open.
@@ -311,7 +311,7 @@ extension NTMSOrchestrator {
                     continue
                 }
                 let persisted = await mutateTask(taskID: taskID) {
-                    _ = StatusRecoveryService.recoverStaleStatuses(in: &$0, teamSettings: teamSettings)
+                    _ = StatusRecoveryService.recoverStaleStatuses(in: &$0, team: team)
                 }
                 if !persisted {
                     failedIDs.append(taskID)
@@ -607,24 +607,32 @@ extension NTMSOrchestrator {
 
     // MARK: - Agent Instruction Files
 
-    /// Skip re-scanning when the last scan used identical inputs and finished
-    /// this recently — collapses back-to-back run starts (a recurrence tick
-    /// firing several tasks, Autovisor passes) into one walk. Any add/remove/
-    /// restore edit changes the scan key, bypassing the memo automatically.
-    private static let agentInstructionsScanTTL: TimeInterval = 5
+    /// How long a DISCOVERY walk stays good — "which instruction files exist in
+    /// this folder", not what they say.
+    ///
+    /// Sixty seconds, and the number is a statement about the CALLER's regime. The
+    /// value was 5 s until 2026-08-27, chosen to collapse a recurrence tick that
+    /// fires several tasks at once into one walk — true of that regime, and silently
+    /// false of the one this actually runs in. A person composing a message takes
+    /// longer than five seconds, so on the interactive path the memo could never hit
+    /// and every single Send paid the walk (CLAUDE.md #82).
+    ///
+    /// Discovery is the only thing behind it: CONTENT is re-read on every call, so
+    /// editing a `CLAUDE.md` still reaches the very next prompt. What the window
+    /// delays is a NEWLY CREATED instruction file — and any Settings edit or folder
+    /// re-open bypasses it, because those change the scan key.
+    private static let agentInstructionsDiscoveryTTL: TimeInterval = 60
 
-    /// Rescan the open work folder for agent instruction files (auto-discovered
-    /// CLAUDE.md/AGENTS.md/… + user-attached extras − exclusions) and refresh
-    /// the in-memory `agentInstructions` snapshot. The walk runs off the main
-    /// actor. Called on work-folder open, at each top-level `startRun`, on the
-    /// Work Folder settings tab appear, before prompt-preview renders, and after
-    /// instruction add/remove/restore. In default storage / no folder there is
-    /// nothing to scan → snapshot cleared to `nil`.
+    /// Bring the in-memory `agentInstructions` snapshot up to date: re-read what the
+    /// known instruction files say, and re-walk the folder for new ones when the
+    /// discovery window has lapsed or the user's overrides changed. Both run off the
+    /// main actor. In default storage / no folder there is nothing to scan →
+    /// snapshot cleared to `nil`.
     ///
     /// Returns whether the published snapshot is AUTHORITATIVE for the inputs this call read —
-    /// `false` only when a newer refresh superseded this one mid-walk. Callers that merely want
+    /// `false` only when a newer refresh superseded this one mid-flight. Callers that merely want
     /// the snapshot fresh ignore it; the one caller that draws a CONCLUSION from the absence of
-    /// a path (`setAgentInstructionInjected`) must not treat a superseded scan as evidence, or
+    /// a path (`setAgentInstructionInjected`) must not treat a superseded pass as evidence, or
     /// it rolls back a setting that was persisted correctly and blames a file that is fine.
     @discardableResult
     func refreshAgentInstructions() async -> Bool {
@@ -639,24 +647,39 @@ extension NTMSOrchestrator {
         let injected = workFolder?.settings.agentInstructionInjectedPaths ?? []
         let key = AgentInstructionsScanKey(
             root: root, extraPaths: extras, excludedPaths: excluded, injectedPaths: injected)
-        if key == agentInstructionsLastScanKey,
-           let lastScanAt = agentInstructionsLastScanAt,
-           Date().timeIntervalSince(lastScanAt) < Self.agentInstructionsScanTTL {
-            return true   // memo hit: the snapshot already reflects THESE inputs
-        }
+        // A previous snapshot is what `reread` refreshes; with none there is nothing
+        // to re-read and the walk is the only way to answer at all.
+        let previous = agentInstructions
+        let discoveryLapsed = agentInstructionsLastScanAt.map {
+            Date().timeIntervalSince($0) >= Self.agentInstructionsDiscoveryTTL
+        } ?? true
+        let needsWalk = previous == nil || key != agentInstructionsLastScanKey || discoveryLapsed
 
         agentInstructionsScanGeneration += 1
         let expected = agentInstructionsScanGeneration
-        let scanned = await Task.detached(priority: .utility) {
-            AgentInstructionsScanner.scan(
+        // `.userInitiated`, not `.utility`: every caller AWAITS this, and awaiting from
+        // the MainActor does not escalate a detached task's priority — so a throttled
+        // QoS here is time the user spends waiting, with no thread of theirs blocked to
+        // show for it. `.utility` would be right for a scan nobody is waiting on; there
+        // is no such caller. Same reasoning as `mutateTask`'s detached write.
+        let scanned = await Task.detached(priority: .userInitiated) {
+            guard needsWalk else {
+                return AgentInstructionsScanner.reread(previous ?? .empty, workFolderRoot: root)
+            }
+            return AgentInstructionsScanner.scan(
                 workFolderRoot: root, manualPaths: extras,
                 excludedPaths: excluded, injectedPaths: injected)
         }.value
         // CLAUDE.md #38: a newer refresh started during the await (or the folder
         // switched/closed, which also bumps the generation) supersedes this scan.
         guard agentInstructionsScanGeneration == expected else { return false }
-        agentInstructionsLastScanKey = key
-        agentInstructionsLastScanAt = Date()
+        // Stamped only by a WALK: a content re-read says nothing about whether new
+        // files appeared, so letting it renew the window would keep discovery from
+        // ever running again on a folder someone sends to every minute.
+        if needsWalk {
+            agentInstructionsLastScanKey = key
+            agentInstructionsLastScanAt = Date()
+        }
         // Equality guard: @Observable fires on every write regardless of value;
         // skipping no-op writes keeps open preview sheets / Settings from
         // re-rendering on every run start (CLAUDE.md View Conventions #9/#11).
@@ -666,64 +689,113 @@ extension NTMSOrchestrator {
 
     // MARK: - Agent Skills
 
-    /// Same rationale as `agentInstructionsScanTTL`: collapse back-to-back run
-    /// starts into one scan. Bypassed automatically whenever the attached-id set
-    /// changes, because those ids are part of the memo key.
-    private static let roleSkillsScanTTL: TimeInterval = 5
-
-    /// Rescan for agent skills and re-read the bodies of the ones roles have
-    /// attached, refreshing the in-memory `roleSkills` snapshot. Scan and reads
-    /// both run off the main actor.
+    /// Bring the in-memory `roleSkills` snapshot up to date: take the cached
+    /// CATALOGUE and re-read the BODIES of every skill some role has attached.
     ///
-    /// **Deliberate divergence from `refreshAgentInstructions`: no
-    /// `hasRealWorkFolder` bail.** Instruction files exist only inside a work
-    /// folder, so clearing the snapshot there is right. Skills do not —
-    /// `~/.claude/skills`, `~/.codex/prompts` and enabled plugin skills are
-    /// available with no folder open at all, and `AgentSkillsScanner.scan`
-    /// takes an OPTIONAL root precisely for that case (the composer's `/`
-    /// picker already passes `nil` in default storage). Copying the bail would
-    /// silently drop every attached global skill in the mode the app boots into.
+    /// Cheap by construction — a JSON decode plus one read per attached id, and on a
+    /// default install the attached set is empty, so this touches no file at all.
+    /// That matters because `launchRun` awaits it: until 2026-08-27 this method
+    /// walked every skill root on the machine (project, `~/.claude/skills`,
+    /// `~/.codex/prompts`, every enabled plugin, 8 KB probed per file found) before
+    /// each first prompt, to build a catalogue nothing on that path reads. See
+    /// `AgentSkillsCatalogueStore` for where discovery lives now.
+    ///
+    /// **Deliberate divergence from `refreshAgentInstructionContents`: no
+    /// `hasRealWorkFolder` bail.** Instruction files exist only inside a work folder,
+    /// so clearing the snapshot there is right. Skills do not — `~/.claude/skills`,
+    /// `~/.codex/prompts` and enabled plugin skills are available with no folder open
+    /// at all, and the scanner takes an OPTIONAL root precisely for that case.
+    /// Copying the bail would silently drop every attached global skill in the mode
+    /// the app boots into.
     func refreshAgentSkills() async {
+        await applySkillsSnapshot(rescanCatalogue: false)
+    }
+
+    /// Re-walk every skill root and republish. The user's own "I just installed a
+    /// skill" verb, wired to the Refresh control beside both catalogue lists.
+    ///
+    /// The only caller-facing way to pay for discovery, and that is the point: a
+    /// timer cannot know when a skill is installed, and staleness here is visible —
+    /// the missing skill is absent from a list the user is looking at — so the honest
+    /// control sits next to the list rather than behind a TTL.
+    func rescanAgentSkillCatalogue() async {
+        await applySkillsSnapshot(rescanCatalogue: true)
+    }
+
+    /// Shared body of both verbs: resolve a catalogue, read the attached bodies
+    /// against it, publish.
+    ///
+    /// The catalogue is resolved a second time when an attached id does not resolve
+    /// against the first one. Without it, a skill installed since the cache was
+    /// taken and attached in Settings would read as "unresolved" forever — the cache
+    /// would be wrong and nothing would ever ask it to look again.
+    ///
+    /// That retry is bounded to ONCE per attachment set (`roleSkillsRescanAttemptedFor`),
+    /// and the bound is the load-bearing half: an id that dangles because its file
+    /// was deleted is unresolvable, so an unbounded retry would walk every skill
+    /// root on every run start — the exact cost this cache exists to remove, and
+    /// invisible, because the outcome would look identical either way.
+    private func applySkillsSnapshot(rescanCatalogue: Bool) async {
         let root = hasRealWorkFolder ? workFolderURL : nil
         // Union of every role's attachments across all teams: these are the only
         // ids whose bodies are worth reading. A typical install discovers 130+
         // skills totalling half a megabyte — reading them all would be waste.
         let attachedIDs = attachedSkillIDsAcrossTeams()
-        let key = RoleSkillsScanKey(root: root, attachedIDs: attachedIDs)
-        if key == roleSkillsLastScanKey,
-           let lastScanAt = roleSkillsLastScanAt,
-           Date().timeIntervalSince(lastScanAt) < Self.roleSkillsScanTTL {
-            return
-        }
 
         roleSkillsScanGeneration += 1
         let expected = roleSkillsScanGeneration
-        let scanned = await Task.detached(priority: .utility) {
-            let snapshot = AgentSkillsScanner.scan(projectRoot: root)
-            var bodies: [String: String] = [:]
-            var unresolved: Set<String> = []
-            let byID = Dictionary(snapshot.items.map { ($0.id, $0) },
-                                  uniquingKeysWith: { first, _ in first })
-            for id in attachedIDs {
-                guard let item = byID[id],
-                      let body = AgentSkillsScanner.readFullContent(at: item.fileURL)
-                else {
-                    // Deleted, moved, renamed, non-UTF-8 or emptied since it was
-                    // attached. Recorded, never silently dropped.
-                    unresolved.insert(id)
-                    continue
-                }
-                bodies[id] = body
+        let store = skillsCatalogueStore
+        // Asked BEFORE the await so a concurrent refresh cannot see a half-updated
+        // answer, and recorded unconditionally: whether the retry runs or is
+        // refused, this set has now had its one look.
+        let mayRetry = !rescanCatalogue && roleSkillsRescanAttemptedFor != attachedIDs
+        if mayRetry { roleSkillsRescanAttemptedFor = attachedIDs }
+        if rescanCatalogue { roleSkillsRescanAttemptedFor = nil }
+        // `.userInitiated`, not `.utility`: every caller AWAITS this, and awaiting
+        // from the MainActor does not escalate a detached task's priority — so a
+        // throttled QoS here is time the user spends waiting, with no thread of
+        // theirs blocked to show for it (CLAUDE.md #136).
+        let scanned = await Task.detached(priority: .userInitiated) {
+            var items = rescanCatalogue
+                ? store.rescan(projectRoot: root).items
+                : store.loadOrScan(projectRoot: root).items
+            var resolved = Self.readSkillBodies(attachedIDs: attachedIDs, catalogue: items)
+            if mayRetry, !resolved.unresolved.isEmpty {
+                items = store.rescan(projectRoot: root).items
+                resolved = Self.readSkillBodies(attachedIDs: attachedIDs, catalogue: items)
             }
-            return RoleSkillsSnapshot(items: snapshot.items, bodies: bodies,
-                                      unresolvedIDs: unresolved)
+            return RoleSkillsSnapshot(items: items, bodies: resolved.bodies,
+                                      unresolvedIDs: resolved.unresolved)
         }.value
         // CLAUDE.md #38: a newer refresh started during the await supersedes this one.
         guard roleSkillsScanGeneration == expected else { return }
-        roleSkillsLastScanKey = key
-        roleSkillsLastScanAt = Date()
-        // Equality guard — @Observable fires on every write (see above).
+        // Equality guard: @Observable fires on every write regardless of value;
+        // skipping no-op writes keeps open preview sheets / Settings from
+        // re-rendering on every run start (CLAUDE.md View Conventions #9/#11).
         if roleSkills != scanned { roleSkills = scanned }
+    }
+
+    /// Reads the body of each attached id against a catalogue. An id the catalogue
+    /// does not carry, or whose file has been deleted, moved, emptied or made
+    /// non-UTF-8, lands in `unresolved` — recorded, never silently dropped.
+    private nonisolated static func readSkillBodies(
+        attachedIDs: [String], catalogue: [AgentSkillsSnapshot.Item]
+    ) -> (bodies: [String: String], unresolved: Set<String>) {
+        guard !attachedIDs.isEmpty else { return ([:], []) }
+        let byID = Dictionary(catalogue.map { ($0.id, $0) },
+                              uniquingKeysWith: { first, _ in first })
+        var bodies: [String: String] = [:]
+        var unresolved: Set<String> = []
+        for id in attachedIDs {
+            guard let item = byID[id],
+                  let body = AgentSkillsScanner.readFullContent(at: item.fileURL)
+            else {
+                unresolved.insert(id)
+                continue
+            }
+            bodies[id] = body
+        }
+        return (bodies, unresolved)
     }
 
     /// Every skill id attached to any role of any team, de-duplicated and sorted
@@ -1193,16 +1265,3 @@ nonisolated struct AgentInstructionsScanKey: Equatable {
     let injectedPaths: [String]
 }
 
-// MARK: - Role Skills Scan Key
-
-/// Inputs of one `refreshAgentSkills` pass — the memo key for its short-TTL skip.
-///
-/// `root` is OPTIONAL: `nil` means default storage, where the scan still runs
-/// (global skills and plugins have nothing to do with the work folder). The
-/// attached ids are part of the key because they decide which bodies get read —
-/// keyed on the root alone, attaching a skill and immediately opening the prompt
-/// preview within the TTL would render the previous snapshot.
-nonisolated struct RoleSkillsScanKey: Equatable {
-    let root: URL?
-    let attachedIDs: [String]
-}

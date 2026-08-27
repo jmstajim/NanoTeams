@@ -322,12 +322,25 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
 
     var streamLiveTextStub: [String: String] = [:]
     func streamLiveText(stepID: String, taskID: Int) -> String? { streamLiveTextStub[stepID] }
+    /// Keyed by step id like `streamLiveTextStub`, so a test can express "a request is in
+    /// flight and no token has arrived" for one step without affecting its siblings.
+    var streamProcessingStatusStub: [String: PromptProcessingStatus] = [:]
+    func streamProcessingStatus(stepID: String, taskID: Int) -> PromptProcessingStatus? {
+        streamProcessingStatusStub[stepID]
+    }
 
     var stopEngineCalls: [Int] = []
     func stopEngineForTask(_ taskID: Int) { stopEngineCalls.append(taskID) }
 
     var pauseRunCalls: [Int] = []
-    func pauseRun(taskID: Int) async { pauseRunCalls.append(taskID) }
+    /// What `pauseRun` reports. `true` by default — the overwhelmingly common case — but the
+    /// honest-result fix (2026-08-25) means callers now BRANCH on it, so the failure arm needs
+    /// a way to be reached.
+    var pauseRunResult = true
+    func pauseRun(taskID: Int) async -> Bool {
+        pauseRunCalls.append(taskID)
+        return pauseRunResult
+    }
 
     var resumeRunCalls: [Int] = []
     func resumeRun(taskID: Int) async { resumeRunCalls.append(taskID) }
@@ -2578,14 +2591,13 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         XCTAssertTrue(thinkingFed.contains("b.swift"))
     }
 
-    /// qwen-style reasoning-channel envelope (`<|call|>` inside
-    /// `reasoning.delta`, NOT content): the call resolves via the
-    /// post-stream thinking scan, the tool-call flag is NOT set (content
-    /// channel never saw a marker — documented asymmetry), and the UX is
-    /// still covered: the envelope streamed through the NORMAL thinking
-    /// path, so the Thinking row was live the whole time (no content →
-    /// `isThinkingStreaming` true without the flag).
-    func testReasoningChannelEnvelope_resolvesCall_withoutToolCallFlag() async throws {
+    /// qwen-style reasoning-channel envelope (`<|call|>` inside `reasoning.delta`, NOT
+    /// content): nothing is dispatched — a call written in the reasoning channel is the
+    /// model rehearsing, not acting (`ReasoningChannelToolCallIsolationTests` owns the
+    /// class). The tool-call flag is NOT set either, because it is a content-channel /
+    /// `toolCallDeltas` signal. The envelope streamed through the NORMAL thinking path and
+    /// is committed there verbatim, so the user sees exactly what the model wrote.
+    func testReasoningChannelEnvelope_isNotExecuted_andStaysRawInThinking() async throws {
         mockClient.deltas = [
             StreamEvent(thinkingDelta: "I should ask the supervisor. "),
             StreamEvent(thinkingDelta: "<|call|>{\"name\":\"ask_supervisor\",\"arguments\":{\"question\":\"Hi\"}}<|end|>"),
@@ -2599,12 +2611,16 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         )
 
         XCTAssertFalse(result.sawHarmonyMarker, "Marker lived in the reasoning channel only")
-        XCTAssertEqual(result.resolvedToolCalls.count, 1,
-                       "Reasoning-channel fallback must still extract the call")
+        XCTAssertTrue(result.resolvedToolCalls.isEmpty,
+                      "A reasoning-channel envelope must not become an executed call")
         XCTAssertTrue(mockDelegate.markStreamingToolCallCalls.isEmpty,
-                      "Flag is a content-channel/toolCallDeltas signal — reasoning-channel envelopes are already visible via the normal thinking stream")
+                      "Flag is a content-channel/toolCallDeltas signal — nothing on the content channel here")
         XCTAssertTrue(thinkingFed.contains("<|call|>"),
                       "Envelope streamed through the regular thinking path — the Thinking row was the live indicator")
+        XCTAssertEqual(
+            mockDelegate.commitStreamingCalls.first?.3,
+            "I should ask the supervisor. <|call|>{\"name\":\"ask_supervisor\",\"arguments\":{\"question\":\"Hi\"}}<|end|>",
+            "Committed thinking is the raw reasoning channel — sentinels included")
     }
 
     /// Cancellation mid-envelope: the partial commit must carry the frozen

@@ -24,71 +24,87 @@ struct RoleContextBanner: View {
 
     // MARK: - Derived State
 
-    private var roleDef: TeamRoleDefinition? {
-        roleDefinitions.first { $0.id == roleID }
-    }
-
-    private var roleStatus: RoleExecutionStatus {
+    /// The role's execution status, with the `systemRoleID` bridge for the UUID-mismatch
+    /// case (a run whose `roleStatuses` are keyed by a previous generation of role ids).
+    ///
+    /// Iterates the ROSTER and indexes into `roleStatuses`, rather than iterating
+    /// `roleStatuses` and scanning the roster for each key. Two things change:
+    ///
+    ///  - **Cost**: Θ(roles) with O(1) dictionary hits, not Θ(roles²).
+    ///  - **Determinism, which is a fix rather than a speedup.** `Dictionary` iteration
+    ///    order is not a function of its contents, so the old loop returned whichever
+    ///    match it happened to reach first. With two roles sharing a `systemRoleID` —
+    ///    reachable, since ids are name-derived, and the same hazard `RoleRosterIndex`
+    ///    and `Run.stepsByRoleBaseID` both call out — the banner could show a different
+    ///    status on different launches from identical data. Roster order now decides.
+    ///
+    /// Identical to the old answer whenever at most one role carries the `systemRoleID`.
+    nonisolated static func resolveStatus(
+        roleID: String,
+        run: Run?,
+        roleDefinitions: [TeamRoleDefinition],
+        roleDef: TeamRoleDefinition?
+    ) -> RoleExecutionStatus {
         if let status = run?.roleStatuses[roleID] { return status }
-        // Fallback: find status by systemRoleID bridge (handles UUID mismatch)
-        guard let def = roleDef, let sysID = def.systemRoleID else { return .idle }
-        for (key, status) in run?.roleStatuses ?? [:] {
-            if roleDefinitions.first(where: { $0.id == key })?.systemRoleID == sysID {
-                return status
-            }
+        guard let sysID = roleDef?.systemRoleID, let statuses = run?.roleStatuses else {
+            return .idle
+        }
+        for candidate in roleDefinitions where candidate.systemRoleID == sysID {
+            if let status = statuses[candidate.id] { return status }
         }
         return .idle
     }
 
-    private var selectedStep: StepExecution? {
+    /// The role's most recent step, with the same `systemRoleID` bridge.
+    nonisolated static func resolveStep(
+        roleID: String,
+        run: Run?,
+        roleDef: TeamRoleDefinition?
+    ) -> StepExecution? {
         if let step = run?.steps.last(where: { $0.effectiveRoleID == roleID }) {
             return step
         }
-        // Fallback: match by role.baseID via systemRoleID bridge
-        guard let def = roleDef, let sysID = def.systemRoleID else { return nil }
+        guard let sysID = roleDef?.systemRoleID else { return nil }
         return run?.steps.last(where: { $0.role.baseID == sysID })
     }
 
-    private var displayStatusName: String {
-        roleStatus.displayName(isInMeeting: isInMeeting, isPaused: isPaused)
-    }
-
-    private var displayStatusColor: Color {
-        roleStatus.displayColor(isInMeeting: isInMeeting, isPaused: isPaused)
-    }
-
-    private var consultations: [TeammateConsultation] {
-        selectedStep?.consultations ?? []
-    }
-
-    private var scratchpad: String? {
-        selectedStep?.scratchpad
-    }
-
-    private var resolvedRole: Role {
-        if let step = selectedStep { return step.role }
-        if let def = roleDef { return Role.fromDefinition(def) }
-        return .custom(id: roleID)
-    }
-
-    private var hasSecondaryContent: Bool {
-        let hasArtifacts = selectedStep.map { !$0.artifacts.isEmpty } ?? false
-        let hasConsultationCount = !consultations.isEmpty
-        let hasScratchpad = scratchpad.map { !$0.isEmpty } ?? false
-        return hasArtifacts || hasConsultationCount || hasScratchpad
+    nonisolated static func hasSecondaryContent(
+        artifacts: [Artifact],
+        consultations: [TeammateConsultation],
+        scratchpad: String?
+    ) -> Bool {
+        !artifacts.isEmpty || !consultations.isEmpty || (scratchpad.map { !$0.isEmpty } ?? false)
     }
 
     // MARK: - Body
 
     var body: some View {
+        // Derived ONCE per body pass and threaded down. These were computed properties,
+        // which SwiftUI re-evaluates at every reference: `selectedStep` ran 8-10 times a
+        // pass (each an O(steps) reverse scan returning a whole `StepExecution` copy) and
+        // `roleStatus` four (each capable of the Θ(roles²) fallback). `consultations` was
+        // read twice on adjacent lines alone. The `let`s are only half the fix — the
+        // computed properties are DELETED, because a property is what a sub-view reaches
+        // back for.
+        let roleDef = roleDefinitions.first { $0.id == roleID }
+        let status = Self.resolveStatus(
+            roleID: roleID, run: run, roleDefinitions: roleDefinitions, roleDef: roleDef)
+        let step = Self.resolveStep(roleID: roleID, run: run, roleDef: roleDef)
+        let roleName = roleDefinitions.roleName(for: roleID)
+        let consultations = step?.consultations ?? []
+        let scratchpad = step?.scratchpad
+        let artifacts = step?.artifacts ?? []
+
         VStack(alignment: .leading, spacing: 0) {
-            primaryRow
+            primaryRow(roleDef: roleDef, roleName: roleName, status: status, step: step)
                 .padding(.horizontal, Spacing.standard)
                 .padding(.top, Spacing.s)
-                .padding(.bottom, hasSecondaryContent ? Spacing.xs : Spacing.s)
+                .padding(.bottom, Self.hasSecondaryContent(
+                    artifacts: artifacts, consultations: consultations, scratchpad: scratchpad)
+                    ? Spacing.xs : Spacing.s)
 
-            if let step = selectedStep, !step.artifacts.isEmpty {
-                RoleArtifactBadges(artifacts: step.artifacts)
+            if !artifacts.isEmpty {
+                RoleArtifactBadges(artifacts: artifacts)
                     .padding(.horizontal, Spacing.standard)
                     .padding(.bottom, Spacing.s)
             }
@@ -124,26 +140,30 @@ struct RoleContextBanner: View {
         }
     }
 
-    /// True when a Correct action makes sense: task paused and the role's step is paused too.
-    private var canCorrect: Bool {
-        isPaused && selectedStep?.status == .paused
-    }
-
     // MARK: - Primary Row
 
-    private var primaryRow: some View {
-        HStack(spacing: Spacing.s) {
+    private func primaryRow(
+        roleDef: TeamRoleDefinition?,
+        roleName: String,
+        status: RoleExecutionStatus,
+        step: StepExecution?
+    ) -> some View {
+        // True when a Correct action makes sense: task paused and the role's step too.
+        let canCorrect = isPaused && step?.status == .paused
+        let resolvedRole: Role = step?.role ?? roleDef.map(Role.fromDefinition) ?? .custom(id: roleID)
+
+        return HStack(spacing: Spacing.s) {
             ActivityFeedRoleAvatar(role: resolvedRole, roleDefinition: roleDef, size: 28)
 
             VStack(alignment: .leading, spacing: 1) {
-                Text(roleDefinitions.roleName(for: roleID))
+                Text(roleName)
                     .font(Typography.subheadlineSemibold)
                     .lineLimit(1)
 
                 RoleStatusPill(
                     roleDefinition: roleDef,
-                    statusName: displayStatusName,
-                    statusColor: displayStatusColor
+                    statusName: status.displayName(isInMeeting: isInMeeting, isPaused: isPaused),
+                    statusColor: status.displayColor(isInMeeting: isInMeeting, isPaused: isPaused)
                 )
             }
 
@@ -163,7 +183,7 @@ struct RoleContextBanner: View {
                     .accessibilityLabel("Correct role")
                 }
 
-                if !isReadOnly, onRestart != nil, roleStatus.canRestart {
+                if !isReadOnly, onRestart != nil, status.canRestart {
                     Button {
                         isShowingRestartSheet = true
                     } label: {
@@ -191,7 +211,7 @@ struct RoleContextBanner: View {
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(roleDefinitions.roleName(for: roleID)), \(roleStatus.displayName)")
+        .accessibilityLabel("\(roleName), \(status.displayName)")
     }
 }
 

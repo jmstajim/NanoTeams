@@ -12,24 +12,41 @@ private final class RefusalCounter: @unchecked Sendable {
     func bump() { lock.withLock { _count += 1 } }
 }
 
-/// Reports every file as existing but refuses to stat the named ones. `attributesOfItem`
-/// is overridable on `FileManager`; `replaceItemAt` is not (it lives in an extension).
-private final class AttributeRefusingFileManager: FileManager {
-    private let refusedNames: Set<String>
+/// Adds a PHANTOM entry to every directory listing — a file the walk is told exists and then
+/// cannot characterise.
+///
+/// It used to refuse `attributesOfItem(atPath:)` instead, and that seam is gone: the walk now
+/// reads mTime and size from the resource values `contentsOfDirectory(at:)` prefetched, because
+/// one `attributesOfItem` per file ran on EVERY `loadOrBuild` — cache hits included — to hand
+/// back two of the dictionary's values.
+///
+/// So the double moved to the seam production actually has (CLAUDE.md #126: a fixture must
+/// describe a shape production can create). A phantom URL is that shape: the directory read
+/// returns it, and every later question about it fails, which is what an entry deleted between
+/// the read and the visit looks like.
+private final class PhantomEntryFileManager: FileManager {
+    private let phantomName: String
     private let counter: RefusalCounter
 
-    init(refusing names: Set<String>, counter: RefusalCounter) {
-        self.refusedNames = names
+    init(phantom name: String, counter: RefusalCounter) {
+        self.phantomName = name
         self.counter = counter
         super.init()
     }
 
-    override func attributesOfItem(atPath path: String) throws -> [FileAttributeKey: Any] {
-        if refusedNames.contains((path as NSString).lastPathComponent) {
+    override func contentsOfDirectory(
+        at url: URL,
+        includingPropertiesForKeys keys: [URLResourceKey]?,
+        options mask: FileManager.DirectoryEnumerationOptions = []
+    ) throws -> [URL] {
+        var entries = try super.contentsOfDirectory(
+            at: url, includingPropertiesForKeys: keys, options: mask)
+        // One directory only — the root — so the phantom cannot be reported twice.
+        if entries.contains(where: { $0.lastPathComponent == "readable.txt" }) {
             counter.bump()
-            throw CocoaError(.fileReadNoPermission)
+            entries.append(url.appendingPathComponent(phantomName))
         }
-        return try super.attributesOfItem(atPath: path)
+        return entries
     }
 }
 
@@ -199,41 +216,48 @@ final class SearchIndexFailureCoverageTests: XCTestCase, @unchecked Sendable {
 
     // MARK: - Attribute-read failure during the walk
 
-    /// A file the walk can SEE but cannot stat is skipped entirely, and the reason is
-    /// written down in the code: storing a `.distantPast` mTime and size 0 instead would
-    /// silently poison the `IndexSignature`, so every later walk would believe the folder
-    /// changed and rebuild the whole index forever.
+    /// A file the walk is told exists but cannot characterise contributes NOTHING — not a
+    /// filename-token entry with a `.distantPast` mTime and size 0.
     ///
-    /// Needs an injected `FileManager`: the walk guards on `fileExists` first, and nothing
-    /// real is visible-but-unstattable (a dangling symlink fails the guard, since
-    /// `fileExists` follows links). `attributesOfItem` IS overridable, unlike
-    /// `replaceItemAt` — CLAUDE.md records that asymmetry.
+    /// The reason is the signature, not tidiness: `IndexSignature` is (fileCount, maxMTime,
+    /// totalSize), so a placeholder entry makes the count disagree with the next walk's forever
+    /// and the whole index rebuilds on every `loadOrBuild` for the life of the folder.
     ///
-    /// RED: remove the `return` from the catch → the file is indexed with a poisoned
-    /// signature and the skip assertion fails.
-    func testAttributeReadFailure_skipsTheFileAndWarns() async throws {
+    /// The phantom is the reachable shape for this: an entry that was in the directory read and
+    /// is not there when the walk asks about it — which is what a file deleted mid-walk looks
+    /// like. It is also the only shape a test can arrange, now that the attributes come from the
+    /// enumerator's prefetch rather than a `FileManager` call a double could refuse.
+    ///
+    /// RED: drop the `guard let attributes … else { continue }` and default the missing values →
+    /// `phantom.txt` appears in the roster and the count assertion fails.
+    func testPhantomEntry_contributesNothingToTheIndex() async throws {
         try Data("alpha beta".utf8).write(to: tempDir.appendingPathComponent("readable.txt"))
-        try Data("gamma delta".utf8).write(to: tempDir.appendingPathComponent("unstattable.txt"))
 
         let counter = RefusalCounter()
         let service = SearchIndexService(
             workFolderRoot: tempDir, internalDir: internalDir,
-            fileManager: AttributeRefusingFileManager(
-                refusing: ["unstattable.txt"], counter: counter))
+            fileManager: PhantomEntryFileManager(phantom: "phantom.txt", counter: counter))
 
-        _ = await service.loadOrBuild(force: true)
+        let index = await service.loadOrBuild(force: true)
 
-        // The stattable file's vocabulary is present…
+        // The healthy file's vocabulary is present…
         let readable = await service.files(containing: ["alpha"])
         XCTAssertFalse(readable.isEmpty, "the healthy file must still be indexed")
 
-        // …and the unstattable one contributed nothing, rather than a zero-size entry.
-        let skipped = await service.files(containing: ["gamma"])
-        XCTAssertTrue(skipped.isEmpty,
-                      "a file whose attributes cannot be read must be skipped, not stored "
-                          + "with a distantPast mTime that poisons the signature: \(skipped)")
+        // …and the phantom contributed neither a roster entry nor its filename tokens.
+        XCTAssertFalse(index.files.contains { $0.path == "phantom.txt" },
+                       "an entry that cannot be characterised must not reach the roster: "
+                           + "\(index.files.map(\.path))")
+        let phantomTokens = await service.files(containing: ["phantom"])
+        XCTAssertTrue(phantomTokens.isEmpty, "not even its filename tokens may be indexed")
+        XCTAssertEqual(index.signature.fileCount, 1,
+                       "the signature must count only files the walk could actually read")
+        let warnings = await service.lastIndexWarnings
+        XCTAssertTrue(warnings.contains { $0.contains("phantom.txt") },
+                      "skipping is right, but a walk that quietly drops entries is "
+                          + "indistinguishable from a small tree — got: \(warnings)")
         XCTAssertGreaterThan(counter.count, 0,
-                             "arrange: the injected failure never fired, so this test proves "
+                             "arrange: the phantom was never injected, so this test proves "
                                  + "nothing")
     }
 

@@ -51,14 +51,14 @@ final class ExploratorySearchRuntimeIntegrationTests: XCTestCase {
 
     // MARK: - Plain search via runtime: parity with old behavior
 
-    func testPlainSearch_viaRuntime_returnsExpectedShape() throws {
+    func testPlainSearch_viaRuntime_returnsExpectedShape() async throws {
         try write("a.swift", content: "let target = 1\n")
 
         let call = StepToolCall(
             name: "search",
             argumentsJSON: #"{"query": "target"}"#
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertEqual(results.count, 1)
         let r = results[0]
         XCTAssertFalse(r.isError)
@@ -70,14 +70,14 @@ final class ExploratorySearchRuntimeIntegrationTests: XCTestCase {
 
     // MARK: - Broad search via runtime: signal makes it back
 
-    func testExploratorySearch_viaRuntime_emitsExploratorySearchSignal() throws {
+    func testExploratorySearch_viaRuntime_emitsExploratorySearchSignal() async throws {
         try write("a.swift", content: "anything\n")
 
         let call = StepToolCall(
             name: "search",
             argumentsJSON: #"{"query": "scroll", "exploratory": true}"#
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertEqual(results.count, 1)
         guard case .exploratorySearch(let payload) = results[0].signal else {
             XCTFail("Expected .exploratorySearch signal, got \(String(describing: results[0].signal))")
@@ -89,24 +89,24 @@ final class ExploratorySearchRuntimeIntegrationTests: XCTestCase {
 
     // MARK: - Aliases route to exploratory search too
 
-    func testGrepAlias_withExploratorySearch_emitsSignal() throws {
+    func testGrepAlias_withExploratorySearch_emitsSignal() async throws {
         let call = StepToolCall(
             name: "grep",
             argumentsJSON: #"{"query": "scroll", "exploratory": true}"#
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         guard case .exploratorySearch = results[0].signal else {
             XCTFail("grep alias must route to SearchTool and propagate exploratory_search.")
             return
         }
     }
 
-    func testFindAlias_withExploratorySearch_emitsSignal() throws {
+    func testFindAlias_withExploratorySearch_emitsSignal() async throws {
         let call = StepToolCall(
             name: "find",
             argumentsJSON: #"{"query": "scroll", "exploratory": true}"#
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         guard case .exploratorySearch = results[0].signal else {
             XCTFail("find alias must route to SearchTool and propagate exploratory_search.")
             return
@@ -115,12 +115,12 @@ final class ExploratorySearchRuntimeIntegrationTests: XCTestCase {
 
     // MARK: - Provider-prefix tool name: functions.search
 
-    func testFunctionsPrefix_withExploratorySearch_emitsSignal() throws {
+    func testFunctionsPrefix_withExploratorySearch_emitsSignal() async throws {
         let call = StepToolCall(
             name: "functions.search",
             argumentsJSON: #"{"query": "scroll", "exploratory": true}"#
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         guard case .exploratorySearch = results[0].signal else {
             XCTFail("functions.* prefix must be stripped before dispatch.")
             return
@@ -129,7 +129,7 @@ final class ExploratorySearchRuntimeIntegrationTests: XCTestCase {
 
     // MARK: - All passthrough parameters preserved
 
-    func testExploratorySearch_passesAllOptionalParametersIntoSignal() throws {
+    func testExploratorySearch_passesAllOptionalParametersIntoSignal() async throws {
         let call = StepToolCall(
             name: "search",
             argumentsJSON: #"""
@@ -146,7 +146,7 @@ final class ExploratorySearchRuntimeIntegrationTests: XCTestCase {
             }
             """#
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         guard case .exploratorySearch(let payload) = results[0].signal else {
             XCTFail("Expected .exploratorySearch")
             return
@@ -163,26 +163,26 @@ final class ExploratorySearchRuntimeIntegrationTests: XCTestCase {
 
     // MARK: - providerID is set by the runtime even on signal results
 
-    func testExploratorySearch_signalResult_hasProviderID() throws {
+    func testExploratorySearch_signalResult_hasProviderID() async throws {
         let call = StepToolCall(
             providerID: "call_xyz_123",
             name: "search",
             argumentsJSON: #"{"query": "x", "exploratory": true}"#
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertEqual(results[0].providerID, "call_xyz_123",
                        "ToolRuntime must propagate providerID into the exploratorySearch signal result.")
     }
 
     // MARK: - Plain regex still works through runtime
 
-    func testPlainSearch_regexMode_viaRuntime() throws {
+    func testPlainSearch_regexMode_viaRuntime() async throws {
         try write("a.swift", content: "hello42\nworld43\n")
         let call = StepToolCall(
             name: "search",
             argumentsJSON: #"{"query": "^world\\d+$", "mode": "regex"}"#
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
 
         // Inspect the parsed `matches` array — `hello42` can legitimately

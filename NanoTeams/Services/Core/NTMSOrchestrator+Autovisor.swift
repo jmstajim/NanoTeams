@@ -132,7 +132,7 @@ extension NTMSOrchestrator {
     /// "Run now" a no-op in its most common case.
     ///
     /// Serialization is `forcingRunTaskIDs` (step 1) for force-vs-force, and
-    /// `startRun`'s own `startingRunTaskIDs` for everything downstream of it — from
+    /// `startRun`'s own run-start claim for everything downstream of it — from
     /// `pauseRun`'s return through that insert there is no suspension point (a
     /// same-actor async call returns directly to the caller, and `startRun` inserts
     /// before its first `await`). Concurrent wakes / recurrence fires cannot reach
@@ -168,7 +168,7 @@ extension NTMSOrchestrator {
             // winner's just-started engine and append a second run. Also bails when
             // a plain `startRun` is already in flight — it WILL append the run the
             // click asked for.
-            guard !startingRunTaskIDs.contains(taskID),
+            guard !engineState.isInitializingRun(taskID),
                   forcingRunTaskIDs.insert(taskID).inserted
             else { return }
             // Defensive: `.running` implies loaded today (the scheduler never evicts
@@ -581,7 +581,12 @@ extension NTMSOrchestrator {
         guard loadedTask(id) != nil else { return }  // load error already surfaced
         await mutateTask(taskID: id) { task in
             if task.supervisorTask != newSupervisorTask { task.supervisorTask = newSupervisorTask }
-            if task.clippedTexts != newClips { task.clippedTexts = newClips }
+            // Compare TEXTS, not clips: `newClips` arrives as plain strings, and
+            // re-minting an unchanged list would churn every row's identity on an
+            // update that touched only the brief.
+            if task.clippedTexts.texts != newClips {
+                task.clippedTexts = [Clip].minting(newClips)
+            }
             if task.attachmentPaths != newPaths { task.attachmentPaths = newPaths }
         }
     }

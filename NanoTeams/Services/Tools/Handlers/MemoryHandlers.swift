@@ -24,8 +24,8 @@ nonisolated struct UpdateScratchpadTool: ToolHandler {
         Self()
     }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             guard let content = resolveContentString(args) else {
                 throw ToolArgumentError.missingRequired("content")
             }

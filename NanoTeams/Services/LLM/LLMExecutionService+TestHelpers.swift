@@ -334,6 +334,12 @@ extension LLMExecutionService {
         executionStates[TaskStepKey(taskID: taskID, stepID: stepID)]?.consecutiveDriftTurnCount ?? -1
     }
 
+    /// Reads the reasoning-channel-envelope counter for a step — the streak of turns whose
+    /// only dispatchable envelope was written into the reasoning channel.
+    func _testReasoningEnvelopeCounter(stepID: String, taskID: Int) -> Int {
+        executionStates[TaskStepKey(taskID: taskID, stepID: stepID)]?.consecutiveReasoningEnvelopeCount ?? -1
+    }
+
     /// Mirrors the production drift-counter reset that happens just before
     /// `executeToolCalls` runs (the model is acting, not just reasoning). Used by
     /// tests to simulate "tool call ran between two drift turns" without spinning

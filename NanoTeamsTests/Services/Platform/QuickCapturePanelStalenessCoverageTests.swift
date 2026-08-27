@@ -11,6 +11,7 @@ private final class ScriptedModeCoordinator: QuickCaptureModeCoordinator {
         isTaskSelected: Bool,
         activeTask: NTMSTask?,
         engineState: TeamEngineState?,
+        isInitializingRun: Bool,
         activeTeam: Team?,
         forceNewTaskMode: Bool
     ) -> QuickCaptureMode { next }

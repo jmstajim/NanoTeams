@@ -11,12 +11,18 @@ import SwiftUI
 /// binding, so the shared `MessageComposer` stays orchestrator-free. `projectRoot`
 /// is nil in default-storage mode → global skills only. The popover works inside
 /// the QuickCapture `NSPanel` (like the clip / improve popovers already do).
+///
+/// The catalogue comes from `AgentSkillsCatalogueStore` — the same cache the run
+/// start and the Role editor read — so opening this popover costs a JSON decode
+/// rather than the full walk of every skill root it used to run on every open. The
+/// walk is behind the Refresh control beside the search field: installing a skill
+/// is a thing the user does, and they are the only one who knows they did it.
 struct SkillsPickerButton: View {
     let projectRoot: URL?
-    @Binding var clips: [String]
+    @Binding var clips: [Clip]
 
     @State private var isShowing = false
-    @State private var snapshot: AgentSkillsSnapshot?   // nil = scanning
+    @State private var snapshot: AgentSkillsSnapshot?   // nil = loading
     @State private var scanTask: Task<Void, Never>?
     @State private var pickError: String?
 
@@ -25,44 +31,48 @@ struct SkillsPickerButton: View {
             isShowing = true
         } label: {
             Text("/")
-                .font(Typography.termBase.weight(.medium))
                 .foregroundStyle(Colors.accent)
-                .frame(width: 28, height: 24)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.composerIcon)
         .help("Insert an agent skill or command")
         .accessibilityLabel("Insert agent skill")
         .popover(isPresented: $isShowing, arrowEdge: .bottom) {
             SkillsPickerPopover(
                 snapshot: snapshot,
                 hasProjectRoot: projectRoot != nil,
-                stagedClips: clips,
+                stagedClips: clips.texts,
                 pickError: pickError,
-                onPick: pick
+                onPick: pick,
+                onRefresh: { load(force: true) }
             )
         }
         .onChange(of: isShowing) { _, showing in
-            if showing { startScan() } else { scanTask?.cancel() }
+            if showing { load(force: false) } else { scanTask?.cancel() }
         }
     }
 
-    private func startScan() {
+    /// `force: false` reads the cached catalogue (taking one if this install has
+    /// never had it); `force: true` is the Refresh control and re-walks every root.
+    private func load(force: Bool) {
         pickError = nil
         snapshot = nil
         let root = projectRoot
         scanTask?.cancel()
         scanTask = Task {
-            let scanned = await Task.detached(priority: .userInitiated) {
-                AgentSkillsScanner.scan(projectRoot: root)
+            let loaded = await Task.detached(priority: .userInitiated) {
+                let store = AgentSkillsCatalogueStore.shared
+                return force
+                    ? store.rescan(projectRoot: root).snapshot
+                    : store.loadOrScan(projectRoot: root).snapshot
             }.value
             guard !Task.isCancelled else { return }
-            snapshot = scanned
+            snapshot = loaded
         }
     }
 
     private func pick(_ item: AgentSkillsSnapshot.Item) {
         // Duplicate pick of an already-staged skill is a no-op.
-        if SkillsPickerLogic.isStaged(item, in: clips) {
+        if SkillsPickerLogic.isStaged(item, in: clips.texts) {
             isShowing = false
             return
         }
@@ -75,9 +85,9 @@ struct SkillsPickerButton: View {
                 pickError = "Could not read \(item.name) — the file may have moved."
                 return
             }
-            clips.append(
+            clips.append(Clip(text:
                 SkillClip(id: item.id, name: item.name, agentLabel: item.agentLabel, origin: item.origin, body: content).encoded()
-            )
+            ))
             isShowing = false
         }
     }
@@ -91,13 +101,17 @@ private struct SkillsPickerPopover: View {
     let stagedClips: [String]
     let pickError: String?
     let onPick: (AgentSkillsSnapshot.Item) -> Void
+    let onRefresh: () -> Void
 
     @State private var searchText = ""
     @State private var contentHeight: CGFloat = .infinity
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.s) {
-            searchField
+            HStack(spacing: Spacing.xs) {
+                searchField
+                refreshButton
+            }
 
             if let pickError {
                 Text(pickError)
@@ -113,24 +127,30 @@ private struct SkillsPickerPopover: View {
     }
 
     private var searchField: some View {
-        HStack(spacing: Spacing.xs) {
-            Image(systemName: "magnifyingglass")
+        TextField("Search skills…", text: $searchText)
+            .textFieldStyle(.plain)
+            .font(Typography.termBase)
+            .inputSurface(.field) {
+                Image(systemName: "magnifyingglass")
+                    .font(Typography.caption)
+                    .foregroundStyle(Colors.textTertiary)
+            }
+    }
+
+    /// The one control in the app that pays for a skill-root walk.
+    ///
+    /// Disabled while a load is in flight (`snapshot == nil`) — a second walk
+    /// stacked on the first would replace the `scanTask` and leave the popover on
+    /// its loader for two walks instead of one.
+    private var refreshButton: some View {
+        Button(action: onRefresh) {
+            Image(systemName: "arrow.clockwise")
                 .font(Typography.caption)
-                .foregroundStyle(Colors.textTertiary)
-            TextField("Search skills…", text: $searchText)
-                .textFieldStyle(.plain)
-                .font(Typography.termBase)
         }
-        .padding(.horizontal, Spacing.s)
-        .padding(.vertical, Spacing.xs)
-        .background(
-            RoundedRectangle.squircle(CornerRadius.small)
-                .fill(Colors.surfaceElevated)
-                .overlay(
-                    RoundedRectangle.squircle(CornerRadius.small)
-                        .strokeBorder(Colors.borderSubtle, lineWidth: 1)
-                )
-        )
+        .buttonStyle(.navbarIcon)
+        .disabled(snapshot == nil)
+        .help("Rescan for installed skills")
+        .accessibilityLabel("Rescan skills")
     }
 
     @ViewBuilder

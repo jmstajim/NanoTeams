@@ -22,15 +22,16 @@ nonisolated struct AnalyzeImageTool: ToolHandler {
     static let excludedInMeetings = true
 
     let resolver: SandboxPathResolver
-    let fileManager: FileManager
+    // `nonisolated(unsafe)`: see `ToolHandlerDependencies.fileManager`.
+    nonisolated(unsafe) let fileManager: FileManager
 
     
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self {
         Self(resolver: dependencies.resolver, fileManager: dependencies.fileManager)
     }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             // Empty `path` does not "fail loudly one layer down" the way the other
             // path arguments do: `resolveFileURL("")` returns the work-folder ROOT
             // rather than throwing, so the extension check fires first and the model

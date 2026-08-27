@@ -58,19 +58,19 @@ final class EditFileLineRangeTests: XCTestCase {
 
     private func runEdit(
         path: String, oldText: String, newText: String, replaceAll: Bool? = nil
-    ) -> ToolExecutionResult {
+    ) async -> ToolExecutionResult {
         var args: [String: Any] = ["path": path, "old_text": oldText, "new_text": newText]
         if let replaceAll { args["replace_all"] = replaceAll }
         let data = try! JSONSerialization.data(withJSONObject: args)
         let call = StepToolCall(name: "edit_file", argumentsJSON: String(data: data, encoding: .utf8)!)
-        return runtime.executeAll(context: context, toolCalls: [call])[0]
+        return await runtime.executeAll(context: context, toolCalls: [call])[0]
     }
 
-    private func runReadLines(path: String, start: Int, end: Int) -> ToolExecutionResult {
+    private func runReadLines(path: String, start: Int, end: Int) async -> ToolExecutionResult {
         let args: [String: Any] = ["path": path, "start_line": start, "end_line": end]
         let data = try! JSONSerialization.data(withJSONObject: args)
         let call = StepToolCall(name: "read_lines", argumentsJSON: String(data: data, encoding: .utf8)!)
-        return runtime.executeAll(context: context, toolCalls: [call])[0]
+        return await runtime.executeAll(context: context, toolCalls: [call])[0]
     }
 
     private func dataField(_ result: ToolExecutionResult, _ key: String) -> Any? {
@@ -91,9 +91,9 @@ final class EditFileLineRangeTests: XCTestCase {
     // MARK: - The envelope carries the span
 
     /// RED: pass `nil` for `start_line`/`end_line` in `EditFileData` → this fires.
-    func testExactEdit_envelopeCarriesTheSpan() throws {
+    func testExactEdit_envelopeCarriesTheSpan() async throws {
         try writeFile("a.swift", "one\ntwo\nthree\nfour\n")
-        let result = runEdit(path: "a.swift", oldText: "three", newText: "THREE")
+        let result = await runEdit(path: "a.swift", oldText: "three", newText: "THREE")
         XCTAssertFalse(result.isError)
         XCTAssertEqual(span(result)?.start, 3)
         XCTAssertEqual(span(result)?.end, 3)
@@ -101,9 +101,9 @@ final class EditFileLineRangeTests: XCTestCase {
 
     /// The tolerant tier rewrites the replacement's leading whitespace, so the region that
     /// CHANGED is not the window the tier matched. The span must describe the former.
-    func testIndentationTolerantEdit_reportsTheChangedRegion() throws {
+    func testIndentationTolerantEdit_reportsTheChangedRegion() async throws {
         try writeFile("b.swift", "class A {\n    func x() {\n        old()\n    }\n}\n")
-        let result = runEdit(
+        let result = await runEdit(
             path: "b.swift",
             oldText: "  func x() {\n      old()\n  }",
             newText: "  func x() {\n      renamed()\n  }"
@@ -115,9 +115,9 @@ final class EditFileLineRangeTests: XCTestCase {
 
     /// RED: report the span from the PRE-edit file (`after: content`) → this fires, because
     /// `replace_all` shifts every region after the first.
-    func testReplaceAll_reportsABoundingSpanAndTheCount() throws {
+    func testReplaceAll_reportsABoundingSpanAndTheCount() async throws {
         try writeFile("c.txt", "x\nTARGET\ny\nTARGET\nz\nTARGET\n")
-        let result = runEdit(path: "c.txt", oldText: "TARGET", newText: "HIT", replaceAll: true)
+        let result = await runEdit(path: "c.txt", oldText: "TARGET", newText: "HIT", replaceAll: true)
         XCTAssertFalse(result.isError)
         XCTAssertEqual(dataField(result, "replacements_made") as? Int, 3)
         XCTAssertEqual(span(result)?.start, 2, "first region")
@@ -126,13 +126,13 @@ final class EditFileLineRangeTests: XCTestCase {
 
     /// A byte-level no-op has no line to point at, and the envelope already says so in
     /// `meta.warnings`. Both fields must be ABSENT rather than defaulted to something.
-    func testNoOpEdit_omitsTheSpan() throws {
+    func testNoOpEdit_omitsTheSpan() async throws {
         // The interior-collapse tier's documented no-op, borrowed verbatim from
         // `EditFileInteriorWhitespaceToleranceTests.testPureSpacingEdit_disclosesTheNoOp`:
         // both sides differ only inside a run of spaces, where the FILE's spacing wins, so
         // the write is byte-identical to what was there.
         try writeFile("pad.js", "let a =  1;\nlet z = 0;\n")
-        let result = runEdit(path: "pad.js", oldText: "let a = 1;", newText: "let a =      1;")
+        let result = await runEdit(path: "pad.js", oldText: "let a = 1;", newText: "let a =      1;")
 
         XCTAssertFalse(result.isError, result.outputJSON)
         XCTAssertEqual(
@@ -143,9 +143,9 @@ final class EditFileLineRangeTests: XCTestCase {
         XCTAssertNil(dataField(result, "end_line"))
     }
 
-    func testFailedEdit_hasNoSpan() throws {
+    func testFailedEdit_hasNoSpan() async throws {
         try writeFile("e.txt", "one\ntwo\n")
-        let result = runEdit(path: "e.txt", oldText: "nowhere", newText: "x")
+        let result = await runEdit(path: "e.txt", oldText: "nowhere", newText: "x")
         XCTAssertTrue(result.isError)
         XCTAssertNil(dataField(result, "start_line"))
     }
@@ -158,13 +158,13 @@ final class EditFileLineRangeTests: XCTestCase {
     ///
     /// The edit deliberately CHANGES the line count, so a span computed against the
     /// pre-edit file would also miss.
-    func testCRLFRoundTrip_readLinesReturnsTheEditedText() throws {
+    func testCRLFRoundTrip_readLinesReturnsTheEditedText() async throws {
         try writeFile("crlf.txt", "alpha\r\nbeta\r\ngamma\r\n")
-        let edit = runEdit(path: "crlf.txt", oldText: "beta", newText: "BETA\r\nEXTRA")
+        let edit = await runEdit(path: "crlf.txt", oldText: "beta", newText: "BETA\r\nEXTRA")
         XCTAssertFalse(edit.isError)
         guard let s = span(edit) else { return XCTFail("expected a span") }
 
-        let read = runReadLines(path: "crlf.txt", start: s.start, end: s.end)
+        let read = await runReadLines(path: "crlf.txt", start: s.start, end: s.end)
         XCTAssertFalse(read.isError)
         let content = dataField(read, "content") as? String ?? ""
         XCTAssertTrue(
@@ -174,13 +174,13 @@ final class EditFileLineRangeTests: XCTestCase {
     }
 
     /// The pure-LF control, so the CRLF test above cannot pass for a trivial reason.
-    func testLFRoundTrip_readLinesReturnsTheEditedText() throws {
+    func testLFRoundTrip_readLinesReturnsTheEditedText() async throws {
         try writeFile("lf.txt", "alpha\nbeta\ngamma\n")
-        let edit = runEdit(path: "lf.txt", oldText: "beta", newText: "BETA\nEXTRA")
+        let edit = await runEdit(path: "lf.txt", oldText: "beta", newText: "BETA\nEXTRA")
         XCTAssertFalse(edit.isError)
         guard let s = span(edit) else { return XCTFail("expected a span") }
 
-        let read = runReadLines(path: "lf.txt", start: s.start, end: s.end)
+        let read = await runReadLines(path: "lf.txt", start: s.start, end: s.end)
         let content = dataField(read, "content") as? String ?? ""
         XCTAssertTrue(content.contains("BETA"))
         XCTAssertTrue(content.contains("EXTRA"))
@@ -200,9 +200,9 @@ final class EditFileLineRangeTests: XCTestCase {
     /// the omission is the default — this pin exists because that file's doc comment
     /// carries a standing instruction to forward every new disclosure, and a reader
     /// following it would silently re-introduce the cost.
-    func testTheSpanDoesNotReachTheWire() throws {
+    func testTheSpanDoesNotReachTheWire() async throws {
         try writeFile("f.swift", "one\ntwo\nthree\n")
-        let result = runEdit(path: "f.swift", oldText: "two", newText: "TWO")
+        let result = await runEdit(path: "f.swift", oldText: "two", newText: "TWO")
         XCTAssertNotNil(span(result), "precondition: the handler produced a span")
 
         guard case .tagged(let wire, _) = MemoryTagStore().processToolResult(result) else {

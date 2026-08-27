@@ -2,7 +2,7 @@ import XCTest
 
 @testable import NanoTeams
 
-/// Route 4 of `performStreamingCall` — the sentinel-free salvage — driven end to end.
+/// Route 3 of `performStreamingCall` — the sentinel-free salvage — driven end to end.
 ///
 /// `BareToolCallSalvageTests` pins the RULE; this pins the WIRING, which is where the
 /// defect actually lived: the rule had no home, so a reply carrying an unambiguous tool
@@ -68,7 +68,7 @@ final class BareEnvelopeStreamingRouteTests: XCTestCase {
 
     // MARK: - The incident
 
-    /// Turn 10, verbatim. The single highest-value assertion here: before route 4 this
+    /// Turn 10, verbatim. The single highest-value assertion here: before this route existed
     /// resolved zero calls, and the manager was told to call the tool it had just called.
     func testBareJSONReply_resolvesOneCall() async throws {
         let result = try await run(
@@ -121,14 +121,15 @@ final class BareEnvelopeStreamingRouteTests: XCTestCase {
                     + #"{"name":"wait_for_events","arguments":{}}"#)],
             tools: [waitForEventsSchema])
         XCTAssertTrue(result.sawHarmonyMarker)
-        // Whatever route 2 makes of it, route 4 must not be what answered.
+        // Whatever route 2 makes of it, route 3 (the salvage) must not be what answered.
         XCTAssertTrue(result.resolvedToolCalls.isEmpty
             || result.resolvedToolCalls.first?.name == ToolNames.waitForEvents)
     }
 
-    /// Content channel only. A `<|…|>` marker means the same thing wherever it appears, so
-    /// route 3 legitimately reads reasoning; bare JSON there is the model CONSIDERING a
-    /// call, and dispatching it would act on a thought.
+    /// Content channel only — and now that no route reads reasoning at all, the same is
+    /// true of a FRAMED envelope there (`ReasoningChannelToolCallIsolationTests`). Text in
+    /// the reasoning channel is the model CONSIDERING a call, and dispatching it would act
+    /// on a thought.
     func testBareJSONInReasoningOnly_isNotSalvaged() async throws {
         let result = try await run(
             events: [

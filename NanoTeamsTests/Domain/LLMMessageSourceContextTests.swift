@@ -44,6 +44,73 @@ final class LLMMessageSourceContextTests: XCTestCase {
         XCTAssertEqual(MessageSourceContext.supervisorMessage.displayLabel, "message")
     }
 
+    // MARK: - autovisorEvent
+
+    func testMessageSourceContext_AutovisorEvent_CodableRoundTrip() throws {
+        // Persisted in `step.llmConversation`, so the raw value is a storage contract:
+        // renaming it re-renders every archived notice as an unattributed `.user` turn,
+        // which the feed's no-source filter then hides outside Debug mode.
+        XCTAssertEqual(MessageSourceContext.autovisorEvent.rawValue, "autovisorEvent")
+        let encoded = try JSONEncoder().encode(MessageSourceContext.autovisorEvent)
+        let decoded = try JSONDecoder().decode(MessageSourceContext.self, from: encoded)
+        XCTAssertEqual(decoded, .autovisorEvent)
+    }
+
+    func testMessageSourceContext_AutovisorEvent_DisplayLabel() {
+        // Must equal `SystemNoticePresentation`'s label for this kind — the two are
+        // drift-guarded against each other there.
+        XCTAssertEqual(MessageSourceContext.autovisorEvent.displayLabel, "event")
+    }
+
+    /// Unlike `.supervisorMessage`, whose label is suppressed because the crowned bubble
+    /// already said who spoke, this one keeps its label: the collapsed feed row suppresses it
+    /// locally (`MessageBubbleView.headerSourceLabel`), but `conversation_log.md` renders the
+    /// same helper with no row to lean on, and there the label is the only attribution.
+    ///
+    /// RED: add `.autovisorEvent` to `sourceContextDisplayLabel`'s nil early-returns → the
+    /// transcript stops naming these turns at all.
+    func testSourceContextDisplayLabel_autovisorEvent_isNotSuppressed() {
+        let msg = LLMMessage(
+            role: .user,
+            content: MessageSourceContext.autovisorEventNoticeHeader + "\n- Task #1 failed.",
+            sourceContext: .autovisorEvent
+        )
+        XCTAssertEqual(msg.sourceContextDisplayLabel, "event")
+    }
+
+    func testAutovisorEventNoticeHeader_constantValue() {
+        // Shared by the composer (`composeAutovisorEventNotice`) and the preview skip
+        // (`SystemNoticePresentation.previewSkippedHeaders`). It also ships on the wire: the
+        // notice is unmarked, so this line is what identifies it once the provider flattens
+        // consecutive user turns.
+        XCTAssertEqual(
+            MessageSourceContext.autovisorEventNoticeHeader,
+            "Event update while you are reviewing — new since this pass started:"
+        )
+    }
+
+    /// The notice is sent UNMARKED, so there is nothing to strip and `displayContent` must
+    /// leave it exactly as persisted — including its header, which `ConversationReplay`
+    /// replays verbatim because this notice really was sent.
+    ///
+    /// RED: give `.autovisorEvent` a strip arm in `displayContent` → this fails, and the
+    /// replayed wire silently diverges from the live one.
+    func testDisplayContent_autovisorEvent_isUntouched() {
+        let raw = MessageSourceContext.autovisorEventNoticeHeader
+            + "\n- Task #35 \"M15\" is waiting for a supervisor answer (answer_task_question)."
+        let msg = LLMMessage(role: .user, content: raw, sourceContext: .autovisorEvent)
+        XCTAssertEqual(msg.displayContent, raw)
+    }
+
+    /// Corner: a notice whose body happens to open with the Supervisor marker must NOT have
+    /// it stripped — the strip is keyed on `.supervisorMessage`, and an event notice wearing
+    /// that text is content, not attribution.
+    func testDisplayContent_autovisorEvent_keepsASupervisorLookalikePrefix() {
+        let raw = MessageSourceContext.supervisorMessagePrefix + "- Task #1 failed."
+        let msg = LLMMessage(role: .user, content: raw, sourceContext: .autovisorEvent)
+        XCTAssertEqual(msg.displayContent, raw)
+    }
+
     // MARK: - sourceContextDisplayLabel (bubble label contract)
 
     func testSourceContextDisplayLabel_changeRequest() {
@@ -247,6 +314,73 @@ final class LLMMessageSourceContextTests: XCTestCase {
         // whose content happens to start with the marker is user content.
         let msg = LLMMessage(role: .user, content: "Supervisor answer: looks like one")
         XCTAssertEqual(msg.displayContent, "Supervisor answer: looks like one")
+    }
+
+    // MARK: - displayContent strip for .loopCorrection
+
+    private var loopOpen: String { MessageSourceContext.loopCorrectionBlockOpen }
+    private var loopClose: String { MessageSourceContext.loopCorrectionBlockClose }
+
+    private func loopCorrection(_ content: String) -> LLMMessage {
+        LLMMessage(role: .user, content: content, sourceContext: .loopCorrection)
+    }
+
+    /// The delimiters exist so both providers stop flattening the correction into the
+    /// preceding `[Tool Result]` block — they are addressed to the wire, not to the reader.
+    /// The feed row is already labelled `system: loop correction`, so leaving them in made the
+    /// row's one-line preview read `--- LOOP CORRECTION ---`: a duplicate of its own label.
+    func testDisplayContent_loopCorrection_stripsBothDelimiters() {
+        let msg = loopCorrection("\(loopOpen)\nThe turn immediately before this note…\n\(loopClose)")
+        XCTAssertEqual(msg.displayContent, "The turn immediately before this note…")
+    }
+
+    /// Each half is stripped on its own merit — a body that somehow carries only one marker
+    /// must lose that one rather than neither. Two mechanisms, two pins (CLAUDE.md #60).
+    func testDisplayContent_loopCorrection_stripsTheOpenMarkerAlone() {
+        XCTAssertEqual(loopCorrection("\(loopOpen)\nbody").displayContent, "body")
+    }
+
+    func testDisplayContent_loopCorrection_stripsTheCloseMarkerAlone() {
+        XCTAssertEqual(loopCorrection("body\n\(loopClose)").displayContent, "body")
+    }
+
+    func testDisplayContent_loopCorrection_isIdempotent() {
+        let once = loopCorrection("\(loopOpen)\nbody\n\(loopClose)").displayContent
+        XCTAssertEqual(loopCorrection(once).displayContent, once,
+                       "an already-stripped body must not lose its first and last lines")
+    }
+
+    /// Corrections persisted before the delimited block was introduced carry no markers.
+    func testDisplayContent_loopCorrection_withoutDelimiters_returnsContentUnchanged() {
+        XCTAssertEqual(loopCorrection("bare legacy correction").displayContent,
+                       "bare legacy correction")
+    }
+
+    /// A body of nothing but delimiters collapses to empty — NOT to a delimiter. This is the
+    /// shape `SystemNoticePresentation.previewLine` reduces to the feed row.
+    func testDisplayContent_loopCorrection_delimitersOnly_isEmpty() {
+        let stripped = loopCorrection("\(loopOpen)\n\(loopClose)").displayContent
+        XCTAssertFalse(stripped.contains(loopOpen))
+        XCTAssertFalse(stripped.contains(loopClose))
+    }
+
+    /// The strip is gated on the CONTEXT, exactly like the two supervisor prefixes above.
+    /// A retry nudge (or a model turn) whose text happens to open with the same line is
+    /// content, not framing.
+    func testDisplayContent_nonLoopCorrection_keepsDelimiterLookalikes() {
+        let raw = "\(loopOpen)\nbody\n\(loopClose)"
+        XCTAssertEqual(
+            LLMMessage(role: .user, content: raw, sourceContext: .retryNudge).displayContent, raw)
+        XCTAssertEqual(LLMMessage(role: .assistant, content: raw).displayContent, raw)
+    }
+
+    /// `displayContent` is a projection: the stored `content` — what
+    /// `ConversationReplay.rebuildFromDisplayRecord` replays onto the wire — keeps the markers.
+    func testDisplayContent_loopCorrection_doesNotMutateStoredContent() {
+        let raw = "\(loopOpen)\nbody\n\(loopClose)"
+        let msg = loopCorrection(raw)
+        _ = msg.displayContent
+        XCTAssertEqual(msg.content, raw)
     }
 
     func testLLMMessage_WithSupervisorMessageContext_CodableRoundTrip() throws {
@@ -519,14 +653,42 @@ final class LLMMessageSourceContextTests: XCTestCase {
 
     // MARK: - carriesUnsolicitedInformation (loop-detector information boundary)
 
-    /// Exactly one context is unsolicited: a queued Supervisor turn (human steering, the
-    /// Autovisor's mid-review notice, `message_task`) or a parent's `forward_to_team`
-    /// injected into a child. Nobody in the conversation asked for it.
+    /// The unsolicited set is exactly what arrives through the QUEUED-MESSAGE pipeline:
+    /// `.supervisorMessage` — a queued Supervisor turn (human steering, `message_task`) or a
+    /// parent's `forward_to_team` injected into a child — and `.autovisorEvent`, the app's
+    /// mid-review notice that folder state moved. Nobody in the conversation asked for either.
     ///
-    /// RED: add a second case to the `true` arm → `testSolicitedAnswers_areNotABoundary`
-    /// fails and names it.
-    func testCarriesUnsolicitedInformation_supervisorMessage_isTheOnlyBoundary() {
+    /// This test read `supervisorMessage_isTheOnlyBoundary` until `.autovisorEvent` was split
+    /// out of `.supervisorMessage` (it had been the notice's context, which is why the feed
+    /// drew it as a crowned Supervisor bubble). The pin was re-aimed at the property that
+    /// survives the split rather than weakened or deleted (CLAUDE.md #104): "only one" was
+    /// never the invariant — "unsolicited means it came off the queue" is.
+    ///
+    /// RED: drop either case from the `true` arm → this fails naming it, and in production the
+    /// manager re-checking a task it was just told changed is scored as a loop.
+    func testCarriesUnsolicitedInformation_theQueuedContexts_areTheBoundaries() {
         XCTAssertTrue(MessageSourceContext.supervisorMessage.carriesUnsolicitedInformation)
+        XCTAssertTrue(MessageSourceContext.autovisorEvent.carriesUnsolicitedInformation)
+    }
+
+    /// `.autovisorEvent` is SYSTEM-authored yet a boundary, which no other system-authored
+    /// context is — so state why here rather than leaving it to look like an oversight.
+    ///
+    /// The self-immunizing hazard that keeps `.toolAcknowledgement` / `.runtimeWarning` /
+    /// `.retryNudge` on the `false` side does not apply: those are each stamped strictly after
+    /// a call the model made, so a model spinning on that call would refresh its own cutoff.
+    /// The event notice is composed by the app from FOLDER state, on a cadence the manager
+    /// does not control — no amount of spinning manufactures one.
+    ///
+    /// RED: flip `.autovisorEvent` to `false` → this fails, and `AutovisorStuckEvaluator` plus
+    /// `LoopScanner.scanCommitted` stop seeing the arrival they exist to respect.
+    func testAutovisorEvent_isABoundary_despiteBeingSystemAuthored() {
+        XCTAssertTrue(MessageSourceContext.autovisorEvent.carriesUnsolicitedInformation)
+        XCTAssertNotNil(
+            SystemNoticePresentation.resolve(context: .autovisorEvent, content: "body"),
+            "system-authored (it collapses to a notice row) AND a boundary — that pairing is "
+                + "unique to this context and is the point of this test"
+        )
     }
 
     /// The self-immunizing set. Each of these is appended as the ANSWER to a tool call the
@@ -596,7 +758,7 @@ final class LLMMessageSourceContextTests: XCTestCase {
 
     private func bucket(_ context: MessageSourceContext) -> Bucket {
         switch context {
-        case .supervisorMessage: return .boundary
+        case .supervisorMessage, .autovisorEvent: return .boundary
         case .consultation, .meeting, .changeRequest, .supervisorAnswer: return .solicitedAnswer
         case .delegatedQuestion, .delegationEscalation: return .delegationChatter
         case .serverError, .loopCorrection, .retryNudge,
@@ -611,7 +773,7 @@ final class LLMMessageSourceContextTests: XCTestCase {
     /// already forces the author of a new case through `bucket`, so a literal list here would
     /// add a second place to forget and no coverage.
     func testBucketing_agreesWithThePredicate() {
-        XCTAssertGreaterThanOrEqual(MessageSourceContext.allCases.count, 13,
+        XCTAssertGreaterThanOrEqual(MessageSourceContext.allCases.count, 14,
                                     "anti-vacuity: a short allCases would check almost nothing")
         for context in MessageSourceContext.allCases {
             XCTAssertEqual(

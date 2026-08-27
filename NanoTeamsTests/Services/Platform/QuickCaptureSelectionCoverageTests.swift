@@ -135,7 +135,7 @@ final class QuickCaptureSelectionCoverageTests: XCTestCase {
 
         await sut.captureClipboardContent(mode: answerMode())
 
-        XCTAssertEqual(sut.formState.answerClippedTexts, ["selected prose"],
+        XCTAssertEqual(sut.formState.answerClippedTexts.texts, ["selected prose"],
                        "an answer-mode capture belongs to the answer draft")
         XCTAssertTrue(sut.formState.clippedTexts.isEmpty,
                       "it must NOT also reach the task draft — the card would render "
@@ -217,7 +217,7 @@ final class QuickCaptureSelectionCoverageTests: XCTestCase {
         await sut.captureClipboardContent(mode: answerMode())
 
         XCTAssertEqual(
-            sut.formState.answerClippedTexts, ["selected prose"],
+            sut.formState.answerClippedTexts.texts, ["selected prose"],
             "the capture still succeeds — the loss is the user's PREVIOUS clipboard")
         let message = store.lastErrorMessage ?? ""
         XCTAssertTrue(message.contains("clipboard"), "got: \(message)")
@@ -287,7 +287,7 @@ final class QuickCaptureSelectionCoverageTests: XCTestCase {
 
         XCTAssertEqual(capturer.accessibilityRequests, 1,
                        "⌃⌥⌘K must ask for Accessibility trust and capture")
-        XCTAssertEqual(sut.formState.clippedTexts, ["grabbed"])
+        XCTAssertEqual(sut.formState.clippedTexts.texts, ["grabbed"])
     }
 
     /// `setup` is one-shot: a second call must not register a second pair of handlers.

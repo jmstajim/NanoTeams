@@ -119,5 +119,13 @@ struct WindowResizeMonitorAccessor: NSViewRepresentable {
 // MARK: - EnvironmentValues
 
 extension EnvironmentValues {
-    @Entry var windowResizeMonitor: WindowResizeMonitor = WindowResizeMonitor()
+    /// A SHARED fallback, not `= WindowResizeMonitor()`. `@Entry` re-evaluates its default
+    /// expression on every read that finds no injected value, so a constructor there hands
+    /// back a fresh instance each time — and this is a reference type, so the four views
+    /// reading `\.windowResizeMonitor` outside a `TeamBoardView` subtree would each observe
+    /// a DIFFERENT monitor, none of them the one an accessor bound to a window. Enforced by
+    /// swiftui_declarations.py axis v7.
+    private static let unboundWindowResizeMonitor = WindowResizeMonitor()
+
+    @Entry var windowResizeMonitor: WindowResizeMonitor = EnvironmentValues.unboundWindowResizeMonitor
 }

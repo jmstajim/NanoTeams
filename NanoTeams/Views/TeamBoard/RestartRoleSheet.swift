@@ -21,7 +21,7 @@ struct RestartRoleSheet: View {
 
                 TextEditor(text: $comment)
                     .frame(height: SheetLayout.textEditorHeight)
-                    .borderedTextEditorStyle()
+                    .inputSurface(.editor)
                     .accessibilityLabel("Instructions for restart")
 
                 Text("Provide instructions for the role on restart.")

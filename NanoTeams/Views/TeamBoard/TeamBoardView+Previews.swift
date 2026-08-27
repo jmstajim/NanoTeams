@@ -94,7 +94,7 @@ private enum TeamBoardPreviewData {
     }
 
     static func configuredStore(task: NTMSTask) -> NTMSOrchestrator {
-        let store = NTMSOrchestrator(repository: NTMSRepository())
+        let store = PreviewStore.make()
         store.snapshot = WorkFolderContext(
             projection: workFolder,
             tasksIndex: TasksIndex(),
@@ -140,7 +140,7 @@ private enum TeamBoardPreviewData {
 // MARK: - Previews
 
 #Preview("No Task") {
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
+    @Previewable @State var store = PreviewStore.make()
     @Previewable @State var engineState = OrchestratorEngineState()
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
@@ -1061,7 +1061,7 @@ private enum TeamBoardPreviewData {
             preferredTeamID: chatTeam.id,
             isChatMode: true
         )
-        let s = NTMSOrchestrator(repository: NTMSRepository())
+        let s = PreviewStore.make()
         s.snapshot = WorkFolderContext(projection: chatWF, tasksIndex: TasksIndex(), toolDefinitions: [], activeTaskID: task.id, activeTask: task)
         s.activeTask = task
         s._setActiveTaskID(task.id)

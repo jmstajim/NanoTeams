@@ -6,20 +6,29 @@ import Foundation
 /// paragraph boundaries (`<w:p>`) becoming newlines. Pure Swift via `ZIPReader`
 /// + `XMLParser`.
 nonisolated struct DOCXDocumentExtractor: DocumentFormatExtractor {
-    func extract(from url: URL) -> String {
+    func extract(from url: URL) -> DocumentExtractionOutcome {
         let data: Data?
         do {
             data = try ZIPReader.readEntry(named: "word/document.xml", from: url)
         } catch {
-            return DocumentExtractionFailure.message(url, reason: String(describing: error))
+            return .failure(reason: String(describing: error))
         }
         guard let docXML = data else {
-            return DocumentExtractionFailure.message(url, reason: "word/document.xml missing")
+            return .failure(reason: "word/document.xml missing")
         }
-        let text = DOCXTextCollector.collect(data: docXML)
-        return text.isEmpty
-            ? DocumentExtractionFailure.message(url, reason: "DOCX contains no text")
-            : text
+        let collected = DOCXTextCollector.collect(data: docXML)
+        if collected.text.isEmpty {
+            // A parse that aborted before any content is a FAILURE, not a blank document —
+            // the two were indistinguishable while both returned "".
+            if let parseError = collected.parseError {
+                return .failure(reason: parseError)
+            }
+            // Only `word/document.xml` was opened, so "no text" is a fact about what we
+            // read, not about the document — the parts below can hold text we never saw.
+            return .empty(reason: "DOCX contains no text",
+                          scope: .mainPartOnly(unread: "headers, footers, footnotes and comments"))
+        }
+        return .text(collected.text, warnings: collected.parseError.map { [$0] } ?? [])
     }
 }
 
@@ -31,24 +40,20 @@ nonisolated private final class DOCXTextCollector: NSObject, XMLParserDelegate {
     private var inText = false
     private var runBuffer = ""
 
-    /// Returns extracted plain text. If XML parsing failed mid-document,
-    /// surfaces a warning marker — even when no text was collected. Returning
-    /// `""` on parse failure would make the caller emit the generic
-    /// "DOCX contains no text" message, indistinguishable from a truly
-    /// blank document.
-    static func collect(data: Data) -> String {
+    /// Returns extracted plain text alongside the parse abort, if any, as separate
+    /// values. They are reported separately because they coexist: an abort partway
+    /// through leaves real text AND a caveat about it, and a caller told only "here is
+    /// a string" cannot tell a truncation notice from the document's own words.
+    static func collect(data: Data) -> (text: String, parseError: String?) {
         let collector = DOCXTextCollector()
         let parser = XMLParser(data: data)
         parser.delegate = collector
         let parsed = parser.parse()
         if !parsed { collector.accumulator += collector.runBuffer }
         let text = collector.accumulator.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !parsed {
-            let reason = parser.parserError?.localizedDescription ?? "malformed XML"
-            let warning = "[Warning: XML parse stopped early — \(reason); content may be truncated]"
-            return text.isEmpty ? warning : text + "\n\n" + warning
-        }
-        return text
+        guard !parsed else { return (text, nil) }
+        let reason = parser.parserError?.localizedDescription ?? "malformed XML"
+        return (text, "XML parse stopped early — \(reason); content may be truncated")
     }
 
     func parser(

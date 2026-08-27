@@ -59,6 +59,7 @@ struct SupervisorTaskItemView: View {
                     ReadOnlyAttachmentGrid(
                         attachmentPaths: attachmentPaths,
                         clippedTexts: clippedTexts,
+                        clipSeed: "supervisor-task-\(createdAt.timeIntervalSince1970)",
                         workFolderURL: workFolderURL
                     )
                 }
@@ -71,9 +72,12 @@ struct SupervisorTaskItemView: View {
 
 /// See `MessageBubbleView`'s Equatable extension for full rationale.
 /// `onAvatarTap` excluded (closure; captures stable orchestrator state).
-/// `roleDefinition` compared by `id` only — same identity-not-structure
-/// choice as `MessageBubbleView.==` (content edits to the role regenerate
-/// the view via parent state updates).
+/// `roleDefinition` compared by `renderIdentity` — its presentation fields —
+/// the same choice as `MessageBubbleView.==`, whose extension carries the
+/// reasoning. It compared `id` alone until 2026-08-25, on the claim that
+/// "content edits to the role regenerate the view via parent state updates";
+/// that regeneration is precisely when `==` runs, so the claim named the path
+/// that produced the staleness rather than one that cured it.
 extension SupervisorTaskItemView: Equatable {
     static func == (lhs: SupervisorTaskItemView, rhs: SupervisorTaskItemView) -> Bool {
         lhs.createdAt == rhs.createdAt
@@ -81,7 +85,7 @@ extension SupervisorTaskItemView: Equatable {
             && lhs.clippedTexts == rhs.clippedTexts
             && lhs.attachmentPaths == rhs.attachmentPaths
             && lhs.workFolderURL == rhs.workFolderURL
-            && lhs.roleDefinition?.id == rhs.roleDefinition?.id
+            && lhs.roleDefinition?.renderIdentity == rhs.roleDefinition?.renderIdentity
     }
 }
 

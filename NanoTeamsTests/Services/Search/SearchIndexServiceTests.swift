@@ -220,6 +220,41 @@ final class SearchIndexServiceTests: XCTestCase {
         XCTAssertEqual(scrollIDs, scrollIDs.sorted())
     }
 
+    /// A file's content tokens must belong to THAT file.
+    ///
+    /// The invariant the parallel rebuild rests on, and the one the suite did not have: passes
+    /// are dispatched `concurrency` at a time and arrive in COMPLETION order, so the merge folds
+    /// them back by candidate index. Get that wrong and every posting list still has the right
+    /// SHAPE — the same tokens, the same number of files per token — while pointing at the wrong
+    /// files. Measured: reversing the fold left the whole 93-case index suite green.
+    ///
+    /// The fixture is deliberately ASYMMETRIC (distinct token per file, and sizes spanning two
+    /// orders of magnitude so a big early file finishes after a small later one). A symmetric
+    /// one is what hid this: `A:scroll, B:scroll+view, C:view` reversed is
+    /// `A:view, B:scroll+view, C:scroll`, which has identical per-token counts.
+    ///
+    /// RED: fold the passes in any order but candidate order (`zip(candidates, passes.reversed())`)
+    /// → every `files(containing:)` here names the wrong file.
+    func testPostings_attributeTokensToTheFileTheyCameFrom() async throws {
+        // Sizes vary ~500x so completion order cannot track walk order.
+        let filler = String(repeating: "padding token noise here\n", count: 500)
+        try write("a_first.swift", content: "let alphaonly = 1\n" + filler)
+        try write("b_second.swift", content: "let betaonly = 2\n")
+        try write("c_third.swift", content: "let gammaonly = 3\n" + filler)
+        try write("d_fourth.swift", content: "let deltaonly = 4\n")
+
+        let service = makeService()
+        let index = await service.loadOrBuild()
+
+        XCTAssertEqual(index.files.count, 4, "anti-vacuum: all four must be indexed")
+        for (token, expected) in [("alphaonly", "a_first.swift"), ("betaonly", "b_second.swift"),
+                                  ("gammaonly", "c_third.swift"), ("deltaonly", "d_fourth.swift")] {
+            let owners = await service.files(containing: [token])
+            XCTAssertEqual(owners, [expected],
+                           "'\(token)' must map to \(expected) and nothing else")
+        }
+    }
+
     func testFilesContaining_unionDedupSorted() async throws {
         try write("A.swift", content: "scroll")
         try write("B.swift", content: "scroll view")
@@ -379,41 +414,73 @@ final class SearchIndexServiceTests: XCTestCase {
         XCTAssertTrue(index.tokens.contains("realone"))
     }
 
+    /// A symlink to a FILE is indexed under the link's path, with the TARGET's size and mTime.
+    ///
+    /// Sibling of `testWalk_symlinkToSibling_indexesTargetOnce`, which links to a DIRECTORY —
+    /// and the two take different arms: for a directory the prefetched `.fileSizeKey` is nil and
+    /// the walk descends, for a file it is the number the `IndexSignature` is built from. The
+    /// signature is why this matters: taking the LINK's size (a few bytes of path) instead of
+    /// the target's would make every walk disagree with the last and rebuild forever.
+    ///
+    /// RED: return the LINK's resource values instead of resolving (drop the `isSymbolicLink`
+    /// arm of `entryAttributes`) → `size` is the link's, not the 4 000-byte target's.
+    func testWalk_symlinkToFile_indexesTargetSizeUnderTheLinkPath() async throws {
+        let body = String(repeating: "x", count: 4000)
+        try write("real.swift", content: body)
+        try FileManager.default.createSymbolicLink(
+            at: tempDir.appendingPathComponent("alias.swift"),
+            withDestinationURL: tempDir.appendingPathComponent("real.swift"))
+
+        let service = makeService()
+        let index = await service.loadOrBuild()
+
+        let alias = try XCTUnwrap(index.files.first { $0.path == "alias.swift" },
+                                  "the link must be indexed under its OWN path: "
+                                      + "\(index.files.map(\.path))")
+        let real = try XCTUnwrap(index.files.first { $0.path == "real.swift" })
+        XCTAssertEqual(alias.size, real.size,
+                       "the link must carry its TARGET's size, not the path's length")
+        XCTAssertGreaterThan(alias.size, 3000, "anti-vacuum: the target is the big one")
+        XCTAssertEqual(alias.mTime, real.mTime)
+    }
+
     // MARK: - Per-file I/O failure surfacing
 
-    /// Per-file attribute-read failures (a file that exists but whose
-    /// metadata can't be read) must surface in `lastIndexWarnings` and the
-    /// file must be SKIPPED — without this, the indexer would store
-    /// `mTime = .distantPast` and `size = 0`, silently poisoning the
-    /// IndexSignature on the next walk.
-    func testBuild_unreadableFileAttributes_recordsWarningAndSkipsFile() async throws {
+    /// A file the walk can stat but cannot READ contributes its filename tokens and a correct
+    /// roster entry — and says so — rather than vanishing or arriving empty in silence.
+    ///
+    /// `chmod 0o000` blocks the read, not the stat, and that distinction is the whole test: the
+    /// entry's mTime and size are real, so the `IndexSignature` stays honest, while the content
+    /// pass fails and must leave a trace. The version this replaces asserted on the ATTRIBUTE
+    /// read instead, and stat does not fail for a 0o000 file — so it took its
+    /// "nothing to assert" branch on every non-root machine, which is every machine.
+    ///
+    /// RED: swallow the `catch` in `indexOne` without appending a warning → the warning
+    /// assertion fails while the token assertions stay green, which is the silent half.
+    func testBuild_unreadableFileContents_indexesFilenameTokensAndWarns() async throws {
         try write("A.swift", content: "class Foo {}")
-        try write("B.swift", content: "class Bar {}")
-        // Strip every permission on B.swift so attributesOfItem fails.
-        let bURL = tempDir.appendingPathComponent("B.swift")
-        chmod(bURL.path, 0o000)
-        defer { chmod(bURL.path, 0o600) }
+        try write("secretive.swift", content: "class HiddenSymbol {}")
+        let secret = tempDir.appendingPathComponent("secretive.swift")
+        chmod(secret.path, 0o000)
+        defer { chmod(secret.path, 0o600) }
+        // Root can read anything, so the arrangement itself has to be verified.
+        try XCTSkipIf((try? Data(contentsOf: secret)) != nil,
+                      "running as root — the read did not fail, so nothing here is exercised")
 
         let service = makeService()
         let index = await service.loadOrBuild()
         let warnings = await service.lastIndexWarnings
+        let contentTokens = await service.files(containing: ["hiddensymbol"])
+        let nameTokens = await service.files(containing: ["secretive"])
 
-        // A.swift survives; B.swift either skipped (warning emitted) or
-        // indexed (no warning). The behavior depends on whether the running
-        // user is root — chmod 0o000 doesn't block root reads. Be lenient:
-        // assert that EITHER B.swift was successfully indexed (root case)
-        // OR the skip surfaced a warning (non-root case). The dangerous
-        // silent third case (B.swift indexed with stale attrs + no warning)
-        // is what this test pins against.
-        let foundB = index.files.contains { $0.path == "B.swift" }
-        if foundB {
-            // Root path — attributes succeeded. Nothing to assert.
-        } else {
-            XCTAssertFalse(warnings.isEmpty,
-                           "Skipped file must surface a walk warning; got empty warnings.")
-            XCTAssertTrue(warnings.contains { $0.contains("B.swift") || $0.contains("attribute read failed") },
-                          "Warning should reference the failed file or the failure mode — got: \(warnings)")
-        }
+        XCTAssertTrue(index.files.contains { $0.path == "secretive.swift" },
+                      "the entry must survive: its mTime and size read fine, and dropping it "
+                          + "would move the signature")
+        XCTAssertTrue(contentTokens.isEmpty, "its content could not be read, so it has no "
+            + "content tokens")
+        XCTAssertFalse(nameTokens.isEmpty, "its filename tokens are still indexable")
+        XCTAssertTrue(warnings.contains { $0.contains("content read failed") },
+                      "the omission must be written down, not silent — got: \(warnings)")
     }
 
     // MARK: - Actor serializes concurrent calls
@@ -427,5 +494,105 @@ final class SearchIndexServiceTests: XCTestCase {
         let (first, second) = await (a, b)
         XCTAssertEqual(first.files, second.files)
         XCTAssertEqual(first.tokens, second.tokens)
+    }
+
+    // MARK: - Single-flight
+
+    /// Two callers arriving at once must produce ONE walk of the tree, not two.
+    ///
+    /// The actor used to buy this for free: `loadOrBuild` was synchronous, so
+    /// `matchesFolder` → `rebuildIndex()` → `cached = fresh` could not be interleaved. Actor
+    /// REENTRANCY is exactly what that reading misses — the moment the rebuild can suspend, a
+    /// second caller wedges in, sees `cached == nil`, and walks the whole tree again.
+    ///
+    /// `generatedAt` is the observation, and it is exact rather than statistical: it comes from
+    /// `MonotonicClock`, which guarantees each call a value strictly greater than the last. Two
+    /// builds therefore CANNOT stamp the same instant, so equality here is proof of one build.
+    ///
+    /// Deterministic despite the concurrency: from actor entry to `inFlightBuild = build` there
+    /// is no suspension point, so whichever caller wins the race has claimed the slot before it
+    /// suspends, and the other necessarily finds it.
+    ///
+    /// RED: delete the `if !force, let existing = inFlightBuild` join → the two indices carry
+    /// different `generatedAt`.
+    func testLoadOrBuild_concurrentCallers_shareOneBuild() async throws {
+        for i in 0..<40 { try write("pkg\(i % 4)/f\(i).swift", content: "let token\(i) = \(i)\n") }
+        let service = makeService()
+
+        async let first = service.loadOrBuild()
+        async let second = service.loadOrBuild()
+        let (a, b) = await (first, second)
+
+        XCTAssertFalse(a.files.isEmpty, "anti-vacuum: the build must have found the tree")
+        XCTAssertEqual(a.generatedAt, b.generatedAt,
+                       "both callers must have shared ONE build; different stamps mean the tree "
+                           + "was walked twice")
+        XCTAssertEqual(a.files.map(\.path), b.files.map(\.path))
+    }
+
+    /// `force: true` means "reuse NOTHING" — not the cache, not the on-disk copy, not a walk
+    /// already in flight.
+    ///
+    /// All three routes sit under ONE `if !force` in `loadOrBuild`, which is what makes this
+    /// test a pin on the RULE rather than on the cache arm alone. The in-flight arm cannot be
+    /// reached from a test on its own: observing that window means blocking the actor mid-build,
+    /// and the only way to arrange it is a seam that would exist purely for the test. Folding
+    /// the three conditions into one is how that arm gets covered anyway.
+    ///
+    /// The folder is deliberately left UNCHANGED between the two calls. A fixture that writes a
+    /// file first proves nothing: the new file moves the `IndexSignature`, `matchesFolder`
+    /// returns false, and the rebuild happens for that reason whether `force` was honoured or
+    /// not. Measured — with `if !force` mutated to `if true`, such a fixture stayed green.
+    ///
+    /// RED: change `if !force` to `if true` → the forced call returns the cached index and the
+    /// two `generatedAt` stamps are equal.
+    func testLoadOrBuild_forceReusesNothing() async throws {
+        for i in 0..<20 { try write("f\(i).swift", content: "let token\(i) = \(i)\n") }
+        let service = makeService()
+
+        let cached = await service.loadOrBuild()
+        let forced = await service.loadOrBuild(force: true)
+
+        XCTAssertFalse(cached.files.isEmpty, "anti-vacuum: the first build must have found the tree")
+        XCTAssertNotEqual(
+            cached.generatedAt, forced.generatedAt,
+            "a forced rebuild must walk again even when the cache still matches the folder")
+        XCTAssertEqual(cached.files.map(\.path), forced.files.map(\.path),
+                       "the unchanged folder must still produce the same roster")
+    }
+
+    /// The other half of the same rule: WITHOUT `force`, an unchanged folder must be served from
+    /// the cache rather than re-walked. Otherwise "force" would be indistinguishable from the
+    /// default and the test above would pass for the wrong reason.
+    ///
+    /// RED: drop the `reuseExistingIndex()` probe from `loadOrBuild` → the second call rebuilds
+    /// and the stamps differ.
+    func testLoadOrBuild_withoutForce_servesAnUnchangedFolderFromTheCache() async throws {
+        for i in 0..<20 { try write("f\(i).swift", content: "let token\(i) = \(i)\n") }
+        let service = makeService()
+
+        let first = await service.loadOrBuild()
+        let second = await service.loadOrBuild()
+
+        XCTAssertEqual(first.generatedAt, second.generatedAt,
+                       "an unchanged folder must not be walked twice")
+    }
+
+    /// The slot is released when its build finishes, or the second search of the session waits
+    /// on a task that already returned and every later one joins a corpse.
+    ///
+    /// RED: never clear `inFlightBuild` → the second call returns the FIRST build's
+    /// `generatedAt` even though the folder changed under it.
+    func testLoadOrBuild_releasesTheSlotAfterTheBuildCompletes() async throws {
+        try write("a.swift", content: "let alpha = 1\n")
+        let service = makeService()
+        let first = await service.loadOrBuild()
+
+        try write("b.swift", content: "let beta = 2\n")
+        let second = await service.loadOrBuild()
+
+        XCTAssertNotEqual(first.generatedAt, second.generatedAt,
+                          "the changed folder must produce a fresh build, not a joined stale one")
+        XCTAssertTrue(second.files.contains { $0.path == "b.swift" })
     }
 }

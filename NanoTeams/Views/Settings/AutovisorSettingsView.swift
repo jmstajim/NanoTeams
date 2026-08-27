@@ -670,12 +670,12 @@ struct AutovisorSettingsView: View {
     // scroll. The `TextField(axis: .vertical)` it replaces treated Enter as
     // "end editing", which made multi-line goal/memory editing feel broken.
     // Visual style is shared with the Watchtower Autovisor card via
-    // `borderedTextEditorStyle(minHeight:)`.
+    // `inputSurface(.editor, minHeight:)`.
     @ViewBuilder
     private func editor(_ text: Binding<String>, minHeight: CGFloat, onChange: @escaping (String) -> Void) -> some View {
         TextEditor(text: text)
             .font(Typography.termBase)
-            .borderedTextEditorStyle(minHeight: minHeight)
+            .inputSurface(.editor, minHeight: minHeight)
             .onChange(of: text.wrappedValue) { _, newValue in onChange(newValue) }
     }
 

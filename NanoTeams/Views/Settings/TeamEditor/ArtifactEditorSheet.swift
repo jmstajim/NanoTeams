@@ -107,7 +107,7 @@ struct ArtifactEditorSheet: View {
                     TextEditor(text: $artifactDescription)
                         .font(Typography.termBase)
                         .frame(minHeight: 200)
-                        .borderedTextEditorStyle()
+                        .inputSurface(.editor)
                 }
             }
         }
@@ -328,7 +328,7 @@ struct ArtifactEditorSheet: View {
 }
 
 #Preview {
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
+    @Previewable @State var store = PreviewStore.make()
     ArtifactEditorSheet(
         team: .constant(.default),
         mode: .create,

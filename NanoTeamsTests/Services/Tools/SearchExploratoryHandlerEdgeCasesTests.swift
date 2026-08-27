@@ -47,7 +47,7 @@ final class SearchExploratoryHandlerEdgeCasesTests: XCTestCase {
 
     // MARK: - Plain path still honors paths / file_glob
 
-    func testPlain_withFileGlob_scopedMatches() throws {
+    func testPlain_withFileGlob_scopedMatches() async throws {
         try "target\n".write(
             to: tempDir.appendingPathComponent("a.swift"),
             atomically: true, encoding: .utf8
@@ -56,7 +56,7 @@ final class SearchExploratoryHandlerEdgeCasesTests: XCTestCase {
             to: tempDir.appendingPathComponent("a.md"),
             atomically: true, encoding: .utf8
         )
-        let result = makeTool().handle(
+        let result = await makeTool().handle(
             context: ctx(),
             args: ["query": "target", "file_glob": "*.swift"]
         )
@@ -67,8 +67,8 @@ final class SearchExploratoryHandlerEdgeCasesTests: XCTestCase {
 
     // MARK: - Missing query — the only required arg
 
-    func testMissingQuery_returnsInvalidArgsError() {
-        let result = makeTool().handle(
+    func testMissingQuery_returnsInvalidArgsError() async {
+        let result = await makeTool().handle(
             context: ctx(),
             args: ["exploratory": true]
         )
@@ -78,7 +78,7 @@ final class SearchExploratoryHandlerEdgeCasesTests: XCTestCase {
 
     // MARK: - expand with non-bool value (defensive)
 
-    func testExpand_stringValue_coerces() throws {
+    func testExpand_stringValue_coerces() async throws {
         // LLMs sometimes emit `"true"` (string) instead of `true` (bool).
         // `optionalBool` coerces the unambiguous spellings, so the model gets
         // the search it asked for instead of silently getting the plain path.
@@ -86,7 +86,7 @@ final class SearchExploratoryHandlerEdgeCasesTests: XCTestCase {
             to: tempDir.appendingPathComponent("a.swift"),
             atomically: true, encoding: .utf8
         )
-        let result = makeTool().handle(
+        let result = await makeTool().handle(
             context: ctx(),
             args: ["query": "target", "exploratory": "true"]
         )
@@ -94,26 +94,26 @@ final class SearchExploratoryHandlerEdgeCasesTests: XCTestCase {
                         "String 'true' must request exploratory search, same as a real bool.")
     }
 
-    func testExpand_intValue_coerces() throws {
+    func testExpand_intValue_coerces() async throws {
         try "target\n".write(
             to: tempDir.appendingPathComponent("a.swift"),
             atomically: true, encoding: .utf8
         )
-        let result = makeTool().handle(
+        let result = await makeTool().handle(
             context: ctx(),
             args: ["query": "target", "exploratory": 1]
         )
         XCTAssertNotNil(result.signal)
     }
 
-    func testExpand_ambiguousValue_treatedAsFalse() throws {
+    func testExpand_ambiguousValue_treatedAsFalse() async throws {
         // Coercion covers only unambiguous spellings — a value that is not a
         // boolean in any reading keeps the default rather than being guessed at.
         try "target\n".write(
             to: tempDir.appendingPathComponent("a.swift"),
             atomically: true, encoding: .utf8
         )
-        let result = makeTool().handle(
+        let result = await makeTool().handle(
             context: ctx(),
             args: ["query": "target", "exploratory": "sometimes"]
         )
@@ -122,8 +122,8 @@ final class SearchExploratoryHandlerEdgeCasesTests: XCTestCase {
 
     // MARK: - Signal carries optional args as expected
 
-    func testSignal_noOptionalArgs_allDefaults() {
-        let result = makeTool().handle(
+    func testSignal_noOptionalArgs_allDefaults() async {
+        let result = await makeTool().handle(
             context: ctx(),
             args: ["query": "scroll", "exploratory": true]
         )
@@ -142,8 +142,8 @@ final class SearchExploratoryHandlerEdgeCasesTests: XCTestCase {
 
     // MARK: - Signal envelope shape
 
-    func testSignal_envelopeIsValidJSON_andMentionsExploring() throws {
-        let result = makeTool().handle(
+    func testSignal_envelopeIsValidJSON_andMentionsExploring() async throws {
+        let result = await makeTool().handle(
             context: ctx(),
             args: ["query": "scroll", "exploratory": true]
         )

@@ -137,6 +137,12 @@ extension LLMExecutionService {
             await delegate.beginStreaming(
                 stepID: stepID, taskID: taskID,
                 messageID: streamingMessageID, role: roleForMessage)
+            #if DEBUG
+            // The end of the submit's silence: from here the bubble says `Processing…`.
+            // A no-op unless a submit measurement is open and still awaiting its first
+            // stream frame, so ordinary mid-run turns cost nothing.
+            SubmitLatencyProbe.markStream()
+            #endif
             // Claim the prompt-processing window for EVERY provider, strictly
             // AFTER `beginStreaming` (which resets the status to nil). This is a
             // fact we own — we are about to issue the send — not an inference
@@ -200,23 +206,26 @@ extension LLMExecutionService {
             // commit into whatever now answers to the captured taskID.
             if isExecutionLive(stepID: stepID, taskID: taskID) {
                 let cleanedContent = ModelTokenCleaner.clean(assistantCollected)
-                // Strip `<|...|>` markers from persisted thinking too — some
-                // models (qwen-style) emit `<|call|>{...}<|end|>` inside the
-                // reasoning channel; the call itself is now extracted by the
-                // post-stream thinking scan below, but the disclosure must
-                // not surface raw model-internal tokens. Use `stripTokens`
-                // (NOT `clean`) so internal whitespace / paragraph breaks
-                // in the reasoning prose round-trip — pinned by
-                // `testHarmonyEnvelope_pureToolCallAfterReasoning_stripsGapToEmpty`.
-                let strippedThinking = ModelTokenCleaner.stripTokens(thinkingCollected)
+                // Reasoning is persisted RAW — no `stripTokens`, no `clean`. The
+                // channel's whole job now is to show what the model actually wrote,
+                // and a `<|call|>{...}<|end|>` it rehearsed there is precisely the
+                // thing a reader needs to SEE unaltered to understand why no tool ran
+                // (nothing reads reasoning for tool calls — see the route list in
+                // `performStreamingCall`). Stripping also disagreed with the live
+                // preview, which never stripped (`StreamingPreviewManager.appendThinking`):
+                // the envelope streamed on screen and then vanished at commit.
+                //
+                // Safe for the wire by construction: `thinking` never leaves the display
+                // record — `ConversationReplay.rebuildFromDisplayRecord` builds
+                // `ChatMessage`s from `content` alone — and `TaskMutationService
+                // .commitStreamingContent` stores this value verbatim.
+                //
                 // Drop whitespace-only reasoning (some models emit an empty
-                // `[reasoning]...[/reasoning]` block with just newlines, OR
-                // a reasoning channel containing ONLY a tool-call envelope —
-                // post-strip both collapse to whitespace-only) so we don't
+                // `[reasoning]...[/reasoning]` block with just newlines) so we don't
                 // persist a thinking disclosure that expands to nothing.
                 let thinkingToCommit: String? =
-                    strippedThinking.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        ? nil : strippedThinking
+                    thinkingCollected.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        ? nil : thinkingCollected
                 await delegate.commitStreaming(
                     stepID: stepID, taskID: taskID,
                     content: cleanedContent, thinking: thinkingToCommit)
@@ -275,7 +284,7 @@ extension LLMExecutionService {
         // Gates the (expensive, whole-buffer) `harmonyParser.extractAllToolCalls(...)`
         // duplicate probe: first fire at the second close marker (before that dedup is
         // impossible by definition), then geometric re-probes so the total parse work
-        // stays amortized-linear in the stream. See `HarmonyProbeGrowthGate`.
+        // stays amortized-linear in the stream. See `harmonyProbeGate` (:279).
         var harmonyProbeGate = StreamProbeGate(
             cadence: .geometric(growthNumerator: 3, growthDenominator: 2, firstAtUnits: 2))
         // Three sites below `break` out of the for-await the moment the parser sees two
@@ -340,7 +349,7 @@ extension LLMExecutionService {
                         // bubble.
                         delegate.appendStreamingThinking(stepID: stepID, taskID: taskID, content: delta)
                         // Whole-buffer re-extract & dedup only when the growth
-                        // gate says a probe is due — see `HarmonyProbeGrowthGate`
+                        // gate says a probe is due — see `harmonyProbeGate` (:279)
                         // for why the per-close probe was O(segments × buffer)
                         // and why a cursor cannot replace the whole-buffer parse.
                         if delta.contains(HarmonyToolCallParser.callMarker) || delta.contains("<|end|>") {
@@ -531,7 +540,7 @@ extension LLMExecutionService {
 
             // Resolve tool calls BEFORE the turn is committed. Every input below is final
             // once the stream loop exits, so the position is free — and it has to be
-            // here, because route 4 can move text out of the content channel. Resolving
+            // here, because route 3 can move text out of the content channel. Resolving
             // after the commit would fork the display record from the wire permanently:
             // the raw payload would already be in `step.llmConversation`, and since
             // `HarmonyToolCallEnvelope.appendedWireText` re-materializes the call on top
@@ -544,23 +553,24 @@ extension LLMExecutionService {
             if resolvedToolCalls.isEmpty, sawHarmonyMarker {
                 resolvedToolCalls = harmonyParser.extractAllToolCalls(from: harmonyBuffer)
             }
-            // 3. Reasoning-channel fallback: some local models (observed: qwen3.6-mlx
-            // family) stochastically emit `<|call|>{...}<|end|>` envelopes inside
-            // `reasoning.delta` SSE events instead of `chunk.delta` content. Those
-            // deltas land in `thinkingCollected` and never reach `harmonyBuffer`.
-            // Empirical evidence in
-            // `.nanoteams/internal/tasks/0/subtasks/1/runs/0/network_log.json`
-            // records #11/#13 (FAIL — call in reasoning) vs #15 (OK — call in
-            // content); byte-identical envelope shapes, only the channel differs.
-            // Cheap `contains("<|")` gate keeps the hot path on the existing
-            // branch — only fires when reasoning text actually carries a marker.
-            if resolvedToolCalls.isEmpty, thinkingCollected.contains("<|") {
-                let fromThinking = harmonyParser.extractAllToolCalls(from: thinkingCollected)
-                if !fromThinking.isEmpty {
-                    resolvedToolCalls = fromThinking
-                }
-            }
-            // 4. Last resort: a reply carrying no sentinel at all. Gated on
+            //
+            // There is NO route out of `thinkingCollected`. A reasoning channel carrying
+            // `<|call|>{...}<|end|>` is the model REHEARSING a call, not making one, and
+            // this app answers it by leaving the text where the model wrote it: the
+            // envelope stays visible in the Thinking disclosure (raw, see
+            // `commitStreamingContent`) and the turn resolves zero calls, so the ordinary
+            // no-tool-call handling in `+StepFlowControl` drives the next iteration.
+            // A route reading reasoning DID exist (added for qwen3.6-mlx, which
+            // stochastically emitted whole envelopes on `reasoning.delta`); it executed
+            // deliberation as if it were action, which is the defect, not the recovery.
+            //
+            // `thinkingCollected` IS read once more, downstream and for DIAGNOSIS only:
+            // `handleNoToolCalls` asks `ConversationRepairService.reasoningChannelToolCallNames`
+            // what the model wrote there, so the nudge for a turn that resolved nothing can
+            // name the channel that swallowed it. That reader dispatches nothing and must not
+            // grow into a route.
+            //
+            // 3. Last resort: a reply carrying no sentinel at all. Gated on
             // `!sawHarmonyMarker` — once a marker was seen, recovery belongs to route 2
             // and `classifyHarmonyCallIssue`, which can name the defect. See
             // `BareToolCallSalvage` for why this is the only place that accepts an

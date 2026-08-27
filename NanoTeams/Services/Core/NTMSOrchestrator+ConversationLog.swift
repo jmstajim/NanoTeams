@@ -58,7 +58,7 @@ enum ConversationLogRenderCoalescer {
 private actor ConversationLogWriter {
     static let shared = ConversationLogWriter()
 
-    func write(_ markdown: String, to url: URL, taskID: Int) {
+    func write(_ markdown: String, to url: URL) {
         do {
             try markdown.write(to: url, atomically: true, encoding: .utf8)
         } catch {
@@ -105,7 +105,7 @@ extension NTMSOrchestrator {
         let supervisorBrief = task.effectiveSupervisorBrief
         let supervisorBriefDate = task.createdAt
         let supervisorTask = task.supervisorTask
-        let supervisorClippedTexts = task.clippedTexts
+        let supervisorClippedTexts = task.clippedTexts.texts
         let supervisorAttachmentPaths = task.attachmentPaths
 
         // All captured values are Sendable; ActivityFeedBuilder / the renderer are pure.
@@ -154,7 +154,7 @@ extension NTMSOrchestrator {
             )
             // Serialized write; the coalescer guarantees at most one render per task
             // is in flight, so ordering needs no second mechanism.
-            await ConversationLogWriter.shared.write(markdown, to: logURL, taskID: taskID)
+            await ConversationLogWriter.shared.write(markdown, to: logURL)
             // Release the slot; if turns landed mid-render, run ONE follow-up that
             // snapshots the now-current state (self is the long-lived orchestrator).
             await MainActor.run {

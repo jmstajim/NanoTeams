@@ -167,13 +167,30 @@ nonisolated enum TeamResolution {
     /// apply a DIFFERENT team's acceptance mode to a task pinned to a deleted team.
     /// Callers decide what `nil` means (see `AcceptanceService.Gate`).
     static func teamSettings(for task: NTMSTask, in projection: WorkFolderProjection) -> TeamSettings? {
+        team(for: task, in: projection)?.settings
+    }
+
+    /// The task's effective TEAM, resolved from an EXPLICIT snapshot — same rule as
+    /// `teamSettings(for:in:)`, which is now derived from this so the two cannot disagree.
+    ///
+    /// Added for `StatusRecoveryService`, which needs the ROSTER (to strip role statuses whose
+    /// role no longer exists) as well as the settings. Resolving once and passing the team down
+    /// also removes the hazard `recoverStaleStatusesAcrossIndex` already worried about in its
+    /// own comment: a second resolve could disagree with the first if the snapshot moved across
+    /// an `await`.
+    ///
+    /// `nil` means "could not resolve" — a pinned team that was deleted, or no team at all — and
+    /// is NOT the same as "resolved to a team with an empty roster". Callers must keep those
+    /// apart (#97): stripping statuses on `nil` would empty the roster of every task pinned to a
+    /// deleted team.
+    static func team(for task: NTMSTask, in projection: WorkFolderProjection) -> Team? {
         switch resolve(
             task: task,
             teamProvider: { projection.team(withID: $0) },
             activeTeam: projection.activeTeam
         ) {
         case .resolved(let team):
-            return team.settings
+            return team
         case .failed, .noTeam:
             return nil
         }

@@ -196,7 +196,7 @@ struct UpdatesSettingsView: View {
 #Preview {
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var appUpdateState = AppUpdateState(config: StoreConfiguration())
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
+    @Previewable @State var store = PreviewStore.make()
     UpdatesSettingsView()
         .environment(appUpdateState)
         .environment(config)

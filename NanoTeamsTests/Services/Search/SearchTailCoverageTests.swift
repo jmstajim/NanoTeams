@@ -576,7 +576,7 @@ final class ESearchFileScannerTailTests: XCTestCase, @unchecked Sendable {
             case .binary: return "binary"
             case .text(let bytes): return "text(\(bytes.count))"
             case .ioError(let reason): return "ioError(\(reason))"
-            case .tooLarge(let bytes): return "tooLarge(\(bytes))"
+            case .tooLarge: return "tooLarge"
             }
         }
         task.cancel()
@@ -588,7 +588,7 @@ final class ESearchFileScannerTailTests: XCTestCase, @unchecked Sendable {
     }
 
     // NOTE — `scanFile`'s "document extractor could not open file" arm is NOT
-    // covered here on purpose. `extractText` returns `nil` for exactly one
+    // covered here on purpose. `extract` returns `nil` for exactly one
     // reason (no registered extractor), and the arm sits behind
     // `isSupported(extension:)`, so it cannot fire while
     // `DocumentConstants.supportedReadExtensions` and the extractor registry

@@ -275,6 +275,62 @@ nonisolated struct ProcessRunner {
             timeout: timeout
         )
     }
+
+    /// Asks the WRAPPER why a sandboxed run failed, by re-launching the identical
+    /// invocation with a shell no-op. The command under judgement does not participate,
+    /// so there is nothing for it to forge.
+    ///
+    /// Measured on macOS 26 / arm64 — the three states separate deterministically:
+    ///
+    ///     healthy profile                          exit 0    → .childRan
+    ///     bad profile                              exit 65   `sandbox-exec: syntax error…`
+    ///     `(deny default)` (execvp refused)        exit 71   `sandbox-exec: execvp() of…`
+    ///     `(deny default)(allow process*)`         exit 134  empty stderr → .confinedBeforeStart
+    ///
+    /// Cost: 30–40 ms, paid only on the failure path of a sandboxed foreground command.
+    /// That is why this beats the two alternatives considered. An inherited extra file
+    /// descriptor would mean abandoning `Process` (Darwin spawns with
+    /// `POSIX_SPAWN_CLOEXEC_DEFAULT`, so fd 3 is closed without explicit `posix_spawn`
+    /// file actions) and re-implementing `run`'s timeout loop, cancellation, SIGTERM/SIGKILL
+    /// grace and bounded pipe drain — the most safety-critical loop here — to buy a fact this
+    /// already yields. A stdout nonce is worse than the defect it fixes: `run` decodes with
+    /// `String(data:encoding:.utf8) ?? ""`, so ONE invalid UTF-8 byte anywhere in the stream
+    /// erases the nonce, the run reads as "the child never started", and with the fallback on
+    /// it is re-executed unconfined — reachable by accident, not only by malice.
+    ///
+    /// Honest weakness, stated rather than buried: this answers "would the child start",
+    /// which is a re-derivation, not an observation of the run that failed. It is
+    /// deterministic because the profile is an inline `-p` string (no file to change
+    /// underneath) and `sandbox-exec`'s failures are a function of that string plus the shell
+    /// path. A transient `execvp` failure (ENOMEM) would probe clean and be reported as the
+    /// command's own exit — the conservative direction, and the same one the classifier's
+    /// doc comment already chose.
+    ///
+    /// A probe that itself throws yields `.childRan`: no unconfined retry, no false
+    /// "did not run".
+    static func probeSandboxLaunch(
+        profile: String,
+        in directory: URL,
+        timeout: TimeInterval = 20
+    ) -> SeatbeltSandbox.LaunchVerdict {
+        // The SAME shell `runShell` used. Probing a different one would be blind to an
+        // `execvp` failure of the real one.
+        let (executable, arguments) = SeatbeltSandbox.probeInvocation(
+            profile: profile, shell: loginShell())
+        guard let result = try? run(
+            executable: executable,
+            arguments: arguments,
+            currentDirectory: directory,
+            timeout: timeout
+        ) else {
+            return .childRan
+        }
+
+        if result.exitCode == 0 { return .childRan }
+        return SeatbeltSandbox.isWrapperDiagnostic(exitCode: result.exitCode, stderr: result.stderr)
+            ? .wrapperRejected
+            : .confinedBeforeStart
+    }
 }
 
 /// Mutable `Data` container used to receive pipe-read output from a background

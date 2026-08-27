@@ -104,7 +104,7 @@ struct RoleEditorLLMTab: View {
     }()
 
     @Previewable @State var config = StoreConfiguration()
-    @Previewable @State var catalog = ModelCatalog()
+    @Previewable @State var catalog = PreviewStore.catalog()
 
     RoleEditorLLMTab(
         editorState: $editorState,

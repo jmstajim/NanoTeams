@@ -34,7 +34,7 @@ struct ActivityFeedActionBar: View {
     }
 
     private var readyCount: Int {
-        normalizedArtifacts.filter { producedArtifacts.contains($0) }.count
+        normalizedArtifacts.count { producedArtifacts.contains($0) }
     }
 
     private var allArtifactsReady: Bool {

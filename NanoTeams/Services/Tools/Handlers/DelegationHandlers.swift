@@ -81,8 +81,8 @@ nonisolated struct DelegateToTeamTool: ToolHandler {
         Self()
     }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             // Absence / empty / non-string team_id defaults to the "generated" sentinel:
             // the downstream `delegationDenied` envelope is a better signal than INVALID_ARGS
             // when the role isn't allowed to use generated teams.
@@ -166,8 +166,8 @@ nonisolated struct CancelDelegationTool: ToolHandler {
 
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self { Self() }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             guard let childID = optionalInt(args, "child_task_id") else {
                 return makeErrorResult(
                     toolName: Self.name, args: args,
@@ -212,8 +212,8 @@ nonisolated struct ResumeDelegationTool: ToolHandler {
 
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self { Self() }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             guard let childID = optionalInt(args, "child_task_id") else {
                 return makeErrorResult(
                     toolName: Self.name, args: args,
@@ -257,8 +257,8 @@ nonisolated struct ForwardToTeamTool: ToolHandler {
 
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self { Self() }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             guard let childID = optionalInt(args, "child_task_id") else {
                 return makeErrorResult(
                     toolName: Self.name, args: args,

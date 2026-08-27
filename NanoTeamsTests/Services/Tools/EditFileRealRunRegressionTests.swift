@@ -58,7 +58,7 @@ final class EditFileRealRunRegressionTests: XCTestCase {
     @discardableResult
     private func replay(
         _ failure: EditFileRealRunFixtures.FailedEdit
-    ) throws -> ToolExecutionResult {
+    ) async throws -> ToolExecutionResult {
         let url = tempDir.appendingPathComponent(failure.path)
         try fileManager.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -70,7 +70,7 @@ final class EditFileRealRunRegressionTests: XCTestCase {
         let data = try JSONSerialization.data(withJSONObject: args)
         let call = StepToolCall(
             name: "edit_file", argumentsJSON: String(data: data, encoding: .utf8)!)
-        return runtime.executeAll(context: context, toolCalls: [call])[0]
+        return await runtime.executeAll(context: context, toolCalls: [call])[0]
     }
 
     private func onDisk(_ failure: EditFileRealRunFixtures.FailedEdit) throws -> String {
@@ -105,9 +105,9 @@ final class EditFileRealRunRegressionTests: XCTestCase {
     ///
     /// RED: drop the tier-3 branch in `whitespaceTolerantEdit` → ANCHOR_NOT_FOUND.
     /// RED: return `newLines` unmapped instead of `reindented` → the file keeps `     }`.
-    func testReal_settingsModelInit_isAutoReindented() throws {
+    func testReal_settingsModelInit_isAutoReindented() async throws {
         let failure = EditFileRealRunFixtures.failure(at: "2026-08-15T10:08:26.484")
-        let result = try replay(failure)
+        let result = try await replay(failure)
 
         XCTAssertFalse(result.isError, result.outputJSON)
         XCTAssertEqual(dataField(result, "matched_ignoring_indentation") as? Bool, true,
@@ -145,9 +145,9 @@ final class EditFileRealRunRegressionTests: XCTestCase {
     /// RED: emit the model's bytes for a PAIRED line (skip the file-leading arm in
     /// `reindentToFileConvention`) → the five-space doc comment collapses to four
     /// and the first line-anchored assert fails.
-    func testReal_sessionHistoryDocComments_landsKeepingTheFilesFiveSpaceDocs() throws {
+    func testReal_sessionHistoryDocComments_landsKeepingTheFilesFiveSpaceDocs() async throws {
         let failure = EditFileRealRunFixtures.failure(at: "2026-08-15T09:58:38.469")
-        let result = try replay(failure)
+        let result = try await replay(failure)
 
         XCTAssertFalse(result.isError, result.outputJSON)
         let written = try onDisk(failure)
@@ -188,9 +188,9 @@ final class EditFileRealRunRegressionTests: XCTestCase {
     /// and recoverable from the warning; the refusal was neither.
     ///
     /// RED: restore `return nil` for unmapped prefixes → ANCHOR_NOT_FOUND, file untouched.
-    func testReal_encoderTail_appendsAndKeepsTheNewLinesIndentation() throws {
+    func testReal_encoderTail_appendsAndKeepsTheNewLinesIndentation() async throws {
         let failure = EditFileRealRunFixtures.failure(at: "2026-08-15T09:59:01.393")
-        let result = try replay(failure)
+        let result = try await replay(failure)
 
         XCTAssertFalse(result.isError, result.outputJSON)
         XCTAssertEqual(dataField(result, "matched_ignoring_indentation") as? Bool, true)
@@ -232,11 +232,11 @@ final class EditFileRealRunRegressionTests: XCTestCase {
     ///
     /// RED: fold `.absent` back into the generic `anchorNotFoundMessage` → the
     /// whitespace assertion fails.
-    func testReal_hallucinatedStatCard_reportsAbsentNotWhitespace() throws {
+    func testReal_hallucinatedStatCard_reportsAbsentNotWhitespace() async throws {
         let failure = EditFileRealRunFixtures.failure(at: "2026-08-15T10:08:30.067")
         XCTAssertTrue(failure.oldText.hasPrefix("    struct StatCard"), "fixture drifted")
 
-        let result = try replay(failure)
+        let result = try await replay(failure)
         let text = message(result)
 
         XCTAssertTrue(result.isError)
@@ -254,9 +254,9 @@ final class EditFileRealRunRegressionTests: XCTestCase {
     /// file it is not looking at, so the message names both sides and the line.
     ///
     /// RED: report `.absent` for a partial match → the divergence assertions fail.
-    func testReal_vStackSpacing_reportsTheDivergingLine() throws {
+    func testReal_vStackSpacing_reportsTheDivergingLine() async throws {
         let failure = EditFileRealRunFixtures.failure(at: "2026-08-15T10:08:30.143")
-        let result = try replay(failure)
+        let result = try await replay(failure)
         let text = message(result)
 
         XCTAssertTrue(result.isError)
@@ -269,9 +269,9 @@ final class EditFileRealRunRegressionTests: XCTestCase {
     /// 10:08:30.362 — `SettingsView.swift`, a second diverging case in a different
     /// file so the first is not pinning a coincidence. `Section("General")` vs the
     /// file's `Section("Daily Reminder")`.
-    func testReal_settingsViewSection_reportsTheDivergingLine() throws {
+    func testReal_settingsViewSection_reportsTheDivergingLine() async throws {
         let failure = EditFileRealRunFixtures.failure(at: "2026-08-15T10:08:30.362")
-        let result = try replay(failure)
+        let result = try await replay(failure)
         let text = message(result)
 
         XCTAssertTrue(result.isError)
@@ -442,7 +442,7 @@ final class EditFileRealRunRegressionTests: XCTestCase {
     ///
     /// RED: collapse `.diverges` into `.absent` (drop the `bestPartialMatch` arm) →
     /// `diverging` reads 0 and `absent` reads 21, so both equality assertions fail.
-    func testReal_everyFailingAnchorFromTheRun_isClassified() throws {
+    func testReal_everyFailingAnchorFromTheRun_isClassified() async throws {
         var applied = 0
         var indentationRefusal = 0
         var diverging = 0
@@ -450,7 +450,7 @@ final class EditFileRealRunRegressionTests: XCTestCase {
         var unclassified: [String] = []
 
         for failure in EditFileRealRunFixtures.failures {
-            let result = try replay(failure)
+            let result = try await replay(failure)
             if !result.isError {
                 XCTAssertEqual(dataField(result, "matched_ignoring_indentation") as? Bool, true,
                                "a recovered call must disclose the re-indent (\(failure.timestamp))")
@@ -495,10 +495,10 @@ final class EditFileRealRunRegressionTests: XCTestCase {
     /// against prose that says the opposite of what it is checking for.
     ///
     /// RED: restore the unconditional `anchorNotFoundMessage` prefix → 21 violations.
-    func testReal_whitespaceAdviceOnlyWhenTheRegionWasFound() throws {
+    func testReal_whitespaceAdviceOnlyWhenTheRegionWasFound() async throws {
         let advicePhrases = ["whitespace and indentation", "check leading whitespace"]
         for failure in EditFileRealRunFixtures.failures {
-            let result = try replay(failure)
+            let result = try await replay(failure)
             guard result.isError else { continue }
             let text = message(result)
             guard advicePhrases.contains(where: text.contains) else { continue }

@@ -5,10 +5,10 @@ import Foundation
 /// (instead of failing) when the shared-string table is unreadable but cells
 /// still parse.
 nonisolated struct XLSXDocumentExtractor: DocumentFormatExtractor {
-    func extract(from url: URL) -> String {
-        // Collect ALL errors — later iterations must not mask earlier ones.
-        // Even when sections parse successfully, a sharedStrings failure is
-        // surfaced as a warning (string cells will show as integer indices).
+    func extract(from url: URL) -> DocumentExtractionOutcome {
+        // Collect ALL errors — later iterations must not mask earlier ones, and every one
+        // reaches the caller: as the failure reason when nothing parsed, as warnings
+        // alongside the text when something did.
         var errors: [String] = []
         var sharedStringsFailed = false
 
@@ -31,7 +31,7 @@ nonisolated struct XLSXDocumentExtractor: DocumentFormatExtractor {
         do {
             entryNames = try ZIPReader.listEntries(at: url).map(\.name)
         } catch {
-            return DocumentExtractionFailure.message(url, reason: String(describing: error))
+            return .failure(reason: String(describing: error))
         }
         let sheetEntries = entryNames
             .filter { $0.hasPrefix("xl/worksheets/sheet") && $0.hasSuffix(".xml") }
@@ -39,7 +39,7 @@ nonisolated struct XLSXDocumentExtractor: DocumentFormatExtractor {
 
         guard !sheetEntries.isEmpty else {
             let reason = errors.isEmpty ? "no worksheet data found" : errors.joined(separator: "; ")
-            return DocumentExtractionFailure.message(url, reason: reason)
+            return .failure(reason: reason)
         }
 
         // 3. Parse each sheet into markdown table
@@ -65,17 +65,21 @@ nonisolated struct XLSXDocumentExtractor: DocumentFormatExtractor {
         }
 
         if sections.isEmpty {
-            let reason = errors.isEmpty ? "empty spreadsheet" : errors.joined(separator: "; ")
-            return DocumentExtractionFailure.message(url, reason: reason)
+            guard errors.isEmpty else { return .failure(reason: errors.joined(separator: "; ")) }
+            // Worksheets parsed and held nothing. Only worksheets were opened, so text in a
+            // chart or a cell comment would not have been seen.
+            return .empty(reason: "empty spreadsheet",
+                          scope: .mainPartOnly(unread: "charts, pivot caches and cell comments"))
         }
 
-        // Some content extracted, but shared strings failed — warn the reader
-        // that string cells may render as integer indices instead of text.
+        // Per-sheet read failures used to be accumulated here and then dropped whenever ANY
+        // sheet parsed — a workbook whose second sheet failed to unzip returned partial
+        // content with no notice at all. They ride `warnings` now, alongside the text.
+        var warnings = errors
         if sharedStringsFailed {
-            let warning = "[Warning: shared string table unreadable — string cells may show as integer indices]"
-            return warning + "\n\n" + sections.joined(separator: "\n\n")
+            warnings.append("shared string table unreadable — string cells may show as integer indices")
         }
-        return sections.joined(separator: "\n\n")
+        return .text(sections.joined(separator: "\n\n"), warnings: warnings)
     }
 
     static func formatMarkdownTable(rows: [[String]], maxRows: Int) -> String {

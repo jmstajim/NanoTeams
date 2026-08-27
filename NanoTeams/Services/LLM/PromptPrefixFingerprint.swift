@@ -96,13 +96,21 @@ nonisolated enum PromptPrefixFingerprint {
     /// megabytes of base64 and appears in exactly one request before
     /// `runOneLLMToolIteration` strips it, so hashing it in full would be the most expensive
     /// thing this type does in exchange for distinguishing two images of identical byte length.
+    ///
+    /// The length is taken as `.utf8.count`, and the spelling is the whole point: `String.count`
+    /// is O(graphemes) — it WALKS the payload, which is exactly what folding "by shape" exists to
+    /// avoid, so until 2026-08-25 the cheap-by-design branch was paying the expensive-by-design
+    /// cost, once per image per wire request. Native Swift strings store UTF-8, so `.utf8.count`
+    /// is the stored length. The two agree on every value that can appear here — base64 is
+    /// ASCII-only — which is what keeps `chain` and `chainAndTokens` in the byte-for-byte parity
+    /// `PromptPrefixFingerprintTests.assertParity` asserts.
     private static func segmentText(of message: ChatMessage) -> String {
         var parts: [String] = [message.role.rawValue, message.content ?? ""]
         let toolCallText = HarmonyToolCallEnvelope.appendedWireText(for: message)
         if !toolCallText.isEmpty { parts.append(toolCallText) }
         for image in message.imageContent ?? [] {
             parts.append(image.mimeType)
-            parts.append(String(image.base64Data.count))
+            parts.append(String(image.base64Data.utf8.count))
         }
         // A separator that cannot appear in a role name, so ["a", "b"] and ["ab"] differ.
         return parts.joined(separator: "\u{1}")
@@ -178,7 +186,7 @@ nonisolated enum PromptPrefixFingerprint {
             total += WorkFolderContextPromptPlanner.estimateTokens(
                 HarmonyToolCallEnvelope.appendedWireText(for: message))
             for image in message.imageContent ?? [] {
-                total += WorkFolderContextPromptPlanner.estimateTokens(image.base64Data)
+                total += WorkFolderContextPromptPlanner.estimateTokensForBase64(image.base64Data)
             }
         }
 
@@ -206,8 +214,8 @@ nonisolated enum PromptPrefixFingerprint {
                 running = fold(running, "\u{1}")
                 running = fold(running, image.mimeType)
                 running = fold(running, "\u{1}")
-                running = fold(running, String(image.base64Data.count))
-                total += WorkFolderContextPromptPlanner.estimateTokens(image.base64Data)
+                running = fold(running, String(image.base64Data.utf8.count))
+                total += WorkFolderContextPromptPlanner.estimateTokensForBase64(image.base64Data)
             }
             result.append(running)
         }

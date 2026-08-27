@@ -584,9 +584,13 @@ final class NTMSOrchestratorTests: NTMSOrchestratorTestBase, @unchecked Sendable
         XCTAssertEqual(taskID, task.id)
         XCTAssertEqual(task.title, "Quick Capture Task")
         XCTAssertEqual(task.supervisorTask, "Implement import flow")
-        XCTAssertEqual(task.clippedTexts, ["Selected API response"])
+        XCTAssertEqual(task.clippedTexts.texts, ["Selected API response"])
         XCTAssertEqual(task.preferredTeamID, selectedTeam.id)
         XCTAssertEqual(task.runs.count, 1)
+        // The create path returns at the navigation boundary — the run is materialized,
+        // its LAUNCH is still in flight behind the (now open) chat. Join it before asking
+        // about the engine, or this races the very backgrounding it is downstream of.
+        await sut.runStartTask(for: taskID)?.value
         XCTAssertEqual(sut.taskEngineStates[taskID], .running)
         XCTAssertEqual(task.attachmentPaths.count, 1)
         XCTAssertTrue(
@@ -726,7 +730,7 @@ final class NTMSOrchestratorTests: NTMSOrchestratorTestBase, @unchecked Sendable
 
         XCTAssertEqual(task.title, "Submit Test")
         XCTAssertEqual(task.supervisorTask, "Test goal")
-        XCTAssertEqual(task.clippedTexts, ["clipped"])
+        XCTAssertEqual(task.clippedTexts.texts, ["clipped"])
         XCTAssertEqual(task.attachmentPaths.count, 1)
 
         // Draft directory should be cleaned up

@@ -58,12 +58,12 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
 
     private func runEdit(
         path: String, oldText: String, newText: String, replaceAll: Bool? = nil
-    ) -> ToolExecutionResult {
+    ) async -> ToolExecutionResult {
         var args: [String: Any] = ["path": path, "old_text": oldText, "new_text": newText]
         if let replaceAll { args["replace_all"] = replaceAll }
         let data = try! JSONSerialization.data(withJSONObject: args)
         let call = StepToolCall(name: "edit_file", argumentsJSON: String(data: data, encoding: .utf8)!)
-        return runtime.executeAll(context: context, toolCalls: [call])[0]
+        return await runtime.executeAll(context: context, toolCalls: [call])[0]
     }
 
     private func dataField(_ result: ToolExecutionResult, _ key: String) -> Any? {
@@ -89,7 +89,7 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
     // MARK: - Matching
 
     /// Verbatim production case: blank line in the file is actually trailing spaces.
-    func testTrailingWSOnBlankLine_productionCase() throws {
+    func testTrailingWSOnBlankLine_productionCase() async throws {
         let fileContent = """
                 // Initialize Spell Cooldown UI
                 this.spellCooldownUI = new SpellCooldownUI(this.spellManager, this.canvas);
@@ -102,7 +102,7 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
         let oldText = "        // Initialize Spell Cooldown UI\n        this.spellCooldownUI = new SpellCooldownUI(this.spellManager, this.canvas);\n\n        // XP and Leveling Systems"
         let newText = "        // Initialize Spell Cooldown UI\n        this.spellCooldownUI = new SpellCooldownUI(this.spellManager, this.canvas);\n\n        // Initialize Spell Selection UI\n        this.spellSelectionUI = new SpellSelectionUI(this.spellManager, this.canvas);\n\n        // XP and Leveling Systems"
 
-        let result = runEdit(path: "game.js", oldText: oldText, newText: newText)
+        let result = await runEdit(path: "game.js", oldText: oldText, newText: newText)
 
         XCTAssertFalse(result.isError, "tolerant fallback should match despite trailing spaces on the blank line: \(result.outputJSON)")
         XCTAssertEqual(replacementsMade(in: result), 1)
@@ -110,10 +110,10 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
         XCTAssertEqual(newContent, newText + "\n")
     }
 
-    func testTrailingSpacesOnCodeLine_multiLineWindow() throws {
+    func testTrailingSpacesOnCodeLine_multiLineWindow() async throws {
         let url = try writeFile("a.txt", "let a = 1;   \nlet b = 2;\n")
 
-        let result = runEdit(path: "a.txt", oldText: "let a = 1;\nlet b = 2;", newText: "let a = 9;\nlet b = 2;")
+        let result = await runEdit(path: "a.txt", oldText: "let a = 1;\nlet b = 2;", newText: "let a = 9;\nlet b = 2;")
 
         XCTAssertFalse(result.isError)
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "let a = 9;\nlet b = 2;\n")
@@ -122,20 +122,20 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
     /// Single-line window: model hallucinated trailing spaces that the file doesn't have.
     /// (The forward direction — clean old_text vs dirty file line — is always a substring
     /// match for single lines, so only the reverse direction reaches the fallback.)
-    func testSingleLineOldText_modelAddedTrailingSpaces() throws {
+    func testSingleLineOldText_modelAddedTrailingSpaces() async throws {
         let url = try writeFile("b.txt", "foo();\nbar();\n")
 
-        let result = runEdit(path: "b.txt", oldText: "foo();   ", newText: "baz();")
+        let result = await runEdit(path: "b.txt", oldText: "foo();   ", newText: "baz();")
 
         XCTAssertFalse(result.isError)
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "baz();\nbar();\n")
     }
 
     /// Multi-line reverse direction: old_text carries trailing whitespace the file lacks.
-    func testReverseDirection_oldTextHasTrailingWS_fileClean() throws {
+    func testReverseDirection_oldTextHasTrailingWS_fileClean() async throws {
         let url = try writeFile("c.txt", "one\ntwo\nthree\n")
 
-        let result = runEdit(path: "c.txt", oldText: "one  \ntwo\t", newText: "ONE\nTWO")
+        let result = await runEdit(path: "c.txt", oldText: "one  \ntwo\t", newText: "ONE\nTWO")
 
         XCTAssertFalse(result.isError)
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "ONE\nTWO\nthree\n")
@@ -143,10 +143,10 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
 
     /// CRLF file, LF old_text: matches, and the REPLACED lines adopt the window's
     /// CRLF convention (the model can't see line endings, so the tool carries them).
-    func testCRLFFile_lfOldText() throws {
+    func testCRLFFile_lfOldText() async throws {
         let url = try writeFile("d.txt", "alpha\r\nbeta\r\ngamma\r\n")
 
-        let result = runEdit(path: "d.txt", oldText: "alpha\nbeta", newText: "ALPHA\nBETA")
+        let result = await runEdit(path: "d.txt", oldText: "alpha\nbeta", newText: "ALPHA\nBETA")
 
         XCTAssertFalse(result.isError)
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "ALPHA\r\nBETA\r\ngamma\r\n")
@@ -154,10 +154,10 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
 
     /// Gutter-prefixed old_text combined with a trailing-whitespace mismatch:
     /// tolerant matching must also run over the line-number-stripped candidate.
-    func testGutterPrefixedOldText_plusTrailingWSMismatch() throws {
+    func testGutterPrefixedOldText_plusTrailingWSMismatch() async throws {
         let url = try writeFile("e.txt", "line one  \nline two\n")
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "e.txt",
             oldText: "1   \u{2502} line one\n2   \u{2502} line two",
             newText: "line ONE\nline TWO"
@@ -168,10 +168,10 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
     }
 
     /// Non-breaking space at line end is just as invisible as a regular space.
-    func testNBSPAtLineEnd_matches() throws {
+    func testNBSPAtLineEnd_matches() async throws {
         let url = try writeFile("f.txt", "x = 1;\u{00A0}\ny = 2;\n")
 
-        let result = runEdit(path: "f.txt", oldText: "x = 1;\ny = 2;", newText: "x = 7;\ny = 2;")
+        let result = await runEdit(path: "f.txt", oldText: "x = 1;\ny = 2;", newText: "x = 7;\ny = 2;")
 
         XCTAssertFalse(result.isError)
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "x = 7;\ny = 2;\n")
@@ -179,10 +179,10 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
 
     // MARK: - replace_all
 
-    func testReplaceAll_twoWindowsDifferentTrailingWS() throws {
+    func testReplaceAll_twoWindowsDifferentTrailingWS() async throws {
         let url = try writeFile("g.txt", "a  \nb\nc\na\t\nb\nd\n")
 
-        let result = runEdit(path: "g.txt", oldText: "a\nb", newText: "X\nY", replaceAll: true)
+        let result = await runEdit(path: "g.txt", oldText: "a\nb", newText: "X\nY", replaceAll: true)
 
         XCTAssertFalse(result.isError)
         XCTAssertEqual(replacementsMade(in: result), 2)
@@ -191,10 +191,10 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
 
     /// Periodic old_text over back-to-back occurrences: greedy non-overlapping scan
     /// yields 2 matches over 4 candidate lines, never overlapping windows.
-    func testReplaceAll_backToBackWindows_nonOverlappingScan() throws {
+    func testReplaceAll_backToBackWindows_nonOverlappingScan() async throws {
         let url = try writeFile("h.txt", "p  \np\t\np \np\u{00A0}\nz\n")
 
-        let result = runEdit(path: "h.txt", oldText: "p\np", newText: "Q", replaceAll: true)
+        let result = await runEdit(path: "h.txt", oldText: "p\np", newText: "Q", replaceAll: true)
 
         XCTAssertFalse(result.isError)
         XCTAssertEqual(replacementsMade(in: result), 2)
@@ -203,10 +203,10 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
 
     // MARK: - Negatives / safety
 
-    func testGenuinelyDifferentText_stillAnchorNotFound() throws {
+    func testGenuinelyDifferentText_stillAnchorNotFound() async throws {
         _ = try writeFile("i.txt", "real content\nmore lines\n")
 
-        let result = runEdit(path: "i.txt", oldText: "totally different\nanchor", newText: "x")
+        let result = await runEdit(path: "i.txt", oldText: "totally different\nanchor", newText: "x")
 
         XCTAssertTrue(result.isError)
         XCTAssertTrue(result.outputJSON.contains("ANCHOR_NOT_FOUND"))
@@ -217,10 +217,10 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
     /// A whitespace-only anchor would tolerantly match any blank run anywhere —
     /// refused, with a hint naming the actual problem (the generic "match exactly"
     /// steering is a treadmill instruction for an all-whitespace anchor).
-    func testWhitespaceOnlyOldText_fallbackRefuses() throws {
+    func testWhitespaceOnlyOldText_fallbackRefuses() async throws {
         _ = try writeFile("j.txt", "a\n   \n\nb\n")
 
-        let result = runEdit(path: "j.txt", oldText: " \n  ", newText: "x")
+        let result = await runEdit(path: "j.txt", oldText: " \n  ", newText: "x")
 
         XCTAssertTrue(result.isError)
         XCTAssertTrue(result.outputJSON.contains("ANCHOR_NOT_FOUND"))
@@ -229,10 +229,10 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
 
     /// Fuzzy match + silent first-pick is too risky: ambiguity gets its own error
     /// code (the anchor_not_found guidance would prescribe the wrong repair).
-    func testAmbiguousTolerantMatch_singleReplace_errors() throws {
+    func testAmbiguousTolerantMatch_singleReplace_errors() async throws {
         let url = try writeFile("k.txt", "m  \nn\nz\nm\t\nn\n")
 
-        let result = runEdit(path: "k.txt", oldText: "m\nn", newText: "X")
+        let result = await runEdit(path: "k.txt", oldText: "m\nn", newText: "X")
 
         XCTAssertTrue(result.isError)
         XCTAssertTrue(result.outputJSON.contains("ANCHOR_AMBIGUOUS"), result.outputJSON)
@@ -248,11 +248,11 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
     /// wrong-location write reported as a success is the worst class of failure this tool has.
     /// RED: delete the occurrence count from the exact-path loop → the first `dup()` is rewritten,
     /// the file changes, and the call reports success.
-    func testExactMatchInSeveralPlaces_withoutReplaceAll_refusesAndLeavesTheFileAlone() throws {
+    func testExactMatchInSeveralPlaces_withoutReplaceAll_refusesAndLeavesTheFileAlone() async throws {
         let original = "dup()\nmiddle\ndup()\n"
         let url = try writeFile("dup.txt", original)
 
-        let result = runEdit(path: "dup.txt", oldText: "dup()", newText: "changed()")
+        let result = await runEdit(path: "dup.txt", oldText: "dup()", newText: "changed()")
 
         XCTAssertTrue(result.isError)
         XCTAssertTrue(result.outputJSON.contains("ANCHOR_AMBIGUOUS"), result.outputJSON)
@@ -266,10 +266,10 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
     /// different sentence.
     /// RED: reuse the tolerant path's message verbatim → the model is told its exact anchor has a
     /// whitespace problem, and `replace_all` is never mentioned as the other way out.
-    func testExactAmbiguity_doesNotBlameTrailingWhitespace_andNamesReplaceAll() throws {
+    func testExactAmbiguity_doesNotBlameTrailingWhitespace_andNamesReplaceAll() async throws {
         _ = try writeFile("dup2.txt", "dup()\nmiddle\ndup()\n")
 
-        let result = runEdit(path: "dup2.txt", oldText: "dup()", newText: "changed()")
+        let result = await runEdit(path: "dup2.txt", oldText: "dup()", newText: "changed()")
 
         XCTAssertFalse(result.outputJSON.contains("ignoring trailing whitespace"), result.outputJSON)
         XCTAssertTrue(result.outputJSON.contains("replace_all"), result.outputJSON)
@@ -278,10 +278,10 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
     /// `replace_all` is exactly what the refusal points at, so it must still work.
     /// RED: hoist the occurrence check above the `!replaceAll` guard → `replace_all: true` starts
     /// erroring on the very input it exists for.
-    func testExactMatchInSeveralPlaces_withReplaceAll_stillReplacesEveryOne() throws {
+    func testExactMatchInSeveralPlaces_withReplaceAll_stillReplacesEveryOne() async throws {
         let url = try writeFile("dup3.txt", "dup()\nmiddle\ndup()\n")
 
-        let result = runEdit(path: "dup3.txt", oldText: "dup()", newText: "changed()", replaceAll: true)
+        let result = await runEdit(path: "dup3.txt", oldText: "dup()", newText: "changed()", replaceAll: true)
 
         XCTAssertFalse(result.isError, result.outputJSON)
         XCTAssertTrue(result.outputJSON.contains("\"replacements_made\":2"), result.outputJSON)
@@ -295,11 +295,11 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
     /// RED: return immediately instead of recording (drop the `index == 0` condition) → a
     /// transformed candidate's ambiguity becomes terminal, and any later candidate that WOULD have
     /// matched uniquely never gets its turn.
-    func testTransformedCandidateAmbiguity_isDeferredThenReported() throws {
+    func testTransformedCandidateAmbiguity_isDeferredThenReported() async throws {
         let original = "foo()\nbar\nfoo()\n"
         let url = try writeFile("gutter.txt", original)
 
-        let result = runEdit(path: "gutter.txt", oldText: "1\tfoo()", newText: "1\tchanged()")
+        let result = await runEdit(path: "gutter.txt", oldText: "1\tfoo()", newText: "1\tchanged()")
 
         XCTAssertTrue(result.isError, result.outputJSON)
         XCTAssertTrue(result.outputJSON.contains("ANCHOR_AMBIGUOUS"), result.outputJSON)
@@ -309,20 +309,20 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
 
     /// The common case must not regress: one occurrence still edits without ceremony.
     /// RED: treat any match as ambiguous (drop the `> 1`) → every single-occurrence edit refuses.
-    func testExactMatchInOnePlace_isUnaffected() throws {
+    func testExactMatchInOnePlace_isUnaffected() async throws {
         let url = try writeFile("once.txt", "only()\nmiddle\n")
 
-        let result = runEdit(path: "once.txt", oldText: "only()", newText: "changed()")
+        let result = await runEdit(path: "once.txt", oldText: "only()", newText: "changed()")
 
         XCTAssertFalse(result.isError, result.outputJSON)
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "changed()\nmiddle\n")
     }
 
     /// Whole-line semantics: a partial-line content difference never fallback-matches.
-    func testMidLineContentDifference_noFallback() throws {
+    func testMidLineContentDifference_noFallback() async throws {
         _ = try writeFile("l.txt", "value = compute(); // cached\nnext();\n")
 
-        let result = runEdit(path: "l.txt", oldText: "value = compute(); // stale\nnext();", newText: "x")
+        let result = await runEdit(path: "l.txt", oldText: "value = compute(); // stale\nnext();", newText: "x")
 
         XCTAssertTrue(result.isError)
         XCTAssertTrue(result.outputJSON.contains("ANCHOR_NOT_FOUND"))
@@ -338,10 +338,10 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
     /// well-defined still refuses — see `testIrregularFileIndentation_refusesAndQuotesTheFile`.
     ///
     /// RED: drop the tier-3 branch → ANCHOR_NOT_FOUND again.
-    func testIndentationMismatch_isRepairedIntoTheFilesConvention() throws {
+    func testIndentationMismatch_isRepairedIntoTheFilesConvention() async throws {
         let url = try writeFile("m.swift", "// header\n\n\tif (x) {\n\t\tgo();\n\t}\n")
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "m.swift",
             oldText: "    if (x) {\n        go();\n    }",
             newText: "    if (y) {\n        go();\n    }"
@@ -365,11 +365,11 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
     ///
     /// RED: restore the conflicted-key `return nil` in `reindentToFileConvention` →
     /// ANCHOR_NOT_FOUND and every assert below fails.
-    func testIrregularFileIndentation_landsPerLine_keepingTheFilesFiveSpaces() throws {
+    func testIrregularFileIndentation_landsPerLine_keepingTheFilesFiveSpaces() async throws {
         let url = try writeFile(
             "irregular.swift", "// header\n\n    let a = 1\n        deeper()\n     let b = 2\n")
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "irregular.swift",
             oldText: "    let a = 1\n        deeper()\n    let b = 2",
             newText: "    let a = 9\n        deeper()\n    let b = 2"
@@ -392,10 +392,10 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
     ///
     /// RED: refuse a unique window when an unpaired depth is not a map key → the
     /// isError assert fails.
-    func testReplacementAtANovelDepth_keepsTheModelsBytesForIt() throws {
+    func testReplacementAtANovelDepth_keepsTheModelsBytesForIt() async throws {
         let url = try writeFile("novel.swift", "\tif (x) {\n\t\tgo();\n\t}\n")
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "novel.swift",
             oldText: "    if (x) {\n        go();\n    }",
             // 12 spaces is a third depth: the anchor only ever showed 4 and 8.
@@ -414,19 +414,19 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
 
     // MARK: - File boundaries
 
-    func testWindowAtEOF_noTrailingNewline() throws {
+    func testWindowAtEOF_noTrailingNewline() async throws {
         let url = try writeFile("n.txt", "first\nlast")
 
-        let result = runEdit(path: "n.txt", oldText: "first \nlast", newText: "X\nY")
+        let result = await runEdit(path: "n.txt", oldText: "first \nlast", newText: "X\nY")
 
         XCTAssertFalse(result.isError)
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "X\nY")
     }
 
-    func testTrailingNewlinePreserved() throws {
+    func testTrailingNewlinePreserved() async throws {
         let url = try writeFile("o.txt", "a  \nb\n")
 
-        let result = runEdit(path: "o.txt", oldText: "a\nb", newText: "c\nd")
+        let result = await runEdit(path: "o.txt", oldText: "a\nb", newText: "c\nd")
 
         XCTAssertFalse(result.isError)
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "c\nd\n")
@@ -434,11 +434,11 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
 
     /// Exact byte-for-byte match must never route through the tolerant path:
     /// only the anchored occurrence is replaced even if a fuzzy duplicate exists.
-    func testExactMatchTakesPriorityOverTolerant() throws {
+    func testExactMatchTakesPriorityOverTolerant() async throws {
         let url = try writeFile("p.txt", "k  \nl\nz\nk\nl\n")
 
         // Exact "k\nl" exists at lines 4-5; lines 1-2 only match tolerantly.
-        let result = runEdit(path: "p.txt", oldText: "k\nl", newText: "K\nL")
+        let result = await runEdit(path: "p.txt", oldText: "k\nl", newText: "K\nL")
 
         XCTAssertFalse(result.isError)
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "k  \nl\nz\nK\nL\n")
@@ -447,10 +447,10 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
     /// replace_all with one exact occurrence and one fuzzy duplicate: the exact path
     /// wins and replaces ONLY exact occurrences — the fuzzy duplicate is left alone
     /// and replacements_made reports the exact count honestly.
-    func testReplaceAll_exactMatchSkipsTolerantDuplicates() throws {
+    func testReplaceAll_exactMatchSkipsTolerantDuplicates() async throws {
         let url = try writeFile("q.txt", "k  \nl\nz\nk\nl\n")
 
-        let result = runEdit(path: "q.txt", oldText: "k\nl", newText: "K\nL", replaceAll: true)
+        let result = await runEdit(path: "q.txt", oldText: "k\nl", newText: "K\nL", replaceAll: true)
 
         XCTAssertFalse(result.isError)
         XCTAssertEqual(replacementsMade(in: result), 1)
@@ -461,10 +461,10 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
 
     /// An anchor ending in "\n" — the most common LLM emission shape — treats that
     /// newline as a line terminator, not as a required blank line in the file.
-    func testTerminatorAnchor_trailingNewline_matches() throws {
+    func testTerminatorAnchor_trailingNewline_matches() async throws {
         let url = try writeFile("r.txt", "first  \nsecond\nthird\n")
 
-        let result = runEdit(path: "r.txt", oldText: "first\nsecond\n", newText: "X\nY\n")
+        let result = await runEdit(path: "r.txt", oldText: "first\nsecond\n", newText: "X\nY\n")
 
         XCTAssertFalse(result.isError, result.outputJSON)
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "X\nY\nthird\n")
@@ -472,10 +472,10 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
 
     /// A terminator anchor must not consume a following whitespace-only line
     /// (e.g. a Markdown paragraph separator) as its "blank line".
-    func testTerminatorAnchor_preservesWhitespaceOnlySeparator() throws {
+    func testTerminatorAnchor_preservesWhitespaceOnlySeparator() async throws {
         let url = try writeFile("s.txt", "foo \n   \nrest\n")
 
-        let result = runEdit(path: "s.txt", oldText: "foo\n", newText: "bar")
+        let result = await runEdit(path: "s.txt", oldText: "foo\n", newText: "bar")
 
         XCTAssertFalse(result.isError, result.outputJSON)
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "bar\n   \nrest\n")
@@ -483,10 +483,10 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
 
     /// Terminator anchor + empty new_text deletes the matched line outright
     /// (mirrors the exact path's `replace "foo\n" with ""` semantics).
-    func testTerminatorAnchor_emptyNewText_deletesLine() throws {
+    func testTerminatorAnchor_emptyNewText_deletesLine() async throws {
         let url = try writeFile("t.txt", "foo \nrest\n")
 
-        let result = runEdit(path: "t.txt", oldText: "foo\n", newText: "")
+        let result = await runEdit(path: "t.txt", oldText: "foo\n", newText: "")
 
         XCTAssertFalse(result.isError, result.outputJSON)
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "rest\n")
@@ -494,10 +494,10 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
 
     /// Non-terminator anchor + empty new_text leaves one blank line (the window's
     /// surrounding newlines survive, matching the exact path's behavior).
-    func testEmptyNewText_nonTerminatorAnchor_leavesBlankLine() throws {
+    func testEmptyNewText_nonTerminatorAnchor_leavesBlankLine() async throws {
         let url = try writeFile("u.txt", "a  \nb\nc\n")
 
-        let result = runEdit(path: "u.txt", oldText: "a\nb", newText: "")
+        let result = await runEdit(path: "u.txt", oldText: "a\nb", newText: "")
 
         XCTAssertFalse(result.isError, result.outputJSON)
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "\nc\n")
@@ -515,10 +515,10 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
     /// RED: drop the tier-3 branch → ANCHOR_NOT_FOUND.
     /// RED: set the flag whenever the tier fires (drop the `leadingRewritten`
     /// gate) → the nil assert fails.
-    func testCombinedLeadingAndTrailingMismatch_isRepaired() throws {
+    func testCombinedLeadingAndTrailingMismatch_isRepaired() async throws {
         let url = try writeFile("v.swift", "\tif (x) {  \n\t\tgo();\n\t}\n")
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "v.swift",
             oldText: "    if (x) {\n        go();\n    }",
             newText: "x"
@@ -530,10 +530,10 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "x\n")
     }
 
-    func testAnchorLongerThanFile_hintsLineCount() throws {
+    func testAnchorLongerThanFile_hintsLineCount() async throws {
         _ = try writeFile("w.txt", "a\nb\n")
 
-        let result = runEdit(path: "w.txt", oldText: "1\n2\n3\n4", newText: "x")
+        let result = await runEdit(path: "w.txt", oldText: "1\n2\n3\n4", newText: "x")
 
         XCTAssertTrue(result.isError)
         XCTAssertTrue(result.outputJSON.contains("ANCHOR_NOT_FOUND"))
@@ -543,13 +543,13 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
     /// Ambiguity of the model's LITERAL anchor is terminal: it demonstrably exists
     /// in several places, so letting a transformed candidate (here JSON-unescaped)
     /// edit its own unique match elsewhere would be a wrong-location guess.
-    func testAmbiguousRawAnchor_terminal_evenWhenTransformMatchesUniquely() throws {
+    func testAmbiguousRawAnchor_terminal_evenWhenTransformMatchesUniquely() async throws {
         let original = "url = \"a\\/b\"  \nnext\nurl = \"a\\/b\"\t\nnext\nurl = \"a/b\" \nnext\ntail\n"
         let url = try writeFile("x.txt", original)
 
         // Raw anchor (with \/) tolerantly matches regions 1 and 2; the unescaped
         // anchor (with /) would match region 3 uniquely — it must NOT win.
-        let result = runEdit(path: "x.txt", oldText: "url = \"a\\/b\"\nnext", newText: "REPLACED\nnext")
+        let result = await runEdit(path: "x.txt", oldText: "url = \"a\\/b\"\nnext", newText: "REPLACED\nnext")
 
         XCTAssertTrue(result.isError)
         XCTAssertTrue(result.outputJSON.contains("ANCHOR_AMBIGUOUS"), result.outputJSON)
@@ -559,11 +559,11 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
     /// A TRANSFORMED candidate's ambiguity is non-terminal in the loop, but when no
     /// candidate matches uniquely it still surfaces as ANCHOR_AMBIGUOUS (the raw
     /// gutter-prefixed anchor matches nothing, the stripped one matches twice).
-    func testAmbiguousStrippedCandidate_rawMatchesNothing_reportsAmbiguous() throws {
+    func testAmbiguousStrippedCandidate_rawMatchesNothing_reportsAmbiguous() async throws {
         let original = "m  \nn\nz\nm\t\nn\n"
         let url = try writeFile("x2.txt", original)
 
-        let result = runEdit(path: "x2.txt", oldText: "1   \u{2502} m\n2   \u{2502} n", newText: "X")
+        let result = await runEdit(path: "x2.txt", oldText: "1   \u{2502} m\n2   \u{2502} n", newText: "X")
 
         XCTAssertTrue(result.isError)
         XCTAssertTrue(result.outputJSON.contains("ANCHOR_AMBIGUOUS"), result.outputJSON)
@@ -573,19 +573,19 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
 
     /// A fuzzy-matched edit discloses itself in the success envelope so the model
     /// knows the file's bytes differed from its anchor.
-    func testTolerantSuccess_disclosesFuzzyMatch() throws {
+    func testTolerantSuccess_disclosesFuzzyMatch() async throws {
         _ = try writeFile("y.txt", "alpha  \nbeta\n")
 
-        let result = runEdit(path: "y.txt", oldText: "alpha\nbeta", newText: "ALPHA\nbeta")
+        let result = await runEdit(path: "y.txt", oldText: "alpha\nbeta", newText: "ALPHA\nbeta")
 
         XCTAssertFalse(result.isError)
         XCTAssertEqual(dataField(result, "matched_ignoring_trailing_whitespace") as? Bool, true, result.outputJSON)
     }
 
-    func testExactSuccess_omitsFuzzyDisclosure() throws {
+    func testExactSuccess_omitsFuzzyDisclosure() async throws {
         _ = try writeFile("z.txt", "alpha\nbeta\n")
 
-        let result = runEdit(path: "z.txt", oldText: "alpha\nbeta", newText: "ALPHA\nbeta")
+        let result = await runEdit(path: "z.txt", oldText: "alpha\nbeta", newText: "ALPHA\nbeta")
 
         XCTAssertFalse(result.isError)
         XCTAssertFalse(result.outputJSON.contains("matched_ignoring_trailing_whitespace"), result.outputJSON)
@@ -595,11 +595,11 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
 
     /// "a\n\n" drops exactly ONE trailing newline as terminator — the remaining
     /// empty component is an intentional blank-line requirement and is honored.
-    func testTerminatorAnchor_keepsIntentionalBlankLineRequirement() throws {
+    func testTerminatorAnchor_keepsIntentionalBlankLineRequirement() async throws {
         let url = try writeFile("ca.txt", "a  \n\t\nx\n")
 
         // Anchor: line "a" + one required blank line (+ terminator).
-        let result = runEdit(path: "ca.txt", oldText: "a\n\n", newText: "b")
+        let result = await runEdit(path: "ca.txt", oldText: "a\n\n", newText: "b")
 
         XCTAssertFalse(result.isError, result.outputJSON)
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "b\nx\n")
@@ -607,10 +607,10 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
 
     /// The negative twin: the blank-line requirement left after dropping the
     /// terminator must NOT be satisfied by a non-blank line.
-    func testTerminatorAnchor_blankLineRequirement_notFoundWithoutBlank() throws {
+    func testTerminatorAnchor_blankLineRequirement_notFoundWithoutBlank() async throws {
         let url = try writeFile("cb.txt", "a\nx\n")
 
-        let result = runEdit(path: "cb.txt", oldText: "a\n\n", newText: "b")
+        let result = await runEdit(path: "cb.txt", oldText: "a\n\n", newText: "b")
 
         XCTAssertTrue(result.isError)
         XCTAssertTrue(result.outputJSON.contains("ANCHOR_NOT_FOUND"))
@@ -620,10 +620,10 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
 
     /// A terminator anchor matches a file whose last line has NO final newline;
     /// the file's no-final-newline shape is preserved.
-    func testTerminatorAnchor_fileWithoutTrailingNewline() throws {
+    func testTerminatorAnchor_fileWithoutTrailingNewline() async throws {
         let url = try writeFile("cc.txt", "a  \nb")
 
-        let result = runEdit(path: "cc.txt", oldText: "a\nb\n", newText: "c\nd\n")
+        let result = await runEdit(path: "cc.txt", oldText: "a\nb\n", newText: "c\nd\n")
 
         XCTAssertFalse(result.isError, result.outputJSON)
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "c\nd")
@@ -632,10 +632,10 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
     /// LF terminator anchor against a CRLF file: the model types "\n" from read
     /// output, the file ends lines with "\r\n" — both diffs are invisible to it.
     /// The replaced line stays CRLF so the file's convention isn't eroded.
-    func testLFTerminatorAnchor_onCRLFFile() throws {
+    func testLFTerminatorAnchor_onCRLFFile() async throws {
         let url = try writeFile("cd.txt", "alpha\r\nbeta\r\n")
 
-        let result = runEdit(path: "cd.txt", oldText: "alpha\n", newText: "ALPHA")
+        let result = await runEdit(path: "cd.txt", oldText: "alpha\n", newText: "ALPHA")
 
         XCTAssertFalse(result.isError, result.outputJSON)
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "ALPHA\r\nbeta\r\n")
@@ -643,10 +643,10 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
 
     /// Reverse line-ending direction: CRLF anchor (copied from another tool or
     /// hallucinated) against an LF file.
-    func testCRLFAnchor_onLFFile() throws {
+    func testCRLFAnchor_onLFFile() async throws {
         let url = try writeFile("ce.txt", "a\nb\nz\n")
 
-        let result = runEdit(path: "ce.txt", oldText: "a\r\nb", newText: "A\nB")
+        let result = await runEdit(path: "ce.txt", oldText: "a\r\nb", newText: "A\nB")
 
         XCTAssertFalse(result.isError, result.outputJSON)
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "A\nB\nz\n")
@@ -654,10 +654,10 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
 
     /// new_text's own trailing newline on a NON-terminator anchor inserts a blank
     /// line — mirroring the exact path, which honors the extra "\n" verbatim.
-    func testNewTextTrailingNewline_nonTerminatorAnchor_insertsBlankLine() throws {
+    func testNewTextTrailingNewline_nonTerminatorAnchor_insertsBlankLine() async throws {
         let url = try writeFile("cf.txt", "a  \nb\nz\n")
 
-        let result = runEdit(path: "cf.txt", oldText: "a\nb", newText: "c\n")
+        let result = await runEdit(path: "cf.txt", oldText: "a\nb", newText: "c\n")
 
         XCTAssertFalse(result.isError, result.outputJSON)
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "c\n\nz\n")
@@ -666,19 +666,19 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
     // MARK: - Corner cases: window boundaries
 
     /// The window may cover every line of the file.
-    func testWholeFileWindow_replacesEntireFile() throws {
+    func testWholeFileWindow_replacesEntireFile() async throws {
         let url = try writeFile("cg.txt", "x  \ny\t\n")
 
-        let result = runEdit(path: "cg.txt", oldText: "x\ny", newText: "1\n2")
+        let result = await runEdit(path: "cg.txt", oldText: "x\ny", newText: "1\n2")
 
         XCTAssertFalse(result.isError, result.outputJSON)
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "1\n2\n")
     }
 
-    func testEmptyFile_anchorLongerThanFile_hintsZeroLines() throws {
+    func testEmptyFile_anchorLongerThanFile_hintsZeroLines() async throws {
         let url = try writeFile("ch.txt", "")
 
-        let result = runEdit(path: "ch.txt", oldText: "a\nb", newText: "x")
+        let result = await runEdit(path: "ch.txt", oldText: "a\nb", newText: "x")
 
         XCTAssertTrue(result.isError)
         XCTAssertTrue(result.outputJSON.contains("ANCHOR_NOT_FOUND"))
@@ -688,10 +688,10 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
 
     /// A clean blank line in the anchor matches a tab-only line in the file —
     /// tabs are as invisible as trailing spaces.
-    func testBlankAnchorLine_matchesTabOnlyFileLine() throws {
+    func testBlankAnchorLine_matchesTabOnlyFileLine() async throws {
         let url = try writeFile("ci.txt", "a\n\t\nb\n")
 
-        let result = runEdit(path: "ci.txt", oldText: "a\n\nb", newText: "a\nb")
+        let result = await runEdit(path: "ci.txt", oldText: "a\n\nb", newText: "a\nb")
 
         XCTAssertFalse(result.isError, result.outputJSON)
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "a\nb\n")
@@ -699,10 +699,10 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
 
     /// Triple combo: gutter-prefixed anchor + trailing newline terminator +
     /// trailing whitespace in the file — every transform layer fires at once.
-    func testGutterPlusTerminatorPlusTrailingWS_combo() throws {
+    func testGutterPlusTerminatorPlusTrailingWS_combo() async throws {
         let url = try writeFile("cj.txt", "a  \nb\n")
 
-        let result = runEdit(path: "cj.txt", oldText: "1   \u{2502} a\n2   \u{2502} b\n", newText: "X")
+        let result = await runEdit(path: "cj.txt", oldText: "1   \u{2502} a\n2   \u{2502} b\n", newText: "X")
 
         XCTAssertFalse(result.isError, result.outputJSON)
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "X\n")
@@ -712,10 +712,10 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
 
     /// Multiple indentation-only matches: plural wording, 1-based numbers, and
     /// the list capped at the first three.
-    func testIndentationHint_multipleWindows_pluralAndCappedAtThree() throws {
+    func testIndentationHint_multipleWindows_pluralAndCappedAtThree() async throws {
         _ = try writeFile("ck.txt", "\tgo()  \nx\n\tgo()\ny\n\tgo()\nz\n\tgo()\n")
 
-        let result = runEdit(path: "ck.txt", oldText: "    go()", newText: "stop()")
+        let result = await runEdit(path: "ck.txt", oldText: "    go()", newText: "stop()")
 
         XCTAssertTrue(result.isError)
         XCTAssertTrue(result.outputJSON.contains("near lines 1, 3, 5"), result.outputJSON)
@@ -724,10 +724,10 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
 
     /// Multibyte content (accents, emoji) with trailing whitespace — the per-line
     /// trim must operate on Characters, not bytes.
-    func testUnicodeContent_trailingWSMatch() throws {
+    func testUnicodeContent_trailingWSMatch() async throws {
         let url = try writeFile("cl.txt", "héllo 👋  \nnext\n")
 
-        let result = runEdit(path: "cl.txt", oldText: "héllo 👋\nnext", newText: "done\nnext")
+        let result = await runEdit(path: "cl.txt", oldText: "héllo 👋\nnext", newText: "done\nnext")
 
         XCTAssertFalse(result.isError, result.outputJSON)
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "done\nnext\n")
@@ -736,10 +736,10 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
     /// A combining mark (U+0301) at the visual end of a line must survive the
     /// trailing trim: the trim walks grapheme clusters and stops at the first
     /// non-whitespace Character, never splitting or eating the accent.
-    func testCombiningMarkAtLineEnd_notTrimmed() throws {
+    func testCombiningMarkAtLineEnd_notTrimmed() async throws {
         let url = try writeFile("cm.txt", "Cafe\u{0301}  \nnext\n")
 
-        let result = runEdit(path: "cm.txt", oldText: "Cafe\u{0301}\nnext", newText: "X\nnext")
+        let result = await runEdit(path: "cm.txt", oldText: "Cafe\u{0301}\nnext", newText: "X\nnext")
 
         XCTAssertFalse(result.isError, result.outputJSON)
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "X\nnext\n")
@@ -747,10 +747,10 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
 
     /// Multi-window deletion: replace_all + terminator anchor + empty new_text
     /// removes every matched line — the most index-shift-sensitive splice shape.
-    func testReplaceAllTerminatorAnchor_emptyNewText_deletesAllWindows() throws {
+    func testReplaceAllTerminatorAnchor_emptyNewText_deletesAllWindows() async throws {
         let url = try writeFile("co.txt", "foo \nA\nfoo\t\nB\n")
 
-        let result = runEdit(path: "co.txt", oldText: "foo\n", newText: "", replaceAll: true)
+        let result = await runEdit(path: "co.txt", oldText: "foo\n", newText: "", replaceAll: true)
 
         XCTAssertFalse(result.isError, result.outputJSON)
         XCTAssertEqual(replacementsMade(in: result), 2)
@@ -760,10 +760,10 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
     /// new_text of exactly "\n" with a terminator anchor REPLACES the line with a
     /// blank one (only a fully empty new_text deletes) — pins the `isEmpty` gate
     /// against a trimmed-emptiness "cleanup".
-    func testTerminatorAnchor_newlineOnlyNewText_leavesBlankLine() throws {
+    func testTerminatorAnchor_newlineOnlyNewText_leavesBlankLine() async throws {
         let url = try writeFile("cp.txt", "foo \nrest\n")
 
-        let result = runEdit(path: "cp.txt", oldText: "foo\n", newText: "\n")
+        let result = await runEdit(path: "cp.txt", oldText: "foo\n", newText: "\n")
 
         XCTAssertFalse(result.isError, result.outputJSON)
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "\nrest\n")
@@ -771,20 +771,20 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
 
     /// Boundary of the longer-than-file hint: anchor exactly ONE line longer than
     /// the file's real line count (the split sentinel must not mask the diagnosis).
-    func testAnchorOneLineLongerThanFile_stillHintsLineCount() throws {
+    func testAnchorOneLineLongerThanFile_stillHintsLineCount() async throws {
         _ = try writeFile("cq.txt", "a\nb\n")
 
-        let result = runEdit(path: "cq.txt", oldText: "x\ny\nz", newText: "w")
+        let result = await runEdit(path: "cq.txt", oldText: "x\ny\nz", newText: "w")
 
         XCTAssertTrue(result.isError)
         XCTAssertTrue(result.outputJSON.contains("more lines (3) than the file (2)"), result.outputJSON)
     }
 
     /// replace_all through the tolerant path also discloses the fuzzy match.
-    func testReplaceAllTolerant_disclosesFuzzyMatch() throws {
+    func testReplaceAllTolerant_disclosesFuzzyMatch() async throws {
         let url = try writeFile("cn.txt", "a  \nb\nc\na\t\nb\n")
 
-        let result = runEdit(path: "cn.txt", oldText: "a\nb", newText: "Q\nb", replaceAll: true)
+        let result = await runEdit(path: "cn.txt", oldText: "a\nb", newText: "Q\nb", replaceAll: true)
 
         XCTAssertFalse(result.isError)
         XCTAssertEqual(replacementsMade(in: result), 2)
@@ -796,10 +796,10 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
 
     /// EOL detection is PER WINDOW: in a mixed-EOL file, a CRLF window gets CRLF
     /// replacement lines while an LF window in the same replace_all gets LF.
-    func testReplaceAll_mixedEOLWindows_eachKeepsOwnConvention() throws {
+    func testReplaceAll_mixedEOLWindows_eachKeepsOwnConvention() async throws {
         let url = try writeFile("da.txt", "k\r\nl\r\nz\nk  \nl\n")
 
-        let result = runEdit(path: "da.txt", oldText: "k\nl", newText: "X\nY", replaceAll: true)
+        let result = await runEdit(path: "da.txt", oldText: "k\nl", newText: "X\nY", replaceAll: true)
 
         XCTAssertFalse(result.isError, result.outputJSON)
         XCTAssertEqual(replacementsMade(in: result), 2)
@@ -808,10 +808,10 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
 
     /// Deletion in a CRLF file: the CR-suffixing map over an empty replacement is
     /// a no-op and untouched lines keep their CRLF endings.
-    func testCRLFWindow_emptyNewText_deletesLine() throws {
+    func testCRLFWindow_emptyNewText_deletesLine() async throws {
         let url = try writeFile("db.txt", "foo \r\nrest\r\n")
 
-        let result = runEdit(path: "db.txt", oldText: "foo\n", newText: "")
+        let result = await runEdit(path: "db.txt", oldText: "foo\n", newText: "")
 
         XCTAssertFalse(result.isError, result.outputJSON)
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "rest\r\n")
@@ -819,10 +819,10 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
 
     /// Replacing with a blank line in a CRLF file produces a blank CRLF line
     /// ("\r\n"), not a bare LF one.
-    func testCRLFWindow_newlineOnlyNewText_leavesBlankCRLFLine() throws {
+    func testCRLFWindow_newlineOnlyNewText_leavesBlankCRLFLine() async throws {
         let url = try writeFile("dc.txt", "foo \r\nrest\r\n")
 
-        let result = runEdit(path: "dc.txt", oldText: "foo\n", newText: "\n")
+        let result = await runEdit(path: "dc.txt", oldText: "foo\n", newText: "\n")
 
         XCTAssertFalse(result.isError, result.outputJSON)
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "\r\nrest\r\n")
@@ -831,10 +831,10 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
     /// Heuristic boundary, documented: a window whose last line sits at EOF with
     /// no line terminator has no "\r" on that line, so the window does not count
     /// as CRLF and the replacement is written with LF endings.
-    func testCRLFWindowAtEOF_noTerminator_fallsBackToLF() throws {
+    func testCRLFWindowAtEOF_noTerminator_fallsBackToLF() async throws {
         let url = try writeFile("dd.txt", "alpha\r\nbeta")
 
-        let result = runEdit(path: "dd.txt", oldText: "alpha\nbeta", newText: "X\nY")
+        let result = await runEdit(path: "dd.txt", oldText: "alpha\nbeta", newText: "X\nY")
 
         XCTAssertFalse(result.isError, result.outputJSON)
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "X\nY")
@@ -844,12 +844,12 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
 
     /// A unique raw match wins immediately — a transform that WOULD be ambiguous
     /// is never consulted (candidate order: raw → stripped → unescaped).
-    func testRawUniqueMatch_winsBeforeTransformIsConsulted() throws {
+    func testRawUniqueMatch_winsBeforeTransformIsConsulted() async throws {
         // Raw anchor (with \/) matches only region 1; the unescaped variant (/)
         // would match regions 2 and 3 ambiguously.
         let url = try writeFile("de.txt", "p\\/q  \nw\np/q \nw\np/q\t\nw\n")
 
-        let result = runEdit(path: "de.txt", oldText: "p\\/q\nw", newText: "R\nw")
+        let result = await runEdit(path: "de.txt", oldText: "p\\/q\nw", newText: "R\nw")
 
         XCTAssertFalse(result.isError, result.outputJSON)
         XCTAssertEqual(
@@ -862,11 +862,11 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
     /// the file also contains a region that trimBoth would match (indented AND
     /// trailing-dirty, so it can't exact- or trailing-trim-match), but the answer
     /// stays ANCHOR_AMBIGUOUS, not the indentation hint.
-    func testTransformAmbiguity_beatsIndentationHint() throws {
+    func testTransformAmbiguity_beatsIndentationHint() async throws {
         let original = "m  \nn\nz\nm\t\nn\n\tm  \nn\t\n"
         let url = try writeFile("df.txt", original)
 
-        let result = runEdit(path: "df.txt", oldText: "1   \u{2502} m\n2   \u{2502} n", newText: "X")
+        let result = await runEdit(path: "df.txt", oldText: "1   \u{2502} m\n2   \u{2502} n", newText: "X")
 
         XCTAssertTrue(result.isError)
         XCTAssertTrue(result.outputJSON.contains("ANCHOR_AMBIGUOUS"), result.outputJSON)
@@ -875,10 +875,10 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
     }
 
     /// Whole-file window + empty terminator new_text empties the file entirely.
-    func testWholeFileWindow_emptyNewText_emptiesFile() throws {
+    func testWholeFileWindow_emptyNewText_emptiesFile() async throws {
         let url = try writeFile("dg.txt", "a  \nb\n")
 
-        let result = runEdit(path: "dg.txt", oldText: "a\nb\n", newText: "")
+        let result = await runEdit(path: "dg.txt", oldText: "a\nb\n", newText: "")
 
         XCTAssertFalse(result.isError, result.outputJSON)
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "")
@@ -886,10 +886,10 @@ final class EditFileWhitespaceToleranceTests: XCTestCase {
 
     /// The longer-than-file hint also fires for files WITHOUT a trailing newline
     /// (no split sentinel to adjust for).
-    func testAnchorLongerThanFile_noTrailingNewlineFile() throws {
+    func testAnchorLongerThanFile_noTrailingNewlineFile() async throws {
         _ = try writeFile("dh.txt", "a\nb")
 
-        let result = runEdit(path: "dh.txt", oldText: "x\ny\nz", newText: "w")
+        let result = await runEdit(path: "dh.txt", oldText: "x\ny\nz", newText: "w")
 
         XCTAssertTrue(result.isError)
         XCTAssertTrue(result.outputJSON.contains("more lines (3) than the file (2)"), result.outputJSON)

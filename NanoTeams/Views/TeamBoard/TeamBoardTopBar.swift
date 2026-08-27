@@ -25,6 +25,11 @@ struct TeamBoardTopBar<Actions: View>: View {
     let runLabel: String?
     let engineState: TeamEngineState?
     let isHistoricalRun: Bool
+    /// A run start is claimed but has not reached `engine.start()` yet — the navbar
+    /// offers `pause` instead of a `start` that would be refused. Defaulted so the
+    /// previews and any future host that has no access to the fact keep compiling into
+    /// the pre-2026-08-27 behaviour rather than silently claiming "not initializing".
+    var isInitializingRun: Bool = false
     let onPause: () -> Void
     let onResume: () -> Void
     let onStart: () -> Void
@@ -78,7 +83,11 @@ struct TeamBoardTopBar<Actions: View>: View {
     /// `<Button size="sm" variant="secondary">`.
     @ViewBuilder
     private var playPauseControl: some View {
-        switch TeamBoardRunControl.select(engineState: engineState, isHistoricalRun: isHistoricalRun) {
+        switch TeamBoardRunControl.select(
+            engineState: engineState,
+            isHistoricalRun: isHistoricalRun,
+            isInitializingRun: isInitializingRun
+        ) {
         case .pause:
             Button("pause", action: onPause)
                 .buttonStyle(.terminalSecondary)

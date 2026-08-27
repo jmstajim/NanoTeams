@@ -18,8 +18,10 @@ final class AgentInstructionsOrchestratorTests: NTMSOrchestratorTestBase, @unche
         try content.write(to: url, atomically: true, encoding: .utf8)
     }
 
-    /// The refresh memo skips a rescan when inputs are unchanged within the
-    /// TTL — tests that WANT a rescan must expire it explicitly.
+    /// The DISCOVERY window — "which instruction files exist" — is memoised;
+    /// CONTENT is re-read on every refresh. Tests that want a fresh WALK (a file
+    /// created since the last one) must expire it explicitly. Tests that want fresh
+    /// BYTES must not: that is unconditional.
     private func expireScanTTL() {
         sut.agentInstructionsLastScanAt = .distantPast
     }
@@ -61,21 +63,92 @@ final class AgentInstructionsOrchestratorTests: NTMSOrchestratorTestBase, @unche
         XCTAssertEqual(sut.agentInstructions?.mainFile?.injectedContent, "added later")
     }
 
-    func testRefresh_withinTTL_sameInputs_skipsRescan() async throws {
+    /// The window covers DISCOVERY only. It used to cover content too, at 5
+    /// seconds — which meant a send inside the window silently used yesterday's
+    /// `CLAUDE.md`, and a send outside it (i.e. every real one, since composing a
+    /// message takes longer than five seconds) paid a full recursive walk of the
+    /// work folder. Both halves were wrong in opposite directions.
+    func testRefresh_withinTheWindow_stillPicksUpAnEditedFile() async throws {
         try writeFile("CLAUDE.md", "v1")
         await sut.openWorkFolder(tempDir)
         XCTAssertEqual(sut.agentInstructions?.mainFile?.injectedContent, "v1")
 
-        // Disk changed, but inputs are identical and the last scan just landed
-        // → the memo intentionally skips (back-to-back run starts collapse).
         try writeFile("CLAUDE.md", "v2")
         await sut.refreshAgentInstructions()
-        XCTAssertEqual(sut.agentInstructions?.mainFile?.injectedContent, "v1",
-                       "within-TTL refresh with unchanged inputs is a no-op")
+
+        XCTAssertEqual(sut.agentInstructions?.mainFile?.injectedContent, "v2",
+                       "Content is re-read unconditionally — an edit reaches the next prompt")
+    }
+
+    /// The other half, and the deliberate narrowing: a file that did not exist when
+    /// the folder was walked is not discovered until the window lapses (or a
+    /// Settings edit changes the scan key, or the folder is reopened).
+    func testRefresh_withinTheWindow_doesNotDiscoverANewFile() async throws {
+        try writeFile("CLAUDE.md", "root")
+        await sut.openWorkFolder(tempDir)
+
+        try writeFile("docs/AGENTS.md", "nested")
+        await sut.refreshAgentInstructions()
+
+        XCTAssertFalse(
+            sut.agentInstructions?.items.contains { $0.relativePath == "docs/AGENTS.md" } ?? true,
+            "Discovery is what the window gates")
 
         expireScanTTL()
         await sut.refreshAgentInstructions()
-        XCTAssertEqual(sut.agentInstructions?.mainFile?.injectedContent, "v2")
+        XCTAssertTrue(
+            sut.agentInstructions?.items.contains { $0.relativePath == "docs/AGENTS.md" } ?? false)
+    }
+
+    /// A content re-read says nothing about whether new files appeared, so it must
+    /// not renew the window. If it did, a folder someone sends to every 30 seconds
+    /// would never run discovery again — the window would be kept alive by exactly
+    /// the calls that do not answer its question.
+    func testContentReread_doesNotRenewTheDiscoveryWindow() async throws {
+        try writeFile("CLAUDE.md", "v1")
+        await sut.openWorkFolder(tempDir)
+        let stampAfterWalk = sut.agentInstructionsLastScanAt
+
+        try writeFile("CLAUDE.md", "v2")
+        await sut.refreshAgentInstructions()
+
+        XCTAssertEqual(sut.agentInstructionsLastScanAt, stampAfterWalk,
+                       "Only a walk may stamp the discovery window")
+    }
+
+    /// A file deleted since the walk must leave the snapshot on the next refresh —
+    /// otherwise the prompt keeps listing a path the sandboxed `read_file` would
+    /// refuse, until the window lapses.
+    func testRefresh_dropsAnInjectedFileThatHasBeenDeleted() async throws {
+        try writeFile("CLAUDE.md", "v1")
+        await sut.openWorkFolder(tempDir)
+        XCTAssertEqual(sut.agentInstructions?.mainFile?.relativePath, "CLAUDE.md")
+
+        try FileManager.default.removeItem(at: tempDir.appendingPathComponent("CLAUDE.md"))
+        await sut.refreshAgentInstructions()
+
+        XCTAssertTrue(sut.agentInstructions?.isEmpty ?? false,
+                      "A vanished file is dropped, not left in the path list")
+    }
+
+    /// An injected file that has become unreadable (turned binary) demotes from
+    /// content-injected to path-listed — the same outcome a full walk produces,
+    /// because the role can still be told the path exists.
+    func testRefresh_demotesAnInjectedFileThatBecameUnreadable() async throws {
+        try writeFile("CLAUDE.md", "v1")
+        try writeFile("docs/notes.md", "readable")
+        await sut.openWorkFolder(tempDir)
+        await sut.addAgentInstructions(urls: [tempDir.appendingPathComponent("docs/notes.md")])
+        XCTAssertNotNil(
+            sut.agentInstructions?.items.first { $0.relativePath == "docs/notes.md" }?.injectedContent)
+
+        try Data([0xFF, 0xFE, 0x00, 0x01])
+            .write(to: tempDir.appendingPathComponent("docs/notes.md"))
+        await sut.refreshAgentInstructions()
+
+        let item = sut.agentInstructions?.items.first { $0.relativePath == "docs/notes.md" }
+        XCTAssertNotNil(item, "still listed")
+        XCTAssertNil(item?.injectedContent, "…but no longer content-injected")
     }
 
     // MARK: - Add / remove / restore
@@ -279,9 +352,9 @@ final class AgentInstructionsOrchestratorTests: NTMSOrchestratorTestBase, @unche
 
         // Simulate an in-flight startRun for the same task: the second call
         // must bail before creating a duplicate run.
-        sut.startingRunTaskIDs.insert(taskID)
+        _ = sut.engineState.beginRunStart(taskID)
         await sut.startRun(taskID: taskID)
-        sut.startingRunTaskIDs.remove(taskID)
+        sut.engineState.endRunStart(taskID)
 
         XCTAssertEqual(sut.loadedTask(taskID)?.runs.count ?? 0, runsBefore,
                        "guarded startRun must not create a run")

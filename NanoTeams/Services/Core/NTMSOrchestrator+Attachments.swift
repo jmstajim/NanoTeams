@@ -19,6 +19,22 @@ struct TaskCreationRequest: Hashable {
 
 extension NTMSOrchestrator {
 
+    /// Creates the task, finalizes its attachments and materializes its first run —
+    /// then returns. The board is renderable at exactly that point, so the caller can
+    /// open the chat immediately; the run's LAUNCH (agent-instruction and role-skill
+    /// rescan, engine start) continues in a registered background task behind it.
+    ///
+    /// The boundary moved here because the previous one was wrong by construction:
+    /// this method used to `await startRun`, so the chat stayed closed for the whole
+    /// prompt warm-up — a recursive walk of the work folder for CLAUDE.md-class files
+    /// plus a scan of every installed skill — none of which the first frame needs.
+    /// Both scans run off the MainActor, which is why the UI never froze and the
+    /// symptom was only ever "the chat opens late".
+    ///
+    /// Callers that need the run to have actually STARTED — tests, headless runs —
+    /// join `runStartTask(for:)`. Concurrency is unchanged: the launch keeps holding
+    /// the run-start claim, so a competing `startRun` is refused for its whole
+    /// duration exactly as before.
     @discardableResult
     func createPreparedTaskAndStart(request: TaskCreationRequest) async -> Int? {
         if workFolderURL == nil {
@@ -49,6 +65,9 @@ extension NTMSOrchestrator {
         ) else {
             return nil
         }
+        #if DEBUG
+        SubmitLatencyProbe.mark("createTask")
+        #endif
 
         do {
             let finalAttachmentPaths = try repository.finalizeAttachments(
@@ -60,7 +79,7 @@ extension NTMSOrchestrator {
             )
 
             await mutateTask(taskID: newTaskID) { task in
-                task.clippedTexts = normalizedClips
+                task.clippedTexts = [Clip].minting(normalizedClips)
                 task.attachmentPaths = finalAttachmentPaths
             }
         } catch {
@@ -68,9 +87,22 @@ extension NTMSOrchestrator {
             lastErrorMessage = error.localizedDescription
             return nil
         }
+        #if DEBUG
+        SubmitLatencyProbe.mark("attachments")
+        #endif
 
+        // No-op today — `createTask(makeActive:)` already promoted this id — but kept
+        // so the "the active task is this one" precondition the board renders against
+        // is stated here rather than inherited from another method's default argument.
         await switchTask(to: newTaskID)
-        await startRun(taskID: newTaskID)
+
+        // Phase 1 inline, phase 2 behind the chat. `claimRunStart` is the same guard
+        // `startRun` takes, so a Play click or a queue-flush wake arriving during the
+        // background launch is refused exactly as it would have been mid-`startRun`.
+        if let generation = claimRunStart(taskID: newTaskID) {
+            await materializeRun(taskID: newTaskID)
+            spawnBackgroundRunLaunch(taskID: newTaskID, generation: generation)
+        }
         return newTaskID
     }
 

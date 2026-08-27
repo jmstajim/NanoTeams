@@ -49,7 +49,7 @@ extension LLMExecutionService {
 
         // Feature disabled → plain search with a marker envelope.
         if !delegate.exploratorySearchEnabled {
-            let plain = runPlainExecutor(
+            let plain = await runPlainExecutor(
                 workFolderRoot: workFolderRoot,
                 resolver: resolver,
                 internalDir: internalDir,
@@ -82,7 +82,7 @@ extension LLMExecutionService {
         // "real folder, coordinator-returned-nil (true bug)" so the LLM can
         // see which branch fired.
         guard let index = await delegate.awaitSearchIndex() else {
-            let plain = runPlainExecutor(
+            let plain = await runPlainExecutor(
                 workFolderRoot: workFolderRoot,
                 resolver: resolver,
                 internalDir: internalDir,
@@ -142,23 +142,11 @@ extension LLMExecutionService {
             query: payload.query, tokens: queryTokens, expanded: expanded
         )
 
-        // Posting intersection — union over postings for every search term.
-        // The literal query is rarely a posting key on its own (multi-word
-        // queries never are), so without `queryTokens` the union for
-        // "team meeting service" against a corpus that contains `team`,
-        // `meeting`, and `service` postings would return 0 candidate files.
-        let hitFiles = index.files(containing: unionTerms)
-
-        // Filename matches over the FULL index roster (not just `hitFiles`)
-        // so a file whose name matches an expanded vocab term still surfaces
-        // even if its content didn't intersect any posting list. The index
-        // builder already applied `WalkSkipRules` + internal-dir exclusion,
-        // so candidate paths are sandbox-clean.
-        let indexFilenameMatches = FilenameMatcher.match(
-            candidates: index.files.map(\.path),
-            queries: unionTerms,
-            limit: payload.maxResults
-        )
+        // Both index-wide passes, off the main actor — see `narrowAndMatchNames`.
+        let narrowed = await Self.narrowAndMatchNames(
+            index: index, unionTerms: unionTerms, limit: payload.maxResults)
+        let hitFiles = narrowed.hitFiles
+        let indexFilenameMatches = narrowed.filenameMatches
 
         // If the posting intersection returned nothing, short-circuit.
         // We still run the executor against the original query scope so that
@@ -167,7 +155,7 @@ extension LLMExecutionService {
         // "those files were unreadable". Constraining to an empty set returns
         // fast (executor early-exits), so the cost is just the walk.
         if hitFiles.isEmpty {
-            let plain = runPlainExecutor(
+            let plain = await runPlainExecutor(
                 workFolderRoot: workFolderRoot,
                 resolver: resolver,
                 internalDir: internalDir,
@@ -200,7 +188,7 @@ extension LLMExecutionService {
             return
         }
 
-        let plain = runPlainExecutor(
+        let plain = await runPlainExecutor(
             workFolderRoot: workFolderRoot,
             resolver: resolver,
             internalDir: internalDir,
@@ -255,6 +243,35 @@ extension LLMExecutionService {
         [query] + Array(tokens) + expanded
     }
 
+    /// The two index-wide computations the exploratory path performs before it greps anything:
+    /// the posting intersection that narrows the walk, and filename matching over the FULL
+    /// roster.
+    ///
+    /// - Posting intersection is a union over the postings of every search term. The literal
+    ///   query is rarely a posting key on its own (multi-word queries never are), so without the
+    ///   query's TOKENS the union for "team meeting service" against a corpus holding `team`,
+    ///   `meeting` and `service` postings returns zero candidate files.
+    /// - Filename matching runs over the whole roster rather than just `hitFiles`, so a file
+    ///   whose NAME matches an expanded vocab term still surfaces even when its content
+    ///   intersected no posting list. The index builder already applied `WalkSkipRules` and the
+    ///   internal-dir exclusion, so these paths are sandbox-clean.
+    ///
+    /// `@concurrent` rather than plain `nonisolated`: under `SWIFT_APPROACHABLE_CONCURRENCY` a
+    /// `nonisolated async` function runs on the CALLER's executor (SE-0461), and every caller
+    /// here is `@MainActor`. Both passes are O(index) with no upper bound — the roster on this
+    /// work folder is several thousand paths — so leaving them with the caller freezes the UI
+    /// for the length of a search nobody asked the main thread to do.
+    @concurrent
+    nonisolated static func narrowAndMatchNames(
+        index: SearchIndex, unionTerms: [String], limit: Int
+    ) async -> (hitFiles: [String], filenameMatches: [FilenameMatch]) {
+        (
+            hitFiles: index.files(containing: unionTerms),
+            filenameMatches: FilenameMatcher.match(
+                candidates: index.files.map(\.path), queries: unionTerms, limit: limit)
+        )
+    }
+
     /// Outcome of a plain-executor pass. When `SearchExecutor.run` throws
     /// (e.g. sandbox-reject of an absolute `paths` entry, regex compile
     /// failure raised from an upstream caller), the envelope must NOT
@@ -272,10 +289,10 @@ extension LLMExecutionService {
         payload: ExploratorySearchPayload,
         constrainToFiles: [String]?,
         extraQueries: [String] = []
-    ) -> PlainExecutorResult {
+    ) async -> PlainExecutorResult {
         let queries = [payload.query] + extraQueries
         do {
-            let output = try SearchExecutor.run(SearchExecutorInput(
+            let output = try await SearchExecutor.run(SearchExecutorInput(
                 workFolderRoot: workFolderRoot,
                 resolver: resolver,
                 fileManager: .default,
@@ -376,7 +393,7 @@ enum ExploratorySearchEnvelope {
         var count: Int
         var hit_files: Int
         var filename_matches: [FilenameMatch]?
-        var skipped_files: [SkippedFile]?
+        var skipped_files: [SkippedFileGroup]?
         var skipped_binary_count: Int?
         var expansion_error: String?
         var search_error: String?
@@ -400,7 +417,7 @@ enum ExploratorySearchEnvelope {
             count: output.matches.count,
             hit_files: hitFilesCount,
             filename_matches: filenameMatches.isEmpty ? nil : filenameMatches,
-            skipped_files: output.skipped.isEmpty ? nil : output.skipped,
+            skipped_files: output.skipped.isEmpty ? nil : SkippedFileGroup.group(output.skipped),
             skipped_binary_count: output.skippedBinaryCount > 0 ? output.skippedBinaryCount : nil,
             expansion_error: expansionError,
             search_error: searchError,

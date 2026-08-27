@@ -13,8 +13,9 @@ nonisolated enum DocumentConstants {
 
     // MARK: - Limits
 
-    /// Maximum UTF-8 bytes of extracted text returned by `extractText`.
-    /// Enforced in `DocumentTextExtractor.extractText`; also drives the
+    /// Maximum UTF-8 bytes of extracted document text.
+    /// Enforced in `DocumentTextExtractor.extract`, which records the cut as a
+    /// `DocumentExtractionOutcome` warning as well as a trailing marker; also drives the
     /// `ZIPReader` output cap (headroom ×2 — see comment there).
     static let maxExtractionBytes = 500_000
 

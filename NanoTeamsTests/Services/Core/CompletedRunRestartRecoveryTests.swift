@@ -270,6 +270,9 @@ final class CompletedRunRestartRecoveryTests: NTMSOrchestratorTestBase, @uncheck
                                           preferredTeamID: startupTeamID())!
         await plantRun(taskID: taskID, stepStatus: .done, roleStatus: .working)
         await restartOrchestrator()
+        // The planted run's role id never went through `findOrCreateStep`; register it on the
+        // team the task is PINNED to (Startup here, not the active one).
+        await registerRoles(["r"], onTeamOf: taskID)
         // Settling does not arm the latch, so arm it explicitly for this pin.
         await sut.mutateTask(taskID: taskID) { $0.status = .paused }
 

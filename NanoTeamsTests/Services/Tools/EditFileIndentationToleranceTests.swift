@@ -56,12 +56,12 @@ final class EditFileIndentationToleranceTests: XCTestCase {
 
     private func runEdit(
         path: String, oldText: String, newText: String, replaceAll: Bool? = nil
-    ) -> ToolExecutionResult {
+    ) async -> ToolExecutionResult {
         var args: [String: Any] = ["path": path, "old_text": oldText, "new_text": newText]
         if let replaceAll { args["replace_all"] = replaceAll }
         let data = try! JSONSerialization.data(withJSONObject: args)
         let call = StepToolCall(name: "edit_file", argumentsJSON: String(data: data, encoding: .utf8)!)
-        return runtime.executeAll(context: context, toolCalls: [call])[0]
+        return await runtime.executeAll(context: context, toolCalls: [call])[0]
     }
 
     private func message(_ result: ToolExecutionResult) -> String {
@@ -80,10 +80,10 @@ final class EditFileIndentationToleranceTests: XCTestCase {
     /// depth maps consistently, so the replacement is shifted with it.
     ///
     /// RED: drop the tier-3 branch → ANCHOR_NOT_FOUND.
-    func testWholeBlockShiftedOneLevel_isRepaired() throws {
+    func testWholeBlockShiftedOneLevel_isRepaired() async throws {
         let url = try writeFile("a.swift", "class C {\n    func f() {\n        go()\n    }\n}\n")
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "a.swift",
             oldText: "func f() {\n    go()\n}",
             newText: "func f() {\n    stop()\n}"
@@ -102,10 +102,10 @@ final class EditFileIndentationToleranceTests: XCTestCase {
     ///
     /// RED: stop skipping blank lines when building the map → `""` vs `"    "`
     /// conflicts on the blank line's key and the edit is refused.
-    func testBlankLineInsideAnchor_doesNotPoisonTheMap() throws {
+    func testBlankLineInsideAnchor_doesNotPoisonTheMap() async throws {
         let url = try writeFile("b.swift", "\tlet a = 1\n\n\tlet b = 2\n")
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "b.swift",
             oldText: "    let a = 1\n    \n    let b = 2",
             newText: "    let a = 9\n    \n    let b = 2"
@@ -121,10 +121,10 @@ final class EditFileIndentationToleranceTests: XCTestCase {
     /// replacement line needs no entry in the map.
     ///
     /// RED: require every non-blank replacement prefix to be a map key → refused.
-    func testZeroIndentReplacementLine_needsNoMapEntry() throws {
+    func testZeroIndentReplacementLine_needsNoMapEntry() async throws {
         let url = try writeFile("c.swift", "\tif (x) {\n\t\tgo();\n\t}\n")
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "c.swift",
             oldText: "    if (x) {\n        go();\n    }",
             newText: "done()"
@@ -140,10 +140,10 @@ final class EditFileIndentationToleranceTests: XCTestCase {
     ///
     /// RED: additionally require the map to be injective → this is refused, and the
     /// field's most frequent recoverable case is lost.
-    func testTwoAnchorDepthsOntoOneFileDepth_isStillRepaired() throws {
+    func testTwoAnchorDepthsOntoOneFileDepth_isStillRepaired() async throws {
         let url = try writeFile("d.swift", "    init() {\n        go()\n    }\n")
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "d.swift",
             oldText: "    init() {\n        go()\n     }",
             newText: "    init() {\n        stop()\n     }"
@@ -162,10 +162,10 @@ final class EditFileIndentationToleranceTests: XCTestCase {
     /// extracting `spliceWindows` is what keeps the two from drifting.
     ///
     /// RED: splice tier 3 without the shared helper → the repaired lines lose `\r`.
-    func testCRLFFile_survivesATierThreeSplice() throws {
+    func testCRLFFile_survivesATierThreeSplice() async throws {
         let url = try writeFile("e.swift", "\tif (x) {\r\n\t\tgo();\r\n\t}\r\n")
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "e.swift",
             oldText: "    if (x) {\n        go();\n    }",
             newText: "    if (y) {\n        go();\n    }"
@@ -183,10 +183,10 @@ final class EditFileIndentationToleranceTests: XCTestCase {
     ///
     /// RED: read `new_text` directly instead of through `replacementLines` → a blank
     /// line is left behind.
-    func testTerminatorSemantics_holdOnTierThree() throws {
+    func testTerminatorSemantics_holdOnTierThree() async throws {
         let url = try writeFile("f.swift", "before\n\tgo();\nafter\n")
 
-        let result = runEdit(path: "f.swift", oldText: "    go();\n", newText: "")
+        let result = await runEdit(path: "f.swift", oldText: "    go();\n", newText: "")
 
         XCTAssertFalse(result.isError, result.outputJSON)
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "before\nafter\n")
@@ -197,11 +197,11 @@ final class EditFileIndentationToleranceTests: XCTestCase {
     /// picks a longer anchor.
     ///
     /// RED: auto-fix on a non-unique match → one window is silently picked.
-    func testMultipleIndentationWindows_areNotAutoFixed() throws {
+    func testMultipleIndentationWindows_areNotAutoFixed() async throws {
         let original = "\tgo()\nx\n\tgo()\ny\n"
         let url = try writeFile("g.swift", original)
 
-        let result = runEdit(path: "g.swift", oldText: "    go()", newText: "stop()")
+        let result = await runEdit(path: "g.swift", oldText: "    go()", newText: "stop()")
 
         XCTAssertTrue(result.isError, result.outputJSON)
         XCTAssertTrue(message(result).contains("ignoring indentation"), message(result))
@@ -214,10 +214,10 @@ final class EditFileIndentationToleranceTests: XCTestCase {
     /// so the model can fix the transcription without re-reading blind.
     ///
     /// RED: report `.absent` for a partial match → neither line is quoted.
-    func testDivergingAnchor_namesBothSidesAndTheLine() throws {
+    func testDivergingAnchor_namesBothSidesAndTheLine() async throws {
         try writeFile("h.swift", "let a = 1\nlet b = 2\nlet c = 3\nlet d = 4\n")
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "h.swift",
             oldText: "let a = 1\nlet b = 99",
             newText: "x"
@@ -234,10 +234,10 @@ final class EditFileIndentationToleranceTests: XCTestCase {
     /// not given — that misdiagnosis is what kept a real run looping.
     ///
     /// RED: fold `.absent` into the generic message → the whitespace assertion fails.
-    func testAbsentAnchor_doesNotAdviseWhitespace() throws {
+    func testAbsentAnchor_doesNotAdviseWhitespace() async throws {
         try writeFile("i.swift", "let a = 1\nlet b = 2\nlet c = 3\nlet d = 4\n")
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "i.swift",
             oldText: "struct NeverExisted {\n    let x: Int\n}",
             newText: "x"
@@ -255,14 +255,14 @@ final class EditFileIndentationToleranceTests: XCTestCase {
     ///
     /// RED: route these through the typed path → the base sentence disappears and
     /// `ToolErrorNotePolicy.direction` stops appending its steering.
-    func testLegacyDiagnoses_keepTheBaseSentence() throws {
+    func testLegacyDiagnoses_keepTheBaseSentence() async throws {
         try writeFile("j.swift", "a\nb\n")
 
-        let longer = runEdit(path: "j.swift", oldText: "a\nb\nc\nd", newText: "z")
+        let longer = await runEdit(path: "j.swift", oldText: "a\nb\nc\nd", newText: "z")
         XCTAssertTrue(message(longer).contains("Make sure it matches exactly"), message(longer))
         XCTAssertTrue(message(longer).contains("more lines (4) than the file (2)"), message(longer))
 
-        let blank = runEdit(path: "j.swift", oldText: "   \n   ", newText: "z")
+        let blank = await runEdit(path: "j.swift", oldText: "   \n   ", newText: "z")
         XCTAssertTrue(message(blank).contains("Make sure it matches exactly"), message(blank))
         XCTAssertTrue(message(blank).contains("whitespace-only"), message(blank))
     }

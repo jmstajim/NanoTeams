@@ -24,7 +24,27 @@ import UniformTypeIdentifiers
 struct MessageComposer<SettingsMenu: View>: View {
     @Binding var text: String
     @Binding var attachments: [StagedAttachment]
-    var clips: Binding<[String]>?
+    /// `[Clip]`, not `[String]`: these cells carry a `RemoveBadgeButton` that deletes
+    /// by index inside `withAnimation`, which is exactly the case a positional id gets
+    /// wrong — SwiftUI animates out whichever row inherits the removed index, not the
+    /// one that went away (CLAUDE.md #22/#23).
+    ///
+    /// `@Binding`, not a stored `Binding<[Clip]>`: this view READS the array
+    /// (`hasAttachments` gates whether the grid renders at all, and `attachmentGrid`
+    /// iterates it), and SwiftUI subscribes only to `DynamicProperty` storage — an
+    /// undecorated `Binding` is a value it never looks inside, so an external append
+    /// through the same pipe re-evaluated nothing here (swiftui-expert
+    /// `state-management.md:177`). Latent rather than live-broken: every production host
+    /// owned the array in a parent that re-renders anyway. Enforced by
+    /// `swiftui_declarations.py` axis v6.
+    @Binding var clips: [Clip]
+
+    /// Whether the "/" skills picker renders. Was `clips != nil` — an implicit gate the
+    /// fix cannot keep, because a `@Binding` is never nil. Split out so the two facts
+    /// stop riding on one optional: WHERE skill clips land (`clips`) and WHETHER this
+    /// surface offers the picker at all. The two convenience inits derive it from their
+    /// still-optional parameter, so no caller had to learn a new argument.
+    let showsSkillsPicker: Bool
     let placeholder: String
     let canSubmit: Bool
     let isSubmitting: Bool
@@ -61,7 +81,8 @@ struct MessageComposer<SettingsMenu: View>: View {
     /// Work-folder root used by the "/" skills picker to discover project-level
     /// agent skills. `nil` (default storage / no folder) → global skills only.
     /// Threaded in by hosts that have the orchestrator so the shared composer
-    /// stays orchestrator-free. The picker shows only when a `clips` pipe exists.
+    /// stays orchestrator-free. The picker shows only when `showsSkillsPicker` is set —
+    /// the convenience inits derive that from whether a `clips` pipe was supplied.
     var skillsProjectRoot: URL?
 
     /// Editor-field mode: the composer becomes a plain multi-line text editor
@@ -90,7 +111,9 @@ struct MessageComposer<SettingsMenu: View>: View {
     @Environment(\.openWindow) private var openWindow
     @State private var isDropTargeted = false
     @State private var quickLookURL: URL?
-    @State private var popoverClipIndex: Int?
+    /// Keyed by clip IDENTITY, not by index: with an index, deleting a clip left the
+    /// popover pointing at whichever row inherited the number.
+    @State private var popoverClipID: UUID?
     @State private var importErrorMessage: String?
 
     /// Bridges AppKit first-responder state into SwiftUI so
@@ -113,12 +136,8 @@ struct MessageComposer<SettingsMenu: View>: View {
     /// keyhint chip alike).
     private var effectiveCanSubmit: Bool { canSubmit && !isImprovingPrompt }
 
-    private var clipTexts: [String] {
-        clips?.wrappedValue ?? []
-    }
-
     private var hasAttachments: Bool {
-        !attachments.isEmpty || !clipTexts.isEmpty
+        !attachments.isEmpty || !clips.isEmpty
     }
 
     /// Clamps a caller-supplied `minLineCount` to the SwiftUI-safe floor of 1.
@@ -207,15 +226,13 @@ struct MessageComposer<SettingsMenu: View>: View {
                     presentOpenPanel()
                 } label: {
                     Image(systemName: "plus")
-                        .font(Typography.termBase.weight(.medium))
                         .foregroundStyle(Colors.accent)
-                        .frame(width: 28, height: 24)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.composerIcon)
                 .accessibilityLabel("Attach files")
 
-                if let clips {
-                    SkillsPickerButton(projectRoot: skillsProjectRoot, clips: clips)
+                if showsSkillsPicker {
+                    SkillsPickerButton(projectRoot: skillsProjectRoot, clips: $clips)
                 }
 
                 settingsMenu
@@ -312,16 +329,20 @@ struct MessageComposer<SettingsMenu: View>: View {
     /// focus is bridged through `$isFocused` so the paste-monitor lifecycle
     /// above sees AppKit-driven transitions.
     private var messageField: some View {
-        // `.background` and `.clipShape` are deliberately omitted — they
-        // pulled SwiftUI into every CoreAnimation frame the inner scroll
-        // view emitted (`.clipShape` requires an offscreen rounded-rect
-        // mask pass per frame; `.background` adds another SwiftUI-managed
-        // layer per frame). The field's background is transparent — the
-        // parent panel's `surfacePrimary` shows through, matching the
-        // intended visual. Only `.overlay` for the border survives: it's
-        // a single SwiftUI layer above the representable with no clip
-        // mask, no offscreen pass, and SwiftUI treats it as static
-        // (doesn't re-evaluate per CA frame).
+        // The fill is AppKit-drawn, on the representable's own NSScrollView, by
+        // `InputSurface.stamp` — zero SwiftUI layers, so it costs nothing per CoreAnimation
+        // frame. `.inputSurfaceBorder()` is the only SwiftUI chrome: a single static overlay
+        // with no clip mask and no offscreen pass.
+        //
+        // This comment used to say the field was transparent so "the parent panel's
+        // `surfacePrimary` shows through, matching the intended visual". That was false at nine
+        // of this composer's ten render positions — TeamBoard, Watchtower and the notification
+        // banner are all `surfaceCard` — and naming a mechanism that does not exist is what made
+        // the divergence read as a decision (CLAUDE.md #79).
+        //
+        // Still forbidden here (#50): `.clipShape` (offscreen rounded-rect mask per frame), an
+        // AppKit wrapper view, `layer.cornerRadius + masksToBounds`, and a `.background { … }`
+        // ViewBuilder holding focusable content anywhere in the ancestor chain.
         EditableMessageTextView(
             text: $text,
             isFocused: $isFocused,
@@ -350,10 +371,7 @@ struct MessageComposer<SettingsMenu: View>: View {
             },
             isInputLocked: isImprovingPrompt
         )
-        .overlay(
-            RoundedRectangle.squircle(CornerRadius.small)
-                .strokeBorder(Colors.borderSubtle, lineWidth: 1)
-        )
+        .inputSurfaceBorder()
         .accessibilityLabel("Message input")
     }
 
@@ -365,8 +383,8 @@ struct MessageComposer<SettingsMenu: View>: View {
             spacing: Spacing.xs
         ) {
             // Clip cells
-            ForEach(Array(clipTexts.enumerated()), id: \.offset) { index, clipText in
-                clipCell(index: index, text: clipText)
+            ForEach(clips) { clip in
+                clipCell(clip: clip)
             }
             // File cells
             ForEach(attachments) { attachment in
@@ -380,18 +398,20 @@ struct MessageComposer<SettingsMenu: View>: View {
         )
     }
 
-    private func clipCell(index: Int, text: String) -> some View {
-        let kind = ClipCellPresentation.resolve(text)
+    private func clipCell(clip: Clip) -> some View {
+        let kind = ClipCellPresentation.resolve(clip.text)
 
         return VStack(spacing: Spacing.xxs) {
             ZStack(alignment: .topTrailing) {
                 clipTile(kind: kind)
-                    .onTapGesture { popoverClipIndex = index }
+                    .onTapGesture { popoverClipID = clip.id }
 
                 RemoveBadgeButton {
                     withAnimation(Animations.quick) {
-                        guard index < (clips?.wrappedValue.count ?? 0) else { return }
-                        _ = clips?.wrappedValue.remove(at: index)
+                        // Remove by IDENTITY. The old form took an index captured when
+                        // the cell was built, which a concurrent edit could already have
+                        // invalidated — hence the bounds guard it needed and this does not.
+                        clips.removeAll { $0.id == clip.id }
                     }
                 }
             }
@@ -404,10 +424,10 @@ struct MessageComposer<SettingsMenu: View>: View {
                 .frame(width: 52)
         }
         .popover(isPresented: Binding(
-            get: { popoverClipIndex == index },
-            set: { if !$0 { popoverClipIndex = nil } }
+            get: { popoverClipID == clip.id },
+            set: { if !$0 { popoverClipID = nil } }
         )) {
-            ClipPopoverContent(text: text)
+            ClipPopoverContent(text: clip.text)
         }
     }
 
@@ -624,11 +644,9 @@ struct EmbedFilesSettingsButton<Extra: View>: View {
             isShowing.toggle()
         } label: {
             Image(systemName: "gearshape")
-                .font(Typography.termBase)
                 .foregroundStyle(Colors.textTertiary)
-                .frame(width: 28, height: 24)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.composerIcon)
         .popover(isPresented: $isShowing) {
             VStack(alignment: .leading, spacing: Spacing.s) {
                 extraContent
@@ -651,7 +669,7 @@ extension MessageComposer where SettingsMenu == EmbedFilesSettingsButton<EmptyVi
     init(
         text: Binding<String>,
         attachments: Binding<[StagedAttachment]>,
-        clips: Binding<[String]>? = nil,
+        clips: Binding<[Clip]>? = nil,
         placeholder: String = "Send a message...",
         canSubmit: Bool,
         isSubmitting: Bool = false,
@@ -665,7 +683,12 @@ extension MessageComposer where SettingsMenu == EmbedFilesSettingsButton<EmptyVi
     ) {
         self._text = text
         self._attachments = attachments
-        self.clips = clips
+        // The optional survives at the API boundary and dies here: `_clips` needs a
+        // Binding, and `showsSkillsPicker` needs the fact the optional used to encode.
+        // `.constant([])` is inert — the picker that would write into it is gated off by
+        // the very same nil.
+        self._clips = clips ?? .constant([])
+        self.showsSkillsPicker = clips != nil
         self.placeholder = placeholder
         self.canSubmit = canSubmit
         self.isSubmitting = isSubmitting
@@ -688,7 +711,7 @@ extension MessageComposer where SettingsMenu == EmbedFilesSettingsButton<EmptyVi
     init(
         editorText: Binding<String>,
         attachments: Binding<[StagedAttachment]>,
-        clips: Binding<[String]>? = nil,
+        clips: Binding<[Clip]>? = nil,
         placeholder: String = "",
         onStageAttachment: @escaping (URL) -> StagedAttachment?,
         onRemoveAttachment: @escaping (StagedAttachment) -> Void,
@@ -700,7 +723,12 @@ extension MessageComposer where SettingsMenu == EmbedFilesSettingsButton<EmptyVi
     ) {
         self._text = editorText
         self._attachments = attachments
-        self.clips = clips
+        // The optional survives at the API boundary and dies here: `_clips` needs a
+        // Binding, and `showsSkillsPicker` needs the fact the optional used to encode.
+        // `.constant([])` is inert — the picker that would write into it is gated off by
+        // the very same nil.
+        self._clips = clips ?? .constant([])
+        self.showsSkillsPicker = clips != nil
         self.placeholder = placeholder
         self.canSubmit = false
         self.isSubmitting = false

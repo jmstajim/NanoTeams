@@ -83,7 +83,7 @@ nonisolated enum BenchmarkPrompt {
     /// a reader — the Prefill column's hover text and two comments in `BenchmarkWarmUpPolicy` —
     /// and all three said "2 500" while the measurement was 2 480. Nothing divides by this: it is
     /// documentation, and its only job is to be the one copy, so that changing `referenceRepeats`
-    /// cannot leave three sentences describing a prompt that no longer exists (CLAUDE.md #83).
+    /// cannot leave three sentences describing a prompt that no longer exists (CLAUDE.md #123).
     ///
     /// Not derived, because deriving it would need a tokenizer this app does not have and the
     /// server's own count is per-run. Re-measure it when `referenceRepeats` or the paragraph

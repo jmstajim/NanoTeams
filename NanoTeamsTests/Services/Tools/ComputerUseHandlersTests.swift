@@ -16,16 +16,16 @@ final class ComputerUseHandlersTests: XCTestCase {
 
     // MARK: - screen_capture
 
-    func testScreenCapture_emitsCaptureSignal() {
-        let r = ScreenCaptureTool().handle(context: ctx, args: ["target": "Safari", "window_title": "GitHub"])
+    func testScreenCapture_emitsCaptureSignal() async {
+        let r = await ScreenCaptureTool().handle(context: ctx, args: ["target": "Safari", "window_title": "GitHub"])
         XCTAssertFalse(r.isError)
         guard case .capture(let t, let w)? = action(r) else { return XCTFail("expected .capture") }
         XCTAssertEqual(t, "Safari")
         XCTAssertEqual(w, "GitHub")
     }
 
-    func testScreenCapture_missingTarget_defaultsToScreen() {
-        let r = ScreenCaptureTool().handle(context: ctx, args: [:])
+    func testScreenCapture_missingTarget_defaultsToScreen() async {
+        let r = await ScreenCaptureTool().handle(context: ctx, args: [:])
         guard case .capture(let t, let w)? = action(r) else { return XCTFail("expected .capture") }
         XCTAssertEqual(t, "screen")
         XCTAssertNil(w)
@@ -33,8 +33,8 @@ final class ComputerUseHandlersTests: XCTestCase {
 
     // MARK: - ui_click
 
-    func testUIClick_emitsClickSignal() {
-        let r = UIClickTool().handle(context: ctx, args: ["x": 10, "y": 20])
+    func testUIClick_emitsClickSignal() async {
+        let r = await UIClickTool().handle(context: ctx, args: ["x": 10, "y": 20])
         guard case .click(let x, let y, let button, let dbl, _)? = action(r) else { return XCTFail("expected .click") }
         XCTAssertEqual(x, 10)
         XCTAssertEqual(y, 20)
@@ -42,51 +42,51 @@ final class ComputerUseHandlersTests: XCTestCase {
         XCTAssertFalse(dbl)
     }
 
-    func testUIClick_rightDouble() {
-        let r = UIClickTool().handle(context: ctx, args: ["x": 1, "y": 2, "button": "right", "double": true])
+    func testUIClick_rightDouble() async {
+        let r = await UIClickTool().handle(context: ctx, args: ["x": 1, "y": 2, "button": "right", "double": true])
         guard case .click(_, _, let button, let dbl, _)? = action(r) else { return XCTFail("expected .click") }
         XCTAssertEqual(button, "right")
         XCTAssertTrue(dbl)
     }
 
-    func testUIClick_missingCoordinate_errorsWithoutSignal() {
-        let r = UIClickTool().handle(context: ctx, args: ["x": 10])
+    func testUIClick_missingCoordinate_errorsWithoutSignal() async {
+        let r = await UIClickTool().handle(context: ctx, args: ["x": 10])
         XCTAssertTrue(r.isError)
         XCTAssertNil(r.signal)
     }
 
     // MARK: - ui_type
 
-    func testUIType_emitsSignal() {
-        let r = UITypeTool().handle(context: ctx, args: ["text": "hello"])
+    func testUIType_emitsSignal() async {
+        let r = await UITypeTool().handle(context: ctx, args: ["text": "hello"])
         guard case .typeText(let t, _)? = action(r) else { return XCTFail("expected .typeText") }
         XCTAssertEqual(t, "hello")
     }
 
-    func testUIType_emptyText_errorsWithoutSignal() {
-        let r = UITypeTool().handle(context: ctx, args: ["text": ""])
+    func testUIType_emptyText_errorsWithoutSignal() async {
+        let r = await UITypeTool().handle(context: ctx, args: ["text": ""])
         XCTAssertTrue(r.isError)
         XCTAssertNil(r.signal)
     }
 
     // MARK: - ui_key
 
-    func testUIKey_emitsSignal() {
-        let r = UIKeyTool().handle(context: ctx, args: ["keys": "cmd+s"])
+    func testUIKey_emitsSignal() async {
+        let r = await UIKeyTool().handle(context: ctx, args: ["keys": "cmd+s"])
         guard case .pressKey(let k, _)? = action(r) else { return XCTFail("expected .pressKey") }
         XCTAssertEqual(k, "cmd+s")
     }
 
-    func testUIKey_missing_errorsWithoutSignal() {
-        let r = UIKeyTool().handle(context: ctx, args: [:])
+    func testUIKey_missing_errorsWithoutSignal() async {
+        let r = await UIKeyTool().handle(context: ctx, args: [:])
         XCTAssertTrue(r.isError)
         XCTAssertNil(r.signal)
     }
 
     // MARK: - ui_scroll
 
-    func testUIScroll_defaultsDeltasToZero() {
-        let r = UIScrollTool().handle(context: ctx, args: ["x": 5, "y": 6])
+    func testUIScroll_defaultsDeltasToZero() async {
+        let r = await UIScrollTool().handle(context: ctx, args: ["x": 5, "y": 6])
         guard case .scroll(let x, let y, let dx, let dy, _)? = action(r) else { return XCTFail("expected .scroll") }
         XCTAssertEqual(x, 5)
         XCTAssertEqual(y, 6)

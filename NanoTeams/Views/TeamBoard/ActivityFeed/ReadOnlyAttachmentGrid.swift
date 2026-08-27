@@ -8,13 +8,18 @@ import QuickLook
 struct ReadOnlyAttachmentGrid: View {
     let attachmentPaths: [String]
     let clippedTexts: [String]
+    /// Names the immutable thing these clips were parsed out of — a message id, a
+    /// thinking id, a task id. Feeds `Clip.derived`, so the same content rebuilds to
+    /// the same row identities instead of churning on every feed rebuild.
+    let clipSeed: String
     let workFolderURL: URL?
 
     @State private var resolvedFiles: [ResolvedFile]
 
-    init(attachmentPaths: [String], clippedTexts: [String], workFolderURL: URL?) {
+    init(attachmentPaths: [String], clippedTexts: [String], clipSeed: String, workFolderURL: URL?) {
         self.attachmentPaths = attachmentPaths
         self.clippedTexts = clippedTexts
+        self.clipSeed = clipSeed
         self.workFolderURL = workFolderURL
         self._resolvedFiles = State(initialValue: Self.resolveFiles(paths: attachmentPaths, workFolderURL: workFolderURL))
     }
@@ -23,14 +28,17 @@ struct ReadOnlyAttachmentGrid: View {
         // Filter empties but keep the RAW clip strings — trimming would strip the
         // zero-width-space sentinel a `SkillClip` / `SourceContext` clip carries,
         // so the cell must parse the untrimmed text.
-        let nonEmptyClips = clippedTexts
-            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        // The ORDINAL is the index in the unfiltered list, so dropping an empty clip
+        // cannot renumber the identities of the ones around it.
+        let nonEmptyClips = clippedTexts.enumerated()
+            .filter { !$0.element.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .map { Clip.derived(text: $0.element, ordinal: $0.offset, seed: clipSeed) }
 
         if !resolvedFiles.isEmpty || !nonEmptyClips.isEmpty {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: Spacing.s) {
-                    ForEach(Array(nonEmptyClips.enumerated()), id: \.offset) { _, text in
-                        ClipCell(text: text)
+                    ForEach(nonEmptyClips) { clip in
+                        ClipCell(text: clip.text)
                     }
                     ForEach(resolvedFiles, id: \.relativePath) { file in
                         FileCell(url: file.url, relativePath: file.relativePath, isImage: file.isImage)

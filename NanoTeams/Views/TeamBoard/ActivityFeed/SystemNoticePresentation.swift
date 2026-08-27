@@ -3,11 +3,15 @@ import Foundation
 /// Classifies a conversation turn as a SYSTEM-AUTHORED notice and derives the
 /// one-line form the activity feed collapses it into.
 ///
-/// Five `MessageSourceContext` cases are written by the runtime itself rather
-/// than by a human or a model: the retry nudges (the eight `handleNoToolCalls`
-/// sites and the repetition warning), the correction appended after a thinking
+/// Six `MessageSourceContext` cases are written by the runtime itself rather
+/// than by a human or a model: the retry nudges (every `handleNoToolCalls`
+/// site and the repetition warning), the correction appended after a thinking
 /// loop was discarded, the transient server-error retry note, the
-/// `update_scratchpad` acknowledgement, and a failure in the app's own work.
+/// `update_scratchpad` acknowledgement, a failure in the app's own work, and the
+/// Autovisor's mid-review event notice — the app reporting that folder state
+/// moved while the manager was reviewing. That last one used to borrow
+/// `.supervisorMessage` and therefore rendered as a crowned Supervisor bubble
+/// the human never typed; it is the reason this table has a sixth row.
 /// The steering appended after a failed TOOL call used to be a sixth and is not:
 /// it comments on one event the feed already draws as a card, so it is persisted
 /// unattributed and never reaches this table — see `ToolErrorNotePolicy`.
@@ -77,6 +81,23 @@ nonisolated enum SystemNoticePresentation {
         .serverError: ("server error", true),
         .toolAcknowledgement: ("note", false),
         .runtimeWarning: ("warning", true),
+        .autovisorEvent: ("event", false),
+    ]
+
+    /// Leading lines a kind's PREVIEW skips — self-describing banners that the row
+    /// label already states, so the one-liner shows the news instead of the headline.
+    ///
+    /// Only the notice's own opening line qualifies, and only where the row would
+    /// otherwise be pure duplication: `system: event  Event update while you are
+    /// reviewing…` says nothing twice, where `system: event  - Task #35 "…" is waiting
+    /// for a supervisor answer.` is the fact the Supervisor is scanning for. Same defect
+    /// the `.loopCorrection` delimiter strip already fixed one row up.
+    ///
+    /// Skipping happens in the PREVIEW only. `content` keeps the line — it was sent, it
+    /// is what identifies an unmarked turn on a flattened wire, and the detail window
+    /// opens the full text.
+    private static let previewSkippedHeaders: [MessageSourceContext: String] = [
+        .autovisorEvent: MessageSourceContext.autovisorEventNoticeHeader,
     ]
 
     private static let rowLabelPrefix = "system: "
@@ -89,12 +110,20 @@ nonisolated enum SystemNoticePresentation {
     /// letting emptiness or length flip the answer would swap the bubble's
     /// `_ConditionalContent` arm mid-update. An empty body yields a notice with
     /// an empty `preview`.
+    ///
+    /// The PREVIEW does read the content — it always has — and since
+    /// `previewSkippedHeaders` it reads it per kind. That is not a crack in the
+    /// rule above: WHETHER a notice exists still comes from `context` alone, so
+    /// no content edit can swap the arm.
     static func resolve(context: MessageSourceContext?, content: String) -> Notice? {
         guard let context, let kind = kinds[context] else { return nil }
         return Notice(
             rowLabel: rowLabelPrefix + kind.label,
             windowTitle: kind.label,
-            preview: previewLine(from: content),
+            preview: previewLine(
+                from: content,
+                skippingLeadingLine: previewSkippedHeaders[context]
+            ),
             isError: kind.isError
         )
     }
@@ -112,14 +141,32 @@ nonisolated enum SystemNoticePresentation {
     /// disables the cap. The ellipsis is appended by us: once the string is cut
     /// it fits the row, so `.lineLimit(1)` would render it as if nothing had
     /// been dropped.
-    static func previewLine(from content: String, maxLength: Int = previewCharacterLimit) -> String {
+    ///
+    /// `skippingLeadingLine` drops ONE leading line equal to it (compared
+    /// trimmed), then proceeds as usual — for a notice whose first line is a
+    /// banner the row label already states. Deliberately narrow: only the FIRST
+    /// non-empty line can be skipped and only once, so a body that repeats the
+    /// banner later, or opens with something else entirely, is untouched. A body
+    /// consisting of nothing BUT the banner yields an empty preview, which
+    /// `resolve` already permits.
+    static func previewLine(
+        from content: String,
+        maxLength: Int = previewCharacterLimit,
+        skippingLeadingLine: String? = nil
+    ) -> String {
+        let skipTarget = skippingLeadingLine?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        var mayStillSkip = !(skipTarget?.isEmpty ?? true)
         var firstLine = ""
         for raw in content.components(separatedBy: .newlines) {
             let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                firstLine = trimmed
-                break
+            guard !trimmed.isEmpty else { continue }
+            if mayStillSkip, trimmed == skipTarget {
+                mayStillSkip = false
+                continue
             }
+            firstLine = trimmed
+            break
         }
         guard !firstLine.isEmpty else { return "" }
 

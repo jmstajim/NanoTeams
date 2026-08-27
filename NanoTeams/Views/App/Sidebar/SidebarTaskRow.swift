@@ -50,7 +50,7 @@ struct SidebarTaskRow: View {
         StatusGlyph(
             glyph: statusGlyph,
             color: statusColor,
-            animatesWork: task.isEngineRunning && !task.hasUnreadInput,
+            animatesWork: (task.isEngineRunning || task.isInitializing) && !task.hasUnreadInput,
             font: Typography.term2xs
         )
     }

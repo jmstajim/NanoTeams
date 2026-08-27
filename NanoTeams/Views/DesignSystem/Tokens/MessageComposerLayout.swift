@@ -32,5 +32,25 @@ nonisolated enum MessageComposerLayout {
     /// bottom padding + immediate siblings of the field). Slightly conservative
     /// so the field's top edge lines up with the host's vertical midline at
     /// maximum growth rather than overshooting it.
+    ///
+    /// The "action bar" term is `actionButtonSize.height` below plus the VStack's
+    /// `Spacing.xs`. Until the cell became a token that term was a literal written out
+    /// at seven sites across five view files, so this estimate could not be checked
+    /// against it at all; `MessageComposerDefaultsTests` now asserts the relation.
     static let paneAnchoredFieldChrome: CGFloat = 56
+
+    /// The composer action bar's icon cell — `+`, `/`, gear, improve, revert, dictate
+    /// and send all measure exactly this, via `ComposerIconButtonStyle`.
+    ///
+    /// A named constant rather than `Spacing` arithmetic, though `Spacing.l + Spacing.s`
+    /// would give 28 and `Spacing.xl` is 24. `NavbarIconButtonStyle` derives its 28 from
+    /// `.terminalSecondary`'s `minHeight` because baseline parity with that button is a
+    /// stated constraint in the navbar row; the composer bar sits under a text field with
+    /// no such neighbour, so borrowing the spelling would import a reason that is false
+    /// here (CLAUDE.md #119). A grid retune must also not silently resize a control and
+    /// invalidate `paneAnchoredFieldChrome` at its two consumers.
+    ///
+    /// `CGSize` rather than two scalars so width and height cannot be swapped at a call
+    /// site, and so `IconButtonHitAreaPinTests` has one identifier to police.
+    static let actionButtonSize = CGSize(width: 28, height: 24)
 }

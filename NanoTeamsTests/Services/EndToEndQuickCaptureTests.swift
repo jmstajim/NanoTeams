@@ -32,7 +32,7 @@ final class EndToEndQuickCaptureTests: XCTestCase {
     func testQuickCapture_multipleClippedTexts_combinedInBrief() {
         let task = NTMSTask(id: 0, title: "Test",
                             supervisorTask: "Fix the bugs",
-                            clippedTexts: ["Error in login", "Crash on startup", "Memory leak in profile"]
+                            clippedTexts: [Clip].minting(["Error in login", "Crash on startup", "Memory leak in profile"])
         )
 
         let brief = task.effectiveSupervisorBrief
@@ -55,7 +55,7 @@ final class EndToEndQuickCaptureTests: XCTestCase {
     func testQuickCapture_singleClippedText_inBrief() {
         let task = NTMSTask(id: 0, title: "Test",
                             supervisorTask: "Review this code",
-                            clippedTexts: ["func doSomething() { }"]
+                            clippedTexts: [Clip].minting(["func doSomething() { }"])
         )
 
         let brief = task.effectiveSupervisorBrief

@@ -36,14 +36,17 @@ enum AnswerTextBuilder {
         }
         let fileName = url.lastPathComponent
         let content: String
-        if let extracted = DocumentTextExtractor.extractText(from: url) {
+        if let outcome = DocumentTextExtractor.extract(from: url) {
+            guard case .text(let extracted, _) = outcome else {
+                return .failed(fileName: fileName)
+            }
             content = extracted
         } else if let utf8 = try? String(contentsOf: url, encoding: .utf8) {
+            // A verbatim read that succeeded is embedded whatever the bytes say. This branch
+            // used to run the extraction-failure check over its own result, so a plain text
+            // file whose body happened to open with that sentence was reported as failed.
             content = utf8
         } else {
-            return .failed(fileName: fileName)
-        }
-        if DocumentTextExtractor.isFailureMessage(content) {
             return .failed(fileName: fileName)
         }
         return .embedded(section: "## Attached File: \(fileName)\n\(content)")

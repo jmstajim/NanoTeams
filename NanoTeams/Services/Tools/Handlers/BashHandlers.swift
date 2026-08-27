@@ -42,7 +42,8 @@ nonisolated struct BashTool: ToolHandler {
 
     let workFolderRoot: URL
     let resolver: SandboxPathResolver
-    let fileManager: FileManager
+    // `nonisolated(unsafe)`: see `ToolHandlerDependencies.fileManager`.
+    nonisolated(unsafe) let fileManager: FileManager
     let sandboxEnabled: Bool
     let sandboxPermissions: BashSandboxPermissions
     let allowUnsandboxedFallback: Bool
@@ -58,8 +59,8 @@ nonisolated struct BashTool: ToolHandler {
         )
     }
 
-    func handle(context: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             // Resolve the command through the SHARED resolver so the handler runs
             // exactly the string the permission gate evaluated (no alternative-key
             // or `content`-decoy bypass).
@@ -156,15 +157,32 @@ nonisolated struct BashTool: ToolHandler {
                         sandboxed: ranSandboxed,
                         writes_blocked: context.isPlanningPhase ? true : nil))
 
-            case .completed(let result, let ranSandboxed):
-                // Sandbox failed to launch and no fallback was allowed. `ranSandboxed` keeps this
-                // branch off the post-fallback path, where the command demonstrably DID run.
-                if ranSandboxed, let sandboxProfile, sandboxProfile != "",
-                   SeatbeltSandbox.isSandboxDenialFailure(exitCode: result.exitCode, stderr: result.stderr),
-                   !effectiveFallback {
+            case .completed(let result, let ranSandboxed, let launch):
+                // The wrapper refused and no fallback was allowed: nothing ran, and now that is
+                // a fact the WRAPPER reported rather than one inferred from a stream the command
+                // could write. The condition lives in `SeatbeltSandbox.response` — the retry
+                // gate in `runForeground` asks about the same verdict and the same flag, and a
+                // rule with two homes can disagree with itself (#51/#60).
+                if SeatbeltSandbox.response(
+                    ranSandboxed: ranSandboxed, launch: launch,
+                    fallbackAllowed: effectiveFallback) == .reportNothingRan {
                     return makeErrorResult(
                         toolName: Self.name, args: args, code: .bashDenied,
                         message: "The macOS sandbox failed to initialize for this command, and running unsandboxed is not permitted. The command was not run — this is an environment failure, not an argument problem.")
+                }
+
+                // A profile that compiled but killed the shell before the command started: the
+                // result IS honest (exit 134, empty output), but on its own it reads as the
+                // command failing. Say what happened without flipping `isError` — same reasoning
+                // as `planningWriteDenialMeta`: the envelope's structural fields stay true and a
+                // warning adds the cause.
+                var meta = Self.planningWriteDenialMeta(
+                    isPlanningPhase: context.isPlanningPhase,
+                    exitCode: result.exitCode, stderr: result.stderr)
+                if ranSandboxed, launch == .confinedBeforeStart {
+                    meta.warnings = (meta.warnings ?? []) + [
+                        "The sandbox profile denied the reads the shell needs to start, so the command never ran. This is the confinement working, not an argument problem — narrow what the command touches, or ask the Supervisor to widen the bash sandbox scopes."
+                    ]
                 }
 
                 return makeSuccessResult(
@@ -176,9 +194,7 @@ nonisolated struct BashTool: ToolHandler {
                         timed_out: false,
                         sandboxed: ranSandboxed,
                         writes_blocked: context.isPlanningPhase ? true : nil),
-                    meta: Self.planningWriteDenialMeta(
-                        isPlanningPhase: context.isPlanningPhase,
-                        exitCode: result.exitCode, stderr: result.stderr))
+                    meta: meta)
             }
         }
     }
@@ -191,8 +207,15 @@ nonisolated struct BashTool: ToolHandler {
     /// reporting `true` for a command that ran with no confinement at all. The timeout arm needs
     /// the same fact, and a `throw` cannot carry it, so the timeout is returned as data here rather
     /// than thrown past the boundary. Cancellation still propagates: it is not an outcome.
+    /// `launch` answers "did the command actually run", and it is computed ONCE here and read
+    /// by both consumers. Before, `runForeground` and `handle` each classified independently
+    /// from `result.stderr` — two derivations of one fact, and under the probe design that
+    /// would also mean two extra process launches per failing command.
+    ///
+    /// `.timedOut` needs no verdict: a wrapper failure exits in milliseconds, so a timeout is
+    /// itself proof the child ran.
     private enum ForegroundOutcome {
-        case completed(ProcessRunner.Result, ranSandboxed: Bool)
+        case completed(ProcessRunner.Result, ranSandboxed: Bool, launch: SeatbeltSandbox.LaunchVerdict)
         case timedOut(stdout: String, stderr: String, ranSandboxed: Bool)
     }
 
@@ -241,17 +264,30 @@ nonisolated struct BashTool: ToolHandler {
             do {
                 let result = try ProcessRunner.runShell(
                     command, in: cwd, timeout: timeout, sandboxProfile: profile)
-                return .completed(result, ranSandboxed: profile != nil)
+                // Ask the wrapper only when there IS one and something went wrong. On the
+                // success path and on an unconfined run the answer is known without spending
+                // 30–40 ms on a second process.
+                let launch: SeatbeltSandbox.LaunchVerdict
+                if let profile, result.exitCode != 0 {
+                    launch = ProcessRunner.probeSandboxLaunch(profile: profile, in: cwd)
+                } else {
+                    launch = .childRan
+                }
+                return .completed(result, ranSandboxed: profile != nil, launch: launch)
             } catch let ProcessRunnerError.timeout(_, stdout, stderr) {
                 return .timedOut(stdout: stdout, stderr: stderr, ranSandboxed: profile != nil)
             }
         }
 
         let first = try run(profile: sandboxProfile)
-        guard case .completed(let result, _) = first,
-              sandboxProfile != nil,
-              SeatbeltSandbox.isSandboxDenialFailure(exitCode: result.exitCode, stderr: result.stderr),
-              fallbackAllowed
+        // Only a wrapper REJECTION licenses an unconfined retry. `.confinedBeforeStart` is a
+        // profile doing its job — retrying without it would defeat the confinement the user
+        // asked for — and it is now refused by a case name instead of by a text rule declining
+        // it for the right reason. Same owner as the envelope arm in `handle`.
+        guard case .completed(_, let ranSandboxed, let launch) = first,
+              SeatbeltSandbox.response(
+                  ranSandboxed: ranSandboxed, launch: launch,
+                  fallbackAllowed: fallbackAllowed) == .retryUnconfined
         else { return first }
         return try run(profile: nil)
     }
@@ -287,8 +323,8 @@ nonisolated struct BashOutputTool: ToolHandler {
 
     static func makeInstance(dependencies _: ToolHandlerDependencies) -> Self { Self() }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let commandID = try requiredString(args, "command_id")
             let action = (optionalString(args, "action") ?? "read").lowercased()
 

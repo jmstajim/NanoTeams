@@ -48,7 +48,15 @@ class QuickCapturePanel: NSPanel, NSWindowDelegate {
     /// the silent-caret failure path, stacking the error banner.
     private var focusRetryTask: Task<Void, Never>?
 
-    init(contentRect: NSRect = NSRect(x: 0, y: 0, width: 260, height: 320)) {
+    /// `autosaveName` is injectable because AppKit writes the saved frame into
+    /// `UserDefaults.standard` itself — there is no storage seam to pass, so isolation has to
+    /// come from the KEY. Parallel XCTest workers share that domain, so several suites
+    /// constructing panels under one autosave name were reading and writing each other's saved
+    /// frames (`DEBTS.md` D-4).
+    init(
+        contentRect: NSRect = NSRect(x: 0, y: 0, width: 260, height: 320),
+        autosaveName: String = UserDefaultsKeys.quickCapturePanelFrame
+    ) {
         super.init(
             contentRect: contentRect,
             styleMask: [.nonactivatingPanel, .titled, .closable, .resizable, .fullSizeContentView],
@@ -56,12 +64,12 @@ class QuickCapturePanel: NSPanel, NSWindowDelegate {
             defer: false
         )
 
-        configure()
+        configure(autosaveName: autosaveName)
     }
 
     // MARK: - Configuration
 
-    private func configure() {
+    private func configure(autosaveName: String) {
         // Floating behavior
         isFloatingPanel = true
         level = .floating
@@ -107,7 +115,7 @@ class QuickCapturePanel: NSPanel, NSWindowDelegate {
         minSize = Self.panelMinSize
         contentMinSize = Self.panelMinSize
         delegate = self
-        setFrameAutosaveName(UserDefaultsKeys.quickCapturePanelFrame)
+        setFrameAutosaveName(autosaveName)
 
         // Hide standard window buttons
         standardWindowButton(.closeButton)?.isHidden = true

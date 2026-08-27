@@ -39,14 +39,14 @@ final class ReadFileDocumentTests: XCTestCase {
 
     // MARK: - read_file with PDF
 
-    func testReadFile_pdf_returnsExtractedText() throws {
+    func testReadFile_pdf_returnsExtractedText() async throws {
         let pdfURL = try createPDFWithText("Hello from PDF via read_file")
 
         let call = StepToolCall(
             name: "read_file",
             argumentsJSON: "{\"path\": \"\(pdfURL.lastPathComponent)\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
@@ -56,7 +56,7 @@ final class ReadFileDocumentTests: XCTestCase {
 
     // MARK: - read_file with RTF
 
-    func testReadFile_rtf_returnsExtractedText() throws {
+    func testReadFile_rtf_returnsExtractedText() async throws {
         let rtfURL = tempDir.appendingPathComponent("test.rtf")
         try #"{\rtf1\ansi RTF content for read_file test}"#
             .write(to: rtfURL, atomically: true, encoding: .utf8)
@@ -65,7 +65,7 @@ final class ReadFileDocumentTests: XCTestCase {
             name: "read_file",
             argumentsJSON: "{\"path\": \"test.rtf\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
@@ -74,7 +74,7 @@ final class ReadFileDocumentTests: XCTestCase {
 
     // MARK: - read_file with HTML — raw source (tags preserved for editing)
 
-    func testReadFile_html_returnsRawSourceWithTags() throws {
+    func testReadFile_html_returnsRawSourceWithTags() async throws {
         // HTML is a source format for a coding tool. `read_file` must return
         // the verbatim markup so the LLM can edit `<p>`, `<div>`, attributes,
         // `<script>`, etc. Earlier builds stripped tags via NSAttributedString
@@ -87,7 +87,7 @@ final class ReadFileDocumentTests: XCTestCase {
             name: "read_file",
             argumentsJSON: "{\"path\": \"page.html\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
@@ -97,7 +97,7 @@ final class ReadFileDocumentTests: XCTestCase {
                       "body text must still be present: \(results[0].outputJSON)")
     }
 
-    func testReadFile_css_returnsRawSource() throws {
+    func testReadFile_css_returnsRawSource() async throws {
         // CSS is source — braces, selectors, and declarations must survive.
         let cssURL = tempDir.appendingPathComponent("style.css")
         let source = ".hero { color: red; font-size: 16px; }"
@@ -107,14 +107,14 @@ final class ReadFileDocumentTests: XCTestCase {
             name: "read_file",
             argumentsJSON: "{\"path\": \"style.css\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains(".hero"))
         XCTAssertTrue(results[0].outputJSON.contains("color: red"))
     }
 
-    func testReadFile_js_returnsRawSource() throws {
+    func testReadFile_js_returnsRawSource() async throws {
         let jsURL = tempDir.appendingPathComponent("app.js")
         let source = "function greet(name) { return `Hello, ${name}!`; }"
         try source.write(to: jsURL, atomically: true, encoding: .utf8)
@@ -123,14 +123,14 @@ final class ReadFileDocumentTests: XCTestCase {
             name: "read_file",
             argumentsJSON: "{\"path\": \"app.js\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("function greet"))
         XCTAssertTrue(results[0].outputJSON.contains("${name}"))
     }
 
-    func testReadFile_oversizeHTML_returnsErrorPointingToReadLines() throws {
+    func testReadFile_oversizeHTML_returnsErrorPointingToReadLines() async throws {
         // HTML goes through the raw-read path (FileReadHandlers ReadFileTool),
         // which now hard-rejects files larger than the configured limit and
         // points the LLM at `read_lines`.
@@ -145,7 +145,7 @@ final class ReadFileDocumentTests: XCTestCase {
             name: "read_file",
             argumentsJSON: "{\"path\": \"big.html\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertTrue(results[0].isError, "oversize HTML must be rejected")
         let json = results[0].outputJSON
@@ -157,7 +157,7 @@ final class ReadFileDocumentTests: XCTestCase {
                        "rejected reads must not return content")
     }
 
-    func testReadFile_mixedCaseHTMLExtension_stillReadsAsRawSource() throws {
+    func testReadFile_mixedCaseHTMLExtension_stillReadsAsRawSource() async throws {
         // Regression pin: both `isSupported` (DocumentTextExtractor.isSupported)
         // and the handler's routing lowercase the extension. If a future
         // refactor drops `.lowercased()` on either side, `.HTML` / `.HTM`
@@ -175,14 +175,14 @@ final class ReadFileDocumentTests: XCTestCase {
                 name: "read_file",
                 argumentsJSON: "{\"path\": \"\(path)\"}"
             )
-            let results = runtime.executeAll(context: context, toolCalls: [call])
+            let results = await runtime.executeAll(context: context, toolCalls: [call])
             XCTAssertFalse(results[0].isError, "read_file on \(path) errored: \(results[0].outputJSON)")
             XCTAssertTrue(results[0].outputJSON.contains("<p>"),
                           "mixed-case \(path) must come back as raw source with tags: \(results[0].outputJSON)")
         }
     }
 
-    func testReadFile_xml_returnsRawSourceNotExtracted() throws {
+    func testReadFile_xml_returnsRawSourceNotExtracted() async throws {
         // XML is not in supportedReadExtensions — must come back with tags intact.
         let xmlURL = tempDir.appendingPathComponent("config.xml")
         let source = "<?xml version=\"1.0\"?><config><key>value</key></config>"
@@ -192,7 +192,7 @@ final class ReadFileDocumentTests: XCTestCase {
             name: "read_file",
             argumentsJSON: "{\"path\": \"config.xml\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("<config>"))
@@ -207,7 +207,7 @@ final class ReadFileDocumentTests: XCTestCase {
 
     // MARK: - read_file with plain text (unchanged behavior)
 
-    func testReadFile_plainText_stillWorksAsUTF8() throws {
+    func testReadFile_plainText_stillWorksAsUTF8() async throws {
         let txtURL = tempDir.appendingPathComponent("plain.txt")
         try "Just plain text".write(to: txtURL, atomically: true, encoding: .utf8)
 
@@ -215,7 +215,7 @@ final class ReadFileDocumentTests: XCTestCase {
             name: "read_file",
             argumentsJSON: "{\"path\": \"plain.txt\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
@@ -226,7 +226,7 @@ final class ReadFileDocumentTests: XCTestCase {
 
     // MARK: - read_lines with PDF
 
-    func testReadLines_pdf_returnsLineRange() throws {
+    func testReadLines_pdf_returnsLineRange() async throws {
         // Create a multi-line PDF
         let lines = (1...10).map { "Line number \($0)" }.joined(separator: "\n")
         let pdfURL = try createPDFWithText(lines)
@@ -237,7 +237,7 @@ final class ReadFileDocumentTests: XCTestCase {
             {"path": "\(pdfURL.lastPathComponent)", "start_line": 2, "end_line": 4}
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
@@ -247,14 +247,14 @@ final class ReadFileDocumentTests: XCTestCase {
 
     // MARK: - read_file with XLSX
 
-    func testReadFile_xlsx_returnsMarkdownTable() throws {
+    func testReadFile_xlsx_returnsMarkdownTable() async throws {
         let xlsxURL = try createTestXLSX()
 
         let call = StepToolCall(
             name: "read_file",
             argumentsJSON: "{\"path\": \"\(xlsxURL.lastPathComponent)\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
@@ -264,7 +264,7 @@ final class ReadFileDocumentTests: XCTestCase {
 
     // MARK: - read_file with DOCX / ODT / PPTX / RTFD / .doc
 
-    func testReadFile_docx_returnsExtractedText() throws {
+    func testReadFile_docx_returnsExtractedText() async throws {
         let docxURL = try makeDOCX(
             at: "report.docx",
             body: "<w:p><w:r><w:t>Hello from DOCX read_file</w:t></w:r></w:p>"
@@ -274,13 +274,13 @@ final class ReadFileDocumentTests: XCTestCase {
             name: "read_file",
             argumentsJSON: "{\"path\": \"\(docxURL.lastPathComponent)\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("Hello from DOCX read_file"))
         XCTAssertTrue(results[0].outputJSON.contains("extracted_text"))
     }
 
-    func testReadFile_odt_returnsExtractedText() throws {
+    func testReadFile_odt_returnsExtractedText() async throws {
         let odtURL = try makeODT(
             at: "memo.odt",
             body: "<text:p>Hello from ODT read_file</text:p>"
@@ -290,13 +290,13 @@ final class ReadFileDocumentTests: XCTestCase {
             name: "read_file",
             argumentsJSON: "{\"path\": \"\(odtURL.lastPathComponent)\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("Hello from ODT read_file"))
         XCTAssertTrue(results[0].outputJSON.contains("extracted_text"))
     }
 
-    func testReadFile_pptx_returnsExtractedText() throws {
+    func testReadFile_pptx_returnsExtractedText() async throws {
         let pptxURL = try makePPTX(at: "deck.pptx", slides: [
             "First slide intro",
             "Second slide UNIQUEPPTX content",
@@ -306,7 +306,7 @@ final class ReadFileDocumentTests: XCTestCase {
             name: "read_file",
             argumentsJSON: "{\"path\": \"\(pptxURL.lastPathComponent)\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("First slide intro"))
         XCTAssertTrue(results[0].outputJSON.contains("UNIQUEPPTX"))
@@ -314,7 +314,7 @@ final class ReadFileDocumentTests: XCTestCase {
                       "Expected slide numbering in output: \(results[0].outputJSON)")
     }
 
-    func testReadFile_rtfd_readsInternalTXTRTF() throws {
+    func testReadFile_rtfd_readsInternalTXTRTF() async throws {
         let rtfdURL = tempDir.appendingPathComponent("bundle.rtfd", isDirectory: true)
         try fm.createDirectory(at: rtfdURL, withIntermediateDirectories: true)
         try #"{\rtf1\ansi Content of RTFD package}"#
@@ -325,12 +325,12 @@ final class ReadFileDocumentTests: XCTestCase {
             name: "read_file",
             argumentsJSON: "{\"path\": \"bundle.rtfd\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("Content of RTFD package"))
     }
 
-    func testReadFile_legacyDoc_returnsErrorWithSaveAsDocxHint() throws {
+    func testReadFile_legacyDoc_returnsErrorWithSaveAsDocxHint() async throws {
         let docURL = tempDir.appendingPathComponent("legacy.doc")
         try Data("Arbitrary binary .doc payload".utf8).write(to: docURL)
 
@@ -338,7 +338,7 @@ final class ReadFileDocumentTests: XCTestCase {
             name: "read_file",
             argumentsJSON: "{\"path\": \"legacy.doc\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertTrue(results[0].isError,
                       "read_file on .doc should surface extraction failure: \(results[0].outputJSON)")
         XCTAssertTrue(results[0].outputJSON.contains("save as .docx"),
@@ -347,7 +347,7 @@ final class ReadFileDocumentTests: XCTestCase {
 
     // MARK: - read_lines across all document formats
 
-    func testReadLines_docx_returnsParagraphRange() throws {
+    func testReadLines_docx_returnsParagraphRange() async throws {
         let docxURL = try makeDOCX(at: "many-paragraphs.docx", body: """
         <w:p><w:r><w:t>paragraph one</w:t></w:r></w:p>
         <w:p><w:r><w:t>paragraph two</w:t></w:r></w:p>
@@ -361,7 +361,7 @@ final class ReadFileDocumentTests: XCTestCase {
             {"path": "\(docxURL.lastPathComponent)", "start_line": 2, "end_line": 3}
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("paragraph two"))
         XCTAssertTrue(results[0].outputJSON.contains("paragraph three"))
@@ -369,7 +369,7 @@ final class ReadFileDocumentTests: XCTestCase {
                        "read_lines should not include line 1 in 2-3 range")
     }
 
-    func testReadLines_rtf_returnsLineRange() throws {
+    func testReadLines_rtf_returnsLineRange() async throws {
         let rtfURL = tempDir.appendingPathComponent("notes.rtf")
         try #"{\rtf1\ansi line alpha\line line beta\line line gamma}"#
             .write(to: rtfURL, atomically: true, encoding: .utf8)
@@ -378,12 +378,12 @@ final class ReadFileDocumentTests: XCTestCase {
             name: "read_lines",
             argumentsJSON: "{\"path\": \"notes.rtf\", \"start_line\": 1, \"end_line\": -1}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("line alpha"))
     }
 
-    func testReadLines_html_returnsRawSourceWithTags() throws {
+    func testReadLines_html_returnsRawSourceWithTags() async throws {
         // HTML is now read as raw source — `read_lines` must preserve tags
         // verbatim so the LLM can edit markup. Earlier builds stripped tags
         // via DocumentTextExtractor.extractHTML; that path is removed.
@@ -395,7 +395,7 @@ final class ReadFileDocumentTests: XCTestCase {
             name: "read_lines",
             argumentsJSON: "{\"path\": \"page.html\", \"start_line\": 1, \"end_line\": 0}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
         // Tags must survive — match the JSON-escaped form of <p class="hero">.
         XCTAssertTrue(results[0].outputJSON.contains("<p class=\\\"hero\\\">"),
@@ -404,7 +404,7 @@ final class ReadFileDocumentTests: XCTestCase {
                       "body text must still be present: \(results[0].outputJSON)")
     }
 
-    func testReadLines_odt_returnsLineRange() throws {
+    func testReadLines_odt_returnsLineRange() async throws {
         let odtURL = try makeODT(at: "notes.odt", body: """
         <text:p>alpha line</text:p>
         <text:p>beta line</text:p>
@@ -415,12 +415,12 @@ final class ReadFileDocumentTests: XCTestCase {
             name: "read_lines",
             argumentsJSON: "{\"path\": \"\(odtURL.lastPathComponent)\", \"start_line\": 2, \"end_line\": 2}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("beta line"))
     }
 
-    func testReadLines_pptx_returnsLineRange() throws {
+    func testReadLines_pptx_returnsLineRange() async throws {
         let pptxURL = try makePPTX(at: "deck.pptx", slides: [
             "slide-one-marker",
             "slide-two-marker",
@@ -430,25 +430,25 @@ final class ReadFileDocumentTests: XCTestCase {
             name: "read_lines",
             argumentsJSON: "{\"path\": \"\(pptxURL.lastPathComponent)\", \"start_line\": 1, \"end_line\": -1}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("slide-one-marker"))
         XCTAssertTrue(results[0].outputJSON.contains("slide-two-marker"))
     }
 
-    func testReadLines_xlsx_returnsLineRange() throws {
+    func testReadLines_xlsx_returnsLineRange() async throws {
         let xlsxURL = try createTestXLSX()
         let call = StepToolCall(
             name: "read_lines",
             argumentsJSON: "{\"path\": \"\(xlsxURL.lastPathComponent)\", \"start_line\": 1, \"end_line\": -1}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("Alice"),
                       "xlsx line range should include known cell value")
     }
 
-    func testReadLines_rtfd_readsInternalTXTRTF() throws {
+    func testReadLines_rtfd_readsInternalTXTRTF() async throws {
         let rtfdURL = tempDir.appendingPathComponent("bundle.rtfd", isDirectory: true)
         try fm.createDirectory(at: rtfdURL, withIntermediateDirectories: true)
         try #"{\rtf1\ansi first line\line second line}"#
@@ -459,12 +459,12 @@ final class ReadFileDocumentTests: XCTestCase {
             name: "read_lines",
             argumentsJSON: "{\"path\": \"bundle.rtfd\", \"start_line\": 1, \"end_line\": -1}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("first line"))
     }
 
-    func testReadLines_legacyDoc_returnsErrorWithSaveAsDocxHint() throws {
+    func testReadLines_legacyDoc_returnsErrorWithSaveAsDocxHint() async throws {
         // read_lines routes through extractText which rejects .doc same as read_file.
         let docURL = tempDir.appendingPathComponent("legacy.doc")
         try Data("binary .doc content".utf8).write(to: docURL)
@@ -473,13 +473,13 @@ final class ReadFileDocumentTests: XCTestCase {
             name: "read_lines",
             argumentsJSON: "{\"path\": \"legacy.doc\", \"start_line\": 1, \"end_line\": -1}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertTrue(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("save as .docx"),
                       "read_lines on .doc should propagate same actionable hint as read_file: \(results[0].outputJSON)")
     }
 
-    func testReadLines_docx_startLinePastEOF_returnsRangeError() throws {
+    func testReadLines_docx_startLinePastEOF_returnsRangeError() async throws {
         let docxURL = try makeDOCX(
             at: "short.docx",
             body: "<w:p><w:r><w:t>single line</w:t></w:r></w:p>"
@@ -489,7 +489,7 @@ final class ReadFileDocumentTests: XCTestCase {
             name: "read_lines",
             argumentsJSON: "{\"path\": \"\(docxURL.lastPathComponent)\", \"start_line\": 999, \"end_line\": 1000}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertTrue(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("exceeds file length"),
                       "expected range error, got: \(results[0].outputJSON)")
@@ -497,7 +497,7 @@ final class ReadFileDocumentTests: XCTestCase {
 
     // MARK: - Edge: Unicode / maxLines / empty document
 
-    func testReadFile_docx_withUnicodeContent() throws {
+    func testReadFile_docx_withUnicodeContent() async throws {
         // Cyrillic, emoji, zero-width joiner — all must round-trip through
         // ZIPReader + XMLParser without re-encoding damage.
         let docxURL = try makeDOCX(
@@ -509,13 +509,13 @@ final class ReadFileDocumentTests: XCTestCase {
             name: "read_file",
             argumentsJSON: "{\"path\": \"\(docxURL.lastPathComponent)\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("Привет, мир!"))
         XCTAssertTrue(results[0].outputJSON.contains("🌍"))
     }
 
-    func testReadFile_docx_returnsAllParagraphsWhenWithinLimit() throws {
+    func testReadFile_docx_returnsAllParagraphsWhenWithinLimit() async throws {
         // Produce a DOCX with multiple paragraphs (each becomes a line in extracted text).
         // 20 paragraphs is well below the default limit, so the file is read in full.
         let body = (1...20).map {
@@ -529,14 +529,14 @@ final class ReadFileDocumentTests: XCTestCase {
             {"path": "\(docxURL.lastPathComponent)"}
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
         let json = results[0].outputJSON
         XCTAssertTrue(json.contains("Paragraph 1"))
         XCTAssertTrue(json.contains("Paragraph 20"), "in-limit DOCX must return all paragraphs")
     }
 
-    func testReadFile_emptyDOCX_returnsFailureMessage() throws {
+    func testReadFile_emptyDOCX_returnsFailureMessage() async throws {
         // DOCX with no <w:t> → extractor returns failure message; read_file
         // surfaces it as isError.
         let docxURL = try makeDOCX(
@@ -548,27 +548,27 @@ final class ReadFileDocumentTests: XCTestCase {
             name: "read_file",
             argumentsJSON: "{\"path\": \"\(docxURL.lastPathComponent)\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertTrue(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("Could not extract text"))
     }
 
     // MARK: - search with documents
 
-    func testSearchDocuments_findsMatchInPDF() throws {
+    func testSearchDocuments_findsMatchInPDF() async throws {
         let pdfURL = try createPDFWithText("Hello UNIQUETOKEN42 world")
         let call = StepToolCall(
             name: "search",
             argumentsJSON: "{\"query\": \"UNIQUETOKEN42\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains(pdfURL.lastPathComponent),
                       "search should find PDF: \(results[0].outputJSON)")
         XCTAssertTrue(results[0].outputJSON.contains("UNIQUETOKEN42"))
     }
 
-    func testSearchDocuments_findsMatchInDOCX() throws {
+    func testSearchDocuments_findsMatchInDOCX() async throws {
         let docxURL = tempDir.appendingPathComponent("report.docx")
         let docXML = """
         <?xml version="1.0" encoding="UTF-8"?>
@@ -584,12 +584,12 @@ final class ReadFileDocumentTests: XCTestCase {
             name: "search",
             argumentsJSON: "{\"query\": \"DOCXMARKER123\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("report.docx"))
     }
 
-    func testSearchDocuments_findsMatchInRTF() throws {
+    func testSearchDocuments_findsMatchInRTF() async throws {
         let rtfURL = tempDir.appendingPathComponent("memo.rtf")
         try #"{\rtf1\ansi RTFMARKER456 in a memo}"#
             .write(to: rtfURL, atomically: true, encoding: .utf8)
@@ -598,12 +598,12 @@ final class ReadFileDocumentTests: XCTestCase {
             name: "search",
             argumentsJSON: "{\"query\": \"RTFMARKER456\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("memo.rtf"))
     }
 
-    func testSearchDocuments_findsMatchInRTFD() throws {
+    func testSearchDocuments_findsMatchInRTFD() async throws {
         let rtfdURL = tempDir.appendingPathComponent("bundle.rtfd", isDirectory: true)
         try fm.createDirectory(at: rtfdURL, withIntermediateDirectories: true)
         try #"{\rtf1\ansi RTFDMARKER789 inside bundle}"#
@@ -614,14 +614,14 @@ final class ReadFileDocumentTests: XCTestCase {
             name: "search",
             argumentsJSON: "{\"query\": \"RTFDMARKER789\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
         // Match path should be the bundle itself, not TXT.rtf inside.
         XCTAssertTrue(results[0].outputJSON.contains("bundle.rtfd"),
                       "RTFD should appear as a single entry, got: \(results[0].outputJSON)")
     }
 
-    func testSearchDocuments_findsMatchInHTML() throws {
+    func testSearchDocuments_findsMatchInHTML() async throws {
         let htmlURL = tempDir.appendingPathComponent("page.html")
         try "<html><body><p>HTMLMARKER321 anchor</p></body></html>"
             .write(to: htmlURL, atomically: true, encoding: .utf8)
@@ -630,12 +630,12 @@ final class ReadFileDocumentTests: XCTestCase {
             name: "search",
             argumentsJSON: "{\"query\": \"HTMLMARKER321\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("page.html"))
     }
 
-    func testSearchHTML_findsTagSelector_provingRawSourceIsIndexed() throws {
+    func testSearchHTML_findsTagSelector_provingRawSourceIsIndexed() async throws {
         // Regression pin for the .html/.htm removal: searching for a tag or
         // attribute string inside HTML now matches because the file is read
         // as raw source. Under the old stripped-text path this test would
@@ -648,7 +648,7 @@ final class ReadFileDocumentTests: XCTestCase {
             name: "search",
             argumentsJSON: "{\"query\": \"<p class=\\\"hero\\\">\"}"
         )
-        let tagResult = runtime.executeAll(context: context, toolCalls: [tagQuery])
+        let tagResult = await runtime.executeAll(context: context, toolCalls: [tagQuery])
         XCTAssertFalse(tagResult[0].isError)
         XCTAssertTrue(tagResult[0].outputJSON.contains("landing.html"),
                       "tag-selector query must match HTML source: \(tagResult[0].outputJSON)")
@@ -657,24 +657,24 @@ final class ReadFileDocumentTests: XCTestCase {
             name: "search",
             argumentsJSON: "{\"query\": \"class=\"}"
         )
-        let attrResult = runtime.executeAll(context: context, toolCalls: [attrQuery])
+        let attrResult = await runtime.executeAll(context: context, toolCalls: [attrQuery])
         XCTAssertFalse(attrResult[0].isError)
         XCTAssertTrue(attrResult[0].outputJSON.contains("landing.html"),
                       "attribute substring must match HTML source: \(attrResult[0].outputJSON)")
     }
 
-    func testSearchDocuments_findsMatchInXLSX() throws {
+    func testSearchDocuments_findsMatchInXLSX() async throws {
         _ = try createTestXLSX() // data.xlsx with rows containing "Alice" / "NY"
         let call = StepToolCall(
             name: "search",
             argumentsJSON: "{\"query\": \"Alice\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("data.xlsx"))
     }
 
-    func testSearchDocuments_findsMatchInODT() throws {
+    func testSearchDocuments_findsMatchInODT() async throws {
         let odtURL = tempDir.appendingPathComponent("notes.odt")
         let contentXML = """
         <?xml version="1.0" encoding="UTF-8"?>
@@ -694,12 +694,12 @@ final class ReadFileDocumentTests: XCTestCase {
             name: "search",
             argumentsJSON: "{\"query\": \"ODTMARKER555\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("notes.odt"))
     }
 
-    func testSearchDocuments_respectsFileGlob_pdfOnly() throws {
+    func testSearchDocuments_respectsFileGlob_pdfOnly() async throws {
         _ = try createPDFWithText("Both files contain GLOBTOKEN")
         let txtURL = tempDir.appendingPathComponent("plain.txt")
         try "Plain text with GLOBTOKEN in it".write(to: txtURL, atomically: true, encoding: .utf8)
@@ -708,7 +708,7 @@ final class ReadFileDocumentTests: XCTestCase {
             name: "search",
             argumentsJSON: "{\"query\": \"GLOBTOKEN\", \"file_glob\": \"*.txt\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("plain.txt"),
                       "Should find plain.txt: \(results[0].outputJSON)")
@@ -716,7 +716,7 @@ final class ReadFileDocumentTests: XCTestCase {
                        "Should NOT find PDF with *.txt glob: \(results[0].outputJSON)")
     }
 
-    func testSearchDocuments_skipsFailedExtraction() throws {
+    func testSearchDocuments_skipsFailedExtraction() async throws {
         // Write a .pdf with garbage bytes — PDFKit will reject it; search should
         // silently skip the file, not error out.
         let badURL = tempDir.appendingPathComponent("broken.pdf")
@@ -726,12 +726,12 @@ final class ReadFileDocumentTests: XCTestCase {
             name: "search",
             argumentsJSON: "{\"query\": \"anything\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError,
                        "Broken PDF should be skipped silently, not cause tool error")
     }
 
-    func testSearchDocuments_findsMatchInPPTX() throws {
+    func testSearchDocuments_findsMatchInPPTX() async throws {
         _ = try makePPTX(at: "slides.pptx", slides: [
             "Introduction slide",
             "Agenda PPTXMARKER777 item",
@@ -742,14 +742,14 @@ final class ReadFileDocumentTests: XCTestCase {
             name: "search",
             argumentsJSON: "{\"query\": \"PPTXMARKER777\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("slides.pptx"))
     }
 
     // MARK: - Edge: search regex / context / limits
 
-    func testSearchDocuments_regexMode_onDOCX() throws {
+    func testSearchDocuments_regexMode_onDOCX() async throws {
         _ = try makeDOCX(at: "report.docx", body: """
         <w:p><w:r><w:t>error: resource not found</w:t></w:r></w:p>
         <w:p><w:r><w:t>warning: deprecated API</w:t></w:r></w:p>
@@ -761,13 +761,13 @@ final class ReadFileDocumentTests: XCTestCase {
             {"query": "error:.*found", "mode": "regex"}
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("report.docx"),
                       "regex over DOCX should match: \(results[0].outputJSON)")
     }
 
-    func testSearchDocuments_contextLines_fromDOCX() throws {
+    func testSearchDocuments_contextLines_fromDOCX() async throws {
         _ = try makeDOCX(at: "notes.docx", body: """
         <w:p><w:r><w:t>preamble alpha</w:t></w:r></w:p>
         <w:p><w:r><w:t>preamble beta</w:t></w:r></w:p>
@@ -782,7 +782,7 @@ final class ReadFileDocumentTests: XCTestCase {
             {"query": "TARGETPHRASE", "context_before": 2, "context_after": 2}
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
         let json = results[0].outputJSON
         XCTAssertTrue(json.contains("TARGETPHRASE"))
@@ -792,7 +792,7 @@ final class ReadFileDocumentTests: XCTestCase {
                       "context_after=2 should include line after match: \(json)")
     }
 
-    func testSearchDocuments_pageSizeTruncatesMidDocument() throws {
+    func testSearchDocuments_pageSizeTruncatesMidDocument() async throws {
         // 10 paragraphs, each matching the query. A page of 3 returns 3 and reports that more
         // exist. Replaces the old `max_match_lines: 3` variant — that parameter is gone, and
         // `max_results` is now the only limit on how many matches come back.
@@ -808,7 +808,7 @@ final class ReadFileDocumentTests: XCTestCase {
             {"query": "SAMEPHRASE", "max_results": 3}
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("\"count\":3"),
                       "page size governs the returned count: \(results[0].outputJSON)")
@@ -818,24 +818,24 @@ final class ReadFileDocumentTests: XCTestCase {
                       "and that is stated explicitly: \(results[0].outputJSON)")
     }
 
-    func testSearchDocuments_pagesDoNotOverlapOrSkip() throws {
+    func testSearchDocuments_pagesDoNotOverlapOrSkip() async throws {
         var body = ""
         for i in 0..<10 {
             body += "<w:p><w:r><w:t>SAMEPHRASE \(i)</w:t></w:r></w:p>"
         }
         _ = try makeDOCX(at: "big.docx", body: body)
 
-        func page(offset: Int, limit: Int) -> String {
+        func page(offset: Int, limit: Int) async -> String {
             let call = StepToolCall(
                 name: "search",
                 argumentsJSON: "{\"query\": \"SAMEPHRASE\", \"max_results\": \(limit), \"offset\": \(offset)}"
             )
-            return runtime.executeAll(context: context, toolCalls: [call])[0].outputJSON
+            return await runtime.executeAll(context: context, toolCalls: [call])[0].outputJSON
         }
 
         // Paragraph 4 is on the second page of 4 and must appear exactly once across pages.
-        let first = page(offset: 0, limit: 4)
-        let second = page(offset: 4, limit: 4)
+        let first = await page(offset: 0, limit: 4)
+        let second = await page(offset: 4, limit: 4)
         XCTAssertTrue(first.contains("SAMEPHRASE 0"), first)
         XCTAssertFalse(first.contains("SAMEPHRASE 4"), "page 1 stops before the 5th match: \(first)")
         XCTAssertTrue(second.contains("SAMEPHRASE 4"), "page 2 resumes exactly where page 1 ended: \(second)")
@@ -843,7 +843,7 @@ final class ReadFileDocumentTests: XCTestCase {
         XCTAssertTrue(second.contains("\"offset\":4"), "offset is echoed back: \(second)")
     }
 
-    func testSearchDocuments_lastPage_reportsNoMore() throws {
+    func testSearchDocuments_lastPage_reportsNoMore() async throws {
         var body = ""
         for i in 0..<5 {
             body += "<w:p><w:r><w:t>SAMEPHRASE \(i)</w:t></w:r></w:p>"
@@ -854,13 +854,13 @@ final class ReadFileDocumentTests: XCTestCase {
             name: "search",
             argumentsJSON: "{\"query\": \"SAMEPHRASE\", \"max_results\": 50}"
         )
-        let json = runtime.executeAll(context: context, toolCalls: [call])[0].outputJSON
+        let json = await runtime.executeAll(context: context, toolCalls: [call])[0].outputJSON
         XCTAssertFalse(json.contains("\"has_more\""), "nothing beyond this page: \(json)")
         XCTAssertTrue(json.contains("\"total_matches\":5"),
                       "the walk finished and everything fit, so the total is exact: \(json)")
     }
 
-    func testSearchDocuments_noMatches_returnsEmptyResult_noSkippedFiles() throws {
+    func testSearchDocuments_noMatches_returnsEmptyResult_noSkippedFiles() async throws {
         // Readable doc + query that doesn't match → count:0, NO skipped_files
         // (skipped_files is for files that couldn't be indexed, not for clean misses).
         _ = try makeDOCX(at: "report.docx", body: """
@@ -871,14 +871,14 @@ final class ReadFileDocumentTests: XCTestCase {
             name: "search",
             argumentsJSON: "{\"query\": \"NEVER-APPEARS-ANYWHERE\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("\"count\":0"))
         XCTAssertFalse(results[0].outputJSON.contains("skipped_files"),
                        "clean misses should NOT populate skipped_files: \(results[0].outputJSON)")
     }
 
-    func testSearchDocuments_findsMatchInNestedSubdirectory() throws {
+    func testSearchDocuments_findsMatchInNestedSubdirectory() async throws {
         let subdir = tempDir.appendingPathComponent("deep/nested/path", isDirectory: true)
         try fm.createDirectory(at: subdir, withIntermediateDirectories: true)
         let rtfURL = subdir.appendingPathComponent("nested.rtf")
@@ -889,7 +889,7 @@ final class ReadFileDocumentTests: XCTestCase {
             name: "search",
             argumentsJSON: "{\"query\": \"NESTEDTOKEN\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("nested.rtf"))
         // Wire encoder keeps slashes literal (`.withoutEscapingSlashes`) so the
@@ -898,7 +898,7 @@ final class ReadFileDocumentTests: XCTestCase {
                       "search must preserve nested path in results: \(results[0].outputJSON)")
     }
 
-    func testSearchDocuments_caseInsensitive_matchInsideDOCX() throws {
+    func testSearchDocuments_caseInsensitive_matchInsideDOCX() async throws {
         _ = try makeDOCX(at: "report.docx", body: """
         <w:p><w:r><w:t>The MixedCaseToken shows up once.</w:t></w:r></w:p>
         """)
@@ -907,13 +907,13 @@ final class ReadFileDocumentTests: XCTestCase {
             name: "search",
             argumentsJSON: "{\"query\": \"mixedcasetoken\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("report.docx"),
                       "substring search must be case-insensitive over extracted text: \(results[0].outputJSON)")
     }
 
-    func testSearchDocuments_skipsLegacyDOC_withSaveAsDocxReason() throws {
+    func testSearchDocuments_skipsLegacyDOC_withSaveAsDocxReason() async throws {
         // .doc is explicitly rejected via failureMessage; search should skip
         // it BUT report it in `skipped_files` so the LLM/user sees WHY the
         // file was unreadable, not just silence.
@@ -924,7 +924,7 @@ final class ReadFileDocumentTests: XCTestCase {
             name: "search",
             argumentsJSON: "{\"query\": \"LEGACYMARKER999\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("\"count\":0"),
                       "expected zero matches for legacy .doc: \(results[0].outputJSON)")
@@ -932,6 +932,69 @@ final class ReadFileDocumentTests: XCTestCase {
                       "search result should carry skipped_files meta: \(results[0].outputJSON)")
         XCTAssertTrue(results[0].outputJSON.contains("save as .docx"),
                       "skipped_files entry should surface the save-as-docx hint: \(results[0].outputJSON)")
+    }
+
+    /// `search` stops reporting a scanned PDF; `read_file` must NOT. The two answer
+    /// different questions — "is this file being passed over" versus "give me this file's
+    /// text" — and a caller that asked for the text directly is owed the reason there is
+    /// none, not silence or an empty string it would read as a blank document.
+    func testReadFile_imageOnlyPDF_stillReportsWhyThereIsNoText() async throws {
+        let url = tempDir.appendingPathComponent("scan.pdf")
+        let doc = PDFDocument()
+        doc.insert(PDFPage(), at: 0)
+        XCTAssertTrue(doc.write(to: url))
+
+        let call = StepToolCall(
+            name: "read_file",
+            argumentsJSON: "{\"path\": \"scan.pdf\"}"
+        )
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertTrue(results[0].isError,
+                      "asking for a scanned PDF's text must not look like an empty file")
+        XCTAssertTrue(results[0].outputJSON.contains("no selectable text"),
+                      "the caller must be told why: \(results[0].outputJSON)")
+    }
+
+    // MARK: - Real content that reads like an extraction failure
+
+    /// A document whose BODY TEXT happens to spell an extraction-failure message was
+    /// extracted perfectly well. Judging the outcome by what the bytes say — rather than
+    /// by what the extractor reported — turns a readable document into an error.
+    func testReadFile_docxBodyLooksLikeFailureMessage_returnsItAsContent() async throws {
+        let sentinel = "[Could not extract text from elsewhere.pdf: PDF has no selectable text]"
+        _ = try makeDOCX(at: "quoted.docx", body: """
+        <w:p><w:r><w:t>\(sentinel.replacingOccurrences(of: "&", with: "&amp;"))</w:t></w:r></w:p>
+        """)
+
+        let call = StepToolCall(
+            name: "read_file",
+            argumentsJSON: "{\"path\": \"quoted.docx\"}"
+        )
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertFalse(results[0].isError,
+                       "extraction succeeded — the body's wording must not make it an error: \(results[0].outputJSON)")
+        XCTAssertTrue(results[0].outputJSON.contains("extracted_text"),
+                      "expected the normal extracted-text envelope: \(results[0].outputJSON)")
+    }
+
+    func testSearchDocuments_docxBodyLooksLikeFailureMessage_matchesAndIsNotSkipped() async throws {
+        _ = try makeDOCX(at: "quoted.docx", body: """
+        <w:p><w:r><w:t>[Could not extract text from elsewhere.pdf: UNIQUETOKEN42]</w:t></w:r></w:p>
+        """)
+
+        let call = StepToolCall(
+            name: "search",
+            argumentsJSON: "{\"query\": \"UNIQUETOKEN42\"}"
+        )
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertFalse(results[0].isError)
+        XCTAssertTrue(results[0].outputJSON.contains("quoted.docx"),
+                      "a readable document must be searched, not discarded: \(results[0].outputJSON)")
+        XCTAssertFalse(results[0].outputJSON.contains("skipped_files"),
+                       "nothing was unreadable here: \(results[0].outputJSON)")
     }
 
     // MARK: - Helpers

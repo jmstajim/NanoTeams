@@ -226,12 +226,20 @@ nonisolated extension NTMSRepository {
             if result.touched { teamsNeedsWrite = true }
             if result.toolsTouched { try store.write(tools, to: paths.toolsJSON) }
 
-            // The watermark ALWAYS advances. Outstanding work is carried in the
-            // pending set, which the gate above retries independently of the
-            // version compare — so one permanently-busy team can no longer force
-            // a full reconcile (and a fresh clobber of every other team's stored
-            // prompts) on every single launch.
-            state.lastAppliedAppVersion = currentAppVersion
+            // The watermark advances on a BUMP, and only there. Outstanding work is
+            // carried in the pending set, which the gate above retries independently of
+            // the version compare — so one permanently-busy team can no longer force a
+            // full reconcile (and a fresh clobber of every other team's stored prompts)
+            // on every single launch.
+            //
+            // Guarded because the gate's second arm fires on a DOWNGRADE too: stamping
+            // an older `currentAppVersion` there rewinds the folder's watermark, and the
+            // newer build then re-runs a full `.allTemplated` pass on its next launch.
+            // When the versions are equal the write was a no-op anyway, so the guard
+            // costs nothing and changes behaviour in exactly the rollback case.
+            if versionBumped {
+                state.lastAppliedAppVersion = currentAppVersion
+            }
             state.pendingReconcileTeamIDs = result.deferredTeamIDs
             state.updatedAt = MonotonicClock.shared.now()
             stateNeedsWrite = true
@@ -388,7 +396,12 @@ nonisolated extension NTMSRepository {
     /// Idempotent — once normalized, subsequent calls are no-ops. Returns true
     /// iff any role's `toolIDs` was mutated, so the caller knows to write.
     func normalizeDelegationToolset(teams: inout [Team]) -> Bool {
-        let delegationTools = ToolHandlerRegistry.delegationToolsExcludedFromToolIDs
+        // Annotated rather than inferred so the complexity scanner can see the receiver kind at
+        // THIS site: `contains` on a Set is O(1) hashed membership, not the linear scan its a1
+        // axis ranks. Without the annotation the site was ranked here and skipped only when
+        // some OTHER file happened to annotate the same identifier — a correct verdict reached
+        // by accident, and one that flips back the moment that unrelated file changes.
+        let delegationTools: Set<String> = ToolHandlerRegistry.delegationToolsExcludedFromToolIDs
         var anyChanged = false
         for teamIndex in teams.indices {
             var teamChanged = false

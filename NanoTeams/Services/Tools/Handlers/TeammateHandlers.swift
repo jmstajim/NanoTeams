@@ -123,8 +123,8 @@ nonisolated struct AskTeammateTool: ToolHandler {
         Self()
     }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             // `teammate` stays on `requiredString` — it is an IDENTIFIER, and the
             // exclusion rule applies: `+TeammateConsultation` answers an empty one
             // with "Unknown teammate role: . Available teammates: …", enumerating
@@ -174,8 +174,8 @@ nonisolated struct RequestTeamMeetingTool: ToolHandler {
         Self()
     }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             // The topic is the meeting's whole framing — it heads every
             // participant's turn message. Empty, it convenes N roles for M turns
             // apiece against the per-run meeting limit with nothing to discuss,
@@ -230,8 +230,8 @@ nonisolated struct ConcludeMeetingTool: ToolHandler {
         Self()
     }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             // Deliberately `requiredString`. An earlier version of this sweep
             // guarded emptiness here on the stated grounds that the decision "is
             // recorded on the meeting and re-enters the initiating role's
@@ -298,8 +298,8 @@ nonisolated struct RequestChangesTool: ToolHandler {
         Self()
     }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             // `target_role` stays on `requiredString`, same reason as
             // `ask_teammate`'s `teammate`: `ChangeRequestService.validateChangeRequest`
             // rejects an unresolvable id — `""` included — BEFORE any meeting is

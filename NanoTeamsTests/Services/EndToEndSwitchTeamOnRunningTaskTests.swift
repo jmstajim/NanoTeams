@@ -18,7 +18,9 @@ import XCTest
 ///    task.preferredTeamID.
 /// 2. Active task's run.roleStatuses is recomputed for the new team.
 /// 3. Steps for roles not in the new team are removed from the run.
-/// 4. Steps for roles still in the new team are preserved.
+/// 4. Steps for roles still in the roster are preserved. Reachable only via a same-team
+///    switch — no two teams can share a role id, since every path that mints one derives
+///    it from the owning team's name (see Scenario 5).
 /// 5. Unknown team ID is a silent no-op.
 /// 6. Switching to the currently active team is idempotent.
 /// 7. If engine was running, switchTeam pauses it first (cancels in-flight).
@@ -132,44 +134,57 @@ final class EndToEndSwitchTeamOnRunningTaskTests: NTMSOrchestratorTestBase, @unc
                        "Step for role `\(doomedRoleID)` not in team2 must be dropped")
     }
 
-    // MARK: - Scenario 5: Steps preserved for overlapping roles
+    // MARK: - Scenario 5: Steps preserved for roles still in the roster
 
-    func testSwitchTeam_preservesStepsForRolesInBothTeams() async throws {
+    /// The keep-branch of `TeamSwitchPlanner.filteredSteps`, reached the only way production
+    /// can reach it: re-selecting the team the task is ALREADY on.
+    ///
+    /// This test used to look for a role id present in two different teams and
+    /// `XCTSkip("No shared role between teams 0 and 1")` when it found none. It found none on
+    /// every run ever: a template role id is `NTMSID.from(name: "\(teamSeed):\(roleName)")` and
+    /// `teamSeed` is derived from the team NAME, so two distinct teams cannot collide — and
+    /// every other way a team enters a folder re-mints the ids the same way (`Team.duplicate`
+    /// from the copy's name, `TeamImportExportService.importTeam` from the import's name,
+    /// custom roles from a fresh UUID). Measured across `Team.defaultTeams`: zero sharing pairs,
+    /// with a self-intersection control proving the check could report one. So the scenario the
+    /// old test described does not exist, and the skip reason — which read as a property of
+    /// teams 0 and 1 — hid that it could never be satisfied by ANY pair.
+    ///
+    /// A same-team switch is not a degenerate stand-in: `switchTeam` has no same-team early
+    /// return (see `testSwitchTeam_sameTeam_roleStatusesStillRebuild`, which pins that the
+    /// status map is rebuilt anyway), so the whole path runs and `filteredSteps` is handed the
+    /// full roster. It is also the only assertion here of step PRESENCE — Scenario 4 asserts
+    /// absence, and the two catch opposite mutations: gutting `filteredSteps` to `[]` is
+    /// invisible to Scenario 4, and dropping the filter entirely is invisible to this one.
+    func testSwitchTeam_sameTeam_preservesStepsForRolesStillInRoster() async throws {
         await sut.openWorkFolder(tempDir)
-        guard let teams = sut.workFolder?.teams, teams.count >= 2 else {
-            return XCTFail("Need ≥ 2 teams")
-        }
-        let team1 = teams[0]
-        let team2 = teams[1]
-
-        // Find a role in BOTH teams
-        let sharedRoleIDs = team1.roles.map(\.id).filter { rid in
-            team2.roles.contains(where: { $0.id == rid })
-        }
-        guard let sharedRoleID = sharedRoleIDs.first else {
-            throw XCTSkip("No shared role between teams 0 and 1")
-        }
+        guard let team = sut.workFolder?.activeTeam else { return XCTFail("Need an active team") }
+        let keptRoleID = try XCTUnwrap(
+            team.nonSupervisorRoles.first?.id,
+            "fixture precondition: the active team must have a non-Supervisor role to keep")
 
         let taskID = await sut.createTask(title: "T", supervisorTask: "x",
-                                          preferredTeamID: team1.id)!
+                                          preferredTeamID: team.id)!
         await sut.switchTask(to: taskID)
 
         await sut.mutateTask(taskID: taskID) { task in
             let step = StepExecution(
-                id: sharedRoleID, role: .softwareEngineer,
-                title: "Shared", status: .done
+                id: keptRoleID, role: .softwareEngineer,
+                title: "Kept", status: .done
             )
             var run = Run(id: 0, steps: [step],
-                          roleStatuses: [sharedRoleID: .done])
+                          roleStatuses: [keptRoleID: .done])
             run.updatedAt = MonotonicClock.shared.now()
             task.runs = [run]
         }
 
-        await sut.switchTeam(to: team2.id)
+        await sut.switchTeam(to: team.id)
 
-        let survivingStepIDs = Set(sut.activeTask?.runs.last?.steps.map(\.id) ?? [])
-        XCTAssertTrue(survivingStepIDs.contains(sharedRoleID),
-                      "Step for shared role must survive team switch")
+        let surviving = try XCTUnwrap(sut.activeTask?.runs.last?.steps)
+        XCTAssertTrue(surviving.map(\.id).contains(keptRoleID),
+                      "step for a role still in the roster must survive the switch")
+        XCTAssertEqual(surviving.count, 1,
+                       "the switch must preserve the step, not duplicate or re-seed it")
     }
 
     // MARK: - Scenario 6: No active task — updates work folder only

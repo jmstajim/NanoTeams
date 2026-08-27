@@ -131,7 +131,7 @@ final class TaskStreamSplitTests: XCTestCase {
         XCTAssertLessThan(
             deep, shallow * 2,
             "10× the frozen history must not cost 10× the diff work — only the "
-            + "changed step can have anything to diff; got \(shallow) → \(deep)")
+                + "changed step can have anything to diff; got \(shallow) → \(deep)")
     }
 
     /// THE test the O(1) gate exists to survive. `updateToolCallResult` edits a

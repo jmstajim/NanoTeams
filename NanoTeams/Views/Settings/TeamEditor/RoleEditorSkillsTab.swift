@@ -58,7 +58,7 @@ nonisolated enum RoleEditorSkillsPolicy {
         let catalogueUnavailable: Bool
 
         var count: Int { entries.count }
-        var danglingCount: Int { entries.filter(\.isDangling).count }
+        var danglingCount: Int { entries.count(where: \.isDangling) }
     }
 
     /// `nil` when the role has nothing attached — the row then renders no badge.
@@ -214,8 +214,10 @@ struct RoleEditorSkillsTab: View {
             .padding(.bottom, Spacing.m)
         }
         .task {
-            // Rescan first: bodies are read at scan time, so a stale snapshot
-            // would show the previous contents and the previous token cost.
+            // Refresh first: bodies are read at snapshot time, so a stale one would
+            // show the previous contents and the previous token cost. This is now a
+            // cache read plus one file per attached skill — the WALK is behind
+            // `refreshButton`, because only the user knows they installed something.
             await store.refreshAgentSkills()
             snapshot = store.roleSkills ?? .empty
             isLoading = false
@@ -389,6 +391,32 @@ struct RoleEditorSkillsTab: View {
     // MARK: - Catalogue
 
     @ViewBuilder
+    /// Re-walks every skill root and republishes the shared catalogue.
+    ///
+    /// The catalogue is a disk cache (`AgentSkillsCatalogueStore`) precisely so that
+    /// opening this tab — or starting a run — does not pay for discovery. Which
+    /// leaves exactly one moment when a walk is warranted: the user installed a
+    /// skill and is now looking at a list that does not have it. Hence a control,
+    /// not a timer.
+    private var refreshButton: some View {
+        Button {
+            Task {
+                isLoading = true
+                await store.rescanAgentSkillCatalogue()
+                snapshot = store.roleSkills ?? .empty
+                isLoading = false
+                await loadMissingBodies()
+            }
+        } label: {
+            Image(systemName: "arrow.clockwise")
+                .font(Typography.caption)
+        }
+        .buttonStyle(.navbarIcon)
+        .disabled(isLoading)
+        .help("Rescan for installed skills")
+        .accessibilityLabel("Rescan skills")
+    }
+
     private var catalogueSection: some View {
         VStack(alignment: .leading, spacing: Spacing.s) {
             HStack(spacing: Spacing.s) {
@@ -398,6 +426,7 @@ struct RoleEditorSkillsTab: View {
                     .textFieldStyle(.plain)
                     .terminalField()
                     .frame(width: 200)
+                refreshButton
             }
 
             if isLoading {

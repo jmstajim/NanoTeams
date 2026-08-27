@@ -111,7 +111,7 @@ final class QuickCaptureComposerHandoffCoverageTests: XCTestCase {
 
         await settleOnChatWorkingTask(sut, taskID: taskA)
         sut.formState.answerText = "for A only"
-        sut.formState.answerClippedTexts = ["A's clip"]
+        sut.formState.answerClippedTexts = [Clip].minting(["A's clip"])
 
         store.engineState[taskB] = .running
         await store.switchTask(to: taskB)
@@ -194,7 +194,7 @@ final class QuickCaptureComposerHandoffCoverageTests: XCTestCase {
     /// RED: return `hasSubmittableText` alone for `.overlay` → this fails.
     func testOverlaySubmit_isEnabledByACapturedClipAlone() {
         let state = QuickCaptureFormState()
-        state.clippedTexts = ["\u{200B}// Source: a.swift:1-2\nlet x = 1"]
+        state.clippedTexts = [Clip].minting(["\u{200B}// Source: a.swift:1-2\nlet x = 1"])
 
         XCTAssertTrue(state.canSubmit(mode: .overlay),
                       "the clip is the request; the hotkey that captured it is the whole point")
@@ -206,7 +206,7 @@ final class QuickCaptureComposerHandoffCoverageTests: XCTestCase {
     /// RED: test only `!clippedTexts.isEmpty` → this fails.
     func testOverlaySubmit_ignoresAWhitespaceOnlyClip() {
         let state = QuickCaptureFormState()
-        state.clippedTexts = ["   \n  "]
+        state.clippedTexts = [Clip].minting(["   \n  "])
 
         XCTAssertFalse(state.canSubmit(mode: .overlay))
     }
@@ -260,6 +260,7 @@ final class QuickCaptureComposerHandoffCoverageTests: XCTestCase {
 
         let mode = DefaultQuickCaptureModeCoordinator().resolveMode(
             isTaskSelected: true, activeTask: task, engineState: .running,
+            isInitializingRun: false,
             activeTeam: makeTeam(), forceNewTaskMode: false)
 
         guard case .taskWorking(let roleName, _) = mode else {
@@ -287,6 +288,7 @@ final class QuickCaptureComposerHandoffCoverageTests: XCTestCase {
 
         let mode = DefaultQuickCaptureModeCoordinator().resolveMode(
             isTaskSelected: true, activeTask: task, engineState: .running,
+            isInitializingRun: false,
             activeTeam: makeTeam(), forceNewTaskMode: false)
 
         guard case .taskWorking(let roleName, _) = mode else {

@@ -9,15 +9,17 @@ nonisolated enum ToolErrorHandler {
     /// - Parameters:
     ///   - toolName: The name of the tool being executed
     ///   - args: The tool arguments dictionary
-    ///   - implementation: The tool implementation closure that may throw
+    ///   - implementation: The tool implementation closure that may throw. `async` because
+    ///     `ToolHandler.handle` is — `search` fans its per-file scan out across a task group,
+    ///     and a sync sibling overload would be a second home for the same catch ladder.
     /// - Returns: The tool result, either from successful execution or error handling
     static func execute(
         toolName: String,
         args: [String: Any],
-        implementation: () throws -> ToolExecutionResult
-    ) -> ToolExecutionResult {
+        implementation: () async throws -> ToolExecutionResult
+    ) async -> ToolExecutionResult {
         do {
-            return try implementation()
+            return try await implementation()
         } catch let error as ToolArgumentError {
             return makeErrorResult(
                 toolName: toolName, args: args,

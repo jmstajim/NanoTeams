@@ -19,6 +19,8 @@ final class RequestRevisionTests: NTMSOrchestratorTestBase, @unchecked Sendable 
 
     private func createTaskWithDoneStep(roleID: String) async -> Int {
         await sut.openWorkFolder(tempDir)
+        // AFTER openWorkFolder — that reloads teams from disk and would discard the roster edit.
+        await registerRolesOnActiveTeam([roleID])
         let taskID = await sut.createTask(title: "Test", supervisorTask: "Goal")!
 
         let step = StepExecution(
@@ -162,6 +164,7 @@ final class RequestRevisionTests: NTMSOrchestratorTestBase, @unchecked Sendable 
     func testRequestRevision_failedStep_isAllowed() async {
         let roleID = "swe-failed"
         await sut.openWorkFolder(tempDir)
+        await registerRolesOnActiveTeam([roleID])
         let taskID = await sut.createTask(title: "Test", supervisorTask: "Goal")!
         let step = StepExecution(
             id: roleID, role: .softwareEngineer, title: "SWE",
@@ -360,4 +363,5 @@ final class RequestRevisionTests: NTMSOrchestratorTestBase, @unchecked Sendable 
                 "Each feedback message carries exactly one prefix: \(message.content)")
         }
     }
+
 }

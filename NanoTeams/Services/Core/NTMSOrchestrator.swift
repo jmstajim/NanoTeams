@@ -6,9 +6,43 @@ import Observation
 @Observable @MainActor
 final class NTMSOrchestrator {
     var workFolderURL: URL?
-    var snapshot: WorkFolderContext?
+    var snapshot: WorkFolderContext? {
+        didSet { storeWriteRevision &+= 1 }
+    }
     private(set) var activeTaskID: Int?
-    var activeTask: NTMSTask?
+    var activeTask: NTMSTask? {
+        didSet { storeWriteRevision &+= 1 }
+    }
+
+    /// Monotonic counter of WRITES to `snapshot` / `activeTask` — not of changes to them.
+    ///
+    /// A view that must react to anything inside the active task otherwise has to
+    /// fold the task itself in an `onChange` KEY, and a key is evaluated on every
+    /// body pass whether or not the handler fires (CLAUDE.md #113). The Watchtower
+    /// timeline did exactly that: `WatchtowerTimelineBuilder.inputsVersion` walks
+    /// every run x every step with eight `hasher.combine` per step, three of them
+    /// over `String`, on every pass of the app's default detail pane.
+    ///
+    /// Deliberately a WRITE counter and not a derived fact — the opposite choice
+    /// from `TaskFactsProjection`, and for the opposite reason. That projection
+    /// answers "did this row's STATUS move", a question with few distinct answers,
+    /// so it can afford to compare and stay inert on the common `updatedAt` tick.
+    /// A timeline consumer needs every field the builder reads, and deciding
+    /// "did any of them move" IS the Theta(runs x steps) fold being avoided. So this
+    /// counter over-fires by construction, and the consumer pays the exact fold ONCE
+    /// per write to confirm — moving it off the body pass without ever risking the
+    /// failure mode a cheap key invites, which is a memo that stops refreshing.
+    ///
+    /// Both stores, because a consumer of task CONTENT also depends on the team that
+    /// names its roles, and a team edit rewrites `snapshot` without touching
+    /// `activeTask`. One counter for both: it answers "might anything I read have
+    /// moved", and two counters would invite a consumer to watch the wrong one.
+    ///
+    /// `didSet` rather than a bump at each assignment: `activeTask` alone is written
+    /// at four sites (`apply`, `applyTaskUpdate`, the streaming commit, the
+    /// work-folder close), and a counter maintained at N sites is the shape
+    /// CLAUDE.md #51 is about.
+    private(set) var storeWriteRevision: Int = 0
     var selectedRunID: Int?
     var lastErrorMessage: String? {
         didSet {
@@ -299,10 +333,14 @@ final class NTMSOrchestrator {
     @ObservationIgnored var agentInstructionsLastScanAt: Date?
 
     /// Agent skills discoverable for this install, plus the bodies of the ones
-    /// roles have attached (`TeamRoleDefinition.attachedSkillIDs`). In-memory
-    /// only — derived from disk and potentially large, never persisted.
-    /// Refreshed on work-folder open, at each top-level `startRun`, before
-    /// prompt-preview renders, and after a role's skill attachments change.
+    /// roles have attached (`TeamRoleDefinition.attachedSkillIDs`).
+    ///
+    /// Two halves with two lifetimes, and the distinction is what keeps a run start
+    /// cheap. `items` is the CATALOGUE — a fact about the machine, cached on disk by
+    /// `AgentSkillsCatalogueStore` and re-walked only when the user asks. `bodies` is
+    /// CONTENT — re-read on work-folder open, at each top-level `startRun`, and
+    /// before prompt-preview renders, so a `SKILL.md` edited since launch always
+    /// reaches the wire.
     ///
     /// Unlike `agentInstructions` this is **never nil'd for default storage**:
     /// global skills (`~/.claude/skills`, `~/.codex/prompts`, plugins) exist
@@ -313,26 +351,69 @@ final class NTMSOrchestrator {
     /// CLAUDE.md #38 generation counter for `refreshAgentSkills` — same contract
     /// as `agentInstructionsScanGeneration`.
     @ObservationIgnored var roleSkillsScanGeneration: Int = 0
-    /// Inputs + completion time of the last landed skills scan. The key carries
-    /// the attached ids, not just the root: they decide which bodies get read,
-    /// so attaching a skill must bypass the memo immediately.
-    @ObservationIgnored var roleSkillsLastScanKey: RoleSkillsScanKey?
-    @ObservationIgnored var roleSkillsLastScanAt: Date?
 
-    /// Tasks whose `startRun` is currently between its guards and `engine.start()`
-    /// — the engine-state double-start guard can't see a run that is still being
-    /// created across `startRun`'s suspension points (instructions rescan, task
-    /// load, run creation), so a concurrent second call would double-create runs.
-    @ObservationIgnored var startingRunTaskIDs: Set<Int> = []
+    /// The attachment set a catalogue rescan has already been attempted for.
+    ///
+    /// Bounds the "an attached id is missing → look again" retry to ONCE per set. A
+    /// dangling attachment — the skill was deleted from disk after a role attached
+    /// it — is unresolvable by definition, so without this the retry would fire a
+    /// full walk of every skill root on every single run start, reintroducing
+    /// exactly the per-send cost the catalogue cache removes, and silently. Changing
+    /// what is attached is a new question and earns a fresh attempt.
+    @ObservationIgnored var roleSkillsRescanAttemptedFor: [String]?
+
+    /// Where the skill CATALOGUE is cached between launches.
+    ///
+    /// A seam, not a process global, for the reason CLAUDE.md #49 records: the
+    /// default resolves OUTWARD to the developer's real
+    /// `~/Library/Application Support/NanoTeams/skills/`, so a test that omitted it
+    /// would both read the machine's installed skills and write its fixtures over
+    /// them. `TestOrchestrator.make` injects a temp directory.
+    @ObservationIgnored let skillsCatalogueStore: AgentSkillsCatalogueStore
+
+    /// Which start each in-flight launch belongs to, keyed by task ID.
+    ///
+    /// Bumped by `claimRunStart` and by `abortRunStart`. `launchRun` captures the value
+    /// at entry and re-checks it after every suspension, so a start the Supervisor has
+    /// since aborted refuses to write — and a `releaseRunStart` arriving late from that
+    /// aborted launch cannot drop the claim of the start that replaced it (CLAUDE.md
+    /// #74: a key that outlives what it identifies makes "still mine" indistinguishable
+    /// from "someone else's").
+    ///
+    /// A counter rather than an abort FLAG because it needs no clearing: a fresh claim
+    /// is simply a new value, so there is no window in which a stale "aborted" mark
+    /// could refuse the start that follows it. Same idiom as
+    /// `agentInstructionsScanGeneration` (CLAUDE.md #38).
+    ///
+    /// It is what makes Pause work on the INLINE start path (Play, Autovisor,
+    /// recurrence), where `backgroundRunLaunches` is legitimately empty and there is no
+    /// `Task` to cancel. Cancellation still runs for the background path — it only
+    /// unwinds sooner; the refusal itself is this counter's (CLAUDE.md #51: a guard on
+    /// one of two paths is a coincidence).
+    @ObservationIgnored var runStartGeneration: [Int: Int] = [:]
+
+    /// Join handles for run launches that were spawned in the BACKGROUND rather
+    /// than awaited inline — today only the Quick Capture create path, which
+    /// returns to the UI as soon as the run is materialized so the chat can open,
+    /// and lets the launch (instruction/skill rescan, engine start) finish behind it.
+    ///
+    /// Not a second home for `engineState.initializingRunTaskIDs` (CLAUDE.md #95):
+    /// that set answers "is a start in flight" for EVERY path and is what the
+    /// double-start guards and the four Initializing surfaces read; this dictionary
+    /// answers "is there a background launch I can join" and is legitimately empty
+    /// during an inline `startRun`, where the caller's own `await` already is the
+    /// join. Read it through `runStartTask(for:)`.
+    @ObservationIgnored var backgroundRunLaunches: [Int: Task<Void, Never>] = [:]
 
     /// Tasks whose FORCED Autovisor pass (`startAutovisorPass(force:)`) is between
-    /// its claim and `startRun`. A separate set from `startingRunTaskIDs` because
-    /// the force path's vulnerable window OPENS EARLIER: it `await`s `pauseRun`
-    /// before ever reaching `startRun`, and `TeamEngine.pause()` writes `.paused`
-    /// on its LAST line — so for that whole suspension the engine mirror still
-    /// reads `.running` and a second click observes exactly the state the first
-    /// did. It cannot reuse `startingRunTaskIDs`: `startRun` bails on membership,
-    /// so claiming that set here would make the force path never start a run.
+    /// its claim and `startRun`. A separate set from
+    /// `engineState.initializingRunTaskIDs` because the force path's vulnerable
+    /// window OPENS EARLIER: it `await`s `pauseRun` before ever reaching `startRun`,
+    /// and `TeamEngine.pause()` writes `.paused` on its LAST line — so for that whole
+    /// suspension the engine mirror still reads `.running` and a second click observes
+    /// exactly the state the first did. It cannot reuse the run-start claim:
+    /// `startRun` bails on membership, so claiming that set here would make the force
+    /// path never start a run.
     @ObservationIgnored var forcingRunTaskIDs: Set<Int> = []
 
     @ObservationIgnored var workFolderContextGenerationTask: Task<Void, Never>?
@@ -475,7 +556,8 @@ final class NTMSOrchestrator {
     /// re-inject the same message every tick of a long pass. Scoped to the
     /// mid-review injection branch ONLY — the fresh-pass wake path deliberately
     /// stays edge-dedup-free (a `handled`-style set there was adversarially
-    /// rejected; see `testWake_afterDebounceWindow_reFires`). Seeded with every
+    /// rejected; see `AutovisorOrchestratorTests.testWake_freshCondition_wakesWithNoThrottle`).
+    /// Seeded with every
     /// non-stuck condition matching at pass start (`seedAutovisorNotifiedKeysForPassStart`
     /// deliberately passes `stuck: []` — one stuck notice per pass is intended)
     /// and pruned on each wake to keys still matching among the triggers that wake
@@ -489,14 +571,20 @@ final class NTMSOrchestrator {
     /// pass (typically a task the manager created mid-pass whose artifact /
     /// `ask_supervisor` landed after it parked) — and wakes the manager immediately
     /// (or, if it's already running, is injected into the live conversation). A
-    /// condition already in the snapshot is NOT re-delivered; the periodic recurrence
-    /// sweep re-reviews unresolved ones. The pass-start seed RECOMPUTES `.stuck` into
+    /// condition already in the snapshot is NOT re-delivered while it keeps matching; the
+    /// periodic recurrence sweep re-reviews unresolved ones. The pass-start seed RECOMPUTES `.stuck` into
     /// the baseline so a stuck task is delivered once, not every poll. Deliberately SEPARATE
     /// from `autovisorNotifiedAttentionKeys` (the mid-review injection dedup set —
-    /// pruned + `formUnion`'d during a pass): this one is NOT pruned, so a condition
-    /// present at pass start stays "not fresh" even if it momentarily flickers. Set at
-    /// every pass start (`seedAutovisorNotifiedKeysForPassStart`) AND synchronously in
-    /// `wakeAutovisorForEvents` before the `await` — that synchronous record is the
+    /// pruned + `formUnion`'d during a pass): that one is delivery bookkeeping WITHIN a
+    /// pass, this one records what a pass was STARTED for. Only `.needsSupervisor` keys are
+    /// pruned here — a question the manager answered is over, and keeping its key made every
+    /// follow-up question on the same task read as already-delivered (CLAUDE.md #74); the
+    /// other triggers keep their level semantics, because there a flicker is a remedy that
+    /// did not take (a restarted role failing again), and re-passing on it is a tight loop.
+    /// Set at every pass start (`seedAutovisorNotifiedKeysForPassStart`), pruned + recorded
+    /// in `wakeAutovisorForEvents`, and single-key-retired by
+    /// `noteSupervisorQuestionResolved`. The record in `wakeAutovisorForEvents` happens
+    /// synchronously before the `await` — that synchronous record is the
     /// SOLE serialization between the concurrent observer + poll callers (a second wake
     /// for the same conditions sees them as not-fresh and bails, so neither
     /// double-starts a `createNewRun`).
@@ -561,8 +649,10 @@ final class NTMSOrchestrator {
         teamGenerationClient: (any LLMClient)? = nil,
         chatModelEnsurer: ChatModelEnsurer = .shared,
         downloadedModelStore: (any DownloadedModelStore)? = nil,
+        skillsCatalogueStore: AgentSkillsCatalogueStore? = nil,
         automationTickInterval: TimeInterval? = nil
     ) {
+        self.skillsCatalogueStore = skillsCatalogueStore ?? .shared
         self.automationTickInterval = automationTickInterval
         self.chatLifecycleClient = chatLifecycleClient
         self.teamGenerationClient = teamGenerationClient
@@ -916,6 +1006,17 @@ extension NTMSOrchestrator: LLMExecutionDelegate {}
 
 #if DEBUG
 extension NTMSOrchestrator {
+    /// Held open by `RunStartOrderingTests` so it can assert what is true at the
+    /// navigation boundary — i.e. after `materializeRun` and before `launchRun` has
+    /// done anything. Awaited as the first statement of `launchRun`.
+    ///
+    /// A deterministic seam rather than a wall-clock race, for the same reason
+    /// `NTMSRepository._testCreateTaskBeforeSummaryAppend` exists: the window is
+    /// shorter than the suspension the assertion itself would take, so "check
+    /// quickly and hope" would pass against the very ordering it is meant to pin.
+    /// Cleared in the test's `tearDown` — a leaked gate would hang every later suite.
+    static var _testRunLaunchGate: (@Sendable () async -> Void)?
+
     func _testRegisterStepTask(stepID: String, taskID: Int) {
         llmExecutionService._testRegisterStepTask(stepID: stepID, taskID: taskID)
     }

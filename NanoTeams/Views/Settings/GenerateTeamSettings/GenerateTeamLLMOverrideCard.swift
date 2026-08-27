@@ -31,7 +31,7 @@ struct GenerateTeamLLMOverrideCard: View {
 
 #Preview("LLM Override – disabled") {
     @Previewable @State var config = StoreConfiguration()
-    @Previewable @State var catalog = ModelCatalog()
+    @Previewable @State var catalog = PreviewStore.catalog()
     ScrollView {
         GenerateTeamLLMOverrideCard(config: config)
             .padding()

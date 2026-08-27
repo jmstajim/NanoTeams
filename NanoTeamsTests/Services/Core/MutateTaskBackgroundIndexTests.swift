@@ -99,9 +99,8 @@ final class MutateTaskBackgroundIndexTests: NTMSOrchestratorTestBase, @unchecked
 
     // MARK: - createNewRun's persist failure
 
-    /// A failed persist must SURFACE. `createNewRun` builds the run in memory, writes it, and
-    /// catches a write failure into `lastErrorMessage`; without that the user would press
-    /// Start, watch a run appear, and find it gone on the next open with no explanation.
+    /// A failed persist must SURFACE — the user presses Start, a run appears, and without a
+    /// banner it would be gone on the next open with no explanation.
     ///
     /// Induced through the repository's own contract rather than permission games:
     /// `updateTaskOnly` throws `taskNotFound` when the task's `task.json` is absent, so
@@ -113,8 +112,24 @@ final class MutateTaskBackgroundIndexTests: NTMSOrchestratorTestBase, @unchecked
     /// treatment as `SearchIndexFailureCoverageTests`' persist arm: a number that oscillates
     /// is a number nobody trusts, and this one carries a real contract.
     ///
-    /// RED: drop the `self.lastErrorMessage = …` from the catch → the failure is silent.
-    func testCreateNewRun_persistFailure_isReportedAndDoesNotFabricateARun() async throws {
+    /// **The in-memory half changed on 2026-08-27 and this test now pins the new semantics
+    /// rather than the old.** `createNewRun` used to hand-roll its own persistence: build the
+    /// run in a local copy, write it with a SYNCHRONOUS `repository.updateTaskOnly` on the
+    /// MainActor, and commit to memory only on success — so a failed write left no run. It now
+    /// goes through `mutateTask` like every other mutation, whose shape is prescribed by
+    /// CLAUDE.md invariant #6: commit in memory synchronously, detach only the encode+write.
+    /// The trade-off that invariant states explicitly — in-memory may be ahead of disk, and a
+    /// disk failure surfaces a banner without rolling back — therefore now applies here too.
+    ///
+    /// That is a real change and it is pinned, not papered over: the rollback was never free
+    /// either, since `startRun` continues to `engine.start()` regardless and the old behaviour
+    /// left the engine running against a run the task no longer had. What matters to the user —
+    /// that the failure is REPORTED — is unchanged, and is the first assertion below.
+    ///
+    /// RED: drop `self.lastErrorMessage = "Failed to save task: …"` from `mutateTask`'s catch →
+    /// the first assertion fails and a broken store goes silent. RED: make `createNewRun`
+    /// persist by hand again → the second assertion fails, naming the invariant it left.
+    func testCreateNewRun_persistFailure_isReported_andKeepsTheInMemoryRun() async throws {
         await sut.openWorkFolder(tempDir)
         let created = await sut.createTask(title: "A", supervisorTask: "x")
         let taskID = try XCTUnwrap(created)
@@ -132,8 +147,9 @@ final class MutateTaskBackgroundIndexTests: NTMSOrchestratorTestBase, @unchecked
             sut.lastErrorMessage,
             "a run that could not be written must be reported, not silently dropped")
         XCTAssertEqual(
-            sut.loadedTask(taskID)?.runs.count, runsBefore,
-            "the in-memory commit happens only on the success branch, so a failed write must "
-                + "not leave a run the store has never heard of")
+            sut.loadedTask(taskID)?.runs.count, runsBefore + 1,
+            "invariant #6: the in-memory commit is synchronous and precedes the write, so a "
+                + "failed write surfaces a banner without rolling back — the UI and the engine "
+                + "keep agreeing about which run is current")
     }
 }

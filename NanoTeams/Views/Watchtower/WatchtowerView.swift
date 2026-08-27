@@ -288,7 +288,7 @@ struct WatchtowerView: View {
 // MARK: - Preview
 
 #Preview {
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
+    @Previewable @State var store = PreviewStore.make()
     @Previewable @State var appUpdateState = AppUpdateState(config: StoreConfiguration())
     @Previewable @State var llmStatusMonitor = LLMStatusMonitor()
     WatchtowerView(taskState: TaskManagementState(), navigationSelection: .constant(.watchtower), clearedUpToDate: .constant(nil))

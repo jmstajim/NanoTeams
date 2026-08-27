@@ -37,7 +37,7 @@ extension QuickCaptureController {
         let queued = queueChatMessage(
             text: formState.answerText,
             attachments: formState.answerAttachments,
-            clippedTexts: formState.answerClippedTexts,
+            clippedTexts: formState.answerClippedTexts.texts,
             taskID: taskID,
             targetRoleID: targetRoleID
         )

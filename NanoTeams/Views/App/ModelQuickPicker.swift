@@ -203,26 +203,16 @@ struct ModelQuickPicker: View {
     }
 
     private var searchField: some View {
-        HStack(spacing: Spacing.xs) {
-            Image(systemName: "magnifyingglass")
-                .font(Typography.caption)
-                .foregroundStyle(Colors.textTertiary)
-                .accessibilityHidden(true)
-            TextField("Search models…", text: $searchText)
-                .textFieldStyle(.plain)
-                .font(Typography.termBase)
-                .onSubmit { submit() }
-        }
-        .padding(.horizontal, Spacing.s)
-        .padding(.vertical, Spacing.xs)
-        .background(
-            RoundedRectangle.squircle(CornerRadius.small)
-                .fill(Colors.surfaceElevated)
-                .overlay(
-                    RoundedRectangle.squircle(CornerRadius.small)
-                        .strokeBorder(Colors.borderSubtle, lineWidth: 1)
-                )
-        )
+        TextField("Search models…", text: $searchText)
+            .textFieldStyle(.plain)
+            .font(Typography.termBase)
+            .onSubmit { submit() }
+            .inputSurface(.field) {
+                Image(systemName: "magnifyingglass")
+                    .font(Typography.caption)
+                    .foregroundStyle(Colors.textTertiary)
+                    .accessibilityHidden(true)
+            }
     }
 
     @ViewBuilder

@@ -88,11 +88,15 @@ nonisolated enum FileReadSupport {
         path: String,
         fileURL: URL
     ) -> ContentOutcome {
-        if let extracted = DocumentTextExtractor.extractText(from: fileURL) {
-            if DocumentTextExtractor.isFailureMessage(extracted) {
+        if let outcome = DocumentTextExtractor.extract(from: fileURL) {
+            guard case .text(let extracted, _) = outcome else {
+                // `.empty` and `.failure` both mean "no content to return". They read the
+                // same here on purpose: the caller asked for this file's text, and either
+                // way there is none — the reason says which.
                 return .failure(makeErrorResult(
                     toolName: toolName, args: args,
-                    code: .commandFailed, message: extracted
+                    code: .commandFailed,
+                    message: outcome.message(for: fileURL) ?? "no extractable text"
                 ))
             }
             return .text(content: extracted, encoding: "extracted_text")

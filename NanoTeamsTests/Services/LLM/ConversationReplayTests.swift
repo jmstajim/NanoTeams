@@ -111,6 +111,12 @@ final class ConversationReplayTests: XCTestCase {
             // Dropping it here would silently restore the pre-fix behaviour on the
             // legacy replay path.
             .loopCorrection,
+            // The Autovisor's mid-review event notice IS sent — unmarked, like every other
+            // system notice. Unlike `.serverError` next door (display-only, rewritten in
+            // place across attempts), dropping this one would delete news the manager
+            // already acted on from the replay, and the resumed wire would stop matching
+            // the live one.
+            .autovisorEvent,
         ]
         for context in sent {
             let rebuilt = ConversationReplay.rebuildFromDisplayRecord([
@@ -120,6 +126,29 @@ final class ConversationReplayTests: XCTestCase {
                 rebuilt.map(\.content), ["payload"],
                 "\(context) tags a turn that was sent — it must survive the replay")
         }
+    }
+
+    /// The replay reads the RAW `content`, never `displayContent` — so the loop correction's
+    /// block delimiters must survive it. They are what stops both providers from flattening the
+    /// correction into the preceding `[Tool Result]` turn, and the feed's strip of them is a
+    /// display projection only.
+    ///
+    /// This is the guard on WHERE that strip lives: implement it at the write side instead and
+    /// the replayed wire stops matching the live one — a prefix-cache miss on every resume, plus
+    /// a correction the model reads as a paragraph of somebody else's message.
+    func testRebuild_loopCorrection_keepsItsWireDelimiters() {
+        let raw = MessageSourceContext.loopCorrectionBlockOpen
+            + "\nThe turn immediately before this note was discarded…\n"
+            + MessageSourceContext.loopCorrectionBlockClose
+        let rebuilt = ConversationReplay.rebuildFromDisplayRecord([
+            display(.user, raw, .loopCorrection)
+        ])
+        XCTAssertEqual(rebuilt.map(\.content), [raw])
+        // Anti-vacuum: the display projection really does differ, so this is asserting that the
+        // replay took the other branch — not that the two happen to be identical strings.
+        XCTAssertNotEqual(
+            LLMMessage(role: .user, content: raw, sourceContext: .loopCorrection).displayContent,
+            raw)
     }
 
     /// An assistant turn that carried only a Harmony tool-call envelope persists with empty

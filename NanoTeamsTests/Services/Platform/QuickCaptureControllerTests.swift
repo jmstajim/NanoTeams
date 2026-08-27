@@ -91,10 +91,13 @@ final class QuickCaptureModeTests: XCTestCase {
 final class QuickCaptureControllerStateTests: XCTestCase {
 
     var sut: QuickCaptureController!
+    private var storage: InMemoryConfigurationStorage!
 
     override func setUp() async throws {
         try await super.setUp()
+        storage = InMemoryConfigurationStorage()
         sut = QuickCaptureController.shared
+        sut._testUseIsolatedStorage(storage)
         sut._testReset()
         if sut._testIsInAnswerMode { sut._testExitAnswerMode() }
         sut.formState._testClearAnswerDrafts()
@@ -126,8 +129,9 @@ final class QuickCaptureControllerStateTests: XCTestCase {
         sut.isTaskSelected = false
         sut._testForceNewTaskMode = false
         sut._testIsPanelVisible = false
-        UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.quickCaptureKeepOpenInChat)
+        sut._testResetStorage()
         sut = nil
+        storage = nil
         try await super.tearDown()
     }
 
@@ -138,22 +142,23 @@ final class QuickCaptureControllerStateTests: XCTestCase {
         XCTAssertFalse(sut.isTaskSelected)
     }
 
+    /// The DEFAULT is what this pins, so the store must genuinely lack the key. Reading it
+    /// back through a fresh controller (rather than recomputing the has-key ternary here)
+    /// asserts the production rule instead of restating it.
     func testKeepOpenInChat_defaultTrue() {
-        let key = UserDefaultsKeys.quickCaptureKeepOpenInChat
-        UserDefaults.standard.removeObject(forKey: key)
-
-        let hasKey = UserDefaults.standard.object(forKey: key) != nil
-        let value = hasKey ? UserDefaults.standard.bool(forKey: key) : true
-        XCTAssertTrue(value, "Default should be true when key doesn't exist")
+        let empty = InMemoryConfigurationStorage()
+        XCTAssertNil(empty.object(forKey: UserDefaultsKeys.quickCaptureKeepOpenInChat),
+                     "premise: the key is absent")
+        XCTAssertTrue(QuickCaptureController(storage: empty).keepOpenInChat)
     }
 
     func testKeepOpenInChat_persistsToUserDefaults() {
         let key = UserDefaultsKeys.quickCaptureKeepOpenInChat
         sut.keepOpenInChat = false
-        XCTAssertFalse(UserDefaults.standard.bool(forKey: key))
+        XCTAssertFalse(storage.bool(forKey: key))
 
         sut.keepOpenInChat = true
-        XCTAssertTrue(UserDefaults.standard.bool(forKey: key))
+        XCTAssertTrue(storage.bool(forKey: key))
     }
 
     func testShowNewTask_clearsPendingAnswer() {
@@ -662,10 +667,13 @@ final class QuickCaptureModeResolutionTests: NTMSOrchestratorTestBase, @unchecke
 final class QuickCaptureAnswerModeTests: XCTestCase {
 
     var sut: QuickCaptureController!
+    private var storage: InMemoryConfigurationStorage!
 
     override func setUp() async throws {
         try await super.setUp()
+        storage = InMemoryConfigurationStorage()
         sut = QuickCaptureController.shared
+        sut._testUseIsolatedStorage(storage)
         sut._testReset()
         if sut._testIsInAnswerMode { sut._testExitAnswerMode() }
         sut.formState._testClearAnswerDrafts()
@@ -689,8 +697,9 @@ final class QuickCaptureAnswerModeTests: XCTestCase {
         sut.formState.answerClippedTexts = []
         sut.isTaskSelected = false
         sut._testForceNewTaskMode = false
-        UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.quickCaptureKeepOpenInChat)
+        sut._testResetStorage()
         sut = nil
+        storage = nil
         try await super.tearDown()
     }
 
@@ -771,10 +780,10 @@ final class QuickCaptureAnswerModeTests: XCTestCase {
     func testAnswerClippedTexts_appendedInAnswerMode() {
         sut._testEnterAnswerMode(.supervisorAnswer(payload: makePayload()))
 
-        sut.formState.answerClippedTexts.append("clipped code snippet")
+        sut.formState.answerClippedTexts.append(Clip(text: "clipped code snippet"))
 
         XCTAssertEqual(sut.formState.answerClippedTexts.count, 1)
-        XCTAssertEqual(sut.formState.answerClippedTexts.first, "clipped code snippet")
+        XCTAssertEqual(sut.formState.answerClippedTexts.first?.text, "clipped code snippet")
         // Goal should remain empty — clips don't go to supervisorTask
         XCTAssertEqual(sut.formState.answerText, "")
     }
@@ -782,15 +791,15 @@ final class QuickCaptureAnswerModeTests: XCTestCase {
     func testAnswerClippedTexts_multipleClips() {
         sut._testEnterAnswerMode(.supervisorAnswer(payload: makePayload()))
 
-        sut.formState.answerClippedTexts.append("first clip")
-        sut.formState.answerClippedTexts.append("second clip")
+        sut.formState.answerClippedTexts.append(Clip(text: "first clip"))
+        sut.formState.answerClippedTexts.append(Clip(text: "second clip"))
 
         XCTAssertEqual(sut.formState.answerClippedTexts.count, 2)
     }
 
     func testExitAnswerMode_clearsAnswerClippedTexts() {
         sut._testEnterAnswerMode(.supervisorAnswer(payload: makePayload()))
-        sut.formState.answerClippedTexts.append("some clip")
+        sut.formState.answerClippedTexts.append(Clip(text: "some clip"))
 
         sut._testExitAnswerMode()
 
@@ -799,7 +808,7 @@ final class QuickCaptureAnswerModeTests: XCTestCase {
 
     func testCancelDraft_inAnswerMode_clearsAnswerClippedTexts() {
         sut._testEnterAnswerMode(.supervisorAnswer(payload: makePayload()))
-        sut.formState.answerClippedTexts.append("will be discarded")
+        sut.formState.answerClippedTexts.append(Clip(text: "will be discarded"))
 
         sut.cancelDraft()
 
@@ -807,17 +816,17 @@ final class QuickCaptureAnswerModeTests: XCTestCase {
     }
 
     func testAnswerClippedTexts_separateFromTaskClippedTexts() {
-        sut.formState.clippedTexts = ["task clip"]
+        sut.formState.clippedTexts = [Clip].minting(["task clip"])
         sut._testEnterAnswerMode(.supervisorAnswer(payload: makePayload()))
-        sut.formState.answerClippedTexts.append("answer clip")
+        sut.formState.answerClippedTexts.append(Clip(text: "answer clip"))
 
-        XCTAssertEqual(sut.formState.clippedTexts, ["task clip"])
-        XCTAssertEqual(sut.formState.answerClippedTexts, ["answer clip"])
+        XCTAssertEqual(sut.formState.clippedTexts.texts, ["task clip"])
+        XCTAssertEqual(sut.formState.answerClippedTexts.texts, ["answer clip"])
 
         sut._testExitAnswerMode()
 
         // Task clips preserved, answer clips cleared
-        XCTAssertEqual(sut.formState.clippedTexts, ["task clip"])
+        XCTAssertEqual(sut.formState.clippedTexts.texts, ["task clip"])
         XCTAssertTrue(sut.formState.answerClippedTexts.isEmpty)
     }
 }
@@ -1122,7 +1131,7 @@ final class QuickCaptureChatWorkingComposerTests: NTMSOrchestratorTestBase, @unc
         let attachment = try makeStagedAttachment(name: "spec.txt")
         controller.formState.answerText = "in-progress msg"
         controller.formState.answerAttachments = [attachment]
-        controller.formState.answerClippedTexts = ["clip-A"]
+        controller.formState.answerClippedTexts = [Clip].minting(["clip-A"])
 
         await addSupervisorQuestionStep(taskID: taskID)
         controller.refreshPanelIfVisible()
@@ -1133,7 +1142,7 @@ final class QuickCaptureChatWorkingComposerTests: NTMSOrchestratorTestBase, @unc
                        "Composer text must survive the .working → .answer transition")
         XCTAssertEqual(controller.formState.answerAttachments, [attachment],
                        "Attachments must survive the transition")
-        XCTAssertEqual(controller.formState.answerClippedTexts, ["clip-A"],
+        XCTAssertEqual(controller.formState.answerClippedTexts.texts, ["clip-A"],
                        "Clips must survive the transition")
     }
 
@@ -1143,7 +1152,7 @@ final class QuickCaptureChatWorkingComposerTests: NTMSOrchestratorTestBase, @unc
         let attachment = try makeStagedAttachment(name: "doc.txt")
         controller.formState.answerText = "msg"
         controller.formState.answerAttachments = [attachment]
-        controller.formState.answerClippedTexts = ["c1"]
+        controller.formState.answerClippedTexts = [Clip].minting(["c1"])
 
         await addSupervisorQuestionStep(taskID: taskID)
         controller.refreshPanelIfVisible()
@@ -1166,7 +1175,7 @@ final class QuickCaptureChatWorkingComposerTests: NTMSOrchestratorTestBase, @unc
                        "Composer text must be restored from the saved draft")
         XCTAssertEqual(controller.formState.answerAttachments, [attachment],
                        "Attachments must be restored from the saved draft")
-        XCTAssertEqual(controller.formState.answerClippedTexts, ["c1"],
+        XCTAssertEqual(controller.formState.answerClippedTexts.texts, ["c1"],
                        "Clips must be restored from the saved draft")
     }
 

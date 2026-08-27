@@ -38,6 +38,11 @@ struct EditableMessageTextView: NSViewRepresentable {
     /// `EditableNSTextView.shouldChangeText` funnel — see its doc.
     var isInputLocked: Bool = false
 
+    /// Read so SwiftUI re-invokes `updateNSView` on a theme switch; `ThemeStampLatch` is what
+    /// keeps the resulting stamp from running at streaming rate.
+    @AppStorage(UserDefaultsKeys.activeTheme)
+    private var activeThemeRaw: String = Theme.defaultTheme.rawValue
+
     // Monospaced system font (SF Mono) — pinned at the AppKit boundary so the
     // composer's typed text stays on the same mono grid as the rest of the DS
     // (DS "Mono everywhere" rule). SwiftUI's `.fontDesign(.monospaced)` does
@@ -46,7 +51,6 @@ struct EditableMessageTextView: NSViewRepresentable {
         ofSize: NSFont.systemFontSize,
         weight: .regular
     )
-    static var defaultTextColor: NSColor { Colors.nsTextPrimary }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -86,6 +90,14 @@ struct EditableMessageTextView: NSViewRepresentable {
             textView.undoManager?.removeAllActions()
         }
         textView.isInputLocked = isInputLocked
+        // AppKit caches resolved NSColors per NSAppearance, so a same-scheme palette swap
+        // (Terminal → OLED) never invalidates it on its own. The latch keeps this off the
+        // streaming-rate path — see `ThemeStampLatch`.
+        if coordinator.themeLatch.shouldStamp(activeThemeRaw) {
+            InputSurface.stamp(scrollView: scrollView, textView: textView, density: .editor)
+            // The placeholder run is drawn with a themed colour in `draw(_:)`.
+            textView.needsDisplay = true
+        }
         coordinator.applyText(text, to: textView)
     }
 
@@ -136,16 +148,12 @@ struct EditableMessageTextView: NSViewRepresentable {
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = true
-        scrollView.drawsBackground = false
         scrollView.borderType = .noBorder
         scrollView.verticalScrollElasticity = .allowed
         scrollView.horizontalScrollElasticity = .none
-        // Critical: NSClipView (scrollView.contentView) defaults to
-        // `drawsBackground = true` with `NSColor.controlBackgroundColor`,
-        // which paints an opaque dark-grey rectangle over the host's
-        // layer background. Disabling it lets the host's layer show
-        // through inside the scroll-view's viewport.
-        scrollView.contentView.drawsBackground = false
+        // Background flags are NOT set here — `InputSurface.stamp` owns every one of them, for
+        // both editable representables, so the two cannot disagree the way they did until
+        // 2026-08-24 (this one painted nothing, PromptTemplateEditor painted the CARD surface).
         return scrollView
     }
 
@@ -157,7 +165,6 @@ struct EditableMessageTextView: NSViewRepresentable {
             size: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
         )
         container.widthTracksTextView = true
-        container.lineFragmentPadding = 0
 
         let layoutManager = NSLayoutManager()
         layoutManager.addTextContainer(container)
@@ -169,13 +176,11 @@ struct EditableMessageTextView: NSViewRepresentable {
         textView.isEditable = true
         textView.isSelectable = true
         textView.isFieldEditor = false
-        textView.drawsBackground = false
         textView.isRichText = false
         textView.allowsUndo = true
         textView.font = defaultFont
-        textView.textColor = defaultTextColor
-        textView.insertionPointColor = Colors.nsTextPrimary
-        textView.textContainerInset = NSSize(width: 4, height: 4)
+        // `drawsBackground`, `textColor`, `insertionPointColor`, `textContainerInset` and the
+        // container's `lineFragmentPadding` are all stamped by `InputSurface.stamp`.
         textView.isHorizontallyResizable = false
         textView.isVerticallyResizable = true
         textView.autoresizingMask = [.width]
@@ -224,6 +229,8 @@ struct EditableMessageTextView: NSViewRepresentable {
         textView.autofocusOnFirstWindow = autofocusOnAppear
 
         scrollView.documentView = textView
+        InputSurface.stamp(scrollView: scrollView, textView: textView, density: .editor)
+        _ = coordinator.themeLatch.shouldStamp(activeThemeRaw)
         return scrollView
     }
 

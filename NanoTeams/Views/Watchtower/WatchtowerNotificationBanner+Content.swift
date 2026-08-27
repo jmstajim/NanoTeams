@@ -194,7 +194,7 @@ extension WatchtowerNotificationBanner {
 
         isSubmitting = true
         Task {
-            let success = await onSubmitAnswer(stepID, answerText, answerAttachments, answerClippedTexts)
+            let success = await onSubmitAnswer(stepID, answerText, answerAttachments, answerClippedTexts.texts)
             await MainActor.run {
                 isSubmitting = false
                 if success {

@@ -190,42 +190,38 @@ struct LLMElevatedTextField: View {
     }
 
     var body: some View {
-        HStack(spacing: Spacing.xs) {
-            TextField(label, text: $text, prompt: prompt.map { Text($0) })
-                .textFieldStyle(.plain)
-                .textContentType(.URL)
-                .autocorrectionDisabled()
-                .font(Typography.mono)
-                .focused($isFocused)
-                .onSubmit { onCommit?() }
-                .onChange(of: isFocused) { _, focused in
-                    // Focus left the field — treat as a commit. Skip when
-                    // gaining focus.
-                    if !focused { onCommit?() }
-                }
-
-            if text != defaultValue {
-                Button {
-                    text = defaultValue
-                    // A reset IS an endpoint change, and it is the one that never
-                    // passes through `onSubmit` / focus-loss — the X can be clicked
-                    // without the field ever being focused. Endpoint-keyed views
-                    // (`.task(id: llmEndpointGeneration)`) would otherwise keep
-                    // serving the previous server's rows under the new address.
-                    onCommit?()
-                } label: {
-                    Image(systemName: "xmark.circle")
-                        .foregroundStyle(Colors.textTertiary)
-                }
-                .buttonStyle(.plain)
-                .help(defaultValue.isEmpty ? "Use default" : "Reset to \(defaultValue)")
-                .accessibilityLabel("Reset to default")
+        TextField(label, text: $text, prompt: prompt.map { Text($0) })
+            .textFieldStyle(.plain)
+            .textContentType(.URL)
+            .autocorrectionDisabled()
+            .font(Typography.mono)
+            .focused($isFocused)
+            .onSubmit { onCommit?() }
+            .onChange(of: isFocused) { _, focused in
+                // Focus left the field — treat as a commit. Skip when
+                // gaining focus.
+                if !focused { onCommit?() }
             }
-        }
-        .padding(Spacing.s)
-        .background(
-            RoundedRectangle.squircle(CornerRadius.small)
-                .fill(Colors.surfaceElevated)
-        )
+            .inputSurface(.field) {
+                EmptyView()
+            } trailing: {
+                if text != defaultValue {
+                    Button {
+                        text = defaultValue
+                        // A reset IS an endpoint change, and it is the one that never
+                        // passes through `onSubmit` / focus-loss — the X can be clicked
+                        // without the field ever being focused. Endpoint-keyed views
+                        // (`.task(id: llmEndpointGeneration)`) would otherwise keep
+                        // serving the previous server's rows under the new address.
+                        onCommit?()
+                    } label: {
+                        Image(systemName: "xmark.circle")
+                            .foregroundStyle(Colors.textTertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .help(defaultValue.isEmpty ? "Use default" : "Reset to \(defaultValue)")
+                    .accessibilityLabel("Reset to default")
+                }
+            }
     }
 }

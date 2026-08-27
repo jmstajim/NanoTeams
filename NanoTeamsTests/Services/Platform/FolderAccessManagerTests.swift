@@ -6,25 +6,21 @@ import XCTest
 final class FolderAccessManagerTests: XCTestCase, @unchecked Sendable {
 
     var manager: FolderAccessManager!
-    var testSuiteName: String!
+    private var storage: InMemoryConfigurationStorage!
 
     override func setUp() async throws {
         try await super.setUp()
-        // Use a unique test suite to avoid polluting real UserDefaults
-        testSuiteName = "FolderAccessManagerTests.\(UUID().uuidString)"
-
-        manager = FolderAccessManager()
+        // The isolation this suite had been BUILDING and discarding since it was written: it
+        // minted a UUID suite name and removed that persistent domain in tearDown, but never
+        // constructed a `UserDefaults(suiteName:)` — the manager was built no-arg, so every
+        // read and write landed in the SHARED domain that parallel workers see. `DEBTS.md` D-4.
+        storage = InMemoryConfigurationStorage()
+        manager = FolderAccessManager(storage: storage)
     }
 
     override func tearDown() async throws {
         manager = nil
-        // Clean up test UserDefaults
-        if let suiteName = testSuiteName {
-            UserDefaults.standard.removePersistentDomain(forName: suiteName)
-        }
-        testSuiteName = nil
-        // Also clear the standard defaults key used by FolderAccessManager
-        UserDefaults.standard.removeObject(forKey: "NanoTeams.projectFolderBookmark.v1")
+        storage = nil
         try await super.tearDown()
     }
 
@@ -38,7 +34,7 @@ final class FolderAccessManagerTests: XCTestCase, @unchecked Sendable {
 
     func testRestoreWithNoSavedBookmarkDoesNothing() async {
         // Ensure no bookmark exists
-        UserDefaults.standard.removeObject(forKey: "NanoTeams.projectFolderBookmark.v1")
+        storage.removeObject(forKey: "NanoTeams.projectFolderBookmark.v1")
 
         await manager.restoreLastFolderIfPossible()
 
@@ -48,35 +44,35 @@ final class FolderAccessManagerTests: XCTestCase, @unchecked Sendable {
     func testRestoreWithInvalidBookmarkDataClearsStorage() async {
         // Store invalid bookmark data
         let invalidData = "not valid bookmark data".data(using: .utf8)!
-        UserDefaults.standard.set(invalidData, forKey: "NanoTeams.projectFolderBookmark.v1")
+        storage.set(invalidData, forKey: "NanoTeams.projectFolderBookmark.v1")
 
         await manager.restoreLastFolderIfPossible()
 
         // Should clear the invalid bookmark
-        XCTAssertNil(UserDefaults.standard.data(forKey: "NanoTeams.projectFolderBookmark.v1"))
+        XCTAssertNil(storage.data(forKey: "NanoTeams.projectFolderBookmark.v1"))
         XCTAssertNil(manager.workFolderURL)
     }
 
     func testRestoreWithEmptyDataClearsStorage() async {
         // Store empty data
-        UserDefaults.standard.set(Data(), forKey: "NanoTeams.projectFolderBookmark.v1")
+        storage.set(Data(), forKey: "NanoTeams.projectFolderBookmark.v1")
 
         await manager.restoreLastFolderIfPossible()
 
         // Should clear the empty bookmark
-        XCTAssertNil(UserDefaults.standard.data(forKey: "NanoTeams.projectFolderBookmark.v1"))
+        XCTAssertNil(storage.data(forKey: "NanoTeams.projectFolderBookmark.v1"))
         XCTAssertNil(manager.workFolderURL)
     }
 
     func testRestoreWithCorruptedBookmarkClearsStorage() async {
         // Store corrupted bookmark data (random bytes)
         let corruptedData = Data([0x00, 0x01, 0x02, 0x03, 0xFF, 0xFE, 0xFD])
-        UserDefaults.standard.set(corruptedData, forKey: "NanoTeams.projectFolderBookmark.v1")
+        storage.set(corruptedData, forKey: "NanoTeams.projectFolderBookmark.v1")
 
         await manager.restoreLastFolderIfPossible()
 
         // Should clear the corrupted bookmark
-        XCTAssertNil(UserDefaults.standard.data(forKey: "NanoTeams.projectFolderBookmark.v1"))
+        XCTAssertNil(storage.data(forKey: "NanoTeams.projectFolderBookmark.v1"))
         XCTAssertNil(manager.workFolderURL)
     }
 
@@ -95,19 +91,19 @@ final class FolderAccessManagerTests: XCTestCase, @unchecked Sendable {
         let key = "NanoTeams.projectFolderBookmark.v1"
 
         // Store something with the key
-        UserDefaults.standard.set(Data([0x01]), forKey: key)
+        storage.set(Data([0x01]), forKey: key)
 
         // Verify it's stored
-        XCTAssertNotNil(UserDefaults.standard.data(forKey: key))
+        XCTAssertNotNil(storage.data(forKey: key))
 
         // Clean up
-        UserDefaults.standard.removeObject(forKey: key)
+        storage.removeObject(forKey: key)
     }
 
     // MARK: - Multiple Restore Attempts
 
     func testMultipleRestoreAttemptsWithNoBookmark() async {
-        UserDefaults.standard.removeObject(forKey: "NanoTeams.projectFolderBookmark.v1")
+        storage.removeObject(forKey: "NanoTeams.projectFolderBookmark.v1")
 
         // Multiple restore attempts should be safe
         await manager.restoreLastFolderIfPossible()
@@ -120,8 +116,8 @@ final class FolderAccessManagerTests: XCTestCase, @unchecked Sendable {
     // MARK: - Manager Lifecycle Tests
 
     func testNewManagerInstanceHasIndependentState() {
-        let manager1 = FolderAccessManager()
-        let manager2 = FolderAccessManager()
+        let manager1 = FolderAccessManager(storage: storage)
+        let manager2 = FolderAccessManager(storage: storage)
 
         XCTAssertNil(manager1.workFolderURL)
         XCTAssertNil(manager2.workFolderURL)
@@ -130,7 +126,7 @@ final class FolderAccessManagerTests: XCTestCase, @unchecked Sendable {
     // MARK: - Concurrent Access Safety
 
     func testRestoreCanBeCalledConcurrently() async {
-        UserDefaults.standard.removeObject(forKey: "NanoTeams.projectFolderBookmark.v1")
+        storage.removeObject(forKey: "NanoTeams.projectFolderBookmark.v1")
 
         // Call restore from multiple tasks
         let captured = manager!
@@ -154,10 +150,12 @@ final class FolderAccessManagerIntegrationTests: XCTestCase {
 
     var manager: FolderAccessManager!
     var tempDir: URL!
+    private var storage: InMemoryConfigurationStorage!
 
     override func setUp() async throws {
         try await super.setUp()
-        manager = FolderAccessManager()
+        storage = InMemoryConfigurationStorage()
+        manager = FolderAccessManager(storage: storage)
 
         // Create a temporary directory for testing
         tempDir = FileManager.default.temporaryDirectory
@@ -166,18 +164,19 @@ final class FolderAccessManagerIntegrationTests: XCTestCase {
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
 
         // Clear any existing bookmark
-        UserDefaults.standard.removeObject(forKey: "NanoTeams.projectFolderBookmark.v1")
+        storage.removeObject(forKey: "NanoTeams.projectFolderBookmark.v1")
     }
 
     override func tearDown() async throws {
         manager = nil
-        // Clean up temp directory
+        // The store is per-test and dies with the class — there is no shared key left to
+        // clear, which is the point of injecting it. (An earlier draft nil'd `storage` here
+        // and then called `removeObject` on it, crashing the worker.)
+        storage = nil
         if let tempDir = tempDir {
             try? FileManager.default.removeItem(at: tempDir)
         }
         tempDir = nil
-        // Clear bookmark
-        UserDefaults.standard.removeObject(forKey: "NanoTeams.projectFolderBookmark.v1")
         try await super.tearDown()
     }
 
@@ -187,21 +186,21 @@ final class FolderAccessManagerIntegrationTests: XCTestCase {
         // Simulate a scenario where a previously valid bookmark becomes invalid
         // (e.g., folder was deleted)
         let invalidData = "simulated-stale-bookmark".data(using: .utf8)!
-        UserDefaults.standard.set(invalidData, forKey: "NanoTeams.projectFolderBookmark.v1")
+        storage.set(invalidData, forKey: "NanoTeams.projectFolderBookmark.v1")
 
         await manager.restoreLastFolderIfPossible()
 
         // Manager should be in a clean state
         XCTAssertNil(manager.workFolderURL)
         // Invalid bookmark should be cleared
-        XCTAssertNil(UserDefaults.standard.data(forKey: "NanoTeams.projectFolderBookmark.v1"))
+        XCTAssertNil(storage.data(forKey: "NanoTeams.projectFolderBookmark.v1"))
     }
 
     // MARK: - State Consistency Tests
 
     func testManagerStateAfterFailedRestore() async {
         // Store invalid data
-        UserDefaults.standard.set(Data([0xFF, 0xFE]), forKey: "NanoTeams.projectFolderBookmark.v1")
+        storage.set(Data([0xFF, 0xFE]), forKey: "NanoTeams.projectFolderBookmark.v1")
 
         await manager.restoreLastFolderIfPossible()
 
@@ -218,22 +217,22 @@ final class FolderAccessManagerIntegrationTests: XCTestCase {
     func testBookmarkDataTypeIsData() {
         // Store valid bookmark format (even if content is invalid)
         let testData = Data([0x62, 0x6F, 0x6F, 0x6B]) // "book" in ASCII
-        UserDefaults.standard.set(testData, forKey: "NanoTeams.projectFolderBookmark.v1")
+        storage.set(testData, forKey: "NanoTeams.projectFolderBookmark.v1")
 
-        let retrieved = UserDefaults.standard.data(forKey: "NanoTeams.projectFolderBookmark.v1")
+        let retrieved = storage.data(forKey: "NanoTeams.projectFolderBookmark.v1")
         XCTAssertEqual(retrieved, testData)
     }
 
     func testBookmarkKeyDoesNotConflictWithOtherKeys() {
         // Store some other data in UserDefaults
-        UserDefaults.standard.set("test", forKey: "NanoTeams.someOtherKey")
-        UserDefaults.standard.set(Data([0x01]), forKey: "NanoTeams.projectFolderBookmark.v1")
+        storage.set("test", forKey: "NanoTeams.someOtherKey")
+        storage.set(Data([0x01]), forKey: "NanoTeams.projectFolderBookmark.v1")
 
         // Both should coexist
-        XCTAssertEqual(UserDefaults.standard.string(forKey: "NanoTeams.someOtherKey"), "test")
-        XCTAssertNotNil(UserDefaults.standard.data(forKey: "NanoTeams.projectFolderBookmark.v1"))
+        XCTAssertEqual(storage.string(forKey: "NanoTeams.someOtherKey"), "test")
+        XCTAssertNotNil(storage.data(forKey: "NanoTeams.projectFolderBookmark.v1"))
 
         // Cleanup
-        UserDefaults.standard.removeObject(forKey: "NanoTeams.someOtherKey")
+        storage.removeObject(forKey: "NanoTeams.someOtherKey")
     }
 }

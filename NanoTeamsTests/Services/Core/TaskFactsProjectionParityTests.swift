@@ -72,7 +72,7 @@ final class TaskFactsProjectionParityTests: NTMSOrchestratorTestBase, @unchecked
         XCTAssertEqual(sut.taskFacts.waitStateByTaskID[a], .waiting)
         XCTAssertGreaterThan(sut.taskFacts.waitRevision, waitBefore,
                              "a wait flip must move the wait revision, or the seen-set "
-                             + "sweep never runs")
+                                 + "sweep never runs")
 
         // Delete rebuilds the snapshot wholesale.
         await sut.removeTask(b)
@@ -110,7 +110,7 @@ final class TaskFactsProjectionParityTests: NTMSOrchestratorTestBase, @unchecked
         }
         XCTAssertEqual(sut.taskFacts.statusRevision, statusRev,
                        "appending a message changes no derived status — the Autovisor "
-                       + "wake must not fire for it")
+                           + "wake must not fire for it")
         XCTAssertEqual(sut.taskFacts.waitRevision, waitRev,
                        "…and no durable wait fact either")
         assertParity("five appends")

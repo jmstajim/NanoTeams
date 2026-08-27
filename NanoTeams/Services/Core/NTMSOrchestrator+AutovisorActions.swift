@@ -91,7 +91,23 @@ extension NTMSOrchestrator {
             // `onTaskCreated` self-wake before the next event-wake overwrites the seen-set.
             autovisorSeenTaskIDs.insert(id)
             await ensureTaskLoaded(id)
+            let startErrorsBefore = errorSurfaceCount
             await startRun(taskID: id)
+
+            // "and started" is now verified. The verdict stays `.success` either way, and that
+            // is a deliberate two-facts-one-slot call (CLAUDE.md #95): the task genuinely EXISTS
+            // and occupies the manager's one-task-in-flight budget, so reporting `.failure`
+            // would invite it to create a duplicate — and `.failure` carries no `createdTaskID`,
+            // so the id would be lost too. What changes is that the message stops asserting the
+            // second fact when it did not happen.
+            let started = (loadedTask(id)?.runs.isEmpty == false) || isGeneratingTeam(taskID: id)
+            guard started else {
+                let why = errorSurfaced(since: startErrorsBefore) ?? "no run was created"
+                return .success(
+                    "Created task #\(id): \(title). It did NOT start (\(why)) — call "
+                        + "control_task start on #\(id).",
+                    createdTaskID: id)
+            }
             return .success("Created and started task #\(id): \(title)", createdTaskID: id)
 
         case .controlTask(let taskID, let verb):
@@ -144,14 +160,26 @@ extension NTMSOrchestrator {
             return .success("Queued message for task #\(taskID).")
 
         case .scheduleTask(let taskID, let intervalMinutes):
+            // Verified against the DURABLE signal rather than reported from the request:
+            // `setTaskRecurrence` is `Void` with silent guards, so "will now run every N min"
+            // was a restatement of what the manager asked for, not of what landed. A recurrence
+            // the manager believes exists and that never fires is invisible until someone
+            // notices the task never ran.
             if intervalMinutes <= 0 {
                 await setTaskRecurrence(taskID: taskID, recurrence: nil)
+                guard loadedTask(taskID)?.recurrence == nil else {
+                    return .failure("Could not clear the schedule for task #\(taskID) — it still "
+                        + "has one. Re-read it with task_status.")
+                }
                 return .success("Cleared schedule for task #\(taskID).")
             }
-            let seconds = TimeInterval(max(1, intervalMinutes) * 60)
+            let seconds = TimeInterval(intervalMinutes * 60)
             let recurrence = TaskRecurrence(rule: .interval(seconds: seconds), isEnabled: true)
             await setTaskRecurrence(taskID: taskID, recurrence: recurrence)
-            return .success("Task #\(taskID) will now run every \(intervalMinutes) min.")
+            guard case .interval(let persisted)? = loadedTask(taskID)?.recurrence?.rule else {
+                return .failure("Could not schedule task #\(taskID) — no recurrence was stored.")
+            }
+            return .success("Task #\(taskID) will now run every \(Int(persisted / 60)) min.")
 
         case .setWorkFolderContext(let content):
             return await reportingError("Updated the Work Folder Context.") {
@@ -197,6 +225,11 @@ extension NTMSOrchestrator {
     /// the same way `DelegationLoopWatcher` combines them. Feeds the stuck-detector's
     /// within-message (thinking-loop) check. Returns nil when nothing is buffered.
     // periphery:ignore - protocol conformance (LLMStateDelegate)
+    // periphery:ignore - protocol conformance (LLMStateDelegate)
+    func streamProcessingStatus(stepID: String, taskID: Int) -> PromptProcessingStatus? {
+        streamingPreviewManager.promptProcessingStatus(stepID: stepID, taskID: taskID)
+    }
+
     func streamLiveText(stepID: String, taskID: Int) -> String? {
         let thinking = streamingPreviewManager.streamingThinking(stepID: stepID, taskID: taskID) ?? ""
         let content = streamingPreviewManager.streamingContent(stepID: stepID, taskID: taskID) ?? ""
@@ -234,6 +267,21 @@ extension NTMSOrchestrator {
             // routed here instead of running as a role verb.
             if needsTeamGeneration(taskID: taskID) {
                 return await retryTeamGenerationReportingResult(taskID: taskID)
+            }
+            // `resumeRun` has two SILENT exits that set no error, so `reportingError` — which
+            // reports ok whenever no error surfaces — called them success. Pre-checked here
+            // rather than by restructuring `resumeRun`, which is what `reportingError`'s own
+            // doc comment prescribes for exactly this shape.
+            //
+            // Placed AFTER the generation branch above: a task waiting on team generation has a
+            // placeholder run and legitimately belongs to that branch, so checking "has a run"
+            // first would refuse it as "no run yet" and make Retry unreachable for the manager.
+            guard loadedTask(taskID)?.closedAt == nil else {
+                return .failure("Task #\(taskID) is already closed — use manage_role restart to "
+                    + "reopen it, or control_task delete to drop it.")
+            }
+            guard loadedTask(taskID)?.runs.last != nil else {
+                return .failure("Task #\(taskID) has no run to resume — use control_task start.")
             }
             return await reportingError("Resumed task #\(taskID).") { await self.resumeRun(taskID: taskID) }
         case .stop:

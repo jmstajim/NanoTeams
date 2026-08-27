@@ -44,7 +44,7 @@ struct TeamEditorTopBar<Picker: View, Actions: View>: View {
     /// `✓ graph valid` (success) / `▲ N issues` (warning) / `✗ N issues` (error)
     /// per JSX spec — matches `TeamEditor.jsx` lines 414–417.
     private var validationContent: (glyph: String, label: String, color: Color) {
-        let errors = issues.filter(\.isError).count
+        let errors = issues.count(where: \.isError)
         let warnings = issues.count - errors
         if errors > 0 {
             let n = issues.count

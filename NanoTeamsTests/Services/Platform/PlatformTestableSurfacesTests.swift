@@ -587,30 +587,29 @@ final class PlatformFolderAccessManagerRestoreTests: XCTestCase {
 final class PlatformQuickCapturePanelGeometryTests: XCTestCase {
 
     private var sut: QuickCapturePanel!
-    /// The panel's frame autosave writes into `UserDefaults.standard`; snapshot
+    /// The panel's frame autosave is written by AppKit into `UserDefaults.standard`; isolate
     /// and restore so these tests neither depend on nor damage the developer's
     /// real saved panel position.
-    private var savedAutosaveEntry: Any?
+    private var autosaveName: String!
     private static let autosaveDefaultsKey = "NSWindow Frame " + UserDefaultsKeys.quickCapturePanelFrame
 
     private var floor: NSSize { QuickCapturePanel.panelMinSize }
 
     override func setUp() async throws {
         try await super.setUp()
-        savedAutosaveEntry = UserDefaults.standard.object(forKey: Self.autosaveDefaultsKey)
-        UserDefaults.standard.removeObject(forKey: Self.autosaveDefaultsKey)
-        sut = QuickCapturePanel()
+        // A per-RUN autosave name. AppKit writes the saved frame to `UserDefaults.standard`
+        // itself, so the isolation has to come from the key: parallel workers share that
+        // domain, and several suites building panels under one name read and wrote each
+        // other's frames (`DEBTS.md` D-4).
+        autosaveName = "NanoTeamsTests.QuickCapturePanel.\(UUID().uuidString)"
+        sut = QuickCapturePanel(autosaveName: autosaveName)
     }
 
     override func tearDown() async throws {
         sut?.orderOut(nil)
         sut = nil
-        if let savedAutosaveEntry {
-            UserDefaults.standard.set(savedAutosaveEntry, forKey: Self.autosaveDefaultsKey)
-        } else {
-            UserDefaults.standard.removeObject(forKey: Self.autosaveDefaultsKey)
-        }
-        savedAutosaveEntry = nil
+        UserDefaults.standard.removePersistentDomain(forName: autosaveName)  // ratchet:allow-shared-defaults per-run UUID key, never a shared one
+        autosaveName = nil
         try await super.tearDown()
     }
 
@@ -815,7 +814,7 @@ final class PlatformQuickCapturePanelGeometryTests: XCTestCase {
             NSMouseInRect(NSEvent.mouseLocation, $0.frame, false)
         } ?? NSScreen.main
         try XCTSkipIf(mouseScreen == nil, "No resolvable screen to centre on in this runner.")
-        UserDefaults.standard.removeObject(forKey: Self.autosaveDefaultsKey)
+        UserDefaults.standard.removeObject(forKey: "NSWindow Frame \(autosaveName!)")  // ratchet:allow-shared-defaults per-run UUID key
         // Park it far away first so a no-op `show` could not accidentally pass.
         sut.setFrame(NSRect(x: -90_000, y: -90_000, width: floor.width, height: floor.height), display: false)
 
@@ -854,7 +853,7 @@ final class PlatformQuickCapturePanelGeometryTests: XCTestCase {
     func testShow_clearsAnyPreviousLockBeforeRestoring() async {
         // No autosaved frame ⇒ `show` centres (origin only) and leaves the size
         // alone, so the size after `show` is a clean signal for which lock won.
-        UserDefaults.standard.removeObject(forKey: Self.autosaveDefaultsKey)
+        UserDefaults.standard.removeObject(forKey: "NSWindow Frame \(autosaveName!)")  // ratchet:allow-shared-defaults per-run UUID key
         let actual = NSSize(width: floor.width + 70, height: floor.height + 90)
         sut.setFrame(NSRect(origin: NSPoint(x: 100, y: 100), size: actual), display: false)
         let staleLock = NSSize(width: floor.width + 500, height: floor.height + 500)
@@ -1033,7 +1032,7 @@ final class PlatformQuickCaptureTaskCreationTests: NTMSOrchestratorTestBase, @un
         await sut.openWorkFolder(tempDir)
         controller.formState.title = "With clip"
         controller.formState.supervisorTask = "Review this"
-        controller.formState.clippedTexts = ["let answer = 42 // unique-clip-marker"]
+        controller.formState.clippedTexts = [Clip].minting(["let answer = 42 // unique-clip-marker"])
 
         await controller.createTask()
 
@@ -1276,7 +1275,7 @@ final class PlatformQuickCaptureAnswerSubmissionTests: NTMSOrchestratorTestBase,
         guard let (taskID, stepID) = await makeParkedTask() else { return }
         controller._testEnterAnswerMode(.supervisorAnswer(payload: payload(taskID: taskID, stepID: stepID)))
         controller.formState.answerText = ""
-        controller.formState.answerClippedTexts = ["clip-only-marker"]
+        controller.formState.answerClippedTexts = [Clip].minting(["clip-only-marker"])
 
         await controller.submitAnswer()
 
@@ -1310,7 +1309,7 @@ final class PlatformQuickCaptureAnswerSubmissionTests: NTMSOrchestratorTestBase,
         guard let (taskID, stepID) = await makeParkedTask() else { return }
         controller._testEnterAnswerMode(.supervisorAnswer(payload: payload(taskID: taskID, stepID: stepID)))
         controller.formState.answerText = "See below"
-        controller.formState.answerClippedTexts = ["func f() { } // answer-clip-marker"]
+        controller.formState.answerClippedTexts = [Clip].minting(["func f() { } // answer-clip-marker"])
 
         await controller.submitAnswer()
 
@@ -1388,7 +1387,7 @@ final class PlatformQuickCaptureAnswerSubmissionTests: NTMSOrchestratorTestBase,
     func testCancelDraft_inTaskMode_clearsTheDraftAndDismisses() async {
         controller.formState.title = "Half typed"
         controller.formState.supervisorTask = "Half typed goal"
-        controller.formState.clippedTexts = ["clip"]
+        controller.formState.clippedTexts = [Clip].minting(["clip"])
         let draftID = controller.formState.draftID
         controller._testIsPanelVisible = true
         controller._testForceNewTaskMode = true
@@ -1409,7 +1408,7 @@ final class PlatformQuickCaptureAnswerSubmissionTests: NTMSOrchestratorTestBase,
         controller.formState.supervisorTask = "Task draft survives"
         controller._testEnterAnswerMode(.supervisorAnswer(payload: payload(taskID: taskID, stepID: stepID)))
         controller.formState.answerText = "answer being typed"
-        controller.formState.answerClippedTexts = ["answer clip"]
+        controller.formState.answerClippedTexts = [Clip].minting(["answer clip"])
         controller._testIsPanelVisible = true
 
         controller.cancelDraft()

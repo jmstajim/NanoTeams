@@ -638,8 +638,8 @@ nonisolated enum XcodeBuildRunner {
                 success: success,
                 exit_code: exitCode,
                 duration: duration,
-                error_count: issues.filter { $0.severity == "error" }.count,
-                warning_count: issues.filter { $0.severity == "warning" }.count,
+                error_count: issues.count { $0.severity == "error" },
+                warning_count: issues.count { $0.severity == "warning" },
                 issues: issues,
                 log: success ? "" : log
             ),

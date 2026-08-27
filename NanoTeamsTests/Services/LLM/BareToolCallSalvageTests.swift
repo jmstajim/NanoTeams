@@ -210,7 +210,7 @@ final class BareToolCallSalvageTests: XCTestCase {
     /// file every compiling checkout carries (the public mirror ships no CLAUDE.md).
     private static let expectedCallSitePath = "NanoTeams/Services/LLM/LLMExecutionService+Streaming.swift"
 
-    /// Exactly one production call site: route 4 of `performStreamingCall`.
+    /// Exactly one production call site: route 3 of `performStreamingCall`.
     ///
     /// A source pin because the property is about where this may NOT be used, and no
     /// behavioural test can observe a call site that doesn't exist yet. The step tool loop
@@ -292,7 +292,7 @@ final class BareToolCallSalvageTests: XCTestCase {
 
     /// `looksLikeToolCallAttempt` IS Rule A with the tail requirement relaxed — same chain,
     /// one differing guard term. Any other divergence would be a silent bug: the planning
-    /// nudge firing for payloads route 4 dispatches, or the reverse.
+    /// nudge firing for payloads route 3 dispatches, or the reverse.
     ///
     /// The equivalence is asserted BOTH ways, which is what makes the test non-vacuous. A
     /// one-way `dispatched ⟹ recognized` over a JSON-only corpus with `advertised: []` is a

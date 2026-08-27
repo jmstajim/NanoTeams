@@ -45,6 +45,7 @@ final class EndToEndRoleAcceptanceReviewTests: NTMSOrchestratorTestBase, @unchec
             run.updatedAt = MonotonicClock.shared.now()
             task.runs = [run]
         }
+        await registerRolesOnActiveTeam([stepID])
         return id
     }
 
@@ -187,6 +188,9 @@ final class EndToEndRoleAcceptanceReviewTests: NTMSOrchestratorTestBase, @unchec
             run.updatedAt = MonotonicClock.shared.now()
             task.runs = [run]
         }
+        // Not decoration: a refused `requestRevision` changes nothing, so both assertions
+        // below would pass for the wrong reason and this test would stop testing preservation.
+        await registerRolesOnActiveTeam(["pm"])
 
         await sut.requestRevision(taskID: id, roleID: "pm",
                                   comment: "Expand section 2.")

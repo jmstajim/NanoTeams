@@ -14,24 +14,29 @@ import XCTest
 /// `ColorsNSIdentityTests` / CLAUDE.md #50 append-relayout contract still holds).
 final class ColorsThemeResolutionTests: XCTestCase {
 
-    private var savedThemeRaw: String?
+    private var themeStore: InMemoryConfigurationStorage!
 
     override func setUp() {
         super.setUp()
-        savedThemeRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.activeTheme)
+        // Per-PROCESS store. The old shape wrote the theme into `UserDefaults.standard`, which
+        // parallel XCTest workers share (one bundle-identifier domain, several host processes),
+        // so this suite's flips were visible to every other worker. `Colors.nsThemed` memoizes
+        // on a key containing `Theme.current` and mints a fresh dynamic `NSColor` per miss —
+        // instances that compare unequal at identical RGB — so a flip landing between two
+        // lookups made two identical attributed strings differ, in a suite that never mentions
+        // themes. See DEBTS D-4.
+        themeStore = InMemoryConfigurationStorage()
+        Theme._testUseIsolatedStorage(themeStore)
     }
 
     override func tearDown() {
-        if let savedThemeRaw {
-            UserDefaults.standard.set(savedThemeRaw, forKey: UserDefaultsKeys.activeTheme)
-        } else {
-            UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.activeTheme)
-        }
+        Theme._testResetStorage()
+        themeStore = nil
         super.tearDown()
     }
 
     private func setTheme(_ theme: Theme) {
-        UserDefaults.standard.set(theme.rawValue, forKey: UserDefaultsKeys.activeTheme)
+        themeStore.set(theme.rawValue, forKey: UserDefaultsKeys.activeTheme)
     }
 
     /// Resolve a (possibly dynamic) NSColor to sRGB components under a fixed
@@ -79,13 +84,16 @@ final class ColorsThemeResolutionTests: XCTestCase {
                        "nsTextPrimary must return a fresh instance after a same-scheme theme switch (Terminal→OLED) so the new palette resolves immediately, not at next launch.")
     }
 
-    func testNSSurfaceCard_differentInstancePerTheme() {
+    /// Re-aimed from the retired `nsSurfaceCard` when the AppKit surface accessor became the
+    /// input fill. Terminal→OLED, not Terminal→anything: both are dark, so this exercises the
+    /// same-scheme case AppKit's per-appearance cache does not invalidate on its own.
+    func testNSSurfaceInput_differentInstancePerTheme() {
         setTheme(.terminal)
-        let terminal = Colors.nsSurfaceCard
+        let terminal = Colors.nsSurfaceInput
         setTheme(.oled)
-        let oled = Colors.nsSurfaceCard
+        let oled = Colors.nsSurfaceInput
         XCTAssertFalse(terminal === oled,
-                       "nsSurfaceCard must return a fresh instance per theme.")
+                       "nsSurfaceInput must return a fresh instance per theme.")
     }
 
     // MARK: - Preserved contract: stable instance within a theme
@@ -97,7 +105,7 @@ final class ColorsThemeResolutionTests: XCTestCase {
         setTheme(.umber)
         XCTAssertTrue(Colors.nsTextPrimary === Colors.nsTextPrimary,
                       "nsTextPrimary must be a stable instance WITHIN a theme.")
-        XCTAssertTrue(Colors.nsSurfaceCard === Colors.nsSurfaceCard)
+        XCTAssertTrue(Colors.nsSurfaceInput === Colors.nsSurfaceInput)
         XCTAssertTrue(Colors.nsTextSecondary === Colors.nsTextSecondary)
     }
 

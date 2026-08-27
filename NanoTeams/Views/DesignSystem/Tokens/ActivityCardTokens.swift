@@ -17,6 +17,18 @@ nonisolated enum ActivityCardTokens {
     /// Card corner radius
     static let cornerRadius: CGFloat = CornerRadius.medium  // 10pt
 
+    /// Leading inset of the feed's CONTENT column — where a row's text starts once the
+    /// avatar gutter and the gap after it are cleared.
+    ///
+    /// A message bubble gets this for free from its `HStack(spacing: cardPadding)`, whose
+    /// first child is the avatar (or a zero-height spacer of the same width). Rows that are
+    /// NOT bubbles have to state it, and there are two: `ToolCallItemView`'s header-less
+    /// card, and the feed's run-start loader, which belongs to the run rather than to any
+    /// message and so has no avatar to sit beside. Both used to spell the sum themselves —
+    /// the loader shipped without it on 2026-08-27 and rendered flush against the pane edge,
+    /// a full gutter left of everything it was meant to line up with.
+    static let contentColumnLeading: CGFloat = avatarSize + cardPadding
+
     /// Gap ABOVE a status row (`Thinking`, `Waiting…`, `Processing 42%`) inside
     /// a message bubble — and zero below it, so the row attaches to the message
     /// it describes instead of floating equidistant between that message and

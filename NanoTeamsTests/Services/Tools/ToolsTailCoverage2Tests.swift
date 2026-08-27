@@ -153,7 +153,7 @@ final class FToolsProcessLaunchTests: XCTestCase {
         try XCTSkipIf(getuid() == 0, "running as root bypasses directory permissions")
         _ = try makeLockedDirectory()
 
-        let result = makeTool().handle(
+        let result = await makeTool().handle(
             context: context(), args: ["command": "echo hi", "working_directory": "locked"])
 
         XCTAssertTrue(result.isError, "got: \(result.outputJSON)")
@@ -174,7 +174,7 @@ final class FToolsProcessLaunchTests: XCTestCase {
         try XCTSkipIf(getuid() == 0, "running as root bypasses directory permissions")
         _ = try makeLockedDirectory()
 
-        let result = makeTool().handle(
+        let result = await makeTool().handle(
             context: context(),
             args: ["command": "echo hi", "working_directory": "locked", "run_in_background": true])
 
@@ -385,7 +385,7 @@ final class FToolsGitTailTests: XCTestCase {
     /// `makeErrorResult(... message: errorMsg)` -> git's raw "not a git repository
     /// (or any of the parent directories)" ships and the guidance assertion fires.
     func testGitCommit_inANonRepository_returnsTheSkipGitGuidance() async throws {
-        let result = try call(
+        let result = try await call(
             ToolNames.gitCommit, ["message": "x"],
             runtime: plainRuntime, context: plainContext)
 
@@ -408,7 +408,7 @@ final class FToolsGitTailTests: XCTestCase {
     /// RED: replace `message: errorMsg` with a fixed string -> the
     /// "nothing to amend" assertion fires.
     func testGitCommit_amendWithNoCommits_passesGitsOwnReasonThrough() async throws {
-        let result = try call(ToolNames.gitCommit, ["message": "x", "amend": true])
+        let result = try await call(ToolNames.gitCommit, ["message": "x", "amend": true])
 
         XCTAssertTrue(result.isError, "got: \(result.outputJSON)")
         XCTAssertTrue(result.outputJSON.contains("COMMAND_FAILED"), result.outputJSON)
@@ -429,7 +429,7 @@ final class FToolsGitTailTests: XCTestCase {
     /// RED: make `classify` return nil (or drop the `if let classified` branch) ->
     /// the envelope carries git's raw fatal and the guidance assertion fires.
     func testGitPull_inANonRepository_usesTheClassifierNotTheGenericArm() async throws {
-        let result = try call(
+        let result = try await call(
             ToolNames.gitPull, ["remote": "origin"],
             runtime: plainRuntime, context: plainContext)
 
@@ -452,7 +452,7 @@ final class FToolsGitTailTests: XCTestCase {
     /// RED: replace `message: result.stderr` with a fixed string -> the
     /// "Invalid pathspec magic" assertion fires.
     func testGitDiff_invalidPathspecMagic_reportsGitsReasonAndNoDiff() async throws {
-        let result = try call(ToolNames.gitDiff, ["paths": [":(zzz)x"]])
+        let result = try await call(ToolNames.gitDiff, ["paths": [":(zzz)x"]])
 
         XCTAssertTrue(result.isError, "got: \(result.outputJSON)")
         XCTAssertTrue(result.outputJSON.contains("COMMAND_FAILED"), result.outputJSON)
@@ -481,7 +481,7 @@ final class FToolsGitTailTests: XCTestCase {
         try Data("u\n".utf8).write(to: repoDir.appendingPathComponent("untracked.txt"))
 
         // Control: the probe works and DOES see the file.
-        let healthy = try dataOf(ToolNames.gitDiff, [:])
+        let healthy = try await dataOf(ToolNames.gitDiff, [:])
         let seen = try XCTUnwrap(healthy["untracked_files"] as? [String])
         XCTAssertTrue(seen.contains("untracked.txt"),
                       "control run must see the untracked file, got: \(seen)")
@@ -491,7 +491,7 @@ final class FToolsGitTailTests: XCTestCase {
         try FileManager.default.createDirectory(at: excludeDir, withIntermediateDirectories: true)
         try git(["config", "core.excludesFile", excludeDir.path], in: repoDir)
 
-        let result = try call(ToolNames.gitDiff, [:])
+        let result = try await call(ToolNames.gitDiff, [:])
         XCTAssertFalse(result.isError, "the diff itself still succeeded: \(result.outputJSON)")
 
         let envelope = try envelopeOf(result)
@@ -549,11 +549,11 @@ final class FToolsGitTailTests: XCTestCase {
         _ args: [String: Any],
         runtime overrideRuntime: ToolRuntime? = nil,
         context overrideContext: ToolExecutionContext? = nil
-    ) throws -> ToolExecutionResult {
+    ) async throws -> ToolExecutionResult {
         let payload = try JSONSerialization.data(withJSONObject: args)
         let json = try XCTUnwrap(String(data: payload, encoding: .utf8))
         let calls = [StepToolCall(name: tool, argumentsJSON: json)]
-        let results = (overrideRuntime ?? runtime!)
+        let results = await (overrideRuntime ?? runtime!)
             .executeAll(context: overrideContext ?? repoContext!, toolCalls: calls)
         return try XCTUnwrap(results.first, "runtime returned no result for \(tool)")
     }
@@ -563,8 +563,8 @@ final class FToolsGitTailTests: XCTestCase {
         return try XCTUnwrap(object as? [String: Any], "not an object: \(result.outputJSON)")
     }
 
-    private func dataOf(_ tool: String, _ args: [String: Any]) throws -> [String: Any] {
-        let result = try call(tool, args)
+    private func dataOf(_ tool: String, _ args: [String: Any]) async throws -> [String: Any] {
+        let result = try await call(tool, args)
         XCTAssertFalse(result.isError, "expected success, got \(result.outputJSON)")
         let envelope = try envelopeOf(result)
         return try XCTUnwrap(envelope["data"] as? [String: Any], result.outputJSON)
@@ -626,8 +626,8 @@ final class FToolsToolRuntimeArgumentTests: XCTestCase {
         try super.tearDownWithError()
     }
 
-    private func run(_ tool: String, rawArgs: String) throws -> ToolExecutionResult {
-        let results = runtime.executeAll(
+    private func run(_ tool: String, rawArgs: String) async throws -> ToolExecutionResult {
+        let results = await runtime.executeAll(
             context: context, toolCalls: [StepToolCall(name: tool, argumentsJSON: rawArgs)])
         return try XCTUnwrap(results.first)
     }
@@ -641,7 +641,7 @@ final class FToolsToolRuntimeArgumentTests: XCTestCase {
     /// with empty args, reports a missing `path`, and the "must be a JSON object"
     /// assertion fires.
     func testExecute_jsonArrayArguments_rejectedWithTheExpectedShape() async throws {
-        let result = try run(ToolNames.readFile, rawArgs: "[1,2,3]")
+        let result = try await run(ToolNames.readFile, rawArgs: "[1,2,3]")
 
         XCTAssertTrue(result.isError, "got: \(result.outputJSON)")
         XCTAssertTrue(result.outputJSON.contains("must be a JSON object"),
@@ -659,7 +659,7 @@ final class FToolsToolRuntimeArgumentTests: XCTestCase {
         let file = workDir.appendingPathComponent("padded.txt")
         try Data("PADDED-KEY-CONTENT\n".utf8).write(to: file)
 
-        let result = try run(
+        let result = try await run(
             ToolNames.readFile, rawArgs: #"{" \npath\t ": "padded.txt"}"#)
 
         XCTAssertFalse(result.isError, "got: \(result.outputJSON)")
@@ -808,7 +808,7 @@ final class FToolsPureTailTests: XCTestCase {
             workFolderRoot: URL(fileURLWithPath: NSTemporaryDirectory()),
             taskID: 1, runID: 0, roleID: "r")
 
-        let result = ForwardToTeamTool().handle(
+        let result = await ForwardToTeamTool().handle(
             context: context, args: ["message": "use library X"])
 
         XCTAssertTrue(result.isError, "got: \(result.outputJSON)")
@@ -859,8 +859,8 @@ final class FToolsDocumentPackageTests: XCTestCase {
 
         let out = DOCXDocumentExtractor().extract(from: url)
 
-        XCTAssertTrue(DocumentExtractionFailure.isFailure(out), out)
-        XCTAssertTrue(out.contains("word/document.xml"), out)
+        XCTAssertNil(out.extractedText, "expected no extracted text, got \(out)")
+        XCTAssertEqual(out.reason?.contains("word/document.xml"), true, "\(out)")
     }
 
     /// ODT sibling of the DOCX case.
@@ -876,8 +876,8 @@ final class FToolsDocumentPackageTests: XCTestCase {
 
         let out = ODTDocumentExtractor().extract(from: url)
 
-        XCTAssertTrue(DocumentExtractionFailure.isFailure(out), out)
-        XCTAssertTrue(out.contains("content.xml"), out)
+        XCTAssertNil(out.extractedText, "expected no extracted text, got \(out)")
+        XCTAssertEqual(out.reason?.contains("content.xml"), true, "\(out)")
     }
 
     /// A PPTX-shaped package with no slides at all.
@@ -889,8 +889,8 @@ final class FToolsDocumentPackageTests: XCTestCase {
 
         let out = PPTXDocumentExtractor().extract(from: url)
 
-        XCTAssertTrue(DocumentExtractionFailure.isFailure(out), out)
-        XCTAssertTrue(out.contains("no slide content"), out)
+        XCTAssertNil(out.extractedText, "expected no extracted text, got \(out)")
+        XCTAssertEqual(out.reason?.contains("no slide content"), true, "\(out)")
     }
 
     /// A slide that is listed in the archive but whose bytes fail CRC-32
@@ -909,10 +909,10 @@ final class FToolsDocumentPackageTests: XCTestCase {
 
         let out = PPTXDocumentExtractor().extract(from: url)
 
-        XCTAssertTrue(DocumentExtractionFailure.isFailure(out), out)
-        XCTAssertTrue(out.lowercased().contains("crc"),
-                      "the corruption must be named, not reported as emptiness: \(out)")
-        XCTAssertFalse(out.contains("no text content in slides"), out)
+        XCTAssertNil(out.extractedText, "expected no extracted text, got \(out)")
+        XCTAssertEqual(out.reason?.lowercased().contains("crc"), true,
+                       "the corruption must be named, not reported as emptiness: \(out)")
+        XCTAssertNotEqual(out.reason, "no text content in slides", "\(out)")
     }
 
     /// An XLSX-shaped package with no worksheets and nothing else wrong.
@@ -924,8 +924,8 @@ final class FToolsDocumentPackageTests: XCTestCase {
 
         let out = XLSXDocumentExtractor().extract(from: url)
 
-        XCTAssertTrue(DocumentExtractionFailure.isFailure(out), out)
-        XCTAssertTrue(out.contains("no worksheet data"), out)
+        XCTAssertNil(out.extractedText, "expected no extracted text, got \(out)")
+        XCTAssertEqual(out.reason?.contains("no worksheet data"), true, "\(out)")
     }
 
     /// Same "no worksheets" shape, but the shared-string table ALSO failed to read.
@@ -943,10 +943,10 @@ final class FToolsDocumentPackageTests: XCTestCase {
 
         let out = XLSXDocumentExtractor().extract(from: url)
 
-        XCTAssertTrue(DocumentExtractionFailure.isFailure(out), out)
-        XCTAssertTrue(out.contains("shared strings"),
-                      "the collected reason must win over the generic one: \(out)")
-        XCTAssertFalse(out.contains("no worksheet data"), out)
+        XCTAssertNil(out.extractedText, "expected no extracted text, got \(out)")
+        XCTAssertEqual(out.reason?.contains("shared strings"), true,
+                       "the collected reason must win over the generic one: \(out)")
+        XCTAssertNotEqual(out.reason, "no worksheet data", "\(out)")
     }
 
     /// A worksheet that parses cleanly and yields zero rows. Every sheet is
@@ -968,7 +968,7 @@ final class FToolsDocumentPackageTests: XCTestCase {
 
         let out = XLSXDocumentExtractor().extract(from: url)
 
-        XCTAssertTrue(DocumentExtractionFailure.isFailure(out), out)
-        XCTAssertTrue(out.contains("empty spreadsheet"), out)
+        XCTAssertNil(out.extractedText, "expected no extracted text, got \(out)")
+        XCTAssertEqual(out.reason?.contains("empty spreadsheet"), true, "\(out)")
     }
 }

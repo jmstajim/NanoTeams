@@ -108,9 +108,15 @@ final class EndToEndTaskAttachmentPersistenceTests: NTMSOrchestratorTestBase, @u
         await sut.openWorkFolder(tempDir)
         await sut.switchTask(to: taskID)
 
-        XCTAssertEqual(sut.activeTask?.clippedTexts,
+        // Compare TEXTS: `Clip` equality includes the identity, and a freshly minted
+        // expectation can never equal a persisted one. What this test is about is that
+        // the clips survive a restart — identity stability across a restart is a
+        // separate property, asserted just below.
+        XCTAssertEqual(sut.activeTask?.clippedTexts.texts,
                        ["Clip A", "Clip B", "Clip C"],
                        "All clipped texts must round-trip identically")
+        XCTAssertEqual(Set(sut.activeTask?.clippedTexts.map(\.id) ?? []).count, 3,
+                       "each clip keeps a distinct identity across the restart")
     }
 
     // MARK: - Scenario 4: effectiveSupervisorBrief after reload

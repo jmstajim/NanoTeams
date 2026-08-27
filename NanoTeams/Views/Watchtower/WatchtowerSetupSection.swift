@@ -161,7 +161,7 @@ struct WatchtowerSetupSection: View {
 // MARK: - Preview
 
 #Preview {
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
+    @Previewable @State var store = PreviewStore.make()
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var monitor = LLMStatusMonitor()
     WatchtowerSetupSection()

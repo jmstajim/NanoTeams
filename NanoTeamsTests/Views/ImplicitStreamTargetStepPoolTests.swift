@@ -2,7 +2,7 @@ import XCTest
 
 @testable import NanoTeams
 
-/// Pins the per-ORIGIN-task step pools behind `resolveImplicitStreamTarget`.
+/// Pins the per-ORIGIN-task step pools behind `implicitStreamTargetIDs`.
 ///
 /// `StepExecution.id` equals the team role ID, so in the merged delegation
 /// timeline a descendant's step shares its id with the parent's same-role step.
@@ -120,23 +120,18 @@ final class ImplicitStreamTargetStepPoolTests: XCTestCase, @unchecked Sendable {
         let context = makeContext(run: parentRun, descendants: [makeDescendant(run: childRun)])
         viewModel.recomputeSteps(context: context)
 
-        let viaDescendantPool = TeamActivityFeedView.resolveImplicitStreamTarget(
-            stepID: sharedStepID,
-            messageID: descendantMessage.id,
-            isPreviewTarget: false,
-            allSteps: viewModel.steps(forOriginTaskID: childTaskID))
-        XCTAssertTrue(
-            viaDescendantPool,
+        XCTAssertEqual(
+            TeamActivityFeedView.implicitStreamTargetID(
+                in: viewModel.steps(forOriginTaskID: childTaskID)[0]),
+            descendantMessage.id,
             "The descendant's latest message on its running step IS the implicit stream target")
 
-        let viaParentPool = TeamActivityFeedView.resolveImplicitStreamTarget(
-            stepID: sharedStepID,
-            messageID: descendantMessage.id,
-            isPreviewTarget: false,
-            allSteps: viewModel.steps(forOriginTaskID: parentTaskID))
-        XCTAssertFalse(
-            viaParentPool,
-            "Pre-fix behavior pinned for contrast: the parent's same-named .done step hides the descendant's live state")
+        XCTAssertNil(
+            TeamActivityFeedView.implicitStreamTargetID(
+                in: viewModel.steps(forOriginTaskID: parentTaskID)[0]),
+            "The parent's same-named step is .done and contributes nothing — the two pools "
+                + "must stay separate or the descendant resolves against the parent's step")
+
     }
 
     /// The inverse cross-talk: the PARENT's latest message must not become an
@@ -148,11 +143,8 @@ final class ImplicitStreamTargetStepPoolTests: XCTestCase, @unchecked Sendable {
         let context = makeContext(run: parentRun, descendants: [makeDescendant(run: childRun)])
         viewModel.recomputeSteps(context: context)
 
-        let resolved = TeamActivityFeedView.resolveImplicitStreamTarget(
-            stepID: sharedStepID,
-            messageID: parentMessage.id,
-            isPreviewTarget: false,
-            allSteps: viewModel.steps(forOriginTaskID: parentTaskID))
+        let resolved = TeamActivityFeedView.implicitStreamTargetID(
+            in: viewModel.steps(forOriginTaskID: parentTaskID)[0]) == parentMessage.id
 
         XCTAssertFalse(
             resolved,

@@ -1,4 +1,5 @@
 import XCTest
+import PDFKit
 
 @testable import NanoTeams
 
@@ -219,6 +220,36 @@ final class SearchTeamStorageSearchTailTests: XCTestCase {
         try Data(bytes).write(to: url)
     }
 
+    /// A minimal DOCX whose `word/document.xml` carries `body`.
+    private func writeDOCX(_ relPath: String, body: String) throws {
+        let url = tempDir.appendingPathComponent(relPath)
+        try fm.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        let docXML = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+          <w:body>\(body)</w:body>
+        </w:document>
+        """
+        try ZIPArchiveWriter.write(to: url, entries: [
+            .init(name: "word/document.xml", data: Data(docXML.utf8), method: .deflate)
+        ])
+    }
+
+    /// A structurally valid PDF with one blank page and no text layer — the shape a
+    /// scanner produces. `PDFPage.string` is nil for it, which is what PDFKit also
+    /// reports for a page holding only a scanned image.
+    private func writeImageOnlyPDF(_ relPath: String) throws {
+        let url = tempDir.appendingPathComponent(relPath)
+        try fm.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        let doc = PDFDocument()
+        doc.insert(PDFPage(), at: 0)
+        XCTAssertTrue(doc.write(to: url), "fixture must produce a readable PDF")
+    }
+
     private func makeSearchIndexService() -> SearchIndexService {
         SearchIndexService(
             workFolderRoot: tempDir,
@@ -248,8 +279,8 @@ final class SearchTeamStorageSearchTailTests: XCTestCase {
         maxResults: Int = 20,
         contextBefore: Int = 0,
         contextAfter: Int = 0
-    ) throws -> SearchExecutorOutput {
-        try SearchExecutor.run(SearchExecutorInput(
+    ) async throws -> SearchExecutorOutput {
+        try await SearchExecutor.run(SearchExecutorInput(
             workFolderRoot: tempDir,
             resolver: resolver,
             fileManager: fm,
@@ -957,10 +988,10 @@ final class SearchTeamStorageSearchTailTests: XCTestCase {
 
     /// Context windows must clamp at both file edges rather than reaching past
     /// them — a match on line 1 has nothing before it.
-    func testScanFile_contextWindow_clampsAtBothFileEdges() throws {
+    func testScanFile_contextWindow_clampsAtBothFileEdges() async throws {
         try write("edges.txt", content: "NEEDLE\nb\nc\nd\nNEEDLE\n")
 
-        let out = try runSearch(["NEEDLE"], contextBefore: 3, contextAfter: 3)
+        let out = try await runSearch(["NEEDLE"], contextBefore: 3, contextAfter: 3)
         XCTAssertEqual(out.matches.count, 2)
 
         let first = try XCTUnwrap(out.matches.first { $0.line == 1 })
@@ -978,10 +1009,10 @@ final class SearchTeamStorageSearchTailTests: XCTestCase {
 
     /// NUL bytes trip the binary sniff. Binaries are COUNTED, never listed —
     /// otherwise every `.png` in a tree floods `skipped`.
-    func testScanFile_nulBytes_countedAsBinaryNotListedAsSkipped() throws {
+    func testScanFile_nulBytes_countedAsBinaryNotListedAsSkipped() async throws {
         try writeBytes("blob.txt", bytes: [0x41, 0x00, 0x42, 0x4E, 0x45])
 
-        let out = try runSearch(["NEEDLE"])
+        let out = try await runSearch(["NEEDLE"])
         XCTAssertEqual(out.skippedBinaryCount, 1)
         XCTAssertTrue(out.skipped.isEmpty,
                       "Binaries must aggregate into a count, not the skipped list.")
@@ -991,11 +1022,11 @@ final class SearchTeamStorageSearchTailTests: XCTestCase {
     /// A file with no NUL byte survives the sniff but can still be invalid UTF-8.
     /// `LineScanner.buildIndex` is the second gate — a decode failure there must
     /// also register as binary rather than silently scanning garbage.
-    func testScanFile_invalidUTF8WithoutNuls_stillCountedAsBinary() throws {
+    func testScanFile_invalidUTF8WithoutNuls_stillCountedAsBinary() async throws {
         // 0xFF / 0xFE are never valid UTF-8 lead bytes, and neither is NUL.
         try writeBytes("latin.txt", bytes: [0xFF, 0xFE, 0xFF, 0xFE, 0xFF, 0xFE])
 
-        let out = try runSearch(["NEEDLE"])
+        let out = try await runSearch(["NEEDLE"])
         XCTAssertEqual(out.skippedBinaryCount, 1,
                        "Invalid UTF-8 must be classified binary, not scanned.")
         XCTAssertTrue(out.matches.isEmpty)
@@ -1004,10 +1035,10 @@ final class SearchTeamStorageSearchTailTests: XCTestCase {
     /// A document whose extension promises structure but whose bytes are garbage
     /// must be REPORTED, not silently absent — "no hits" and "could not read"
     /// are different answers for the model.
-    func testScanFile_unreadableDocumentExtension_landsInSkippedWithReason() throws {
+    func testScanFile_unreadableDocumentExtension_landsInSkippedWithReason() async throws {
         try writeBytes("broken.pdf", bytes: Array("not a pdf at all".utf8))
 
-        let out = try runSearch(["NEEDLE"])
+        let out = try await runSearch(["NEEDLE"])
         XCTAssertEqual(out.skipped.count, 1,
                        "An unreadable document must surface — got \(out.skipped)")
         let entry = try XCTUnwrap(out.skipped.first)
@@ -1015,13 +1046,56 @@ final class SearchTeamStorageSearchTailTests: XCTestCase {
         XCTAssertFalse(entry.reason.isEmpty, "The skip must carry a reason.")
     }
 
+    /// A scanned, image-only PDF was read end to end and holds no text. Zero matches is
+    /// the whole truth about it, so it is NOT an omission and must not be listed: a folder
+    /// of scans otherwise emits one `skipped_files` entry per file and buries the answer.
+    ///
+    /// The pin sits on the SCANNER's routing, not on `PDFDocumentExtractor`: the change is
+    /// a condition around the extractor call, so a test that invokes the extractor directly
+    /// would be green either way (CLAUDE.md #57).
+    func testScanFile_imageOnlyPDF_isNotListedAsSkipped() async throws {
+        try writeImageOnlyPDF("scan.pdf")
+
+        let out = try await runSearch(["NEEDLE"])
+        XCTAssertTrue(out.skipped.isEmpty,
+                      "A fully-read PDF that holds no text is not an omission: \(out.skipped)")
+        XCTAssertTrue(out.matches.isEmpty)
+    }
+
+    /// The companion to the above, and the reason it is not simply "stop reporting PDFs":
+    /// a PDF that could not be OPENED is still an omission. Both files sit in one tree so
+    /// a fix that silences the whole format fails here.
+    func testScanFile_imageOnlyPDFBesideBrokenPDF_reportsOnlyTheBrokenOne() async throws {
+        try writeImageOnlyPDF("scan.pdf")
+        try writeBytes("broken.pdf", bytes: Array("not a pdf at all".utf8))
+
+        let out = try await runSearch(["NEEDLE"])
+        XCTAssertEqual(out.skipped.map(\.path), ["broken.pdf"],
+                       "only the unreadable file is an omission: \(out.skipped)")
+    }
+
+    /// The boundary of the silence. A DOCX with no text is NOT the same claim as a scanned
+    /// PDF: this reader opens `word/document.xml` alone, so text in a header or a footnote
+    /// would never have been seen. That is a gap in our coverage, and `skipped_files` is the
+    /// only channel where it is visible — so it is still reported, and the reason says what
+    /// went unexamined.
+    func testScanFile_docxWithNoText_isStillReported_becauseOnlyTheBodyWasRead() async throws {
+        try writeDOCX("empty.docx", body: "<w:p></w:p>")
+
+        let out = try await runSearch(["NEEDLE"])
+        let entry = try XCTUnwrap(out.skipped.first, "a partial read must stay visible")
+        XCTAssertEqual(entry.path, "empty.docx")
+        XCTAssertTrue(entry.reason.contains("were not examined"),
+                      "the reason must name what went unread: \(entry.reason)")
+    }
+
     /// An empty needle alongside a real one must never match. ICU reports no
     /// match for an empty needle; a raw byte scan would claim a hit at offset 0
     /// on every single line, so the ICU answer is the one that is kept.
-    func testScanFile_emptyNeedleBesideRealOne_neverMatches() throws {
+    func testScanFile_emptyNeedleBesideRealOne_neverMatches() async throws {
         try write("mixed.txt", content: "alpha\nNEEDLE\nbeta\n")
 
-        let out = try runSearch(["", "NEEDLE"])
+        let out = try await runSearch(["", "NEEDLE"])
         XCTAssertEqual(out.matches.count, 1,
                        "Only the real needle may match — got \(out.matches.map(\.text))")
         XCTAssertEqual(out.matches.first?.line, 2)
@@ -1029,20 +1103,20 @@ final class SearchTeamStorageSearchTailTests: XCTestCase {
 
     /// One line is consumed by at most one query (`break` after a hit), so two
     /// queries that both match the same line yield ONE match, not two.
-    func testScanFile_lineMatchingTwoQueries_isReportedOnce() throws {
+    func testScanFile_lineMatchingTwoQueries_isReportedOnce() async throws {
         try write("both.txt", content: "alpha beta\ngamma\n")
 
-        let out = try runSearch(["alpha", "beta"])
+        let out = try await runSearch(["alpha", "beta"])
         XCTAssertEqual(out.matches.count, 1,
                        "A line must not be double-counted across queries.")
         XCTAssertEqual(out.matches.first?.line, 1)
     }
 
     /// Zero context is the documented default — one line per match, like `grep`.
-    func testScanFile_defaultContext_isOneLinePerMatch() throws {
+    func testScanFile_defaultContext_isOneLinePerMatch() async throws {
         try write("plain.txt", content: "a\nNEEDLE\nb\n")
 
-        let out = try runSearch(["NEEDLE"])
+        let out = try await runSearch(["NEEDLE"])
         let match = try XCTUnwrap(out.matches.first)
         XCTAssertNil(match.context_before)
         XCTAssertNil(match.context_after)
@@ -1052,10 +1126,10 @@ final class SearchTeamStorageSearchTailTests: XCTestCase {
     /// The whole-buffer prefilter is an optimisation, not a semantic change: a
     /// file that cannot contain the needle contributes no matches and is counted
     /// as prefiltered rather than line-scanned.
-    func testScanFile_prefilterEliminatesFileWithoutPerLinePass() throws {
+    func testScanFile_prefilterEliminatesFileWithoutPerLinePass() async throws {
         try write("nohit.txt", content: "alpha\nbeta\ngamma\n")
 
-        let out = try runSearch(["ZZZZZ"])
+        let out = try await runSearch(["ZZZZZ"])
         XCTAssertTrue(out.matches.isEmpty)
         XCTAssertEqual(out.stats.filesPrefiltered, 1,
                        "A pure-ASCII miss must be eliminated by the whole-buffer scan.")

@@ -180,9 +180,9 @@ extension GeneratedTeamPanelStateTests {
                                 hasRun: hasRun,
                                 isGenerationInFlight: inFlight),
                             "not pending must be false — the view mirrors this guard "
-                            + "(toolCallIsError: \(toolCallIsError), status: "
-                            + "\(String(describing: stepStatus)), hasRun: \(hasRun), "
-                            + "inFlight: \(inFlight))")
+                                + "(toolCallIsError: \(toolCallIsError), status: "
+                                + "\(String(describing: stepStatus)), hasRun: \(hasRun), "
+                                + "inFlight: \(inFlight))")
                     }
                 }
             }

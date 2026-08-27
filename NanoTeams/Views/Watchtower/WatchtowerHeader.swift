@@ -334,7 +334,7 @@ struct WatchtowerAutovisorPill: View {
 // MARK: - Preview
 
 #Preview {
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
+    @Previewable @State var store = PreviewStore.make()
     VStack(spacing: Spacing.l) {
         WatchtowerHeader(
             needsYouCount: 3,

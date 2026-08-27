@@ -716,4 +716,81 @@ final class TeamActivityFeedViewModelOrchestrationTests: XCTestCase {
             isStreaming: { _ in false }
         )
     }
+
+    // MARK: - D-24: how many FULL rebuilds does one turn actually cost?
+
+    /// A deterministic model of ONE tool-loop turn, driving the same VM entry points the
+    /// view drives, and counting the rebuilds that are actually performed.
+    ///
+    /// This is the measurement DEBTS.md D-24 asked for and could not have: it prescribed
+    /// "a rebuild counter on a real headless run", but `run_headless.sh` drives an XCTest
+    /// that never mounts SwiftUI — `TeamActivityFeedViewModel` is never instantiated
+    /// there and the count would read 0. The instrument had to be deterministic and
+    /// in-process, and the counter had to be separate from `timelineVersion` so that
+    /// gating a path could not turn the coalescing pin vacuously green.
+    ///
+    /// Events per turn, in the order the orchestrator produces them:
+    ///  1. `beginStreaming` — pre-creates the assistant message (`runDataVersion` moves)
+    ///     AND creates a preview (`structuralVersion` moves → debounced schedule)
+    ///  2. `commitStreaming` — re-stamps the message (`runDataVersion`) AND removes the
+    ///     preview (`structuralVersion` → a second debounced schedule)
+    ///  3. `appendToolCalls` — tool call count moves
+    ///  4. the tool-result message lands
+    func testOneTurn_performedRebuildCount() async {
+        let role = makeRole(id: "r1")
+        var step = makeStep(roleDefinitionID: "r1")
+        step.status = .running
+        var run = Run(id: 0, steps: [step])
+
+        func context(_ run: Run) -> TeamActivityFeedViewModel.BuildContext {
+            makeContext(run: run, roles: [role])
+        }
+        func mutateStep(_ body: (inout StepExecution) -> Void) {
+            var s = run.steps[0]
+            body(&s)
+            run.steps[0] = s
+        }
+
+        // Seed: the feed is already showing this run.
+        viewModel.recomputeAndRebuild(context: context(run))
+        TimelineRebuildProbe.reset()
+
+        // 1. beginStreaming
+        mutateStep { $0.llmConversation.append(
+            LLMMessage(role: .assistant, content: "")) }
+        viewModel.recomputeAndRebuild(context: context(run))
+        viewModel.scheduleStructuralRebuild(context: context(run), delayMilliseconds: 10)
+
+        // 2. commitStreaming
+        mutateStep { $0.llmConversation[0] = LLMMessage(role: .assistant, content: "hello") }
+        viewModel.recomputeAndRebuild(context: context(run))
+        viewModel.scheduleStructuralRebuild(context: context(run), delayMilliseconds: 10)
+
+        // 3. appendToolCalls
+        mutateStep { $0.toolCalls.append(
+            StepToolCall(name: "read_file", argumentsJSON: "{}")) }
+        viewModel.recomputeAndRebuild(context: context(run))
+
+        // 4. tool result
+        mutateStep { $0.llmConversation.append(
+            LLMMessage(role: .tool, content: "result")) }
+        viewModel.recomputeAndRebuild(context: context(run))
+
+        try? await Task.sleep(for: .milliseconds(200))
+        let performed = TimelineRebuildProbe.performed()
+
+        XCTAssertGreaterThan(
+            performed, 0,
+            "anti-vacuum: if a turn costs zero rebuilds the model above is not driving the "
+                + "VM at all, and every bound asserted here is meaningless")
+        // Recorded rather than merely bounded: the point of the measurement is the NUMBER,
+        // and a bound with no recorded value is what let D-24 carry an estimate for a day.
+        XCTAssertLessThanOrEqual(
+            performed, 5,
+            "one turn performed \(performed) full timeline rebuilds. Each walks every "
+                + "message, tool call, artifact, meeting turn and change request of the "
+                + "displayed run plus every loaded descendant, and sorts with a comparator "
+                + "that calls an escaping isStreaming closure twice per comparison")
+    }
+
 }

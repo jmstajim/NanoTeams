@@ -231,6 +231,11 @@ protocol LLMStateDelegate: TaskMutationDelegate {
     /// and hang paths.
     func streamLiveText(stepID: String, taskID: Int) -> String?
 
+    /// The step's live prompt-processing state, or nil when no request is in flight or the
+    /// first generation delta has arrived. Consumed by `AutovisorStuckEvaluator` to tell a
+    /// prefill from a wedged server — see `AutovisorConstants.stuckPrefillHangSeconds`.
+    func streamProcessingStatus(stepID: String, taskID: Int) -> PromptProcessingStatus?
+
     /// Hard-stops a task's engine and cancels any awaiter waiters. Used by
     /// `handleDelegateToTeam` on timeout — the child has wedged past the
     /// per-delegation deadline and we need to abort cleanly.
@@ -243,7 +248,11 @@ protocol LLMStateDelegate: TaskMutationDelegate {
     /// `cancel_delegation` / `resume_delegation` / `forward_to_team`.
     /// Distinct from `stopEngineForTask` which tears down the engine
     /// entirely.
-    func pauseRun(taskID: Int) async
+    /// Returns whether the task is ACTUALLY stopped afterwards — see
+    /// `NTMSOrchestrator.pauseRun`. `@discardableResult` because most delegate callers
+    /// genuinely do not care; `awaitDelegationCompletion` does, and checks it.
+    @discardableResult
+    func pauseRun(taskID: Int) async -> Bool
 
     /// Resumes a paused task's engine. Counterpart of `pauseRun`. Used by
     /// `resume_delegation` and `forward_to_team` after the parent role

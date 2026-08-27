@@ -76,11 +76,11 @@ final class EditFilePerLineAlignmentTests: XCTestCase {
             .components(separatedBy: "\n")
     }
 
-    private func runEdit(path: String, oldText: String, newText: String) -> ToolExecutionResult {
+    private func runEdit(path: String, oldText: String, newText: String) async -> ToolExecutionResult {
         let args: [String: Any] = ["path": path, "old_text": oldText, "new_text": newText]
         let data = try! JSONSerialization.data(withJSONObject: args)
         let call = StepToolCall(name: "edit_file", argumentsJSON: String(data: data, encoding: .utf8)!)
-        return runtime.executeAll(context: context, toolCalls: [call])[0]
+        return await runtime.executeAll(context: context, toolCalls: [call])[0]
     }
 
     private func envelope(_ result: ToolExecutionResult) -> [String: Any] {
@@ -112,7 +112,7 @@ final class EditFilePerLineAlignmentTests: XCTestCase {
     ///
     /// RED: refuse when an unpaired depth is not a map key (the shipped
     /// `return nil`) → `isError` flips and every assert below fails.
-    func testSandwichInsertion_interiorTier_landsWithFileBytesForTheReproducedLines() throws {
+    func testSandwichInsertion_interiorTier_landsWithFileBytesForTheReproducedLines() async throws {
         try writeFile("game.js", [
             "  const JUMP  = 8;      // px",
             "",
@@ -120,7 +120,7 @@ final class EditFilePerLineAlignmentTests: XCTestCase {
             "  const KEY = \"v1\";",
         ])
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "game.js",
             oldText: [
                 "   const JUMP   = 8;       // px",  // 3sp + interior drift
@@ -165,14 +165,14 @@ final class EditFilePerLineAlignmentTests: XCTestCase {
     /// about an anchor that was never the problem.
     ///
     /// RED: refuse when an unpaired depth is not a map key → `isError` flips.
-    func testSandwichInsertion_indentationTier_lands() throws {
+    func testSandwichInsertion_indentationTier_lands() async throws {
         try writeFile("game.js", [
             "   let t = 0.30; // morning",   // 3sp — the file is irregular here
             "",
             "  // ids",                       // 2sp
         ])
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "game.js",
             oldText: [
                 "   let t = 0.30; // morning",
@@ -203,13 +203,13 @@ final class EditFilePerLineAlignmentTests: XCTestCase {
     /// so the head `}` pairs first and the block's own `}` is honestly new.
     ///
     /// RED: refuse when an unpaired depth is not a map key → `isError` flips.
-    func testSandwichWhoseNewBlockEndsInABrace_pairsInOrder() throws {
+    func testSandwichWhoseNewBlockEndsInABrace_pairsInOrder() async throws {
         try writeFile("style.html", [
             "     }",          // 5sp
             "  </style>",      // 2sp
         ])
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "style.html",
             oldText: [
                 "      }",         // 6sp
@@ -239,14 +239,14 @@ final class EditFilePerLineAlignmentTests: XCTestCase {
     ///
     /// RED: restore the conflicted-key `return nil` in the map builder → the
     /// refusal returns and `isError` flips.
-    func testPureRewriteOverAnIrregularWindow_mapConflictDissolvesPerLine() throws {
+    func testPureRewriteOverAnIrregularWindow_mapConflictDissolvesPerLine() async throws {
         try writeFile("game.js", [
             "  function save() {",
             "    body();",
             "   }",              // 3sp — irregular beside the 4sp body
         ])
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "game.js",
             oldText: [
                 "  function save() {",
@@ -272,14 +272,14 @@ final class EditFilePerLineAlignmentTests: XCTestCase {
     /// two (3sp and 2sp, the head written by the run itself 40 seconds earlier).
     ///
     /// RED: restore the conflicted-key `return nil` → `isError` flips.
-    func testSandwichOverSelfPoisonedIndentation_lands() throws {
+    func testSandwichOverSelfPoisonedIndentation_lands() async throws {
         try writeFile("game.js", [
             "   let t = 0.30;",   // 3sp — the model's own earlier insert
             "",
             "  // ids",           // 2sp — the file's original convention
         ])
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "game.js",
             oldText: [
                 "   let t = 0.30;",
@@ -309,14 +309,14 @@ final class EditFilePerLineAlignmentTests: XCTestCase {
     /// carried depths (7sp) the anchor never showed.
     ///
     /// RED: refuse when an unpaired depth is not a map key → `isError` flips.
-    func testGrowInPlaceRewrite_unmappedNewDepths_lands() throws {
+    func testGrowInPlaceRewrite_unmappedNewDepths_lands() async throws {
         try writeFile("game.js", [
             "    // Sky backgrounds.",
             "    const h = clamp(H);",
             "    fill(sky);",
         ])
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "game.js",
             oldText: [
                 "      // Sky backgrounds.",   // 6sp
@@ -351,13 +351,13 @@ final class EditFilePerLineAlignmentTests: XCTestCase {
     /// RED: translate unpaired lines per-line through the map (drop the
     /// all-or-nothing gate) → the opener lands at 8sp, the child at 6sp, and the
     /// nesting assert fails.
-    func testUnpairedSetStraddlingTheKeys_isKeptVerbatimEntire() throws {
+    func testUnpairedSetStraddlingTheKeys_isKeptVerbatimEntire() async throws {
         try writeFile("f.py", [
             "    def f():",
             "        g()",
         ])
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "f.py",
             oldText: [
                 "  def f():",     // 2sp model vs 4sp file → map {2→4}
@@ -391,13 +391,13 @@ final class EditFilePerLineAlignmentTests: XCTestCase {
     ///
     /// RED: pair greedily for equal counts too → position 0 steals the file's
     /// `b()   // y` padding and the first equality fails.
-    func testEqualCountReorder_staysTheModelsBytes() throws {
+    func testEqualCountReorder_staysTheModelsBytes() async throws {
         try writeFile("f.swift", [
             "    a()  // x",
             "    b()   // y",
         ])
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "f.swift",
             oldText: [
                 "   a() // x",    // 3sp, collapsed interior — tier 3.5 territory
@@ -423,14 +423,14 @@ final class EditFilePerLineAlignmentTests: XCTestCase {
     ///
     /// RED: edit the first of several trimBoth windows → `isError` flips and the
     /// wrong region is written.
-    func testSeveralWindows_stillRefuse() throws {
+    func testSeveralWindows_stillRefuse() async throws {
         try writeFile("dup.swift", [
             "    row()",
             "separator()",
             "  row()",
         ])
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "dup.swift",
             oldText: "     row()",   // 5sp — deeper than both, so the exact tier misses
             newText: "     column()")
@@ -448,12 +448,12 @@ final class EditFilePerLineAlignmentTests: XCTestCase {
     ///
     /// RED: gate the no-op warning on the interior flag only → no warning here
     /// and the contains assert fails.
-    func testLeadingOnlyFormattingIntent_disclosesTheNoOp() throws {
+    func testLeadingOnlyFormattingIntent_disclosesTheNoOp() async throws {
         try writeFile("f.swift", [
             "   body()",   // 3sp — the "wrong" indentation the model wants to fix
         ])
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "f.swift",
             oldText: "    body()",   // 4sp — misses exactly, matches trimBoth
             newText: "  body()")     // 2sp — pure formatting intent

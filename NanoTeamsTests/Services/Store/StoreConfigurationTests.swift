@@ -8,99 +8,29 @@ final class StoreConfigurationTests: XCTestCase {
     // MARK: - Test Subject
 
     var config: StoreConfiguration!
+    private var storage: InMemoryConfigurationStorage!
 
     // MARK: - Test Lifecycle
 
-    private var originalLLMBaseURL: String?
-    private var originalLLMModel: String?
-    private var originalDebugModeEnabled: Bool?
-    private var originalEnterSendsMessage: Bool?
-    private var originalSidebarTaskFilter: String?
-    private var originalEmbedFilesInPrompt: Bool?
-    // The provider decides which DEFAULTS `llmBaseURLString` / `llmModelName` fall back
-    // to, so leaving it uncleared makes this suite order-dependent: it passes alone and
-    // fails in a full run, where an earlier suite leaves `llmProvider` = ollama behind
-    // and `testInit_withNoStoredValues_usesDefaults` then sees Ollama's defaults. The
-    // per-provider endpoint memory feeds the same fallback, so it is cleared too.
-    private var originalLLMProvider: String?
-    private var originalProviderEndpoints: Data?
+    // Order-dependence used to be the hazard here: the provider decides which defaults
+    // `llmBaseURLString` / `llmModelName` fall back to, so an earlier suite leaving
+    // `llmProvider` = ollama in the shared domain made `testInit_withNoStoredValues_usesDefaults`
+    // pass alone and fail in a full run. A fresh per-test store removes the coupling entirely
+    // rather than clearing keys around it.
 
     override func setUp() async throws {
         try await super.setUp()
-        // Store original UserDefaults values to restore after tests
-        originalLLMBaseURL = UserDefaults.standard.string(forKey: UserDefaultsKeys.llmBaseURL)
-        originalLLMModel = UserDefaults.standard.string(forKey: UserDefaultsKeys.llmModel)
-        originalDebugModeEnabled = UserDefaults.standard.object(forKey: UserDefaultsKeys.debugModeEnabled) as? Bool
-        originalEnterSendsMessage = UserDefaults.standard.object(forKey: UserDefaultsKeys.enterSendsMessage) as? Bool
-        originalSidebarTaskFilter = UserDefaults.standard.string(forKey: UserDefaultsKeys.sidebarTaskFilter)
-        originalEmbedFilesInPrompt = UserDefaults.standard.object(forKey: UserDefaultsKeys.quickCaptureEmbedFiles) as? Bool
-        originalLLMProvider = UserDefaults.standard.string(forKey: StoreConfiguration.Keys.llmProvider)
-        originalProviderEndpoints = UserDefaults.standard.data(forKey: UserDefaultsKeys.llmProviderEndpoints)
-
-        // Clear UserDefaults for clean test state
-        UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.llmBaseURL)
-        UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.llmModel)
-        UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.debugModeEnabled)
-        UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.enterSendsMessage)
-        UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.sidebarTaskFilter)
-        UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.quickCaptureEmbedFiles)
-        UserDefaults.standard.removeObject(forKey: StoreConfiguration.Keys.llmProvider)
-        UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.llmProviderEndpoints)
-
-        // Initialize test subject with clean state
-        config = StoreConfiguration()
+        // A per-PROCESS store, so this suite no longer save/clear/restores the SHARED defaults
+        // domain around every test. That dance existed only because parallel XCTest workers see
+        // one domain (several host processes, one bundle identifier) — and while it ran, every
+        // other worker's reads saw the cleared keys. `DEBTS.md` D-4.
+        storage = InMemoryConfigurationStorage()
+        config = StoreConfiguration(storage: storage)
     }
 
     override func tearDown() async throws {
-        // Restore original UserDefaults values
-        if let original = originalLLMBaseURL {
-            UserDefaults.standard.set(original, forKey: UserDefaultsKeys.llmBaseURL)
-        } else {
-            UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.llmBaseURL)
-        }
-
-        if let original = originalLLMModel {
-            UserDefaults.standard.set(original, forKey: UserDefaultsKeys.llmModel)
-        } else {
-            UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.llmModel)
-        }
-
-        if let original = originalDebugModeEnabled {
-            UserDefaults.standard.set(original, forKey: UserDefaultsKeys.debugModeEnabled)
-        } else {
-            UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.debugModeEnabled)
-        }
-
-        if let original = originalEnterSendsMessage {
-            UserDefaults.standard.set(original, forKey: UserDefaultsKeys.enterSendsMessage)
-        } else {
-            UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.enterSendsMessage)
-        }
-
-        if let original = originalSidebarTaskFilter {
-            UserDefaults.standard.set(original, forKey: UserDefaultsKeys.sidebarTaskFilter)
-        } else {
-            UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.sidebarTaskFilter)
-        }
-
-        if let original = originalLLMProvider {
-            UserDefaults.standard.set(original, forKey: StoreConfiguration.Keys.llmProvider)
-        } else {
-            UserDefaults.standard.removeObject(forKey: StoreConfiguration.Keys.llmProvider)
-        }
-
-        if let original = originalProviderEndpoints {
-            UserDefaults.standard.set(original, forKey: UserDefaultsKeys.llmProviderEndpoints)
-        } else {
-            UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.llmProviderEndpoints)
-        }
-
-        if let original = originalEmbedFilesInPrompt {
-            UserDefaults.standard.set(original, forKey: UserDefaultsKeys.quickCaptureEmbedFiles)
-        } else {
-            UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.quickCaptureEmbedFiles)
-        }
-
+        config = nil
+        storage = nil
         try await super.tearDown()
     }
 
@@ -115,11 +45,11 @@ final class StoreConfigurationTests: XCTestCase {
 
     func testInit_withStoredValues_loadsFromUserDefaults() {
         // Set up stored values
-        UserDefaults.standard.set("http://custom:8080", forKey: UserDefaultsKeys.llmBaseURL)
-        UserDefaults.standard.set("custom-model", forKey: UserDefaultsKeys.llmModel)
+        storage.set("http://custom:8080", forKey: UserDefaultsKeys.llmBaseURL)
+        storage.set("custom-model", forKey: UserDefaultsKeys.llmModel)
 
         // Create fresh instance to test initialization with pre-populated UserDefaults
-        freshConfigWithStoredValues = StoreConfiguration()
+        freshConfigWithStoredValues = StoreConfiguration(storage: storage)
 
         XCTAssertEqual(freshConfigWithStoredValues.llmBaseURLString, "http://custom:8080")
         XCTAssertEqual(freshConfigWithStoredValues.llmModelName, "custom-model")
@@ -130,7 +60,7 @@ final class StoreConfigurationTests: XCTestCase {
     func testLLMBaseURLString_persistsToUserDefaults() {
         config.llmBaseURLString = "http://newhost:9999"
 
-        let stored = UserDefaults.standard.string(forKey: UserDefaultsKeys.llmBaseURL)
+        let stored = storage.string(forKey: UserDefaultsKeys.llmBaseURL)
         XCTAssertEqual(stored, "http://newhost:9999")
     }
 
@@ -144,7 +74,7 @@ final class StoreConfigurationTests: XCTestCase {
         config.llmBaseURL = "http://via-alias:5678"
 
         XCTAssertEqual(config.llmBaseURLString, "http://via-alias:5678")
-        let stored = UserDefaults.standard.string(forKey: UserDefaultsKeys.llmBaseURL)
+        let stored = storage.string(forKey: UserDefaultsKeys.llmBaseURL)
         XCTAssertEqual(stored, "http://via-alias:5678")
     }
 
@@ -153,7 +83,7 @@ final class StoreConfigurationTests: XCTestCase {
     func testLLMModelName_persistsToUserDefaults() {
         config.llmModelName = "gpt-4-turbo"
 
-        let stored = UserDefaults.standard.string(forKey: UserDefaultsKeys.llmModel)
+        let stored = storage.string(forKey: UserDefaultsKeys.llmModel)
         XCTAssertEqual(stored, "gpt-4-turbo")
     }
 
@@ -161,7 +91,7 @@ final class StoreConfigurationTests: XCTestCase {
         config.llmModelName = ""
 
         XCTAssertEqual(config.llmModelName, "")
-        let stored = UserDefaults.standard.string(forKey: UserDefaultsKeys.llmModel)
+        let stored = storage.string(forKey: UserDefaultsKeys.llmModel)
         XCTAssertEqual(stored, "")
     }
 
@@ -175,7 +105,7 @@ final class StoreConfigurationTests: XCTestCase {
         config.llmModelName = "roundtrip-model"
 
         // Create fresh instance - should load from UserDefaults
-        freshConfigAllPropertiesPersistAndReload = StoreConfiguration()
+        freshConfigAllPropertiesPersistAndReload = StoreConfiguration(storage: storage)
 
         XCTAssertEqual(freshConfigAllPropertiesPersistAndReload.llmBaseURLString, "http://roundtrip:7777")
         XCTAssertEqual(freshConfigAllPropertiesPersistAndReload.llmModelName, "roundtrip-model")
@@ -200,16 +130,16 @@ final class StoreConfigurationTests: XCTestCase {
     func testDebugModeEnabled_persistsToUserDefaults() {
         config.debugModeEnabled = true
 
-        let stored = UserDefaults.standard.bool(forKey: UserDefaultsKeys.debugModeEnabled)
+        let stored = storage.bool(forKey: UserDefaultsKeys.debugModeEnabled)
         XCTAssertTrue(stored)
     }
 
     var freshConfigDebugModeLoads: StoreConfiguration!
 
     func testDebugModeEnabled_loadsFromUserDefaults() {
-        UserDefaults.standard.set(true, forKey: UserDefaultsKeys.debugModeEnabled)
+        storage.set(true, forKey: UserDefaultsKeys.debugModeEnabled)
 
-        freshConfigDebugModeLoads = StoreConfiguration()
+        freshConfigDebugModeLoads = StoreConfiguration(storage: storage)
 
         XCTAssertTrue(freshConfigDebugModeLoads.debugModeEnabled)
     }
@@ -223,16 +153,16 @@ final class StoreConfigurationTests: XCTestCase {
     func testEnterSendsMessage_persistsToUserDefaults() {
         config.enterSendsMessage = true
 
-        let stored = UserDefaults.standard.bool(forKey: UserDefaultsKeys.enterSendsMessage)
+        let stored = storage.bool(forKey: UserDefaultsKeys.enterSendsMessage)
         XCTAssertTrue(stored)
     }
 
     var freshConfigEnterSendsLoads: StoreConfiguration!
 
     func testEnterSendsMessage_loadsFromUserDefaults() {
-        UserDefaults.standard.set(true, forKey: UserDefaultsKeys.enterSendsMessage)
+        storage.set(true, forKey: UserDefaultsKeys.enterSendsMessage)
 
-        freshConfigEnterSendsLoads = StoreConfiguration()
+        freshConfigEnterSendsLoads = StoreConfiguration(storage: storage)
 
         XCTAssertTrue(freshConfigEnterSendsLoads.enterSendsMessage)
     }
@@ -245,7 +175,7 @@ final class StoreConfigurationTests: XCTestCase {
         config.debugModeEnabled = true
         config.enterSendsMessage = true
 
-        freshConfigUIPreferencesRoundTrip = StoreConfiguration()
+        freshConfigUIPreferencesRoundTrip = StoreConfiguration(storage: storage)
 
         XCTAssertTrue(freshConfigUIPreferencesRoundTrip.debugModeEnabled)
         XCTAssertTrue(freshConfigUIPreferencesRoundTrip.enterSendsMessage)
@@ -260,16 +190,16 @@ final class StoreConfigurationTests: XCTestCase {
     func testSidebarTaskFilter_persistsToUserDefaults() {
         config.sidebarTaskFilter = .running
 
-        let stored = UserDefaults.standard.string(forKey: UserDefaultsKeys.sidebarTaskFilter)
+        let stored = storage.string(forKey: UserDefaultsKeys.sidebarTaskFilter)
         XCTAssertEqual(stored, TaskFilter.running.rawValue)
     }
 
     var freshConfigSidebarFilterLoads: StoreConfiguration!
 
     func testSidebarTaskFilter_loadsFromUserDefaults() {
-        UserDefaults.standard.set(TaskFilter.done.rawValue, forKey: UserDefaultsKeys.sidebarTaskFilter)
+        storage.set(TaskFilter.done.rawValue, forKey: UserDefaultsKeys.sidebarTaskFilter)
 
-        freshConfigSidebarFilterLoads = StoreConfiguration()
+        freshConfigSidebarFilterLoads = StoreConfiguration(storage: storage)
 
         XCTAssertEqual(freshConfigSidebarFilterLoads.sidebarTaskFilter, .done)
     }
@@ -277,9 +207,9 @@ final class StoreConfigurationTests: XCTestCase {
     var freshConfigSidebarFilterInvalid: StoreConfiguration!
 
     func testSidebarTaskFilter_invalidStoredValue_defaultsToAll() {
-        UserDefaults.standard.set("bogus", forKey: UserDefaultsKeys.sidebarTaskFilter)
+        storage.set("bogus", forKey: UserDefaultsKeys.sidebarTaskFilter)
 
-        freshConfigSidebarFilterInvalid = StoreConfiguration()
+        freshConfigSidebarFilterInvalid = StoreConfiguration(storage: storage)
 
         XCTAssertEqual(freshConfigSidebarFilterInvalid.sidebarTaskFilter, .all)
     }
@@ -301,16 +231,16 @@ final class StoreConfigurationTests: XCTestCase {
     func testEmbedFilesInPrompt_persistsToUserDefaults() {
         config.embedFilesInPrompt = true
 
-        let stored = UserDefaults.standard.bool(forKey: UserDefaultsKeys.quickCaptureEmbedFiles)
+        let stored = storage.bool(forKey: UserDefaultsKeys.quickCaptureEmbedFiles)
         XCTAssertTrue(stored)
     }
 
     var freshConfigEmbedFilesLoads: StoreConfiguration!
 
     func testEmbedFilesInPrompt_loadsFromUserDefaults() {
-        UserDefaults.standard.set(true, forKey: UserDefaultsKeys.quickCaptureEmbedFiles)
+        storage.set(true, forKey: UserDefaultsKeys.quickCaptureEmbedFiles)
 
-        freshConfigEmbedFilesLoads = StoreConfiguration()
+        freshConfigEmbedFilesLoads = StoreConfiguration(storage: storage)
 
         XCTAssertTrue(freshConfigEmbedFilesLoads.embedFilesInPrompt)
     }

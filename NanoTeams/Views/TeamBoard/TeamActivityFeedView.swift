@@ -100,7 +100,7 @@ struct TeamActivityFeedView: View {
             supervisorBrief: task?.effectiveSupervisorBrief,
             supervisorBriefDate: task?.createdAt,
             supervisorTask: task?.supervisorTask,
-            supervisorClippedTexts: task?.clippedTexts ?? [],
+            supervisorClippedTexts: task?.clippedTexts.texts ?? [],
             supervisorAttachmentPaths: task?.attachmentPaths ?? [],
             supervisorProjectFolderURL: store.workFolderURL,
             workFolderURL: store.workFolderURL,
@@ -199,10 +199,8 @@ struct TeamActivityFeedView: View {
     /// a transition where the descendant has unloaded but a stale tagged item
     /// is still in the cached timeline).
     private func findRoleDefinition(for role: Role, originTaskID: Int) -> TeamRoleDefinition? {
-        let baseID = role.baseID
-        let roster = viewModel.roleDefinitionsByTaskID[originTaskID] ?? roleDefinitions
-        if let def = roster.first(where: { $0.id == baseID }) { return def }
-        return roster.first(where: { $0.systemRoleID == baseID || $0.name == baseID })
+        let index = viewModel.roleIndexByTaskID[originTaskID] ?? viewModel.activeRoleIndex
+        return index.role(forBaseID: role.baseID)
     }
 
     /// True when `originTaskID` refers to a delegated descendant (not the active task).
@@ -425,6 +423,35 @@ struct TeamActivityFeedView: View {
             : ActivityCardTokens.turnGapSpacing
     }
 
+    /// The one thing the feed can honestly say between Send and the first token: the
+    /// run's start is in flight.
+    ///
+    /// Deliberately NOT a `cachedTimelineItems` entry. That list is a pure projection of
+    /// the TASK, replayed by `ConversationTranscriptRenderer` into
+    /// `conversation_log.md` — a live spinner has no business in a transcript, and a
+    /// timeline case would have to be filtered back out there. This is view state, so it
+    /// renders as view state, from the observable fact and nothing else.
+    ///
+    /// It covers the window up to `engine.start()`. What follows — prompt assembly — is
+    /// already answered by `MessageBubbleStreamingIndicator`, which claims `Processing…`
+    /// on `beginStreaming`, i.e. BEFORE the request is sent and therefore across the
+    /// whole model load.
+    @ViewBuilder
+    private var runInitializationRow: some View {
+        if !isReadOnly, let taskID = store.activeTaskID,
+           engineStateEnv.isInitializingRun(taskID) {
+            MessageLoaderLabel(RunInitializationDisplay.caption)
+                // The content column, not the pane edge: this reads as a status row of the
+                // same family as `Thinking…` / `Processing…`, and those sit inside a
+                // bubble's `HStack` past the avatar gutter. Without the inset it rendered a
+                // full gutter to their left, which is what made it look like page furniture
+                // instead of the run talking.
+                .padding(.leading, ActivityCardTokens.contentColumnLeading)
+                .padding(.top, Spacing.m)
+                .transition(.opacity)
+        }
+    }
+
     private var timelineScrollView: some View {
         ScrollView {
             // NON-lazy on purpose (was LazyVStack — reverted 2026-07-07 after two
@@ -461,6 +488,7 @@ struct TeamActivityFeedView: View {
                             .padding(.top, tagged.boundary == nil ? topPadding : 0)
                     }
                 }
+                runInitializationRow
             }
             .padding(.top)
             .padding(.trailing)

@@ -112,6 +112,28 @@ nonisolated enum WorkFolderContextPromptPlanner {
     static func _testResetScalarWork() { _estimateScalarWork.store(0, ordering: .relaxed) }
     #endif
 
+    /// Price a base64 payload WITHOUT walking it.
+    ///
+    /// The two-class estimate needs the scalar classes, and base64's alphabet
+    /// (`A-Z a-z 0-9 + / =`) is ASCII-only by construction — so `ascii` is the
+    /// stored UTF-8 length and `nonAscii` is zero, both O(1) on a native String.
+    /// No `scalarCounts` walk, and therefore no re-walk (this file's own rule at
+    /// `scalarCounts`: pricing must never re-walk what it already counted).
+    ///
+    /// This exists as ONE function rather than the same two lines at each call
+    /// site because the ASCII premise is the load-bearing part: two copies would
+    /// be two places for it to be forgotten (CLAUDE.md #91). Its callers are the
+    /// two surfaces that price a conversation on every wire request —
+    /// `PromptPrefixFingerprint.chainAndTokens` and
+    /// `ContextBudgetPolicy.estimateTokens` — where walking a multi-megabyte
+    /// screenshot was Θ(requests × payload) across a run.
+    ///
+    /// Pinned by `PromptPrefixFingerprintTests.testImagePayloadIsPricedWithoutWalkingIt`,
+    /// which asserts the ASCII premise as well as the cost.
+    static func estimateTokensForBase64(_ base64: String) -> Int {
+        estimateTokens(ascii: base64.utf8.count, nonAscii: 0)
+    }
+
     /// The same two-class estimate from pre-counted scalar classes — the formula's
     /// single home. `PromptPrefixFingerprint.chainAndTokens` counts the classes
     /// during its FNV fold (scalars = non-continuation UTF-8 bytes) so pricing and

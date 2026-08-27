@@ -59,8 +59,26 @@ final class QuickCaptureController {
 
     /// When enabled, the overlay stays open after submitting an answer in chat-mode tasks.
     var keepOpenInChat: Bool {
-        didSet { UserDefaults.standard.set(keepOpenInChat, forKey: UserDefaultsKeys.quickCaptureKeepOpenInChat) }
+        didSet { storage.set(keepOpenInChat, forKey: UserDefaultsKeys.quickCaptureKeepOpenInChat) }
     }
+
+    /// Where `keepOpenInChat` persists. `UserDefaults.standard` in production; injected in
+    /// tests, because that domain is SHARED across parallel XCTest host processes and a write
+    /// here reaches every other worker's reads (`DEBTS.md` D-4).
+    private var storage: any ConfigurationStorage
+
+    #if DEBUG
+    /// Points `keepOpenInChat`'s persistence at a per-process store, for suites that exercise
+    /// the SHARED singleton and so cannot inject through `init`. Re-reads the value from the
+    /// new store so the object is consistent with it. Pair with `_testResetStorage()`.
+    func _testUseIsolatedStorage(_ store: any ConfigurationStorage) {
+        storage = store
+        let key = UserDefaultsKeys.quickCaptureKeepOpenInChat
+        keepOpenInChat = store.object(forKey: key) != nil ? store.bool(forKey: key) : true
+    }
+
+    func _testResetStorage() { storage = UserDefaults.standard }
+    #endif
 
     /// When enabled, file attachment contents are read and embedded directly into the prompt
     /// instead of being passed as file paths for the LLM to read via `read_file`.
@@ -73,7 +91,6 @@ final class QuickCaptureController {
 
     private(set) var isPanelVisible = false
     @ObservationIgnored private var panel: QuickCapturePanel?
-    @ObservationIgnored var pendingWorkingMode = false
     @ObservationIgnored var forceNewTaskMode = false
     @ObservationIgnored private var lastRefreshedTaskID: Int?
     /// `QuickCapturePresentationPolicy.renderIdentity` of the mode the hosting view was
@@ -145,15 +162,18 @@ final class QuickCaptureController {
         hotkeyManager: (any HotkeyManager)? = nil,
         modeCoordinator: (any QuickCaptureModeCoordinator)? = nil,
         formState: QuickCaptureFormState? = nil,
-        selectionCapturer: (any SelectionCapturing)? = nil
+        selectionCapturer: (any SelectionCapturing)? = nil,
+        storage: (any ConfigurationStorage)? = nil
     ) {
+        self.storage = storage ?? UserDefaults.standard
         self.hotkeyManager = hotkeyManager ?? InertHotkeyManager()
         self.modeCoordinator = modeCoordinator ?? DefaultQuickCaptureModeCoordinator()
         self.formState = formState ?? QuickCaptureFormState()
         self.selectionCapturer = selectionCapturer ?? InertSelectionCapturer()
         let key = UserDefaultsKeys.quickCaptureKeepOpenInChat
-        self.keepOpenInChat = UserDefaults.standard.object(forKey: key) != nil
-            ? UserDefaults.standard.bool(forKey: key)
+        let store = storage ?? UserDefaults.standard
+        self.keepOpenInChat = store.object(forKey: key) != nil
+            ? store.bool(forKey: key)
             : true
     }
 
@@ -350,10 +370,14 @@ final class QuickCaptureController {
     private func resolveMode() -> QuickCaptureMode {
         let activeTask = store?.activeTask
         let engineState: TeamEngineState? = activeTask.flatMap { store?.taskEngineStates[$0.id] }
+        let isInitializingRun = activeTask.flatMap {
+            store?.engineState.isInitializingRun($0.id)
+        } ?? false
         return modeCoordinator.resolveMode(
             isTaskSelected: isTaskSelected,
             activeTask: activeTask,
             engineState: engineState,
+            isInitializingRun: isInitializingRun,
             activeTeam: store?.resolvedTeam(for: activeTask),
             forceNewTaskMode: forceNewTaskMode
         )
@@ -403,8 +427,7 @@ final class QuickCaptureController {
             // Symmetric restore: returning to chat-mode `.taskWorking` for the active task
             // reloads the draft `exitAnswerMode` just saved. No-op when no draft exists, so
             // a fresh transition with empty composer stays empty.
-            if case .taskWorking(_, let isChatMode) = resolvedMode,
-               isChatMode,
+            if resolvedMode.liveTaskChatMode == true,
                let taskID = store?.activeTaskID {
                 formState.restoreAnswerDraftToLiveFields(taskID: taskID)
             }
@@ -451,7 +474,7 @@ final class QuickCaptureController {
         // breath, so unclaimed means provably empty and the load can displace nothing. An owner
         // that is neither nil nor this task cannot reach here — that is exactly what the
         // `.reassign` branch above consumes.
-        if case .taskWorking(_, let isChatMode) = resolvedMode, isChatMode,
+        if resolvedMode.liveTaskChatMode == true,
            let taskID = store?.activeTaskID {
             if formState.answerFieldsOwnerTaskID == nil {
                 formState.restoreAnswerDraftToLiveFields(taskID: taskID)
@@ -517,13 +540,13 @@ final class QuickCaptureController {
         // here purely as a test artifact.
         guard let panel, let store, let dictation else { return }
 
-        let currentMode: QuickCaptureMode
-        if pendingWorkingMode {
-            pendingWorkingMode = false
-            currentMode = .taskWorking(roleName: "", isChatMode: true)
-        } else {
-            currentMode = resolveMode()
-        }
+        // Always the resolved mode. Until 2026-08-27 a `pendingWorkingMode` flag
+        // forced `.taskWorking(roleName: "")` for exactly ONE rebuild after a submit,
+        // because the resolver had no way to see a run whose start was still in flight.
+        // It bought one frame and lost the next: the following refresh re-resolved to
+        // `.overlay`. `.taskInitializing` is that missing answer, so the placeholder has
+        // nothing left to stand in for.
+        let currentMode = resolveMode()
 
         let formView = QuickCaptureFormView(
             mode: currentMode,
@@ -671,7 +694,6 @@ final class QuickCaptureController {
     func _testReset() {
         panel = nil
         isPanelVisible = false
-        pendingWorkingMode = false
         forceNewTaskMode = false
         lastRefreshedTaskID = nil
         isTaskSelected = false

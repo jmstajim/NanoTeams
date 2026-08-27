@@ -24,10 +24,23 @@ nonisolated enum TeamBoardRunControl: Equatable {
     ///   (an active run, including one parked for input or waiting on acceptance,
     ///   can be paused).
     /// - `.paused` → **resume**.
-    /// - `.pending` / `nil` → **start** (no engine yet).
+    /// - `.pending` / `nil` → **start** (no engine yet) — UNLESS a run start is in
+    ///   flight, in which case **pause**, see below.
     /// - `.done` / `.failed` → none (terminal; the run is over).
-    static func select(engineState: TeamEngineState?, isHistoricalRun: Bool) -> TeamBoardRunControl? {
+    ///
+    /// `isInitializingRun` is checked FIRST among the engineless cases and only there.
+    /// A start claimed but not yet handed to `engine.start()` leaves no engine, so the
+    /// mirror reads `nil` and the navbar offered `start` — an action `claimRunStart`
+    /// then refused in silence, on top of a run that was in fact already starting. It
+    /// cannot override a live engine state: once `.running` the engine's own answer is
+    /// the better one, and the two overlap by a tick (CLAUDE.md #95).
+    static func select(
+        engineState: TeamEngineState?,
+        isHistoricalRun: Bool,
+        isInitializingRun: Bool = false
+    ) -> TeamBoardRunControl? {
         guard !isHistoricalRun else { return nil }
+        if isInitializingRun, engineState == nil || engineState == .pending { return .pause }
         switch engineState {
         case .running, .needsSupervisorInput, .needsAcceptance:
             return .pause

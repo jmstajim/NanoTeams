@@ -749,17 +749,17 @@ final class ToolsTailToolErrorHandlerTests: XCTestCase {
 
     private func run(
         _ args: [String: Any] = [:], _ body: @escaping () throws -> ToolExecutionResult
-    ) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: "probe_tool", args: args, implementation: body)
+    ) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: "probe_tool", args: args, implementation: body)
     }
 
     // MARK: - SandboxPathError: restrictedPath is caught BEFORE the generic arm
 
-    func testRestrictedPath_isReportedAsFileNotFound_notPermissionDenied() {
+    func testRestrictedPath_isReportedAsFileNotFound_notPermissionDenied() async {
         // Catch ORDER is the contract: `.restrictedPath` must stay silent
         // ("File not found.") so `.nanoteams/internal` is indistinguishable
         // from a missing file. A permission-denied answer would confirm it exists.
-        let result = run(["path": ".nanoteams/internal/teams.json"]) {
+        let result = await run(["path": ".nanoteams/internal/teams.json"]) {
             throw SandboxPathError.restrictedPath
         }
         let env = toolsTailEnvelope(result)
@@ -770,14 +770,14 @@ final class ToolsTailToolErrorHandlerTests: XCTestCase {
                           "the restrictedPath arm must win over the generic SandboxPathError arm")
     }
 
-    func testOtherSandboxPathErrors_mapToPermissionDenied() {
+    func testOtherSandboxPathErrors_mapToPermissionDenied() async {
         let cases: [SandboxPathError] = [
             .absolutePathNotAllowed("/etc/passwd"),
             .parentTraversalNotAllowed("../../secrets"),
             .outsideSandbox("/var/root"),
         ]
         for sandboxError in cases {
-            let result = run(["path": "x"]) { throw sandboxError }
+            let result = await run(["path": "x"]) { throw sandboxError }
             let env = toolsTailEnvelope(result)
             XCTAssertTrue(result.isError, "\(sandboxError)")
             XCTAssertEqual(env.errorCode, ToolErrorCode.permissionDenied.rawValue, "\(sandboxError)")
@@ -788,10 +788,10 @@ final class ToolsTailToolErrorHandlerTests: XCTestCase {
 
     // MARK: - ToolArgumentError
 
-    func testInvalidValueArgumentError_carriesTheSpecificDetail() {
+    func testInvalidValueArgumentError_carriesTheSpecificDetail() async {
         // `.invalidValue` exists so the model is told the TYPE is wrong rather
         // than being sent hunting for an argument it just supplied.
-        let result = run(["depth": "deep"]) {
+        let result = await run(["depth": "deep"]) {
             throw ToolArgumentError.invalidValue(key: "depth", detail: "must be an integer")
         }
         let env = toolsTailEnvelope(result)
@@ -801,8 +801,8 @@ final class ToolsTailToolErrorHandlerTests: XCTestCase {
                        "a present-but-wrong-typed argument must not be reported as missing")
     }
 
-    func testMissingRequiredArgumentError_namesTheKey() {
-        let result = run([:]) { throw ToolArgumentError.missingRequired("path") }
+    func testMissingRequiredArgumentError_namesTheKey() async {
+        let result = await run([:]) { throw ToolArgumentError.missingRequired("path") }
         let env = toolsTailEnvelope(result)
         XCTAssertEqual(env.errorCode, ToolErrorCode.invalidArgs.rawValue)
         XCTAssertEqual(env.errorMessage, "Missing required argument: path")
@@ -810,11 +810,11 @@ final class ToolsTailToolErrorHandlerTests: XCTestCase {
 
     // MARK: - ProcessRunnerError.cancelled → the unified cancel envelope
 
-    func testProcessRunnerCancelled_routesToTheUnifiedCancelEnvelope() {
+    func testProcessRunnerCancelled_routesToTheUnifiedCancelEnvelope() async {
         // A SIGTERMed subprocess must look identical on the wire to a pause that
         // landed between two tool calls, so downstream classifiers see one shape.
         let args: [String: Any] = ["scheme": "App"]
-        let result = run(args) { throw ProcessRunnerError.cancelled }
+        let result = await run(args) { throw ProcessRunnerError.cancelled }
         let env = toolsTailEnvelope(result)
 
         XCTAssertTrue(result.isError)
@@ -826,20 +826,20 @@ final class ToolsTailToolErrorHandlerTests: XCTestCase {
                        "must be byte-identical to the ToolRuntime-emitted cancel envelope")
     }
 
-    func testProcessRunnerCancelled_preservesTheArgumentsJSON() {
+    func testProcessRunnerCancelled_preservesTheArgumentsJSON() async {
         // The cancelled arm builds its own result rather than going through
         // makeErrorResult — the args must still be threaded through.
         let args: [String: Any] = ["command": "xcodebuild", "timeout": 600]
-        let result = run(args) { throw ProcessRunnerError.cancelled }
+        let result = await run(args) { throw ProcessRunnerError.cancelled }
         XCTAssertEqual(result.argumentsJSON, encodeArgsToJSON(args))
         XCTAssertEqual(result.toolName, "probe_tool")
         XCTAssertNil(result.signal)
     }
 
-    func testProcessRunnerTimeout_doesNotGetTheCancelEnvelope() {
+    func testProcessRunnerTimeout_doesNotGetTheCancelEnvelope() async {
         // Only `.cancelled` is special-cased; a timeout falls through to the
         // generic arm, which is what lets `bash` reinterpret it as a success.
-        let result = run([:]) {
+        let result = await run([:]) {
             throw ProcessRunnerError.timeout(30, stdout: "partial", stderr: "")
         }
         let env = toolsTailEnvelope(result)
@@ -848,8 +848,8 @@ final class ToolsTailToolErrorHandlerTests: XCTestCase {
         XCTAssertEqual(env.errorMessage, "Process timed out after 30 seconds")
     }
 
-    func testProcessRunnerExecutableNotFound_fallsToCommandFailed() {
-        let result = run([:]) { throw ProcessRunnerError.executableNotFound("/usr/bin/nope") }
+    func testProcessRunnerExecutableNotFound_fallsToCommandFailed() async {
+        let result = await run([:]) { throw ProcessRunnerError.executableNotFound("/usr/bin/nope") }
         let env = toolsTailEnvelope(result)
         XCTAssertEqual(env.errorCode, ToolErrorCode.commandFailed.rawValue)
         XCTAssertEqual(env.errorMessage, "Executable not found: /usr/bin/nope")
@@ -857,9 +857,9 @@ final class ToolsTailToolErrorHandlerTests: XCTestCase {
 
     // MARK: - Generic arm
 
-    func testPlainSwiftError_withNoLocalizedDescription_stillProducesAnEnvelope() {
+    func testPlainSwiftError_withNoLocalizedDescription_stillProducesAnEnvelope() async {
         struct Bare: Error {}
-        let result = run([:]) { throw Bare() }
+        let result = await run([:]) { throw Bare() }
         let env = toolsTailEnvelope(result)
         XCTAssertTrue(result.isError)
         XCTAssertEqual(env.errorCode, ToolErrorCode.commandFailed.rawValue)
@@ -869,7 +869,7 @@ final class ToolsTailToolErrorHandlerTests: XCTestCase {
 
     // MARK: - Success passthrough
 
-    func testSuccessResult_passesThroughUntouched_includingItsSignal() {
+    func testSuccessResult_passesThroughUntouched_includingItsSignal() async {
         // `execute` must not rewrap a handler's own result — the signal is how
         // collaboration tools reach the service layer.
         let expected = ToolExecutionResult(
@@ -879,17 +879,17 @@ final class ToolsTailToolErrorHandlerTests: XCTestCase {
             isError: false,
             signal: .waitForEvents
         )
-        let result = run([:]) { expected }
+        let result = await run([:]) { expected }
         XCTAssertEqual(result, expected)
         guard case .waitForEvents? = result.signal else {
             return XCTFail("signal must survive: \(String(describing: result.signal))")
         }
     }
 
-    func testHandlerReturnedErrorResult_isNotDoubleWrapped() {
+    func testHandlerReturnedErrorResult_isNotDoubleWrapped() async {
         // A handler that RETURNS an error envelope (rather than throwing) keeps
         // its own error code — the catch arms must not touch it.
-        let result = run(["path": "x"]) {
+        let result = await run(["path": "x"]) {
             makeErrorResult(toolName: "probe_tool", args: ["path": "x"],
                             code: .notADirectory, message: "Parent path is not a directory")
         }
@@ -898,8 +898,8 @@ final class ToolsTailToolErrorHandlerTests: XCTestCase {
         XCTAssertEqual(env.errorMessage, "Parent path is not a directory")
     }
 
-    func testEmptyToolName_stillProducesAWellFormedEnvelope() {
-        let result = ToolErrorHandler.execute(toolName: "", args: [:]) {
+    func testEmptyToolName_stillProducesAWellFormedEnvelope() async {
+        let result = await ToolErrorHandler.execute(toolName: "", args: [:]) {
             throw ToolArgumentError.missingRequired("path")
         }
         XCTAssertTrue(result.isError)
@@ -935,27 +935,27 @@ final class ToolsTailFileWriteHandlerTests: XCTestCase {
         ToolExecutionContext(workFolderRoot: workDir, taskID: 1, runID: 0, roleID: "r")
     }
 
-    private func write(_ args: [String: Any]) -> ToolExecutionResult {
-        WriteFileTool(resolver: resolver(), fileManager: fm).handle(context: context(), args: args)
+    private func write(_ args: [String: Any]) async -> ToolExecutionResult {
+        await WriteFileTool(resolver: resolver(), fileManager: await fm).handle(context: context(), args: args)
     }
 
-    private func edit(_ args: [String: Any]) -> ToolExecutionResult {
-        EditFileTool(resolver: resolver(), fileManager: fm).handle(context: context(), args: args)
+    private func edit(_ args: [String: Any]) async -> ToolExecutionResult {
+        await EditFileTool(resolver: resolver(), fileManager: await fm).handle(context: context(), args: args)
     }
 
-    private func delete(_ args: [String: Any]) -> ToolExecutionResult {
-        DeleteFileTool(resolver: resolver(), fileManager: fm).handle(context: context(), args: args)
+    private func delete(_ args: [String: Any]) async -> ToolExecutionResult {
+        await DeleteFileTool(resolver: resolver(), fileManager: await fm).handle(context: context(), args: args)
     }
 
     // MARK: - write_file
 
-    func testWriteFile_parentPathIsAFile_notADirectory() throws {
+    func testWriteFile_parentPathIsAFile_notADirectory() async throws {
         // `a.txt` exists as a FILE; writing `a.txt/child.txt` must be refused
         // rather than attempting a create-directory that would clobber it.
         let blocker = workDir.appendingPathComponent("a.txt")
         try "i am a file".write(to: blocker, atomically: true, encoding: .utf8)
 
-        let result = write(["path": "a.txt/child.txt", "content": "nope"])
+        let result = await write(["path": "a.txt/child.txt", "content": "nope"])
         let env = toolsTailEnvelope(result)
         XCTAssertTrue(result.isError)
         XCTAssertEqual(env.errorCode, ToolErrorCode.notADirectory.rawValue)
@@ -964,39 +964,39 @@ final class ToolsTailFileWriteHandlerTests: XCTestCase {
                        "the blocking file must be untouched")
     }
 
-    func testWriteFile_missingPath_isInvalidArgs() {
-        let env = toolsTailEnvelope(write(["content": "x"]))
+    func testWriteFile_missingPath_isInvalidArgs() async {
+        let env = await toolsTailEnvelope(write(["content": "x"]))
         XCTAssertEqual(env.errorCode, ToolErrorCode.invalidArgs.rawValue)
         XCTAssertEqual(env.errorMessage, "Missing required argument: path")
     }
 
-    func testWriteFile_missingContent_isInvalidArgs() {
-        let env = toolsTailEnvelope(write(["path": "a.txt"]))
+    func testWriteFile_missingContent_isInvalidArgs() async {
+        let env = await toolsTailEnvelope(write(["path": "a.txt"]))
         XCTAssertEqual(env.errorCode, ToolErrorCode.invalidArgs.rawValue)
         XCTAssertEqual(env.errorMessage, "Missing required argument: content")
         XCTAssertFalse(fm.fileExists(atPath: workDir.appendingPathComponent("a.txt").path),
                        "a rejected write must not create the file")
     }
 
-    func testWriteFile_stringEncodedCreateDirsFalse_isHonored() {
+    func testWriteFile_stringEncodedCreateDirsFalse_isHonored() async {
         // Models quote booleans; `"false"` must still suppress directory creation
         // (silently creating them would be the destructive direction).
-        let result = write(["path": "no/parent/x.txt", "content": "c", "create_dirs": "false"])
+        let result = await write(["path": "no/parent/x.txt", "content": "c", "create_dirs": "false"])
         XCTAssertTrue(result.isError)
         XCTAssertEqual(toolsTailEnvelope(result).errorCode, ToolErrorCode.notADirectory.rawValue)
         XCTAssertFalse(fm.fileExists(atPath: workDir.appendingPathComponent("no").path))
     }
 
-    func testWriteFile_ambiguousCreateDirsValue_keepsTheCreatingDefault() {
+    func testWriteFile_ambiguousCreateDirsValue_keepsTheCreatingDefault() async {
         // Unrecognized spellings fall back to the default (true) rather than
         // silently flipping behavior on garbage.
-        let result = write(["path": "made/up/x.txt", "content": "c", "create_dirs": "maybe"])
+        let result = await write(["path": "made/up/x.txt", "content": "c", "create_dirs": "maybe"])
         XCTAssertFalse(result.isError, "got \(result.outputJSON)")
         XCTAssertTrue(fm.fileExists(atPath: workDir.appendingPathComponent("made/up/x.txt").path))
     }
 
-    func testWriteFile_emptyContent_createsAnEmptyFile() {
-        let result = write(["path": "blank.txt", "content": ""])
+    func testWriteFile_emptyContent_createsAnEmptyFile() async {
+        let result = await write(["path": "blank.txt", "content": ""])
         XCTAssertFalse(result.isError)
         let data = toolsTailEnvelope(result).data
         XCTAssertEqual(data?["size"] as? Int, 0)
@@ -1005,19 +1005,19 @@ final class ToolsTailFileWriteHandlerTests: XCTestCase {
                                    encoding: .utf8), "")
     }
 
-    func testWriteFile_size_isUTF8ByteCountNotCharacterCount() {
+    func testWriteFile_size_isUTF8ByteCountNotCharacterCount() async {
         // "Привет" is 6 characters / 12 UTF-8 bytes. Reporting characters would
         // make the model's size accounting wrong for every non-ASCII file.
-        let result = write(["path": "ru.txt", "content": "Привет"])
+        let result = await write(["path": "ru.txt", "content": "Привет"])
         XCTAssertFalse(result.isError)
         XCTAssertEqual(toolsTailEnvelope(result).data?["size"] as? Int, 12)
     }
 
-    func testWriteFile_overwrite_reportsCreatedFalse() throws {
+    func testWriteFile_overwrite_reportsCreatedFalse() async throws {
         let target = workDir.appendingPathComponent("exists.txt")
         try "old".write(to: target, atomically: true, encoding: .utf8)
 
-        let result = write(["path": "exists.txt", "content": "new"])
+        let result = await write(["path": "exists.txt", "content": "new"])
         XCTAssertFalse(result.isError)
         XCTAssertEqual(toolsTailEnvelope(result).data?["created"] as? Bool, false)
         XCTAssertEqual(try String(contentsOf: target, encoding: .utf8), "new")
@@ -1025,56 +1025,56 @@ final class ToolsTailFileWriteHandlerTests: XCTestCase {
 
     // MARK: - edit_file
 
-    func testEditFile_missingFile_isFileNotFoundNamingThePath() {
+    func testEditFile_missingFile_isFileNotFoundNamingThePath() async {
         // The handler's own existence guard (distinct from the resolver's
         // restrictedPath mapping, which reports a bare "File not found.").
-        let env = toolsTailEnvelope(
+        let env = await toolsTailEnvelope(
             edit(["path": "ghost.swift", "old_text": "a", "new_text": "b"]))
         XCTAssertEqual(env.errorCode, ToolErrorCode.fileNotFound.rawValue)
         XCTAssertEqual(env.errorMessage, "File not found: ghost.swift")
     }
 
-    func testEditFile_nonUTF8File_failsLoudlyInsteadOfEditingGarbage() throws {
+    func testEditFile_nonUTF8File_failsLoudlyInsteadOfEditingGarbage() async throws {
         let binary = workDir.appendingPathComponent("blob.bin")
         try Data([0xFF, 0xFE, 0xFF, 0x00, 0xC0]).write(to: binary)
 
-        let result = edit(["path": "blob.bin", "old_text": "a", "new_text": "b"])
+        let result = await edit(["path": "blob.bin", "old_text": "a", "new_text": "b"])
         XCTAssertTrue(result.isError, "a non-UTF-8 file must not be silently rewritten")
         XCTAssertEqual(toolsTailEnvelope(result).errorCode, ToolErrorCode.commandFailed.rawValue)
         XCTAssertEqual(try Data(contentsOf: binary), Data([0xFF, 0xFE, 0xFF, 0x00, 0xC0]),
                        "the file must be byte-identical after a failed edit")
     }
 
-    func testEditFile_missingOldText_isInvalidArgs() throws {
+    func testEditFile_missingOldText_isInvalidArgs() async throws {
         try "hello".write(to: workDir.appendingPathComponent("f.txt"), atomically: true, encoding: .utf8)
-        let env = toolsTailEnvelope(edit(["path": "f.txt", "new_text": "b"]))
+        let env = await toolsTailEnvelope(edit(["path": "f.txt", "new_text": "b"]))
         XCTAssertEqual(env.errorCode, ToolErrorCode.invalidArgs.rawValue)
         XCTAssertEqual(env.errorMessage, "Missing required argument: old_text")
     }
 
-    func testEditFile_missingNewText_isInvalidArgs() throws {
+    func testEditFile_missingNewText_isInvalidArgs() async throws {
         try "hello".write(to: workDir.appendingPathComponent("f.txt"), atomically: true, encoding: .utf8)
-        let env = toolsTailEnvelope(edit(["path": "f.txt", "old_text": "hello"]))
+        let env = await toolsTailEnvelope(edit(["path": "f.txt", "old_text": "hello"]))
         XCTAssertEqual(env.errorCode, ToolErrorCode.invalidArgs.rawValue)
         XCTAssertEqual(env.errorMessage, "Missing required argument: new_text")
     }
 
-    func testEditFile_stringEncodedReplaceAll_isHonored() throws {
+    func testEditFile_stringEncodedReplaceAll_isHonored() async throws {
         let target = workDir.appendingPathComponent("many.txt")
         try "x\nx\nx\n".write(to: target, atomically: true, encoding: .utf8)
 
-        let result = edit(["path": "many.txt", "old_text": "x", "new_text": "y",
-                           "replace_all": "true"])
+        let result = await edit(["path": "many.txt", "old_text": "x", "new_text": "y",
+                                 "replace_all": "true"])
         XCTAssertFalse(result.isError, "got \(result.outputJSON)")
         XCTAssertEqual(toolsTailEnvelope(result).data?["replacements_made"] as? Int, 3)
         XCTAssertEqual(try String(contentsOf: target, encoding: .utf8), "y\ny\ny\n")
     }
 
-    func testEditFile_exactMatch_omitsTheFuzzyDisclosure() throws {
+    func testEditFile_exactMatch_omitsTheFuzzyDisclosure() async throws {
         let target = workDir.appendingPathComponent("clean.txt")
         try "alpha\nbeta\n".write(to: target, atomically: true, encoding: .utf8)
 
-        let result = edit(["path": "clean.txt", "old_text": "beta", "new_text": "gamma"])
+        let result = await edit(["path": "clean.txt", "old_text": "beta", "new_text": "gamma"])
         XCTAssertFalse(result.isError)
         let data = toolsTailEnvelope(result).data
         XCTAssertEqual(data?["replacements_made"] as? Int, 1)
@@ -1084,45 +1084,45 @@ final class ToolsTailFileWriteHandlerTests: XCTestCase {
 
     // MARK: - delete_file
 
-    func testDeleteFile_missingPath_isInvalidArgs() {
-        let env = toolsTailEnvelope(delete([:]))
+    func testDeleteFile_missingPath_isInvalidArgs() async {
+        let env = await toolsTailEnvelope(delete([:]))
         XCTAssertEqual(env.errorCode, ToolErrorCode.invalidArgs.rawValue)
         XCTAssertEqual(env.errorMessage, "Missing required argument: path")
     }
 
-    func testDeleteFile_stringEncodedMustExistFalse_isHonored() {
-        let result = delete(["path": "nope.txt", "must_exist": "false"])
+    func testDeleteFile_stringEncodedMustExistFalse_isHonored() async {
+        let result = await delete(["path": "nope.txt", "must_exist": "false"])
         XCTAssertFalse(result.isError, "got \(result.outputJSON)")
         let data = toolsTailEnvelope(result).data
         XCTAssertEqual(data?["deleted"] as? Bool, false)
         XCTAssertEqual(data?["path"] as? String, "nope.txt")
     }
 
-    func testDeleteFile_ambiguousMustExistValue_keepsTheStrictDefault() {
+    func testDeleteFile_ambiguousMustExistValue_keepsTheStrictDefault() async {
         // Unrecognized spelling → default `true` → a missing file is an error.
         // Defaulting the other way would make a typo look like a successful delete.
-        let result = delete(["path": "nope.txt", "must_exist": "sure"])
+        let result = await delete(["path": "nope.txt", "must_exist": "sure"])
         XCTAssertTrue(result.isError)
         XCTAssertEqual(toolsTailEnvelope(result).errorCode, ToolErrorCode.fileNotFound.rawValue)
     }
 
-    func testDeleteFile_nestedFile_isRemovedAndParentSurvives() throws {
+    func testDeleteFile_nestedFile_isRemovedAndParentSurvives() async throws {
         let sub = workDir.appendingPathComponent("nested", isDirectory: true)
         try fm.createDirectory(at: sub, withIntermediateDirectories: true)
         let target = sub.appendingPathComponent("doomed.txt")
         try "bye".write(to: target, atomically: true, encoding: .utf8)
 
-        let result = delete(["path": "nested/doomed.txt"])
+        let result = await delete(["path": "nested/doomed.txt"])
         XCTAssertFalse(result.isError)
         XCTAssertEqual(toolsTailEnvelope(result).data?["deleted"] as? Bool, true)
         XCTAssertFalse(fm.fileExists(atPath: target.path))
         XCTAssertTrue(fm.fileExists(atPath: sub.path), "only the file is removed, not its parent")
     }
 
-    func testDeleteFile_workFolderRootItself_isRefusedAsADirectory() {
+    func testDeleteFile_workFolderRootItself_isRefusedAsADirectory() async {
         // "." is the documented spelling for the work-folder root; deleting it
         // would take the whole project with it, so the directory guard must fire.
-        let result = delete(["path": "."])
+        let result = await delete(["path": "."])
         XCTAssertTrue(result.isError)
         XCTAssertEqual(toolsTailEnvelope(result).errorCode, ToolErrorCode.notAFile.rawValue)
         XCTAssertTrue(fm.fileExists(atPath: workDir.path))
@@ -1165,10 +1165,10 @@ final class ToolsTailBashHandlerTests: XCTestCase {
 
     // MARK: - working_directory
 
-    func testWorkingDirectory_pointsAtAFile_isNotADirectory() throws {
+    func testWorkingDirectory_pointsAtAFile_isNotADirectory() async throws {
         try "text".write(to: workDir.appendingPathComponent("file.txt"),
                          atomically: true, encoding: .utf8)
-        let result = tool().handle(
+        let result = await tool().handle(
             context: context(), args: ["command": "pwd", "working_directory": "file.txt"])
         let env = toolsTailEnvelope(result)
         XCTAssertTrue(result.isError)
@@ -1178,34 +1178,34 @@ final class ToolsTailBashHandlerTests: XCTestCase {
 
     // MARK: - timeout resolution
 
-    func testTimeout_aboveTheCeiling_isClampedNotRejected() {
+    func testTimeout_aboveTheCeiling_isClampedNotRejected() async {
         // Clamping keeps an over-eager timeout usable; rejecting it would cost
         // the model a round trip for a value that is harmless once bounded.
-        let result = tool().handle(
+        let result = await tool().handle(
             context: context(),
             args: ["command": "echo clamped", "timeout": BashConstants.maxTimeoutMilliseconds * 10])
         XCTAssertFalse(result.isError, "got \(result.outputJSON)")
         XCTAssertEqual(toolsTailEnvelope(result).data?["exit_code"] as? Int, 0)
     }
 
-    func testTimeout_stringEncoded_isAccepted() {
-        let result = tool().handle(
+    func testTimeout_stringEncoded_isAccepted() async {
+        let result = await tool().handle(
             context: context(), args: ["command": "echo quoted", "timeout": "5000"])
         XCTAssertFalse(result.isError, "got \(result.outputJSON)")
         XCTAssertEqual(toolsTailEnvelope(result).data?["exit_code"] as? Int, 0)
     }
 
-    func testTimeout_fractional_isTruncatedTowardZeroThenValidated() {
+    func testTimeout_fractional_isTruncatedTowardZeroThenValidated() async {
         // 1500.6 ms → 1500 ms → 1.5 s → floored to the 1 s minimum. Still valid.
-        let result = tool().handle(
+        let result = await tool().handle(
             context: context(), args: ["command": "echo frac", "timeout": 1500.6])
         XCTAssertFalse(result.isError, "got \(result.outputJSON)")
     }
 
-    func testTimeout_nonNumericString_fallsBackToTheDefault() {
+    func testTimeout_nonNumericString_fallsBackToTheDefault() async {
         // `optionalInt` returns nil for garbage, and a nil timeout means "use
         // the default" — NOT "reject", which is reserved for a sign typo.
-        let result = tool().handle(
+        let result = await tool().handle(
             context: context(), args: ["command": "echo dflt", "timeout": "soon"])
         XCTAssertFalse(result.isError, "got \(result.outputJSON)")
         XCTAssertEqual(toolsTailEnvelope(result).data?["exit_code"] as? Int, 0)
@@ -1213,25 +1213,25 @@ final class ToolsTailBashHandlerTests: XCTestCase {
 
     // MARK: - command resolution
 
-    func testWhitespaceOnlyCommand_isTreatedAsMissing() {
-        let result = tool().handle(context: context(), args: ["command": "   \n  "])
+    func testWhitespaceOnlyCommand_isTreatedAsMissing() async {
+        let result = await tool().handle(context: context(), args: ["command": "   \n  "])
         XCTAssertTrue(result.isError)
         XCTAssertEqual(toolsTailEnvelope(result).errorCode, ToolErrorCode.invalidArgs.rawValue)
     }
 
-    func testEmptyStringCommand_isTreatedAsMissing() {
-        let result = tool().handle(context: context(), args: ["command": ""])
+    func testEmptyStringCommand_isTreatedAsMissing() async {
+        let result = await tool().handle(context: context(), args: ["command": ""])
         XCTAssertTrue(result.isError)
         XCTAssertEqual(toolsTailEnvelope(result).errorCode, ToolErrorCode.invalidArgs.rawValue)
     }
 
     // MARK: - Sandbox
 
-    func testSandboxEnabled_reportsSandboxedTrue() throws {
+    func testSandboxEnabled_reportsSandboxedTrue() async throws {
         guard fm.isExecutableFile(atPath: BashConstants.sandboxExecPath) else {
             throw XCTSkip("sandbox-exec unavailable on this host")
         }
-        let result = tool(sandboxed: true).handle(
+        let result = await tool(sandboxed: true).handle(
             context: context(), args: ["command": "echo SANDBOX_MARKER"])
         XCTAssertFalse(result.isError, "default permissions keep system reads broad. Got: \(result.outputJSON)")
         let data = toolsTailEnvelope(result).data
@@ -1240,24 +1240,24 @@ final class ToolsTailBashHandlerTests: XCTestCase {
         XCTAssertTrue((data?["stdout"] as? String ?? "").contains("SANDBOX_MARKER"))
     }
 
-    func testSandboxDisabled_reportsSandboxedFalse() {
-        let result = tool(sandboxed: false).handle(context: context(), args: ["command": "true"])
+    func testSandboxDisabled_reportsSandboxedFalse() async {
+        let result = await tool(sandboxed: await false).handle(context: context(), args: ["command": "true"])
         XCTAssertEqual(toolsTailEnvelope(result).data?["sandboxed"] as? Bool, false)
     }
 
     // MARK: - bash_output action dispatch
 
-    private func startBackground(_ command: String) throws -> String {
-        let start = tool().handle(
+    private func startBackground(_ command: String) async throws -> String {
+        let start = await tool().handle(
             context: context(), args: ["command": command, "run_in_background": true])
         XCTAssertFalse(start.isError, "got \(start.outputJSON)")
         return try XCTUnwrap(toolsTailEnvelope(start).data?["command_id"] as? String)
     }
 
-    func testBashOutput_uppercaseStopAction_stillStops() throws {
+    func testBashOutput_uppercaseStopAction_stillStops() async throws {
         // The action is lowercased before dispatch — models capitalize verbs.
-        let id = try startBackground("sleep 30")
-        let result = BashOutputTool().handle(
+        let id = try await startBackground("sleep 30")
+        let result = await BashOutputTool().handle(
             context: context(), args: ["command_id": id, "action": "STOP"])
         XCTAssertFalse(result.isError, "got \(result.outputJSON)")
         let data = toolsTailEnvelope(result).data
@@ -1265,13 +1265,13 @@ final class ToolsTailBashHandlerTests: XCTestCase {
         XCTAssertEqual(data?["running"] as? Bool, false)
     }
 
-    func testBashOutput_unknownAction_fallsThroughToRead() throws {
+    func testBashOutput_unknownAction_fallsThroughToRead() async throws {
         // Only "stop" is special; anything else reads. Erroring on an unknown
         // verb would strand a model that mis-spelled the read default.
-        let id = try startBackground("echo READ_FALLBACK; sleep 5")
+        let id = try await startBackground("echo READ_FALLBACK; sleep 5")
         var sawOutput = false
         for _ in 0..<30 {
-            let result = BashOutputTool().handle(
+            let result = await BashOutputTool().handle(
                 context: context(), args: ["command_id": id, "action": "frobnicate"])
             XCTAssertFalse(result.isError, "an unknown action must read, not error: \(result.outputJSON)")
             let data = toolsTailEnvelope(result).data
@@ -1280,26 +1280,26 @@ final class ToolsTailBashHandlerTests: XCTestCase {
                 sawOutput = true
                 break
             }
-            Thread.sleep(forTimeInterval: 0.1)
+            try? await Task.sleep(nanoseconds: 100_000_000)
         }
         XCTAssertTrue(sawOutput, "an unknown action should have behaved as a read")
     }
 
-    func testBashOutput_stopTwice_bothReportStopped() throws {
+    func testBashOutput_stopTwice_bothReportStopped() async throws {
         // The registry keeps the entry after a stop so a second call is
         // idempotent rather than an "unknown command_id" the model can't explain.
-        let id = try startBackground("sleep 30")
-        let first = BashOutputTool().handle(
+        let id = try await startBackground("sleep 30")
+        let first = await BashOutputTool().handle(
             context: context(), args: ["command_id": id, "action": "stop"])
-        let second = BashOutputTool().handle(
+        let second = await BashOutputTool().handle(
             context: context(), args: ["command_id": id, "action": "stop"])
         XCTAssertFalse(first.isError)
         XCTAssertFalse(second.isError, "a repeat stop must stay idempotent: \(second.outputJSON)")
         XCTAssertEqual(toolsTailEnvelope(second).data?["status"] as? String, "stopped")
     }
 
-    func testBashOutput_stopUnknownID_isInvalidArgsNamingTheID() {
-        let result = BashOutputTool().handle(
+    func testBashOutput_stopUnknownID_isInvalidArgsNamingTheID() async {
+        let result = await BashOutputTool().handle(
             context: context(), args: ["command_id": "bg_nope", "action": "stop"])
         let env = toolsTailEnvelope(result)
         XCTAssertTrue(result.isError)
@@ -1307,16 +1307,16 @@ final class ToolsTailBashHandlerTests: XCTestCase {
         XCTAssertEqual(env.errorMessage, "Unknown command_id 'bg_nope'.")
     }
 
-    func testBashOutput_readUnknownID_isInvalidArgsNamingTheID() {
-        let result = BashOutputTool().handle(context: context(), args: ["command_id": "bg_nope"])
+    func testBashOutput_readUnknownID_isInvalidArgsNamingTheID() async {
+        let result = await BashOutputTool().handle(context: context(), args: ["command_id": "bg_nope"])
         let env = toolsTailEnvelope(result)
         XCTAssertTrue(result.isError)
         XCTAssertEqual(env.errorMessage, "Unknown command_id 'bg_nope'.")
     }
 
-    func testBackground_startResultCarriesTheNextHintPointingAtBashOutput() throws {
+    func testBackground_startResultCarriesTheNextHintPointingAtBashOutput() async throws {
         // The hint is how a model learns the follow-up call without guessing.
-        let start = tool().handle(
+        let start = await tool().handle(
             context: context(), args: ["command": "echo hinted", "run_in_background": true])
         XCTAssertFalse(start.isError)
         guard let obj = try JSONSerialization.jsonObject(with: Data(start.outputJSON.utf8))
@@ -1329,10 +1329,10 @@ final class ToolsTailBashHandlerTests: XCTestCase {
                        toolsTailEnvelope(start).data?["command_id"] as? String)
     }
 
-    func testBackground_withWorkingDirectory_startsInThatDirectory() throws {
+    func testBackground_withWorkingDirectory_startsInThatDirectory() async throws {
         let sub = workDir.appendingPathComponent("bgdir", isDirectory: true)
         try fm.createDirectory(at: sub, withIntermediateDirectories: true)
-        let start = tool().handle(context: context(), args: [
+        let start = await tool().handle(context: context(), args: [
             "command": "pwd", "working_directory": "bgdir", "run_in_background": true,
         ])
         XCTAssertFalse(start.isError, "got \(start.outputJSON)")
@@ -1340,18 +1340,18 @@ final class ToolsTailBashHandlerTests: XCTestCase {
 
         var sawDir = false
         for _ in 0..<30 {
-            let read = BashOutputTool().handle(context: context(), args: ["command_id": id])
+            let read = await BashOutputTool().handle(context: context(), args: ["command_id": id])
             if (toolsTailEnvelope(read).data?["output"] as? String ?? "").contains("bgdir") {
                 sawDir = true
                 break
             }
-            Thread.sleep(forTimeInterval: 0.1)
+            try? await Task.sleep(nanoseconds: 100_000_000)
         }
         XCTAssertTrue(sawDir, "background command must honor working_directory")
     }
 
-    func testBackground_invalidWorkingDirectory_isRejectedBeforeStarting() {
-        let result = tool().handle(context: context(), args: [
+    func testBackground_invalidWorkingDirectory_isRejectedBeforeStarting() async {
+        let result = await tool().handle(context: context(), args: [
             "command": "pwd", "working_directory": "missing", "run_in_background": true,
         ])
         XCTAssertTrue(result.isError)
@@ -1392,34 +1392,34 @@ final class ToolsTailAutovisorHandlerTests: XCTestCase {
 
     // MARK: - task_id validation across every task-targeted tool
 
-    func testMissingTaskID_isRejectedByEveryTaskTargetedTool() {
+    func testMissingTaskID_isRejectedByEveryTaskTargetedTool() async {
         let ctx = context()
-        assertInvalidArgs(TaskStatusTool().handle(context: ctx, args: [:]), contains: "task_id")
-        assertInvalidArgs(
+        await assertInvalidArgs(TaskStatusTool().handle(context: ctx, args: [:]), contains: "task_id")
+        await assertInvalidArgs(
             ControlTaskTool().handle(context: ctx, args: ["action": "pause"]), contains: "task_id")
-        assertInvalidArgs(
+        await assertInvalidArgs(
             ManageRoleTool().handle(context: ctx, args: ["role_id": "r", "action": "accept"]),
             contains: "task_id")
-        assertInvalidArgs(
+        await assertInvalidArgs(
             AnswerTaskQuestionTool().handle(context: ctx, args: ["answer": "yes"]),
             contains: "task_id")
-        assertInvalidArgs(
+        await assertInvalidArgs(
             MessageTaskTool().handle(context: ctx, args: ["message": "go"]), contains: "task_id")
-        assertInvalidArgs(
+        await assertInvalidArgs(
             ScheduleTaskTool().handle(context: ctx, args: ["interval_minutes": 5]),
             contains: "task_id")
     }
 
-    func testNonNumericTaskID_isRejected() {
+    func testNonNumericTaskID_isRejected() async {
         // `optionalInt` coerces quoted numbers but not prose — a task named
         // rather than numbered must fail loudly, not resolve to task 0.
-        assertInvalidArgs(
+        await assertInvalidArgs(
             TaskStatusTool().handle(context: context(), args: ["task_id": "the login one"]),
             contains: "task_id")
     }
 
-    func testStringEncodedTaskID_isCoerced() {
-        let result = TaskStatusTool().handle(context: context(), args: ["task_id": " 7 "])
+    func testStringEncodedTaskID_isCoerced() async {
+        let result = await TaskStatusTool().handle(context: context(), args: ["task_id": " 7 "])
         XCTAssertFalse(result.isError)
         guard case let .taskStatus(id)? = result.signal else {
             return XCTFail("got \(String(describing: result.signal))")
@@ -1427,8 +1427,8 @@ final class ToolsTailAutovisorHandlerTests: XCTestCase {
         XCTAssertEqual(id, 7)
     }
 
-    func testFractionalTaskID_truncatesTowardZero() {
-        let result = TaskStatusTool().handle(context: context(), args: ["task_id": 7.9])
+    func testFractionalTaskID_truncatesTowardZero() async {
+        let result = await TaskStatusTool().handle(context: context(), args: ["task_id": 7.9])
         XCTAssertFalse(result.isError)
         guard case let .taskStatus(id)? = result.signal else {
             return XCTFail("got \(String(describing: result.signal))")
@@ -1438,20 +1438,20 @@ final class ToolsTailAutovisorHandlerTests: XCTestCase {
 
     // MARK: - control_task / manage_role verb decoding
 
-    func testControlTask_missingAction_isRejected() {
-        assertInvalidArgs(ControlTaskTool().handle(context: context(), args: ["task_id": 3]))
+    func testControlTask_missingAction_isRejected() async {
+        await assertInvalidArgs(ControlTaskTool().handle(context: context(), args: ["task_id": 3]))
     }
 
-    func testControlTask_emptyAction_isRejected() {
-        assertInvalidArgs(
+    func testControlTask_emptyAction_isRejected() async {
+        await assertInvalidArgs(
             ControlTaskTool().handle(context: context(), args: ["task_id": 3, "action": "   "]))
     }
 
-    func testControlTask_setTimeoutWithoutArg_clearsTheTimeout() {
+    func testControlTask_setTimeoutWithoutArg_clearsTheTimeout() async {
         // Documented behavior: a missing `arg` CLEARS the per-run timeout — the
         // same meaning as `arg: "0"`. (Unlike `rename`, which rejects a missing
         // title, because there is no sensible "clear" for a task's name.)
-        let result = ControlTaskTool().handle(
+        let result = await ControlTaskTool().handle(
             context: context(), args: ["task_id": 3, "action": "set_timeout"])
         XCTAssertFalse(result.isError, "got \(result.outputJSON)")
         guard case let .controlTask(taskID, verb)? = result.signal else {
@@ -1464,8 +1464,8 @@ final class ToolsTailAutovisorHandlerTests: XCTestCase {
         XCTAssertNil(seconds, "no `arg` means clear, not \"set to zero seconds\"")
     }
 
-    func testControlTask_setTimeoutWithZero_clearsTheTimeout() {
-        let result = ControlTaskTool().handle(
+    func testControlTask_setTimeoutWithZero_clearsTheTimeout() async {
+        let result = await ControlTaskTool().handle(
             context: context(), args: ["task_id": 3, "action": "set_timeout", "arg": "0"])
         XCTAssertFalse(result.isError, "got \(result.outputJSON)")
         guard case let .controlTask(_, verb)? = result.signal,
@@ -1474,8 +1474,8 @@ final class ToolsTailAutovisorHandlerTests: XCTestCase {
         XCTAssertNil(seconds)
     }
 
-    func testControlTask_setTimeoutWithSeconds_carriesThemInTheVerb() {
-        let result = ControlTaskTool().handle(
+    func testControlTask_setTimeoutWithSeconds_carriesThemInTheVerb() async {
+        let result = await ControlTaskTool().handle(
             context: context(), args: ["task_id": 3, "action": "set_timeout", "arg": "120"])
         XCTAssertFalse(result.isError, "got \(result.outputJSON)")
         guard case let .controlTask(taskID, verb)? = result.signal,
@@ -1488,9 +1488,9 @@ final class ToolsTailAutovisorHandlerTests: XCTestCase {
     /// Regression: a present-but-unparseable `arg` used to CLEAR the timeout and
     /// report ok:true — the opposite of what the manager asked, with no signal it
     /// could act on. `rename` beside it already rejects an unusable `arg`.
-    func testControlTask_setTimeoutWithUnparseableArg_isRejectedNotSilentlyCleared() {
+    func testControlTask_setTimeoutWithUnparseableArg_isRejectedNotSilentlyCleared() async {
         for arg in ["600s", "10 minutes", "two hours", "abc", "-30"] {
-            let result = ControlTaskTool().handle(
+            let result = await ControlTaskTool().handle(
                 context: context(), args: ["task_id": 3, "action": "set_timeout", "arg": arg])
             XCTAssertTrue(result.isError,
                           "'\(arg)' must be rejected, not read as 'clear': \(result.outputJSON)")
@@ -1501,8 +1501,8 @@ final class ToolsTailAutovisorHandlerTests: XCTestCase {
         }
     }
 
-    func testControlTask_renameCarriesTheTrimmedTitle() {
-        let result = ControlTaskTool().handle(
+    func testControlTask_renameCarriesTheTrimmedTitle() async {
+        let result = await ControlTaskTool().handle(
             context: context(), args: ["task_id": 3, "action": "rename", "arg": "  New title  "])
         XCTAssertFalse(result.isError, "got \(result.outputJSON)")
         guard case let .controlTask(_, verb)? = result.signal,
@@ -1511,21 +1511,21 @@ final class ToolsTailAutovisorHandlerTests: XCTestCase {
         XCTAssertEqual(title, "New title")
     }
 
-    func testManageRole_missingAction_isRejected() {
-        assertInvalidArgs(
+    func testManageRole_missingAction_isRejected() async {
+        await assertInvalidArgs(
             ManageRoleTool().handle(context: context(), args: ["task_id": 3, "role_id": "r"]))
     }
 
-    func testManageRole_whitespaceOnlyRoleID_isRejected() {
-        assertInvalidArgs(
+    func testManageRole_whitespaceOnlyRoleID_isRejected() async {
+        await assertInvalidArgs(
             ManageRoleTool().handle(
                 context: context(),
                 args: ["task_id": 3, "role_id": "   ", "action": "accept"]),
             contains: "role_id")
     }
 
-    func testManageRole_paddedRoleID_isTrimmedIntoTheSignal() {
-        let result = ManageRoleTool().handle(
+    func testManageRole_paddedRoleID_isTrimmedIntoTheSignal() async {
+        let result = await ManageRoleTool().handle(
             context: context(),
             args: ["task_id": 3, "role_id": "  engineer  ", "action": "accept"])
         XCTAssertFalse(result.isError, "got \(result.outputJSON)")
@@ -1535,22 +1535,22 @@ final class ToolsTailAutovisorHandlerTests: XCTestCase {
         XCTAssertEqual(roleID, "engineer", "an untrimmed id would never match a step id")
     }
 
-    func testManageRole_correctWithoutComment_isRejected() {
-        assertInvalidArgs(
+    func testManageRole_correctWithoutComment_isRejected() async {
+        await assertInvalidArgs(
             ManageRoleTool().handle(
                 context: context(), args: ["task_id": 3, "role_id": "r", "action": "correct"]))
     }
 
     // MARK: - answer_task_question / message_task
 
-    func testAnswerTaskQuestion_missingAnswerKey_isRejected() {
-        assertInvalidArgs(
+    func testAnswerTaskQuestion_missingAnswerKey_isRejected() async {
+        await assertInvalidArgs(
             AnswerTaskQuestionTool().handle(context: context(), args: ["task_id": 3]),
             contains: "answer")
     }
 
-    func testAnswerTaskQuestion_trimsTheAnswer() {
-        let result = AnswerTaskQuestionTool().handle(
+    func testAnswerTaskQuestion_trimsTheAnswer() async {
+        let result = await AnswerTaskQuestionTool().handle(
             context: context(), args: ["task_id": 3, "answer": "  ship it  "])
         XCTAssertFalse(result.isError)
         guard case let .answerTaskQuestion(_, answer)? = result.signal else {
@@ -1559,13 +1559,13 @@ final class ToolsTailAutovisorHandlerTests: XCTestCase {
         XCTAssertEqual(answer, "ship it")
     }
 
-    func testMessageTask_missingMessageKey_isRejected() {
-        assertInvalidArgs(
+    func testMessageTask_missingMessageKey_isRejected() async {
+        await assertInvalidArgs(
             MessageTaskTool().handle(context: context(), args: ["task_id": 3]), contains: "message")
     }
 
-    func testMessageTask_withoutRoleID_targetsTheWholeTeam() {
-        let result = MessageTaskTool().handle(
+    func testMessageTask_withoutRoleID_targetsTheWholeTeam() async {
+        let result = await MessageTaskTool().handle(
             context: context(), args: ["task_id": 3, "message": "nudge"])
         XCTAssertFalse(result.isError)
         guard case let .messageTask(taskID, text, roleID)? = result.signal else {
@@ -1576,8 +1576,8 @@ final class ToolsTailAutovisorHandlerTests: XCTestCase {
         XCTAssertNil(roleID, "an absent role_id must mean the whole team, not an empty-string role")
     }
 
-    func testMessageTask_withRoleID_narrowsDelivery() {
-        let result = MessageTaskTool().handle(
+    func testMessageTask_withRoleID_narrowsDelivery() async {
+        let result = await MessageTaskTool().handle(
             context: context(),
             args: ["task_id": 3, "message": "nudge", "role_id": " engineer "])
         XCTAssertFalse(result.isError)
@@ -1587,10 +1587,10 @@ final class ToolsTailAutovisorHandlerTests: XCTestCase {
         XCTAssertEqual(roleID, "engineer")
     }
 
-    func testMessageTask_blankRoleID_collapsesToWholeTeam() {
+    func testMessageTask_blankRoleID_collapsesToWholeTeam() async {
         // `extractString` returns nil for an empty/whitespace value, so a blank
         // role_id must not become an unmatchable role name.
-        let result = MessageTaskTool().handle(
+        let result = await MessageTaskTool().handle(
             context: context(), args: ["task_id": 3, "message": "nudge", "role_id": "   "])
         XCTAssertFalse(result.isError)
         guard case let .messageTask(_, _, roleID)? = result.signal else {
@@ -1601,21 +1601,21 @@ final class ToolsTailAutovisorHandlerTests: XCTestCase {
 
     // MARK: - schedule_task
 
-    func testScheduleTask_missingInterval_isRejected() {
-        assertInvalidArgs(
+    func testScheduleTask_missingInterval_isRejected() async {
+        await assertInvalidArgs(
             ScheduleTaskTool().handle(context: context(), args: ["task_id": 3]),
             contains: "interval_minutes")
     }
 
-    func testScheduleTask_nonNumericInterval_isRejected() {
-        assertInvalidArgs(
+    func testScheduleTask_nonNumericInterval_isRejected() async {
+        await assertInvalidArgs(
             ScheduleTaskTool().handle(
                 context: context(), args: ["task_id": 3, "interval_minutes": "hourly"]),
             contains: "interval_minutes")
     }
 
-    func testScheduleTask_stringEncodedInterval_isCoerced() {
-        let result = ScheduleTaskTool().handle(
+    func testScheduleTask_stringEncodedInterval_isCoerced() async {
+        let result = await ScheduleTaskTool().handle(
             context: context(), args: ["task_id": 3, "interval_minutes": "15"])
         XCTAssertFalse(result.isError)
         guard case let .scheduleTask(_, minutes)? = result.signal else {
@@ -1626,11 +1626,11 @@ final class ToolsTailAutovisorHandlerTests: XCTestCase {
 
     // MARK: - set_work_folder_context
 
-    func testSetWorkFolderContext_carriesContentVerbatim() {
+    func testSetWorkFolderContext_carriesContentVerbatim() async {
         // No trimming here by design: the folder context is prose whose leading
         // and trailing structure is the author's.
         let content = "  # Project\n\nA calculator.\n"
-        let result = SetWorkFolderContextTool().handle(
+        let result = await SetWorkFolderContextTool().handle(
             context: context(), args: ["content": content])
         XCTAssertFalse(result.isError)
         guard case let .setWorkFolderContext(carried)? = result.signal else {
@@ -1639,8 +1639,8 @@ final class ToolsTailAutovisorHandlerTests: XCTestCase {
         XCTAssertEqual(carried, content)
     }
 
-    func testSetWorkFolderContext_missingContent_isRejected() {
-        assertInvalidArgs(
+    func testSetWorkFolderContext_missingContent_isRejected() async {
+        await assertInvalidArgs(
             SetWorkFolderContextTool().handle(context: context(), args: [:]), contains: "content")
     }
 
@@ -1648,9 +1648,9 @@ final class ToolsTailAutovisorHandlerTests: XCTestCase {
     /// writes is injected into every role's prompt on every task in the folder — so
     /// one accidental empty emission silently wiped it. Every sibling text field
     /// (`brief`, `answer`, `message`, `role_id`) already trims and rejects.
-    func testSetWorkFolderContext_whitespaceOnlyContent_isRejected() {
+    func testSetWorkFolderContext_whitespaceOnlyContent_isRejected() async {
         for blank in ["", "   ", "\n\n", " \t \n "] {
-            let result = SetWorkFolderContextTool().handle(
+            let result = await SetWorkFolderContextTool().handle(
                 context: context(), args: ["content": blank])
             XCTAssertTrue(result.isError,
                           "blank content must not silently wipe the folder context: \(result.outputJSON)")
@@ -1660,18 +1660,18 @@ final class ToolsTailAutovisorHandlerTests: XCTestCase {
 
     // MARK: - Zero-argument tools
 
-    func testZeroArgumentTools_ignoreStrayArgumentsAndStillSignal() {
+    func testZeroArgumentTools_ignoreStrayArgumentsAndStillSignal() async {
         // Small models bolt arguments onto argument-less tools; that must not
         // turn "go idle" into an error the manager cannot recover from.
         let stray: [String: Any] = ["task_id": 9, "reason": "done for now"]
 
-        let wait = WaitForEventsTool().handle(context: context(), args: stray)
+        let wait = await WaitForEventsTool().handle(context: context(), args: stray)
         XCTAssertFalse(wait.isError, "got \(wait.outputJSON)")
         guard case .waitForEvents? = wait.signal else {
             return XCTFail("got \(String(describing: wait.signal))")
         }
 
-        let list = ListTasksTool().handle(context: context(), args: stray)
+        let list = await ListTasksTool().handle(context: context(), args: stray)
         XCTAssertFalse(list.isError, "got \(list.outputJSON)")
         guard case .listTasks? = list.signal else {
             return XCTFail("got \(String(describing: list.signal))")
@@ -1723,8 +1723,8 @@ final class ToolsTailCreateTeamHandlerTests: XCTestCase {
             taskID: 1, runID: 0, roleID: "supervisor")
     }
 
-    private func run(_ args: [String: Any]) -> ToolExecutionResult {
-        CreateTeamTool().handle(context: context(), args: args)
+    private func run(_ args: [String: Any]) async -> ToolExecutionResult {
+        await CreateTeamTool().handle(context: context(), args: args)
     }
 
     private func assertRejected(
@@ -1746,92 +1746,92 @@ final class ToolsTailCreateTeamHandlerTests: XCTestCase {
 
     // MARK: - team_config shape
 
-    func testTeamConfig_numericValue_isReportedAsMissing() {
+    func testTeamConfig_numericValue_isReportedAsMissing() async {
         // Neither a dict nor a string → the else branch. Reported as missing
         // rather than "invalid", because the model supplied no config at all.
-        assertRejected(run(["team_config": 42]),
-                       contains: "Missing required 'team_config' parameter")
+        await assertRejected(run(["team_config": 42]),
+                             contains: "Missing required 'team_config' parameter")
     }
 
-    func testTeamConfig_arrayValue_isReportedAsMissing() {
-        assertRejected(run(["team_config": [1, 2, 3]]),
-                       contains: "Missing required 'team_config' parameter")
+    func testTeamConfig_arrayValue_isReportedAsMissing() async {
+        await assertRejected(run(["team_config": [1, 2, 3]]),
+                             contains: "Missing required 'team_config' parameter")
     }
 
-    func testTeamConfig_booleanValue_isReportedAsMissing() {
-        assertRejected(run(["team_config": true]),
-                       contains: "Missing required 'team_config' parameter")
+    func testTeamConfig_booleanValue_isReportedAsMissing() async {
+        await assertRejected(run(["team_config": true]),
+                             contains: "Missing required 'team_config' parameter")
     }
 
-    func testTeamConfig_absent_isReportedAsMissing() {
-        assertRejected(run([:]), contains: "Missing required 'team_config' parameter")
+    func testTeamConfig_absent_isReportedAsMissing() async {
+        await assertRejected(run([:]), contains: "Missing required 'team_config' parameter")
     }
 
-    func testTeamConfig_stringWithMalformedJSON_isInvalidArgs() {
-        assertRejected(run(["team_config": "{\"name\": \"X\", roles:"]),
-                       contains: "Invalid team_config")
+    func testTeamConfig_stringWithMalformedJSON_isInvalidArgs() async {
+        await assertRejected(run(["team_config": "{\"name\": \"X\", roles:"]),
+                             contains: "Invalid team_config")
     }
 
-    func testTeamConfig_stringHoldingAJSONArray_isInvalidArgs() {
+    func testTeamConfig_stringHoldingAJSONArray_isInvalidArgs() async {
         // Valid JSON, wrong top-level shape.
-        assertRejected(run(["team_config": "[1,2,3]"]), contains: "Invalid team_config")
+        await assertRejected(run(["team_config": "[1,2,3]"]), contains: "Invalid team_config")
     }
 
-    func testTeamConfig_emptyString_isInvalidArgs() {
-        assertRejected(run(["team_config": ""]), contains: "Invalid team_config")
+    func testTeamConfig_emptyString_isInvalidArgs() async {
+        await assertRejected(run(["team_config": ""]), contains: "Invalid team_config")
     }
 
     // MARK: - decodingMessage: each DecodingError flavour
 
-    func testDecodeError_typeMismatch_surfacesTheDebugDescription() {
+    func testDecodeError_typeMismatch_surfacesTheDebugDescription() async {
         // `localizedDescription` alone would say "data couldn't be read"; the
         // model needs the actual mismatch to fix its emission.
         let config: [String: Any] = ["name": "T", "description": "d", "roles": "not-an-array"]
-        let result = run(["team_config": config])
+        let result = await run(["team_config": config])
         assertRejected(result, contains: "Expected to decode")
         XCTAssertFalse(
             toolsTailEnvelope(result).errorMessage?.contains("couldn't be read") ?? true,
             "the generic localizedDescription must not replace the debug description")
     }
 
-    func testDecodeError_keyNotFound_namesTheMissingKey() {
+    func testDecodeError_keyNotFound_namesTheMissingKey() async {
         // A role with no `prompt` — the one hard-required role field.
         let config: [String: Any] = [
             "name": "T", "description": "d",
             "roles": [["name": "Engineer"]],
         ]
-        assertRejected(run(["team_config": config]), contains: "prompt")
+        await assertRejected(run(["team_config": config]), contains: "prompt")
     }
 
-    func testDecodeError_missingRolesKey_isReported() {
+    func testDecodeError_missingRolesKey_isReported() async {
         let config: [String: Any] = ["name": "T", "description": "d"]
-        assertRejected(run(["team_config": config]), contains: "roles")
+        await assertRejected(run(["team_config": config]), contains: "roles")
     }
 
-    func testDecodeError_valueNotFound_isReported() {
+    func testDecodeError_valueNotFound_isReported() async {
         // `prompt: null` is a valueNotFound — a different `decodingMessage` arm
         // from the missing-key case above. Its debug description names the NULL
         // (the coding path holds "prompt"), so assert on that rather than the key.
         let json = """
         {"name": "T", "description": "d", "roles": [{"name": "E", "prompt": null}]}
         """
-        let result = run(["team_config": json])
+        let result = await run(["team_config": json])
         assertRejected(result, contains: "Invalid team_config")
         let message = toolsTailEnvelope(result).errorMessage ?? ""
         XCTAssertTrue(message.lowercased().contains("null"),
                       "a null-valued required field must be reported as such: \(message)")
     }
 
-    func testDecodeError_dataCorrupted_carriesTheValidationMessage() {
+    func testDecodeError_dataCorrupted_carriesTheValidationMessage() async {
         let config: [String: Any] = [
             "name": "T", "description": "d",
             "roles": [String](), "artifacts": [String](),
             "supervisor_requires": [String](),
         ]
-        assertRejected(run(["team_config": config]), contains: "at least one role")
+        await assertRejected(run(["team_config": config]), contains: "at least one role")
     }
 
-    func testEveryDecodeFailure_appendsTheSnakeCaseGuidance() {
+    func testEveryDecodeFailure_appendsTheSnakeCaseGuidance() async {
         // The one recovery hint that fits every decode failure — dropping it on
         // any arm leaves a small model guessing at key casing.
         let failures: [[String: Any]] = [
@@ -1841,7 +1841,7 @@ final class ToolsTailCreateTeamHandlerTests: XCTestCase {
             ["team_config": ["name": "T", "description": "d", "roles": [String]()]],
         ]
         for args in failures {
-            let message = toolsTailEnvelope(run(args)).errorMessage ?? ""
+            let message = await toolsTailEnvelope(run(args)).errorMessage ?? ""
             XCTAssertTrue(message.contains("snake_case"), "missing guidance in: \(message)")
             XCTAssertTrue(message.contains("produces_artifacts"), "missing example in: \(message)")
         }
@@ -1849,13 +1849,13 @@ final class ToolsTailCreateTeamHandlerTests: XCTestCase {
 
     // MARK: - Success envelope
 
-    func testSuccessEnvelope_reportsTeamNameAndRoleCountAsStrings() {
+    func testSuccessEnvelope_reportsTeamNameAndRoleCountAsStrings() async {
         let config: [String: Any] = [
             "name": "Dev Team", "description": "Ships software",
             "roles": validRoles(),
             "artifacts": [String](), "supervisor_requires": ["Notes"],
         ]
-        let result = run(["team_config": config])
+        let result = await run(["team_config": config])
         XCTAssertFalse(result.isError, "got \(result.outputJSON)")
 
         let env = toolsTailEnvelope(result)
@@ -1866,12 +1866,12 @@ final class ToolsTailCreateTeamHandlerTests: XCTestCase {
         XCTAssertEqual(env.data?["status"] as? String, "created")
     }
 
-    func testSuccessSignal_carriesTheDecodedConfigNotTheRawArgs() {
+    func testSuccessSignal_carriesTheDecodedConfigNotTheRawArgs() async {
         let config: [String: Any] = [
             "name": "Dev Team", "description": "Ships software",
             "roles": validRoles(), "artifacts": [String](), "supervisor_requires": ["Notes"],
         ]
-        let result = run(["team_config": config])
+        let result = await run(["team_config": config])
         guard case let .teamCreation(decoded)? = result.signal else {
             return XCTFail("expected .teamCreation, got \(String(describing: result.signal))")
         }
@@ -1881,7 +1881,7 @@ final class ToolsTailCreateTeamHandlerTests: XCTestCase {
         XCTAssertEqual(decoded.roles[0].producesArtifacts, ["Notes"])
     }
 
-    func testStringAndDictionaryForms_produceTheSameSignal() throws {
+    func testStringAndDictionaryForms_produceTheSameSignal() async throws {
         // Providers loosen the schema differently; both shapes must land on the
         // same parsed config or the generated team depends on the provider.
         let config: [String: Any] = [
@@ -1891,8 +1891,8 @@ final class ToolsTailCreateTeamHandlerTests: XCTestCase {
         let asString = String(
             data: try JSONSerialization.data(withJSONObject: config), encoding: .utf8)!
 
-        let fromDict = run(["team_config": config])
-        let fromString = run(["team_config": asString])
+        let fromDict = await run(["team_config": config])
+        let fromString = await run(["team_config": asString])
         XCTAssertFalse(fromDict.isError)
         XCTAssertFalse(fromString.isError)
 

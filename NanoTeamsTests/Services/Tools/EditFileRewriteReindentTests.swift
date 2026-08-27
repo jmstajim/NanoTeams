@@ -89,11 +89,11 @@ final class EditFileRewriteReindentTests: XCTestCase {
         return url
     }
 
-    private func runEdit(path: String, oldText: String, newText: String) -> ToolExecutionResult {
+    private func runEdit(path: String, oldText: String, newText: String) async -> ToolExecutionResult {
         let args: [String: Any] = ["path": path, "old_text": oldText, "new_text": newText]
         let data = try! JSONSerialization.data(withJSONObject: args)
         let call = StepToolCall(name: "edit_file", argumentsJSON: String(data: data, encoding: .utf8)!)
-        return runtime.executeAll(context: context, toolCalls: [call])[0]
+        return await runtime.executeAll(context: context, toolCalls: [call])[0]
     }
 
     private func envelope(_ result: ToolExecutionResult) -> [String: Any] {
@@ -390,11 +390,11 @@ final class EditFileRewriteReindentTests: XCTestCase {
     ///
     /// RED: refuse a unique window when an unpaired depth is not a map key → the
     /// isError assert fails and nothing below runs.
-    func testShrinkWithUnknownCloserDepth_landsEndToEnd_andDisclosesTheKeptLines() throws {
+    func testShrinkWithUnknownCloserDepth_landsEndToEnd_andDisclosesTheKeptLines() async throws {
         let url = try writeFile("card.swift", Self.cardFile)
         let sloppyAnchor = "    var body: Row {\n        Row {\n            leading()\n             trailing()"
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "card.swift",
             oldText: sloppyAnchor,
             newText: "    var body: Row {\n        Row(compact: true)\n         }")
@@ -423,7 +423,7 @@ final class EditFileRewriteReindentTests: XCTestCase {
         // CONTROL — the byte-identical anchor with new_text's closer moved onto a
         // key (13): the unpaired set translates whole into the file's convention.
         try Self.cardFile.write(to: url, atomically: true, encoding: .utf8)
-        let repaired = runEdit(
+        let repaired = await runEdit(
             path: "card.swift",
             oldText: sloppyAnchor,
             newText: "    var body: Row {\n        Row(compact: true)\n             }")
@@ -451,10 +451,10 @@ final class EditFileRewriteReindentTests: XCTestCase {
     /// and #8 failed only in how their depths strayed from this shape.
     ///
     /// RED: drop the tier-3 branch from `whitespaceTolerantEdit` → ANCHOR_NOT_FOUND.
-    func testFullStructRestructure_allDepthsMapped_landsTranslated() throws {
+    func testFullStructRestructure_allDepthsMapped_landsTranslated() async throws {
         let url = try writeFile("card.swift", Self.cardFile)
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "card.swift",
             oldText: Self.sloppyWholeStructAnchor.joined(separator: "\n"),
             newText: Self.restructuredLines(modifierIndent: 12).joined(separator: "\n"))
@@ -493,10 +493,10 @@ final class EditFileRewriteReindentTests: XCTestCase {
     ///
     /// RED: refuse a unique window when an unpaired depth is not a map key → the
     /// isError assert fails and nothing below runs.
-    func testGrowInPlaceRestructure_landsEndToEnd() throws {
+    func testGrowInPlaceRestructure_landsEndToEnd() async throws {
         let url = try writeFile("card.swift", Self.cardFile)
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "card.swift",
             oldText: Self.sloppyWholeStructAnchor.joined(separator: "\n"),
             newText: Self.restructuredLines(modifierIndent: 14).joined(separator: "\n"))

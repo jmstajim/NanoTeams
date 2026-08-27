@@ -49,23 +49,11 @@ struct RoleEditorPromptTab: View {
             .padding(.horizontal, Spacing.standard)
             .padding(.top, Spacing.s)
 
-            HStack(alignment: .top, spacing: Spacing.xs) {
-                PromptMarker()
-                TextEditor(text: $editorState.rolePrompt)
-                    .font(Typography.termBase)
-                    .scrollContentBackground(.hidden)
-            }
-            .padding(Spacing.s)
-            .background(
-                RoundedRectangle.squircle(CornerRadius.small)
-                    .fill(Colors.surfacePrimary)
-            )
-            .overlay(
-                RoundedRectangle.squircle(CornerRadius.small)
-                    .strokeBorder(Colors.borderSubtle, lineWidth: 1)
-            )
-            .padding(.horizontal, Spacing.standard)
-            .padding(.bottom, Spacing.s)
+            TextEditor(text: $editorState.rolePrompt)
+                .font(Typography.termBase)
+                .inputSurface(.editor) { PromptMarker() }
+                .padding(.horizontal, Spacing.standard)
+                .padding(.bottom, Spacing.s)
         }
         .sheet(isPresented: $editorState.showingPromptPreview) {
             PromptPreviewSheet(
@@ -78,6 +66,7 @@ struct RoleEditorPromptTab: View {
 }
 
 #Preview("Role Prompt Editor") {
+    @Previewable @State var previewStore = PreviewStore.make()
     @Previewable @State var editorState: RoleEditorState = {
         var s = RoleEditorState()
         s.roleName = "Software Engineer"
@@ -94,5 +83,5 @@ struct RoleEditorPromptTab: View {
     )
     .frame(width: 600, height: 250)
     .background(Colors.surfacePrimary)
-    .environment(NTMSOrchestrator(repository: NTMSRepository()))
+    .environment(previewStore)
 }

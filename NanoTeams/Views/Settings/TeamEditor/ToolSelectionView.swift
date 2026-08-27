@@ -362,7 +362,7 @@ private struct ToolCategorySection: View {
     var showDescriptions: Bool = false
 
     private var selectedInCategory: Int {
-        tools.filter { selectedTools.contains($0) }.count
+        tools.count { selectedTools.contains($0) }
     }
 
     private var allSelected: Bool {

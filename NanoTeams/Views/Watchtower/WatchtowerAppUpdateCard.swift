@@ -127,7 +127,7 @@ private struct SkipButton: View {
 // MARK: - Preview
 
 #Preview("App Update Card") {
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
+    @Previewable @State var store = PreviewStore.make()
     VStack(spacing: Spacing.m) {
         WatchtowerAppUpdateCard(
             release: .init(

@@ -135,13 +135,13 @@ final class OrchestratorCoreTailRunControlTests: NTMSOrchestratorTestBase, @unch
     func testStartRun_whileAnotherStartIsInFlight_createsNoRun() async {
         let store = makeOfflineOrchestrator()
         let id = await openAndCreateTask(store)
-        store.startingRunTaskIDs.insert(id)
+        _ = store.engineState.beginRunStart(id)
 
         await store.startRun(taskID: id)
 
         XCTAssertEqual(store.loadedTask(id)?.runs.count, 0,
                        "a concurrent second startRun for the same task must not double-create runs")
-        store.startingRunTaskIDs.remove(id)
+        store.engineState.endRunStart(id)
     }
 
     /// Sanity anchor for the guards above: with nothing blocking, startRun
@@ -286,6 +286,21 @@ final class OrchestratorCoreTailRunControlTests: NTMSOrchestratorTestBase, @unch
             ],
             roleStatuses: ["agent": .working, "pm": .working]
         )
+
+        // The premise: a handler is actually suspended on 4242. Re-aimed 2026-08-25 — the
+        // predicate moved from the durable marker to `TaskCompletionAwaiter.hasWaiters`, and
+        // without a registered awaiter this fixture stops selecting the short-circuit at all.
+        // The test would then pass for the wrong reason (branch 3 not restarting `pm` because
+        // it never ran), i.e. go VACUOUS rather than red under its own stated mutation.
+        let handler = Task { @MainActor in _ = await store.completionAwaiter.register(taskID: 4242) }
+        var attempts = 0
+        while !store.completionAwaiter.hasWaiters(for: 4242), attempts < 50 {
+            try? await Task.sleep(for: .milliseconds(1))
+            attempts += 1
+        }
+        defer { store.completionAwaiter.cancelAll(taskID: 4242); handler.cancel() }
+        XCTAssertTrue(store.completionAwaiter.hasWaiters(for: 4242),
+                      "premise: a delegate_to_team handler is suspended on child #4242")
 
         await store.resumeRun(taskID: id)
 
@@ -1078,7 +1093,7 @@ final class OrchestratorCoreTailWorkFolderTests: NTMSOrchestratorTestBase, @unch
         let taskID = await store.createPreparedTaskAndStart(request: request)
 
         XCTAssertNotNil(taskID)
-        XCTAssertEqual(store.activeTask?.clippedTexts, ["real content"],
+        XCTAssertEqual(store.activeTask?.clippedTexts.texts, ["real content"],
                        "blank clips must be dropped and survivors trimmed")
         // This path ends in `startRun`, so an engine is live — stop it before
         // the temp folder is torn down.

@@ -91,8 +91,8 @@ nonisolated struct GitCheckoutTool: ToolHandler {
         Self(workFolderRoot: dependencies.workFolderRoot)
     }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let branch = try requiredString(args, "branch")
             let create = optionalBool(args, "create", default: false)
             let from = optionalString(args, "from")
@@ -178,8 +178,8 @@ nonisolated struct GitMergeTool: ToolHandler {
         Self(workFolderRoot: dependencies.workFolderRoot)
     }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let branch = try requiredString(args, "branch")
             let noFf = optionalBool(args, "no_ff", default: false)
             let squash = optionalBool(args, "squash", default: false)
@@ -297,8 +297,8 @@ nonisolated struct GitBranchTool: ToolHandler {
         Self(workFolderRoot: dependencies.workFolderRoot)
     }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let action = try requiredString(args, "action")
             let name = try requiredString(args, "name")
             let from = optionalString(args, "from")

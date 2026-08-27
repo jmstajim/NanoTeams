@@ -91,7 +91,9 @@ final class DownloadedModelDeletionTests: NTMSOrchestratorTestBase, @unchecked S
                                     referenceHints: ["pub/a-GGUF", "pub/a"])
 
         XCTAssertEqual(
-            sut.downloadedModelReferenceWarning(model, base: "http://127.0.0.1:1234"),
+            sut.downloadedModelReferenceWarning(
+                model, base: "http://127.0.0.1:1234", allFolders: [model],
+                serverKeys: ["pub/a"]),
             "Your LLM settings currently use this model.")
     }
 
@@ -100,7 +102,12 @@ final class DownloadedModelDeletionTests: NTMSOrchestratorTestBase, @unchecked S
         sut.configuration.llmModelName = "something-else"
         let model = DownloadedModel(id: "pub/unused", displayName: "pub/unused")
 
-        XCTAssertNil(sut.downloadedModelReferenceWarning(model, base: "http://127.0.0.1:1234"))
+        // `serverKeys` names what the server actually serves: it does NOT serve
+        // "something-else", so that reference cannot be backed by a folder here and the row
+        // stays determinate. Without this the honest answer would be "couldn't verify".
+        XCTAssertNil(sut.downloadedModelReferenceWarning(
+            model, base: "http://127.0.0.1:1234", allFolders: [model],
+            serverKeys: ["pub/unused"]))
     }
 
     /// A model on a DIFFERENT server than the selected one isn't referenced by
@@ -110,7 +117,103 @@ final class DownloadedModelDeletionTests: NTMSOrchestratorTestBase, @unchecked S
         sut.configuration.llmModelName = "pub/a"
         let model = DownloadedModel(id: "pub/a", displayName: "pub/a")
 
-        XCTAssertNil(sut.downloadedModelReferenceWarning(model, base: "http://10.0.0.9:1234"))
+        XCTAssertNil(sut.downloadedModelReferenceWarning(
+            model, base: "http://10.0.0.9:1234", allFolders: [model], serverKeys: ["pub/a"]))
+    }
+
+    /// The MEASURED D-B2 case, and the reason the answer is three-state.
+    ///
+    /// Settings name `openai/gpt-oss-20b` — the SHIPPED DEFAULT for the shipped default
+    /// provider — while the folder on disk is `lmstudio-community/gpt-oss-20b-GGUF`. The
+    /// server serves that key, so the reference is real; it just matches no folder here.
+    /// The old `Bool` reported "not referenced", which the user reads as safe, and Remove
+    /// sent ~11 GB to the Trash.
+    ///
+    /// RED: collapse `.undetermined` into `.notReferenced` → this returns nil and fails.
+    func testReferenceWarning_referenceMatchesNoFolder_saysCouldNotVerify_notNothing() {
+        sut.configuration.llmBaseURLString = "http://127.0.0.1:1234"
+        sut.configuration.llmModelName = "openai/gpt-oss-20b"
+        let onDisk = DownloadedModel(
+            id: "lmstudio-community/gpt-oss-20b-GGUF",
+            displayName: "lmstudio-community/gpt-oss-20b-GGUF",
+            referenceHints: ["lmstudio-community/gpt-oss-20b-GGUF", "gpt-oss-20b-GGUF"])
+
+        let warning = sut.downloadedModelReferenceWarning(
+            onDisk, base: "http://127.0.0.1:1234", allFolders: [onDisk],
+            serverKeys: ["openai/gpt-oss-20b"])
+
+        guard let warning else {
+            return XCTFail("an unresolved reference must not read as 'nothing uses this'")
+        }
+        XCTAssertTrue(warning.contains("Couldn't verify"), warning)
+        XCTAssertTrue(warning.contains("openai/gpt-oss-20b"),
+                      "the unresolved reference must be NAMED, or the caution is unactionable")
+    }
+
+    /// The benchmark target carries its own model name and base URL and belonged to no slot
+    /// list at all, so deleting a model the benchmark points at warned about nothing — even
+    /// on an exact match, in either namespace.
+    ///
+    /// RED: drop the `benchmarkTarget` block from `referencedModelSlots` → nil, and fails.
+    func testReferenceWarning_benchmarkTarget_isAReferencingSlot() {
+        sut.configuration.llmBaseURLString = "http://127.0.0.1:1234"
+        sut.configuration.llmModelName = "unrelated"
+        sut.configuration.benchmarkTarget = BenchmarkTarget(
+            provider: .lmStudio, baseURLString: "http://127.0.0.1:1234", modelName: "pub/bench")
+        let model = DownloadedModel(id: "pub/bench", displayName: "pub/bench",
+                                    referenceHints: ["pub/bench"])
+
+        XCTAssertEqual(
+            sut.downloadedModelReferenceWarning(
+                model, base: "http://127.0.0.1:1234", allFolders: [model],
+                serverKeys: ["pub/bench", "unrelated"]),
+            "Your LLM settings currently use this model.")
+    }
+
+    /// A per-role `llmOverride` is a reference too — and one that inherits the global base
+    /// while naming its own model is the common shape, so the inheritance arm has to resolve.
+    func testReferenceWarning_namesATeamRoleOverride() async {
+        sut.configuration.llmBaseURLString = "http://127.0.0.1:1234"
+        sut.configuration.llmModelName = "unrelated"
+        await sut.openWorkFolder(tempDir)
+        await sut.mutateWorkFolder { projection in
+            guard let index = projection.teams.indices.first,
+                  let roleIndex = projection.teams[index].roles.indices.first else { return }
+            projection.teams[index].roles[roleIndex].llmOverride =
+                LLMOverride(baseURLString: nil, modelName: "pub/role")
+        }
+        let model = DownloadedModel(id: "pub/role", displayName: "pub/role",
+                                    referenceHints: ["pub/role"])
+
+        XCTAssertEqual(
+            sut.downloadedModelReferenceWarning(
+                model, base: "http://127.0.0.1:1234", allFolders: [model],
+                serverKeys: ["pub/role", "unrelated"]),
+            "A team role currently uses this model.")
+    }
+
+    /// A generated team lives on the TASK, not in `teams` — and the ACTIVE task is
+    /// deliberately absent from `loadedTasks`, so it needs its own walk. Without it, the
+    /// roster the user is looking at right now is the one slot that goes unchecked.
+    func testReferenceWarning_namesAGeneratedRosterRoleOnTheActiveTask() async {
+        sut.configuration.llmBaseURLString = "http://127.0.0.1:1234"
+        sut.configuration.llmModelName = "unrelated"
+        await sut.openWorkFolder(tempDir)
+        guard let taskID = await sut.createTask(title: "T", supervisorTask: "goal") else {
+            return XCTFail("createTask failed")
+        }
+        var generated = TeamTemplateFactory.startup()
+        generated.roles[0].llmOverride = LLMOverride(baseURLString: nil, modelName: "pub/gen")
+        await sut.mutateTask(taskID: taskID) { $0.adoptGeneratedTeam(generated) }
+        XCTAssertEqual(sut.activeTask?.id, taskID, "premise: the roster under test is ACTIVE")
+        let model = DownloadedModel(id: "pub/gen", displayName: "pub/gen",
+                                    referenceHints: ["pub/gen"])
+
+        XCTAssertEqual(
+            sut.downloadedModelReferenceWarning(
+                model, base: "http://127.0.0.1:1234", allFolders: [model],
+                serverKeys: ["pub/gen", "unrelated"]),
+            "A generated team role currently uses this model.")
     }
 
     // MARK: - Deletion

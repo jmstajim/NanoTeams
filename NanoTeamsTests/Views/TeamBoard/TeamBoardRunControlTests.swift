@@ -7,8 +7,11 @@ import XCTest
 /// pause/resume/start gating (now living in `TeamBoardTopBar.playPauseControl`).
 final class TeamBoardRunControlTests: XCTestCase {
 
-    private func select(_ state: TeamEngineState?, historical: Bool = false) -> TeamBoardRunControl? {
-        TeamBoardRunControl.select(engineState: state, isHistoricalRun: historical)
+    private func select(
+        _ state: TeamEngineState?, historical: Bool = false, initializing: Bool = false
+    ) -> TeamBoardRunControl? {
+        TeamBoardRunControl.select(
+            engineState: state, isHistoricalRun: historical, isInitializingRun: initializing)
     }
 
     // MARK: - Live run: every state maps to the right control
@@ -66,5 +69,39 @@ final class TeamBoardRunControlTests: XCTestCase {
         XCTAssertNotNil(select(.running, historical: false))
         XCTAssertNotNil(select(.paused, historical: false))
         XCTAssertNotNil(select(.pending, historical: false))
+    }
+
+    // MARK: - A run start in flight
+
+    /// The window between the Supervisor pressing Send / Play and `engine.start()`. No
+    /// engine exists yet, so the mirror reads `nil` and the navbar used to offer `start`
+    /// — an action `claimRunStart` then refused in silence, on a run that was already
+    /// starting. `pause` is the honest control: it aborts the start.
+    ///
+    /// RED: drop the `isInitializingRun` branch from `select` → this fails; every other
+    /// test in this file stays green, because none of them passes the flag.
+    func testInitializing_withNoEngineYet_showsPause() {
+        XCTAssertEqual(select(nil, initializing: true), .pause)
+        XCTAssertEqual(select(.pending, initializing: true), .pause,
+                       "`.pending` is the engineless state too — an engine object that has "
+                           + "not started is not a run in progress")
+    }
+
+    /// The control, and the reason the branch is scoped to the engineless states: the two
+    /// facts overlap by a tick (CLAUDE.md #95), and where they disagree the ENGINE is the
+    /// better answer. A flag that overrode `.needsAcceptance` or `.paused` would replace a
+    /// meaningful control with the same word or the wrong one.
+    func testInitializing_neverOverridesALiveEngineState() {
+        XCTAssertEqual(select(.paused, initializing: true), .resume,
+                       "A paused run still resumes — the stale claim must not hijack it")
+        XCTAssertEqual(select(.needsAcceptance, initializing: true), .pause)
+        XCTAssertNil(select(.done, initializing: true),
+                     "Terminal stays terminal: a leftover claim must not resurrect a control")
+        XCTAssertNil(select(.failed, initializing: true))
+    }
+
+    /// A historical run outranks everything, this flag included.
+    func testInitializing_isStillSuppressedOnAHistoricalRun() {
+        XCTAssertNil(select(nil, historical: true, initializing: true))
     }
 }

@@ -203,7 +203,7 @@ final class QuickCapturePanelResolveBaselineCoverageTests: XCTestCase {
             stepID: "s", taskID: 1, role: .softwareEngineer, roleDefinition: nil,
             question: "q", messageContent: nil, thinking: nil, isChatMode: true))
         state.answerText = "typed"
-        state.answerClippedTexts = ["clip"]
+        state.answerClippedTexts = [Clip].minting(["clip"])
         state.exitAnswerMode()
 
         XCTAssertNil(state.answerFieldsOwnerTaskID)

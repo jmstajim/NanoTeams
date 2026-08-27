@@ -160,34 +160,37 @@ struct TemplatePreviewSheet: View {
 // MARK: - Previews
 
 #Preview("System Template") {
+    @Previewable @State var previewStore = PreviewStore.make()
     TemplatePreviewSheet(
         team: Team.default,
         templateType: .system,
         workFolder: nil
     )
     .environment(StoreConfiguration())
-    .environment(NTMSOrchestrator(repository: NTMSRepository()))
+    .environment(previewStore)
     .frame(width: 700, height: 1000)
 }
 
 #Preview("Consultation Template") {
+    @Previewable @State var previewStore = PreviewStore.make()
     TemplatePreviewSheet(
         team: Team.default,
         templateType: .consultation,
         workFolder: nil
     )
     .environment(StoreConfiguration())
-    .environment(NTMSOrchestrator(repository: NTMSRepository()))
+    .environment(previewStore)
     .frame(width: 700, height: 1000)
 }
 
 #Preview("Meeting Template") {
+    @Previewable @State var previewStore = PreviewStore.make()
     TemplatePreviewSheet(
         team: Team.default,
         templateType: .meeting,
         workFolder: nil
     )
     .environment(StoreConfiguration())
-    .environment(NTMSOrchestrator(repository: NTMSRepository()))
+    .environment(previewStore)
     .frame(width: 700, height: 1000)
 }

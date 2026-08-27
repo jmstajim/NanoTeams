@@ -163,4 +163,76 @@ enum RatchetSourceScan {
         }
         return results
     }
+
+    // MARK: - SwiftUI expression walking
+
+    /// The index just past the delimiter matching the one that opened at `index`.
+    /// String literals are skipped whole, so a `(` or `}` inside one does not unbalance the count
+    /// — `TextField("Name (optional)", text: $x)` closes at the right paren, not the one in the
+    /// placeholder (CLAUDE.md #89: the prose and the literals are where a needle goes wrong).
+    ///
+    /// Extracted from `InputSurfacePinTests` when `IconButtonHitAreaPinTests` became the second
+    /// consumer — the extraction threshold this file's own history documents.
+    static func balanced(_ code: String, from index: String.Index,
+                         open: Character, close: Character) -> String.Index {
+        var depth = 1
+        var i = index
+        while i < code.endIndex, depth > 0 {
+            let c = code[i]
+            if c == "\"" {
+                i = code.index(after: i)
+                while i < code.endIndex {
+                    if code[i] == "\"", code[code.index(before: i)] != "\\" { break }
+                    i = code.index(after: i)
+                }
+            } else if c == open {
+                depth += 1
+            } else if c == close {
+                depth -= 1
+            }
+            if i < code.endIndex { i = code.index(after: i) }
+        }
+        return i
+    }
+
+    /// The trailing modifier chain that belongs to the construct ending at `index` — `.foo`,
+    /// `.foo(…)`, `.foo(…) { … }`, across newlines, stopping at the first token that is not a
+    /// leading dot.
+    ///
+    /// The walker's failure modes are asymmetric, and that asymmetry is why every consumer must
+    /// assert a COMPLIANT floor beside its offender list: a walker that OVERRUNS its expression
+    /// sweeps up the next statement's modifiers, marks every site compliant, and the pin is green
+    /// forever over any drift. A walker that terminates early makes everything an offender —
+    /// loud, and someone fixes it within the hour.
+    static func chain(in code: String, after index: String.Index) -> String {
+        var i = index
+        while true {
+            var j = i
+            while j < code.endIndex, code[j].isWhitespace { j = code.index(after: j) }
+            guard j < code.endIndex, code[j] == "." else { break }
+            var k = code.index(after: j)
+            guard k < code.endIndex, code[k].isLetter || code[k] == "_" else { break }
+            while k < code.endIndex, code[k].isLetter || code[k].isNumber || code[k] == "_" {
+                k = code.index(after: k)
+            }
+            if k < code.endIndex, code[k] == "(" {
+                k = balanced(code, from: code.index(after: k), open: "(", close: ")")
+            }
+            var m = k
+            while m < code.endIndex, code[m] == " " || code[m] == "\t" { m = code.index(after: m) }
+            if m < code.endIndex, code[m] == "{" {
+                k = balanced(code, from: code.index(after: m), open: "{", close: "}")
+            }
+            i = k
+        }
+        return String(code[index..<i])
+    }
+
+    /// `true` when `needle` at `index` is a construct rather than a longer identifier ending in
+    /// one — `SearchFieldView(` must not read as `Field(`, and `.textField(` is a modifier.
+    static func isStandaloneOccurrence(_ code: String, at index: String.Index) -> Bool {
+        guard index > code.startIndex else { return true }
+        let previous = code[code.index(before: index)]
+        return !(previous.isLetter || previous.isNumber || previous == "_" || previous == ".")
+    }
 }

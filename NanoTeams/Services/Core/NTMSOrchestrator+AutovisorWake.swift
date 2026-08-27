@@ -188,7 +188,11 @@ extension NTMSOrchestrator {
     ///   iteration), deduped per (task, trigger) via `autovisorNotifiedAttentionKeys`;
     /// • any other state — an immediate FRESH review pass for a not-yet-seen condition
     ///   (a parked `wait_for_events` engine is superseded, not continued). A condition
-    ///   already in `autovisorLastPassAttentionKeys` is not re-delivered (deliver-once).
+    ///   already in `autovisorLastPassAttentionKeys` is not re-delivered FOR AS LONG AS IT
+    ///   KEEPS MATCHING (deliver-once). A `.needsSupervisor` condition that goes quiet is
+    ///   retired from that baseline — by `noteSupervisorQuestionResolved` when an answer
+    ///   resolves it, or by this method's own prune otherwise — so the NEXT question on the
+    ///   same task is a new condition and wakes.
     ///
     /// `includeStuck` enables the `onTaskStuck` evaluation — passed `true` ONLY by
     /// the per-minute poll backstop. The hot engine-state observer leaves it `false`
@@ -222,6 +226,31 @@ extension NTMSOrchestrator {
         autovisorNotifiedAttentionKeys = autovisorNotifiedAttentionKeys.filter {
             stillMatchingKeys.contains($0) || ($0.trigger == .stuck && !stuckEvaluated)
         }
+        // Retire spent `.needsSupervisor` keys from the deliver-once baseline too, so
+        // "delivered once" means once per QUESTION rather than once per task for the life
+        // of the process. `answerSupervisorQuestion` retires a key the moment it resolves
+        // one (`noteSupervisorQuestionResolved`); this covers the clearing paths that carry
+        // no answer — `manage_role restart`, `control_task stop`, a superseded run.
+        //
+        // ABOVE the `items.isEmpty` return on purpose: the wake that observes a question go
+        // quiet is usually the one carrying NO items at all (the manager answered the task
+        // and it resumed to `.running`), and that is the only moment this can be learned.
+        //
+        // ONLY `.needsSupervisor`. The other triggers keep their level semantics because
+        // there a "flicker" is noise, not news: the manager's remedy for `.failed` is a
+        // restart, so pruning that key would make a deterministically-failing role wake a
+        // fresh pass every failure latency until auto-off — one `createNewRun` each, each
+        // resetting `autovisorCreationsThisReview`. A question is different in kind: the
+        // remedy CONSUMES it, and the next one is a thing the manager has never seen. The
+        // recurrence sweep remains the re-review for everything still standing.
+        //
+        // Cannot weaken the concurrent-wake serialization below, and the argument is per
+        // key: `hasFreshCondition` only ever tests keys that ARE in `items`, and any such
+        // key is in `stillMatchingKeys`, so it survives. A key this drops is one the
+        // freshness gate would not have looked at.
+        autovisorLastPassAttentionKeys = autovisorLastPassAttentionKeys.filter {
+            $0.trigger != .needsSupervisor || stillMatchingKeys.contains($0)
+        }
         guard !items.isEmpty else { return }
 
         // Already reviewing → deliver the event into the LIVE conversation (queued
@@ -247,7 +276,13 @@ extension NTMSOrchestrator {
                       text: Self.composeAutovisorEventNotice(fresh),
                       attachments: [], clippedTexts: [],
                       targetRoleID: autovisorRole?.id,
-                      isFromAutomatedSupervisor: true
+                      // Both axes, and they are not the same fact: `isFromAutomatedSupervisor`
+                      // says WHO (it feeds the auto-answer badge and the pending-human guard),
+                      // `kind` says WHAT — the drain reads it to persist `.autovisorEvent` and
+                      // to ship the turn unmarked. `message_task` is automated speech and takes
+                      // only the first.
+                      isFromAutomatedSupervisor: true,
+                      kind: .autovisorEventNotice
                   ) else { return }
             formState.appendQueuedMessage(message, for: managerID)
             autovisorNotifiedAttentionKeys.formUnion(fresh.map(\.key))
@@ -270,10 +305,13 @@ extension NTMSOrchestrator {
 
         // NO THROTTLE: a "fresh" condition — one NOT present at the manager's last pass
         // start (`autovisorLastPassAttentionKeys`) — wakes the manager immediately. A
-        // condition it has ALREADY seen is not re-delivered (deliver-once); the periodic
+        // condition it has ALREADY seen AND THAT IS STILL STANDING is not re-delivered
+        // (deliver-once — the prune above retires a question that went quiet); the periodic
         // recurrence sweep re-reviews any it didn't resolve, so a standing unresolved
         // condition can't tight-loop. The baseline is recomputed at pass start INCLUDING
-        // stuck (`seedAutovisorNotifiedKeysForPassStart`), so a stuck task is delivered
+        // stuck (`seedAutovisorNotifiedKeysForPassStart`) — one of the baseline's THREE
+        // maintainers, beside this method's prune+record and the single-key retirement in
+        // `noteSupervisorQuestionResolved` — so a stuck task is delivered
         // ONCE (not every poll tick) and a no-longer-stuck one is dropped (a fresh stuck
         // episode re-wakes). Fixes the wedge where a task the manager CREATED mid-pass
         // produced its artifact / called ask_supervisor AFTER it parked: never in the
@@ -323,7 +361,9 @@ extension NTMSOrchestrator {
             watchable: watchable, engineStates: taskEngineStates,
             activation: act, seen: autovisorSeenTaskIDs, stuck: []
         ).map(\.key))
-        // Deliver-once freshness baseline for the NEXT event wake — covers passes that
+        // Deliver-once freshness baseline for the NEXT event wake — ASSIGNED here (the other
+        // two maintainers are `wakeAutovisorForEvents`' prune+record and
+        // `noteSupervisorQuestionResolved`). Covers passes that
         // DON'T go through `wakeAutovisorForEvents` (recurrence, open-time, Run-now); the
         // event-wake path also sets it synchronously for the race guard. RECOMPUTES stuck
         // (once per pass — cheap next to the LLM call) so a stuck task the manager just
@@ -334,6 +374,31 @@ extension NTMSOrchestrator {
             watchable: watchable, engineStates: taskEngineStates,
             activation: act, seen: autovisorSeenTaskIDs, stuck: stuck
         ).map(\.key))
+    }
+
+    /// Retires the deliver-once bookkeeping for a Supervisor question that has just been
+    /// ANSWERED, so the next question on the same task counts as a new condition.
+    ///
+    /// `AutovisorAttentionKey` is `(taskID, trigger)` — it names the CONDITION, not the
+    /// occurrence — so without this the key from a task's first question outlived the
+    /// question itself and `hasFreshCondition` read false for every later one (CLAUDE.md
+    /// #74). In a chat-mode task every turn is an `ask_supervisor`, so that swallowed every
+    /// follow-up until the 10-minute recurrence; the per-minute poll could not help, since
+    /// it evaluates the same gate.
+    ///
+    /// Called from `answerSupervisorQuestion` — the single seam every answer flows through
+    /// (the manager's own `answer_task_question`, a human's Quick Capture flush, the
+    /// delegated side exchange). Positive evidence at the moment of resolution (CLAUDE.md
+    /// #92), so it needs no wake to sample the gap; `wakeAutovisorForEvents`' own prune is
+    /// the level-triggered net for clears that carry no answer.
+    ///
+    /// The loop-park ledger is retired with it: its entry bounds re-delivery for ONE
+    /// episode, and keeping a spent one would deny the next, genuinely distinct question
+    /// its one free rollback.
+    func noteSupervisorQuestionResolved(taskID: Int) {
+        let key = AutovisorAttentionKey(taskID: taskID, trigger: .needsSupervisor)
+        autovisorLastPassAttentionKeys.remove(key)
+        autovisorLoopParkRedelivered.remove(key)
     }
 
     /// Roll back the attention baseline a pass never earned, once.
@@ -347,7 +412,9 @@ extension NTMSOrchestrator {
     /// auto-off deadline, after which nothing wakes the folder at all).
     ///
     /// Subtracting only keys NOT already in `autovisorLoopParkRedelivered` is the bound:
-    /// one extra pass per key per episode. A manager that loops again immediately finds
+    /// one extra pass per key per EPISODE — `noteSupervisorQuestionResolved` retires a
+    /// question's entry when it is answered, so a spent rollback cannot deny the next,
+    /// genuinely distinct question its own. A manager that loops again immediately finds
     /// its keys already spent, rolls back nothing, and stays parked — so this cannot
     /// become the tight wake loop the deliver-once design prevents.
     ///
@@ -381,7 +448,7 @@ extension NTMSOrchestrator {
     /// Pure read over the supplied snapshots — no engine, no side effects — so it is unit-testable
     /// with hand-built `TaskSummary` values.
     ///
-    /// All four triggers are LEVEL-triggered: a task that stays in a matching state keeps the
+    /// All five triggers are LEVEL-triggered: a task that stays in a matching state keeps the
     /// manager wake-eligible every tick. The caller's deliver-once freshness baseline
     /// (`autovisorLastPassAttentionKeys`) bounds how often that actually spawns a run (a condition
     /// already reviewed isn't re-delivered), and the per-minute poll backstop is the level-triggered
@@ -392,8 +459,10 @@ extension NTMSOrchestrator {
     /// `.done`: a finished task derives to Review until the manager closes it, and `.done` only
     /// appears AFTER close. Matching `.done` (the old behavior) both missed the actual review AND
     /// looped forever on every already-closed task (closed tasks persist in `tasksIndex`).
-    /// `onTaskNeedsSupervisor` reads the live engine state (the signal the immediate event-wake
-    /// observes); the status-based triggers read the derived summary so a closed task stops matching.
+    /// `onTaskNeedsSupervisor` reads the DURABLE wait-fact (or the live engine state — see
+    /// `summaryAwaitsSupervisor`), so a question that survived a relaunch still matches even
+    /// though recovery demoted its status; the status-based triggers read the derived summary
+    /// so a closed task stops matching.
     ///
     /// `stuck` carries the ids the poll backstop found looping/hung (empty on the
     /// observer path); `onTaskStuck` matches against it. Defaulted to `[]` so the
@@ -437,6 +506,50 @@ extension NTMSOrchestrator {
         var key: AutovisorAttentionKey { .init(taskID: taskID, trigger: trigger) }
     }
 
+    /// The `onTaskNeedsSupervisor` level: this task is owed a Supervisor answer that can
+    /// actually be delivered right now.
+    ///
+    /// Reads the DURABLE fact (`TaskSummary.isWaitingForSupervisor`), not the engine mirror
+    /// alone. `taskEngineStates` is derived from step STATUS, and `StatusRecoveryService`
+    /// rewrites every waiting step to `.paused` at launch while leaving the flag AND the
+    /// question intact — so `mapDerivedStatusToEngineState` seeds `.paused` for a task that
+    /// is still waiting, and a task that was never loaded has no mirror entry at all.
+    /// Keying on the mirror is how a question that survived a relaunch reached the manager
+    /// only via the 10-minute recurrence. This is the seventh consumer of the durable fact
+    /// (CLAUDE.md #91); the other six moved on 2026-08-20 and this one did not.
+    ///
+    /// The mirror is OR'd in, never replaced: it is the only answer a LEGACY index row can
+    /// give (`hasPendingSupervisorInput == nil`, written before the field existed, reads
+    /// `false` through `isWaitingForSupervisor` by design), so dropping it would silently
+    /// narrow the trigger for exactly those rows. It needs no liveness qualifier of its own
+    /// — the engine reaches `.needsSupervisorInput` only while a step SITS at that status.
+    ///
+    /// `status == .running` vetoes the DURABLE arm, and only that arm.
+    /// `hasActiveSupervisorInput` is `needsSupervisorInput || activeAskCall != nil`, so the
+    /// durable fact flips true when the `ask_supervisor` CALL lands in `step.toolCalls` —
+    /// sub-second before `setNeedsSupervisorInput` writes the park — and it stays true on a
+    /// chat-mode step auto-finished carrying an unanswered trailing ask (which derives
+    /// `.running` through the chat-mode override). `answer_task_question` matches the STORED
+    /// flag, so waking for either shape buys a pass that cannot answer anything. The veto
+    /// costs no real wake: every ANSWERABLE shape derives something else — a parked step
+    /// derives `.needsSupervisorInput` and a restart-recovered one `.paused`, both
+    /// outranking `hasRunning` in `Run.derivedTaskStatus()`. Status is read only to VETO,
+    /// never to establish the wait, so this is not the substitution
+    /// `isWaitingForSupervisor`'s own doc forbids.
+    ///
+    /// Accepted consequence: `StepExecutionService.pauseStep` leaves the flag set, so a
+    /// DELIBERATELY paused task with a pending question is an item here too, and answering
+    /// it resumes the task. It is indistinguishable from a restart-recovered park at every
+    /// level (both derive `.paused`; `acceptsSupervisorAnswer` includes `.paused` by
+    /// design), so the manager is told instead of guessed for: `list_tasks` reports
+    /// `status: "paused"` and `waiting_for_supervisor: true` side by side.
+    nonisolated static func summaryAwaitsSupervisor(
+        _ summary: TaskSummary, engineState: TeamEngineState?
+    ) -> Bool {
+        if summary.isWaitingForSupervisor, summary.status != .running { return true }
+        return engineState == .needsSupervisorInput
+    }
+
     /// Itemized form of `autovisorNeedsAttention` — same five trigger rules, but
     /// returns WHAT matched so the mid-review injection path can compose a notice
     /// and dedup per condition. Order: watchable order, triggers in the fixed
@@ -450,7 +563,10 @@ extension NTMSOrchestrator {
     ) -> [AutovisorAttentionItem] {
         watchable.flatMap { summary -> [AutovisorAttentionItem] in
             var triggers: [AutovisorAttentionTrigger] = []
-            if act.onTaskNeedsSupervisor, engineStates[summary.id] == .needsSupervisorInput { triggers.append(.needsSupervisor) }
+            if act.onTaskNeedsSupervisor,
+               Self.summaryAwaitsSupervisor(summary, engineState: engineStates[summary.id]) {
+                triggers.append(.needsSupervisor)
+            }
             if act.onTaskFailed, summary.status == .failed { triggers.append(.failed) }
             if act.onTaskCompleted, summary.status == .needsSupervisorAcceptance { triggers.append(.completed) }
             if act.onTaskCreated, !seen.contains(summary.id) { triggers.append(.created) }
@@ -461,6 +577,20 @@ extension NTMSOrchestrator {
 
     /// Renders the mid-review event notice delivered into the manager's live
     /// conversation — one bullet per condition with the actionable tool hint.
+    ///
+    /// The opening line comes from `MessageSourceContext.autovisorEventNoticeHeader` rather
+    /// than a literal here, because two other places depend on its exact text: the notice
+    /// ships UNMARKED (no `Supervisor:` badge, like every other system notice), so that line
+    /// is what identifies it on a wire both providers flatten — and the feed's collapsed row
+    /// skips it when building its one-line preview, so the glance shows a bullet instead of
+    /// the banner its `system: event` label already states.
+    ///
+    /// Because the notice is unmarked, `PlanningPhasePolicy.discardedSupervisorMessages` —
+    /// which finds re-queueable turns by the `Supervisor:` prefix — does not carry it across
+    /// a planning boundary. Structurally unreachable rather than merely unlikely:
+    /// `PlanningPhasePolicy.isEligible` carries `!isAutovisor`, so the manager never has a
+    /// planning phase to cross. A still-standing condition re-notifies on the fresh-pass wake
+    /// regardless (`testFailedDeliveredMidPass_unaddressed_freshWakeFiresAfterPassEnds`).
     nonisolated static func composeAutovisorEventNotice(_ items: [AutovisorAttentionItem]) -> String {
         let bullets = items.map { item -> String in
             let task = "Task #\(item.taskID) \"\(item.title)\""
@@ -477,7 +607,7 @@ extension NTMSOrchestrator {
                 return "- \(task) looks stuck or looping (task_status / manage_role)."
             }
         }
-        return (["Event update while you are reviewing — new since this pass started:"] + bullets)
+        return ([MessageSourceContext.autovisorEventNoticeHeader] + bullets)
             .joined(separator: "\n")
     }
 
@@ -498,7 +628,9 @@ extension NTMSOrchestrator {
                 task: task, now: now,
                 lastStreamActivityAt: { self.streamingPreviewManager.lastStreamActivity(stepID: $0, taskID: summary.id) },
                 liveStreamText: { self.streamLiveText(stepID: $0, taskID: summary.id) },
+                processingStatus: { self.streamProcessingStatus(stepID: $0, taskID: summary.id) },
                 hangSeconds: tuning.stuckHangSeconds,
+                prefillHangSeconds: tuning.stuckPrefillHangSeconds,
                 loopRecencySeconds: tuning.stuckLoopRecencySeconds
             )
             if verdict.isStuck { stuck.insert(summary.id) }

@@ -30,7 +30,7 @@ import XCTest
 /// API is missing. It is the line the app's own dictation stack — which the form embeds — is
 /// already gated on, and it is the line that separates the runner from every machine where
 /// the path is known to work. Whether the abort is a CI-session artifact or a real macOS 15
-/// defect is UNRESOLVED and recorded in DEBTS.md D-7; the deployment target is 15.0, so the
+/// defect is UNRESOLVED and recorded in DEBTS.md D-29; the deployment target is 15.0, so the
 /// second reading would be a product bug, and this skip must not be read as ruling it out.
 enum PanelHostingAvailability {
 
@@ -43,7 +43,7 @@ enum PanelHostingAvailability {
         if #available(macOS 26, *) { return }
         throw XCTSkip(
             "Building QuickCaptureFormView in an NSHostingView aborts the XCTest worker on "
-                + "macOS < 26 (the mirror's CI runner). See DEBTS.md D-7.",
+                + "macOS < 26 (the mirror's CI runner). See DEBTS.md D-29.",
             file: file,
             line: line
         )

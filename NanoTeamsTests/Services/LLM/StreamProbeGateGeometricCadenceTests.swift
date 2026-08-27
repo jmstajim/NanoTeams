@@ -210,7 +210,7 @@ final class StreamProbeGateEquivalenceTests: XCTestCase {
         }
         XCTAssertGreaterThan(divergences, 0,
                              "the two cadences must be distinguishable, or the case name "
-                             + "carries no information")
+                                 + "carries no information")
     }
 
     /// The reason the tool-delta gate moved to `.geometric`: an arithmetic
@@ -233,9 +233,9 @@ final class StreamProbeGateEquivalenceTests: XCTestCase {
 
         XCTAssertLessThan(geometric, finalLength * 4,
                           "geometric spacing must keep Σ probe work within a small "
-                          + "multiple of the final buffer: \(geometric) vs \(finalLength)")
+                              + "multiple of the final buffer: \(geometric) vs \(finalLength)")
         XCTAssertGreaterThan(arithmetic, finalLength * 50,
                              "control: the arithmetic cadence really is quadratic here — "
-                             + "otherwise this test proves nothing about the change")
+                                 + "otherwise this test proves nothing about the change")
     }
 }

@@ -62,12 +62,12 @@ final class EditFileReplacementFidelityCoverageTests: XCTestCase {
 
     private func runEdit(
         path: String, oldText: String, newText: String, replaceAll: Bool? = nil
-    ) -> ToolExecutionResult {
+    ) async -> ToolExecutionResult {
         var args: [String: Any] = ["path": path, "old_text": oldText, "new_text": newText]
         if let replaceAll { args["replace_all"] = replaceAll }
         let data = try! JSONSerialization.data(withJSONObject: args)
         let call = StepToolCall(name: ToolNames.editFile, argumentsJSON: String(data: data, encoding: .utf8)!)
-        return runtime.executeAll(context: context, toolCalls: [call])[0]
+        return await runtime.executeAll(context: context, toolCalls: [call])[0]
     }
 
     private func read(_ name: String) throws -> String {
@@ -88,10 +88,10 @@ final class EditFileReplacementFidelityCoverageTests: XCTestCase {
     /// RED: build `candidates` from `oldText` alone and splice raw `newText` (the pre-fix code) →
     /// the file becomes `1   │ func foo() {\n2   │     baz()\n}\n` — line-number gutters written
     /// into a Swift source file under `ok:true`.
-    func testGutterInBothAnchorAndReplacement_doesNotWriteTheGutterIntoTheFile() throws {
+    func testGutterInBothAnchorAndReplacement_doesNotWriteTheGutterIntoTheFile() async throws {
         try writeFile("g.swift", "func foo() {\n    bar()\n}\n")
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "g.swift",
             oldText: "1   \u{2502} func foo() {\n2   \u{2502}     bar()",
             newText: "1   \u{2502} func foo() {\n2   \u{2502}     baz()"
@@ -107,10 +107,10 @@ final class EditFileReplacementFidelityCoverageTests: XCTestCase {
     ///
     /// RED: apply `unescapeJSONSequences` to the anchor only → the file gets a literal backslash,
     /// `const u = "a\/c";`.
-    func testEscapedSlashInBothAnchorAndReplacement_doesNotWriteABackslash() throws {
+    func testEscapedSlashInBothAnchorAndReplacement_doesNotWriteABackslash() async throws {
         try writeFile("h.js", "const u = \"a/b\";\n")
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "h.js",
             oldText: "const u = \"a\\/b\";",
             newText: "const u = \"a\\/c\";"
@@ -126,10 +126,10 @@ final class EditFileReplacementFidelityCoverageTests: XCTestCase {
     /// RED: unconditionally run `stripLineNumberPrefixes` / `unescapeJSONSequences` over
     /// `new_text` → the box-drawing table row loses its `2 │ ` prefix and the regex loses its
     /// backslash, silently rewriting content the model meant literally.
-    func testCleanAnchor_leavesAGutterLookalikeReplacementUntouched() throws {
+    func testCleanAnchor_leavesAGutterLookalikeReplacementUntouched() async throws {
         try writeFile("i.txt", "row\n")
 
-        let result = runEdit(path: "i.txt", oldText: "row", newText: "2 \u{2502} cell\npath = \"a\\/b\"")
+        let result = await runEdit(path: "i.txt", oldText: "row", newText: "2 \u{2502} cell\npath = \"a\\/b\"")
 
         XCTAssertFalse(result.isError, result.outputJSON)
         XCTAssertEqual(try read("i.txt"), "2 \u{2502} cell\npath = \"a\\/b\"\n")
@@ -141,10 +141,10 @@ final class EditFileReplacementFidelityCoverageTests: XCTestCase {
     ///
     /// RED: pass a bare `[String]` of anchors plus one `newText` into `whitespaceTolerantEdit`
     /// (the pre-fix signature) → the gutter reaches the file through the fallback instead.
-    func testGutterRepair_pairsWithTheReplacementOnTheTolerantPathToo() throws {
+    func testGutterRepair_pairsWithTheReplacementOnTheTolerantPathToo() async throws {
         try writeFile("j.txt", "line one  \nline two\n")
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "j.txt",
             oldText: "1   \u{2502} line one\n2   \u{2502} line two",
             newText: "1   \u{2502} line ONE\n2   \u{2502} line TWO"
@@ -163,10 +163,10 @@ final class EditFileReplacementFidelityCoverageTests: XCTestCase {
     ///
     /// RED: drop the CR-stripping normalisation before the `windowIsCRLF` reattach map → the file
     /// becomes `ALPHA\r\r\nBETA\r\ngamma\r\n`, and `\r\r\n` is not a valid line ending.
-    func testCRLFReplacementIntoACRLFWindow_doesNotDoubleTheCR() throws {
+    func testCRLFReplacementIntoACRLFWindow_doesNotDoubleTheCR() async throws {
         try writeFile("k.txt", "alpha\r\nbeta\r\ngamma\r\n")
 
-        let result = runEdit(path: "k.txt", oldText: "alpha\nbeta", newText: "ALPHA\r\nBETA")
+        let result = await runEdit(path: "k.txt", oldText: "alpha\nbeta", newText: "ALPHA\r\nBETA")
 
         XCTAssertFalse(result.isError, result.outputJSON)
         let got = try read("k.txt")
@@ -177,10 +177,10 @@ final class EditFileReplacementFidelityCoverageTests: XCTestCase {
     /// separately — the two branches build `newLines` by different routes.
     ///
     /// RED: same mutation → `ONE\r\r\nTWO\r\r\nbeta\r\n`.
-    func testCRLFReplacementWithATerminatorAnchor_doesNotDoubleAnyCR() throws {
+    func testCRLFReplacementWithATerminatorAnchor_doesNotDoubleAnyCR() async throws {
         try writeFile("l.txt", "alpha\r\nbeta\r\n")
 
-        let result = runEdit(path: "l.txt", oldText: "alpha\n", newText: "ONE\r\nTWO\r\n")
+        let result = await runEdit(path: "l.txt", oldText: "alpha\n", newText: "ONE\r\nTWO\r\n")
 
         XCTAssertFalse(result.isError, result.outputJSON)
         let got = try read("l.txt")
@@ -193,10 +193,10 @@ final class EditFileReplacementFidelityCoverageTests: XCTestCase {
     ///
     /// RED: strip the CR only when `windowIsCRLF` is true → an LF file acquires CRLF lines from
     /// whatever convention the model happened to emit.
-    func testCRLFReplacementIntoAnLFWindow_staysLF() throws {
+    func testCRLFReplacementIntoAnLFWindow_staysLF() async throws {
         try writeFile("m.txt", "alpha  \nbeta\n")
 
-        let result = runEdit(path: "m.txt", oldText: "alpha\nbeta", newText: "ONE\r\nTWO")
+        let result = await runEdit(path: "m.txt", oldText: "alpha\nbeta", newText: "ONE\r\nTWO")
 
         XCTAssertFalse(result.isError, result.outputJSON)
         let got = try read("m.txt")
@@ -219,10 +219,10 @@ final class EditFileReplacementFidelityCoverageTests: XCTestCase {
     /// RED: hoist the CR normalisation out of `whitespaceTolerantEdit` into the exact-match branch
     /// → the model's literal bytes are rewritten on a path that has no line-ending convention to
     /// preserve, which is the mirror image of the gutter defect above.
-    func testCharacterization_exactPathSplicesTheModelsBytesVerbatim() throws {
+    func testCharacterization_exactPathSplicesTheModelsBytesVerbatim() async throws {
         try writeFile("m2.txt", "alpha\nbeta\n")
 
-        let result = runEdit(path: "m2.txt", oldText: "alpha", newText: "ONE\r\nTWO")
+        let result = await runEdit(path: "m2.txt", oldText: "alpha", newText: "ONE\r\nTWO")
 
         XCTAssertFalse(result.isError, result.outputJSON)
         let got = try read("m2.txt")
@@ -242,10 +242,10 @@ final class EditFileReplacementFidelityCoverageTests: XCTestCase {
     ///
     /// RED: scan to `contentLines.count` instead of excluding the sentinel → the file becomes
     /// `X` with no trailing newline, silently un-terminating a text file under `ok:true`.
-    func testAnchorWithAPhantomTrailingBlankLine_isRefusedRatherThanEatingTheFinalNewline() throws {
+    func testAnchorWithAPhantomTrailingBlankLine_isRefusedRatherThanEatingTheFinalNewline() async throws {
         try writeFile("n.txt", "a\nb\n")
 
-        let result = runEdit(path: "n.txt", oldText: "a\nb\n\n", newText: "X")
+        let result = await runEdit(path: "n.txt", oldText: "a\nb\n\n", newText: "X")
 
         XCTAssertTrue(result.isError, result.outputJSON)
         XCTAssertEqual(try read("n.txt"), "a\nb\n")
@@ -257,10 +257,10 @@ final class EditFileReplacementFidelityCoverageTests: XCTestCase {
     /// RED: write the sentinel exclusion so it also refuses a REAL trailing blank line (e.g. a
     /// scan bound of `count - 2`) → this reds while the phantom-line test above still passes, so
     /// the pair fixes the boundary from both sides.
-    func testAnchorWithARealTrailingBlankLine_stillMatches() throws {
+    func testAnchorWithARealTrailingBlankLine_stillMatches() async throws {
         try writeFile("o.txt", "a\nb\n\n")
 
-        let result = runEdit(path: "o.txt", oldText: "a\nb\n\n", newText: "X")
+        let result = await runEdit(path: "o.txt", oldText: "a\nb\n\n", newText: "X")
 
         XCTAssertFalse(result.isError, result.outputJSON)
         XCTAssertEqual(try read("o.txt"), "X")
@@ -271,10 +271,10 @@ final class EditFileReplacementFidelityCoverageTests: XCTestCase {
     ///
     /// RED: exclude the sentinel by scanning to `count - oldLines.count` or otherwise
     /// over-narrowing → this ordinary end-of-file edit starts returning ANCHOR_NOT_FOUND.
-    func testAnchorEndingOnTheFinalRealLine_stillMatches() throws {
+    func testAnchorEndingOnTheFinalRealLine_stillMatches() async throws {
         try writeFile("p.txt", "a  \nb\n")
 
-        let result = runEdit(path: "p.txt", oldText: "a\nb", newText: "X\nY")
+        let result = await runEdit(path: "p.txt", oldText: "a\nb", newText: "X\nY")
 
         XCTAssertFalse(result.isError, result.outputJSON)
         XCTAssertEqual(try read("p.txt"), "X\nY\n")
@@ -298,11 +298,11 @@ final class EditFileReplacementFidelityCoverageTests: XCTestCase {
     ///
     /// RED: select the winner with a byte-literal search (e.g. over `utf8`) instead of
     /// `range(of:)` → the NFC anchor misses the NFD content and this edit is refused.
-    func testCharacterization_precomposedAnchorOverDecomposedContent_matchesOnTheExactPath() throws {
+    func testCharacterization_precomposedAnchorOverDecomposedContent_matchesOnTheExactPath() async throws {
         let decomposed = "let cafe\u{0301} = 1\nprint(cafe\u{0301})\n"
         try writeFile("nfd.swift", decomposed)
 
-        let result = runEdit(path: "nfd.swift", oldText: "caf\u{00E9} = 1", newText: "tea = 2")
+        let result = await runEdit(path: "nfd.swift", oldText: "caf\u{00E9} = 1", newText: "tea = 2")
 
         XCTAssertFalse(result.isError, result.outputJSON)
         let got = try read("nfd.swift")
@@ -319,10 +319,10 @@ final class EditFileReplacementFidelityCoverageTests: XCTestCase {
     ///
     /// RED: strip per matching line instead of bailing on the first non-matching one → the
     /// partially-stripped candidate matches and the file is edited under `ok:true`.
-    func testMixedGutterAnchor_doesNotMatchViaAPartialStrip() throws {
+    func testMixedGutterAnchor_doesNotMatchViaAPartialStrip() async throws {
         try writeFile("mx.txt", "Normal line\nTabbed data\n")
 
-        let result = runEdit(path: "mx.txt", oldText: "Normal line\n42\tTabbed data", newText: "X")
+        let result = await runEdit(path: "mx.txt", oldText: "Normal line\n42\tTabbed data", newText: "X")
 
         XCTAssertTrue(result.isError, result.outputJSON)
         XCTAssertTrue(result.outputJSON.contains("ANCHOR_NOT_FOUND"), result.outputJSON)
@@ -336,10 +336,10 @@ final class EditFileReplacementFidelityCoverageTests: XCTestCase {
     /// RED: make the replaceAll arm search with the raw `oldText` instead of the winner → zero
     /// occurrences of the gutter-carrying spelling exist in the file, `replacements_made`
     /// reads 0 and the file is written unchanged under `ok:true`.
-    func testReplaceAll_throughARepairedGutterAnchor_replacesEveryOccurrence() throws {
+    func testReplaceAll_throughARepairedGutterAnchor_replacesEveryOccurrence() async throws {
         try writeFile("ra.swift", "foo()\nbar()\nfoo()\n")
 
-        let result = runEdit(
+        let result = await runEdit(
             path: "ra.swift", oldText: "1\tfoo()", newText: "1\tqux()", replaceAll: true
         )
 

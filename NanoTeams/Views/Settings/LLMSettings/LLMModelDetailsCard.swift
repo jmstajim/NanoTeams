@@ -9,11 +9,22 @@ import SwiftUI
 struct LLMModelDetailsCard: View {
     @Bindable var config: StoreConfiguration
 
-    @State private var details: ModelLoadDetails?
-    @State private var isLoading = false
-    /// Generation counter so a slow probe from a previous (model, server,
-    /// provider) selection can't overwrite fresh results (CLAUDE.md #38).
-    @State private var fetchGeneration = 0
+    /// The probe and its result live in the catalog, which owns the client seam. This card
+    /// built `LLMClientRouter()` inline until 2026-08-24, with no seam at all — so the
+    /// `#Preview` of the sheet that hosts it probed a real server on appear.
+    ///
+    /// The generation counter that stood here (CLAUDE.md #38) went with it: the catalog keys
+    /// its results by `(url, provider, model)`, so a slow probe from a previous selection
+    /// lands in its own slot instead of racing for a single shared one.
+    @Environment(ModelCatalog.self) private var modelCatalog
+
+    private var details: ModelLoadDetails? {
+        modelCatalog.details(for: config.globalLLMConfig)
+    }
+
+    private var isLoading: Bool {
+        modelCatalog.isLoadingDetails(for: config.globalLLMConfig)
+    }
 
     /// Keyed on the endpoint COMMIT generation, not the live URL: the Settings URL
     /// field writes `llmBaseURLString` on every keystroke, so a URL-keyed task
@@ -99,16 +110,6 @@ struct LLMModelDetailsCard: View {
     }
 
     private func refresh() async {
-        guard !trimmedModelName.isEmpty else {
-            details = nil
-            return
-        }
-        fetchGeneration += 1
-        let expected = fetchGeneration
-        isLoading = true
-        let fetched = await LLMClientRouter().modelLoadDetails(config: config.globalLLMConfig)
-        guard fetchGeneration == expected else { return }
-        details = fetched
-        isLoading = false
+        await modelCatalog.loadDetails(for: config.globalLLMConfig)
     }
 }

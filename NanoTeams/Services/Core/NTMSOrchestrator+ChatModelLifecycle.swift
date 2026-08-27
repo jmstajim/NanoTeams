@@ -500,6 +500,51 @@ extension NTMSOrchestrator {
     /// EVERY request, so an unload that races a live step costs one reload, not
     /// a failure. A busy-check would trade that bounded reload for an unbounded
     /// leak: a step running on model B would pin model A forever.
+    /// Every place the app names a model on `base`, with a human-readable description of that
+    /// place — the enumerating counterpart of `modelIsStillReferenced`, which answers the same
+    /// question with a `Bool`.
+    ///
+    /// A `Bool` cannot say WHICH references exist, and that is what the downloaded-models
+    /// warning needs to distinguish "this folder is used" from "some reference could not be
+    /// matched to any folder". One walk, not two: `modelIsStillReferenced` is expressed through
+    /// this so the two can never disagree about what counts as a reference.
+    func referencedModelSites(base: String) -> [ModelReferenceResolver.Site] {
+        let normalizedBase = base.normalizedBaseURL
+        var sites: [ModelReferenceResolver.Site] = configuration.referencedModelSlots
+            .filter { $0.normalizedBase == normalizedBase && !$0.modelName.isEmpty }
+            .map { .init(modelName: $0.modelName, description: "Your LLM settings currently use this model.") }
+
+        let globalModel = configuration.llmModelName
+        let globalBase = configuration.llmBaseURLString
+
+        func resolved(_ override: LLMOverride?) -> String? {
+            guard let override, !override.isEmpty else { return nil }
+            let roleModel = Self.inherited(override.modelName, fallback: globalModel)
+            let roleBase = Self.inherited(override.baseURLString, fallback: globalBase)
+            guard roleBase.normalizedBaseURL == normalizedBase, !roleModel.isEmpty else { return nil }
+            return roleModel
+        }
+
+        for team in snapshot?.projection.teams ?? [] {
+            for role in team.roles {
+                if let m = resolved(role.llmOverride) {
+                    sites.append(.init(modelName: m, description: "A team role currently uses this model."))
+                }
+            }
+        }
+        // Generated teams live on the task, not in `teams`. The ACTIVE task is deliberately
+        // absent from `loadedTasks` (`loadedTask()` special-cases it), so it is checked
+        // explicitly — its generated roster deserves the same protection.
+        for roster in [activeTask?.generatedTeam] + (snapshot?.loadedTasks.values.map(\.generatedTeam) ?? []) {
+            for role in roster?.roles ?? [] {
+                if let m = resolved(role.llmOverride) {
+                    sites.append(.init(modelName: m, description: "A generated team role currently uses this model."))
+                }
+            }
+        }
+        return sites
+    }
+
     func modelIsStillReferenced(_ model: String, base: String) -> Bool {
         if configuration.referencesModel(model, base: base) { return true }
 

@@ -27,8 +27,8 @@ nonisolated struct GitAddTool: ToolHandler {
         Self(workFolderRoot: dependencies.workFolderRoot, resolver: dependencies.resolver)
     }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             // I4: surface every accepted alias so a model that emits an
             // unrecognized argument shape ({"foos": [...]}) sees the full set of
             // acceptable keys instead of just `paths`. The single-valued aliases
@@ -107,8 +107,8 @@ nonisolated struct GitCommitTool: ToolHandler {
         Self(workFolderRoot: dependencies.workFolderRoot)
     }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let message = try requiredString(args, "message")
             let amend = optionalBool(args, "amend", default: false)
 
@@ -193,8 +193,8 @@ nonisolated struct GitPullTool: ToolHandler {
         Self(workFolderRoot: dependencies.workFolderRoot)
     }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let remote = optionalString(args, "remote") ?? "origin"
             let branch = optionalString(args, "branch")
             let rebase = optionalBool(args, "rebase", default: false)
@@ -321,8 +321,8 @@ nonisolated struct GitStashTool: ToolHandler {
         Self(workFolderRoot: dependencies.workFolderRoot)
     }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let action = try requiredString(args, "action")
             let message = optionalString(args, "message")
             let index = optionalInt(args, "index")

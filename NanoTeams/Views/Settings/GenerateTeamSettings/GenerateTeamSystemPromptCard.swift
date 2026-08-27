@@ -36,7 +36,7 @@ struct GenerateTeamSystemPromptCard: View {
                     TextEditor(text: $config.teamGenSystemPrompt)
                         .font(Typography.caption)
                         .frame(minHeight: 280)
-                        .borderedTextEditorStyle()
+                        .inputSurface(.editor)
                 }
 
                 HStack {

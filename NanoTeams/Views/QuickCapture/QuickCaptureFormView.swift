@@ -1,5 +1,8 @@
 import QuickLook
 import SwiftUI
+#if DEBUG
+import Synchronization
+#endif
 import UniformTypeIdentifiers
 
 // MARK: - Supervisor Answer Payload
@@ -25,6 +28,41 @@ enum QuickCaptureMode {
     case supervisorAnswer(payload: SupervisorAnswerPayload)
     /// Task is running (LLM working) — overlay shows a loader
     case taskWorking(roleName: String, isChatMode: Bool)
+    /// The task's run start is claimed but has not reached `engine.start()` yet — the
+    /// agent-instruction and role-skill rescans that feed the first prompt, then the
+    /// engine coming up.
+    ///
+    /// A CASE and not a flag on `.taskWorking` (CLAUDE.md #95): the two are mutually
+    /// exclusive, because "the engine is running" is exactly what this one is waiting
+    /// for, and this phase has no role to name — the engine has not picked one. A
+    /// `taskWorking(roleName:isChatMode:isInitializing:)` would have spelled the
+    /// impossible combination "initializing, by the Software Engineer".
+    ///
+    /// Everything a live-task mode does with the composer it does here identically —
+    /// ask through `liveTaskChatMode`, never by destructuring one of the two.
+    case taskInitializing(isChatMode: Bool)
+
+    /// The chat-mode flag of the two modes that watch a LIVE task, or `nil` for the
+    /// modes that watch none.
+    ///
+    /// Six call sites used to ask this by destructuring `.taskWorking` alone — the
+    /// composer's bucket binding, the draft restore, the handoff, submit enablement.
+    /// Each would have been a place to forget `.taskInitializing`, and a guard placed at
+    /// some of N sites is a coincidence rather than a defence (CLAUDE.md #51). Asked
+    /// once, it cannot be forgotten once.
+
+    /// `nonisolated` because `QuickCapturePresentationPolicy` is: the policy is pure and
+    /// callable from tests without hopping to the main actor, and this accessor only
+    /// reads `self`. Pattern-matching the enum inline was nonisolated for free; a
+    /// computed property inherits the type's implicit `@MainActor` unless it says so.
+    nonisolated var liveTaskChatMode: Bool? {
+        switch self {
+        case .overlay, .supervisorAnswer:
+            return nil
+        case .taskWorking(_, let isChatMode), .taskInitializing(let isChatMode):
+            return isChatMode
+        }
+    }
 
     /// Will the rendered form for this mode include a focusable text field?
     /// Drives `QuickCapturePanel.show(expectsFocusableField:)` so the focus-
@@ -35,7 +73,7 @@ enum QuickCaptureMode {
         switch self {
         case .overlay, .supervisorAnswer:
             return true
-        case .taskWorking(_, let isChatMode):
+        case .taskWorking(_, let isChatMode), .taskInitializing(let isChatMode):
             return isChatMode
         }
     }
@@ -62,7 +100,7 @@ enum QuickCaptureMode {
             return false
         case .supervisorAnswer:
             return true
-        case .taskWorking(_, let isChatMode):
+        case .taskWorking(_, let isChatMode), .taskInitializing(let isChatMode):
             // Non-chat working is a loader with no composer at all. Neither pair is
             // visible; the task draft is the one the user will eventually submit, so it is
             // the only destination a stray capture can honestly belong to.
@@ -125,17 +163,13 @@ struct QuickCaptureFormView: View {
         return nil
     }
 
-    private var isWorkingMode: Bool {
-        if case .taskWorking = mode { return true }
-        return false
-    }
+    /// The overlay is watching a live task — running, or its run start in flight.
+    private var isWorkingMode: Bool { mode.liveTaskChatMode != nil }
 
     /// True when the overlay is working on a chat-mode task. Enables the queue composer
-    /// so the user can line up their next message while the LLM is still streaming.
-    private var isChatWorkingMode: Bool {
-        if case .taskWorking(_, let isChatMode) = mode { return isChatMode }
-        return false
-    }
+    /// so the user can line up their next message while the LLM is still streaming — or,
+    /// during `.taskInitializing`, before it has begun.
+    private var isChatWorkingMode: Bool { mode.liveTaskChatMode == true }
 
     private var availableTeams: [Team] {
         store.snapshot?.workFolder.teams ?? [Team.default]
@@ -278,10 +312,11 @@ struct QuickCaptureFormView: View {
                 text: $formState.answerText,
                 attachments: $formState.answerAttachments,
                 clips: $formState.answerClippedTexts,
+                showsSkillsPicker: true,
                 placeholder: "Type your answer...",
                 canSubmit: canSubmit,
                 isSubmitting: false,
-                onSubmit: handleSubmit,
+                onSubmit: onSubmit,
                 onStageAttachment: { url in store.stageAttachment(url: url, draftID: activeDraftID) },
                 onRemoveAttachment: { attachment in store.removeStagedAttachment(attachment) },
                 filePickerBinding: $isShowingFilePicker,
@@ -311,10 +346,11 @@ struct QuickCaptureFormView: View {
                 text: $formState.supervisorTask,
                 attachments: $formState.attachments,
                 clips: $formState.clippedTexts,
+                showsSkillsPicker: true,
                 placeholder: taskFieldPlaceholder,
                 canSubmit: canSubmit,
                 isSubmitting: false,
-                onSubmit: handleSubmit,
+                onSubmit: onSubmit,
                 onStageAttachment: { url in store.stageAttachment(url: url, draftID: activeDraftID) },
                 onRemoveAttachment: { attachment in store.removeStagedAttachment(attachment) },
                 filePickerBinding: $isShowingFilePicker,
@@ -333,6 +369,8 @@ struct QuickCaptureFormView: View {
         Group {
             if let payload = answerPayload {
                 overlayHeaderRow { SupervisorAnswerHeaderView(payload: payload) }
+            } else if case .taskInitializing = mode {
+                overlayHeaderRow { workingHeader(caption: RunInitializationDisplay.caption) }
             } else if case .taskWorking(let roleName, _) = mode {
                 overlayHeaderRow { workingHeader(roleName: roleName) }
             } else {
@@ -485,8 +523,12 @@ struct QuickCaptureFormView: View {
     // MARK: - Task Working
 
     private func workingHeader(roleName: String) -> some View {
+        workingHeader(caption: roleName.isEmpty ? "Thinking…" : "\(roleName) is thinking…")
+    }
+
+    private func workingHeader(caption: String) -> some View {
         HStack(spacing: Spacing.s) {
-            Text(roleName.isEmpty ? "Thinking…" : "\(roleName) is thinking…")
+            Text(caption)
                 .font(Typography.termMd)
                 .foregroundStyle(Colors.textSecondary)
                 .lineLimit(1)
@@ -544,12 +586,13 @@ struct QuickCaptureFormView: View {
                     text: $formState.answerText,
                     attachments: $formState.answerAttachments,
                     clips: $formState.answerClippedTexts,
+                    showsSkillsPicker: true,
                     placeholder: formState.hasQueuedMessage(for: taskID)
                         ? "Replace queued message..."
                         : "Type to queue a message...",
                     canSubmit: canSubmit,
                     isSubmitting: false,
-                    onSubmit: handleSubmit,
+                    onSubmit: onSubmit,
                     onStageAttachment: { url in store.stageAttachment(url: url, draftID: activeDraftID) },
                     onRemoveAttachment: { attachment in store.removeStagedAttachment(attachment) },
                     filePickerBinding: $isShowingFilePicker,
@@ -596,14 +639,21 @@ struct QuickCaptureFormView: View {
     /// spacers stay outside TimelineView so they aren't rebuilt on every tick.
     private var streamingPreviewLine: some View {
         TimelineView(.periodic(from: .now, by: reduceMotion ? 1.0 : 0.15)) { _ in
-            Text(currentStreamingLine ?? "")
+            // ONE evaluation per tick. `currentStreamingLine` was spelled twice — once
+            // for the `Text` and once as the `.animation(_, value:)` argument — and a
+            // modifier's value argument is evaluated on every body pass just like the
+            // content is (CLAUDE.md #113, one modifier over). At 6.7 Hz over a buffer
+            // that grows for the whole model turn, the second evaluation was pure waste
+            // paid to SUPPRESS an animation.
+            let line = currentStreamingLine ?? ""
+            Text(line)
                 .font(Typography.caption)
                 .foregroundStyle(Colors.textSecondary)
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .frame(maxWidth: .infinity, alignment: .center)
                 .padding(.horizontal, Spacing.m)
-                .animation(nil, value: currentStreamingLine)
+                .animation(nil, value: line)
         }
     }
 
@@ -642,11 +692,8 @@ struct QuickCaptureFormView: View {
         if let content, let line = lastNonEmptyLine(in: content) {
             return line
         }
-        if let thinking {
-            let cleaned = ModelTokenCleaner.stripTokens(thinking)
-            if let line = lastNonEmptyLine(in: cleaned) {
-                return line
-            }
+        if let thinking, let line = lastNonEmptyCleanedLine(in: thinking) {
+            return line
         }
         return nil
     }
@@ -673,12 +720,63 @@ struct QuickCaptureFormView: View {
     /// Returns the last non-empty trimmed line from a multi-line streaming chunk,
     /// or nil if the text is empty/whitespace-only. Picking the last line shows the
     /// user what was most recently appended rather than a stale first heading.
+    ///
+    /// Walks BACKWARDS. The spelling this replaces was
+    /// `text.trimmingCharacters(…).split(whereSeparator: \.isNewline).reversed()`, which
+    /// allocates a full copy of the buffer AND an array of every line in it to answer a
+    /// question about the tail. This runs inside a `TimelineView(.periodic(by: 0.15))`
+    /// over a buffer that grows for the length of a model turn — Θ(N) per tick at 6.7 Hz
+    /// is Θ(N²) across the turn, on the MainActor, and it is paid even when nothing
+    /// changed because the driver is a timer, not an event.
     private static func lastNonEmptyLine(in text: String) -> String? {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        for line in trimmed.split(whereSeparator: \.isNewline).reversed() {
-            let s = line.trimmingCharacters(in: .whitespaces)
-            if !s.isEmpty { return String(s) }
+        lastNonEmptyLine(in: text) { String($0) }
+    }
+
+    /// `lastNonEmptyLine` with Harmony tokens stripped from the CANDIDATE line rather
+    /// than from the whole buffer (`appendThinking` in `StreamingPreviewManager` skips
+    /// the cleaner that `append` applies, so thinking arrives raw).
+    ///
+    /// Per-line stripping is equivalent to stripping the whole buffer and then taking the
+    /// last non-empty line, because `ModelTokenCleaner` refuses to delete any span
+    /// carrying a newline (`isTokenSpan`): every span it removes lies inside one line, so
+    /// a pass started at a line boundary pairs openers with closers exactly as the
+    /// whole-buffer pass does over that line. That is an argument, and an earlier wave
+    /// was wrong with the same one about a windowed EDIT — so it is MEASURED instead, by
+    /// randomised token-dense vectors in `QuickCaptureFormViewLogicTests`.
+    ///
+    /// The fallback to the previous line is load-bearing: a line that is nothing but a
+    /// sentinel becomes empty once stripped, and the pre-strip walk would otherwise stop
+    /// on it and show a blank preview.
+    private static func lastNonEmptyCleanedLine(in text: String) -> String? {
+        lastNonEmptyLine(in: text) { ModelTokenCleaner.stripTokens(String($0)) }
+    }
+
+    /// Shared backward walk: last line whose `transform` leaves something non-blank.
+    ///
+    /// The inner scan is spelled as an explicit index loop rather than
+    /// `lastIndex(where: \.isNewline)` so the characters it examines can be COUNTED —
+    /// the property this whole change exists for is invisible in the returned value
+    /// (both spellings return the same line), so it needs a work bound, and a work bound
+    /// needs a counter inside the mechanism (CLAUDE.md #62).
+    private static func lastNonEmptyLine(
+        in text: String, transform: (Substring) -> String
+    ) -> String? {
+        var end = text.endIndex
+        while end > text.startIndex {
+            var lineStart = end
+            while lineStart > text.startIndex {
+                let previous = text.index(before: lineStart)
+                #if DEBUG
+                StreamingLineScanProbe.noteExamined()
+                #endif
+                if text[previous].isNewline { break }
+                lineStart = previous
+            }
+            let candidate = transform(text[lineStart..<end])
+                .trimmingCharacters(in: .whitespaces)
+            if !candidate.isEmpty { return candidate }
+            guard lineStart > text.startIndex else { break }
+            end = text.index(before: lineStart)
         }
         return nil
     }
@@ -714,10 +812,15 @@ struct QuickCaptureFormView: View {
         QuickCaptureFormLogic.taskFieldPlaceholder(for: selectedTeam)
     }
 
-    // Flushes any pending dictation (so the last spoken words land before
-    // submit) and cancels it on Escape (so the mic doesn't keep recording
-    // after the panel closes).
-    private func handleSubmit() { dictation.flushAndThen(onSubmit) }
+    // Cancels dictation on Escape, so the mic doesn't keep recording after the
+    // panel closes.
+    //
+    // There is deliberately no `handleSubmit` twin. Every submit here goes through
+    // `MessageComposer`, which already flushes pending dictation before calling
+    // `onSubmit` — wrapping it a second time only meant the outer call always found
+    // the session idle (the inner flush had just reset it) and spent an extra
+    // MainActor hop on the button's hot path to discover that. One owner of the
+    // flush, and it is the composer that owns the field being dictated into.
     private func handleCancel() { dictation.flushAndThen(onCancel) }
 
     // MARK: - Settings Menu
@@ -777,4 +880,21 @@ extension QuickCaptureFormView {
     }
 }
 
+#endif
+
+#if DEBUG
+/// Work-bound seam for the Quick Capture streaming preview's backward line walk: how
+/// many characters it EXAMINED since the last reset.
+///
+/// The preview is driven by `TimelineView(.periodic(by: 0.15))` — a timer, not an event —
+/// over a buffer that grows for the length of a model turn. The spelling this replaced
+/// (`trimmingCharacters` + `split(whereSeparator:)` over the whole buffer, TWICE per tick)
+/// returned exactly the same line, so no behavioural test can tell the two apart. Only a
+/// count can, and it has to be taken inside the walk (CLAUDE.md #62).
+nonisolated enum StreamingLineScanProbe {
+    private static let _examined = Atomic<Int>(0)
+    static func noteExamined() { _examined.wrappingAdd(1, ordering: .relaxed) }
+    static func examined() -> Int { _examined.load(ordering: .relaxed) }
+    static func reset() { _examined.store(0, ordering: .relaxed) }
+}
 #endif

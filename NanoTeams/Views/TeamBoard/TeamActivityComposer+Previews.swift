@@ -3,7 +3,7 @@ import SwiftUI
 // MARK: - Preview
 
 #Preview("Composer — no pending question (chat)") {
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
+    @Previewable @State var store = PreviewStore.make()
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var dictation = DictationService()
     TeamActivityComposer(
@@ -24,7 +24,7 @@ import SwiftUI
 }
 
 #Preview("Composer — queued messages") {
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
+    @Previewable @State var store = PreviewStore.make()
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var dictation = DictationService()
     let roles = Team.default.roles

@@ -42,7 +42,7 @@ final class QuickCaptureFormState {
     var selectedTeamID: NTMSID?
     var draftID: UUID = UUID()
     var attachments: [StagedAttachment] = []
-    var clippedTexts: [String] = []
+    var clippedTexts: [Clip] = []
 
     private func refreshHasSubmittableText() {
         let computed = !supervisorTask.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -64,7 +64,7 @@ final class QuickCaptureFormState {
     }
     private(set) var hasSubmittableAnswerText: Bool = false
     var answerAttachments: [StagedAttachment] = []
-    var answerClippedTexts: [String] = []
+    var answerClippedTexts: [Clip] = []
 
     @ObservationIgnored private(set) var isInAnswerMode: Bool = false
 
@@ -121,6 +121,29 @@ final class QuickCaptureFormState {
     /// the flush path's `popFirstQueuedMessage(matching: id)` don't depend on structural
     /// equality (which would misbehave when two messages have identical content).
     struct QueuedChatMessage: Equatable, Identifiable {
+        /// WHAT the entry is, as opposed to `isFromAutomatedSupervisor`'s WHO wrote it.
+        ///
+        /// The two axes are independent and both are load-bearing, which is why this is a
+        /// second field rather than a reinterpretation of the flag: `message_task` is
+        /// authored by the automated Supervisor AND is genuine Supervisor speech, so
+        /// "automated" cannot stand in for "system-authored". The author axis drives the
+        /// feed's "Auto-answered" badge and `autovisorHasPendingHumanContinuation`'s
+        /// supersede-vs-defer decision; this axis decides only how
+        /// `consumeQueuedSupervisorMessage` renders the drained turn.
+        /// `nonisolated` so the pure composition helper that reads it
+        /// (`NTMSOrchestrator.composeQueuedDelivery`) stays off the main actor and unit-
+        /// testable — the enclosing `QuickCaptureFormState` is implicitly `@MainActor`.
+        nonisolated enum Kind: Equatable {
+            /// A Supervisor — human or automated — talking to a role. Drains with the
+            /// `Supervisor:` attribution marker and persists as `.supervisorMessage`.
+            case supervisorSpeech
+            /// The app's mid-review notice that folder state moved
+            /// (`NTMSOrchestrator.composeAutovisorEventNotice`). Drains UNMARKED, like every
+            /// other system notice, and persists as `.autovisorEvent` so the feed collapses
+            /// it to a one-line row instead of drawing a Supervisor bubble.
+            case autovisorEventNotice
+        }
+
         let id: UUID
         let text: String
         let attachments: [StagedAttachment]
@@ -135,6 +158,9 @@ final class QuickCaptureFormState {
         /// the feed's "Auto-answered" badge stays honest. Human enqueue paths
         /// (composer, QuickCapture, `sendMessageToAutovisor`) use the default `false`.
         let isFromAutomatedSupervisor: Bool
+        /// What this entry IS — see ``Kind``. Every human enqueue path and `message_task`
+        /// take the default; only the Autovisor's mid-review injection sets the notice kind.
+        let kind: Kind
         /// Monotonic timestamp — useful for diagnosing FIFO-order issues across task
         /// switches and for future "queued N seconds ago" UX.
         let createdAt: Date
@@ -156,6 +182,7 @@ final class QuickCaptureFormState {
             clippedTexts: [String],
             targetRoleID: String? = nil,
             isFromAutomatedSupervisor: Bool = false,
+            kind: Kind = .supervisorSpeech,
             id: UUID = UUID(),
             createdAt: Date = MonotonicClock.shared.now(),
             isRedelivery: Bool = false
@@ -170,6 +197,7 @@ final class QuickCaptureFormState {
             self.clippedTexts = clippedTexts
             self.targetRoleID = targetRoleID
             self.isFromAutomatedSupervisor = isFromAutomatedSupervisor
+            self.kind = kind
             self.createdAt = createdAt
             self.isRedelivery = isRedelivery
         }
@@ -202,7 +230,7 @@ final class QuickCaptureFormState {
                 if answerAttachments.isEmpty && answerClippedTexts.isEmpty,
                    let draft = answerDrafts[payload.taskID] {
                     answerAttachments = draft.attachments
-                    answerClippedTexts = draft.clippedTexts
+                    answerClippedTexts = [Clip].minting(draft.clippedTexts)
                 }
             }
             return
@@ -210,7 +238,7 @@ final class QuickCaptureFormState {
         if let draft = answerDrafts[payload.taskID] {
             answerText = draft.text
             answerAttachments = draft.attachments
-            answerClippedTexts = draft.clippedTexts
+            answerClippedTexts = [Clip].minting(draft.clippedTexts)
         } else {
             answerText = ""
             answerAttachments = []
@@ -250,7 +278,7 @@ final class QuickCaptureFormState {
         if let draft = answerDrafts[newPayload.taskID] {
             answerText = draft.text
             answerAttachments = draft.attachments
-            answerClippedTexts = draft.clippedTexts
+            answerClippedTexts = [Clip].minting(draft.clippedTexts)
         } else {
             answerText = ""
             answerAttachments = []
@@ -326,7 +354,7 @@ final class QuickCaptureFormState {
         guard let draft = answerDrafts[taskID] else { return }
         answerText = draft.text
         answerAttachments = draft.attachments
-        answerClippedTexts = draft.clippedTexts
+        answerClippedTexts = [Clip].minting(draft.clippedTexts)
     }
 
     // MARK: - Queued Chat Message API
@@ -466,7 +494,7 @@ final class QuickCaptureFormState {
         }
         // Chat-mode working lets the user queue the next message — same rules as answer mode.
         // Non-chat working has no composer, so submit is always disabled there.
-        if case .taskWorking(_, let isChatMode) = mode {
+        if let isChatMode = mode.liveTaskChatMode {
             guard isChatMode else { return false }
             return hasSubmittableAnswerText || !answerAttachments.isEmpty
                 || !answerClippedTexts.isEmpty
@@ -486,7 +514,7 @@ final class QuickCaptureFormState {
     /// True when at least one clip carries something other than whitespace. Same trim as
     /// `hasTaskDraftContent`, so the submit gate and the discard prompt agree.
     private var hasSubmittableClip: Bool {
-        clippedTexts.contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        clippedTexts.contains { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
 
     /// True when any task-draft content is present. Used to decide whether to show a
@@ -496,7 +524,7 @@ final class QuickCaptureFormState {
     var hasTaskDraftContent: Bool {
         !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || hasSubmittableText
-            || clippedTexts.contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            || clippedTexts.contains { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
             || !attachments.isEmpty
     }
 
@@ -510,7 +538,7 @@ final class QuickCaptureFormState {
             answerDrafts[taskID] = AnswerDraft(
                 text: answerText,
                 attachments: answerAttachments,
-                clippedTexts: answerClippedTexts
+                clippedTexts: answerClippedTexts.texts
             )
         }
     }

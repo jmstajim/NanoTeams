@@ -52,7 +52,7 @@ final class ToolsChangeRequestTests: XCTestCase {
 
     // MARK: - Valid Requests
 
-    func testRequestChanges_validRequest() {
+    func testRequestChanges_validRequest() async {
         let call = StepToolCall(
             name: "request_changes",
             argumentsJSON: """
@@ -63,14 +63,14 @@ final class ToolsChangeRequestTests: XCTestCase {
             }
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
         XCTAssertEqual(results[0].signal, .changeRequest(targetRole: "softwareEngineer", changes: "Add error handling for network failures", reasoning: "The current code silently fails on timeout"))
     }
 
-    func testRequestChanges_outputContainsPendingStatus() {
+    func testRequestChanges_outputContainsPendingStatus() async {
         let call = StepToolCall(
             name: "request_changes",
             argumentsJSON: """
@@ -81,14 +81,14 @@ final class ToolsChangeRequestTests: XCTestCase {
             }
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertTrue(results[0].outputJSON.contains("pending"))
     }
 
     // MARK: - Invalid Requests
 
-    func testRequestChanges_unknownTargetRole_delegatesToService() {
+    func testRequestChanges_unknownTargetRole_delegatesToService() async {
         // Unknown role IDs are no longer rejected at the tool level — validation is
         // delegated to LLMExecutionService+ChangeRequest which has team context.
         let call = StepToolCall(
@@ -101,14 +101,14 @@ final class ToolsChangeRequestTests: XCTestCase {
             }
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
         XCTAssertEqual(results[0].signal, .changeRequest(targetRole: "nonexistentRole", changes: "Fix stuff", reasoning: "Because"))
     }
 
-    func testRequestChanges_missingTargetRole() {
+    func testRequestChanges_missingTargetRole() async {
         let call = StepToolCall(
             name: "request_changes",
             argumentsJSON: """
@@ -118,14 +118,14 @@ final class ToolsChangeRequestTests: XCTestCase {
             }
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertTrue(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("INVALID_ARGS"))
     }
 
-    func testRequestChanges_missingChanges() {
+    func testRequestChanges_missingChanges() async {
         let call = StepToolCall(
             name: "request_changes",
             argumentsJSON: """
@@ -135,14 +135,14 @@ final class ToolsChangeRequestTests: XCTestCase {
             }
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertTrue(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("INVALID_ARGS"))
     }
 
-    func testRequestChanges_missingReasoning() {
+    func testRequestChanges_missingReasoning() async {
         let call = StepToolCall(
             name: "request_changes",
             argumentsJSON: """
@@ -152,7 +152,7 @@ final class ToolsChangeRequestTests: XCTestCase {
             }
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertTrue(results[0].isError)
@@ -161,7 +161,7 @@ final class ToolsChangeRequestTests: XCTestCase {
 
     // MARK: - Signaling Fields
 
-    func testRequestChanges_signalingFieldsNotSetOnOtherTools() {
+    func testRequestChanges_signalingFieldsNotSetOnOtherTools() async {
         let call = StepToolCall(
             name: "ask_teammate",
             argumentsJSON: """
@@ -171,7 +171,7 @@ final class ToolsChangeRequestTests: XCTestCase {
             }
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         // ask_teammate produces a teammateConsultation signal, not a changeRequest
         if case .changeRequest = results[0].signal { XCTFail("ask_teammate must not produce changeRequest signal") }

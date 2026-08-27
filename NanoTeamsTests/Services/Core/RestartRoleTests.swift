@@ -25,6 +25,11 @@ final class RestartRoleTests: NTMSOrchestratorTestBase, @unchecked Sendable {
             run.updatedAt = MonotonicClock.shared.now()
             task.runs = [run]
         }
+        // The run is hand-built, so its role ids never went through `findOrCreateStep`. See
+        // `registerRolesOnActiveTeam` — without this the fixture describes a run the app
+        // cannot create, and `restartRole` rightly refuses every id in it.
+        await registerRoles(
+            steps.map(\.effectiveRoleID) + Array(roleStatuses.keys), onTeamOf: taskID)
 
         return taskID
     }
@@ -180,23 +185,18 @@ final class RestartRoleTests: NTMSOrchestratorTestBase, @unchecked Sendable {
             roleStatuses: [pmRoleID: .done, sweRoleID: .done]
         )
 
-        // Configure team so SWE depends on PM's artifact
-        await sut.mutateWorkFolder { wf in
-            guard let teamIdx = wf.teams.indices.first else { return }
-            // Find or add PM role
-            if let pmIdx = wf.teams[teamIdx].roles.firstIndex(where: { $0.id == pmRoleID }) {
-                wf.teams[teamIdx].roles[pmIdx].dependencies.producesArtifacts = ["Product Requirements"]
-            } else {
-                let pmRole = TeamRoleDefinition(id: pmRoleID, name: "PM", prompt: "", toolIDs: [], usePlanningPhase: false, dependencies: RoleDependencies(requiredArtifacts: [], producesArtifacts: ["Product Requirements"]))
-                wf.teams[teamIdx].roles.append(pmRole)
-            }
-            if let sweIdx = wf.teams[teamIdx].roles.firstIndex(where: { $0.id == sweRoleID }) {
-                wf.teams[teamIdx].roles[sweIdx].dependencies.requiredArtifacts = ["Product Requirements"]
-            } else {
-                let sweRole = TeamRoleDefinition(id: sweRoleID, name: "SWE", prompt: "", toolIDs: [], usePlanningPhase: false, dependencies: RoleDependencies(requiredArtifacts: ["Product Requirements"], producesArtifacts: []))
-                wf.teams[teamIdx].roles.append(sweRole)
-            }
-        }
+        // Configure team so SWE depends on PM's artifact. `defineRole` upserts on the task's
+        // PINNED team — the fixture funnel already registered both ids there.
+        await defineRole(TeamRoleDefinition(
+            id: pmRoleID, name: "PM", prompt: "", toolIDs: [], usePlanningPhase: false,
+            dependencies: RoleDependencies(
+                requiredArtifacts: [], producesArtifacts: ["Product Requirements"])),
+        onTeamOf: taskID)
+        await defineRole(TeamRoleDefinition(
+            id: sweRoleID, name: "SWE", prompt: "", toolIDs: [], usePlanningPhase: false,
+            dependencies: RoleDependencies(
+                requiredArtifacts: ["Product Requirements"], producesArtifacts: [])),
+        onTeamOf: taskID)
 
         // Restart PM — should cascade to SWE
         await sut.restartRole(taskID: taskID, roleID: pmRoleID, comment: nil)
@@ -326,15 +326,18 @@ final class RestartRoleTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
         // SWE depends on PM's artifact → SWE is downstream of PM. PM requires an artifact
         // that is never produced, so neither role is ready after the reset (no re-spawn).
-        await sut.mutateWorkFolder { wf in
-            guard let teamIdx = wf.teams.indices.first else { return }
-            wf.teams[teamIdx].roles.append(TeamRoleDefinition(
-                id: pmRoleID, name: "PM", prompt: "", toolIDs: [], usePlanningPhase: false,
-                dependencies: RoleDependencies(requiredArtifacts: ["Upstream Doc"], producesArtifacts: ["Product Requirements"])))
-            wf.teams[teamIdx].roles.append(TeamRoleDefinition(
-                id: sweRoleID, name: "SWE", prompt: "", toolIDs: [], usePlanningPhase: false,
-                dependencies: RoleDependencies(requiredArtifacts: ["Product Requirements"], producesArtifacts: [])))
-        }
+        // `defineRole`, not `roles.append`: the fixture funnel already registered both ids, and
+        // a second entry with the same id would be shadowed by the first (dependency-free) one.
+        await defineRole(TeamRoleDefinition(
+            id: pmRoleID, name: "PM", prompt: "", toolIDs: [], usePlanningPhase: false,
+            dependencies: RoleDependencies(
+                requiredArtifacts: ["Upstream Doc"], producesArtifacts: ["Product Requirements"])),
+        onTeamOf: taskID)
+        await defineRole(TeamRoleDefinition(
+            id: sweRoleID, name: "SWE", prompt: "", toolIDs: [], usePlanningPhase: false,
+            dependencies: RoleDependencies(
+                requiredArtifacts: ["Product Requirements"], producesArtifacts: [])),
+        onTeamOf: taskID)
 
         let engine = sut.engineForTask(taskID)
         let pmStale = Task<Void, Never> {}; _ = await pmStale.value
@@ -432,14 +435,18 @@ final class RestartRoleTests: NTMSOrchestratorTestBase, @unchecked Sendable {
             roleStatuses: [pmRoleID: .done, sweRoleID: .done]
         )
 
-        // Configure dependency so SWE depends on PM
-        await sut.mutateWorkFolder { wf in
-            guard let teamIdx = wf.teams.indices.first else { return }
-            let pmRole = TeamRoleDefinition(id: pmRoleID, name: "PM", prompt: "", toolIDs: [], usePlanningPhase: false, dependencies: RoleDependencies(requiredArtifacts: [], producesArtifacts: ["Product Requirements"]))
-            wf.teams[teamIdx].roles.append(pmRole)
-            let sweRole = TeamRoleDefinition(id: sweRoleID, name: "SWE", prompt: "", toolIDs: [], usePlanningPhase: false, dependencies: RoleDependencies(requiredArtifacts: ["Product Requirements"], producesArtifacts: []))
-            wf.teams[teamIdx].roles.append(sweRole)
-        }
+        // Configure dependency so SWE depends on PM. Upsert, not append — a second entry with
+        // the same id is shadowed by the stub `createTaskWithRun` already registered.
+        await defineRole(TeamRoleDefinition(
+            id: pmRoleID, name: "PM", prompt: "", toolIDs: [], usePlanningPhase: false,
+            dependencies: RoleDependencies(
+                requiredArtifacts: [], producesArtifacts: ["Product Requirements"])),
+        onTeamOf: taskID)
+        await defineRole(TeamRoleDefinition(
+            id: sweRoleID, name: "SWE", prompt: "", toolIDs: [], usePlanningPhase: false,
+            dependencies: RoleDependencies(
+                requiredArtifacts: ["Product Requirements"], producesArtifacts: [])),
+        onTeamOf: taskID)
 
         await sut.restartRole(taskID: taskID, roleID: pmRoleID, comment: "Redo please")
 

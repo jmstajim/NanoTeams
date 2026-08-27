@@ -21,11 +21,17 @@ final class SupervisorTaskItemViewEquatableTests: XCTestCase {
 
     private static let baselineCreatedAt = Date(timeIntervalSince1970: 1_000)
 
-    private static func roleDef(id: String = "sup") -> TeamRoleDefinition {
+    private static func roleDef(
+        id: String = "sup",
+        name: String = "Supervisor",
+        icon: String = "crown",
+        iconColor: String = "#FFFFFF",
+        iconBackground: String = RoleColorDefaults.defaultHex
+    ) -> TeamRoleDefinition {
         TeamRoleDefinition(
-            id: id, name: "Supervisor", icon: "crown",
+            id: id, name: name, icon: icon,
             prompt: "", toolIDs: [], usePlanningPhase: false, dependencies: RoleDependencies(),
-            iconBackground: RoleColorDefaults.defaultHex
+            iconColor: iconColor, iconBackground: iconBackground
         )
     }
 
@@ -61,7 +67,10 @@ final class SupervisorTaskItemViewEquatableTests: XCTestCase {
         XCTAssertEqual(
             Self.makeCard(roleDefinition: Self.roleDef()),
             Self.makeCard(roleDefinition: Self.roleDef()),
-            "roleDefinition compares by id — two definitions with the same id must not break equality."
+            "roleDefinition compares by renderIdentity — two definitions built alike must "
+                + "stay equal. Note the fixture's createdAt/updatedAt differ between the two "
+                + "calls: that is the case FOR a presentation projection over a whole-struct "
+                + "comparison, which would over-fire on a timestamp nothing renders."
         )
     }
 
@@ -114,5 +123,42 @@ final class SupervisorTaskItemViewEquatableTests: XCTestCase {
         let a = Self.makeCard(onAvatarTap: { })
         let b = Self.makeCard(onAvatarTap: { })
         XCTAssertEqual(a, b, "onAvatarTap intentionally excluded from ==; closure-only diffs must not invalidate cache.")
+    }
+
+    // MARK: - Render granularity
+    //
+    // Each case renames or recolours the role WITHOUT changing its id — the
+    // Team-editor gesture. The body reads the changed field, so `==` must
+    // report a difference or `.equatable()` freezes the old pixels. An
+    // `id`-only comparison answers a question this view does not ask, and
+    // `TeamRoleDefinition.==` is itself an identity shortcut (CLAUDE.md #42),
+    // so it cannot stand in for "would this render differently" either.
+
+    func testNotEqual_whenRoleDefinitionNameDiffers() async {
+        XCTAssertNotEqual(
+            Self.makeCard(roleDefinition: Self.roleDef(name: "Alpha")),
+            Self.makeCard(roleDefinition: Self.roleDef(name: "Beta")),
+            "the view renders roleDefinition?.name — a rename must break ==")
+    }
+
+    func testNotEqual_whenRoleDefinitionIconDiffers() async {
+        XCTAssertNotEqual(
+            Self.makeCard(roleDefinition: Self.roleDef(icon: "hammer")),
+            Self.makeCard(roleDefinition: Self.roleDef(icon: "wrench")),
+            "the avatar renders roleDefinition?.icon")
+    }
+
+    func testNotEqual_whenRoleDefinitionIconBackgroundDiffers() async {
+        XCTAssertNotEqual(
+            Self.makeCard(roleDefinition: Self.roleDef(iconBackground: "#112233")),
+            Self.makeCard(roleDefinition: Self.roleDef(iconBackground: "#445566")),
+            "resolvedTintColor and resolvedIconBackground both read iconBackground")
+    }
+
+    func testNotEqual_whenRoleDefinitionIconColorDiffers() async {
+        XCTAssertNotEqual(
+            Self.makeCard(roleDefinition: Self.roleDef(iconColor: "#FFFFFF")),
+            Self.makeCard(roleDefinition: Self.roleDef(iconColor: "#000000")),
+            "iconColor is a presentation field — the projection covers the whole set")
     }
 }

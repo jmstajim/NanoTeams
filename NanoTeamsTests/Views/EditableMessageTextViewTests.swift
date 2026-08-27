@@ -647,12 +647,67 @@ final class EditableMessageTextViewTests: XCTestCase {
         }
         XCTAssertTrue(textView.isVerticallyResizable,
                       "Vertically-resizable textView is what NSScrollView watches for content overflow.")
-        XCTAssertTrue(scrollView.hasVerticalScroller,
-                      "NSScrollView needs the vertical scroller to be enabled or scrollRangeToVisible can't reveal off-screen caret.")
+        // No assertion on `hasVerticalScroller` here, in either direction. It once stood as
+        // `XCTAssertTrue`, justified as "or scrollRangeToVisible can't reveal off-screen caret" —
+        // a claim about BEHAVIOUR pinned through a flag, and measurement showed the flag does not
+        // carry it. The behaviour is pinned directly by `testCaretFollowingRevealsAnOffScreenCaret`
+        // below; re-adding a flag assertion in either direction restores the same proxy
+        // (CLAUDE.md #115).
         XCTAssertEqual(textView.string, "",
                        "Initial text from the binding must be applied during makeNSView.")
         XCTAssertNotNil(textView.layoutManager,
                         "TextKit 1 stack must be live — convenience NSTextView() can opt into TextKit 2 with nil layoutManager.")
+    }
+
+    /// The property the flag assertion above used to stand in for: does asking for the caret
+    /// bring the viewport with it?
+    ///
+    /// The old pin asserted `hasVerticalScroller == true` and explained it as "or
+    /// `scrollRangeToVisible` can't reveal off-screen caret" — a claim about behaviour, pinned
+    /// through a flag. The claim is directly checkable, and it is false: measured 2026-08-23, the
+    /// clip view moves with the scroller switched either way, so the flag never carried the
+    /// property (CLAUDE.md #115). The behaviour is measured here instead: type past the viewport,
+    /// put the caret at the end, ask for it, and require the clip view to have moved.
+    ///
+    /// RED against a text view that is not the scroll view's `documentView`, or one that is not
+    /// vertically resizable — the two wirings that genuinely do break this.
+    func testCaretFollowingRevealsAnOffScreenCaret() async throws {
+        let textBinding = MutableBoxBinding(initial: "")
+        let focusBinding = MutableBoxBinding(initial: false)
+        let view = EditableMessageTextView(
+            text: textBinding.binding,
+            isFocused: focusBinding.binding,
+            placeholder: "",
+            maxHeight: 220,
+            minLineCount: 1,
+            autofocusOnAppear: false,
+            onReturnKey: { _, _ in false }
+        )
+        let coordinator = view.makeCoordinator()
+        let scrollView = view.testHooks_makeNSView(coordinator: coordinator)
+        let textView = try XCTUnwrap(scrollView.documentView as? EditableNSTextView)
+
+        scrollView.frame = NSRect(x: 0, y: 0, width: 260, height: 120)
+        let window = NSWindow(contentRect: scrollView.frame, styleMask: [.borderless],
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = scrollView
+        textView.string = (1...200).map { "line \($0)" }.joined(separator: "\n")
+        textView.layoutManager?.ensureLayout(for: try XCTUnwrap(textView.textContainer))
+        window.layoutIfNeeded()
+
+        XCTAssertEqual(scrollView.contentView.bounds.origin.y, 0, accuracy: 0.5,
+                       "premise: the fixture starts at the top")
+        let end = NSRange(location: (textView.string as NSString).length, length: 0)
+        textView.setSelectedRange(end)
+        textView.scrollRangeToVisible(end)
+
+        XCTAssertGreaterThan(
+            scrollView.contentView.bounds.origin.y, 0,
+            "the caret at the end of 200 lines did not bring the viewport with it — this is the "
+                + "iMessage-style following the composer exists for, and it is what the old "
+                + "`hasVerticalScroller` assertion was standing in for")
+        window.close()
     }
 
     /// Initial text from the binding must reach the live NSTextView.

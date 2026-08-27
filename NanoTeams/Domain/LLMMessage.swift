@@ -100,6 +100,24 @@ nonisolated enum MessageSourceContext: String, Codable, CaseIterable {
     /// that renders RED, because the remedy (a full disk, a permissions problem) belongs to the
     /// human reading the feed, not to the model reading the turn.
     case runtimeWarning
+    /// The app's own notice that folder state moved WHILE the Autovisor manager was
+    /// mid-review — composed by `NTMSOrchestrator.composeAutovisorEventNotice` and injected
+    /// into the live pass through the queued-message pipeline.
+    ///
+    /// Split off from `.supervisorMessage`, which it used to borrow, and the split is the
+    /// whole point: that context means a Supervisor SPOKE (a human steering the run, or the
+    /// automated Supervisor's own `message_task`), and wearing it made the app's bookkeeping
+    /// render as a crowned Supervisor bubble the human never typed. Both still ride the same
+    /// queue — `QueuedChatMessage.Kind` is what the drain reads to tell them apart.
+    ///
+    /// The one system-authored context that is `carriesUnsolicitedInformation` — see there
+    /// for why it does not self-immunize the way `.toolAcknowledgement` does.
+    ///
+    /// Sent to the model UNMARKED, like every other system notice: no `Supervisor:` badge, no
+    /// delimiters. What identifies it on a flattened wire is its own opening line, which is
+    /// why that line is a shared constant (``autovisorEventNoticeHeader``) rather than a
+    /// literal at the compose site.
+    case autovisorEvent
     /// Text description of a screenshot, produced by the Vision model for a main model that
     /// cannot see images (`+ComputerUse`'s describe-then-tell path).
     ///
@@ -118,10 +136,20 @@ nonisolated enum MessageSourceContext: String, Codable, CaseIterable {
     /// "identical arguments N times and the state isn't changing" one turn after the model
     /// was told the state changed.
     ///
-    /// **The discriminator is UNSOLICITED, not "the world moved".** Only `.supervisorMessage`
-    /// qualifies: a queued Supervisor turn (human steering, the Autovisor's mid-review event
-    /// notice, `message_task`) or a parent role's `forward_to_team` injected into a child.
-    /// Nobody in the conversation asked for it.
+    /// **The discriminator is UNSOLICITED, not "the world moved".** Two contexts qualify, and
+    /// both arrive through the queued-message pipeline: `.supervisorMessage` — a queued
+    /// Supervisor turn (human steering, `message_task`) or a parent role's `forward_to_team`
+    /// injected into a child — and `.autovisorEvent`, the app's mid-review notice that folder
+    /// state moved while the manager was reviewing. Nobody in the conversation asked for
+    /// either.
+    ///
+    /// `.autovisorEvent` is the one SYSTEM-authored context on this side, and it does not
+    /// self-immunize the way the others would: the app composes it from folder state on a
+    /// cadence the manager does not control, so a manager spinning on `task_status` cannot
+    /// manufacture a boundary by spinning. That is exactly the property the paragraph below
+    /// demands of anything counted here, and exactly what `.toolAcknowledgement` and
+    /// `.runtimeWarning` lack — each of those is stamped strictly after the call that
+    /// produced it.
     ///
     /// Every other content-bearing context is the ANSWER TO A TOOL CALL THE MODEL MADE, and
     /// `commitCollaborationOutcome` / `recordAutoSupervisorAnswer` append it to the same
@@ -156,7 +184,7 @@ nonisolated enum MessageSourceContext: String, Codable, CaseIterable {
     /// produces, it disables the detector for that tool permanently).
     var carriesUnsolicitedInformation: Bool {
         switch self {
-        case .supervisorMessage:
+        case .supervisorMessage, .autovisorEvent:
             return true
         case .consultation, .meeting, .changeRequest, .supervisorAnswer,
              .delegatedQuestion, .delegationEscalation,
@@ -178,6 +206,7 @@ nonisolated enum MessageSourceContext: String, Codable, CaseIterable {
         .retryNudge: "retry",
         .toolAcknowledgement: "note",
         .runtimeWarning: "warning",
+        .autovisorEvent: "event",
         .screenDescription: "screen description",
     ]
 
@@ -203,6 +232,52 @@ nonisolated enum MessageSourceContext: String, Codable, CaseIterable {
     /// (`PromptBuilder` reads `step.messages`). Single source of truth across the
     /// write sites (`requestRevision`, `correctRole`) and the send site.
     static let supervisorFeedbackPrefix = "Supervisor Feedback: "
+
+    /// Delimiters wrapping a `.loopCorrection` turn (`LoopRecoveryPolicy.retryWithNudge`).
+    ///
+    /// **Wire-side purpose.** Both providers FLATTEN consecutive user-side turns into one
+    /// message (`OllamaClient.buildRequest` joins them with a blank line; the LM Studio
+    /// builder renders the same flat shape), and the correction is appended where the
+    /// looping generation was DISCARDED — so nothing assistant-side separates it from the
+    /// preceding `[Tool Result]` block and it would arrive as a trailing paragraph of that
+    /// block rather than as a turn of its own. Delimiting in the TEXT fixes both providers
+    /// at once; changing the merge would not — many chat templates render or drop
+    /// consecutive user messages badly, and diverging the two wire builders is its own bug
+    /// source. (No `handleNoToolCalls` nudge needs delimiters: each is appended
+    /// AFTER `processStreamingResult` has committed the assistant turn, which separates them.)
+    ///
+    /// **Why they live here** rather than on the policy that writes them: they are a
+    /// contract between a wire writer and a display reader — `displayContent` strips them
+    /// so the feed's one-line row is the correction's opening sentence and not a decorative
+    /// separator. One constant, both sides derived from it (CLAUDE.md #117); Domain cannot
+    /// reach into `Services/` for the writer's copy. Same reason `supervisorMessagePrefix`
+    /// and `supervisorAnswerPrefix` are here.
+    ///
+    /// The PERSISTED content keeps them: `ConversationReplay.rebuildFromDisplayRecord` reads
+    /// the raw `content` and `.loopCorrection` is the one system notice that really was sent,
+    /// so stripping at the write side would make the replayed wire diverge from the live one.
+    static let loopCorrectionBlockOpen = "--- LOOP CORRECTION ---"
+    static let loopCorrectionBlockClose = "--- END LOOP CORRECTION ---"
+
+    /// Opening line of an `.autovisorEvent` notice
+    /// (`NTMSOrchestrator.composeAutovisorEventNotice`).
+    ///
+    /// **Wire-side purpose.** The notice ships UNMARKED — no `Supervisor:` badge, matching
+    /// every other system notice — and both providers flatten consecutive user-side turns,
+    /// so this line is the only thing telling the manager where the app stopped relaying a
+    /// human and started reporting folder state. It is not decoration and is never stripped
+    /// from `content`: `ConversationReplay` replays the persisted text verbatim, and unlike
+    /// `.serverError` this notice really was sent.
+    ///
+    /// **Display-side purpose.** `SystemNoticePresentation` skips it when building the
+    /// collapsed row's one-line preview, so the glance shows the first bullet (what actually
+    /// happened) instead of a banner the row's own `system: event` label already states.
+    ///
+    /// One constant, both sides derived from it (CLAUDE.md #117) — same reason
+    /// `supervisorMessagePrefix` and the loop-correction delimiters live here rather than on
+    /// the `Services/` type that writes them, which `Domain` cannot reach.
+    static let autovisorEventNoticeHeader =
+        "Event update while you are reviewing — new since this pass started:"
 
     /// Normalizes incoming feedback to its RAW form: trims whitespace and strips a
     /// leading ``supervisorFeedbackPrefix`` if the author already included one — the
@@ -308,9 +383,38 @@ nonisolated struct LLMMessage: Codable, Identifiable, Hashable {
                 return String(content.dropFirst(prefix.count))
             }
             return content
+        case .loopCorrection:
+            return Self.strippingLoopCorrectionBlock(content)
         default:
             return content
         }
+    }
+
+    /// Removes the wire-side framing from a `.loopCorrection` body.
+    ///
+    /// The markers are addressed to the PROVIDER (see
+    /// ``MessageSourceContext/loopCorrectionBlockOpen``), and the feed row that renders this
+    /// turn is already labelled `system: loop correction` — so leaving them in made
+    /// `SystemNoticePresentation.previewLine`, which takes the first non-empty line, reduce the
+    /// row to `--- LOOP CORRECTION ---`: a preview that duplicated its own label and carried
+    /// nothing else.
+    ///
+    /// Each marker is dropped on its own merit rather than as a pair: a body carrying only one
+    /// of them should lose that one. Line-based, so a body of nothing but markers collapses to
+    /// empty (the row then renders label-only) and a body carrying neither is returned
+    /// unchanged — which is also what makes it idempotent, and what keeps corrections persisted
+    /// before the block existed rendering as they always did.
+    private static func strippingLoopCorrectionBlock(_ content: String) -> String {
+        var lines = content.components(separatedBy: .newlines)
+        if lines.first?.trimmingCharacters(in: .whitespaces)
+            == MessageSourceContext.loopCorrectionBlockOpen {
+            lines.removeFirst()
+        }
+        if lines.last?.trimmingCharacters(in: .whitespaces)
+            == MessageSourceContext.loopCorrectionBlockClose {
+            lines.removeLast()
+        }
+        return lines.joined(separator: "\n")
     }
 
     init(from decoder: Decoder) throws {

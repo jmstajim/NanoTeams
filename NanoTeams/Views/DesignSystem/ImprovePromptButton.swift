@@ -56,13 +56,11 @@ struct ImprovePromptButton: View {
     private var mainButton: some View {
         Button(action: primaryAction) {
             Image(systemName: session.isImproving ? "stop.fill" : "sparkles")
-                .font(Typography.termBase.weight(.medium))
                 .foregroundStyle(iconTint)
-                .frame(width: 28, height: 24)
                 .symbolEffect(.pulse, options: .repeating, isActive: session.isImproving)
                 .contentTransition(.symbolEffect(.replace))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.composerIcon)
         .disabled(!session.isImproving && !canImprove)
         .help(helpText)
         .accessibilityLabel(session.isImproving ? "Stop improving" : "Improve prompt")
@@ -103,20 +101,20 @@ struct ImprovePromptButton: View {
 
     // MARK: - Revert button
 
-    /// Mirrors `mainButton`'s metrics (same font, same 28×24 frame, same
-    /// `.plain` style) so the affordance row reads as one set of icons rather
-    /// than a bordered chip wedged between bare glyphs. The label is carried by
-    /// `.help` + `.accessibilityLabel`, which say more than the word did.
+    /// Takes its cell from `ComposerIconButtonStyle`, the same seam as `mainButton`
+    /// beside it, so the affordance row reads as one set of icons rather than a
+    /// bordered chip wedged between bare glyphs. (Until 2026-08-25 this comment
+    /// described a hand-copied recipe — "same font, same 28×24 frame, same `.plain`
+    /// style" — which is exactly the drift a shared seam removes.) The label is
+    /// carried by `.help` + `.accessibilityLabel`, which say more than the word did.
     /// Tint stays `textSecondary`: revert is subordinate to the accent-tinted
     /// improve action beside it.
     private var revertButton: some View {
         Button { session.revert() } label: {
             Image(systemName: "arrow.uturn.backward")
-                .font(Typography.termBase.weight(.medium))
                 .foregroundStyle(Colors.textSecondary)
-                .frame(width: 28, height: 24)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.composerIcon)
         .help("Restore the original prompt")
         .accessibilityLabel("Revert improved prompt")
         .transition(.opacity)
@@ -125,7 +123,7 @@ struct ImprovePromptButton: View {
 
 #Preview("Improve Prompt Button") {
     @Previewable @State var text = "make a calc"
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
+    @Previewable @State var store = PreviewStore.make()
     HStack {
         ImprovePromptButton(text: $text)
     }

@@ -3,7 +3,7 @@ import Foundation
 /// Where a discovered agent skill lives. Project = inside the open work folder;
 /// Global = under the user's home dir (`~/.claude/skills`, `~/.codex/prompts`, …).
 /// Shared vocabulary across the scanner, the clip codec, and the picker badge.
-nonisolated enum AgentSkillOrigin: String, Hashable, Sendable, CaseIterable {
+nonisolated enum AgentSkillOrigin: String, Codable, Hashable, Sendable, CaseIterable {
     case project
     case global
 

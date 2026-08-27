@@ -60,11 +60,17 @@ final class MeetingMessageItemEquatableTests: XCTestCase {
         )
     }
 
-    private static func roleDef(id: String = "swe") -> TeamRoleDefinition {
+    private static func roleDef(
+        id: String = "swe",
+        name: String = "Software Engineer",
+        icon: String = "chevron.left.forwardslash.chevron.right",
+        iconColor: String = "#FFFFFF",
+        iconBackground: String = RoleColorDefaults.defaultHex
+    ) -> TeamRoleDefinition {
         TeamRoleDefinition(
-            id: id, name: "Software Engineer", icon: "chevron.left.forwardslash.chevron.right",
+            id: id, name: name, icon: icon,
             prompt: "", toolIDs: [], usePlanningPhase: false, dependencies: RoleDependencies(),
-            iconBackground: RoleColorDefaults.defaultHex
+            iconColor: iconColor, iconBackground: iconBackground
         )
     }
 
@@ -199,5 +205,42 @@ final class MeetingMessageItemEquatableTests: XCTestCase {
         let a = Self.makeView(onAvatarTap: { })
         let b = Self.makeView(onAvatarTap: { })
         XCTAssertEqual(a, b, "onAvatarTap is intentionally excluded from ==.")
+    }
+
+    // MARK: - Render granularity
+    //
+    // Each case renames or recolours the role WITHOUT changing its id — the
+    // Team-editor gesture. The body reads the changed field, so `==` must
+    // report a difference or `.equatable()` freezes the old pixels. An
+    // `id`-only comparison answers a question this view does not ask, and
+    // `TeamRoleDefinition.==` is itself an identity shortcut (CLAUDE.md #42),
+    // so it cannot stand in for "would this render differently" either.
+
+    func testNotEqual_whenRoleDefinitionNameDiffers() async {
+        XCTAssertNotEqual(
+            Self.makeView(roleDefinition: Self.roleDef(name: "Alpha")),
+            Self.makeView(roleDefinition: Self.roleDef(name: "Beta")),
+            "the view renders roleDefinition?.name — a rename must break ==")
+    }
+
+    func testNotEqual_whenRoleDefinitionIconDiffers() async {
+        XCTAssertNotEqual(
+            Self.makeView(roleDefinition: Self.roleDef(icon: "hammer")),
+            Self.makeView(roleDefinition: Self.roleDef(icon: "wrench")),
+            "the avatar renders roleDefinition?.icon")
+    }
+
+    func testNotEqual_whenRoleDefinitionIconBackgroundDiffers() async {
+        XCTAssertNotEqual(
+            Self.makeView(roleDefinition: Self.roleDef(iconBackground: "#112233")),
+            Self.makeView(roleDefinition: Self.roleDef(iconBackground: "#445566")),
+            "resolvedTintColor and resolvedIconBackground both read iconBackground")
+    }
+
+    func testNotEqual_whenRoleDefinitionIconColorDiffers() async {
+        XCTAssertNotEqual(
+            Self.makeView(roleDefinition: Self.roleDef(iconColor: "#FFFFFF")),
+            Self.makeView(roleDefinition: Self.roleDef(iconColor: "#000000")),
+            "iconColor is a presentation field — the projection covers the whole set")
     }
 }

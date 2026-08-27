@@ -264,7 +264,7 @@ struct RoleEditorSheet: View {
 }
 
 #Preview {
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
+    @Previewable @State var store = PreviewStore.make()
     RoleEditorSheet(
         team: .constant(.default),
         mode: .create,

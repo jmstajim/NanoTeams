@@ -16,8 +16,14 @@ final class AutovisorWakeDecisionTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func sum(_ id: Int, _ status: TaskStatus, chat: Bool = false) -> TaskSummary {
-        TaskSummary(id: id, title: "t\(id)", status: status, isChatMode: chat)
+    /// `waiting` is the DURABLE "someone is owed a Supervisor answer" fact
+    /// (`TaskSummary.hasPendingSupervisorInput`), deliberately tri-state: `nil` is an
+    /// index row written before the field existed, which is not the same as `false`.
+    private func sum(
+        _ id: Int, _ status: TaskStatus, chat: Bool = false, waiting: Bool? = nil
+    ) -> TaskSummary {
+        TaskSummary(id: id, title: "t\(id)", status: status, isChatMode: chat,
+                    hasPendingSupervisorInput: waiting)
     }
 
     private func act(
@@ -123,6 +129,71 @@ final class AutovisorWakeDecisionTests: XCTestCase {
 
     func testNeedsSupervisor_off_noFire() {
         XCTAssertFalse(attn([sum(1, .running)], engine: [1: .needsSupervisorInput],
+                            activation: act(failed: true, completed: true), seen: [1]))
+    }
+
+    // MARK: - needsSupervisor reads the DURABLE fact, not only the engine mirror
+    //
+    // `taskEngineStates` is derived from step STATUS, and `StatusRecoveryService`
+    // rewrites a parked step to `.paused` at launch while leaving the durable
+    // `needsSupervisorInput` flag and the question intact — so the mirror says
+    // "answered" for a task that is still waiting. `TaskSummary.isWaitingForSupervisor`
+    // is the fact whose lifetime matches the question (CLAUDE.md #91).
+
+    func testNeedsSupervisor_durableFlag_noEngineEntry_fires() {
+        // The restart-recovered shape: the durable flag survives, the mirror does not
+        // exist at all. With no engine entry the mirror arm cannot mask this.
+        XCTAssertTrue(attn([sum(1, .paused, waiting: true)], engine: [:],
+                           activation: act(needsSupervisor: true), seen: [1]),
+                      "a task whose durable wait-fact is set must wake the manager even with no engine entry")
+    }
+
+    func testNeedsSupervisor_durableFlag_engineMirrorSaysPaused_fires() {
+        // `syncEngineStateFromRun` seeds `.paused` from the recovered derived status.
+        // Gating the durable arm on "no engine entry" would miss exactly this case.
+        XCTAssertTrue(attn([sum(1, .paused, waiting: true)], engine: [1: .paused],
+                           activation: act(needsSupervisor: true), seen: [1]),
+                      "the seeded `.paused` mirror must not suppress the durable wait-fact")
+    }
+
+    func testNeedsSupervisor_askCallLandedButParkNotYet_doesNotFire() {
+        // `hasActiveSupervisorInput` is `needsSupervisorInput || activeAskCall != nil`,
+        // so the durable fact flips true when the `ask_supervisor` CALL is appended —
+        // sub-second before `setNeedsSupervisorInput` writes the park. In that window
+        // `answer_task_question` (which matches the STORED flag) would fail, so the
+        // `.running` status vetoes the durable arm.
+        XCTAssertFalse(attn([sum(1, .running, waiting: true)], engine: [1: .running],
+                            activation: act(needsSupervisor: true), seen: [1]),
+                       "a still-running step with an ask call but no park is not answerable yet")
+    }
+
+    func testNeedsSupervisor_legacyUnknownRow_fallsBackToEngineMirror() {
+        // `hasPendingSupervisorInput == nil` is an index row older than the field. The
+        // mirror is the only answer it can give, so the arm must remain a union.
+        XCTAssertTrue(attn([sum(1, .paused, waiting: nil)], engine: [1: .needsSupervisorInput],
+                           activation: act(needsSupervisor: true), seen: [1]),
+                      "a legacy row with no durable fact must still fire via the engine mirror")
+    }
+
+    func testNeedsSupervisor_legacyUnknownRow_noEngineEntry_doesNotFire() {
+        // `.unknown` must not be read as "waiting" — that would wake the manager for
+        // every legacy row on the first launch after an upgrade.
+        XCTAssertFalse(attn([sum(1, .paused, waiting: nil)], engine: [:],
+                            activation: act(needsSupervisor: true), seen: [1]),
+                       "unknown is not waiting — a legacy row with no mirror must stay quiet")
+    }
+
+    func testNeedsSupervisor_durableFalse_engineSaysWaiting_stillFires() {
+        // The change is a pure WIDENING: the durable fact may only ADD wakes, never
+        // veto one the engine mirror already establishes.
+        XCTAssertTrue(attn([sum(1, .running, waiting: false)], engine: [1: .needsSupervisorInput],
+                           activation: act(needsSupervisor: true), seen: [1]),
+                      "a live parked engine must fire regardless of the durable fact")
+    }
+
+    func testNeedsSupervisor_durableFlag_off_noFire() {
+        // The activation toggle still gates the durable arm, not just the mirror one.
+        XCTAssertFalse(attn([sum(1, .paused, waiting: true)], engine: [:],
                             activation: act(failed: true, completed: true), seen: [1]))
     }
 
@@ -329,6 +400,22 @@ final class AutovisorWakeDecisionTests: XCTestCase {
         XCTAssertTrue(lines[0].contains("new since this pass started"))
         XCTAssertTrue(lines[1].contains("Task #1 \"A\""))
         XCTAssertTrue(lines[2].contains("Task #2 \"B\""))
+    }
+
+    /// The composer must emit the SHARED header constant, not a private literal.
+    ///
+    /// Two other places depend on that exact line: the notice ships unmarked, so it is what
+    /// identifies the turn once a provider flattens consecutive user messages, and
+    /// `SystemNoticePresentation` skips it when building the collapsed row's preview. A
+    /// literal here that drifted from the constant would leave the row showing the banner it
+    /// was supposed to hide, with nothing red anywhere.
+    ///
+    /// The constant's own text is pinned against a literal in `LLMMessageSourceContextTests`,
+    /// so this pair is anchored rather than self-referential.
+    func testCompose_headerIsTheSharedConstant() {
+        let notice = NTMSOrchestrator.composeAutovisorEventNotice(
+            [.init(taskID: 1, title: "A", trigger: .failed)])
+        XCTAssertTrue(notice.hasPrefix(MessageSourceContext.autovisorEventNoticeHeader + "\n"))
     }
 
     func testCompose_emptyItems_headerOnly() {

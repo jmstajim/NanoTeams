@@ -164,6 +164,183 @@ final class BashPermissionServiceTests: XCTestCase {
         XCTAssertTrue(isAllow(d))
     }
 
+    // MARK: - Read-only set membership — the class invariant
+    //
+    // These pin the CLASS, not the four instances found on 2026-08-25 (`command`,
+    // `arch`, `rg`/`ripgrep`, `yq`). A wrapper added to `readOnlyPrograms` next year
+    // is caught without anyone editing a test, which is the difference between
+    // closing a defect class and closing four bugs.
+
+    /// RED: re-add `"command"` to `BashConstants.readOnlyPrograms` → the disjointness
+    /// assertion fails naming it.
+    func testReadOnlySet_containsNoCommandWrapper() {
+        // Anti-vacuum first: a disjointness assertion against an EMPTY wrapper set is
+        // trivially true, so the pin would be green on nothing.
+        XCTAssertGreaterThan(BashConstants.commandWrappers.count, 10,
+                             "anti-vacuum: the wrapper set must actually enumerate the class")
+        for w in ["command", "sudo", "env", "arch", "xargs", "timeout"] {
+            XCTAssertTrue(BashConstants.commandWrappers.contains(w),
+                          "\(w) runs whatever is in its argv tail — it belongs to the class")
+        }
+
+        let overlap = BashConstants.readOnlyPrograms
+            .intersection(BashConstants.commandWrappers)
+        XCTAssertTrue(
+            overlap.isEmpty,
+            "these command wrappers are classified read-only, so `<wrapper> rm -rf x` "
+                + "auto-allows with neither judge nor human: \(overlap.sorted())"
+        )
+    }
+
+    /// RED: re-add `"yq"` to `readOnlyPrograms` → this fails.
+    ///
+    /// Deliberately a SEPARATE test from the wrapper row above: one property defended
+    /// by two lists stays green under either single mutation (CLAUDE.md #60), so a
+    /// combined assertion would let a re-added writer hide behind a healthy wrapper set.
+    func testReadOnlySet_containsNoInPlaceWriter() {
+        XCTAssertGreaterThan(BashConstants.writesWithoutRedirection.count, 4,
+                             "anti-vacuum: the writer set must actually enumerate the class")
+        for w in ["yq", "sed", "tee"] {
+            XCTAssertTrue(BashConstants.writesWithoutRedirection.contains(w),
+                          "\(w) mutates with no `>` on the line — it belongs to the class")
+        }
+
+        let overlap = BashConstants.readOnlyPrograms
+            .intersection(BashConstants.writesWithoutRedirection)
+        XCTAssertTrue(
+            overlap.isEmpty,
+            "these in-place writers are classified read-only, and the redirection check "
+                + "cannot see them because there is no `>`: \(overlap.sorted())"
+        )
+    }
+
+    /// RED: pass the unwidened `programs` to the deny lookup in `evaluate` → every row
+    /// of this loop fails, because a deny rule matches the leading program and the
+    /// leading program of `sudo rm -rf x` is `sudo`.
+    ///
+    /// Driven off the production set rather than a hand-written list, so a wrapper
+    /// added later is covered by this pin the day it is added.
+    func testEveryCommandWrapper_isDeniedThroughItsWrappedProgram() {
+        for wrapper in BashConstants.commandWrappers.sorted() {
+            let decision = BashPermissionService.evaluate(
+                command: "\(wrapper) rm -rf /tmp/x", policy: policy(deny: ["rm"])
+            )
+            XCTAssertTrue(
+                isDeny(decision),
+                "`\(wrapper) rm -rf /tmp/x` must be blocked by the user's `rm` deny rule; got \(decision)"
+            )
+        }
+    }
+
+    /// RED: drop the tail expansion from `denySegments` and pass raw segments → the
+    /// `^`-anchored glob misses the wrapped program.
+    func testCommandWrapper_globDenyMatchesTheWrappedTail() {
+        XCTAssertTrue(isDeny(BashPermissionService.evaluate(
+            command: "command rm -rf x", policy: policy(deny: ["rm *"])
+        )))
+        XCTAssertTrue(isDeny(BashPermissionService.evaluate(
+            command: "timeout 5 rm -rf x", policy: policy(deny: ["rm *"])
+        )), "a wrapper with an operand must still expose its tail")
+    }
+
+    /// RED: leave `"command"` in `readOnlyPrograms` → the `.semiAutomatic` and `.auto`
+    /// rows return `.allow`, i.e. `command rm -rf x` runs with no review at all.
+    func testCommandWrapper_isNeverAutoAllowedInAnyMode() {
+        for mode in BashExecutionMode.allCases {
+            let decision = BashPermissionService.evaluate(
+                command: "command ls", policy: policy(mode: mode)
+            )
+            XCTAssertFalse(
+                isAllow(decision),
+                "mode \(mode.rawValue): a wrapper must never reach the read-only bypass; got \(decision)"
+            )
+        }
+    }
+
+    /// RED: drop `usesCommandWrapper` from the step-3 carve-out → the `sudo` assertion
+    /// fails while the `echo` control below stays green, which is what distinguishes
+    /// "does not vouch for wrappers" from "stopped honouring allow rules".
+    func testBareAllowRule_doesNotVouchForAWrappedProgram() {
+        XCTAssertFalse(isAllow(BashPermissionService.evaluate(
+            command: "sudo rm -rf x", policy: policy(allow: ["sudo"])
+        )), "a bare `sudo` allow rule names the outer program, not what runs")
+
+        XCTAssertTrue(isAllow(BashPermissionService.evaluate(
+            command: "echo hi", policy: policy(allow: ["echo"])
+        )), "control: a bare allow rule for a non-wrapper still short-circuits")
+    }
+
+    /// The control (CLAUDE.md #56) that catches a carve-out over-fitted to today's wrapper
+    /// list: `git` does not run its argv tail as a command line, so a bare `git` allow rule
+    /// must keep working.
+    ///
+    /// RED: add `"git"` to `BashConstants.commandWrappers` → this fails while every wrapper
+    /// test above stays green. (An earlier draft used the no-mutation escape hatch here and
+    /// `RedMarkerPinTests` refused it, correctly: the edit is nameable, and naming it is what
+    /// makes this a control rather than a decoration.)
+    func testNonWrapperAllowRuleUnaffected() {
+        XCTAssertTrue(isAllow(BashPermissionService.evaluate(
+            command: "git status", policy: policy(allow: ["git"])
+        )))
+    }
+
+    // MARK: - Flag-gated read-only programs
+
+    /// RED: delete the `flagGatedReadOnlyPrograms` check from `isReadOnly` → `--pre`
+    /// auto-allows and `rg` becomes a command wrapper with no review.
+    func testFlagGated_unknownFlagFallsBackToReview() {
+        XCTAssertTrue(isAllow(BashPermissionService.evaluate(
+            command: "rg foo src/", policy: policy()
+        )), "the common case must stay fast — that is why rg is gated rather than removed")
+        XCTAssertTrue(isAllow(BashPermissionService.evaluate(
+            command: "rg -n -i foo src/", policy: policy()
+        )), "recognised flags, bundled or not, stay read-only")
+
+        XCTAssertFalse(isAllow(BashPermissionService.evaluate(
+            command: "rg --pre=sh foo", policy: policy()
+        )), "--pre spawns a process per file — ripgrep's own help says so")
+    }
+
+    /// RED: match long flags including their `=` payload → `--pre=sh` is tested as the
+    /// literal `--pre=sh`, which is not in the allowlist either, so this passes for the
+    /// WRONG reason; the mutation is visible only on a recognised flag with a payload.
+    func testFlagGated_longFlagMatchesUpToEquals() {
+        XCTAssertTrue(isAllow(BashPermissionService.evaluate(
+            command: "rg --max-count=3 foo", policy: policy()
+        )), "`--max-count=3` is the recognised flag `--max-count`")
+    }
+
+    /// RED: stop splitting bundled shorts and test `-nZ` as one token → it is not in the
+    /// allowlist, so this still refuses, but `-ni` would ALSO refuse; the pair is what
+    /// separates the two behaviours.
+    func testFlagGated_bundledShortsAreSplitPerCharacter() {
+        XCTAssertTrue(isAllow(BashPermissionService.evaluate(
+            command: "rg -ni foo", policy: policy()
+        )), "-ni is -n plus -i, both recognised")
+        XCTAssertFalse(isAllow(BashPermissionService.evaluate(
+            command: "rg -nZ foo", policy: policy()
+        )), "one unrecognised character disqualifies the bundle")
+    }
+
+    /// RED: make an unknown flag fall through to `.allow` (the fails-OPEN denylist shape
+    /// the user's decision explicitly rejected) → this fails.
+    func testFlagGated_failsClosedOnAFlagThatDoesNotExistYet() {
+        XCTAssertFalse(isAllow(BashPermissionService.evaluate(
+            command: "rg --some-flag-ripgrep-adds-in-2027 foo", policy: policy()
+        )), "an unknown flag must go to review, not be assumed harmless")
+    }
+
+    /// RED: drop the `writesWithoutRedirection` lookup from step 5 → the reason reverts
+    /// to the generic one and the human on the approval card is not told why a
+    /// harmless-looking command stopped short-circuiting.
+    func testAskReason_namesTheInPlaceWriter() {
+        let decision = BashPermissionService.evaluate(command: "yq -i x.yaml", policy: policy())
+        guard case .ask(let reason) = decision else {
+            return XCTFail("expected .ask, got \(decision)")
+        }
+        XCTAssertTrue(reason.contains("yq"), "the reason must name the offender; got \(reason)")
+    }
+
     // MARK: - Read-only bypass
 
     func testReadOnlyCommand_allowed() {

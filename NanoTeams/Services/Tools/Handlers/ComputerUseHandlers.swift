@@ -31,8 +31,8 @@ nonisolated struct ScreenCaptureTool: ToolHandler {
 
     static func makeInstance(dependencies _: ToolHandlerDependencies) -> Self { Self() }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let target = optionalString(args, "target").flatMap { $0.isEmpty ? nil : $0 } ?? "screen"
             let windowTitle = optionalString(args, "window_title").flatMap { $0.isEmpty ? nil : $0 }
             return signalResult(args: args, action: .capture(target: target, windowTitle: windowTitle))
@@ -69,8 +69,8 @@ nonisolated struct UIClickTool: ToolHandler {
 
     static func makeInstance(dependencies _: ToolHandlerDependencies) -> Self { Self() }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let x = try requiredInt(args, "x")
             let y = try requiredInt(args, "y")
             let button = ComputerUseAction.normalizedButton(optionalString(args, "button"))
@@ -106,8 +106,8 @@ nonisolated struct UITypeTool: ToolHandler {
 
     static func makeInstance(dependencies _: ToolHandlerDependencies) -> Self { Self() }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let text = optionalString(args, "text") ?? resolveContentString(args) ?? ""
             guard !text.isEmpty else {
                 return makeErrorResult(toolName: Self.name, args: args, code: .invalidArgs,
@@ -139,8 +139,8 @@ nonisolated struct UIKeyTool: ToolHandler {
 
     static func makeInstance(dependencies _: ToolHandlerDependencies) -> Self { Self() }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let keys = optionalString(args, "keys") ?? optionalString(args, "key") ?? ""
             guard !keys.isEmpty else {
                 return makeErrorResult(toolName: Self.name, args: args, code: .invalidArgs,
@@ -175,8 +175,8 @@ nonisolated struct UIScrollTool: ToolHandler {
 
     static func makeInstance(dependencies _: ToolHandlerDependencies) -> Self { Self() }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let x = try requiredInt(args, "x")
             let y = try requiredInt(args, "y")
             let dx = optionalInt(args, "dx") ?? 0

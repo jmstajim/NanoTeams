@@ -383,6 +383,46 @@ final class AutovisorTaskStatusArtifactTests: XCTestCase {
         XCTAssertEqual(byID[2], false)
     }
 
+    // MARK: - list_tasks waiting_for_supervisor
+
+    func testHandleListTasks_waitingTask_carriesWaitingForSupervisor() async throws {
+        // The manager is woken for a restart-recovered question whose derived status reads
+        // `paused` — and its own prompt says a paused task's remedy is `control_task resume`,
+        // which re-enters the step and re-asks. The row has to carry the wait fact itself.
+        let index = TasksIndex(tasks: [
+            TaskSummary(id: 1, title: "Waiting", status: .paused, hasPendingSupervisorInput: true),
+        ])
+        let projection = WorkFolderProjection(
+            state: WorkFolderState(name: "t"), settings: ProjectSettings(), teams: [])
+        mockDelegate.snapshot = WorkFolderContext(
+            projection: projection, tasksIndex: index, toolDefinitions: [])
+
+        struct Row: Decodable { let id: Int; let waiting_for_supervisor: Bool? }
+        struct Env: Decodable { struct D: Decodable { let tasks: [Row] }; let data: D }
+        let rows = try JSONDecoder().decode(Env.self, from: Data(await service.handleListTasks().utf8)).data.tasks
+        XCTAssertEqual(rows.first(where: { $0.id == 1 })?.waiting_for_supervisor, true,
+                       "a `paused` row that is still owed an answer must say so")
+    }
+
+    func testHandleListTasks_notWaitingTask_omitsTheField() async throws {
+        // Present-only-when-true (the `resumable` convention): an ABSENT value must never
+        // assert a state the payload cannot prove — a legacy index row knows nothing.
+        let index = TasksIndex(tasks: [
+            TaskSummary(id: 1, title: "Busy", status: .running, hasPendingSupervisorInput: false),
+            TaskSummary(id: 2, title: "Legacy", status: .paused, hasPendingSupervisorInput: nil),
+        ])
+        let projection = WorkFolderProjection(
+            state: WorkFolderState(name: "t"), settings: ProjectSettings(), teams: [])
+        mockDelegate.snapshot = WorkFolderContext(
+            projection: projection, tasksIndex: index, toolDefinitions: [])
+
+        struct Row: Decodable { let id: Int; let waiting_for_supervisor: Bool? }
+        struct Env: Decodable { struct D: Decodable { let tasks: [Row] }; let data: D }
+        let rows = try JSONDecoder().decode(Env.self, from: Data(await service.handleListTasks().utf8)).data.tasks
+        XCTAssertNil(rows.first(where: { $0.id == 1 })?.waiting_for_supervisor)
+        XCTAssertNil(rows.first(where: { $0.id == 2 })?.waiting_for_supervisor)
+    }
+
     // MARK: - chat_mode / role_kind wire fields
 
     func testHandleTaskStatus_chatModeTask_reportsChatModeTrue() async throws {

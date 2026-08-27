@@ -983,8 +983,9 @@ final class TeamActivityFeedLogicTests: XCTestCase {
                     for hasThinking in [false, true] {
                         for progress in [nil, .indeterminate, .fraction(0.42)] as [PromptProcessingStatus?] {
                             for activity in [false, true] {
-                                // Production never sets both: resolveImplicitStreamTarget
-                                // returns false for the live preview target. The
+                                // Production never sets both: the implicit-target term is
+                                // ANDed with `!scheduleIsStreaming`, so it is false for
+                                // the live preview target. The
                                 // `&& activity` conjunct is matrix pruning only (an
                                 // implicit target with no activity has no live
                                 // indicator candidates at all) — production does NOT
@@ -1599,8 +1600,8 @@ final class TeamActivityFeedLogicTests: XCTestCase {
 
     /// `step.status` flipping `.running` → `.paused` / `.done` without any count
     /// change (e.g. `pauseRun`, `finishAdvisoryRole`) must invalidate the hash —
-    /// otherwise the dispatcher's `resolveImplicitStreamTarget` keeps returning
-    /// `true` against a stale `cachedAllSteps[i].status`, and a residual
+    /// otherwise `implicitStreamTargetID(in:)` keeps naming a message from a
+    /// stale `cachedAllSteps[i].status`, and a residual
     /// `processingStatus` would mis-surface "Processing" on a paused step.
     func testComputeRunDataVersion_changesWhenStepStatusFlips() {
         let stepRunning = makeStep(status: .running)

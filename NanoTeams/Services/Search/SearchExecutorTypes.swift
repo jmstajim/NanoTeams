@@ -3,10 +3,18 @@ import Foundation
 /// Input bundle for a grep pass — used by both the plain `SearchTool` handler
 /// and the exploratory-search processor (which constrains the walk to a posting-hit
 /// set before invoking the executor).
-nonisolated struct SearchExecutorInput {
+///
+/// `Sendable` because `SearchExecutor.run` is `@concurrent` — the input crosses an executor
+/// boundary on every call. That is a statement about this value, not a formality: it is read by
+/// the walk and frozen into the per-file `SearchScanPlan` the scan tasks share.
+nonisolated struct SearchExecutorInput: Sendable {
     let workFolderRoot: URL
     let resolver: SandboxPathResolver
-    let fileManager: FileManager
+    /// `nonisolated(unsafe)` for the same narrow reason as `ToolHandlerDependencies.fileManager`,
+    /// which carries the full argument: Apple declined to mark `FileManager` because of its
+    /// DELEGATE, and nothing here sets one. Marking the property rather than the struct keeps the
+    /// check live for every other field.
+    nonisolated(unsafe) let fileManager: FileManager
     let queries: [String]
     let mode: SearchMode
     let paths: [String]?
@@ -26,6 +34,13 @@ nonisolated struct SearchExecutorInput {
     /// Optional restriction to a set of internal paths that should never be
     /// scanned (e.g. `.nanoteams/internal/`).
     let internalDir: URL?
+    /// How many candidate files may be scanned at once. `nil` uses
+    /// `SearchExecutor.defaultScanConcurrency`.
+    ///
+    /// Exists for tests, which need `1` to compare the parallel path against the sequential
+    /// ordering it must reproduce — a default that varies with the machine's core count cannot
+    /// be the baseline in a comparison the machine is one side of.
+    let scanConcurrency: Int?
 
     init(
         workFolderRoot: URL,
@@ -40,7 +55,8 @@ nonisolated struct SearchExecutorInput {
         maxResults: Int = 20,
         offset: Int = 0,
         constrainToFiles: [String]? = nil,
-        internalDir: URL? = nil
+        internalDir: URL? = nil,
+        scanConcurrency: Int? = nil
     ) {
         self.workFolderRoot = workFolderRoot
         self.resolver = resolver
@@ -55,6 +71,7 @@ nonisolated struct SearchExecutorInput {
         self.offset = offset
         self.constrainToFiles = constrainToFiles
         self.internalDir = internalDir
+        self.scanConcurrency = scanConcurrency
     }
 }
 
@@ -153,6 +170,26 @@ nonisolated struct SearchExecutorOutput {
         var globCompilations = 0
         /// Files the whole-buffer prefilter eliminated without a per-line pass.
         var filesPrefiltered = 0
+        /// Candidate scans dispatched to the parallel lane whose result the merge did NOT use —
+        /// re-scanned in order to honour a per-query cap, or dropped past the early exit.
+        ///
+        /// The speculation's waste, and deliberately an UPPER bound on wasted reads: a task
+        /// cancelled before it opened its file is counted here too. It exists because
+        /// `SearchExecutorCounterTests` is the suite that catches "faster, by reading ten times
+        /// as much" — a parallel scan that ran the whole tree ahead of a 20-match budget would
+        /// look identical in every other counter.
+        var speculativeScansDiscarded = 0
+
+        /// Adds the per-file counters of one candidate scan. Walk-level counters
+        /// (`dirsEnumerated`, `globCompilations`, `speculativeScansDiscarded`) are the driver's
+        /// and are deliberately absent: a per-candidate result has no walk.
+        mutating func addScanCounters(_ other: Stats) {
+            filesRead += other.filesRead
+            bytesScanned += other.bytesScanned
+            linesScanned += other.linesScanned
+            icuComparisons += other.icuComparisons
+            filesPrefiltered += other.filesPrefiltered
+        }
     }
 
     init(
@@ -228,14 +265,69 @@ nonisolated struct SearchScanResults {
     /// would otherwise flood `skipped`, while the count still separates "empty scope" from
     /// "scope held N unreadable binaries".
     var skippedBinaryCount = 0
+    /// Caveats about documents that WERE searched — a mid-document parse abort, an
+    /// unreadable worksheet, text cut at the extraction byte cap. Deduplicated on the way
+    /// in: these are per-format facts, so a folder of 50 oversize PDFs otherwise emits the
+    /// same sentence 50 times, which is the flood `skippedBinaryCount` already exists to
+    /// avoid one aisle over.
+    private(set) var documentWarnings: [String] = []
+    /// Membership half of `documentWarnings`, which keeps first-seen ORDER. Two structures
+    /// for one set of strings so neither job is done badly: a `contains` scan of the array
+    /// would run per warning per document, which is the per-file cost the dedup exists to
+    /// remove.
+    private var seenWarnings: Set<String> = []
     var stats = SearchExecutorOutput.Stats()
 
     init(queryCount: Int) {
         perQueryMatches = Array(repeating: [], count: queryCount)
     }
 
+    /// Records caveats raised while extracting one document, ignoring repeats.
+    mutating func noteWarnings(_ warnings: [String]) {
+        for warning in warnings where seenWarnings.insert(warning).inserted {
+            documentWarnings.append(warning)
+        }
+    }
+
     /// The page budget is full — stop walking.
     func budgetExhausted(_ plan: SearchScanPlan) -> Bool {
         totalMatchCount >= plan.collectBudget
+    }
+
+    /// Whether `candidate` — scanned in isolation, against EMPTY buckets and a zero total — is
+    /// the same result the sequential scan would have produced against `self`.
+    ///
+    /// The two decisions `scanFile` makes from shared state are the per-query cap
+    /// (`perQueryMatches[q].count < perQueryCap`, checked before every append) and the page
+    /// budget (`totalMatchCount >= collectBudget`, checked before every line). Neither fired
+    /// differently iff the merged totals stay within both limits: below them, a scan started
+    /// from zero takes exactly the branches a scan started from `self` would.
+    ///
+    /// With one query — the plain `search` path — `perQueryCap == collectBudget` and the bucket
+    /// IS the total, so this reduces to the budget test and fails at most once per run: the
+    /// candidate that fills the page. That one is re-scanned in order, which is what makes the
+    /// parallel output byte-identical rather than merely equivalent.
+    func canAdopt(_ candidate: SearchScanResults, plan: SearchScanPlan) -> Bool {
+        guard totalMatchCount + candidate.totalMatchCount <= plan.collectBudget else {
+            return false
+        }
+        for q in perQueryMatches.indices
+            where perQueryMatches[q].count + candidate.perQueryMatches[q].count > plan.perQueryCap {
+            return false
+        }
+        return true
+    }
+
+    /// Appends one candidate's scan result at its position in the walk.
+    mutating func adopt(_ candidate: SearchScanResults) {
+        for q in perQueryMatches.indices {
+            perQueryMatches[q].append(contentsOf: candidate.perQueryMatches[q])
+        }
+        totalMatchCount += candidate.totalMatchCount
+        perQueryBucketSaturated = perQueryBucketSaturated || candidate.perQueryBucketSaturated
+        skipped.append(contentsOf: candidate.skipped)
+        skippedBinaryCount += candidate.skippedBinaryCount
+        noteWarnings(candidate.documentWarnings)
+        stats.addScanCounters(candidate.stats)
     }
 }

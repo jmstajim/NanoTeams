@@ -23,12 +23,12 @@ final class DelegateToTeamHandlerTests: XCTestCase {
     private func invokeDelegate(
         runtime: ToolRuntime,
         args: [String: Any]
-    ) throws -> ToolExecutionResult {
+    ) async throws -> ToolExecutionResult {
         let workFolderRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("NanoTeams-delegate-ctx-\(UUID().uuidString)")
         let argsJSON = String(data: try JSONSerialization.data(withJSONObject: args), encoding: .utf8) ?? "{}"
         let call = StepToolCall(name: ToolNames.delegateToTeam, argumentsJSON: argsJSON)
-        let results = runtime.executeAll(
+        let results = await runtime.executeAll(
             context: ToolExecutionContext(
                 workFolderRoot: workFolderRoot,
                 taskID: 1, runID: 0, roleID: "pm"
@@ -75,21 +75,21 @@ final class DelegateToTeamHandlerTests: XCTestCase {
     /// the call proceeds; the downstream eligibility check produces the actionable
     /// `delegationDenied` envelope when the role isn't allowed to use generated teams.
     /// Strict `INVALID_ARGS — Missing required argument: team_id` was the prior contract.
-    func testMissingTeamID_defaultsToGeneratedSentinel() throws {
+    func testMissingTeamID_defaultsToGeneratedSentinel() async throws {
         let runtime = try makeRuntime()
-        let result = try invokeDelegate(runtime: runtime, args: ["task_brief": "Do X"])
+        let result = try await invokeDelegate(runtime: runtime, args: ["task_brief": "Do X"])
         assertDefaultedToSentinel(result, expectedBrief: "Do X")
     }
 
-    func testEmptyStringTeamID_defaultsToGeneratedSentinel() throws {
+    func testEmptyStringTeamID_defaultsToGeneratedSentinel() async throws {
         let runtime = try makeRuntime()
-        let result = try invokeDelegate(runtime: runtime, args: ["team_id": "", "task_brief": "Do X"])
+        let result = try await invokeDelegate(runtime: runtime, args: ["team_id": "", "task_brief": "Do X"])
         assertDefaultedToSentinel(result, expectedBrief: "Do X")
     }
 
-    func testWhitespaceTeamID_defaultsToGeneratedSentinel() throws {
+    func testWhitespaceTeamID_defaultsToGeneratedSentinel() async throws {
         let runtime = try makeRuntime()
-        let result = try invokeDelegate(runtime: runtime, args: ["team_id": "   ", "task_brief": "Do X"])
+        let result = try await invokeDelegate(runtime: runtime, args: ["team_id": "   ", "task_brief": "Do X"])
         assertDefaultedToSentinel(result, expectedBrief: "Do X")
     }
 
@@ -98,9 +98,9 @@ final class DelegateToTeamHandlerTests: XCTestCase {
     /// strict type-rejection would teach a contract small models can't reliably
     /// honor. Numeric `42` round-trips as `"42"`, then downstream eligibility / ID
     /// matching produces the actionable error.
-    func testNonStringTeamID_coercesToString() throws {
+    func testNonStringTeamID_coercesToString() async throws {
         let runtime = try makeRuntime()
-        let result = try invokeDelegate(runtime: runtime, args: ["team_id": 42, "task_brief": "Do X"])
+        let result = try await invokeDelegate(runtime: runtime, args: ["team_id": 42, "task_brief": "Do X"])
         XCTAssertFalse(result.isError, "Non-string team_id should coerce, not error: \(result.outputJSON)")
         if case .delegateToTeam(let teamID, _)? = result.signal {
             XCTAssertEqual(teamID, "42", "Numeric team_id should round-trip as its String representation")
@@ -113,10 +113,10 @@ final class DelegateToTeamHandlerTests: XCTestCase {
     /// `__raw_input__`), the handler still recovers structured fields. Mirrors the
     /// `requiredString` recovery path so a parsable blob is never silently flattened
     /// to the sentinel even when it carries a real team_id.
-    func testRawInputJSONBlob_recoversTeamID() throws {
+    func testRawInputJSONBlob_recoversTeamID() async throws {
         let runtime = try makeRuntime()
         let blob = #"{"team_id":"engineering_team","task_brief":"Do X"}"#
-        let result = try invokeDelegate(runtime: runtime, args: ["__raw_input__": blob])
+        let result = try await invokeDelegate(runtime: runtime, args: ["__raw_input__": blob])
         XCTAssertFalse(result.isError, "Should recover from __raw_input__: \(result.outputJSON)")
         if case .delegateToTeam(let teamID, _)? = result.signal {
             XCTAssertEqual(teamID, "engineering_team",
@@ -128,9 +128,9 @@ final class DelegateToTeamHandlerTests: XCTestCase {
 
     // MARK: - task_brief
 
-    func testMissingTaskBrief_returnsInvalidArgs() throws {
+    func testMissingTaskBrief_returnsInvalidArgs() async throws {
         let runtime = try makeRuntime()
-        let result = try invokeDelegate(runtime: runtime, args: ["team_id": "team-A"])
+        let result = try await invokeDelegate(runtime: runtime, args: ["team_id": "team-A"])
         XCTAssertTrue(result.isError)
         XCTAssertTrue(result.outputJSON.contains("INVALID_ARGS"), "envelope: \(result.outputJSON)")
         XCTAssertTrue(result.outputJSON.contains("task_brief"), "Error should mention task_brief: \(result.outputJSON)")
@@ -139,9 +139,9 @@ final class DelegateToTeamHandlerTests: XCTestCase {
     /// Whitespace-only task_brief is rejected: an empty brief turns the 30-min
     /// delegation budget into wasted child-team work. Mirrors the team_id trim+check
     /// pattern, but here we reject (no useful default exists for content).
-    func testWhitespaceTaskBrief_returnsInvalidArgs() throws {
+    func testWhitespaceTaskBrief_returnsInvalidArgs() async throws {
         let runtime = try makeRuntime()
-        let result = try invokeDelegate(runtime: runtime, args: ["team_id": "team-A", "task_brief": "   "])
+        let result = try await invokeDelegate(runtime: runtime, args: ["team_id": "team-A", "task_brief": "   "])
         XCTAssertTrue(result.isError, "Whitespace-only task_brief should reject: \(result.outputJSON)")
         XCTAssertTrue(result.outputJSON.contains("INVALID_ARGS"), "envelope: \(result.outputJSON)")
         XCTAssertTrue(result.outputJSON.contains("task_brief is empty"),
@@ -150,19 +150,19 @@ final class DelegateToTeamHandlerTests: XCTestCase {
 
     // MARK: - Happy paths
 
-    func testGeneratedSentinel_isAccepted() throws {
+    func testGeneratedSentinel_isAccepted() async throws {
         let runtime = try makeRuntime()
-        let result = try invokeDelegate(
+        let result = try await invokeDelegate(
             runtime: runtime,
             args: ["team_id": DelegationConstants.generatedTeamSentinel, "task_brief": "Do X"]
         )
         assertDefaultedToSentinel(result, expectedBrief: "Do X")
     }
 
-    func testValidUUID_isAccepted() throws {
+    func testValidUUID_isAccepted() async throws {
         let runtime = try makeRuntime()
         let teamID = UUID().uuidString
-        let result = try invokeDelegate(
+        let result = try await invokeDelegate(
             runtime: runtime,
             args: ["team_id": teamID, "task_brief": "Brief"]
         )

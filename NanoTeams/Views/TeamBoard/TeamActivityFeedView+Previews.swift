@@ -3,7 +3,7 @@ import SwiftUI
 // MARK: - Previews
 
 #Preview("Empty Feed") {
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
+    @Previewable @State var store = PreviewStore.make()
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
     @Previewable @State var engineState = OrchestratorEngineState()
@@ -25,7 +25,7 @@ import SwiftUI
 }
 
 #Preview("Feed — LLM Thinking + Consultation") {
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
+    @Previewable @State var store = PreviewStore.make()
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
     @Previewable @State var engineState = OrchestratorEngineState()
@@ -83,7 +83,7 @@ import SwiftUI
 }
 
 #Preview("Feed — Meeting Messages") {
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
+    @Previewable @State var store = PreviewStore.make()
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
     @Previewable @State var engineState = OrchestratorEngineState()
@@ -141,7 +141,7 @@ import SwiftUI
 }
 
 #Preview("Feed — Change Requests") {
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
+    @Previewable @State var store = PreviewStore.make()
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
     @Previewable @State var engineState = OrchestratorEngineState()
@@ -198,7 +198,7 @@ import SwiftUI
 }
 
 #Preview("Feed — Answered Supervisor Question") {
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
+    @Previewable @State var store = PreviewStore.make()
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
     @Previewable @State var engineState = OrchestratorEngineState()
@@ -239,7 +239,7 @@ import SwiftUI
 }
 
 #Preview("Feed — Final Review Stage") {
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
+    @Previewable @State var store = PreviewStore.make()
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
     @Previewable @State var engineState = OrchestratorEngineState()
@@ -274,7 +274,7 @@ import SwiftUI
 }
 
 #Preview("Feed — Needs Acceptance") {
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
+    @Previewable @State var store = PreviewStore.make()
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
     @Previewable @State var engineState = OrchestratorEngineState()
@@ -326,7 +326,7 @@ import SwiftUI
 }
 
 #Preview("Feed — Filtered Single Role") {
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
+    @Previewable @State var store = PreviewStore.make()
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
     @Previewable @State var engineState = OrchestratorEngineState()
@@ -377,7 +377,7 @@ import SwiftUI
 }
 
 #Preview("Feed with Steps") {
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
+    @Previewable @State var store = PreviewStore.make()
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
     @Previewable @State var engineState = OrchestratorEngineState()
@@ -415,7 +415,7 @@ import SwiftUI
 }
 
 #Preview("Multi-Role Pipeline") {
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
+    @Previewable @State var store = PreviewStore.make()
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
     @Previewable @State var engineState = OrchestratorEngineState()
@@ -498,7 +498,7 @@ import SwiftUI
 }
 
 #Preview("Feed — Supervisor Question") {
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
+    @Previewable @State var store = PreviewStore.make()
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
     @Previewable @State var engineState = OrchestratorEngineState()
@@ -568,7 +568,7 @@ import SwiftUI
 }
 
 #Preview("Feed — Failed Step") {
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
+    @Previewable @State var store = PreviewStore.make()
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
     @Previewable @State var engineState = OrchestratorEngineState()
@@ -608,7 +608,7 @@ import SwiftUI
 // MARK: - Loaders & Activity Indicators Preview
 
 #Preview("Loaders & Activity Indicators") {
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
+    @Previewable @State var store = PreviewStore.make()
     @Previewable @State var config = StoreConfiguration()
     @Previewable @State var streaming = StreamingPreviewManager()
     @Previewable @State var engineState = OrchestratorEngineState()

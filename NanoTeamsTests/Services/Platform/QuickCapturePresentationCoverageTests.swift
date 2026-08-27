@@ -327,20 +327,15 @@ final class QuickCaptureControllerCallbackTests: XCTestCase {
 @MainActor
 final class QuickCaptureControllerInitDefaultsTests: XCTestCase {
 
-    private var savedKeepOpen: Any?
+    private var keepOpenStore: InMemoryConfigurationStorage!
 
     override func setUp() async throws {
         try await super.setUp()
-        savedKeepOpen = UserDefaults.standard.object(forKey: UserDefaultsKeys.quickCaptureKeepOpenInChat)
+        keepOpenStore = InMemoryConfigurationStorage()
     }
 
     override func tearDown() async throws {
-        if let savedKeepOpen {
-            UserDefaults.standard.set(savedKeepOpen, forKey: UserDefaultsKeys.quickCaptureKeepOpenInChat)
-        } else {
-            UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.quickCaptureKeepOpenInChat)
-        }
-        savedKeepOpen = nil
+        keepOpenStore = nil
         try await super.tearDown()
     }
 
@@ -348,8 +343,13 @@ final class QuickCaptureControllerInitDefaultsTests: XCTestCase {
     /// chat teams keeping the overlay open after a send is the whole point of
     /// the setting.
     func testInit_withNoStoredPreference_defaultsKeepOpenInChatToTrue() async {
-        UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.quickCaptureKeepOpenInChat)
-        let sut = QuickCaptureController(formState: QuickCaptureFormState())
+        // The store is injected into THIS instance, not into the shared singleton: `init`
+        // reads its own `storage` parameter, so seeding the singleton would leave this
+        // construction reading `UserDefaults.standard` — the very shared domain D-4 is about,
+        // where a sibling worker's `false` makes this assertion fail for a reason that has
+        // nothing to do with the default.
+        let sut = QuickCaptureController(
+            formState: QuickCaptureFormState(), storage: keepOpenStore)
         XCTAssertTrue(sut.keepOpenInChat)
     }
 
@@ -357,21 +357,26 @@ final class QuickCaptureControllerInitDefaultsTests: XCTestCase {
     /// "never set". A plain `bool(forKey:)` read would return `false` for both
     /// and silently flip the default.
     func testInit_withStoredFalse_honoursTheUsersChoice() async {
-        UserDefaults.standard.set(false, forKey: UserDefaultsKeys.quickCaptureKeepOpenInChat)
-        let sut = QuickCaptureController(formState: QuickCaptureFormState())
+        keepOpenStore.set(false, forKey: UserDefaultsKeys.quickCaptureKeepOpenInChat)
+        let sut = QuickCaptureController(
+            formState: QuickCaptureFormState(), storage: keepOpenStore)
         XCTAssertFalse(sut.keepOpenInChat)
     }
 
     func testInit_withStoredTrue_readsTrue() async {
-        UserDefaults.standard.set(true, forKey: UserDefaultsKeys.quickCaptureKeepOpenInChat)
-        let sut = QuickCaptureController(formState: QuickCaptureFormState())
+        keepOpenStore.set(true, forKey: UserDefaultsKeys.quickCaptureKeepOpenInChat)
+        let sut = QuickCaptureController(
+            formState: QuickCaptureFormState(), storage: keepOpenStore)
         XCTAssertTrue(sut.keepOpenInChat)
     }
 
     /// All-nil construction — exercises every `??` fallback in one go and
     /// proves the defaults are inert (no hotkey is claimed until `setup`).
     func testInit_withNoInjectedSeams_buildsItsOwnFormState() async {
-        UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.quickCaptureKeepOpenInChat)
+        // The all-nil path IS this test's subject, and it only READS the store at init — no
+        // property is set, so nothing reaches the shared domain. Injecting a store here would
+        // test a different construction than the one this test is named for.
+        // ratchet:allow-shared-defaults reads only; the all-nil fallback is the subject
         let sut = QuickCaptureController()
         XCTAssertFalse(sut._testIsPanelVisible)
         XCTAssertFalse(sut._testIsInAnswerMode)
@@ -390,15 +395,18 @@ final class QuickCaptureControllerInitDefaultsTests: XCTestCase {
 
     /// `keepOpenInChat`'s `didSet` is the only writer of the key.
     func testKeepOpenInChat_setterPersists() async {
-        UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.quickCaptureKeepOpenInChat)
-        let sut = QuickCaptureController(formState: QuickCaptureFormState())
+        // ONE store shared by both controllers: "a second instance observes the persisted
+        // value" is the property under test, and it needs a common store — just not the
+        // process-global one.
+        let store = InMemoryConfigurationStorage()
+        let sut = QuickCaptureController(formState: QuickCaptureFormState(), storage: store)
         sut.keepOpenInChat = false
         XCTAssertEqual(
-            UserDefaults.standard.object(forKey: UserDefaultsKeys.quickCaptureKeepOpenInChat) as? Bool,
+            store.object(forKey: UserDefaultsKeys.quickCaptureKeepOpenInChat) as? Bool,
             false
         )
         // A second controller built now must observe the persisted value.
-        let reread = QuickCaptureController(formState: QuickCaptureFormState())
+        let reread = QuickCaptureController(formState: QuickCaptureFormState(), storage: store)
         XCTAssertFalse(reread.keepOpenInChat)
     }
 }

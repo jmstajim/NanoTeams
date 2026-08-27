@@ -399,7 +399,7 @@ struct GraphPanelView: View {
 // MARK: - Previews
 
 #Preview("Graph Panel — Idle") {
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
+    @Previewable @State var store = PreviewStore.make()
     @Previewable @State var selectedRoleID: String? = nil
     let team = Team.default
     let wf = WorkFolderProjection(
@@ -421,7 +421,7 @@ struct GraphPanelView: View {
 }
 
 #Preview("Graph Panel — In Progress") {
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
+    @Previewable @State var store = PreviewStore.make()
     @Previewable @State var selectedRoleID: String? = nil
     let team = Team.default
     let wf = WorkFolderProjection(

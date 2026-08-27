@@ -258,7 +258,7 @@ struct SidebarIconButton: View {
 
 // periphery:ignore - used in #Preview below
 private func makeCardPreviewStore(folder: URL?) -> NTMSOrchestrator {
-    let s = NTMSOrchestrator(repository: NTMSRepository())
+    let s = PreviewStore.make()
     s.workFolderURL = folder
     return s
 }

@@ -5,7 +5,11 @@ import Observation
 
 /// Abstracts the persistence backend for `StoreConfiguration` (DIP).
 /// `UserDefaults` conforms automatically — no additional code needed.
-protocol ConfigurationStorage {
+/// `nonisolated`: a pure storage abstraction with no UI dependency, and `Theme.current` — a
+/// static read reached from AppKit's appearance-resolution thread — has to call it from a
+/// nonisolated context. `UserDefaults`'s own methods are nonisolated in Foundation, so this
+/// narrows nothing for the production conformer.
+nonisolated protocol ConfigurationStorage {
     func string(forKey key: String) -> String?
     func bool(forKey key: String) -> Bool
     func data(forKey key: String) -> Data?
@@ -14,7 +18,7 @@ protocol ConfigurationStorage {
     func removeObject(forKey key: String)
 }
 
-extension UserDefaults: ConfigurationStorage {}
+nonisolated extension UserDefaults: ConfigurationStorage {}
 
 // MARK: - App Update Check Interval
 

@@ -278,6 +278,59 @@ final class SidebarViewLogicTests: XCTestCase {
             engineState: .paused, isIdleParked: false)
         XCTAssertEqual(info, .init(isEnabled: true, running: false, needsInput: false))
     }
+
+    // MARK: - The run-start spinner
+
+    /// The sidebar spins for a run whose START is in flight, not only for one already
+    /// running — otherwise the row goes still for exactly the seconds the user is asking
+    /// about. The status LABEL stays whatever `TaskStatus` says: this column has no room
+    /// for a caption, so the word lives only where there is (`RunInitializationDisplay`).
+    ///
+    /// RED: drop `initializingTaskIDs` from the builder → `isInitializing` is false and
+    /// the first assertion fails.
+    func testBuild_initializingTaskIsMarked_withoutTouchingTheStatusLabel() {
+        let items = SidebarViewLogic.buildSidebarTaskItems(
+            summaries: [summary(1, status: .waiting)],
+            seenSupervisorInputTaskIDs: [],
+            engineStates: [:],
+            initializingTaskIDs: [1]
+        )
+
+        XCTAssertTrue(items[0].isInitializing)
+        XCTAssertFalse(items[0].isEngineRunning,
+                       "Anti-vacuum: the engine is NOT running, so the spinner in this row "
+                           + "can only be coming from the run-start claim")
+        XCTAssertEqual(items[0].status, .waiting,
+                       "The phase must not rewrite the task's status — the two answer "
+                           + "different questions and the row shows both")
+    }
+
+    /// The two facts overlap by a tick, so a row must not lose its spinner as the claim
+    /// is released and the engine comes up — nor gain one from an unrelated task's claim.
+    func testBuild_initializingAndRunningAreIndependentPerTask() {
+        let items = SidebarViewLogic.buildSidebarTaskItems(
+            summaries: [summary(1, status: .running), summary(2, status: .waiting)],
+            seenSupervisorInputTaskIDs: [],
+            engineStates: [1: .running],
+            initializingTaskIDs: [1]
+        )
+
+        XCTAssertTrue(items[0].isEngineRunning)
+        XCTAssertTrue(items[0].isInitializing, "Both may be true at once — that is why "
+            + "they are two fields and not one enum")
+        XCTAssertFalse(items[1].isInitializing,
+                       "A claim is per task: task 2 must not borrow task 1's spinner")
+    }
+
+    func testBuild_noClaims_leavesEveryRowStill() {
+        let items = SidebarViewLogic.buildSidebarTaskItems(
+            summaries: [summary(1, status: .waiting)],
+            seenSupervisorInputTaskIDs: [],
+            engineStates: [:]
+        )
+        XCTAssertFalse(items[0].isInitializing,
+                       "The default must be silence — a row that always spins says nothing")
+    }
 }
 
 /// Pins the single-pass pill counter that replaced four per-filter passes inside

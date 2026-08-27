@@ -220,7 +220,7 @@ final class ToolCallLoggingCornerTests: XCTestCase {
 
     // MARK: - Executed-call branches (executeOne) parity across both sinks
 
-    func testExecutedCall_handlerReturnedError_loggedToBothWithEnvelope() throws {
+    func testExecutedCall_handlerReturnedError_loggedToBothWithEnvelope() async throws {
         let registry = ToolRegistry()
         registry.register(name: "boom_returns") { _, _ in
             ToolExecutionResult(
@@ -229,7 +229,7 @@ final class ToolCallLoggingCornerTests: XCTestCase {
         }
         let rt = makeRuntime(registry: registry, jsonl: true, net: true)
 
-        let result = rt.executeAll(
+        let result = await rt.executeAll(
             context: context(),
             toolCalls: [StepToolCall(name: "boom_returns", argumentsJSON: "{}")]).first!
         XCTAssertTrue(result.isError)
@@ -261,7 +261,7 @@ final class ToolCallLoggingCornerTests: XCTestCase {
         let ctx = context()
         let calls = (0..<3).map { _ in StepToolCall(name: "cancel_self", argumentsJSON: "{}") }
 
-        let results = await Task.detached { rt.executeAll(context: ctx, toolCalls: calls) }.value
+        let results = await Task.detached { await rt.executeAll(context: ctx, toolCalls: calls) }.value
         XCTAssertEqual(results.count, 3, "1 executed + 2 cancellation envelopes")
 
         // Only the executed first call is logged; the 2 cancellation envelopes are not.
@@ -273,14 +273,14 @@ final class ToolCallLoggingCornerTests: XCTestCase {
                        "Cancellation envelope content must never reach either log")
     }
 
-    func testExecutedCall_handlerThrew_loggedToBothWithErrorMessage() throws {
+    func testExecutedCall_handlerThrew_loggedToBothWithErrorMessage() async throws {
         let registry = ToolRegistry()
         registry.register(name: "boom_throws") { _, _ in
             throw ToolRuntimeError.argumentsNotObject
         }
         let rt = makeRuntime(registry: registry, jsonl: true, net: true)
 
-        let result = rt.executeAll(
+        let result = await rt.executeAll(
             context: context(),
             toolCalls: [StepToolCall(name: "boom_throws", argumentsJSON: "{}")]).first!
         XCTAssertTrue(result.isError)

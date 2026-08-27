@@ -12,6 +12,7 @@ protocol QuickCaptureModeCoordinator {
         isTaskSelected: Bool,
         activeTask: NTMSTask?,
         engineState: TeamEngineState?,
+        isInitializingRun: Bool,
         activeTeam: Team?,
         forceNewTaskMode: Bool
     ) -> QuickCaptureMode
@@ -25,6 +26,7 @@ struct DefaultQuickCaptureModeCoordinator: QuickCaptureModeCoordinator {
         isTaskSelected: Bool,
         activeTask: NTMSTask?,
         engineState: TeamEngineState?,
+        isInitializingRun: Bool,
         activeTeam: Team?,
         forceNewTaskMode: Bool
     ) -> QuickCaptureMode {
@@ -69,6 +71,20 @@ struct DefaultQuickCaptureModeCoordinator: QuickCaptureModeCoordinator {
             return .taskWorking(roleName: roleName, isChatMode: task.isChatMode)
         }
 
+        // The run start is claimed but has not reached `engine.start()` yet. Checked
+        // AFTER `.running`, because once the engine exists its answer is the better one
+        // and the two overlap by a tick (CLAUDE.md #95) — and after the Supervisor
+        // question, which outranks both: a task parked for an answer while a NEW start
+        // is claimed must still show the question.
+        //
+        // Before this branch the panel resolved to `.overlay` here, so the post-submit
+        // working mode survived exactly until the first `refreshPanelIfVisible` and then
+        // flipped back to the new-task composer — the panel telling the user their
+        // message went nowhere while the run was in fact starting.
+        if isInitializingRun {
+            return .taskInitializing(isChatMode: task.isChatMode)
+        }
+
         return .overlay
     }
 }
@@ -86,7 +102,7 @@ enum QuickCaptureVisualMode: Equatable {
     init(_ mode: QuickCaptureMode) {
         switch mode {
         case .supervisorAnswer: self = .answer
-        case .taskWorking: self = .working
+        case .taskWorking, .taskInitializing: self = .working
         case .overlay: self = .newTask
         }
     }

@@ -63,7 +63,7 @@ final class EditFileInsertionReindentTests: XCTestCase {
     @discardableResult
     private func replay(
         _ failure: EditFileTask28Fixtures.FailedEdit
-    ) throws -> ToolExecutionResult {
+    ) async throws -> ToolExecutionResult {
         let url = tempDir.appendingPathComponent(EditFileTask28Fixtures.path)
         try fileManager.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -78,7 +78,7 @@ final class EditFileInsertionReindentTests: XCTestCase {
         let data = try JSONSerialization.data(withJSONObject: args)
         let call = StepToolCall(
             name: "edit_file", argumentsJSON: String(data: data, encoding: .utf8)!)
-        return runtime.executeAll(context: context, toolCalls: [call])[0]
+        return await runtime.executeAll(context: context, toolCalls: [call])[0]
     }
 
     private func onDisk() throws -> String {
@@ -110,9 +110,9 @@ final class EditFileInsertionReindentTests: XCTestCase {
     /// `LibraryCategoryEmptyState` at depths 4/8/12/18.
     ///
     /// RED (before the fix): ANCHOR_NOT_FOUND, file untouched.
-    func testReal_libraryEmptyStateInsertion_applies() throws {
+    func testReal_libraryEmptyStateInsertion_applies() async throws {
         let failure = EditFileTask28Fixtures.failure(at: "2026-08-15T17:29:12.726")
-        let result = try replay(failure)
+        let result = try await replay(failure)
 
         XCTAssertFalse(result.isError, result.outputJSON)
 
@@ -140,9 +140,9 @@ final class EditFileInsertionReindentTests: XCTestCase {
     /// is wrong again — the same no-silent-caps rule the walk and the search obey.
     ///
     /// RED: emit no warning → empty.
-    func testReal_insertion_disclosesThePassedThroughLines() throws {
+    func testReal_insertion_disclosesThePassedThroughLines() async throws {
         let failure = EditFileTask28Fixtures.failure(at: "2026-08-15T17:29:12.726")
-        let result = try replay(failure)
+        let result = try await replay(failure)
 
         let texts = warnings(result)
         XCTAssertTrue(
@@ -160,9 +160,9 @@ final class EditFileInsertionReindentTests: XCTestCase {
     /// whitespace had been rewritten reached the model as an unqualified success.
     ///
     /// RED: remove either forwarding branch in `processEdit` → the matching assertion fails.
-    func testReal_insertion_disclosuresSurviveTheTagStore() throws {
+    func testReal_insertion_disclosuresSurviveTheTagStore() async throws {
         let failure = EditFileTask28Fixtures.failure(at: "2026-08-15T17:29:12.726")
-        let result = try replay(failure)
+        let result = try await replay(failure)
         XCTAssertFalse(result.isError, result.outputJSON)
 
         guard case .tagged(let wire, _) = MemoryTagStore().processToolResult(result) else {
@@ -181,7 +181,7 @@ final class EditFileInsertionReindentTests: XCTestCase {
     /// nothing to disclose, so the forwarding above cannot become noise on every call.
     ///
     /// RED: forward the keys unconditionally → both assertions fail.
-    func testCleanEdit_addsNoDisclosureToTheWire() throws {
+    func testCleanEdit_addsNoDisclosureToTheWire() async throws {
         let url = tempDir.appendingPathComponent(EditFileTask28Fixtures.path)
         try fileManager.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -196,7 +196,7 @@ final class EditFileInsertionReindentTests: XCTestCase {
         let data = try JSONSerialization.data(withJSONObject: args)
         let call = StepToolCall(
             name: "edit_file", argumentsJSON: String(data: data, encoding: .utf8)!)
-        let result = runtime.executeAll(context: context, toolCalls: [call])[0]
+        let result = await runtime.executeAll(context: context, toolCalls: [call])[0]
         XCTAssertFalse(result.isError, result.outputJSON)
 
         guard case .tagged(let wire, _) = MemoryTagStore().processToolResult(result) else {
@@ -210,9 +210,9 @@ final class EditFileInsertionReindentTests: XCTestCase {
     /// four-space convention at the seam.
     ///
     /// RED (before the fix): 4 errors.
-    func testReal_everyFailureFromTheRun_nowApplies() throws {
+    func testReal_everyFailureFromTheRun_nowApplies() async throws {
         for failure in EditFileTask28Fixtures.failures {
-            let result = try replay(failure)
+            let result = try await replay(failure)
             XCTAssertFalse(
                 result.isError, "\(failure.timestamp) still refused: \(result.outputJSON)")
 

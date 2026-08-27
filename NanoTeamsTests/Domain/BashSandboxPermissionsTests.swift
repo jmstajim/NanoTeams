@@ -65,10 +65,13 @@ final class BashSandboxPermissionsTests: XCTestCase {
     /// `(deny default)` answers every real filesystem write. That is what makes "bash cannot
     /// mutate work-folder source during planning" checkable instead of argued.
     ///
-    /// This is also why `tempWrite` must go off with the rest: the write allow-list is a set of
-    /// `(subpath …)` clauses with no work-folder deny beneath it, so a temp grant covers a work
-    /// folder that lives under `$TMPDIR` — exactly the layout this suite's own sibling test
-    /// avoids by putting its fixture under HOME.
+    /// `tempWrite` goes off with the rest because temp writes are writes and the contract is
+    /// that none survive. The rationale recorded here until 2026-08-25 was a defect instead —
+    /// the narrow-write branch emitted no work-folder deny, so a temp grant covered a project
+    /// under `$TMPDIR` — and that hole is now closed by `workCoveredByTemp` in
+    /// `SeatbeltSandbox`, pinned by `SeatbeltCanonicalPathCoverageTests`. The fixture below
+    /// still sits under `NSTemporaryDirectory()`, which after the fix is the interesting
+    /// layout rather than the one to avoid.
     ///
     /// RED: restore `tempWrite` in `withWritesDisabled()` → `(subpath` reappears.
     func testWithWritesDisabled_profileGrantsNoWriteSubpathAtAll() {

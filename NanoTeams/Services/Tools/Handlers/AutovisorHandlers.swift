@@ -35,8 +35,8 @@ nonisolated struct ListTasksTool: ToolHandler {
 
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self { Self() }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             ToolExecutionResult(
                 toolName: Self.name,
                 argumentsJSON: encodeArgsToJSON(args),
@@ -65,8 +65,8 @@ nonisolated struct TaskStatusTool: ToolHandler {
 
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self { Self() }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             guard let taskID = optionalInt(args, "task_id") else {
                 return makeErrorResult(toolName: Self.name, args: args, code: .invalidArgs,
                                        message: "task_id is required (integer).")
@@ -181,8 +181,8 @@ nonisolated struct CreateManagedTaskTool: ToolHandler {
 
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self { Self() }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let brief = try requiredString(args, "brief").trimmingCharacters(in: .whitespacesAndNewlines)
             guard !brief.isEmpty else {
                 return makeErrorResult(toolName: Self.name, args: args, code: .invalidArgs,
@@ -242,8 +242,8 @@ nonisolated struct ControlTaskTool: ToolHandler {
 
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self { Self() }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             guard let taskID = optionalInt(args, "task_id") else {
                 return makeErrorResult(toolName: Self.name, args: args, code: .invalidArgs,
                                        message: "task_id is required (integer).")
@@ -294,8 +294,8 @@ nonisolated struct ManageRoleTool: ToolHandler {
 
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self { Self() }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             guard let taskID = optionalInt(args, "task_id") else {
                 return makeErrorResult(toolName: Self.name, args: args, code: .invalidArgs,
                                        message: "task_id is required (integer).")
@@ -341,8 +341,8 @@ nonisolated struct AnswerTaskQuestionTool: ToolHandler {
 
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self { Self() }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             guard let taskID = optionalInt(args, "task_id") else {
                 return makeErrorResult(toolName: Self.name, args: args, code: .invalidArgs,
                                        message: "task_id is required (integer).")
@@ -383,8 +383,8 @@ nonisolated struct MessageTaskTool: ToolHandler {
 
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self { Self() }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             guard let taskID = optionalInt(args, "task_id") else {
                 return makeErrorResult(toolName: Self.name, args: args, code: .invalidArgs,
                                        message: "task_id is required (integer).")
@@ -424,8 +424,8 @@ nonisolated struct ScheduleTaskTool: ToolHandler {
 
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self { Self() }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             guard let taskID = optionalInt(args, "task_id") else {
                 return makeErrorResult(toolName: Self.name, args: args, code: .invalidArgs,
                                        message: "task_id is required (integer).")
@@ -461,8 +461,8 @@ nonisolated struct SetWorkFolderContextTool: ToolHandler {
 
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self { Self() }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             // Every sibling text field (`brief`, `answer`, `message`, `role_id`) trims and
             // rejects empty. This one did not — and what it writes is injected into every
             // role's prompt on every task in the folder, so an accidental empty emission
@@ -500,8 +500,8 @@ nonisolated struct WaitForEventsTool: ToolHandler {
 
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self { Self() }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             ToolExecutionResult(
                 toolName: Self.name,
                 argumentsJSON: encodeArgsToJSON(args),

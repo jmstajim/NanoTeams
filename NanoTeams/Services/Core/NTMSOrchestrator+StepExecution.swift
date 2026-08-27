@@ -154,6 +154,11 @@ extension NTMSOrchestrator {
             configuration.unmarkTaskSeen(workFolderID: workFolderID, taskID: taskID)
         }
 
+        // Same reason, for the Autovisor's deliver-once ledgers: the answer is the durable
+        // "question consumed" event, and a key that outlives the question it names makes
+        // the NEXT question on this task read as already-delivered.
+        noteSupervisorQuestionResolved(taskID: taskID)
+
         let engineState = taskEngineStates[taskID] ?? .pending
         if engineState == .paused || engineState == .needsSupervisorInput {
             await resumeRun(taskID: taskID)

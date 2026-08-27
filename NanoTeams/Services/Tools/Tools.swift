@@ -1,6 +1,13 @@
 import Foundation
 
-extension ToolRegistry {
+/// `nonisolated` is load-bearing, not decoration: an extension in this target inherits the
+/// project-wide `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` even when the TYPE it extends is
+/// `nonisolated`, so the closures below (`ToolCallLogger(logURL:)` in an `Optional.map`) carried
+/// a main-actor requirement checked DYNAMICALLY. Every production caller happened to be on the
+/// main actor, so the check passed and nothing said this builder was pinned there — until a test
+/// helper became `async` and built a registry off the main thread, which trapped inside
+/// `Optional.map`. Nothing here touches UI.
+nonisolated extension ToolRegistry {
     /// Builds a tool registry and runtime for the given work folder, backed by
     /// `ToolHandlerRegistry` as the single source of truth for schemas and handlers.
     static func defaultRegistry(
@@ -37,7 +44,7 @@ extension ToolRegistry {
         for handler in handlers {
             let name = type(of: handler).name
             registry.register(name: name) { ctx, args in
-                handler.handle(context: ctx, args: args)
+                await handler.handle(context: ctx, args: args)
             }
         }
 

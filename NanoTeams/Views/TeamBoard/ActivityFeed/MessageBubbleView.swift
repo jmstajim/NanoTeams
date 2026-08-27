@@ -335,6 +335,7 @@ struct MessageBubbleView: View {
                     ReadOnlyAttachmentGrid(
                         attachmentPaths: attachmentPaths,
                         clippedTexts: clippedTexts,
+                        clipSeed: "message-\(message.id.uuidString)",
                         workFolderURL: workFolderURL
                     )
                     .padding(.top, Spacing.xs)
@@ -359,11 +360,19 @@ struct MessageBubbleView: View {
 ///    correct across cache hits. The captured values here are `role` and
 ///    `originTaskID`; both feed `roleDefinition?.id` / `roleTeamSuffix`,
 ///    which ARE in `==`.
-/// 2. Compares `roleDefinition` by `id` rather than the full struct.
-///    `TeamRoleDefinition` is `Identifiable` but not `Hashable`; structural
-///    equality would require field-by-field comparison and we only care
-///    about identity here. If the role's content (name, icon, color) ever
-///    changes mid-conversation, parent state updates regenerate the view.
+/// 2. Compares `roleDefinition` by `renderIdentity` — its presentation
+///    fields — rather than by `id` or by the full struct.
+///    `TeamRoleDefinition.==` IS available (it is `Hashable`), but it is an
+///    identity shortcut, `lhs.id == rhs.id` (CLAUDE.md #42), so it answers
+///    "same role", never "would this draw differently"; and the full struct
+///    would walk `prompt` / `toolIDs` on every diff pass and over-fire on
+///    `updatedAt`. Until 2026-08-25 this compared `id` alone and justified
+///    it with "if the role's content ever changes, parent state updates
+///    regenerate the view" — which is backwards, and is why the bug
+///    survived being copied to five cards: regenerating the view is exactly
+///    when `==` runs, and `==` then said equal, so `.equatable()` skipped
+///    the update. A rename or a recolour in the Team editor left the open
+///    feed showing the old label and the old avatar (CLAUDE.md #111).
 ///
 /// **DRIFT GUARD.** Any new prop added to `MessageBubbleView` must be
 /// added to `==` here, otherwise updates to that prop are silently
@@ -373,7 +382,7 @@ extension MessageBubbleView: Equatable {
     static func == (lhs: MessageBubbleView, rhs: MessageBubbleView) -> Bool {
         lhs.message == rhs.message
             && lhs.role == rhs.role
-            && lhs.roleDefinition?.id == rhs.roleDefinition?.id
+            && lhs.roleDefinition?.renderIdentity == rhs.roleDefinition?.renderIdentity
             && lhs.content == rhs.content
             && lhs.thinking == rhs.thinking
             && lhs.processingStatus == rhs.processingStatus

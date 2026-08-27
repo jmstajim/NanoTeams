@@ -78,7 +78,7 @@ nonisolated enum ContextBudgetPolicy {
             total += WorkFolderContextPromptPlanner.estimateTokens(
                 HarmonyToolCallEnvelope.appendedWireText(for: message))
             for image in message.imageContent ?? [] {
-                total += WorkFolderContextPromptPlanner.estimateTokens(image.base64Data)
+                total += WorkFolderContextPromptPlanner.estimateTokensForBase64(image.base64Data)
             }
         }
         return total

@@ -58,6 +58,12 @@ extension LLMExecutionService {
             /// task whose `updated_seconds_ago` is large may be hung; drill in via
             /// task_status (which has the full timing + stuck verdict).
             var updated_seconds_ago: Int
+            /// Present (and `true`) only when a role on this task is still owed an answer —
+            /// never `false`, so its absence cannot deny a wait the row can't prove. A task
+            /// that was waiting when the app last quit reads `paused` here, so `status`
+            /// alone would send you to resume it (re-asking the question) instead of
+            /// answering it with answer_task_question.
+            var waiting_for_supervisor: Bool?
         }
         struct ListData: Codable { var tasks: [TaskRow] }
 
@@ -66,7 +72,8 @@ extension LLMExecutionService {
             TaskRow(
                 id: $0.id, title: $0.title, status: $0.status.rawValue,
                 chat_mode: $0.isChatMode,
-                updated_seconds_ago: max(0, Int(now.timeIntervalSince($0.updatedAt)))
+                updated_seconds_ago: max(0, Int(now.timeIntervalSince($0.updatedAt))),
+                waiting_for_supervisor: $0.isWaitingForSupervisor ? true : nil
             )
         }
         return makeSuccessEnvelope(data: ListData(tasks: rows))
@@ -165,7 +172,9 @@ extension LLMExecutionService {
                 let verdict = AutovisorStuckEvaluator.evaluate(
                     step: step, now: now, lastStreamActivityAt: live,
                     liveStreamText: delegate.streamLiveText(stepID: step.id, taskID: task.id),
+                    processingStatus: delegate.streamProcessingStatus(stepID: step.id, taskID: task.id),
                     hangSeconds: tuning.stuckHangSeconds,
+                    prefillHangSeconds: tuning.stuckPrefillHangSeconds,
                     loopRecencySeconds: tuning.stuckLoopRecencySeconds
                 )
                 let stuckRow = verdict.wireRow.map { StuckRow(kind: $0.kind, detail: $0.detail) }

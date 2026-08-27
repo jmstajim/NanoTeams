@@ -36,6 +36,26 @@ extension NTMSOrchestrator {
             return
         }
         let team = resolvedTeam(for: task)
+
+        // Roster membership, checked BEFORE anything is reset. This is the destructive half of
+        // D-13: `reset()` below destroys the step's conversation, tool calls and artifacts, and
+        // without this guard it did so for a role deleted from the roster — then reported
+        // success for a role the engine can never start again. The post-mutation verification
+        // further down catches a HALLUCINATED id, but a role that still has a STEP sails past
+        // it, and a Team Editor deletion against a live task produces exactly that shape.
+        //
+        // Resolved STRICTLY, not through `resolvedTeam(for:)`. That one coalesces to
+        // `activeTeam ?? Team.default` for display, so on a task whose pinned team was deleted
+        // it hands back a completely unrelated roster — and a refusal built on it would reject
+        // EVERY role of that task. `TeamResolution.team(for:in:)` returns nil there instead, and
+        // nil means "could not determine", which is not "not on the roster" (#97).
+        if let snapshot,
+           let strictTeam = TeamResolution.team(for: task, in: snapshot.projection),
+           let refusal = RoleRosterGuard.refusal(roleID: roleID, team: strictTeam) {
+            lastErrorMessage = refusal
+            return
+        }
+
         let roles = team.roles
         let roleName = roles.first(where: { $0.id == roleID })?.name ?? roleID
 
@@ -408,6 +428,27 @@ extension NTMSOrchestrator {
         guard loadedTask(taskID)?.closedAt == nil else {
             lastErrorMessage = "Task #\(taskID) is closed — use restart to reopen the task and "
                 + "re-run the role (it also resets the roles downstream of it)."
+            return
+        }
+
+        // Roster membership. Placed here deliberately — AFTER the two guards above and BEFORE
+        // the step lookup. A role deleted from the roster can still HAVE a step, so the step
+        // guard below would pass it through; and its message ("no completed work to revise") is
+        // right for a hallucinated id and wrong for a deleted role. Ordering the two this way
+        // means each refusal says the true thing (CLAUDE.md #58 — list what precedes a guard, or
+        // it never executes for the case you wrote it for).
+        //
+        // Without this, `roleStatuses[roleID] = .revisionRequested` was written for a role no
+        // roster contains, and the two completion readers then DISAGREED: the engine retired the
+        // run (`activeWorkRoleIDs` iterates definitions, so the orphan is invisible) while the
+        // task read "Working" forever (`derivedStatusFromActiveRun`'s `.done` arm reads
+        // `roleStatuses` raw). Supervisor and Autovisor were both told `ok: true`.
+        // Resolved STRICTLY — see `restartRole`'s sibling guard for why `resolvedTeam(for:)`
+        // (which coalesces to the active team for display) cannot be the basis of a refusal.
+        if let task = loadedTask(taskID), let snapshot,
+           let strictTeam = TeamResolution.team(for: task, in: snapshot.projection),
+           let refusal = RoleRosterGuard.refusal(roleID: roleID, team: strictTeam) {
+            lastErrorMessage = refusal
             return
         }
 

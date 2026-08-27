@@ -68,7 +68,7 @@ final class TeamGraphCanvasGeometryBenchmark: XCTestCase {
         XCTAssertLessThan(
             large, small * 6,
             "doubling the roster must cost ~4x (quadratic by design), not ~8x "
-            + "(a new nesting level). got \(small) -> \(large)")
+                + "(a new nesting level). got \(small) -> \(large)")
     }
 
     /// Builds a fan-out + fan-in graph: a root producing `A0`, `producers`

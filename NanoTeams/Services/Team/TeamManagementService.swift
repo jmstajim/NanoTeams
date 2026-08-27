@@ -28,7 +28,7 @@ nonisolated enum TeamManagementService {
     static func canDeleteTeam(in workFolder: WorkFolderProjection, teamID: NTMSID) -> Bool {
         guard let team = workFolder.teams.first(where: { $0.id == teamID }),
               !team.isManagedSingleton else { return false }
-        return workFolder.teams.filter { !$0.isManagedSingleton }.count > 1
+        return workFolder.teams.count { !$0.isManagedSingleton } > 1
     }
 
     // MARK: - Role Management

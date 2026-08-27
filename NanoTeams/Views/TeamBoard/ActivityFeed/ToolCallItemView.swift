@@ -22,38 +22,27 @@ struct ToolCallItemView: View {
     private var roleName: String { roleLabelOverride ?? roleDefinition?.name ?? role.displayName }
     private var tintColor: Color { roleDefinition?.resolvedTintColor ?? role.tintColor }
 
-    /// Display + dispatch name with model-emitted namespace prefixes (`repo_browser.`,
-    /// `functions.`) and common aliases stripped. `call.name` stays as-emitted on the
-    /// model — that form is what the LLM saw in the rejection envelope and what error
-    /// messages quote; the UI and tool-name matching always work on the canonical form.
-    private var canonicalName: String { ToolRegistry.resolveToolName(call.name) }
-
-    private static let customSummaryTools: Set<String> = [
-        ToolNames.requestTeamMeeting,
-    ]
-    private var hasCustomSummary: Bool { Self.customSummaryTools.contains(canonicalName) }
-
     private var statusColor: Color {
         if call.resultJSON == nil || call.isAnalyzing || call.isGeneratingTeam { return Colors.info }
         return call.isError == true ? Colors.error : Colors.success
     }
 
-    /// True when this `search` call took the exploratory branch. `SearchTool` canonicalizes
-    /// the resolved `exploratory` value into `argumentsJSON` (covering both the explicit-arg
-    /// case and the `searchExploratoryByDefault`-ON case), so this is a direct args check.
-    private var isExploratorySearch: Bool {
-        guard canonicalName == ToolNames.search else { return false }
-        guard let args = JSONUtilities.parseJSONDictionary(call.argumentsJSON) else { return false }
-        // Same resolver the handler uses, so the badge reflects the search that
-        // actually ran rather than the literal type the model happened to emit.
-        return optionalBool(args, "exploratory")
-    }
-
     // MARK: - Body
 
-    private static let noHeaderLeading: CGFloat = ActivityCardTokens.avatarSize + ActivityCardTokens.cardPadding
+    private static let noHeaderLeading: CGFloat = ActivityCardTokens.contentColumnLeading
 
     var body: some View {
+        // Derived ONCE per body pass. `canonicalName` / `isExploratorySearch` /
+        // `hasCustomSummary` / the argument summary were computed properties, so each
+        // reference re-ran `resolveToolName` and, on a `search` card, a second
+        // `JSONSerialization` pass over the same `argumentsJSON`.
+        let model = ToolCallCardModel.make(
+            call: call, resolveRoleName: { teamRoles.roleName(for: $0) })
+        return content(model: model)
+    }
+
+    @ViewBuilder
+    private func content(model: ToolCallCardModel) -> some View {
         if showHeader {
             HStack(alignment: .top, spacing: ActivityCardTokens.cardPadding) {
                 ActivityFeedRoleAvatar(role: role, roleDefinition: roleDefinition, onTap: onAvatarTap)
@@ -66,61 +55,54 @@ struct ToolCallItemView: View {
                             .font(Typography.term2xs)
                             .foregroundStyle(Colors.textTertiary)
                     }
-                    toolCard
+                    toolCard(model)
                 }
             }
         } else {
-            toolCard
+            toolCard(model)
                 .padding(.leading, Self.noHeaderLeading)
         }
     }
 
     // MARK: - Tool Card
 
-    private var toolCard: some View {
+    private func toolCard(_ model: ToolCallCardModel) -> some View {
         VStack(alignment: .leading, spacing: ActivityCardTokens.contentSpacing) {
             HStack(spacing: Spacing.xs) {
                 // Terminal command line: `$ tool args → ok/error`
                 Text("$")
                     .font(Typography.termXs)
                     .foregroundStyle(Colors.textQuaternary)
-                Text(canonicalName)
+                Text(model.canonicalName)
                     .font(Typography.termXs.weight(.medium))
                     .foregroundStyle(statusColor)
                     .lineLimit(1)
-                if isExploratorySearch && !call.isExploratorySearchDisabled {
+                if model.isExploratorySearch && !call.isExploratorySearchDisabled {
                     Image(systemName: "binoculars")
                         .font(Typography.term2xs)
                         .foregroundStyle(Colors.textTertiary)
                         .accessibilityLabel("Exploratory search")
                 }
-                if !hasCustomSummary {
-                    let argSummary = ToolCallSummarizer.cardSummary(
-                        toolName: canonicalName,
-                        argumentsJSON: call.argumentsJSON,
-                        resultJSON: call.resultJSON,
-                        isError: call.isError == true,
-                        resolveRoleName: { teamRoles.roleName(for: $0) }
-                    )
-                    if !argSummary.isEmpty {
-                        Text(argSummary)
-                            .font(Typography.termXs)
-                            .foregroundStyle(Colors.textTertiary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
+                if !model.argumentSummary.isEmpty {
+                    Text(model.argumentSummary)
+                        .font(Typography.termXs)
+                        .foregroundStyle(Colors.textTertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                 }
                 Spacer(minLength: Spacing.xs)
                 resultIndicator
             }
 
-            callSummary
+            if let summary = model.customSummary {
+                ToolCallCustomSummaryView(summary: summary)
+            }
         }
         .contentShape(Rectangle())
         .onTapGesture {
             openWindow(value: ActivityDetailWindow.toolCall(
                 id: call.id,
-                toolName: canonicalName,
+                toolName: model.canonicalName,
                 argumentsJSON: call.argumentsJSON,
                 resultJSON: call.resultJSON,
                 isError: call.isError == true,
@@ -153,10 +135,6 @@ struct ToolCallItemView: View {
         }
     }
 
-    @ViewBuilder
-    private var callSummary: some View {
-        ToolCallCustomSummaryView(toolName: canonicalName, argumentsJSON: call.argumentsJSON)
-    }
 }
 
 // MARK: - Custom Summary
@@ -165,49 +143,39 @@ struct ToolCallItemView: View {
 /// Handles `ask_teammate` (shows question) and `request_team_meeting` (shows topic + participants).
 /// Returns an empty view for tools without a custom summary. Tap on the card
 /// (handled by the parent) opens full args + result in a standalone window.
+/// Takes pre-resolved display values, not JSON. A `[String: Any]` stored in a `View` is
+/// neither `Sendable` nor `Equatable` and is COW-boxed, so it would be a new box every
+/// pass and SwiftUI's structural comparison would never match.
 private struct ToolCallCustomSummaryView: View {
-    let toolName: String
-    let argumentsJSON: String
+    let summary: ToolCallCustomSummary
 
     var body: some View {
-        switch toolName {
-        case ToolNames.askTeammate:
-            if let args = JSONUtilities.parseJSONDictionary(argumentsJSON),
-               let question = args["question"] as? String,
-               !question.isEmpty
-            {
-                Text(question)
-                    .font(Typography.captionSemibold)
-                    .foregroundStyle(Colors.textPrimary)
-                    .lineLimit(3)
-            }
-        case ToolNames.requestTeamMeeting:
-            if let args = JSONUtilities.parseJSONDictionary(argumentsJSON) {
-                let topic = (args["topic"] as? String) ?? ""
-                let participantIDs = optionalStringArray(args, "participants") ?? []
-                let names = participantIDs.compactMap { Role.builtInRole(for: $0)?.displayName }
-                VStack(alignment: .leading, spacing: 3) {
-                    if !topic.isEmpty {
-                        Text(topic)
-                            .font(Typography.captionSemibold)
-                            .foregroundStyle(Colors.textPrimary)
-                            .lineLimit(2)
-                    }
-                    if !names.isEmpty {
-                        HStack(spacing: 4) {
-                            Image(systemName: "person.3")
-                                .font(Typography.term2xs)
-                                .foregroundStyle(Colors.textSecondary)
-                            Text(names.joined(separator: ", "))
-                                .font(Typography.caption)
-                                .foregroundStyle(Colors.textSecondary)
-                                .lineLimit(1)
-                        }
+        switch summary {
+        case let .question(question):
+            Text(question)
+                .font(Typography.captionSemibold)
+                .foregroundStyle(Colors.textPrimary)
+                .lineLimit(3)
+        case let .meeting(topic, names):
+            VStack(alignment: .leading, spacing: 3) {
+                if !topic.isEmpty {
+                    Text(topic)
+                        .font(Typography.captionSemibold)
+                        .foregroundStyle(Colors.textPrimary)
+                        .lineLimit(2)
+                }
+                if !names.isEmpty {
+                    HStack(spacing: 4) {
+                        Image(systemName: "person.3")
+                            .font(Typography.term2xs)
+                            .foregroundStyle(Colors.textSecondary)
+                        Text(names.joined(separator: ", "))
+                            .font(Typography.caption)
+                            .foregroundStyle(Colors.textSecondary)
+                            .lineLimit(1)
                     }
                 }
             }
-        default:
-            EmptyView()
         }
     }
 }
@@ -216,18 +184,30 @@ private struct ToolCallCustomSummaryView: View {
 
 /// See `MessageBubbleView`'s Equatable extension for the full rationale —
 /// `.equatable()` lets the timeline dispatcher skip diffing this card when
-/// nothing observable has changed. `teamRoles` is compared by id-array
-/// (`TeamRoleDefinition` is `Identifiable` but not `Hashable`); the role
-/// definitions are read for name resolution inside `summarizeArguments` and
-/// identity is the right granularity. `onAvatarTap` excluded (closure;
-/// captures only props that are themselves in `==`).
+/// nothing observable has changed. `onAvatarTap` excluded (closure; captures
+/// only props that are themselves in `==`).
+///
+/// `teamRoles` is compared element-wise on `renderIdentity`, non-allocating.
+/// Two corrections to what stood here until 2026-08-25, and each was
+/// load-bearing:
+///   - it read `lhs.teamRoles.map(\.id) == rhs.teamRoles.map(\.id)`, which
+///     allocates two `[String]` on EVERY comparison of every tool-call row —
+///     the one `==` in the app that allocated;
+///   - it justified the id-array with "`TeamRoleDefinition` is `Identifiable`
+///     but not `Hashable`", which is false (it has been `Hashable` since
+///     `01d21001`), and with "identity is the right granularity", which is
+///     wrong for what this array is FOR: it exists only to resolve names via
+///     `roleName(for:)`, which reads `.name` and `.systemRoleID`. A roster
+///     rename therefore left a resolved name stale on screen.
+/// Swapping in `TeamRoleDefinition.==` would not have helped — that is itself
+/// `lhs.id == rhs.id` (CLAUDE.md #42), i.e. exactly as blind.
 extension ToolCallItemView: Equatable {
     static func == (lhs: ToolCallItemView, rhs: ToolCallItemView) -> Bool {
         lhs.call == rhs.call
             && lhs.role == rhs.role
-            && lhs.roleDefinition?.id == rhs.roleDefinition?.id
+            && lhs.roleDefinition?.renderIdentity == rhs.roleDefinition?.renderIdentity
             && lhs.showHeader == rhs.showHeader
-            && lhs.teamRoles.map(\.id) == rhs.teamRoles.map(\.id)
+            && lhs.teamRoles.elementsEqual(rhs.teamRoles) { $0.renderIdentity == $1.renderIdentity }
             && lhs.roleLabelOverride == rhs.roleLabelOverride
             && lhs.roleTeamSuffix == rhs.roleTeamSuffix
     }

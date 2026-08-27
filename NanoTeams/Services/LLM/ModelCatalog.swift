@@ -18,15 +18,25 @@ import Foundation
 /// State is keyed by `normalize(_:)` so trivial URL variations (trailing
 /// slash, casing, leading/trailing whitespace) collapse to one entry.
 ///
-/// Embedding models live in a separate fetch path
-/// (`fetchEmbeddingModels`) and are NOT cached here — the Embeddings
-/// card owns its own state because the filter shape differs.
+/// Embedding models live in a separate fetch path (`fetchEmbeddingModels`)
+/// and are NOT cached here: they are held by `EmbeddingModelCatalog`, whose
+/// doc comment records the three differences that keep the two types apart.
+/// It used to say "the Embeddings card owns its own state" — it did, and that
+/// is exactly what put a live `LLMClientRouter` in a `#Preview`.
 @MainActor @Observable
 final class ModelCatalog {
     struct CacheKey: Hashable {
         let url: String
         let provider: LLMProvider
         let visionOnly: Bool
+    }
+
+    /// Identity of ONE model on one endpoint. Separate from `CacheKey` because it names a
+    /// model rather than a list, and because `visionOnly` is meaningless here.
+    struct DetailsKey: Hashable {
+        let url: String
+        let provider: LLMProvider
+        let modelName: String
     }
 
     /// Cached model lists, keyed by `(normalized URL, visionOnly)`.
@@ -40,6 +50,18 @@ final class ModelCatalog {
     /// Keys with an in-flight fetch — observable so pickers can render
     /// a spinner.
     private(set) var fetchingKeys: Set<CacheKey> = []
+
+    /// One model's load parameters, keyed by `(url, provider, modelName)`.
+    ///
+    /// Deliberately NOT cached the way `modelsByKey` is — see `loadDetails`. What is kept is
+    /// the LAST answer per key, so a re-probe renders the previous values instead of
+    /// flickering through an empty state, which is what the card did while it owned this.
+    private(set) var detailsByKey: [DetailsKey: ModelLoadDetails] = [:]
+    /// Keys whose probe has RETURNED, including one that returned nothing. `detailsByKey`
+    /// alone collapses "never asked" and "asked, server had nothing to say", and the card
+    /// renders those two differently.
+    private(set) var loadedDetailKeys: Set<DetailsKey> = []
+    private(set) var fetchingDetailKeys: Set<DetailsKey> = []
 
     private let clientFactory: () -> any LLMClient
 
@@ -152,8 +174,63 @@ final class ModelCatalog {
         }
     }
 
+    // MARK: - Per-model load details
+
+    /// What the server reports about ONE loaded model, or `nil` when it has not answered yet
+    /// or had nothing to say.
+    func details(for config: LLMConfig) -> ModelLoadDetails? {
+        detailsByKey[detailsKey(config)]
+    }
+
+    /// `true` once a probe for this model has RETURNED — including one that returned nothing.
+    func hasLoadedDetails(for config: LLMConfig) -> Bool {
+        loadedDetailKeys.contains(detailsKey(config))
+    }
+
+    func isLoadingDetails(for config: LLMConfig) -> Bool {
+        fetchingDetailKeys.contains(detailsKey(config))
+    }
+
+    /// Probes one model's load parameters.
+    ///
+    /// Takes the whole `LLMConfig` rather than the three identity fields because the probe is
+    /// a real request and the caller's timeout / keep-alive settings belong to it; only the
+    /// identity triple becomes the key, so two configs differing in timeout are still the
+    /// same model.
+    ///
+    /// Unlike the model LIST, this deliberately does NOT serve from cache: the card that
+    /// reads it exists to report what the server has loaded *right now*, and a model can be
+    /// evicted, re-loaded at a different context length, or swapped between two looks at the
+    /// same picker. Only an in-flight probe for the same key is coalesced.
+    ///
+    /// Keying is also what replaces the caller's generation counter (CLAUDE.md #38): a slow
+    /// probe from a previous selection writes into ITS OWN key, so it cannot overwrite the
+    /// current one — the counter was guarding a single shared slot that no longer exists.
+    func loadDetails(for config: LLMConfig) async {
+        let k = detailsKey(config)
+        guard !k.url.isEmpty, !k.modelName.isEmpty else { return }
+        if fetchingDetailKeys.contains(k) { return }
+
+        fetchingDetailKeys.insert(k)
+        defer { fetchingDetailKeys.remove(k) }
+
+        let fetched = await clientFactory().modelLoadDetails(config: config)
+        loadedDetailKeys.insert(k)
+        // `nil` is an answer ("the server told us nothing about this model"), so it must
+        // REPLACE a previous one rather than leave stale values on screen.
+        detailsByKey[k] = fetched
+    }
+
     private func key(_ url: String, _ provider: LLMProvider, _ visionOnly: Bool) -> CacheKey {
         CacheKey(url: Self.normalize(url), provider: provider, visionOnly: visionOnly)
+    }
+
+    private func detailsKey(_ config: LLMConfig) -> DetailsKey {
+        DetailsKey(
+            url: Self.normalize(config.baseURLString),
+            provider: config.provider,
+            modelName: config.modelName.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
     }
 
     /// Trim + lowercase + collapse trailing slashes so trivial URL

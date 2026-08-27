@@ -25,7 +25,7 @@ struct CorrectRoleSheet: View {
 
                 TextEditor(text: $comment)
                     .frame(height: SheetLayout.textEditorHeight)
-                    .borderedTextEditorStyle()
+                    .inputSurface(.editor)
                     .accessibilityLabel("Correction text")
             }
 

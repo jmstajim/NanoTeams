@@ -63,7 +63,7 @@ struct SupervisorFinalReviewView: View {
 
     private var progress: (ready: Int, total: Int, missing: Int) {
         let total = reviewItems.count
-        let ready = reviewItems.filter(\.isReady).count
+        let ready = reviewItems.count(where: \.isReady)
         return (ready: ready, total: total, missing: total - ready)
     }
 

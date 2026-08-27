@@ -118,9 +118,60 @@ nonisolated struct FilenameMatch: Codable, Equatable {
 
 /// A file the search traversal encountered but could not index.
 /// Surfaced so the LLM/user can tell "no hits" from "file was unreadable".
+///
+/// This is the per-file record the walk accumulates. What reaches the model is
+/// `SkippedFileGroup` — see there for why the two shapes differ.
 nonisolated struct SkippedFile: Codable {
     var path: String
     var reason: String
+}
+
+/// Skipped files folded by reason, which is the shape the tool envelope carries.
+///
+/// One entry per file floods the context whenever the cause is per-CLASS rather than
+/// per-file: every `.doc` in a tree yields the same "save as .docx" sentence, every
+/// mislabeled export the same "not valid RTF", every un-downloaded cloud placeholder the
+/// same open error. Forty files then cost forty copies of one fact, which is the same
+/// flood that made binaries an aggregate count one field over.
+///
+/// The fold lives at the ENVELOPE boundary, not in the walk: `SearchExecutorOutput.skipped`
+/// stays per-file because that is what actually happened. This is a statement of the same
+/// facts sized for a reader.
+nonisolated struct SkippedFileGroup: Codable, Equatable {
+    var reason: String
+    /// How many files hit this reason — the true total, which `paths` may not reach.
+    var count: Int
+    /// Up to `pathSampleLimit` of them. The cap needs no separate notice: `count` sitting
+    /// beside a shorter list says so.
+    var paths: [String]
+
+    /// Sample size per group. Enough to recognise the pattern (which folder, which
+    /// extension) without restating it.
+    static let pathSampleLimit = 5
+
+    /// Folds per-file records by reason, most-common first.
+    ///
+    /// Ties break on `reason` so the output is a function of the input alone — two runs
+    /// over one tree must produce byte-identical envelopes, or the prompt prefix moves for
+    /// no reason. Paths keep walk order, which is already sorted.
+    static func group(_ skipped: [SkippedFile]) -> [SkippedFileGroup] {
+        var order: [String] = []
+        var byReason: [String: [String]] = [:]
+        for file in skipped {
+            if byReason[file.reason] == nil { order.append(file.reason) }
+            byReason[file.reason, default: []].append(file.path)
+        }
+        return order
+            .map { reason in
+                let paths = byReason[reason] ?? []
+                return SkippedFileGroup(
+                    reason: reason,
+                    count: paths.count,
+                    paths: Array(paths.prefix(pathSampleLimit))
+                )
+            }
+            .sorted { ($0.count, $1.reason) > ($1.count, $0.reason) }
+    }
 }
 
 // MARK: - Git Data Types

@@ -198,6 +198,23 @@ nonisolated enum ConversationRepairService {
             && toolCallCount == 0
     }
 
+    /// Tool names the model wrote into the REASONING channel as a Harmony envelope.
+    ///
+    /// Diagnosis only, never dispatch. The result reaches nothing but the text of a nudge:
+    /// there is no route from `thinkingCollected` into `resolvedToolCalls`, and none is being
+    /// added — see the route list in `performStreamingCall` for why a rehearsed call is not a
+    /// call. This function exists because the turn is ALREADY lost by the time it runs, and
+    /// the model deserves to be told which channel swallowed it.
+    ///
+    /// Names come back in written order and deduplicated: a nudge that lists one name twice
+    /// reads as two separate mistakes.
+    static func reasoningChannelToolCallNames(in thinking: String) -> [String] {
+        var seen = Set<String>()
+        return HarmonyToolCallParser().extractAllToolCalls(from: thinking)
+            .map(\.name)
+            .filter { seen.insert($0).inserted }
+    }
+
     // MARK: - Harmony Token Cleaning
 
     /// Clean Harmony/model control tokens from content before persisting.

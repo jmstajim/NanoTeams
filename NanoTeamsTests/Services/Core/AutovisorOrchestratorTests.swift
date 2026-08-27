@@ -146,6 +146,7 @@ final class AutovisorOrchestratorTests: NTMSOrchestratorTestBase, @unchecked Sen
             toolCalls: calls)
         // A background task is absent from `loadedTasks`, and `mutateTask` gates on
         // it — without this the seed is silently dropped (CLAUDE.md §7).
+        await registerRolesOnActiveTeam([roleID])
         await sut.ensureTaskLoaded(taskID)
         await sut.mutateTask(taskID: taskID) { task in
             task.runs = [Run(id: 0, steps: [step], roleStatuses: [roleID: .idle])]
@@ -183,6 +184,7 @@ final class AutovisorOrchestratorTests: NTMSOrchestratorTestBase, @unchecked Sen
         let otherID = await sut.createTask(title: "M3", supervisorTask: "x", makeActive: false)!
         let step = StepExecution(id: "startup_software_engineer", role: .softwareEngineer,
                                  title: "SWE", status: .paused)
+        await registerRolesOnActiveTeam(["startup_software_engineer"])
         await sut.ensureTaskLoaded(otherID)
         await sut.mutateTask(taskID: otherID) { task in
             task.runs = [Run(id: 0, steps: [step], roleStatuses: ["startup_software_engineer": .idle])]
@@ -1505,4 +1507,5 @@ final class AutovisorOrchestratorTests: NTMSOrchestratorTestBase, @unchecked Sen
         XCTAssertNil(sut.autovisorAutoDisableAt,
                      "reopen with the feature off clears any stale deadline")
     }
+
 }

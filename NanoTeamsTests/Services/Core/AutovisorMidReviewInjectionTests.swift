@@ -72,10 +72,42 @@ final class AutovisorMidReviewInjectionTests: NTMSOrchestratorTestBase, @uncheck
                        "the notice targets the manager role so its tool loop drains it")
         XCTAssertEqual(queued.first?.isFromAutomatedSupervisor, true,
                        "automated notice — keeps the Auto-answered badge honest on the backstop path")
+        // BOTH axes, because they answer different questions and only one of them is new.
+        // `isFromAutomatedSupervisor` says WHO wrote it (the auto-answer badge and
+        // `autovisorHasPendingHumanContinuation` read it, and `message_task` sets it too);
+        // `kind` says WHAT it is, and is what makes the drain persist `.autovisorEvent` and
+        // ship the turn without the `Supervisor:` marker. Asserting only the flag would leave
+        // a drain that renders every automated turn as a system notice looking correct.
+        XCTAssertEqual(queued.first?.kind, .autovisorEventNotice,
+                       "the drain reads `kind` to render this as a system notice, not a Supervisor bubble")
         XCTAssertTrue(queued.first?.text.contains("Task #\(taskID)") ?? false)
         XCTAssertTrue(queued.first?.text.contains("failed") ?? false)
         XCTAssertNil(sut.autovisorLastWakeAt,
                      "injection must NOT stamp the wake debounce — the post-pass fresh wake stays available")
+    }
+
+    /// The sibling of the assertion above, and the reason `kind` is a second field rather than
+    /// a reinterpretation of `isFromAutomatedSupervisor` (CLAUDE.md #51: a marker set at one
+    /// site is a coincidence until its siblings are checked).
+    ///
+    /// A human talking to the manager is Supervisor SPEECH and must keep drawing a Supervisor
+    /// bubble. `message_task` sits on the same queue and is likewise `.supervisorSpeech`
+    /// despite being written by the automated Supervisor — which is exactly why "automated"
+    /// cannot stand in for "system-authored".
+    ///
+    /// RED: default `kind` to `.autovisorEventNotice`, or derive it from
+    /// `isFromAutomatedSupervisor` → this fails and the human's own steering collapses into a
+    /// dim `system: event` row.
+    func testHumanMessageToManager_isSpeech_notAnEventNotice() async {
+        let mgrID = await enabledRunningManager()
+
+        // `.running` ⇒ `autovisorMessageWake` returns `.nextIteration`, so this only queues.
+        XCTAssertTrue(sut.sendMessageToAutovisor("look at the parser"))
+
+        let queued = formState.queuedMessages(for: mgrID)
+        XCTAssertEqual(queued.count, 1)
+        XCTAssertEqual(queued.first?.kind, .supervisorSpeech)
+        XCTAssertEqual(queued.first?.isFromAutomatedSupervisor, false)
     }
 
     func testMidReview_sameCondition_secondWake_deduped() async {

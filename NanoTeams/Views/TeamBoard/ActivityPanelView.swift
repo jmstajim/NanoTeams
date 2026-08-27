@@ -62,7 +62,7 @@ struct ActivityPanelView: View {
 // MARK: - Previews
 
 #Preview("Activity Panel — No Role Selected") {
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
+    @Previewable @State var store = PreviewStore.make()
     @Previewable @State var dictation = DictationService()
     @Previewable @State var selectedRoleID: String? = nil
     ActivityPanelView(
@@ -84,7 +84,7 @@ struct ActivityPanelView: View {
 }
 
 #Preview("Activity Panel — Role Selected") {
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
+    @Previewable @State var store = PreviewStore.make()
     @Previewable @State var dictation = DictationService()
     @Previewable @State var selectedRoleID: String? = Team.default.roles.first(where: { !$0.isSupervisor })?.id
     let team = Team.default

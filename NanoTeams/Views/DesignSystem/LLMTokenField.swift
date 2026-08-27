@@ -99,29 +99,25 @@ struct LLMTokenField: View {
 
     @ViewBuilder
     private var editableField: some View {
-        HStack(spacing: Spacing.xs) {
-            SecureField("API Token (optional)", text: $token)
-                .textFieldStyle(.plain)
-                .autocorrectionDisabled()
-                .font(Typography.mono)
-
-            if !token.isEmpty {
-                Button {
-                    token = ""
-                } label: {
-                    Image(systemName: "xmark.circle")
-                        .foregroundStyle(Colors.textTertiary)
+        SecureField("API Token (optional)", text: $token)
+            .textFieldStyle(.plain)
+            .autocorrectionDisabled()
+            .font(Typography.mono)
+            .inputSurface(.field) {
+                EmptyView()
+            } trailing: {
+                if !token.isEmpty {
+                    Button {
+                        token = ""
+                    } label: {
+                        Image(systemName: "xmark.circle")
+                            .foregroundStyle(Colors.textTertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Clear API token")
+                    .accessibilityLabel("Clear API token")
                 }
-                .buttonStyle(.plain)
-                .help("Clear API token")
-                .accessibilityLabel("Clear API token")
             }
-        }
-        .padding(Spacing.s)
-        .background(
-            RoundedRectangle.squircle(CornerRadius.small)
-                .fill(Colors.surfaceElevated)
-        )
     }
 
     @ViewBuilder

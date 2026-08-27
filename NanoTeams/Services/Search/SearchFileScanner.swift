@@ -30,7 +30,7 @@ nonisolated extension SearchExecutor {
         let ext = url.pathExtension.lowercased()
         if DocumentTextExtractor.isSupported(extension: ext) {
             // Unreachable while the supported set and the extractor registry
-            // agree: `extractText` returns `nil` for exactly one reason — no
+            // agree: `extract` returns `nil` for exactly one reason — no
             // registered extractor for the extension — and this branch is
             // already behind `isSupported`. Widening
             // `DocumentConstants.supportedReadExtensions` without registering an
@@ -39,17 +39,25 @@ nonisolated extension SearchExecutor {
             // testFacade_everySupportedExtensionResolvesToAStrategy`. Kept as a
             // report rather than a crash so such a slip degrades to one skipped
             // file with a reason.
-            guard let extracted = DocumentTextExtractor.extractText(from: url) else {
+            guard let outcome = DocumentTextExtractor.extract(from: url) else {
                 results.skipped.append(SkippedFile(
                     path: relativePath,
                     reason: "document extractor could not open file as .\(ext)"
                 ))
                 return
             }
-            if DocumentTextExtractor.isFailureMessage(extracted) {
-                results.skipped.append(SkippedFile(path: relativePath, reason: extracted))
+            guard case .text(let extracted, let warnings) = outcome else {
+                // Only an OMISSION is reported. A document read end to end that holds no
+                // text — a scanned, image-only PDF — is not one: zero matches is the whole
+                // truth about it, and listing it would say a file was passed over when
+                // nothing was. `omissionReason` owns that judgement, so it cannot drift
+                // between the surfaces that render it.
+                if let reason = outcome.omissionReason {
+                    results.skipped.append(SkippedFile(path: relativePath, reason: reason))
+                }
                 return
             }
+            results.noteWarnings(warnings)
             // The document path already produced text; hand its bytes to the same scanner.
             content = Data(extracted.utf8)
         } else {
@@ -72,10 +80,13 @@ nonisolated extension SearchExecutor {
                 // Don't touch the per-file counters — the count would
                 // otherwise grow with every file the cancel walked past.
                 return
-            case .tooLarge(let bytes):
+            case .tooLarge:
+                // The reason names the RULE, not this file's byte count. A per-file number
+                // makes every oversize file its own group, so a folder of large logs floods
+                // exactly as it did before folding — and `paths` already says which files.
                 results.skipped.append(SkippedFile(
                     path: relativePath,
-                    reason: "file is \(bytes) bytes, over the \(maxSearchableFileBytes)-byte search limit"
+                    reason: "over the \(maxSearchableFileBytes)-byte search limit"
                 ))
                 return
             }

@@ -138,7 +138,7 @@ nonisolated struct WatchtowerNotification: Identifiable {
     /// Supervisor's attention, INCLUDING failed / timed-out (see
     /// `WatchtowerNotificationType.needsAttention`). Pure + testable.
     static func needsYouCount(_ notifications: [WatchtowerNotification]) -> Int {
-        notifications.filter(\.type.needsAttention).count
+        notifications.count(where: \.type.needsAttention)
     }
 }
 

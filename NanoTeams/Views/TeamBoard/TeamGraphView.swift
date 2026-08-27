@@ -40,18 +40,38 @@ struct TeamGraphView: View {
     /// graph keeps its pre-resize scale until `didEndLiveResize` fires.
     @State private var snappedViewSize: CGSize = .zero
 
-    /// Visible node positions (Supervisor + team members only)
-    private var visibleNodePositions: [TeamNodePosition] {
-        nodePositions.filter { position in
-            let roleDef = roleDefinitions.first { $0.id == position.roleID }
-            let isSupervisor = roleDef?.isSupervisor ?? false
+    /// Bounding box of a set of node positions.
+    ///
+    /// A named `nonisolated struct` rather than the anonymous tuple this used to return:
+    /// a tuple cannot be a parameter type without respelling it at every call site, and
+    /// cannot be `Equatable` for the geometry tests.
+    nonisolated struct Bounds: Equatable {
+        let minX: CGFloat
+        let maxX: CGFloat
+        let minY: CGFloat
+        let maxY: CGFloat
+    }
+
+    /// Visible node positions (Supervisor + team members only).
+    ///
+    /// Takes an `index` rather than scanning the roster per node: this used to be a
+    /// computed property whose filter ran a linear roster scan for every node, and
+    /// SwiftUI re-evaluates a computed property at every reference — five per body pass
+    /// here (three through `nodeBounds`, one in `fitScale`, one as the `ForEach` data),
+    /// so the cost was 5 × Θ(nodes × roles). `body` derives it ONCE and threads it.
+    nonisolated static func visibleNodePositions(
+        _ positions: [TeamNodePosition],
+        index: RoleRosterIndex,
+        teamMembers: Set<String>
+    ) -> [TeamNodePosition] {
+        positions.filter { position in
+            let isSupervisor = index.role(forExactID: position.roleID)?.isSupervisor ?? false
             return isSupervisor || teamMembers.contains(position.roleID)
         }
     }
 
     /// Bounding box of visible node positions (single-pass)
-    private var nodeBounds: (minX: CGFloat, maxX: CGFloat, minY: CGFloat, maxY: CGFloat)? {
-        let positions = visibleNodePositions
+    nonisolated static func nodeBounds(of positions: [TeamNodePosition]) -> Bounds? {
         guard let first = positions.first else { return nil }
         var minX = first.x, maxX = first.x, minY = first.y, maxY = first.y
         for pos in positions.dropFirst() {
@@ -60,14 +80,14 @@ struct TeamGraphView: View {
             if pos.y < minY { minY = pos.y }
             if pos.y > maxY { maxY = pos.y }
         }
-        return (minX, maxX, minY, maxY)
+        return Bounds(minX: minX, maxX: maxX, minY: minY, maxY: maxY)
     }
 
     private static let runtimeNodeHeight: CGFloat = GraphTokens.nodeHeight
 
     /// Calculate scale factor so the graph fits within the view
-    private func fitScale(viewSize: CGSize) -> CGFloat {
-        guard let b = nodeBounds, visibleNodePositions.count >= 2 else { return 1.0 }
+    nonisolated static func fitScale(viewSize: CGSize, bounds: Bounds?, visibleCount: Int) -> CGFloat {
+        guard let b = bounds, visibleCount >= 2 else { return 1.0 }
 
         let nodeW: CGFloat = GraphTokens.nodeMaxWidth
         let nodeH = Self.runtimeNodeHeight
@@ -87,8 +107,8 @@ struct TeamGraphView: View {
 
     /// Graph-local offset: translates node positions so all coordinates are positive
     /// within a fixed-size frame. Prevents Canvas clipping at negative coordinates.
-    private var graphFrameSize: CGSize {
-        guard let b = nodeBounds else { return CGSize(width: 100, height: 100) }
+    nonisolated static func graphFrameSize(bounds: Bounds?) -> CGSize {
+        guard let b = bounds else { return CGSize(width: 100, height: 100) }
         let nodeW: CGFloat = GraphTokens.nodeMaxWidth
         let nodeH = Self.runtimeNodeHeight
         let padding: CGFloat = GraphTokens.edgePadding
@@ -101,8 +121,8 @@ struct TeamGraphView: View {
 
     /// Offset to translate raw node positions into the graph-local frame
     /// (always positive, starts at padding)
-    private var graphLocalOffset: CGPoint {
-        guard let b = nodeBounds else { return .zero }
+    nonisolated static func graphLocalOffset(bounds: Bounds?) -> CGPoint {
+        guard let b = bounds else { return .zero }
         let nodeW: CGFloat = GraphTokens.nodeMaxWidth
         let nodeH = Self.runtimeNodeHeight
         let padding: CGFloat = GraphTokens.edgePadding
@@ -114,14 +134,23 @@ struct TeamGraphView: View {
     }
 
     var body: some View {
-        let scale = fitScale(viewSize: snappedViewSize)
-        let localOffset = graphLocalOffset
-        let frameSize = graphFrameSize
+        // Derived ONCE per body pass and threaded down. `body` already hoisted the three
+        // CONSUMERS (scale / offset / frame size) but not the shared INPUT all three
+        // re-derive, so `visibleNodePositions` ran five times per pass and `nodeBounds`
+        // three — each a Θ(nodes × roles) filter. The roster index is built here rather
+        // than in the parent because `GraphPanelView` constructs this view once per
+        // delegation layer, so a parent-side build would only move the cost.
+        let index = RoleRosterIndex(roster: roleDefinitions)
+        let visible = Self.visibleNodePositions(nodePositions, index: index, teamMembers: teamMembers)
+        let bounds = Self.nodeBounds(of: visible)
+        let scale = Self.fitScale(viewSize: snappedViewSize, bounds: bounds, visibleCount: visible.count)
+        let localOffset = Self.graphLocalOffset(bounds: bounds)
+        let frameSize = Self.graphFrameSize(bounds: bounds)
 
         Color.clear
             .background(Colors.surfacePrimary)
             .overlay {
-                graphContent(localOffset: localOffset)
+                graphContent(localOffset: localOffset, visible: visible, index: index)
                     .frame(width: frameSize.width, height: frameSize.height)
                     .scaleEffect(scale)
             }
@@ -157,7 +186,11 @@ struct TeamGraphView: View {
     }
 
     @ViewBuilder
-    private func graphContent(localOffset: CGPoint) -> some View {
+    private func graphContent(
+        localOffset: CGPoint,
+        visible: [TeamNodePosition],
+        index: RoleRosterIndex
+    ) -> some View {
         // Compute the structural layout ONCE per body re-evaluation and
         // hand the same `Layout` to both stacked canvas instances. Cache
         // hits skip the work entirely on resize-driven re-renders.
@@ -188,8 +221,10 @@ struct TeamGraphView: View {
             )
 
             // Role nodes - positioned in graph-local coordinates
-            ForEach(visibleNodePositions) { nodePosition in
-                let roleDef = roleDefinitions.first { $0.id == nodePosition.roleID }
+            ForEach(visible) { nodePosition in
+                // The lookup `visibleNodePositions` already performed for this node and
+                // discarded — same answer, O(1), no second roster scan.
+                let roleDef = index.role(forExactID: nodePosition.roleID)
                 let role = Role.builtInRole(for: nodePosition.roleID) ?? .custom(id: nodePosition.roleID)
                 let status = roleStatuses[nodePosition.roleID] ?? .idle
 

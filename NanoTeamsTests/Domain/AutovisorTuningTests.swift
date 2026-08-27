@@ -96,4 +96,29 @@ final class AutovisorTuningTests: XCTestCase {
         XCTAssertTrue(json.contains("\"maxManagedTasksPerReview\""))
         XCTAssertTrue(json.contains("\"stuckHangSeconds\""))
     }
+    /// The only clamp in `AutovisorTuning` that is not a floor, and the one a hand-edited
+    /// `settings.json` can violate: a pre-token budget SMALLER than the general one falsifies
+    /// the design — the window that emits nothing at all would be judged more harshly than the
+    /// one that emits tokens.
+    ///
+    /// RED: drop the cross-field clamp → `{stuckHangSeconds: 180, stuckPrefillHangSeconds: 60}`
+    /// survives, and a prefill is flagged at 60s while a mid-response stall waits 180s.
+    func testClamped_prefillBudgetIsNeverBelowTheHangBudget() {
+        let tuning = AutovisorTuning(stuckHangSeconds: 180, stuckPrefillHangSeconds: 60)
+        XCTAssertGreaterThanOrEqual(tuning.stuckPrefillHangSeconds, tuning.stuckHangSeconds)
+
+        // Control: a legitimately larger value is left alone rather than snapped to the floor.
+        let wide = AutovisorTuning(stuckHangSeconds: 180, stuckPrefillHangSeconds: 900)
+        XCTAssertEqual(wide.stuckPrefillHangSeconds, 900)
+    }
+
+    /// RED: drop the `decodeIfPresent ?? constant` fallback for the new field → an existing
+    /// `settings.json` written before this knob existed fails to decode, and the whole
+    /// Autovisor tuning block reverts to defaults.
+    func testDecode_settingsWithoutTheNewKnob_keepsItsOtherValues() throws {
+        let json = #"{"maxConcurrentManagedTasks":2,"stuckHangSeconds":240}"#
+        let tuning = try JSONDecoder().decode(AutovisorTuning.self, from: Data(json.utf8))
+        XCTAssertEqual(tuning.stuckHangSeconds, 240)
+        XCTAssertEqual(tuning.stuckPrefillHangSeconds, AutovisorConstants.stuckPrefillHangSeconds)
+    }
 }

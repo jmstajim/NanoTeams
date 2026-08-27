@@ -291,6 +291,14 @@ final class StreamingPreviewManager {
         lastStreamActivityAt[TaskStepKey(taskID: taskID, stepID: stepID)]
     }
 
+    /// The step's live prompt-processing state, or nil when no request is in flight or the
+    /// first generation delta has already arrived. Non-nil is therefore exactly "a request is
+    /// in flight and the server has produced no token yet" — the fact the Autovisor's pre-token
+    /// hang budget is keyed on. `processingStatus` is `private(set)`, hence this accessor.
+    func promptProcessingStatus(stepID: String, taskID: Int) -> PromptProcessingStatus? {
+        processingStatus[TaskStepKey(taskID: taskID, stepID: stepID)]
+    }
+
     // MARK: - Commit / Clear
 
     /// Commits the streaming preview for a step: removes the preview, streaming

@@ -22,8 +22,8 @@ nonisolated struct GitStatusTool: ToolHandler {
         Self(workFolderRoot: dependencies.workFolderRoot)
     }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let result = try ProcessRunner.runGit(["status", "--porcelain=v1", "-b"], in: workFolderRoot)
 
             guard result.success else {
@@ -126,8 +126,8 @@ nonisolated struct GitBranchListTool: ToolHandler {
         Self(workFolderRoot: dependencies.workFolderRoot)
     }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let all = optionalBool(args, "all", default: false)
 
             var gitArgs = ["branch", "-v"]
@@ -235,8 +235,8 @@ nonisolated struct GitLogTool: ToolHandler {
         Self(workFolderRoot: dependencies.workFolderRoot, resolver: dependencies.resolver)
     }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let maxCount = optionalInt(args, "max") ?? 20
             let oneline = optionalBool(args, "oneline", default: true)
             let paths = optionalStringArray(args, "paths")?.map { resolver.relativizePathspec($0) }
@@ -332,8 +332,8 @@ nonisolated struct GitDiffTool: ToolHandler {
         Self(workFolderRoot: dependencies.workFolderRoot, resolver: dependencies.resolver)
     }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let cached = optionalBool(args, "cached", default: false)
             let paths = optionalStringArray(args, "paths")?.map { resolver.relativizePathspec($0) }
             let maxLines = optionalInt(args, "max_lines") ?? 400
@@ -348,7 +348,20 @@ nonisolated struct GitDiffTool: ToolHandler {
                 gitArgs.append(contentsOf: paths)
             }
 
-            let result = try ProcessRunner.runGit(gitArgs, in: workFolderRoot)
+            // The two reads are independent processes over the same repository, so they run
+            // concurrently. `git diff` is the slow one on a large working tree; the untracked
+            // probe used to wait behind it for no reason.
+            //
+            // Both are awaited before the branch below rather than only on the success path: an
+            // `async let` left unawaited is implicitly awaited at scope exit ANYWAY —
+            // `ProcessRunner.runGit` blocks and cancellation cannot interrupt it — so an early
+            // `return` would suspend at the closing brace instead, which reads as if it returned
+            // promptly and does not.
+            let root = workFolderRoot
+            async let diffTask = Self.git(gitArgs, in: root)
+            async let untrackedTask = Self.untrackedFiles(paths: paths, cached: cached, in: root)
+            let result = try await diffTask
+            let probe = await untrackedTask
 
             guard result.success else {
                 if GitErrorClassifier.isNotARepository(stderr: result.stderr) {
@@ -365,34 +378,10 @@ nonisolated struct GitDiffTool: ToolHandler {
             let outputLines = truncated ? Array(lines.prefix(maxLines)) : lines
             let diff = outputLines.joined(separator: "\n")
 
-            let filesChanged = lines.filter { $0.hasPrefix("diff --git") }.count
+            let filesChanged = lines.count { $0.hasPrefix("diff --git") }
 
-            // `git diff` reports tracked changes only; list untracked working-tree files so
-            // reviewers don't miss brand-new files the engineer hasn't `git add`-ed yet.
-            // Skip when `cached` (staging-only view) — staged content is always tracked.
-            // Scope by `paths` when provided so the field still reflects the caller's query.
-            var untracked: [String] = []
-            var warnings: [String] = []
-            if !cached {
-                var probeArgs = ["ls-files", "--others", "--exclude-standard"]
-                if let paths = paths, !paths.isEmpty {
-                    probeArgs.append("--")
-                    probeArgs.append(contentsOf: paths)
-                }
-                do {
-                    let others = try ProcessRunner.runGit(probeArgs, in: workFolderRoot)
-                    if others.success {
-                        untracked = others.stdout
-                            .split(separator: "\n", omittingEmptySubsequences: true)
-                            .map(String.init)
-                    } else {
-                        let detail = others.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-                        warnings.append("untracked_files probe failed: \(detail.isEmpty ? "non-zero exit" : detail)")
-                    }
-                } catch {
-                    warnings.append("untracked_files probe failed: \(error.localizedDescription)")
-                }
-            }
+            let untracked = probe.files
+            let warnings = probe.warnings
 
             struct DiffData: Codable {
                 var diff: String
@@ -405,6 +394,50 @@ nonisolated struct GitDiffTool: ToolHandler {
                 data: DiffData(diff: diff, files_changed: filesChanged, untracked_files: untracked),
                 meta: ToolResultMeta(truncated: truncated, warnings: warnings)
             )
+        }
+    }
+
+    /// `ProcessRunner.runGit` behind an `async` face, so two independent reads can be started
+    /// with `async let`.
+    ///
+    /// `@concurrent` rather than plain `nonisolated`: under `SWIFT_APPROACHABLE_CONCURRENCY` a
+    /// `nonisolated async` function runs on the CALLER's executor (SE-0461), which would put
+    /// both `async let`s on the same one and serialise the very thing this exists to overlap.
+    @concurrent
+    private static func git(_ arguments: [String], in root: URL) async throws
+        -> ProcessRunner.Result
+    {
+        try ProcessRunner.runGit(arguments, in: root)
+    }
+
+    /// `git diff` reports tracked changes only; list untracked working-tree files so reviewers
+    /// don't miss brand-new files the engineer hasn't `git add`-ed yet.
+    ///
+    /// Skipped when `cached` (staging-only view) — staged content is always tracked. Scoped by
+    /// `paths` when provided so the field still reflects the caller's query.
+    @concurrent
+    private static func untrackedFiles(
+        paths: [String]?, cached: Bool, in root: URL
+    ) async -> (files: [String], warnings: [String]) {
+        guard !cached else { return ([], []) }
+        var probeArgs = ["ls-files", "--others", "--exclude-standard"]
+        if let paths, !paths.isEmpty {
+            probeArgs.append("--")
+            probeArgs.append(contentsOf: paths)
+        }
+        do {
+            let others = try ProcessRunner.runGit(probeArgs, in: root)
+            guard others.success else {
+                let detail = others.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+                return ([], ["untracked_files probe failed: "
+                        + "\(detail.isEmpty ? "non-zero exit" : detail)"])
+            }
+            return (
+                others.stdout.split(separator: "\n", omittingEmptySubsequences: true)
+                    .map(String.init),
+                [])
+        } catch {
+            return ([], ["untracked_files probe failed: \(error.localizedDescription)"])
         }
     }
 }

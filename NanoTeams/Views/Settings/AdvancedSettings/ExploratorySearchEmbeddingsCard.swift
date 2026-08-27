@@ -24,12 +24,12 @@ struct ExploratorySearchEmbeddingsCard: View {
     /// ACL denied, corrupt) land in the app-wide error banner — without
     /// this wired the user just sees an empty field and a 401 loop.
     var onTokenLoadError: ((Error) -> Void)? = nil
-    /// Injected for testability. Defaults to the real router.
-    var client: any LLMClient = LLMClientRouter()
 
-    @State private var availableEmbeddingModels: [String] = []
-    @State private var isFetchingEmbeddingModels = false
-    @State private var fetchEmbeddingModelsError: String?
+    /// The model list, its in-flight flag and its last error — owned by the catalog, not by
+    /// this card. The card held them, and its own client, until 2026-08-24; the client's
+    /// default resolved outward to a live `LLMClientRouter`, so the `#Preview` below fetched
+    /// against a real server on appear.
+    @Environment(EmbeddingModelCatalog.self) private var embeddingCatalog
 
     /// Per-embedding-server bearer token. `LLMTokenField` (inside
     /// `LLMEndpointEditor`) owns the load/save lifecycle keyed by the
@@ -67,16 +67,16 @@ struct ExploratorySearchEmbeddingsCard: View {
                 emptyModelLabel: emptyModelLabel,
                 onTokenSaveError: onTokenSaveError,
                 onTokenLoadError: onTokenLoadError,
-                onURLCommit: { Task { await fetchEmbeddingModels() } },
-                availableModels: availableEmbeddingModels,
-                isFetchingModels: isFetchingEmbeddingModels,
+                onURLCommit: { Task { await refreshEmbeddingModels() } },
+                availableModels: embeddingCatalog.models(for: fetchURL),
+                isFetchingModels: embeddingCatalog.isFetching(fetchURL),
                 status: statusAlreadyShowsConnectionFailure
                     ? nil
                     : EndpointStatus.resolve(
-                        fetchError: fetchEmbeddingModelsError,
-                        isFetching: isFetchingEmbeddingModels
+                        fetchError: embeddingCatalog.error(for: fetchURL),
+                        isFetching: embeddingCatalog.isFetching(fetchURL)
                     ),
-                onRefreshModels: { Task { await fetchEmbeddingModels() } }
+                onRefreshModels: { Task { await refreshEmbeddingModels() } }
             )
 
             if let coordinator {
@@ -91,9 +91,9 @@ struct ExploratorySearchEmbeddingsCard: View {
         .task {
             // First-appear load only. URL edits don't re-trigger — onCommit
             // (Enter / focus loss) and the Refresh button are the user-driven
-            // re-fetch paths.
-            guard availableEmbeddingModels.isEmpty else { return }
-            await fetchEmbeddingModels()
+            // re-fetch paths. `loadIfNeeded` also dedupes across appearances,
+            // which the card's own `isEmpty` guard could not.
+            await embeddingCatalog.loadIfNeeded(url: fetchURL, tokenOverride: apiToken)
         }
     }
 
@@ -133,6 +133,7 @@ struct ExploratorySearchEmbeddingsCard: View {
             } label: {
                 Image(systemName: "ellipsis")
                     .frame(width: 28, height: 28)
+                    .contentShape(RoundedRectangle.squircle(CornerRadius.small))
             }
             .menuStyle(.borderlessButton)
             .frame(width: 28)
@@ -184,42 +185,17 @@ struct ExploratorySearchEmbeddingsCard: View {
 
     // MARK: - Fetch loop
 
-    /// Fetches embedding-type models from the server. Filtered on the client
-    /// side to LM Studio's `type == "embeddings"` — chat and vision models
-    /// don't surface in this picker.
-    private func fetchEmbeddingModels() async {
-        guard !isFetchingEmbeddingModels else { return }
-        isFetchingEmbeddingModels = true
-        fetchEmbeddingModelsError = nil
-        defer { isFetchingEmbeddingModels = false }
-        do {
-            availableEmbeddingModels = try await effectiveClient.fetchEmbeddingModels(
-                config: fetchConfig
-            )
-        } catch {
-            fetchEmbeddingModelsError = "Failed to load embedding models: \(error.localizedDescription)"
-        }
+    /// The server this card's picker is about — the effective embedding endpoint, which is
+    /// the override when one is set and the canonical default otherwise.
+    private var fetchURL: String {
+        config.effectiveEmbeddingConfig.baseURLString
     }
 
-    /// Returns either the injected client (test override) or a fresh router
-    /// preconfigured with the typed-but-unsaved bearer token for this card's
-    /// embedding URL.
-    private var effectiveClient: any LLMClient {
-        let url = config.effectiveEmbeddingConfig.baseURLString
-        let trimmed = apiToken.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return client }
-        return LLMClientRouter(tokenResolver: OverridingLLMTokenResolver(
-            overrides: [url: trimmed]
-        ))
-    }
-
-    private var fetchConfig: LLMConfig {
-        let cfg = config.effectiveEmbeddingConfig
-        return LLMConfig(
-            provider: .lmStudio,
-            baseURLString: cfg.baseURLString,
-            modelName: cfg.modelName
-        )
+    /// User-initiated re-fetch (Refresh button, URL commit). The token rides along because
+    /// `LLMTokenField` holds it before it reaches the Keychain, and a fetch issued while the
+    /// user is still typing one must authenticate with what is on screen.
+    private func refreshEmbeddingModels() async {
+        await embeddingCatalog.refresh(url: fetchURL, tokenOverride: apiToken)
     }
 
     // MARK: - Field bindings
@@ -307,12 +283,16 @@ struct ExploratorySearchEmbeddingsCard: View {
 
 #Preview("Semantic Query Expansion — disabled") {
     @Previewable @State var config = StoreConfiguration()
+    // Inert, not live: the card fetches on appear, so a real catalog here issues a request
+    // against whatever embedding server the developer has running the moment the canvas opens.
+    @Previewable @State var embeddingCatalog = PreviewStore.embeddingCatalog()
     ExploratorySearchEmbeddingsCard(
         config: config,
         coordinator: nil,
         onRebuild: {},
         onForceFullRebuild: {}
     )
+    .environment(embeddingCatalog)
     .padding()
     .background(Colors.surfacePrimary)
 }

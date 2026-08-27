@@ -25,7 +25,7 @@ final class SearchExecutorBenchTests: XCTestCase {
         throw XCTSkip("repo root not found from \(#filePath)")
     }
 
-    func testBench_realCorpus() throws {
+    func testBench_realCorpus() async throws {
         guard ProcessInfo.processInfo.environment["NANOTEAMS_SEARCH_BENCH"] == "1" else {
             throw XCTSkip("set NANOTEAMS_SEARCH_BENCH=1 to run")
         }
@@ -37,16 +37,21 @@ final class SearchExecutorBenchTests: XCTestCase {
         let reportURL = URL(fileURLWithPath: "/tmp/nt_search_bench.txt")
         var report = "corpus: \(root.path)\n"
 
-        func measure(_ label: String, queries: [String], maxResults: Int = 100) throws {
+        func measure(
+            _ label: String, queries: [String], maxResults: Int = 100,
+            scanConcurrency: Int? = nil
+        ) async throws {
             // One warm-up so the page cache is not what is being measured.
-            _ = try SearchExecutor.run(SearchExecutorInput(
+            _ = try await SearchExecutor.run(SearchExecutorInput(
                 workFolderRoot: root, resolver: resolver, fileManager: .default,
-                queries: queries, maxResults: maxResults, internalDir: internalDir))
+                queries: queries, maxResults: maxResults, internalDir: internalDir,
+                scanConcurrency: scanConcurrency))
 
             let started = ContinuousClock.now
-            let out = try SearchExecutor.run(SearchExecutorInput(
+            let out = try await SearchExecutor.run(SearchExecutorInput(
                 workFolderRoot: root, resolver: resolver, fileManager: .default,
-                queries: queries, maxResults: maxResults, internalDir: internalDir))
+                queries: queries, maxResults: maxResults, internalDir: internalDir,
+                scanConcurrency: scanConcurrency))
             let ms = (ContinuousClock.now - started).milliseconds
 
             let st = out.stats
@@ -57,14 +62,44 @@ final class SearchExecutorBenchTests: XCTestCase {
                 Double(st.bytesScanned) / 1_048_576)
         }
 
-        try measure("1 query, zero hits", queries: ["zzz_no_such_token_anywhere"])
-        try measure("5 queries, zero hits", queries: (0..<5).map { "zzz_absent_\($0)" })
-        try measure("1 query, common token", queries: ["mutateTask"])
+        try await measure("1 query, zero hits", queries: ["zzz_no_such_token_anywhere"])
+        try await measure("5 queries, zero hits", queries: (0..<5).map { "zzz_absent_\($0)" })
+        try await measure("1 query, common token", queries: ["mutateTask"])
         // Equal-WORK comparison for the common-token row. The pre-rewrite executor stopped at 7
         // matches (the hardcoded 40-line budget against context 2+3), so comparing it against a
         // 100-match page measures different amounts of output, not different speeds.
-        try measure("1 query, common (7 results)", queries: ["mutateTask"], maxResults: 7)
-        try measure("31 queries (exploratory)", queries: (0..<31).map { "zzz_absent_\($0)" })
+        try await measure("1 query, common (7 results)", queries: ["mutateTask"], maxResults: 7)
+        try await measure("31 queries (exploratory)", queries: (0..<31).map { "zzz_absent_\($0)" })
+
+        // The point of the whole exercise, on one line of the artifact: the same corpus and
+        // the same query, scanned one file at a time and `defaultScanConcurrency` at a time.
+        // Sequential is the BASELINE row, not a legacy path — `scanConcurrency: 1` drives the
+        // identical pipeline with a window of one, so the pair measures the width and nothing
+        // else.
+        try await measure("1 query, zero hits (serial)",
+                          queries: ["zzz_no_such_token_anywhere"], scanConcurrency: 1)
+        try await measure("1 query, zero hits (parallel)",
+                          queries: ["zzz_no_such_token_anywhere"],
+                          scanConcurrency: SearchExecutor.defaultScanConcurrency)
+
+        // The INDEX walk, which feeds exploratory search and re-runs on every FS event. Its
+        // signature probe additionally runs on every `loadOrBuild`, cache hit included, so both
+        // are measured: `matchesFolder` is what a warm exploratory search actually pays.
+        let indexService = SearchIndexService(
+            workFolderRoot: root, internalDir: internalDir, fileManager: .default)
+        _ = await indexService.loadOrBuild(force: true)
+        var started = ContinuousClock.now
+        let rebuilt = await indexService.loadOrBuild(force: true)
+        report += String(
+            format: "%-26@ %8.1f ms | files=%d tokens=%d\n",
+            "index rebuild" as NSString, (ContinuousClock.now - started).milliseconds,
+            rebuilt.files.count, rebuilt.tokens.count)
+
+        started = ContinuousClock.now
+        _ = await indexService.loadOrBuild(force: false)
+        report += String(
+            format: "%-26@ %8.1f ms | (signature probe only — every warm search pays this)\n",
+            "index cache hit" as NSString, (ContinuousClock.now - started).milliseconds)
 
         try report.write(to: reportURL, atomically: true, encoding: .utf8)
     }

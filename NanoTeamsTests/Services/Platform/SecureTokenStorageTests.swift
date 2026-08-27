@@ -6,9 +6,26 @@ final class SecureTokenStorageTests: XCTestCase {
 
     /// Real-Keychain tests prompt for authorization on the first write by an
     /// unsigned app on local dev machines and block indefinitely waiting for
-    /// the user to click Allow. Default to skipping; set
-    /// `NANOTEAMS_TEST_REAL_KEYCHAIN=1` in the test scheme's environment to
-    /// run them. CI uses a signed runner where the prompt doesn't fire.
+    /// the user to click Allow. Default to skipping; opt in with
+    /// `NANOTEAMS_TEST_REAL_KEYCHAIN=1`.
+    ///
+    /// **From the command line the variable must be spelled
+    /// `TEST_RUNNER_NANOTEAMS_TEST_REAL_KEYCHAIN=1`** — `xcodebuild` strips that prefix and
+    /// forwards the rest to the test host. A bare `export NANOTEAMS_TEST_REAL_KEYCHAIN=1`
+    /// reaches the build system and not the host (the same gotcha `run_headless.sh` works
+    /// around by rewriting the test plan), so every one of these tests skips and the run still
+    /// exits 0. Setting it in the scheme/test-plan environment works from Xcode's UI.
+    ///
+    /// This comment used to close with "CI uses a signed runner where the prompt doesn't fire",
+    /// which stopped being true when CI was switched off on 2026-08-22 (DEBTS §5, D-3/D-31;
+    /// there is no `.github/workflows`). Between that date and 2026-08-25 the 11 tests behind
+    /// this gate therefore ran NOWHERE, while the sentence naming a runner that no longer
+    /// exists made the arrangement read as deliberate coverage — CLAUDE.md #79.
+    ///
+    /// Measured 2026-08-25 on this machine, opted in via the `TEST_RUNNER_` spelling:
+    /// 72 tests across the four Keychain suites, 72 passed, 0 skipped, no prompt. The default
+    /// stays OFF regardless — a signed local runner is a property of one machine, and the hang
+    /// this gate prevents is silent everywhere it does happen.
     static func skipUnlessRealKeychainOptedIn() throws {
         guard ProcessInfo.processInfo.environment["NANOTEAMS_TEST_REAL_KEYCHAIN"] == "1" else {
             throw XCTSkip("Real Keychain test disabled by default. "

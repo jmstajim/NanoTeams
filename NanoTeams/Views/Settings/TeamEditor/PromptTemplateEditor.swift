@@ -37,16 +37,12 @@ struct PromptTemplateEditor: NSViewRepresentable {
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = true
         scrollView.borderType = .noBorder
-        scrollView.drawsBackground = false
-        // NSClipView defaults to drawing controlBackgroundColor over our layer —
-        // disable it so the textView's own backgroundColor shows through.
-        scrollView.contentView.drawsBackground = false
         // Intentionally NO `wantsLayer + cornerRadius + masksToBounds` — that
         // combination with a scrolling sublayer forces CoreAnimation to do an
         // offscreen mask pass per frame, producing trackpad-scroll hitches
-        // (CLAUDE.md Swift Style #50). The textView's `backgroundColor` fill
-        // is AppKit-drawn and stays cheap; the caller can add a SwiftUI
-        // `.overlay(strokeBorder)` if a visual frame is wanted.
+        // (CLAUDE.md Swift Style #50). The fill stays AppKit-drawn and cheap;
+        // `InputSurface.stamp` owns it, and the border is the host's
+        // `.inputSurfaceBorder()` — not optional, and no longer this file's choice.
 
         // TextKit 1 hard-init — the convenience `NSTextView()` initializer may
         // opt into TextKit 2 (nil `layoutManager`), which breaks height
@@ -66,14 +62,11 @@ struct PromptTemplateEditor: NSViewRepresentable {
         textView.isEditable = true
         textView.isSelectable = true
         textView.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
-        textView.textColor = Colors.nsTextPrimary
-        textView.backgroundColor = Colors.nsSurfaceCard
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.isAutomaticTextReplacementEnabled = false
         textView.isAutomaticSpellingCorrectionEnabled = false
         textView.delegate = coordinator
-        textView.textContainerInset = NSSize(width: 8, height: 8)
 
         // Configure text container for wrapping
         textView.isHorizontallyResizable = false
@@ -82,6 +75,9 @@ struct PromptTemplateEditor: NSViewRepresentable {
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
 
         scrollView.documentView = textView
+        // Colour + inset for both editable representables, in one place.
+        InputSurface.stamp(scrollView: scrollView, textView: textView, density: .editor)
+        _ = coordinator.themeLatch.shouldStamp(activeThemeRaw)
 
         // Load initial content with chips. `textStorage` is non-nil because we
         // attached it via the explicit TextKit 1 init above — a nil here means
@@ -132,11 +128,8 @@ struct PromptTemplateEditor: NSViewRepresentable {
         // changes. AppKit's NSColor cache keys on `NSAppearance.name`, so a
         // palette swap within the same color scheme (dark→dark) keeps the
         // stale resolved color until we replace the attribute outright.
-        let themeChanged = context.coordinator.lastAppliedTheme != activeThemeRaw
-        if themeChanged {
-            context.coordinator.lastAppliedTheme = activeThemeRaw
-            textView.textColor = Colors.nsTextPrimary
-            textView.backgroundColor = Colors.nsSurfaceCard
+        if context.coordinator.themeLatch.shouldStamp(activeThemeRaw) {
+            InputSurface.stamp(scrollView: nsView, textView: textView, density: .editor)
             let selectedRange = textView.selectedRange()
             let attributed = PlaceholderParser.attributedString(from: template, placeholders: placeholders)
             storage.setAttributedString(attributed)
@@ -188,9 +181,10 @@ struct PromptTemplateEditor: NSViewRepresentable {
         var template: Binding<String>
         var placeholders: [(key: String, label: String, category: String)]
         var isEditing = false
-        /// Last theme rawValue stamped into the textView — drives the
-        /// theme-change branch in `updateNSView`.
-        var lastAppliedTheme: String?
+        /// Edge trigger for the colour re-stamp in `updateNSView`. Was a hand-rolled
+        /// `lastAppliedTheme: String?` compare here; extracted so the other editable
+        /// representable gets the same behaviour instead of relying on its hosts.
+        var themeLatch = ThemeStampLatch()
         private var debounceTimer: Timer?
 
         init(template: Binding<String>, placeholders: [(key: String, label: String, category: String)]) {

@@ -43,8 +43,8 @@ extension TeamBoardView {
     /// `startAutovisorPass` instead (one seam, every entry point, mirroring
     /// `fireRecurrence`'s zombie guard), which refuses and says why.
     @ViewBuilder
-    var autovisorRunNowButton: some View {
-        if isAutovisorBoard, !isHistoricalRun, let task {
+    func autovisorRunNowButton(ctx: BoardContext) -> some View {
+        if isAutovisorBoard, !ctx.isHistorical, let task {
             Button {
                 Task { await store.startAutovisorPass(taskID: task.id, force: true) }
             } label: {
@@ -59,11 +59,11 @@ extension TeamBoardView {
     }
 
     @ViewBuilder
-    var acceptTaskButton: some View {
-        if !isHistoricalRun,
+    func acceptTaskButton(ctx: BoardContext) -> some View {
+        if !ctx.isHistorical,
            let task,
            task.isReadyForFinalAcceptance {
-            if resolvedTeam.requiresSupervisorFinalReview {
+            if ctx.team.requiresSupervisorFinalReview {
                 Button {
                     isShowingFinalReviewSheet = true
                 } label: {
@@ -84,8 +84,8 @@ extension TeamBoardView {
     }
 
     @ViewBuilder
-    var automationButton: some View {
-        if !isHistoricalRun, let task {
+    func automationButton(ctx: BoardContext) -> some View {
+        if !ctx.isHistorical, let task {
             let isActive = (task.recurrence?.isEnabled == true) || (task.runTimeoutSeconds != nil)
             Button {
                 isShowingAutomationSheet = true
@@ -132,12 +132,12 @@ extension TeamBoardView {
     }
 
     @ViewBuilder
-    private var switchTeamMenu: some View {
+    private func switchTeamMenu(ctx: BoardContext) -> some View {
         let teams = (store.snapshot?.workFolder.teams ?? []).filter { !$0.isHiddenFromPickers }
         if Self.shouldOfferTeamSwitch(
             isAutovisorBoard: isAutovisorBoard,
-            isHistoricalRun: isHistoricalRun,
-            activeTeamIsManagedSingleton: resolvedTeam.isManagedSingleton,
+            isHistoricalRun: ctx.isHistorical,
+            activeTeamIsManagedSingleton: ctx.team.isManagedSingleton,
             selectableTeamCount: teams.count
         ) {
             Menu {
@@ -146,7 +146,7 @@ extension TeamBoardView {
                         Task { await store.switchTeam(to: team.id) }
                     } label: {
                         let title = "\(team.name) (\(team.memberCount) members)"
-                        if team.id == resolvedTeam.id {
+                        if team.id == ctx.team.id {
                             Label(title, systemImage: "checkmark")
                         } else {
                             Text(title)
@@ -161,7 +161,7 @@ extension TeamBoardView {
         }
     }
 
-    var moreActionsMenu: some View {
+    func moreActionsMenu(ctx: BoardContext) -> some View {
         Menu {
             // New Run — always available, pauses current run first.
             // Hidden on the Autovisor board: its "Run now" toolbar button replaces
@@ -178,19 +178,19 @@ extension TeamBoardView {
                 } label: {
                     Label("New Run", systemImage: "arrow.counterclockwise")
                 }
-                .disabled(isHistoricalRun)
+                .disabled(ctx.isHistorical)
 
                 Divider()
             }
 
-            switchTeamMenu
+            switchTeamMenu(ctx: ctx)
 
             // Run history submenu
             Menu {
                 if let task = task, !task.runs.isEmpty {
                     ForEach(task.runs.reversed()) { run in
                         let status = run.derivedStatus()
-                        let isActive = run.id == activeRun?.id
+                        let isActive = run.id == task.runs.last?.id
                         let timeStr = run.createdAt.formatted(date: .omitted, time: .shortened)
 
                         let timedOutSuffix = run.timedOutAt != nil ? " (timed out)" : ""
@@ -215,22 +215,22 @@ extension TeamBoardView {
             Divider()
 
             Button {
-                guard let taskID = task?.id, let runID = displayedRun?.id else { return }
+                guard let taskID = task?.id, let runID = ctx.run?.id else { return }
                 guard let url = store.conversationLogURL(taskID: taskID, runID: runID) else { return }
                 NSWorkspace.shared.activateFileViewerSelecting([url])
             } label: {
                 Label("Conversation Log", systemImage: "text.bubble")
             }
-            .disabled(!(task.flatMap { t in displayedRun.map { store.conversationLogExists(taskID: t.id, runID: $0.id) } } ?? false))
+            .disabled(!runLogAvailability.conversation)
 
             Button {
-                guard let taskID = task?.id, let runID = displayedRun?.id else { return }
+                guard let taskID = task?.id, let runID = ctx.run?.id else { return }
                 guard let url = store.networkLogURL(taskID: taskID, runID: runID) else { return }
                 NSWorkspace.shared.activateFileViewerSelecting([url])
             } label: {
                 Label("Network Log", systemImage: "network")
             }
-            .disabled(!(task.flatMap { t in displayedRun.map { store.networkLogExists(taskID: t.id, runID: $0.id) } } ?? false))
+            .disabled(!runLogAvailability.network)
 
             if let task, !task.attachmentPaths.isEmpty {
                 Divider()

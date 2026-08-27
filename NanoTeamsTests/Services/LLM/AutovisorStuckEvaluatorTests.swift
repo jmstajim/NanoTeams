@@ -326,4 +326,124 @@ final class AutovisorStuckEvaluatorTests: XCTestCase {
         XCTAssertTrue(v.isStuck, "custom hangSeconds must thread through the task-level overload")
         XCTAssertEqual(v.wireRow?.kind, "hang")
     }
+    // MARK: - Pre-token window (D-17)
+    //
+    // `processingStatus != nil` means a request is in flight and NOT ONE generation delta has
+    // arrived — the server may still be loading the model or processing the prompt, and in that
+    // window Ollama emits nothing at all (measured: 103.5 s cold prefill at 38.5k tokens). The
+    // general hang budget is calibrated on a server that is already producing tokens, so this
+    // window gets a larger one. NOT silence: suppressing the verdict entirely would blind the
+    // detector exactly where "prefilling" and "wedged" are indistinguishable.
+
+    /// RED: delete the `processingStatus != nil` branch so `hangSeconds` applies always → a
+    /// healthy prefill is flagged `.hang`, and the manager is handed `restart` as the remedy.
+    func testNotHang_beforeFirstToken_underPrefillBudget() {
+        let idle = AutovisorConstants.stuckHangSeconds + 120
+        let v = AutovisorStuckEvaluator.evaluate(
+            step: step(createdAt: now.addingTimeInterval(-idle)), now: now,
+            lastStreamActivityAt: nil, processingStatus: .indeterminate)
+        XCTAssertFalse(v.isStuck, "still inside the pre-token budget")
+    }
+
+    /// RED: make the pre-token branch return `.notStuck` unconditionally — D-17 as originally
+    /// written → a genuinely wedged Ollama becomes permanently invisible.
+    func testHang_beforeFirstToken_overPrefillBudget() {
+        let idle = AutovisorConstants.stuckPrefillHangSeconds + 1
+        let v = AutovisorStuckEvaluator.evaluate(
+            step: step(createdAt: now.addingTimeInterval(-idle)), now: now,
+            lastStreamActivityAt: nil, processingStatus: .indeterminate)
+        XCTAssertTrue(v.isStuck)
+        XCTAssertEqual(v.wireRow?.kind, "hang", "the wire vocabulary must NOT grow a third kind")
+    }
+
+    /// RED: apply `prefillHangSeconds` unconditionally → a mid-response stall stops being
+    /// reported for a further seven minutes.
+    func testHang_duringGeneration_keepsTheShorterBudget() {
+        let idle = AutovisorConstants.stuckHangSeconds + 1
+        let v = AutovisorStuckEvaluator.evaluate(
+            step: step(createdAt: now.addingTimeInterval(-idle)), now: now,
+            lastStreamActivityAt: nil, processingStatus: nil)
+        XCTAssertTrue(v.isStuck)
+        XCTAssertEqual(v.wireRow?.kind, "hang")
+    }
+
+    /// The phase rides in the verdict and the DETAIL, never in the kind — the kind strings have
+    /// a second home in the manager prompt, and the remedy set does not differ.
+    ///
+    /// RED: drop `phase` from the `.hang` payload, or emit the same diagnostic for both → the
+    /// detail assertion fails and the manager loses the one cue that tells it a restart would
+    /// discard a prefill.
+    func testHang_beforeFirstToken_detailNamesThePhase() {
+        let idle = AutovisorConstants.stuckPrefillHangSeconds + 1
+        let v = AutovisorStuckEvaluator.evaluate(
+            step: step(createdAt: now.addingTimeInterval(-idle)), now: now,
+            lastStreamActivityAt: nil, processingStatus: .indeterminate)
+        XCTAssertEqual(v.wireRow?.kind, "hang")
+        XCTAssertTrue(v.wireRow?.detail.contains("first token") ?? false,
+                      "got: \(v.wireRow?.detail ?? "nil")")
+        guard case .hang(let phase, _) = v else { return XCTFail("expected .hang, got \(v)") }
+        XCTAssertEqual(phase, .beforeFirstToken)
+    }
+
+    /// RED: `>=` for `>` in the pre-token comparison → the equality half fails.
+    func testHang_prefillThresholdIsStrict() {
+        func verdict(idle: TimeInterval) -> AutovisorStuckEvaluator.StuckVerdict {
+            AutovisorStuckEvaluator.evaluate(
+                step: step(createdAt: now.addingTimeInterval(-idle)), now: now,
+                lastStreamActivityAt: nil, processingStatus: .indeterminate)
+        }
+        XCTAssertFalse(verdict(idle: AutovisorConstants.stuckPrefillHangSeconds).isStuck,
+                       "exactly at the threshold is not a hang")
+        XCTAssertTrue(verdict(idle: AutovisorConstants.stuckPrefillHangSeconds + 1).isStuck)
+    }
+
+    /// The pair the custom-threshold tests in this suite always ship as one: the default does
+    /// NOT fire, the override DOES.
+    ///
+    /// RED: ignore the parameter and read the constant → the override half fails.
+    func testHang_customPrefillHangSeconds_overridesDefault() {
+        let s = step(createdAt: now.addingTimeInterval(-200))
+        XCTAssertFalse(
+            AutovisorStuckEvaluator.evaluate(
+                step: s, now: now, lastStreamActivityAt: nil,
+                processingStatus: .indeterminate).isStuck,
+            "200s is under the 600s default")
+        XCTAssertTrue(
+            AutovisorStuckEvaluator.evaluate(
+                step: s, now: now, lastStreamActivityAt: nil,
+                processingStatus: .indeterminate, prefillHangSeconds: 60).isStuck,
+            "and over a 60s override")
+    }
+
+    /// RED: drop the forward in the task-level overload → this fails while every step-level pin
+    /// above stays green (CLAUDE.md #60).
+    func testTaskLevel_prefillWindow_threadsThrough() {
+        let s = step(createdAt: now.addingTimeInterval(-300))
+        var task = NTMSTask(id: 1, title: "T", supervisorTask: "g")
+        task.runs = [Run(id: 0, steps: [s])]
+
+        XCTAssertFalse(
+            AutovisorStuckEvaluator.evaluate(
+                task: task, now: now, lastStreamActivityAt: { _ in nil },
+                processingStatus: { _ in .indeterminate }).isStuck,
+            "300s is inside the pre-token budget")
+        XCTAssertTrue(
+            AutovisorStuckEvaluator.evaluate(
+                task: task, now: now, lastStreamActivityAt: { _ in nil }).isStuck,
+            "and outside the general one when no request is in flight")
+    }
+
+    /// Guard ordering is load-bearing: an in-flight tool wins regardless of the pre-token
+    /// window, and the order must not rest on the coincidence that a tool running between LLM
+    /// turns has no processing status anyway.
+    ///
+    /// RED: move the pre-token branch above the `hasToolInFlight` guard → this fails.
+    func testNotStuck_toolInFlight_winsOverThePreTokenWindow() {
+        let old = now.addingTimeInterval(-(AutovisorConstants.stuckPrefillHangSeconds + 100))
+        let s = step(createdAt: old, toolCalls: [toolCall("bash", "{}", resultJSON: nil, at: old)])
+        XCTAssertFalse(
+            AutovisorStuckEvaluator.evaluate(
+                step: s, now: now, lastStreamActivityAt: nil,
+                processingStatus: .indeterminate).isStuck)
+    }
 }

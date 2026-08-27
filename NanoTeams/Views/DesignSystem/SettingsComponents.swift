@@ -126,42 +126,39 @@ struct SettingsEmptyState: View {
 // MARK: - Search Field
 
 /// Pure SwiftUI search/filter field with magnifying glass icon and clear button.
-/// Uses `.roundedBorder` text field style for native macOS appearance.
-/// Used in RoleListView, ArtifactListView, MainLayoutView.
+/// Used in RoleListView, ArtifactListView, ToolSelectionView.
+///
+/// Draws the standard input chrome like every other field. It used to fill `surfacePrimary` with
+/// NO border — and all three hosts are `surfacePrimary` panes, so the field had no separation from
+/// its background at all. Routing it through `InputSurface` is what gives it the hairline; the
+/// radius moves 3 → 2 with the rest of the tree. "Search field" is not a different kind of input.
 struct SearchFieldView: View {
     let placeholder: String
     @Binding var text: String
     var onSubmit: (() -> Void)? = nil
 
     var body: some View {
-        HStack(spacing: Spacing.xs) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(Colors.textSecondary)
-                .font(Typography.termBase)
-                .accessibilityHidden(true)
-
-            TextField(placeholder, text: $text)
-                .textFieldStyle(.plain)
-                .font(Typography.termBase)
-                .onSubmit { onSubmit?() }
-
-            if !text.isEmpty {
-                Button {
-                    text = ""
-                } label: {
-                    Image(systemName: "xmark.circle")
-                        .foregroundStyle(Colors.textSecondary)
-                        .font(Typography.termBase)
+        TextField(placeholder, text: $text)
+            .textFieldStyle(.plain)
+            .font(Typography.termBase)
+            .onSubmit { onSubmit?() }
+            .inputSurface(.field) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(Colors.textSecondary)
+                    .font(Typography.termBase)
+                    .accessibilityHidden(true)
+            } trailing: {
+                if !text.isEmpty {
+                    Button {
+                        text = ""
+                    } label: {
+                        Image(systemName: "xmark.circle")
+                            .foregroundStyle(Colors.textSecondary)
+                            .font(Typography.termBase)
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
-        }
-        .padding(.horizontal, Spacing.s)
-        .frame(height: 28)
-        .background(
-            RoundedRectangle.squircle(CornerRadius.medium)
-                .fill(Colors.surfacePrimary)
-        )
     }
 }
 

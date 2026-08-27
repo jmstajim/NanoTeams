@@ -23,7 +23,7 @@ struct RevisionSheet: View {
 
                 TextEditor(text: $comment)
                     .frame(height: SheetLayout.textEditorHeight)
-                    .borderedTextEditorStyle()
+                    .inputSurface(.editor)
                     .accessibilityLabel("Feedback text")
             }
 

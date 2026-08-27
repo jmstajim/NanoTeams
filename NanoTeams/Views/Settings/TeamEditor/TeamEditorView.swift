@@ -458,7 +458,7 @@ struct TeamEditorView: View {
 }
 
 #Preview {
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
+    @Previewable @State var store = PreviewStore.make()
     @Previewable @State var dictation = DictationService()
     TeamEditorView()
         .environment(store)

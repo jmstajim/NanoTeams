@@ -55,12 +55,12 @@ final class ToolsMemoryTests: XCTestCase {
 
     // MARK: - update_scratchpad Basic Functionality
 
-    func testUpdateScratchpad_validContent() {
+    func testUpdateScratchpad_validContent() async {
         let call = StepToolCall(
             name: "update_scratchpad",
             argumentsJSON: "{\"content\": \"My notes for this step\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
@@ -68,13 +68,13 @@ final class ToolsMemoryTests: XCTestCase {
         XCTAssertTrue(results[0].outputJSON.contains("true"))
     }
 
-    func testUpdateScratchpad_contentLengthReported() {
+    func testUpdateScratchpad_contentLengthReported() async {
         let content = "This is a test content with specific length"
         let call = StepToolCall(
             name: "update_scratchpad",
             argumentsJSON: "{\"content\": \"\(content)\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
@@ -83,12 +83,12 @@ final class ToolsMemoryTests: XCTestCase {
         XCTAssertTrue(results[0].outputJSON.contains("\(content.count)"))
     }
 
-    func testUpdateScratchpad_emptyContent() {
+    func testUpdateScratchpad_emptyContent() async {
         let call = StepToolCall(
             name: "update_scratchpad",
             argumentsJSON: "{\"content\": \"\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
@@ -97,12 +97,12 @@ final class ToolsMemoryTests: XCTestCase {
             results[0].outputJSON.contains("content_length\": 0"))
     }
 
-    func testUpdateScratchpad_missingContent() {
+    func testUpdateScratchpad_missingContent() async {
         let call = StepToolCall(
             name: "update_scratchpad",
             argumentsJSON: "{}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertTrue(results[0].isError)
@@ -111,46 +111,46 @@ final class ToolsMemoryTests: XCTestCase {
 
     // MARK: - update_scratchpad Content Resolution Fallbacks
 
-    func testUpdateScratchpad_textArgFallback() {
+    func testUpdateScratchpad_textArgFallback() async {
         let call = StepToolCall(
             name: "update_scratchpad",
             argumentsJSON: "{\"text\": \"My notes via text arg\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("\"updated\":true"))
     }
 
-    func testUpdateScratchpad_planArgFallback() {
+    func testUpdateScratchpad_planArgFallback() async {
         let call = StepToolCall(
             name: "update_scratchpad",
             argumentsJSON: "{\"plan\": \"Step 1: Do something\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
     }
 
-    func testUpdateScratchpad_bodyArgFallback() {
+    func testUpdateScratchpad_bodyArgFallback() async {
         let call = StepToolCall(
             name: "update_scratchpad",
             argumentsJSON: "{\"body\": \"Some body content\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
     }
 
-    func testUpdateScratchpad_emptyArgsStillFails() {
+    func testUpdateScratchpad_emptyArgsStillFails() async {
         let call = StepToolCall(
             name: "update_scratchpad",
             argumentsJSON: "{}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertTrue(results[0].isError)
@@ -159,61 +159,61 @@ final class ToolsMemoryTests: XCTestCase {
 
     // MARK: - update_scratchpad Content Types
 
-    func testUpdateScratchpad_multilineContent() {
+    func testUpdateScratchpad_multilineContent() async {
         let content = "Line 1\\nLine 2\\nLine 3"
         let call = StepToolCall(
             name: "update_scratchpad",
             argumentsJSON: "{\"content\": \"\(content)\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
     }
 
-    func testUpdateScratchpad_jsonContent() {
+    func testUpdateScratchpad_jsonContent() async {
         let content = "{\\\"key\\\": \\\"value\\\", \\\"nested\\\": {\\\"a\\\": 1}}"
         let call = StepToolCall(
             name: "update_scratchpad",
             argumentsJSON: "{\"content\": \"\(content)\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
     }
 
-    func testUpdateScratchpad_codeContent() {
+    func testUpdateScratchpad_codeContent() async {
         let content = "func hello() {\\n    print(\\\"Hello, World!\\\")\\n}"
         let call = StepToolCall(
             name: "update_scratchpad",
             argumentsJSON: "{\"content\": \"\(content)\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
     }
 
-    func testUpdateScratchpad_unicodeContent() {
+    func testUpdateScratchpad_unicodeContent() async {
         let content = "Notes: 日本語テスト 🎉 émojis"
         let call = StepToolCall(
             name: "update_scratchpad",
             argumentsJSON: "{\"content\": \"\(content)\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
     }
 
-    func testUpdateScratchpad_largeContent() {
+    func testUpdateScratchpad_largeContent() async {
         let content = String(repeating: "x", count: 10000)
         let call = StepToolCall(
             name: "update_scratchpad",
             argumentsJSON: "{\"content\": \"\(content)\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
@@ -222,12 +222,12 @@ final class ToolsMemoryTests: XCTestCase {
 
     // MARK: - Output Format Tests
 
-    func testUpdateScratchpad_outputIsValidJSON() {
+    func testUpdateScratchpad_outputIsValidJSON() async {
         let call = StepToolCall(
             name: "update_scratchpad",
             argumentsJSON: "{\"content\": \"test\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
 
@@ -235,12 +235,12 @@ final class ToolsMemoryTests: XCTestCase {
         XCTAssertNoThrow(try JSONSerialization.jsonObject(with: outputData))
     }
 
-    func testUpdateScratchpad_outputContainsOk() {
+    func testUpdateScratchpad_outputContainsOk() async {
         let call = StepToolCall(
             name: "update_scratchpad",
             argumentsJSON: "{\"content\": \"test\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertTrue(results[0].outputJSON.contains("\"ok\":true") ||
@@ -249,36 +249,36 @@ final class ToolsMemoryTests: XCTestCase {
 
     // MARK: - Error Cases
 
-    func testUpdateScratchpad_invalidJSON_recoversViaRawInput() {
+    func testUpdateScratchpad_invalidJSON_recoversViaRawInput() async {
         // Invalid JSON is recovered — plain string treated as content
         let call = StepToolCall(
             name: "update_scratchpad",
             argumentsJSON: "not valid json"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
     }
 
-    func testUpdateScratchpad_nullContent() {
+    func testUpdateScratchpad_nullContent() async {
         let call = StepToolCall(
             name: "update_scratchpad",
             argumentsJSON: "{\"content\": null}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         // null is not a string, so this should fail
         XCTAssertTrue(results[0].isError)
     }
 
-    func testUpdateScratchpad_numericContent() {
+    func testUpdateScratchpad_numericContent() async {
         let call = StepToolCall(
             name: "update_scratchpad",
             argumentsJSON: "{\"content\": 12345}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         // Number is not a string, so this should fail
@@ -287,7 +287,7 @@ final class ToolsMemoryTests: XCTestCase {
 
     // MARK: - Multiple Calls
 
-    func testUpdateScratchpad_multipleCalls() {
+    func testUpdateScratchpad_multipleCalls() async {
         let call1 = StepToolCall(
             name: "update_scratchpad",
             argumentsJSON: "{\"content\": \"First update\"}"
@@ -297,8 +297,8 @@ final class ToolsMemoryTests: XCTestCase {
             argumentsJSON: "{\"content\": \"Second update\"}"
         )
 
-        let results1 = runtime.executeAll(context: context, toolCalls: [call1])
-        let results2 = runtime.executeAll(context: context, toolCalls: [call2])
+        let results1 = await runtime.executeAll(context: context, toolCalls: [call1])
+        let results2 = await runtime.executeAll(context: context, toolCalls: [call2])
 
         XCTAssertFalse(results1[0].isError)
         XCTAssertFalse(results2[0].isError)

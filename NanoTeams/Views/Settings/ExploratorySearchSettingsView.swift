@@ -59,9 +59,11 @@ struct ExploratorySearchSettingsView: View {
 }
 
 #Preview("Exploratory Search Settings") {
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
+    @Previewable @State var store = PreviewStore.make()
+    @Previewable @State var embeddingCatalog = PreviewStore.embeddingCatalog()
     ExploratorySearchSettingsView()
         .environment(store)
         .environment(store.configuration)
+        .environment(embeddingCatalog)
         .frame(width: 720, height: 800)
 }

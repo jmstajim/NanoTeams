@@ -58,7 +58,7 @@ final class VisionToolTests: XCTestCase {
 
     // MARK: - Valid Input
 
-    func testValidImage_returnsVisionAnalysisSignal() throws {
+    func testValidImage_returnsVisionAnalysisSignal() async throws {
         let imagePath = "screenshot.png"
         let imageURL = tempDir.appendingPathComponent(imagePath)
         try Data([0x89, 0x50, 0x4E, 0x47]).write(to: imageURL) // minimal PNG header bytes
@@ -69,7 +69,7 @@ final class VisionToolTests: XCTestCase {
             {"path": "\(imagePath)", "prompt": "Describe this UI"}
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
@@ -81,7 +81,7 @@ final class VisionToolTests: XCTestCase {
 
     // MARK: - Extension Validation
 
-    func testUnsupportedExtension_returnsError() throws {
+    func testUnsupportedExtension_returnsError() async throws {
         let imagePath = "document.pdf"
         let fileURL = tempDir.appendingPathComponent(imagePath)
         try Data([0x25, 0x50, 0x44, 0x46]).write(to: fileURL)
@@ -92,14 +92,14 @@ final class VisionToolTests: XCTestCase {
             {"path": "\(imagePath)", "prompt": "Read this"}
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertTrue(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("Unsupported image format"))
     }
 
-    func testAllSupportedExtensions() throws {
+    func testAllSupportedExtensions() async throws {
         for ext in VisionConstants.supportedExtensions {
             let imagePath = "test_image.\(ext)"
             let fileURL = tempDir.appendingPathComponent(imagePath)
@@ -111,7 +111,7 @@ final class VisionToolTests: XCTestCase {
                 {"path": "\(imagePath)", "prompt": "Describe"}
                 """
             )
-            let results = runtime.executeAll(context: context, toolCalls: [call])
+            let results = await runtime.executeAll(context: context, toolCalls: [call])
 
             XCTAssertEqual(results.count, 1, "Extension .\(ext)")
             XCTAssertFalse(results[0].isError, "Extension .\(ext) should succeed")
@@ -127,14 +127,14 @@ final class VisionToolTests: XCTestCase {
 
     // MARK: - File Not Found
 
-    func testMissingFile_returnsError() {
+    func testMissingFile_returnsError() async {
         let call = StepToolCall(
             name: "analyze_image",
             argumentsJSON: """
             {"path": "nonexistent.png", "prompt": "Describe"}
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertTrue(results[0].isError)
@@ -143,14 +143,14 @@ final class VisionToolTests: XCTestCase {
 
     // MARK: - Sandbox Escape
 
-    func testSandboxEscape_returnsError() {
+    func testSandboxEscape_returnsError() async {
         let call = StepToolCall(
             name: "analyze_image",
             argumentsJSON: """
             {"path": "../../etc/passwd.png", "prompt": "Read"}
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertTrue(results[0].isError)
@@ -158,27 +158,27 @@ final class VisionToolTests: XCTestCase {
 
     // MARK: - Missing Arguments
 
-    func testMissingPath_returnsError() {
+    func testMissingPath_returnsError() async {
         let call = StepToolCall(
             name: "analyze_image",
             argumentsJSON: """
             {"prompt": "Describe this"}
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertTrue(results[0].isError)
     }
 
-    func testMissingPrompt_returnsError() {
+    func testMissingPrompt_returnsError() async {
         let call = StepToolCall(
             name: "analyze_image",
             argumentsJSON: """
             {"path": "image.png"}
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertTrue(results[0].isError)

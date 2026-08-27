@@ -15,6 +15,9 @@ extension QuickCaptureController {
     /// Creates a task from the current form state and starts execution.
     func createTask() async {
         guard let store else { return }
+        #if DEBUG
+        SubmitLatencyProbe.begin()
+        #endif
 
         // Check if the selected team is chat mode before creating
         let teamID = formState.selectedTeamID ?? store.snapshot?.workFolder.activeTeamID
@@ -33,7 +36,7 @@ extension QuickCaptureController {
         // Build the supervisor task text with optional file embedding
         let built = AnswerTextBuilder.build(
             text: formState.supervisorTask,
-            clips: formState.clippedTexts,
+            clips: formState.clippedTexts.texts,
             attachments: formState.attachments,
             embedFiles: embedFilesInPrompt
         )
@@ -41,7 +44,7 @@ extension QuickCaptureController {
             store.lastErrorMessage = "Could not embed \(built.failedFiles.count) file(s) as text: \(built.failedFiles.joined(separator: ", ")). They may be binary files."
         }
         // When clips were provided to the builder, they are always embedded into the text
-        let remainingClips = formState.clippedTexts.isEmpty ? formState.clippedTexts : [String]()
+        let remainingClips = formState.clippedTexts.isEmpty ? formState.clippedTexts.texts : [String]()
 
         if await store.submitQuickCaptureForm(
             title: formState.title,
@@ -52,12 +55,20 @@ extension QuickCaptureController {
             draftID: formState.draftID
         ) != nil {
             formState.clearTaskDraft()
+            // The chat opens HERE. `submitQuickCaptureForm` now returns once the task
+            // and its first run exist, so this is no longer downstream of the run's
+            // prompt warm-up — see `createPreparedTaskAndStart`.
             NotificationCenter.default.post(name: .navigateToActiveTask, object: nil)
+            #if DEBUG
+            SubmitLatencyProbe.markNavigation()
+            #endif
             if keepOpenInChat && isChatMode {
-                // Task just created — force working mode, refreshPanelIfVisible will update later
+                // The run start is claimed by now, so `resolveMode` returns
+                // `.taskInitializing` on its own and holds it until the engine reports
+                // `.running` — no placeholder mode to force, and no window in which a
+                // refresh drops the panel back to the new-task composer.
                 forceNewTaskMode = false
                 isTaskSelected = true
-                pendingWorkingMode = true
                 updatePanelContent()
             } else {
                 dismissPanel()
@@ -76,7 +87,7 @@ extension QuickCaptureController {
 
         let result = AnswerTextBuilder.build(
             text: answer,
-            clips: formState.answerClippedTexts,
+            clips: formState.answerClippedTexts.texts,
             attachments: formState.answerAttachments,
             embedFiles: embedFilesInPrompt
         )

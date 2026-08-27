@@ -720,7 +720,7 @@ final class PromptBuilderTests: XCTestCase {
     func testBuildChatMessages_usesEffectiveSupervisorBriefForQuickCaptureInput() {
         let task = NTMSTask(id: 0, title: "Test",
                             supervisorTask: "Implement import flow",
-                            clippedTexts: ["Selected API response"],
+                            clippedTexts: [Clip].minting(["Selected API response"]),
                             attachmentPaths: [".nanoteams/tasks/abc/attachments/spec.pdf"]
         )
         let step = StepExecution(id: "test_step", role: .productManager, title: "PM Step")

@@ -51,11 +51,11 @@ final class ToolRuntimeNetworkLogTests: XCTestCase {
 
     // MARK: - Tests
 
-    func testExecutedCall_appendsToolCallNetworkRecord() throws {
+    func testExecutedCall_appendsToolCallNetworkRecord() async throws {
         let runtime = makeRuntime(networkLogger: NetworkLogger(logURL: networkLogURL))
         let call = StepToolCall(name: "list_files", argumentsJSON: #"{"path":"."}"#)
 
-        let result = runtime.executeAll(context: context(), toolCalls: [call]).first!
+        let result = await runtime.executeAll(context: context(), toolCalls: [call]).first!
         XCTAssertFalse(result.isError, "list_files on the work folder root should succeed")
 
         let records = try toolCallRecords()
@@ -65,11 +65,11 @@ final class ToolRuntimeNetworkLogTests: XCTestCase {
         XCTAssertTrue(records[0].body?.contains("list_files") == true)
     }
 
-    func testToolNotFound_appendsRecordWithErrorMessage() throws {
+    func testToolNotFound_appendsRecordWithErrorMessage() async throws {
         let runtime = makeRuntime(networkLogger: NetworkLogger(logURL: networkLogURL))
         let call = StepToolCall(name: "definitely_not_a_tool", argumentsJSON: "{}")
 
-        let result = runtime.executeAll(context: context(), toolCalls: [call]).first!
+        let result = await runtime.executeAll(context: context(), toolCalls: [call]).first!
         XCTAssertTrue(result.isError)
 
         let records = try toolCallRecords()
@@ -78,11 +78,11 @@ final class ToolRuntimeNetworkLogTests: XCTestCase {
         XCTAssertTrue(records[0].body?.contains("definitely_not_a_tool") == true)
     }
 
-    func testNilNetworkLogger_writesNoNetworkLog() throws {
+    func testNilNetworkLogger_writesNoNetworkLog() async throws {
         let runtime = makeRuntime(networkLogger: nil)
         let call = StepToolCall(name: "list_files", argumentsJSON: #"{"path":"."}"#)
 
-        _ = runtime.executeAll(context: context(), toolCalls: [call])
+        _ = await runtime.executeAll(context: context(), toolCalls: [call])
 
         XCTAssertFalse(
             fileManager.fileExists(atPath: networkLogURL.path),

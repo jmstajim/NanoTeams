@@ -2,8 +2,9 @@ import Foundation
 
 /// Names skipped by `list_files` and `search` directory traversal.
 /// Allows useful dotfiles (.gitignore, .env, .eslintrc) while filtering noise.
-/// Shared with `SearchIndexService` via `WalkSkipRules.skipped`.
-nonisolated private let listFilesSkippedNames: Set<String> = WalkSkipRules.skipped
+// `list_files` asks the SAME question every other walk asks — see `WalkSkipRules.shouldSkip`.
+// It used to hold a copy of the name set, which is one layer further from a grep for the rule
+// than the direct callers are, and is exactly how a consumer survives a migration unnoticed.
 
 private typealias TN = ToolNames
 private typealias JS = JSONSchema
@@ -25,7 +26,8 @@ nonisolated struct ReadFileTool: ToolHandler {
     static let category: ToolCategory = .fileRead
 
     let resolver: SandboxPathResolver
-    let fileManager: FileManager
+    // `nonisolated(unsafe)`: see `ToolHandlerDependencies.fileManager`.
+    nonisolated(unsafe) let fileManager: FileManager
     /// Hard line cap. `0` means unlimited (no size check).
     let lineLimit: Int
 
@@ -33,8 +35,8 @@ nonisolated struct ReadFileTool: ToolHandler {
         Self(resolver: dependencies.resolver, fileManager: dependencies.fileManager, lineLimit: dependencies.readFileMaxLines)
     }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let path = try requiredString(args, "path")
 
             // Resolve + validate (existence, RTFD-as-file, directory rejection).
@@ -126,7 +128,8 @@ nonisolated struct ReadLinesTool: ToolHandler {
     static let category: ToolCategory = .fileRead
 
     let resolver: SandboxPathResolver
-    let fileManager: FileManager
+    // `nonisolated(unsafe)`: see `ToolHandlerDependencies.fileManager`.
+    nonisolated(unsafe) let fileManager: FileManager
     /// `0` means unlimited.
     let lineLimit: Int
 
@@ -134,8 +137,8 @@ nonisolated struct ReadLinesTool: ToolHandler {
         Self(resolver: dependencies.resolver, fileManager: dependencies.fileManager, lineLimit: dependencies.readFileMaxLines)
     }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let path = try requiredString(args, "path")
             let startLineRaw = try requiredInt(args, "start_line")
             let endLineRaw = optionalInt(args, "end_line") ?? 0
@@ -264,7 +267,8 @@ nonisolated struct ListFilesTool: ToolHandler {
     static let category: ToolCategory = .fileRead
 
     let resolver: SandboxPathResolver
-    let fileManager: FileManager
+    // `nonisolated(unsafe)`: see `ToolHandlerDependencies.fileManager`.
+    nonisolated(unsafe) let fileManager: FileManager
     let internalDir: URL?
 
     
@@ -272,8 +276,8 @@ nonisolated struct ListFilesTool: ToolHandler {
         Self(resolver: dependencies.resolver, fileManager: dependencies.fileManager, internalDir: dependencies.internalDir)
     }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
-        ToolErrorHandler.execute(toolName: Self.name, args: args) {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
+        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let path = optionalString(args, "path") ?? "."
             // `depth` is RECURSION depth counted from zero — the way models actually
             // spell it: 0 = this folder's direct contents, 1 = also one level of
@@ -364,7 +368,7 @@ nonisolated struct ListFilesTool: ToolHandler {
 
                 for name in contents {
                     guard entries.count <= maxEntries else { return }
-                    guard !listFilesSkippedNames.contains(name) else { continue }
+                    guard !WalkSkipRules.shouldSkip(name: name) else { continue }
 
                     let itemURL = url.appendingPathComponent(name)
                     if let internalDir, SandboxPathResolver.isWithin(candidate: itemURL, container: internalDir) { continue }
@@ -475,7 +479,8 @@ nonisolated struct SearchTool: ToolHandler {
     static let category: ToolCategory = .fileRead
 
     let resolver: SandboxPathResolver
-    let fileManager: FileManager
+    // `nonisolated(unsafe)`: see `ToolHandlerDependencies.fileManager`.
+    nonisolated(unsafe) let fileManager: FileManager
     let workFolderRoot: URL
     let internalDir: URL?
     let exploratoryByDefault: Bool
@@ -497,7 +502,7 @@ nonisolated struct SearchTool: ToolHandler {
         )
     }
 
-    func handle(context _: ToolExecutionContext, args: [String: Any]) -> ToolExecutionResult {
+    func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
         // Resolve `exploratory` against the default-on setting and write it back into args
         // before any throwing call, so error envelopes (e.g. missing query) also reflect
         // the actual branch taken rather than the verbatim LLM input.
@@ -505,7 +510,7 @@ nonisolated struct SearchTool: ToolHandler {
         var canonicalArgs = args
         canonicalArgs["exploratory"] = exploratory
 
-        return ToolErrorHandler.execute(toolName: Self.name, args: canonicalArgs) {
+        return await ToolErrorHandler.execute(toolName: Self.name, args: canonicalArgs) {
             // `query` is optional: an empty/omitted query is the "list files"
             // trigger (paired with file_glob or paths). `requiredString` would
             // reject an omitted key and block that path.
@@ -580,7 +585,7 @@ nonisolated struct SearchTool: ToolHandler {
             }
 
             // Plain search path: delegate to SearchExecutor.
-            let output = try SearchExecutor.run(SearchExecutorInput(
+            let output = try await SearchExecutor.run(SearchExecutorInput(
                 workFolderRoot: workFolderRoot,
                 resolver: resolver,
                 fileManager: fileManager,
@@ -622,7 +627,7 @@ nonisolated struct SearchTool: ToolHandler {
                 /// present together with `has_more`.
                 var total_matches: Int?
                 var filename_matches: [FilenameMatch]?
-                var skipped_files: [SkippedFile]?
+                var skipped_files: [SkippedFileGroup]?
                 var skipped_binary_count: Int?
             }
 
@@ -637,7 +642,7 @@ nonisolated struct SearchTool: ToolHandler {
                     next_offset: output.truncated ? offset + output.pageCount : nil,
                     total_matches: output.totalMatches,
                     filename_matches: output.filenameMatches.isEmpty ? nil : output.filenameMatches,
-                    skipped_files: output.skipped.isEmpty ? nil : output.skipped,
+                    skipped_files: output.skipped.isEmpty ? nil : SkippedFileGroup.group(output.skipped),
                     skipped_binary_count: output.skippedBinaryCount > 0 ? output.skippedBinaryCount : nil
                 ),
                 meta: ToolResultMeta(truncated: output.truncated, warnings: output.warnings)

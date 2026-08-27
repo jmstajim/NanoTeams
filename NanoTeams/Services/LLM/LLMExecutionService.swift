@@ -263,6 +263,7 @@ final class LLMExecutionService {
         let key = TaskStepKey(taskID: taskID, stepID: stepID)
         executionStates[key]?.consecutiveDriftTurnCount = 0
         executionStates[key]?.consecutiveHarmonyParseFailureCount = 0
+        executionStates[key]?.consecutiveReasoningEnvelopeCount = 0
     }
 
     /// Resets the consecutive thinking-loop-break counter. Called from

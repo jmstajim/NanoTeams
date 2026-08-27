@@ -438,28 +438,19 @@ struct WorkFolderSettingsView: View {
                 .font(Typography.caption)
                 .foregroundStyle(Colors.textSecondary)
 
-            HStack(alignment: .top, spacing: Spacing.xs) {
-                PromptMarker()
-                TextEditor(text: $promptDraft)
-                    .font(Typography.termBase)
-                    .scrollContentBackground(.hidden)
-                    .frame(minHeight: 160)
-            }
-            .padding(Spacing.s)
-            .background(
-                RoundedRectangle.squircle(CornerRadius.small)
-                    .fill(Colors.surfaceElevated)
-            )
-            .onChange(of: promptDraft) { _, newValue in
-                promptSaveTask?.cancel()
-                promptSaveTask = Task {
-                    try? await Task.sleep(for: .milliseconds(500))
-                    guard !Task.isCancelled else { return }
-                    if store.workFolder?.settings.contextPrompt != newValue {
-                        await store.updateContextPrompt(newValue)
+            TextEditor(text: $promptDraft)
+                .font(Typography.termBase)
+                .inputSurface(.editor, minHeight: 160) { PromptMarker() }
+                .onChange(of: promptDraft) { _, newValue in
+                    promptSaveTask?.cancel()
+                    promptSaveTask = Task {
+                        try? await Task.sleep(for: .milliseconds(500))
+                        guard !Task.isCancelled else { return }
+                        if store.workFolder?.settings.contextPrompt != newValue {
+                            await store.updateContextPrompt(newValue)
+                        }
                     }
                 }
-            }
 
             HStack {
                 Button {
@@ -820,7 +811,7 @@ private struct AgentInstructionCell: View {
 // MARK: - Previews
 
 #Preview("Work Folder Settings - No Folder") {
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
+    @Previewable @State var store = PreviewStore.make()
     WorkFolderSettingsView()
         .environment(store)
         .frame(width: 500, height: 400)

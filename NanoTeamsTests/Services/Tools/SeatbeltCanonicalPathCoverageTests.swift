@@ -233,4 +233,190 @@ final class SeatbeltCanonicalPathCoverageTests: XCTestCase {
         XCTAssertEqual(work.standardizedFileURL.path, kernelPath(work.standardizedFileURL.path))
         XCTAssertTrue(profile.contains("(subpath \"\(work.standardizedFileURL.path)\")"), profile)
     }
+
+    // MARK: - Work folder under a temp dir (D-10)
+    //
+    // The fixture MUST sit under `NSTemporaryDirectory()`. Every neighbouring suite
+    // deliberately puts its work folder under HOME — `SeatbeltSandboxTests:314` even
+    // says so, "so the temp-dir allow (still on by default) doesn't cover it" — and
+    // that dodge is precisely the defect being pinned here, documented as a fixture
+    // convenience for months.
+
+    /// RED: drop the `workCoveredByTemp` term from the NARROW-WRITE deny → the write
+    /// lands and `inside.txt` exists, i.e. an explicit "commands may not write my
+    /// project" setting is silently not in force.
+    func testWorkUnderTemp_workWriteOff_blocksInsideWrite_live() throws {
+        try requireSandboxExec()
+        let work = try makeDirectory(at: URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("nanoteams-d10-write-\(UUID().uuidString)"))
+
+        let profile = SeatbeltSandbox.profile(
+            workFolderRoot: work,
+            permissions: BashSandboxPermissions(workFolderWrite: false)
+        )
+        _ = try run("echo x > inside.txt", profile: profile, cwd: work)
+
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: work.appendingPathComponent("inside.txt").path),
+            "workFolderWrite is OFF, so the write must not land — but the temp grant is a "
+                + "`(subpath …)` allow with no work deny beneath it, and the project lives "
+                + "under $TMPDIR."
+        )
+    }
+
+    /// The read-side sibling, pinned separately from the write half because one
+    /// property defended at two sites stays green under either single mutation
+    /// (CLAUDE.md #60).
+    ///
+    /// STATIC, and that is forced rather than chosen. The narrow-read branch is only
+    /// reached with `everythingElseRead: false`, and `SeatbeltSandbox.profile`'s own
+    /// comment says why that cannot be driven live: "the shell needs system reads to
+    /// run anything". A live version was written first and was VACUOUS — with system
+    /// reads off the shell could not read `/bin/zsh` or `cat`, so the command never
+    /// ran, stdout was empty, and "the secret did not leak" passed for the wrong
+    /// reason. It stayed green under the mutation, which is CLAUDE.md #56 reading 3:
+    /// the fixture never selected the branch.
+    ///
+    /// RED: drop the `workCoveredByTemp` term from the narrow-READ deny → no deny
+    /// clause names the work folder, and the temp grant reads the project back.
+    func testWorkUnderTemp_workReadOff_emitsAWorkDeny() throws {
+        let work = try makeDirectory(at: URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("nanoteams-d10-read-\(UUID().uuidString)"))
+        let kernel = kernelPath(work.standardizedFileURL.path)
+
+        let profile = SeatbeltSandbox.profile(
+            workFolderRoot: work,
+            permissions: BashSandboxPermissions(
+                workFolderRead: false, tempRead: true, everythingElseRead: false
+            )
+        )
+
+        // Anti-vacuum: prove the fixture actually reaches the NARROW branch. The broad
+        // branch denies the work folder unconditionally and never had this defect, so
+        // a fixture that drifted into it would make the assertion below meaningless.
+        XCTAssertFalse(profile.contains("(allow file-read*)"),
+                       "fixture must exercise the narrow-read branch:\n\(profile)")
+        // ...and that the temp grant really does cover the work folder here.
+        XCTAssertTrue(profile.contains("(subpath \"/private/tmp\")"),
+                      "fixture must sit under a granted temp root:\n\(profile)")
+
+        guard let denyRange = profile.range(of: "(deny file-read*") else {
+            return XCTFail("workFolderRead is OFF and the temp grant reaches the project, "
+                + "so a read deny must be emitted:\n\(profile)")
+        }
+        XCTAssertTrue(
+            profile[denyRange.lowerBound...].contains("(subpath \"\(kernel)\")"),
+            "the read deny must name the work folder:\n\(profile)"
+        )
+    }
+
+    /// The control CLAUDE.md #56 requires, predicted GREEN. It forbids the tempting
+    /// wrong fix — emitting the work deny unconditionally — which would red this while
+    /// leaving both tests above green, i.e. it distinguishes "honours the toggle" from
+    /// "always denies".
+    ///
+    /// RED: emit the work deny without the `!permissions.workFolderWrite` guard → this
+    /// fails and the two pins above stay green.
+    func testWorkUnderTemp_grantsOn_stillWritable_live() throws {
+        try requireSandboxExec()
+        let work = try makeDirectory(at: URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("nanoteams-d10-control-\(UUID().uuidString)"))
+
+        let profile = SeatbeltSandbox.profile(workFolderRoot: work)
+        let result = try run("echo x > inside.txt && echo INSIDE_OK", profile: profile, cwd: work)
+
+        XCTAssertTrue(
+            result.stdout.contains("INSIDE_OK"),
+            "default permissions grant the work folder; stderr=\(result.stderr)"
+        )
+    }
+
+    /// The OTHER direction, and the one nobody reported: a grant the user switched ON
+    /// that silently does not apply. With `tempWrite` off and the project under
+    /// `$TMPDIR`, the temp deny swallowed the work folder and the re-allow never fired
+    /// because it was conditioned on `!homeWrite` specifically.
+    ///
+    /// RED: restore `!permissions.homeWrite` as the re-allow condition → no
+    /// `(allow file-write*` clause naming the work folder is emitted.
+    func testProfile_broadWriteTempOff_workGrantOn_underTemp_reallowsWork() throws {
+        let work = try makeDirectory(at: URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("nanoteams-d10-reallow-\(UUID().uuidString)"))
+
+        let profile = SeatbeltSandbox.profile(
+            workFolderRoot: work,
+            permissions: BashSandboxPermissions(
+                workFolderWrite: true, tempWrite: false, homeWrite: true, everythingElseWrite: true
+            )
+        )
+        let kernel = kernelPath(work.standardizedFileURL.path)
+        guard let denyIndex = profile.range(of: "(deny file-write*")?.lowerBound,
+              let allowRange = profile.range(of: "(allow file-write*\n    (subpath \"\(kernel)\")")
+        else {
+            return XCTFail("no work re-allow after the temp deny; profile:\n\(profile)")
+        }
+        XCTAssertLessThan(
+            denyIndex, allowRange.lowerBound,
+            "SBPL is last-match-wins, so the re-allow must come AFTER the deny"
+        )
+    }
+
+    // MARK: - The launch probe (D-7)
+
+    /// RED: hard-code the probe argv instead of deriving it from `wrap` → a flag added to `wrap`
+    /// leaves the probe testing a DIFFERENT invocation than the one that failed, and the verdict
+    /// stops describing the run it is asked about.
+    func testProbeInvocation_matchesWrapExceptForTheCommand() {
+        let profile = "(version 1)(allow default)"
+        let probe = SeatbeltSandbox.probeInvocation(profile: profile, shell: "/bin/zsh")
+        let real = SeatbeltSandbox.wrap(profile: profile, shell: "/bin/zsh", command: ":")
+        XCTAssertEqual(probe.executable, real.executable)
+        XCTAssertEqual(probe.arguments, real.arguments)
+
+        // ...and it really is the same shape as a genuine command's invocation, differing only
+        // in the trailing command word.
+        let other = SeatbeltSandbox.wrap(profile: profile, shell: "/bin/zsh", command: "ls -la")
+        XCTAssertEqual(probe.arguments.dropLast(), other.arguments.dropLast())
+    }
+
+    /// RED: return `.childRan` on any non-zero probe exit → the legitimate fallback becomes
+    /// unreachable, and this reds while the spoof pins stay green. It is the control (#56) that
+    /// stops "always say childRan" from passing the suite.
+    func testProbe_badProfile_isWrapperRejected_live() throws {
+        try requireSandboxExec()
+        let work = try makeDirectory(at: URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("nanoteams-probe-bad-\(UUID().uuidString)"))
+        // Unbalanced paren — measured exit 65, `sandbox-exec: syntax error: expecting ')'`.
+        XCTAssertEqual(
+            ProcessRunner.probeSandboxLaunch(profile: "(version 1)(allow default", in: work),
+            .wrapperRejected
+        )
+    }
+
+    /// RED: collapse the third state into `.wrapperRejected` → a profile-killed shell licenses an
+    /// unconfined retry, i.e. the confinement doing its job is read as the wrapper failing.
+    func testProbe_profileKillsTheShell_isConfinedBeforeStart_live() throws {
+        try requireSandboxExec()
+        let work = try makeDirectory(at: URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("nanoteams-probe-confined-\(UUID().uuidString)"))
+        // Compiles and execs, then the shell dies for lack of system reads — measured exit 134
+        // with EMPTY stderr, which is why a Bool could never express it.
+        XCTAssertEqual(
+            ProcessRunner.probeSandboxLaunch(
+                profile: "(version 1)(deny default)(allow process*)", in: work),
+            .confinedBeforeStart
+        )
+    }
+
+    /// RED: invert the `exitCode == 0` arm → every failing command under a healthy profile reads
+    /// as a wrapper fault, and with the fallback on it is re-run unconfined.
+    func testProbe_healthyProfile_isChildRan_live() throws {
+        try requireSandboxExec()
+        let work = try makeDirectory(at: URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("nanoteams-probe-ok-\(UUID().uuidString)"))
+        XCTAssertEqual(
+            ProcessRunner.probeSandboxLaunch(
+                profile: SeatbeltSandbox.profile(workFolderRoot: work), in: work),
+            .childRan
+        )
+    }
 }

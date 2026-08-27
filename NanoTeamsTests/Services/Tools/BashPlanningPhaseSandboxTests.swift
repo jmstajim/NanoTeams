@@ -65,11 +65,11 @@ final class BashPlanningPhaseSandboxTests: XCTestCase {
     ///
     /// RED: clear a read scope in `withWritesDisabled()` → `cat` cannot read and the exit-code
     /// assertion fails.
-    func testPlanning_readSucceeds() throws {
+    func testPlanning_readSucceeds() async throws {
         let note = workDir.appendingPathComponent("note.txt")
         try "findings".write(to: note, atomically: true, encoding: .utf8)
 
-        let r = makeTool().handle(
+        let r = await makeTool().handle(
             context: context(isPlanningPhase: true), args: ["command": "cat note.txt"])
 
         XCTAssertFalse(r.isError, r.outputJSON)
@@ -85,9 +85,9 @@ final class BashPlanningPhaseSandboxTests: XCTestCase {
     ///
     /// RED: use `sandboxPermissions` instead of `effectivePermissions` in `BashTool.handle` →
     /// the file appears and the fileExists assertion fails.
-    func testPlanning_writeIsDeniedByTheKernel() {
+    func testPlanning_writeIsDeniedByTheKernel() async {
         let target = workDir.appendingPathComponent("out.txt")
-        let r = makeTool().handle(
+        let r = await makeTool().handle(
             context: context(isPlanningPhase: true), args: ["command": "echo x > out.txt"])
 
         XCTAssertNotEqual(data(r.outputJSON)?["exit_code"] as? Int, 0,
@@ -106,8 +106,8 @@ final class BashPlanningPhaseSandboxTests: XCTestCase {
     ///
     /// RED: change the needle in `planningWriteDenialMeta` to anything else → no warning reaches
     /// the envelope.
-    func testPlanning_writeDenial_carriesTheRetryContractForARealKernelRefusal() {
-        let r = makeTool().handle(
+    func testPlanning_writeDenial_carriesTheRetryContractForARealKernelRefusal() async {
+        let r = await makeTool().handle(
             context: context(isPlanningPhase: true), args: ["command": "echo x > out.txt"])
 
         guard let d = r.outputJSON.data(using: .utf8),
@@ -125,9 +125,9 @@ final class BashPlanningPhaseSandboxTests: XCTestCase {
     ///
     /// RED: apply the narrowing unconditionally → the implementation-phase write is refused too
     /// and both assertions fail.
-    func testImplementation_theSameWriteSucceeds() {
+    func testImplementation_theSameWriteSucceeds() async {
         let target = workDir.appendingPathComponent("out.txt")
-        let r = makeTool().handle(
+        let r = await makeTool().handle(
             context: context(isPlanningPhase: false), args: ["command": "echo x > out.txt"])
 
         XCTAssertEqual(data(r.outputJSON)?["exit_code"] as? Int, 0, r.outputJSON)
@@ -141,9 +141,9 @@ final class BashPlanningPhaseSandboxTests: XCTestCase {
     ///
     /// RED: restore `narrowed.tempWrite = true` in `withWritesDisabled()` → the write succeeds
     /// and the file exists.
-    func testPlanning_workFolderUnderTemp_isStillWriteBlocked() {
+    func testPlanning_workFolderUnderTemp_isStillWriteBlocked() async {
         let target = workDir.appendingPathComponent("under-tmp.txt")
-        _ = makeTool().handle(
+        _ = await makeTool().handle(
             context: context(isPlanningPhase: true),
             args: ["command": "echo x > under-tmp.txt"])
 
@@ -156,10 +156,10 @@ final class BashPlanningPhaseSandboxTests: XCTestCase {
     ///
     /// RED: drop the dev-node literals from the write clause → the redirect fails and the
     /// exit-code assertion does not hold.
-    func testPlanning_devNullRedirectStillWorks() throws {
+    func testPlanning_devNullRedirectStillWorks() async throws {
         try "findings".write(to: workDir.appendingPathComponent("note.txt"),
                              atomically: true, encoding: .utf8)
-        let r = makeTool().handle(
+        let r = await makeTool().handle(
             context: context(isPlanningPhase: true),
             args: ["command": "cat note.txt 2>/dev/null"])
 

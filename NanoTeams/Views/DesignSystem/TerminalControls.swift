@@ -321,11 +321,11 @@ struct TerminalSlider: View {
                     .frame(width: max(trackHeight, knobX), height: trackHeight)
 
                 if let ticks = tickFractions {
-                    ForEach(ticks.indices, id: \.self) { i in
+                    ForEach(ticks, id: \.self) { tick in
                         Rectangle()
                             .fill(Colors.textQuaternary)
                             .frame(width: 2, height: 2)
-                            .offset(x: knob / 2 + ticks[i] * max(0, width - knob) - 1)
+                            .offset(x: knob / 2 + tick * max(0, width - knob) - 1)
                     }
                 }
 
@@ -404,7 +404,7 @@ struct TerminalPicker<Value: Hashable>: View {
 
     var body: some View {
         Menu {
-            ForEach(Array(options.enumerated()), id: \.offset) { _, option in
+            ForEach(options, id: \.value) { option in
                 Button {
                     selection = option.value
                 } label: {
@@ -456,7 +456,7 @@ struct TerminalSegmentedPicker<Value: Hashable>: View {
 
     var body: some View {
         HStack(spacing: 2) {
-            ForEach(Array(options.enumerated()), id: \.offset) { _, option in
+            ForEach(options, id: \.value) { option in
                 let isSelected = option.value == selection
                 Button {
                     withAnimation(reduceMotion ? nil : Animations.quick) { selection = option.value }
@@ -504,16 +504,7 @@ struct TerminalFieldChrome: ViewModifier {
         content
             .font(Typography.termBase)
             .foregroundStyle(Colors.textPrimary)
-            .padding(.horizontal, Spacing.s)
-            .padding(.vertical, Spacing.xs + 1)
-            .frame(minHeight: Spacing.l + Spacing.s)
-            .background(
-                RoundedRectangle.squircle(CornerRadius.small).fill(Colors.surfacePrimary)
-            )
-            .overlay(
-                RoundedRectangle.squircle(CornerRadius.small)
-                    .strokeBorder(Colors.borderSubtle, lineWidth: 1)
-            )
+            .inputSurface(.field)
     }
 }
 

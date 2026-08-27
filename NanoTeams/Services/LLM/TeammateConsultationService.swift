@@ -28,7 +28,7 @@ extension TeammateConsultationService {
         targetTeammate: Role,
         limits: TeamLimits
     ) -> Bool {
-        let countToTeammate = consultations.filter { $0.consultedRole == targetTeammate }.count
+        let countToTeammate = consultations.count { $0.consultedRole == targetTeammate }
         return countToTeammate >= limits.maxSameTeammateAsks
     }
 

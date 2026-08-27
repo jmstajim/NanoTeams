@@ -201,8 +201,8 @@ nonisolated struct ToolExecutionResult: Hashable {
 }
 
 nonisolated final class ToolRegistry: @unchecked Sendable {
-    typealias ToolHandler = (_ context: ToolExecutionContext, _ args: [String: Any]) throws ->
-        ToolExecutionResult
+    typealias ToolHandler = @Sendable (_ context: ToolExecutionContext, _ args: [String: Any])
+        async throws -> ToolExecutionResult
 
     private var handlers: [String: ToolHandler] = [:]
     private var aliases: [String: String] = [:]

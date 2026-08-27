@@ -16,6 +16,7 @@ private final class GPlatStubModeCoordinator: QuickCaptureModeCoordinator {
         isTaskSelected _: Bool,
         activeTask _: NTMSTask?,
         engineState _: TeamEngineState?,
+        isInitializingRun _: Bool,
         activeTeam _: Team?,
         forceNewTaskMode _: Bool
     ) -> QuickCaptureMode {
@@ -212,7 +213,7 @@ final class GPlatPanelCallbackWiringTests: XCTestCase {
     func testCreatePanel_onCancelKeyPressed_routesToCancelDraftNotBareDismiss() async {
         sut._testPresentPanelSync()
         sut.formState.supervisorTask = "abandoned draft"
-        sut.formState.clippedTexts = ["a clip"]
+        sut.formState.clippedTexts = [Clip].minting(["a clip"])
         XCTAssertTrue(sut._testPanel?.onCancelKeyPressed != nil,
                       "createPanel must wire the AppKit Escape route")
 

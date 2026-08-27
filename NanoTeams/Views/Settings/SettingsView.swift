@@ -4,7 +4,6 @@ import SwiftUI
 
 /// Main settings window with sidebar navigation
 struct SettingsView: View {
-    @Environment(StoreConfiguration.self) var config
     @AppStorage(UserDefaultsKeys.activeTheme) private var activeThemeRaw: String = Theme.defaultTheme.rawValue
 
     private var activeTheme: Theme {
@@ -343,8 +342,9 @@ private struct SettingsRowView: View {
 // MARK: - Preview
 
 #Preview {
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
-    @Previewable @State var modelCatalog = ModelCatalog()
+    @Previewable @State var store = PreviewStore.make()
+    @Previewable @State var modelCatalog = PreviewStore.catalog()
+    @Previewable @State var embeddingCatalog = PreviewStore.embeddingCatalog()
     @Previewable @State var dictation = DictationService()
     @Previewable @State var llmStatusMonitor = LLMStatusMonitor()
     SettingsView()
@@ -353,6 +353,7 @@ private struct SettingsRowView: View {
         .environment(store.configuration)
         .environment(store.streamingPreviewManager)
         .environment(modelCatalog)
+        .environment(embeddingCatalog)
         .environment(dictation)
         .environment(AppUpdateState(config: store.configuration))
         .environment(llmStatusMonitor)

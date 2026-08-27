@@ -47,13 +47,13 @@ final class ToolsFileSystemTests: XCTestCase {
 
     // MARK: - read_file Tests
 
-    func testReadFile_readsExistingFile() throws {
+    func testReadFile_readsExistingFile() async throws {
         let content = "Hello, World!"
         let filePath = tempDir.appendingPathComponent("test.txt")
         try content.write(to: filePath, atomically: true, encoding: .utf8)
 
         let call = StepToolCall(name: "read_file", argumentsJSON: "{\"path\": \"test.txt\"}")
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
@@ -65,12 +65,12 @@ final class ToolsFileSystemTests: XCTestCase {
     /// an edit_file anchor copied verbatim from that text must match the file. Before
     /// the fix the envelope showed `..\/systems\/Q.js`, which the model re-typed with
     /// backslashes into an anchor that never matched → an unbreakable edit→re-read loop.
-    func testReadThenEditFile_forwardSlashAnchorFromRawEnvelope_matches() throws {
+    func testReadThenEditFile_forwardSlashAnchorFromRawEnvelope_matches() async throws {
         let original = "import { Q } from '../systems/Q.js';\n"
         let filePath = tempDir.appendingPathComponent("game.js")
         try original.write(to: filePath, atomically: true, encoding: .utf8)
 
-        let read = runtime.executeAll(context: context, toolCalls: [
+        let read = await runtime.executeAll(context: context, toolCalls: [
             StepToolCall(name: "read_file", argumentsJSON: "{\"path\": \"game.js\"}")
         ])
         XCTAssertFalse(read[0].isError)
@@ -81,7 +81,7 @@ final class ToolsFileSystemTests: XCTestCase {
 
         // Anchor copied verbatim from what the model saw must match on disk.
         let anchor = "import { Q } from '../systems/Q.js';"
-        let edit = runtime.executeAll(context: context, toolCalls: [
+        let edit = await runtime.executeAll(context: context, toolCalls: [
             StepToolCall(
                 name: "edit_file",
                 argumentsJSON: "{\"path\":\"game.js\",\"old_text\":\"\(anchor)\",\"new_text\":\"import { Q } from '../systems/Quad.js';\"}"
@@ -92,21 +92,21 @@ final class ToolsFileSystemTests: XCTestCase {
         XCTAssertTrue(updated.contains("../systems/Quad.js"), "edit must have applied: \(updated)")
     }
 
-    func testReadFile_returnsErrorForMissingFile() {
+    func testReadFile_returnsErrorForMissingFile() async {
         let call = StepToolCall(name: "read_file", argumentsJSON: "{\"path\": \"nonexistent.txt\"}")
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertTrue(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("FILE_NOT_FOUND"))
     }
 
-    func testReadFile_returnsErrorForDirectory() throws {
+    func testReadFile_returnsErrorForDirectory() async throws {
         let dirPath = tempDir.appendingPathComponent("subdir")
         try fileManager.createDirectory(at: dirPath, withIntermediateDirectories: true)
 
         let call = StepToolCall(name: "read_file", argumentsJSON: "{\"path\": \"subdir\"}")
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertTrue(results[0].isError)
@@ -116,9 +116,9 @@ final class ToolsFileSystemTests: XCTestCase {
     /// With "/" resolving to the work-folder root, `read_file {"path": "/"}` composes with
     /// the existing directory rejection: NOT_A_FILE + a `next: list_files` hint whose
     /// suggested call now works (previously the whole path form was PERMISSION_DENIED).
-    func testReadFile_slashPath_returnsNotAFileWithListFilesHint() throws {
+    func testReadFile_slashPath_returnsNotAFileWithListFilesHint() async throws {
         let call = StepToolCall(name: "read_file", argumentsJSON: "{\"path\": \"/\"}")
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
         XCTAssertTrue(results[0].isError)
@@ -126,7 +126,7 @@ final class ToolsFileSystemTests: XCTestCase {
         XCTAssertTrue(results[0].outputJSON.contains("list_files"), "directory rejection must steer to list_files: \(results[0].outputJSON)")
     }
 
-    func testReadFile_largeFile_returnsErrorPointingToReadLines() throws {
+    func testReadFile_largeFile_returnsErrorPointingToReadLines() async throws {
         // File over the configured limit → hard-block error pointing at `read_lines`.
         let limit = AppDefaults.readFileMaxLines
         let largeContent = (1...(limit + 200)).map { "Line \($0)" }.joined(separator: "\n")
@@ -134,7 +134,7 @@ final class ToolsFileSystemTests: XCTestCase {
         try largeContent.write(to: filePath, atomically: true, encoding: .utf8)
 
         let call = StepToolCall(name: "read_file", argumentsJSON: "{\"path\": \"large.txt\"}")
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertTrue(results[0].isError)
         let json = results[0].outputJSON
@@ -143,7 +143,7 @@ final class ToolsFileSystemTests: XCTestCase {
         XCTAssertTrue(json.contains("read_lines"))
     }
 
-    func testReadFile_inLimitFile_returnsAllLines() throws {
+    func testReadFile_inLimitFile_returnsAllLines() async throws {
         let content = (1...100).map { "Line \($0)" }.joined(separator: "\n")
         let filePath = tempDir.appendingPathComponent("medium.txt")
         try content.write(to: filePath, atomically: true, encoding: .utf8)
@@ -152,7 +152,7 @@ final class ToolsFileSystemTests: XCTestCase {
             name: "read_file",
             argumentsJSON: "{\"path\": \"medium.txt\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         let json = results[0].outputJSON
@@ -163,7 +163,7 @@ final class ToolsFileSystemTests: XCTestCase {
 
     // MARK: - read_lines Tests
 
-    func testReadFileRange_readsSpecifiedLines() throws {
+    func testReadFileRange_readsSpecifiedLines() async throws {
         let content = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5"
         let filePath = tempDir.appendingPathComponent("lines.txt")
         try content.write(to: filePath, atomically: true, encoding: .utf8)
@@ -172,7 +172,7 @@ final class ToolsFileSystemTests: XCTestCase {
             name: "read_lines",
             argumentsJSON: "{\"path\": \"lines.txt\", \"start_line\": 2, \"end_line\": 4}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("Line 2"))
@@ -180,7 +180,7 @@ final class ToolsFileSystemTests: XCTestCase {
         XCTAssertTrue(results[0].outputJSON.contains("Line 4"))
     }
 
-    func testReadFileRange_invalidStartLine() throws {
+    func testReadFileRange_invalidStartLine() async throws {
         let content = "Line 1\nLine 2"
         let filePath = tempDir.appendingPathComponent("short.txt")
         try content.write(to: filePath, atomically: true, encoding: .utf8)
@@ -189,7 +189,7 @@ final class ToolsFileSystemTests: XCTestCase {
             name: "read_lines",
             argumentsJSON: "{\"path\": \"short.txt\", \"start_line\": 0, \"end_line\": 1}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertTrue(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("INVALID_ARGS"))
@@ -198,7 +198,7 @@ final class ToolsFileSystemTests: XCTestCase {
     // Transposed range (start > end): per CORE_PRINCIPLES the runtime silently
     // swaps the bounds rather than erroring. `start_line: 3, end_line: 1` on a
     // 2-line file → swap to 1..3, clamp to file length, read both lines.
-    func testReadFileRange_transposedRange_silentlySwaps() throws {
+    func testReadFileRange_transposedRange_silentlySwaps() async throws {
         let content = "Line 1\nLine 2"
         let filePath = tempDir.appendingPathComponent("test.txt")
         try content.write(to: filePath, atomically: true, encoding: .utf8)
@@ -207,7 +207,7 @@ final class ToolsFileSystemTests: XCTestCase {
             name: "read_lines",
             argumentsJSON: "{\"path\": \"test.txt\", \"start_line\": 3, \"end_line\": 1}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(
             results[0].isError,
@@ -222,7 +222,7 @@ final class ToolsFileSystemTests: XCTestCase {
     // Regression for Run 13: qwen3.5-35b-a3b emitted `end_line: -1` intending "to EOF"
     // and got stuck retrying the same failing call. Non-positive end_line is now a
     // valid "read through end of file" sentinel.
-    func testReadFileRange_endLineMinusOne_readsThroughEOF() throws {
+    func testReadFileRange_endLineMinusOne_readsThroughEOF() async throws {
         let content = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5"
         let filePath = tempDir.appendingPathComponent("eof_neg.txt")
         try content.write(to: filePath, atomically: true, encoding: .utf8)
@@ -231,7 +231,7 @@ final class ToolsFileSystemTests: XCTestCase {
             name: "read_lines",
             argumentsJSON: "{\"path\": \"eof_neg.txt\", \"start_line\": 2, \"end_line\": -1}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError, "end_line=-1 should read to EOF, not error. Got: \(results[0].outputJSON)")
         XCTAssertTrue(results[0].outputJSON.contains("Line 2"))
@@ -240,7 +240,7 @@ final class ToolsFileSystemTests: XCTestCase {
         XCTAssertTrue(results[0].outputJSON.contains("\"end_line\":5") || results[0].outputJSON.contains("\"end_line\": 5"))
     }
 
-    func testReadFileRange_endLineZero_readsThroughEOF() throws {
+    func testReadFileRange_endLineZero_readsThroughEOF() async throws {
         let content = "A\nB\nC"
         let filePath = tempDir.appendingPathComponent("eof_zero.txt")
         try content.write(to: filePath, atomically: true, encoding: .utf8)
@@ -249,7 +249,7 @@ final class ToolsFileSystemTests: XCTestCase {
             name: "read_lines",
             argumentsJSON: "{\"path\": \"eof_zero.txt\", \"start_line\": 1, \"end_line\": 0}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("A"))
@@ -260,7 +260,7 @@ final class ToolsFileSystemTests: XCTestCase {
     // EOF (file shorter than expected). Must NOT crash on the slice
     // `allLines[(startLine-1)..<actualEndLine]` (which would fault if
     // startLine-1 > actualEndLine). Expected: clean rangeOutOfBounds error.
-    func testReadFileRange_startLinePastEOF_withEOFSentinel_returnsRangeError() throws {
+    func testReadFileRange_startLinePastEOF_withEOFSentinel_returnsRangeError() async throws {
         let content = "Line 1\nLine 2\nLine 3"  // 3 lines
         let filePath = tempDir.appendingPathComponent("short_file.txt")
         try content.write(to: filePath, atomically: true, encoding: .utf8)
@@ -269,7 +269,7 @@ final class ToolsFileSystemTests: XCTestCase {
             name: "read_lines",
             argumentsJSON: "{\"path\": \"short_file.txt\", \"start_line\": 10, \"end_line\": -1}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertTrue(results[0].isError, "start_line past EOF must error, not return empty content")
         XCTAssertTrue(
@@ -281,12 +281,12 @@ final class ToolsFileSystemTests: XCTestCase {
 
     // MARK: - write_file Tests
 
-    func testWriteFile_createsNewFile() {
+    func testWriteFile_createsNewFile() async {
         let call = StepToolCall(
             name: "write_file",
             argumentsJSON: "{\"path\": \"new.txt\", \"content\": \"New content\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("created\":true") || results[0].outputJSON.contains("created\": true"))
@@ -296,7 +296,7 @@ final class ToolsFileSystemTests: XCTestCase {
         XCTAssertTrue(fileManager.fileExists(atPath: filePath.path))
     }
 
-    func testWriteFile_overwritesExistingFile() throws {
+    func testWriteFile_overwritesExistingFile() async throws {
         let filePath = tempDir.appendingPathComponent("existing.txt")
         try "Old content".write(to: filePath, atomically: true, encoding: .utf8)
 
@@ -304,19 +304,19 @@ final class ToolsFileSystemTests: XCTestCase {
             name: "write_file",
             argumentsJSON: "{\"path\": \"existing.txt\", \"content\": \"New content\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         let newContent = try String(contentsOf: filePath, encoding: .utf8)
         XCTAssertEqual(newContent, "New content")
     }
 
-    func testWriteFile_createsParentDirectories() {
+    func testWriteFile_createsParentDirectories() async {
         let call = StepToolCall(
             name: "write_file",
             argumentsJSON: "{\"path\": \"nested/deep/file.txt\", \"content\": \"Deep content\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
 
@@ -324,12 +324,12 @@ final class ToolsFileSystemTests: XCTestCase {
         XCTAssertTrue(fileManager.fileExists(atPath: filePath.path))
     }
 
-    func testWriteFile_failsWithoutCreateDirs() throws {
+    func testWriteFile_failsWithoutCreateDirs() async throws {
         let call = StepToolCall(
             name: "write_file",
             argumentsJSON: "{\"path\": \"missing_parent/file.txt\", \"content\": \"Content\", \"create_dirs\": false}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertTrue(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("NOT_A_DIRECTORY"))
@@ -337,7 +337,7 @@ final class ToolsFileSystemTests: XCTestCase {
 
     // MARK: - delete_file Tests
 
-    func testDeleteFile_deletesExistingFile() throws {
+    func testDeleteFile_deletesExistingFile() async throws {
         let filePath = tempDir.appendingPathComponent("to_delete.txt")
         try "Content".write(to: filePath, atomically: true, encoding: .utf8)
 
@@ -345,35 +345,35 @@ final class ToolsFileSystemTests: XCTestCase {
             name: "delete_file",
             argumentsJSON: "{\"path\": \"to_delete.txt\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         XCTAssertFalse(fileManager.fileExists(atPath: filePath.path))
     }
 
-    func testDeleteFile_errorForMissingFile() {
+    func testDeleteFile_errorForMissingFile() async {
         let call = StepToolCall(
             name: "delete_file",
             argumentsJSON: "{\"path\": \"nonexistent.txt\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertTrue(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("FILE_NOT_FOUND"))
     }
 
-    func testDeleteFile_mustExistFalse_succeedsForMissing() {
+    func testDeleteFile_mustExistFalse_succeedsForMissing() async {
         let call = StepToolCall(
             name: "delete_file",
             argumentsJSON: "{\"path\": \"nonexistent.txt\", \"must_exist\": false}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("deleted\":false") || results[0].outputJSON.contains("deleted\": false"))
     }
 
-    func testDeleteFile_errorForDirectory() throws {
+    func testDeleteFile_errorForDirectory() async throws {
         let dirPath = tempDir.appendingPathComponent("mydir")
         try fileManager.createDirectory(at: dirPath, withIntermediateDirectories: true)
 
@@ -381,7 +381,7 @@ final class ToolsFileSystemTests: XCTestCase {
             name: "delete_file",
             argumentsJSON: "{\"path\": \"mydir\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertTrue(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("NOT_A_FILE"))
@@ -389,7 +389,7 @@ final class ToolsFileSystemTests: XCTestCase {
 
     // MARK: - list_files Tests
 
-    func testListDirectory_listsFiles() throws {
+    func testListDirectory_listsFiles() async throws {
         try "A".write(to: tempDir.appendingPathComponent("file1.txt"), atomically: true, encoding: .utf8)
         try "B".write(to: tempDir.appendingPathComponent("file2.txt"), atomically: true, encoding: .utf8)
         try fileManager.createDirectory(at: tempDir.appendingPathComponent("subdir"), withIntermediateDirectories: true)
@@ -398,7 +398,7 @@ final class ToolsFileSystemTests: XCTestCase {
             name: "list_files",
             argumentsJSON: "{\"path\": \".\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("file1.txt"))
@@ -406,7 +406,7 @@ final class ToolsFileSystemTests: XCTestCase {
         XCTAssertTrue(results[0].outputJSON.contains("subdir"))
     }
 
-    func testListDirectory_respectsDepth() throws {
+    func testListDirectory_respectsDepth() async throws {
         try fileManager.createDirectory(
             at: tempDir.appendingPathComponent("level1/level2"),
             withIntermediateDirectories: true
@@ -422,7 +422,7 @@ final class ToolsFileSystemTests: XCTestCase {
             name: "list_files",
             argumentsJSON: "{\"path\": \".\", \"depth\": 1}"
         )
-        let results1 = runtime.executeAll(context: context, toolCalls: [call1])
+        let results1 = await runtime.executeAll(context: context, toolCalls: [call1])
 
         XCTAssertFalse(results1[0].isError)
         XCTAssertTrue(results1[0].outputJSON.contains("level1"))
@@ -433,13 +433,13 @@ final class ToolsFileSystemTests: XCTestCase {
             name: "list_files",
             argumentsJSON: "{\"path\": \".\", \"depth\": 3}"
         )
-        let results3 = runtime.executeAll(context: context, toolCalls: [call3])
+        let results3 = await runtime.executeAll(context: context, toolCalls: [call3])
 
         XCTAssertFalse(results3[0].isError)
         XCTAssertTrue(results3[0].outputJSON.contains("deep.txt"))
     }
 
-    func testListDirectory_includesHiddenFiles() throws {
+    func testListDirectory_includesHiddenFiles() async throws {
         try "Hidden".write(to: tempDir.appendingPathComponent(".hidden"), atomically: true, encoding: .utf8)
         try "Visible".write(to: tempDir.appendingPathComponent("visible.txt"), atomically: true, encoding: .utf8)
 
@@ -447,14 +447,14 @@ final class ToolsFileSystemTests: XCTestCase {
             name: "list_files",
             argumentsJSON: "{\"path\": \".\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("visible.txt"))
         XCTAssertTrue(results[0].outputJSON.contains(".hidden"), "Hidden files should be included")
     }
 
-    func testListDirectory_skipsNoisyDotDirs() throws {
+    func testListDirectory_skipsNoisyDotDirs() async throws {
         try "Meta".write(to: tempDir.appendingPathComponent(".DS_Store"), atomically: true, encoding: .utf8)
         try fileManager.createDirectory(
             at: tempDir.appendingPathComponent(".git"), withIntermediateDirectories: false
@@ -468,7 +468,7 @@ final class ToolsFileSystemTests: XCTestCase {
             name: "list_files",
             argumentsJSON: "{\"path\": \".\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("visible.txt"))
@@ -477,14 +477,14 @@ final class ToolsFileSystemTests: XCTestCase {
         XCTAssertFalse(results[0].outputJSON.contains(".build"), ".build should be skipped")
     }
 
-    func testListDirectory_errorForNonDirectory() throws {
+    func testListDirectory_errorForNonDirectory() async throws {
         try "File".write(to: tempDir.appendingPathComponent("file.txt"), atomically: true, encoding: .utf8)
 
         let call = StepToolCall(
             name: "list_files",
             argumentsJSON: "{\"path\": \"file.txt\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertTrue(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("NOT_A_DIRECTORY"))
@@ -492,7 +492,7 @@ final class ToolsFileSystemTests: XCTestCase {
 
     /// The exact call from the reported bug: `list_files {"path": "/", "depth": 1}` —
     /// chroot-style "/" means the work-folder root and must list it, not PERMISSION_DENIED.
-    func testListDirectory_slashPath_listsRootContents() throws {
+    func testListDirectory_slashPath_listsRootContents() async throws {
         try "One".write(to: tempDir.appendingPathComponent("file1.txt"), atomically: true, encoding: .utf8)
         try fileManager.createDirectory(
             at: tempDir.appendingPathComponent("subdir"), withIntermediateDirectories: false
@@ -502,7 +502,7 @@ final class ToolsFileSystemTests: XCTestCase {
             name: "list_files",
             argumentsJSON: "{\"path\": \"/\", \"depth\": 1}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError, "\"/\" must resolve to the work-folder root: \(results[0].outputJSON)")
         XCTAssertTrue(results[0].outputJSON.contains("file1.txt"))
@@ -520,14 +520,14 @@ final class ToolsFileSystemTests: XCTestCase {
         return try XCTUnwrap(root["data"] as? [String: Any], "no data in: \(json)")
     }
 
-    private func runListFiles(_ argumentsJSON: String) -> ToolExecutionResult {
-        runtime.executeAll(
+    private func runListFiles(_ argumentsJSON: String) async -> ToolExecutionResult {
+        await runtime.executeAll(
             context: context,
             toolCalls: [StepToolCall(name: "list_files", argumentsJSON: argumentsJSON)]
         )[0]
     }
 
-    func testListFiles_splitsFilesAndDirs() throws {
+    func testListFiles_splitsFilesAndDirs() async throws {
         // Listed from a dedicated subdirectory, not the work-folder root: the root
         // also holds the fixture's `.nanoteams`, which would make exact-array
         // assertions couple to setUp instead of to the split behaviour.
@@ -538,7 +538,7 @@ final class ToolsFileSystemTests: XCTestCase {
             at: proj.appendingPathComponent("sub"), withIntermediateDirectories: false
         )
 
-        let result = runListFiles("{\"path\": \"proj\"}")
+        let result = await runListFiles("{\"path\": \"proj\"}")
         let data = try listData(result.outputJSON)
 
         XCTAssertEqual(try XCTUnwrap(data["files"] as? [String]), ["proj/a.txt"])
@@ -552,32 +552,32 @@ final class ToolsFileSystemTests: XCTestCase {
     /// subdirectory listing must be a valid `read_file` argument. Before the fix
     /// entries were relative to the REQUESTED directory while `read_file` resolves
     /// from the work-folder root, so this round-trip silently missed.
-    func testListFiles_subdirEntry_feedsDirectlyIntoReadFile() throws {
+    func testListFiles_subdirEntry_feedsDirectlyIntoReadFile() async throws {
         let sources = tempDir.appendingPathComponent("Sources")
         try fileManager.createDirectory(at: sources, withIntermediateDirectories: true)
         try "let x = 1".write(
             to: sources.appendingPathComponent("Calculator.swift"), atomically: true, encoding: .utf8
         )
 
-        let listing = try listData(runListFiles("{\"path\": \"Sources\"}").outputJSON)
+        let listing = try await listData(runListFiles("{\"path\": \"Sources\"}").outputJSON)
         let entry = try XCTUnwrap((listing["files"] as? [String])?.first)
 
         let readCall = StepToolCall(
             name: "read_file",
             argumentsJSON: "{\"path\": \"\(entry)\"}"
         )
-        let read = runtime.executeAll(context: context, toolCalls: [readCall])[0]
+        let read = await runtime.executeAll(context: context, toolCalls: [readCall])[0]
 
         XCTAssertFalse(read.isError, "entry '\(entry)' must feed straight into read_file: \(read.outputJSON)")
         XCTAssertTrue(read.outputJSON.contains("let x = 1"), read.outputJSON)
     }
 
-    func testListFiles_pathsAreWorkFolderRootRelative() throws {
+    func testListFiles_pathsAreWorkFolderRootRelative() async throws {
         let sources = tempDir.appendingPathComponent("Sources")
         try fileManager.createDirectory(at: sources, withIntermediateDirectories: true)
         try "x".write(to: sources.appendingPathComponent("Calculator.swift"), atomically: true, encoding: .utf8)
 
-        let data = try listData(runListFiles("{\"path\": \"Sources\"}").outputJSON)
+        let data = try await listData(runListFiles("{\"path\": \"Sources\"}").outputJSON)
 
         XCTAssertEqual(try XCTUnwrap(data["files"] as? [String]), ["Sources/Calculator.swift"])
     }
@@ -585,12 +585,12 @@ final class ToolsFileSystemTests: XCTestCase {
     /// The residual risk of the root-relative fix: a model that habitually joins
     /// `data.path` with an entry would produce `Sources/Sources/…`. The shape must
     /// make the join structurally unnecessary — entries already carry the prefix.
-    func testListFiles_entryAlreadyContainsRequestedPath() throws {
+    func testListFiles_entryAlreadyContainsRequestedPath() async throws {
         let nested = tempDir.appendingPathComponent("a/b")
         try fileManager.createDirectory(at: nested, withIntermediateDirectories: true)
         try "x".write(to: nested.appendingPathComponent("deep.txt"), atomically: true, encoding: .utf8)
 
-        let data = try listData(runListFiles("{\"path\": \"a/b\"}").outputJSON)
+        let data = try await listData(runListFiles("{\"path\": \"a/b\"}").outputJSON)
         let echoed = try XCTUnwrap(data["path"] as? String)
 
         XCTAssertEqual(echoed, "a/b")
@@ -599,7 +599,7 @@ final class ToolsFileSystemTests: XCTestCase {
         }
     }
 
-    func testListFiles_countMatchesArrays() throws {
+    func testListFiles_countMatchesArrays() async throws {
         let proj = tempDir.appendingPathComponent("proj", isDirectory: true)
         try fileManager.createDirectory(at: proj, withIntermediateDirectories: true)
         try "A".write(to: proj.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
@@ -608,7 +608,7 @@ final class ToolsFileSystemTests: XCTestCase {
             at: proj.appendingPathComponent("sub"), withIntermediateDirectories: false
         )
 
-        let data = try listData(runListFiles("{\"path\": \"proj\"}").outputJSON)
+        let data = try await listData(runListFiles("{\"path\": \"proj\"}").outputJSON)
         let files = try XCTUnwrap(data["files"] as? [String])
         let dirs = try XCTUnwrap(data["dirs"] as? [String])
 
@@ -618,21 +618,21 @@ final class ToolsFileSystemTests: XCTestCase {
 
     /// Stable shape beats a shape that varies: an empty `dirs` is the real answer
     /// "no subdirectories here", not an exception marker to be omitted.
-    func testListFiles_emptyDirsArrayStillEmitted() throws {
+    func testListFiles_emptyDirsArrayStillEmitted() async throws {
         let proj = tempDir.appendingPathComponent("proj", isDirectory: true)
         try fileManager.createDirectory(at: proj, withIntermediateDirectories: true)
         try "A".write(to: proj.appendingPathComponent("only.txt"), atomically: true, encoding: .utf8)
 
-        let data = try listData(runListFiles("{\"path\": \"proj\"}").outputJSON)
+        let data = try await listData(runListFiles("{\"path\": \"proj\"}").outputJSON)
 
         XCTAssertEqual(try XCTUnwrap(data["dirs"] as? [String]), [])
         XCTAssertNotNil(data["files"])
     }
 
-    func testListFiles_slashPath_echoesNormalizedPath() throws {
+    func testListFiles_slashPath_echoesNormalizedPath() async throws {
         try "One".write(to: tempDir.appendingPathComponent("file1.txt"), atomically: true, encoding: .utf8)
 
-        let data = try listData(runListFiles("{\"path\": \"/\"}").outputJSON)
+        let data = try await listData(runListFiles("{\"path\": \"/\"}").outputJSON)
 
         XCTAssertEqual(try XCTUnwrap(data["path"] as? String), ".")
     }
@@ -640,12 +640,12 @@ final class ToolsFileSystemTests: XCTestCase {
     /// `.withoutEscapingSlashes` is load-bearing: escaped `\/` in paths makes small
     /// models emit literal backslashes in edit_file anchors. Nested paths make it
     /// more load-bearing than before, so pin it here too.
-    func testListFiles_forwardSlashesUnescaped() throws {
+    func testListFiles_forwardSlashesUnescaped() async throws {
         let nested = tempDir.appendingPathComponent("a/b")
         try fileManager.createDirectory(at: nested, withIntermediateDirectories: true)
         try "x".write(to: nested.appendingPathComponent("deep.txt"), atomically: true, encoding: .utf8)
 
-        let json = runListFiles("{\"path\": \".\", \"depth\": 3}").outputJSON
+        let json = await runListFiles("{\"path\": \".\", \"depth\": 3}").outputJSON
 
         XCTAssertTrue(json.contains("a/b/deep.txt"), json)
         XCTAssertFalse(json.contains("\\/"), "forward slashes must not be escaped: \(json)")
@@ -664,10 +664,10 @@ final class ToolsFileSystemTests: XCTestCase {
     /// Off-by-one regression: a directory holding EXACTLY the cap is a complete
     /// listing and must not claim truncation — the old `>=` provoked a needless
     /// narrowing re-call.
-    func testListFiles_exactlyAtCap_notReportedTruncated() throws {
+    func testListFiles_exactlyAtCap_notReportedTruncated() async throws {
         try seedFlatFiles(ToolConstants.maxDirectoryEntries)
 
-        let result = runListFiles("{\"path\": \"many\"}")
+        let result = await runListFiles("{\"path\": \"many\"}")
         let root = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.outputJSON.utf8)) as? [String: Any])
         let data = try XCTUnwrap(root["data"] as? [String: Any])
         let meta = try XCTUnwrap(root["meta"] as? [String: Any])
@@ -676,10 +676,10 @@ final class ToolsFileSystemTests: XCTestCase {
         XCTAssertEqual(meta["truncated"] as? Bool, false)
     }
 
-    func testListFiles_overCap_reportsTruncatedWithWarning() throws {
+    func testListFiles_overCap_reportsTruncatedWithWarning() async throws {
         try seedFlatFiles(ToolConstants.maxDirectoryEntries + 5)
 
-        let result = runListFiles("{\"path\": \"many\"}")
+        let result = await runListFiles("{\"path\": \"many\"}")
         let root = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.outputJSON.utf8)) as? [String: Any])
         let data = try XCTUnwrap(root["data"] as? [String: Any])
         let meta = try XCTUnwrap(root["meta"] as? [String: Any])
@@ -695,10 +695,10 @@ final class ToolsFileSystemTests: XCTestCase {
 
     /// Builds the args JSON through JSONSerialization so non-ASCII and quoted
     /// names can't be broken by hand-escaping.
-    private func runList(_ args: [String: Any]) throws -> ToolExecutionResult {
+    private func runList(_ args: [String: Any]) async throws -> ToolExecutionResult {
         let data = try JSONSerialization.data(withJSONObject: args, options: [.sortedKeys])
         let json = try XCTUnwrap(String(data: data, encoding: .utf8))
-        return runtime.executeAll(
+        return await runtime.executeAll(
             context: context, toolCalls: [StepToolCall(name: "list_files", argumentsJSON: json)]
         )[0]
     }
@@ -717,37 +717,37 @@ final class ToolsFileSystemTests: XCTestCase {
         }
     }
 
-    func testListFiles_pathOmitted_listsRootWithNoPrefix() throws {
+    func testListFiles_pathOmitted_listsRootWithNoPrefix() async throws {
         try seed(["top.txt"])
 
-        let data = try listData(try runList([:]).outputJSON)
+        let data = try await listData(try runList([:]).outputJSON)
 
         XCTAssertEqual(try XCTUnwrap(data["path"] as? String), ".")
         XCTAssertEqual(try XCTUnwrap(data["files"] as? [String]), ["top.txt"])
     }
 
-    func testListFiles_emptyStringPath_listsRoot() throws {
+    func testListFiles_emptyStringPath_listsRoot() async throws {
         try seed(["top.txt"])
 
-        let data = try listData(try runList(["path": ""]).outputJSON)
+        let data = try await listData(try runList(["path": ""]).outputJSON)
 
         XCTAssertEqual(try XCTUnwrap(data["path"] as? String), ".")
         XCTAssertEqual(try XCTUnwrap(data["files"] as? [String]), ["top.txt"])
     }
 
-    func testListFiles_trailingSlashPath_normalizesPrefix() throws {
+    func testListFiles_trailingSlashPath_normalizesPrefix() async throws {
         try seed(["Sources/a.swift"])
 
-        let data = try listData(try runList(["path": "Sources/"]).outputJSON)
+        let data = try await listData(try runList(["path": "Sources/"]).outputJSON)
 
         XCTAssertEqual(try XCTUnwrap(data["path"] as? String), "Sources")
         XCTAssertEqual(try XCTUnwrap(data["files"] as? [String]), ["Sources/a.swift"])
     }
 
-    func testListFiles_dotSlashPath_normalizesPrefix() throws {
+    func testListFiles_dotSlashPath_normalizesPrefix() async throws {
         try seed(["Sources/a.swift"])
 
-        let data = try listData(try runList(["path": "./Sources"]).outputJSON)
+        let data = try await listData(try runList(["path": "./Sources"]).outputJSON)
 
         XCTAssertEqual(try XCTUnwrap(data["path"] as? String), "Sources")
         XCTAssertEqual(try XCTUnwrap(data["files"] as? [String]), ["Sources/a.swift"])
@@ -755,10 +755,10 @@ final class ToolsFileSystemTests: XCTestCase {
 
     /// The prefix is derived from the RESOLVED url, so an absolute in-sandbox path
     /// (models paste these) comes back relativized rather than absolute.
-    func testListFiles_absoluteInSandboxPath_prefixIsRelativized() throws {
+    func testListFiles_absoluteInSandboxPath_prefixIsRelativized() async throws {
         try seed(["Sources/a.swift"])
 
-        let data = try listData(
+        let data = try await listData(
             try runList(["path": tempDir.appendingPathComponent("Sources").path]).outputJSON
         )
 
@@ -769,20 +769,20 @@ final class ToolsFileSystemTests: XCTestCase {
     /// Deriving the prefix from the resolved url (not the raw arg) means a
     /// redundant work-folder-name component is echoed back in canonical form —
     /// the model sees the spelling that its next call should use.
-    func testListFiles_redundantWorkFolderNamePrefix_echoesCanonicalPath() throws {
+    func testListFiles_redundantWorkFolderNamePrefix_echoesCanonicalPath() async throws {
         try seed(["Sources/a.swift"])
         let folderName = tempDir.lastPathComponent
 
-        let data = try listData(try runList(["path": "\(folderName)/Sources"]).outputJSON)
+        let data = try await listData(try runList(["path": "\(folderName)/Sources"]).outputJSON)
 
         XCTAssertEqual(try XCTUnwrap(data["path"] as? String), "Sources")
         XCTAssertEqual(try XCTUnwrap(data["files"] as? [String]), ["Sources/a.swift"])
     }
 
-    func testListFiles_deeplyNestedRequest_prefixesEveryComponent() throws {
+    func testListFiles_deeplyNestedRequest_prefixesEveryComponent() async throws {
         try seed(["a/b/c/leaf.txt"])
 
-        let data = try listData(try runList(["path": "a/b/c"]).outputJSON)
+        let data = try await listData(try runList(["path": "a/b/c"]).outputJSON)
 
         XCTAssertEqual(try XCTUnwrap(data["path"] as? String), "a/b/c")
         XCTAssertEqual(try XCTUnwrap(data["files"] as? [String]), ["a/b/c/leaf.txt"])
@@ -790,20 +790,20 @@ final class ToolsFileSystemTests: XCTestCase {
 
     // MARK: - list_files Corners: shape and ordering
 
-    func testListFiles_emptyDirectory_zeroCountBothArraysPresent() throws {
+    func testListFiles_emptyDirectory_zeroCountBothArraysPresent() async throws {
         try seed(["empty/"])
 
-        let data = try listData(try runList(["path": "empty"]).outputJSON)
+        let data = try await listData(try runList(["path": "empty"]).outputJSON)
 
         XCTAssertEqual(try XCTUnwrap(data["count"] as? Int), 0)
         XCTAssertEqual(try XCTUnwrap(data["files"] as? [String]), [])
         XCTAssertEqual(try XCTUnwrap(data["dirs"] as? [String]), [])
     }
 
-    func testListFiles_onlyDirectories_filesArrayEmptyButPresent() throws {
+    func testListFiles_onlyDirectories_filesArrayEmptyButPresent() async throws {
         try seed(["only/one/", "only/two/"])
 
-        let data = try listData(try runList(["path": "only"]).outputJSON)
+        let data = try await listData(try runList(["path": "only"]).outputJSON)
 
         XCTAssertEqual(try XCTUnwrap(data["files"] as? [String]), [])
         XCTAssertEqual(try XCTUnwrap(data["dirs"] as? [String]), ["only/one", "only/two"])
@@ -812,20 +812,20 @@ final class ToolsFileSystemTests: XCTestCase {
     /// Ordering is by PATH, so each subtree stays contiguous. Under the old
     /// basename key this returned ["b/apple.txt", "a/zebra.txt"], which reads as
     /// unsorted once the per-entry `name` is gone.
-    func testListFiles_ordering_isByPathNotBasename() throws {
+    func testListFiles_ordering_isByPathNotBasename() async throws {
         try seed(["a/zebra.txt", "b/apple.txt"])
 
-        let data = try listData(try runList(["path": ".", "depth": 2]).outputJSON)
+        let data = try await listData(try runList(["path": ".", "depth": 2]).outputJSON)
 
         XCTAssertEqual(try XCTUnwrap(data["files"] as? [String]), ["a/zebra.txt", "b/apple.txt"])
     }
 
     /// `localizedStandardCompare` survives the switch to the path key, so numbered
     /// files stay in natural order rather than lexicographic.
-    func testListFiles_ordering_isNaturalNotLexicographic() throws {
+    func testListFiles_ordering_isNaturalNotLexicographic() async throws {
         try seed(["n/f2.txt", "n/f10.txt"])
 
-        let data = try listData(try runList(["path": "n"]).outputJSON)
+        let data = try await listData(try runList(["path": "n"]).outputJSON)
 
         XCTAssertEqual(try XCTUnwrap(data["files"] as? [String]), ["n/f2.txt", "n/f10.txt"])
     }
@@ -833,31 +833,32 @@ final class ToolsFileSystemTests: XCTestCase {
     /// A file and a directory sharing a name are distinguishable by ARRAY, with no
     /// in-band marker to misread — the property that ruled out the trailing-slash
     /// encoding.
-    func testListFiles_sameNameAsFileAndDirectory_noAmbiguity() throws {
+    func testListFiles_sameNameAsFileAndDirectory_noAmbiguity() async throws {
         try seed(["x/report/", "y/report"])
 
-        let data = try listData(try runList(["path": ".", "depth": 2]).outputJSON)
+        let data = try await listData(try runList(["path": ".", "depth": 2]).outputJSON)
 
         XCTAssertTrue(try XCTUnwrap(data["dirs"] as? [String]).contains("x/report"))
         XCTAssertTrue(try XCTUnwrap(data["files"] as? [String]).contains("y/report"))
     }
 
-    func testListFiles_nonASCIIAndSpacedNames_roundTripIntact() throws {
+    func testListFiles_nonASCIIAndSpacedNames_roundTripIntact() async throws {
         try seed(["Ресурсы/файл тест.txt"])
 
-        let data = try listData(try runList(["path": "Ресурсы"]).outputJSON)
+        let data = try await listData(try runList(["path": "Ресурсы"]).outputJSON)
 
         XCTAssertEqual(try XCTUnwrap(data["files"] as? [String]), ["Ресурсы/файл тест.txt"])
     }
 
     /// The constant `meta` block was deliberately KEPT (its presence is the
     /// mechanically checkable half of the no-silent-caps rule).
-    func testListFiles_untruncated_stillEmitsMetaBlock() throws {
+    func testListFiles_untruncated_stillEmitsMetaBlock() async throws {
         try seed(["a.txt"])
 
+        // Hoisted: `XCTUnwrap` takes an autoclosure, which is not an async context.
+        let listed = try await runList(["path": "."]).outputJSON
         let root = try XCTUnwrap(
-            JSONSerialization.jsonObject(with: Data(try runList(["path": "."]).outputJSON.utf8))
-                as? [String: Any]
+            JSONSerialization.jsonObject(with: Data(listed.utf8)) as? [String: Any]
         )
         let meta = try XCTUnwrap(root["meta"] as? [String: Any])
 
@@ -867,19 +868,19 @@ final class ToolsFileSystemTests: XCTestCase {
 
     // MARK: - list_files Corners: glob, depth, skips
 
-    func testListFiles_globMatchingOnlyDirs_leavesFilesEmpty() throws {
+    func testListFiles_globMatchingOnlyDirs_leavesFilesEmpty() async throws {
         try seed(["g/keep.d/", "g/drop.txt"])
 
-        let data = try listData(try runList(["path": "g", "name_glob": "*.d"]).outputJSON)
+        let data = try await listData(try runList(["path": "g", "name_glob": "*.d"]).outputJSON)
 
         XCTAssertEqual(try XCTUnwrap(data["dirs"] as? [String]), ["g/keep.d"])
         XCTAssertEqual(try XCTUnwrap(data["files"] as? [String]), [])
     }
 
-    func testListFiles_globMatchingNothing_succeedsWithZeroCount() throws {
+    func testListFiles_globMatchingNothing_succeedsWithZeroCount() async throws {
         try seed(["g/a.txt"])
 
-        let result = try runList(["path": "g", "name_glob": "*.never"])
+        let result = try await runList(["path": "g", "name_glob": "*.never"])
         let data = try listData(result.outputJSON)
 
         XCTAssertFalse(result.isError, result.outputJSON)
@@ -888,10 +889,10 @@ final class ToolsFileSystemTests: XCTestCase {
 
     /// The glob matches the BASENAME while the emitted path is full — removing the
     /// `name` field must not have moved the filter onto the path.
-    func testListFiles_globMatchesBasename_whilePathStaysFull() throws {
+    func testListFiles_globMatchesBasename_whilePathStaysFull() async throws {
         try seed(["deep/nested/target.gd", "deep/nested/other.txt"])
 
-        let data = try listData(
+        let data = try await listData(
             try runList(["path": ".", "depth": 3, "name_glob": "*.gd"]).outputJSON
         )
 
@@ -902,10 +903,10 @@ final class ToolsFileSystemTests: XCTestCase {
     /// `depth: 0` on the work-folder root — recursion depth is habitually counted
     /// from zero. Before the floor this answered with a successful EMPTY listing,
     /// i.e. "your project is empty", at the very first exploration step.
-    func testListFiles_depthZeroOnRoot_listsImmediateChildren() throws {
+    func testListFiles_depthZeroOnRoot_listsImmediateChildren() async throws {
         try seed(["top.txt", "sub/"])
 
-        let result = try runList(["depth": 0])
+        let result = try await runList(["depth": 0])
         let data = try listData(result.outputJSON)
 
         XCTAssertFalse(result.isError, result.outputJSON)
@@ -917,11 +918,11 @@ final class ToolsFileSystemTests: XCTestCase {
     /// 1 already reaches into its subfolders. Pinning both tiers against the same
     /// tree is what makes the indexing falsifiable — an off-by-one either way
     /// breaks exactly one of these two assertions.
-    func testListFiles_depthScale_isZeroIndexedRecursion() throws {
+    func testListFiles_depthScale_isZeroIndexedRecursion() async throws {
         try seed(["d/a.txt", "d/nested/deep.txt"])
 
-        let zero = try listData(try runList(["path": "d", "depth": 0]).outputJSON)
-        let one = try listData(try runList(["path": "d", "depth": 1]).outputJSON)
+        let zero = try await listData(try runList(["path": "d", "depth": 0]).outputJSON)
+        let one = try await listData(try runList(["path": "d", "depth": 1]).outputJSON)
 
         XCTAssertEqual(try XCTUnwrap(zero["files"] as? [String]), ["d/a.txt"],
                        "depth 0 = direct contents only, no recursion")
@@ -931,21 +932,21 @@ final class ToolsFileSystemTests: XCTestCase {
 
     /// Omitting `depth` must behave as `depth: 0` — the default is the base of the
     /// scale, so the overwhelmingly common no-arg call is unaffected by the indexing.
-    func testListFiles_depthOmitted_equivalentToDepthZero() throws {
+    func testListFiles_depthOmitted_equivalentToDepthZero() async throws {
         try seed(["d/a.txt", "d/nested/deep.txt"])
 
-        let omitted = try listData(try runList(["path": "d"]).outputJSON)
-        let zero = try listData(try runList(["path": "d", "depth": 0]).outputJSON)
+        let omitted = try await listData(try runList(["path": "d"]).outputJSON)
+        let zero = try await listData(try runList(["path": "d", "depth": 0]).outputJSON)
 
         XCTAssertEqual(omitted["files"] as? [String], zero["files"] as? [String])
         XCTAssertEqual(omitted["dirs"] as? [String], zero["dirs"] as? [String])
     }
 
     /// A wild depth must not overflow the internal `depth + 1`.
-    func testListFiles_intMaxDepth_doesNotOverflow() throws {
+    func testListFiles_intMaxDepth_doesNotOverflow() async throws {
         try seed(["d/a.txt"])
 
-        let result = try runList(["path": "d", "depth": Int.max])
+        let result = try await runList(["path": "d", "depth": Int.max])
 
         XCTAssertFalse(result.isError, result.outputJSON)
         XCTAssertEqual(try XCTUnwrap(try listData(result.outputJSON)["files"] as? [String]), ["d/a.txt"])
@@ -953,27 +954,27 @@ final class ToolsFileSystemTests: XCTestCase {
 
     /// Negative depth is the same class of nonsense as zero and takes the same floor
     /// rather than silently reporting an empty directory.
-    func testListFiles_negativeDepth_listsImmediateChildren() throws {
+    func testListFiles_negativeDepth_listsImmediateChildren() async throws {
         try seed(["d/a.txt"])
 
-        let data = try listData(try runList(["path": "d", "depth": -3]).outputJSON)
+        let data = try await listData(try runList(["path": "d", "depth": -3]).outputJSON)
 
         XCTAssertEqual(try XCTUnwrap(data["files"] as? [String]), ["d/a.txt"])
     }
 
     /// The string-encoded path takes the floor too — coercion happens before it.
-    func testListFiles_depthZeroAsString_listsImmediateChildren() throws {
+    func testListFiles_depthZeroAsString_listsImmediateChildren() async throws {
         try seed(["d/a.txt"])
 
-        let data = try listData(try runList(["path": "d", "depth": "0"]).outputJSON)
+        let data = try await listData(try runList(["path": "d", "depth": "0"]).outputJSON)
 
         XCTAssertEqual(try XCTUnwrap(data["files"] as? [String]), ["d/a.txt"])
     }
 
-    func testListFiles_depthBeyondTree_listsEverythingWithoutError() throws {
+    func testListFiles_depthBeyondTree_listsEverythingWithoutError() async throws {
         try seed(["d/a/b.txt"])
 
-        let result = try runList(["path": "d", "depth": 99])
+        let result = try await runList(["path": "d", "depth": 99])
         let data = try listData(result.outputJSON)
 
         XCTAssertFalse(result.isError)
@@ -982,10 +983,10 @@ final class ToolsFileSystemTests: XCTestCase {
     }
 
     /// WalkSkipRules must keep applying below the first level, not just at the root.
-    func testListFiles_skipRules_applyAtNestedDepth() throws {
+    func testListFiles_skipRules_applyAtNestedDepth() async throws {
         try seed(["proj/src/main.swift", "proj/node_modules/pkg.js"])
 
-        let data = try listData(try runList(["path": "proj", "depth": 3]).outputJSON)
+        let data = try await listData(try runList(["path": "proj", "depth": 3]).outputJSON)
         let all = try XCTUnwrap(data["files"] as? [String]) + (try XCTUnwrap(data["dirs"] as? [String]))
 
         XCTAssertTrue(all.contains("proj/src/main.swift"), "\(all)")
@@ -994,14 +995,14 @@ final class ToolsFileSystemTests: XCTestCase {
 
     /// A dangling symlink fails the `fileExists` probe and is skipped rather than
     /// listed as a file the model would then fail to read.
-    func testListFiles_danglingSymlink_isSkipped() throws {
+    func testListFiles_danglingSymlink_isSkipped() async throws {
         try seed(["s/real.txt"])
         try fileManager.createSymbolicLink(
             atPath: tempDir.appendingPathComponent("s/broken.txt").path,
             withDestinationPath: tempDir.appendingPathComponent("s/does_not_exist.txt").path
         )
 
-        let data = try listData(try runList(["path": "s"]).outputJSON)
+        let data = try await listData(try runList(["path": "s"]).outputJSON)
 
         XCTAssertEqual(try XCTUnwrap(data["files"] as? [String]), ["s/real.txt"])
     }
@@ -1010,10 +1011,10 @@ final class ToolsFileSystemTests: XCTestCase {
 
     /// One past the cap is the smallest input that must report truncation, and the
     /// probe entry must not leak into the payload.
-    func testListFiles_exactlyOneOverCap_truncatesAndDropsProbe() throws {
+    func testListFiles_exactlyOneOverCap_truncatesAndDropsProbe() async throws {
         try seedFlatFiles(ToolConstants.maxDirectoryEntries + 1)
 
-        let result = runListFiles("{\"path\": \"many\"}")
+        let result = await runListFiles("{\"path\": \"many\"}")
         let root = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.outputJSON.utf8)) as? [String: Any])
         let data = try XCTUnwrap(root["data"] as? [String: Any])
         let files = try XCTUnwrap(data["files"] as? [String])
@@ -1025,13 +1026,13 @@ final class ToolsFileSystemTests: XCTestCase {
 
     /// The cap counts entries actually LISTED, so a glob that filters most of the
     /// directory away must not trip truncation.
-    func testListFiles_capCountsMatchingEntriesOnly_notScannedOnes() throws {
+    func testListFiles_capCountsMatchingEntriesOnly_notScannedOnes() async throws {
         try seedFlatFiles(ToolConstants.maxDirectoryEntries + 5)
         try "x".write(
             to: tempDir.appendingPathComponent("many/unique.gd"), atomically: true, encoding: .utf8
         )
 
-        let result = runListFiles("{\"path\": \"many\", \"name_glob\": \"*.gd\"}")
+        let result = await runListFiles("{\"path\": \"many\", \"name_glob\": \"*.gd\"}")
         let root = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.outputJSON.utf8)) as? [String: Any])
         let data = try XCTUnwrap(root["data"] as? [String: Any])
 
@@ -1044,9 +1045,9 @@ final class ToolsFileSystemTests: XCTestCase {
     /// SAFETY: now that "/" resolves to the real work-folder root, a model that fat-fingers
     /// `delete_file {"path": "/"}` must NOT delete the work folder — the directory guard
     /// rejects it with NOT_A_FILE and everything survives.
-    func testDeleteFile_slashPath_rejectedAndWorkFolderPreserved() throws {
+    func testDeleteFile_slashPath_rejectedAndWorkFolderPreserved() async throws {
         let call = StepToolCall(name: "delete_file", argumentsJSON: "{\"path\": \"/\"}")
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertTrue(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("NOT_A_FILE"), results[0].outputJSON)
@@ -1059,12 +1060,12 @@ final class ToolsFileSystemTests: XCTestCase {
 
     /// SAFETY: `write_file {"path": "/"}` cannot clobber the work-folder root — writing a
     /// file over an existing directory fails, so the call errors and the folder survives.
-    func testWriteFile_slashPath_rejectedAndWorkFolderPreserved() throws {
+    func testWriteFile_slashPath_rejectedAndWorkFolderPreserved() async throws {
         let call = StepToolCall(
             name: "write_file",
             argumentsJSON: "{\"path\": \"/\", \"content\": \"nope\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertTrue(results[0].isError, "write_file on \"/\" must fail: \(results[0].outputJSON)")
         var isDir: ObjCBool = false
@@ -1076,7 +1077,7 @@ final class ToolsFileSystemTests: XCTestCase {
 
     // MARK: - search Tests
 
-    func testSearchProject_findsMatches() throws {
+    func testSearchProject_findsMatches() async throws {
         try "Hello World".write(to: tempDir.appendingPathComponent("hello.txt"), atomically: true, encoding: .utf8)
         try "Goodbye World".write(to: tempDir.appendingPathComponent("goodbye.txt"), atomically: true, encoding: .utf8)
 
@@ -1084,40 +1085,40 @@ final class ToolsFileSystemTests: XCTestCase {
             name: "search",
             argumentsJSON: "{\"query\": \"World\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("hello.txt"))
         XCTAssertTrue(results[0].outputJSON.contains("goodbye.txt"))
     }
 
-    func testSearchProject_caseInsensitive() throws {
+    func testSearchProject_caseInsensitive() async throws {
         try "UPPERCASE content".write(to: tempDir.appendingPathComponent("upper.txt"), atomically: true, encoding: .utf8)
 
         let call = StepToolCall(
             name: "search",
             argumentsJSON: "{\"query\": \"uppercase\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("upper.txt"))
     }
 
-    func testSearchProject_regexMode() throws {
+    func testSearchProject_regexMode() async throws {
         try "error: file not found".write(to: tempDir.appendingPathComponent("log.txt"), atomically: true, encoding: .utf8)
 
         let call = StepToolCall(
             name: "search",
             argumentsJSON: "{\"query\": \"error:.*found\", \"mode\": \"regex\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("log.txt"))
     }
 
-    func testSearchProject_respectsMaxResults() throws {
+    func testSearchProject_respectsMaxResults() async throws {
         for i in 0..<10 {
             try "match".write(to: tempDir.appendingPathComponent("file\(i).txt"), atomically: true, encoding: .utf8)
         }
@@ -1126,7 +1127,7 @@ final class ToolsFileSystemTests: XCTestCase {
             name: "search",
             argumentsJSON: "{\"query\": \"match\", \"max_results\": 3}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         // Check truncated flag
@@ -1135,7 +1136,7 @@ final class ToolsFileSystemTests: XCTestCase {
 
     // MARK: - read_lines Format Tests
 
-    func testReadLines_usesBoxDrawingSeparator() throws {
+    func testReadLines_usesBoxDrawingSeparator() async throws {
         let content = "Alpha\nBeta\nGamma"
         let filePath = tempDir.appendingPathComponent("format.txt")
         try content.write(to: filePath, atomically: true, encoding: .utf8)
@@ -1144,7 +1145,7 @@ final class ToolsFileSystemTests: XCTestCase {
             name: "read_lines",
             argumentsJSON: "{\"path\": \"format.txt\", \"start_line\": 1, \"end_line\": 3}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         let json = results[0].outputJSON
@@ -1157,7 +1158,7 @@ final class ToolsFileSystemTests: XCTestCase {
 
     // MARK: - search Glob Metacharacters (Round 4 regression)
 
-    func testSearchProject_GlobWithMetacharacters_EscapesCorrectly() throws {
+    func testSearchProject_GlobWithMetacharacters_EscapesCorrectly() async throws {
         // Create files: test.ts, test.tsx, test.py with "match" content
         try "match here".write(to: tempDir.appendingPathComponent("test.ts"), atomically: true, encoding: .utf8)
         try "match here".write(to: tempDir.appendingPathComponent("test.tsx"), atomically: true, encoding: .utf8)
@@ -1167,7 +1168,7 @@ final class ToolsFileSystemTests: XCTestCase {
             name: "search",
             argumentsJSON: "{\"query\": \"match\", \"file_glob\": \"*.ts\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError, "search with glob should not error")
         let json = results[0].outputJSON
@@ -1178,7 +1179,7 @@ final class ToolsFileSystemTests: XCTestCase {
 
     // MARK: - Internal Path Restriction Tests
 
-    func testListFiles_hidesInternalDir() throws {
+    func testListFiles_hidesInternalDir() async throws {
         // Create .nanoteams/internal/ with a file
         let paths = NTMSPaths(workFolderRoot: tempDir)
         try fileManager.createDirectory(at: paths.internalDir, withIntermediateDirectories: true)
@@ -1194,7 +1195,7 @@ final class ToolsFileSystemTests: XCTestCase {
             name: "list_files",
             argumentsJSON: "{\"path\": \".nanoteams\", \"depth\": 2}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
 
@@ -1216,7 +1217,7 @@ final class ToolsFileSystemTests: XCTestCase {
         )
     }
 
-    func testListFiles_showsAttachments() throws {
+    func testListFiles_showsAttachments() async throws {
         let paths = NTMSPaths(workFolderRoot: tempDir)
         let taskID = 0
         let attachDir = paths.taskAttachmentsDir(taskID: taskID)
@@ -1230,13 +1231,13 @@ final class ToolsFileSystemTests: XCTestCase {
             name: "list_files",
             argumentsJSON: "{\"path\": \".nanoteams/tasks/\(String(taskID))/attachments\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("photo.png"))
     }
 
-    func testReadFile_blocksInternalWorkFolderJSON() throws {
+    func testReadFile_blocksInternalWorkFolderJSON() async throws {
         let paths = NTMSPaths(workFolderRoot: tempDir)
         try fileManager.createDirectory(at: paths.internalDir, withIntermediateDirectories: true)
         try "secret config".write(to: paths.workFolderJSON, atomically: true, encoding: .utf8)
@@ -1245,7 +1246,7 @@ final class ToolsFileSystemTests: XCTestCase {
             name: "read_file",
             argumentsJSON: "{\"path\": \".nanoteams/internal/workfolder.json\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertTrue(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("FILE_NOT_FOUND"))
@@ -1254,7 +1255,7 @@ final class ToolsFileSystemTests: XCTestCase {
         XCTAssertFalse(results[0].outputJSON.contains("restricted"))
     }
 
-    func testReadFile_blocksInternalTaskJSON() throws {
+    func testReadFile_blocksInternalTaskJSON() async throws {
         let paths = NTMSPaths(workFolderRoot: tempDir)
         let taskID = 0
         let internalTaskDir = paths.internalTasksDir
@@ -1269,13 +1270,13 @@ final class ToolsFileSystemTests: XCTestCase {
             name: "read_file",
             argumentsJSON: "{\"path\": \".nanoteams/internal/tasks/\(String(taskID))/task.json\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertTrue(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("FILE_NOT_FOUND"))
     }
 
-    func testReadFile_allowsAttachments() throws {
+    func testReadFile_allowsAttachments() async throws {
         let paths = NTMSPaths(workFolderRoot: tempDir)
         let taskID = 0
         let attachDir = paths.taskAttachmentsDir(taskID: taskID)
@@ -1289,13 +1290,13 @@ final class ToolsFileSystemTests: XCTestCase {
             name: "read_file",
             argumentsJSON: "{\"path\": \".nanoteams/tasks/\(String(taskID))/attachments/doc.txt\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("file content"))
     }
 
-    func testReadFile_allowsArtifacts() throws {
+    func testReadFile_allowsArtifacts() async throws {
         let paths = NTMSPaths(workFolderRoot: tempDir)
         let runID = 0
         let roleID = "test_role"
@@ -1310,13 +1311,13 @@ final class ToolsFileSystemTests: XCTestCase {
             name: "read_file",
             argumentsJSON: "{\"path\": \".nanoteams/tasks/0/runs/\(String(runID))/roles/\(roleID)/artifact_requirements.md\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("artifact content"))
     }
 
-    func testWriteFile_blocksInternalPath() throws {
+    func testWriteFile_blocksInternalPath() async throws {
         let paths = NTMSPaths(workFolderRoot: tempDir)
         try fileManager.createDirectory(at: paths.internalDir, withIntermediateDirectories: true)
 
@@ -1324,13 +1325,13 @@ final class ToolsFileSystemTests: XCTestCase {
             name: "write_file",
             argumentsJSON: "{\"path\": \".nanoteams/internal/evil.txt\", \"content\": \"hacked\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertTrue(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("FILE_NOT_FOUND"))
     }
 
-    func testSearch_skipsInternalDir() throws {
+    func testSearch_skipsInternalDir() async throws {
         let paths = NTMSPaths(workFolderRoot: tempDir)
         try fileManager.createDirectory(at: paths.internalDir, withIntermediateDirectories: true)
         try "secret_token=abc123".write(
@@ -1347,7 +1348,7 @@ final class ToolsFileSystemTests: XCTestCase {
             name: "search",
             argumentsJSON: "{\"query\": \"secret_token\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         let json = results[0].outputJSON
@@ -1356,7 +1357,7 @@ final class ToolsFileSystemTests: XCTestCase {
         XCTAssertFalse(json.contains("config.json"))
     }
 
-    func testDeleteFile_blocksInternalPath() throws {
+    func testDeleteFile_blocksInternalPath() async throws {
         let paths = NTMSPaths(workFolderRoot: tempDir)
         try fileManager.createDirectory(at: paths.internalDir, withIntermediateDirectories: true)
         try "important".write(
@@ -1368,14 +1369,14 @@ final class ToolsFileSystemTests: XCTestCase {
             name: "delete_file",
             argumentsJSON: "{\"path\": \".nanoteams/internal/workfolder.json\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertTrue(results[0].isError)
         // File should still exist
         XCTAssertTrue(fileManager.fileExists(atPath: paths.workFolderJSON.path))
     }
 
-    func testReadLines_blocksInternalPath() throws {
+    func testReadLines_blocksInternalPath() async throws {
         let paths = NTMSPaths(workFolderRoot: tempDir)
         try fileManager.createDirectory(at: paths.internalDir, withIntermediateDirectories: true)
         try "line1\nline2\nline3".write(
@@ -1387,13 +1388,13 @@ final class ToolsFileSystemTests: XCTestCase {
             name: "read_lines",
             argumentsJSON: "{\"path\": \".nanoteams/internal/tools.json\", \"start_line\": 1, \"end_line\": 3}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertTrue(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("FILE_NOT_FOUND"))
     }
 
-    func testEditFile_blocksInternalPath() throws {
+    func testEditFile_blocksInternalPath() async throws {
         let paths = NTMSPaths(workFolderRoot: tempDir)
         try fileManager.createDirectory(at: paths.internalDir, withIntermediateDirectories: true)
         try "original content".write(
@@ -1405,7 +1406,7 @@ final class ToolsFileSystemTests: XCTestCase {
             name: "edit_file",
             argumentsJSON: "{\"path\": \".nanoteams/internal/tools.json\", \"old_text\": \"original\", \"new_text\": \"hacked\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertTrue(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("FILE_NOT_FOUND"))
@@ -1414,7 +1415,7 @@ final class ToolsFileSystemTests: XCTestCase {
         XCTAssertEqual(content, "original content")
     }
 
-    func testSearch_blocksExplicitInternalPath() throws {
+    func testSearch_blocksExplicitInternalPath() async throws {
         let paths = NTMSPaths(workFolderRoot: tempDir)
         try fileManager.createDirectory(at: paths.internalDir, withIntermediateDirectories: true)
         try "secret_data".write(
@@ -1426,7 +1427,7 @@ final class ToolsFileSystemTests: XCTestCase {
             name: "search",
             argumentsJSON: "{\"query\": \"secret_data\", \"paths\": [\".nanoteams/internal\"]}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         // Should error because the explicit path resolves inside internalDir
         XCTAssertTrue(results[0].isError)
@@ -1435,7 +1436,7 @@ final class ToolsFileSystemTests: XCTestCase {
 
     // MARK: - edit_file Fallback Tests
 
-    func testEditFile_stripsTabLineNumberPrefixes() throws {
+    func testEditFile_stripsTabLineNumberPrefixes() async throws {
         let content = "## Structure\nSome content\nMore content"
         let filePath = tempDir.appendingPathComponent("strip_tab.txt")
         try content.write(to: filePath, atomically: true, encoding: .utf8)
@@ -1447,14 +1448,14 @@ final class ToolsFileSystemTests: XCTestCase {
             {"path": "strip_tab.txt", "old_text": "6\\t## Structure\\n7\\tSome content", "new_text": "## New Structure\\nNew content"}
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError, "edit_file should auto-recover by stripping line-number prefixes")
         let newContent = try String(contentsOf: filePath, encoding: .utf8)
         XCTAssertTrue(newContent.contains("## New Structure"))
     }
 
-    func testEditFile_stripsBoxDrawingPrefixes() throws {
+    func testEditFile_stripsBoxDrawingPrefixes() async throws {
         let content = "func hello() {\n    print(\"hi\")\n}"
         let filePath = tempDir.appendingPathComponent("strip_box.txt")
         try content.write(to: filePath, atomically: true, encoding: .utf8)
@@ -1466,14 +1467,14 @@ final class ToolsFileSystemTests: XCTestCase {
             {"path": "strip_box.txt", "old_text": "1   \u{2502} func hello() {\\n2   \u{2502}     print(\\"hi\\")\\n3   \u{2502} }", "new_text": "func goodbye() {\\n    print(\\"bye\\")\\n}"}
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError, "edit_file should auto-recover by stripping box-drawing prefixes")
         let newContent = try String(contentsOf: filePath, encoding: .utf8)
         XCTAssertTrue(newContent.contains("func goodbye()"))
     }
 
-    func testEditFile_unescapesJSONSlashes() throws {
+    func testEditFile_unescapesJSONSlashes() async throws {
         let content = "import src/utils/helper"
         let filePath = tempDir.appendingPathComponent("slash.txt")
         try content.write(to: filePath, atomically: true, encoding: .utf8)
@@ -1485,14 +1486,14 @@ final class ToolsFileSystemTests: XCTestCase {
             {"path": "slash.txt", "old_text": "import src\\/utils\\/helper", "new_text": "import src/utils/newhelper"}
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError, "edit_file should auto-recover by unescaping JSON slashes")
         let newContent = try String(contentsOf: filePath, encoding: .utf8)
         XCTAssertTrue(newContent.contains("src/utils/newhelper"))
     }
 
-    func testEditFile_noFalsePositiveStripping() throws {
+    func testEditFile_noFalsePositiveStripping() async throws {
         // File content that legitimately starts with digit+tab on only some lines
         let content = "Normal line\n42\tTabbed data\nAnother normal"
         let filePath = tempDir.appendingPathComponent("no_strip.txt")
@@ -1505,14 +1506,14 @@ final class ToolsFileSystemTests: XCTestCase {
             {"path": "no_strip.txt", "old_text": "Normal line\\n99\\tMissing data", "new_text": "Replaced"}
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         // Should fail because stripping requires ALL lines to match, and "Normal line" has no prefix
         XCTAssertTrue(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("ANCHOR_NOT_FOUND"))
     }
 
-    func testEditFile_exactMatchStillWorks() throws {
+    func testEditFile_exactMatchStillWorks() async throws {
         let content = "Hello World\nGoodbye World"
         let filePath = tempDir.appendingPathComponent("exact.txt")
         try content.write(to: filePath, atomically: true, encoding: .utf8)
@@ -1523,7 +1524,7 @@ final class ToolsFileSystemTests: XCTestCase {
             {"path": "exact.txt", "old_text": "Hello World", "new_text": "Hi World"}
             """
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         let newContent = try String(contentsOf: filePath, encoding: .utf8)
@@ -1532,7 +1533,7 @@ final class ToolsFileSystemTests: XCTestCase {
 
     // MARK: - search diagnostics (C5 + skipped_binary_count)
 
-    func testSearch_rtfdBundleMissingTXTRTF_surfacesInSkippedFiles() throws {
+    func testSearch_rtfdBundleMissingTXTRTF_surfacesInSkippedFiles() async throws {
         // An `.rtfd` directory with no internal `TXT.rtf` must produce an
         // entry in `skipped_files` — not silent omission.
         let rtfdURL = tempDir.appendingPathComponent("broken.rtfd", isDirectory: true)
@@ -1547,7 +1548,7 @@ final class ToolsFileSystemTests: XCTestCase {
             name: "search",
             argumentsJSON: "{\"query\": \"needle\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("skipped_files"),
@@ -1558,7 +1559,7 @@ final class ToolsFileSystemTests: XCTestCase {
                       "skipped_files reason should mention TXT.rtf: \(results[0].outputJSON)")
     }
 
-    func testSearch_binaryFiles_counted_notListed() throws {
+    func testSearch_binaryFiles_counted_notListed() async throws {
         // A PNG-like binary (non-UTF8, unsupported extension) should contribute
         // to `skipped_binary_count` without polluting `skipped_files`.
         try "plain text with match".write(
@@ -1573,7 +1574,7 @@ final class ToolsFileSystemTests: XCTestCase {
             name: "search",
             argumentsJSON: "{\"query\": \"match\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("skipped_binary_count"),
@@ -1584,7 +1585,7 @@ final class ToolsFileSystemTests: XCTestCase {
 
     // MARK: - read_lines directory parity (B4)
 
-    func testReadLines_onPlainDirectory_returnsNotAFileError() throws {
+    func testReadLines_onPlainDirectory_returnsNotAFileError() async throws {
         let subdir = tempDir.appendingPathComponent("sub", isDirectory: true)
         try fileManager.createDirectory(at: subdir, withIntermediateDirectories: true)
 
@@ -1592,14 +1593,14 @@ final class ToolsFileSystemTests: XCTestCase {
             name: "read_lines",
             argumentsJSON: "{\"path\": \"sub\", \"start_line\": 1, \"end_line\": 10}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertTrue(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("NOT_A_FILE"),
                       "plain dir must produce NOT_A_FILE, got: \(results[0].outputJSON)")
     }
 
-    func testReadLines_onRTFDBundle_readsContent() throws {
+    func testReadLines_onRTFDBundle_readsContent() async throws {
         let rtfdURL = tempDir.appendingPathComponent("note.rtfd", isDirectory: true)
         try fileManager.createDirectory(at: rtfdURL, withIntermediateDirectories: true)
         let rtfContent = #"{\rtf1\ansi Line 1\line Line 2\line Line 3}"#
@@ -1612,27 +1613,27 @@ final class ToolsFileSystemTests: XCTestCase {
             name: "read_lines",
             argumentsJSON: "{\"path\": \"note.rtfd\", \"start_line\": 1, \"end_line\": 0}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError,
                        "read_lines must accept .rtfd like read_file: \(results[0].outputJSON)")
     }
 
-    func testReadLines_onMissingFile_stillReturnsFileNotFound() throws {
+    func testReadLines_onMissingFile_stillReturnsFileNotFound() async throws {
         // The new directory guard in B4 must not mask the pre-existing
         // FILE_NOT_FOUND response for truly missing paths.
         let call = StepToolCall(
             name: "read_lines",
             argumentsJSON: "{\"path\": \"nonexistent.txt\", \"start_line\": 1, \"end_line\": 10}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertTrue(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("FILE_NOT_FOUND"),
                       "missing file must still return FILE_NOT_FOUND, not NOT_A_FILE: \(results[0].outputJSON)")
     }
 
-    func testSearch_rtfdBundleWithValidContent_findsMatches() throws {
+    func testSearch_rtfdBundleWithValidContent_findsMatches() async throws {
         // Happy-path counterpart to testSearch_rtfdBundleMissingTXTRTF: a
         // well-formed .rtfd bundle must still participate in search and NOT
         // appear in skipped_files.
@@ -1648,7 +1649,7 @@ final class ToolsFileSystemTests: XCTestCase {
             name: "search",
             argumentsJSON: "{\"query\": \"needle\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("good.rtfd"),
@@ -1657,7 +1658,7 @@ final class ToolsFileSystemTests: XCTestCase {
                        "valid .rtfd must NOT appear in skipped_files: \(results[0].outputJSON)")
     }
 
-    func testSearch_multipleBinaryFiles_aggregateCountIsExact() throws {
+    func testSearch_multipleBinaryFiles_aggregateCountIsExact() async throws {
         // D6 edge case: the counter is an aggregate, not a "saw one" flag.
         try "needle".write(
             to: tempDir.appendingPathComponent("match.txt"),
@@ -1673,7 +1674,7 @@ final class ToolsFileSystemTests: XCTestCase {
             name: "search",
             argumentsJSON: "{\"query\": \"needle\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("\"skipped_binary_count\" : 3")
@@ -1681,7 +1682,7 @@ final class ToolsFileSystemTests: XCTestCase {
             "expected aggregate count of 3 binary files, got: \(results[0].outputJSON)")
     }
 
-    func testSearch_noBinaryFiles_omitsSkippedBinaryCountField() throws {
+    func testSearch_noBinaryFiles_omitsSkippedBinaryCountField() async throws {
         // The field is Optional<Int>? and encoded only when > 0 — guards
         // against noise on happy-path responses.
         try "needle text".write(
@@ -1693,7 +1694,7 @@ final class ToolsFileSystemTests: XCTestCase {
             name: "search",
             argumentsJSON: "{\"query\": \"needle\"}"
         )
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         XCTAssertFalse(results[0].outputJSON.contains("skipped_binary_count"),
@@ -1702,14 +1703,14 @@ final class ToolsFileSystemTests: XCTestCase {
 
     // MARK: - search: empty-query "list files" mode
 
-    func testSearch_emptyQueryWithGlob_listsFilenameMatches() throws {
+    func testSearch_emptyQueryWithGlob_listsFilenameMatches() async throws {
         try fileManager.createDirectory(at: tempDir.appendingPathComponent("scenes"), withIntermediateDirectories: true)
         try "extends Node".write(to: tempDir.appendingPathComponent("scenes/Player.gd"), atomically: true, encoding: .utf8)
         try "extends Body".write(to: tempDir.appendingPathComponent("Slime.gd"), atomically: true, encoding: .utf8)
         try "# docs".write(to: tempDir.appendingPathComponent("readme.md"), atomically: true, encoding: .utf8)
 
         let call = StepToolCall(name: "search", argumentsJSON: "{\"query\": \"\", \"file_glob\": \"*.gd\"}")
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError, results[0].outputJSON)
         XCTAssertTrue(results[0].outputJSON.contains("filename_matches"))
@@ -1719,51 +1720,51 @@ final class ToolsFileSystemTests: XCTestCase {
                        "The *.gd glob must exclude the .md file.")
     }
 
-    func testSearch_emptyQueryNoConstraint_returnsError() throws {
+    func testSearch_emptyQueryNoConstraint_returnsError() async throws {
         let call = StepToolCall(name: "search", argumentsJSON: "{\"query\": \"\"}")
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertTrue(results[0].isError, "Empty query with no file_glob/paths must be an error, not a silent zero.")
         XCTAssertTrue(results[0].outputJSON.contains("empty query requires file_glob or paths"),
                       results[0].outputJSON)
     }
 
-    func testSearch_emptyQuery_blankPathsEntry_returnsError() throws {
+    func testSearch_emptyQuery_blankPathsEntry_returnsError() async throws {
         // paths:[""] resolves to the work-folder root — a present-but-empty
         // constraint must NOT slip an empty query into a whole-tree walk.
         try "x".write(to: tempDir.appendingPathComponent("some.gd"), atomically: true, encoding: .utf8)
         let argsData = try JSONSerialization.data(withJSONObject: ["query": "", "paths": [""]])
         let call = StepToolCall(name: "search", argumentsJSON: String(data: argsData, encoding: .utf8)!)
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertTrue(results[0].isError, "paths:[\"\"] is not a real constraint: \(results[0].outputJSON)")
         XCTAssertTrue(results[0].outputJSON.contains("empty query requires file_glob or paths"))
     }
 
-    func testSearch_emptyQuery_paddedFileGlob_stillLists() throws {
+    func testSearch_emptyQuery_paddedFileGlob_stillLists() async throws {
         // A whitespace-padded glob (common LLM emission artifact) must be
         // trimmed, not silently match nothing.
         try "x".write(to: tempDir.appendingPathComponent("Player.gd"), atomically: true, encoding: .utf8)
         let call = StepToolCall(name: "search", argumentsJSON: "{\"query\": \"\", \"file_glob\": \"*.gd \"}")
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError, results[0].outputJSON)
         XCTAssertTrue(results[0].outputJSON.contains("Player.gd"),
                       "A padded glob must be trimmed, not silently match nothing: \(results[0].outputJSON)")
     }
 
-    func testSearch_emptyQuery_emptyFileGlob_returnsError() throws {
+    func testSearch_emptyQuery_emptyFileGlob_returnsError() async throws {
         // file_glob:"" compiles to ^$ (matches nothing) — treat as no constraint
         // (typed error), not a silent zero.
         try "x".write(to: tempDir.appendingPathComponent("some.gd"), atomically: true, encoding: .utf8)
         let call = StepToolCall(name: "search", argumentsJSON: "{\"query\": \"\", \"file_glob\": \"\"}")
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertTrue(results[0].isError, "file_glob:\"\" is not a real constraint: \(results[0].outputJSON)")
         XCTAssertTrue(results[0].outputJSON.contains("empty query requires file_glob or paths"))
     }
 
-    func testSearch_emptyQueryWithGlob_exploratoryDefaultOn_stillListsViaPlainPath() throws {
+    func testSearch_emptyQueryWithGlob_exploratoryDefaultOn_stillListsViaPlainPath() async throws {
         // With exploratory default ON, a non-empty query would route to the
         // vector pass. An empty query has nothing to expand, so it must fall
         // through to the plain list path BEFORE the exploratory branch — not
@@ -1777,7 +1778,7 @@ final class ToolsFileSystemTests: XCTestCase {
         )
 
         let call = StepToolCall(name: "search", argumentsJSON: "{\"query\": \"\", \"file_glob\": \"*.gd\"}")
-        let results = exploratoryRuntime.executeAll(context: context, toolCalls: [call])
+        let results = await exploratoryRuntime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError, results[0].outputJSON)
         XCTAssertTrue(results[0].outputJSON.contains("Player.gd"))
@@ -1787,12 +1788,12 @@ final class ToolsFileSystemTests: XCTestCase {
 
     // MARK: - list_files: name_glob filter
 
-    func testListFiles_nameGlob_filtersToMatchingFiles() throws {
+    func testListFiles_nameGlob_filtersToMatchingFiles() async throws {
         try "a".write(to: tempDir.appendingPathComponent("a.gd"), atomically: true, encoding: .utf8)
         try "b".write(to: tempDir.appendingPathComponent("b.txt"), atomically: true, encoding: .utf8)
 
         let call = StepToolCall(name: "list_files", argumentsJSON: "{\"path\": \".\", \"name_glob\": \"*.gd\"}")
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("a.gd"))
@@ -1800,7 +1801,7 @@ final class ToolsFileSystemTests: XCTestCase {
                        "name_glob *.gd must exclude b.txt.")
     }
 
-    func testListFiles_nameGlob_recursesButFiltersEntries() throws {
+    func testListFiles_nameGlob_recursesButFiltersEntries() async throws {
         // A non-matching subdirectory is still traversed so nested matches are
         // reachable; the subdirectory itself is filtered out of the listing.
         try fileManager.createDirectory(at: tempDir.appendingPathComponent("scenes"), withIntermediateDirectories: true)
@@ -1808,7 +1809,7 @@ final class ToolsFileSystemTests: XCTestCase {
         try "top".write(to: tempDir.appendingPathComponent("Main.gd"), atomically: true, encoding: .utf8)
 
         let call = StepToolCall(name: "list_files", argumentsJSON: "{\"path\": \".\", \"depth\": 3, \"name_glob\": \"*.gd\"}")
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("Main.gd"))
@@ -1816,14 +1817,14 @@ final class ToolsFileSystemTests: XCTestCase {
                       "Nested match must be reachable even though its parent dir doesn't match the glob.")
     }
 
-    func testListFiles_invalidNameGlob_returnsError() throws {
+    func testListFiles_invalidNameGlob_returnsError() async throws {
         // The uncompilable-glob sentinel must surface as a typed error, not a
         // fail-closed empty listing.
         let argsData = try JSONSerialization.data(
             withJSONObject: ["path": ".", "name_glob": CompiledGlob._testUncompilableGlobSentinel])
         let argsJSON = String(data: argsData, encoding: .utf8)!
         let call = StepToolCall(name: "list_files", argumentsJSON: argsJSON)
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertTrue(results[0].isError, "An uncompilable name_glob must error, not fail-close silently.")
         XCTAssertTrue(results[0].outputJSON.contains("name_glob"),
@@ -1832,13 +1833,13 @@ final class ToolsFileSystemTests: XCTestCase {
                        "Error must NOT name file_glob — list_files has no such parameter: \(results[0].outputJSON)")
     }
 
-    func testListFiles_paddedNameGlob_stillFilters() throws {
+    func testListFiles_paddedNameGlob_stillFilters() async throws {
         // A whitespace-padded name_glob must be trimmed, not silently exclude
         // every entry.
         try "x".write(to: tempDir.appendingPathComponent("a.gd"), atomically: true, encoding: .utf8)
         try "x".write(to: tempDir.appendingPathComponent("b.txt"), atomically: true, encoding: .utf8)
         let call = StepToolCall(name: "list_files", argumentsJSON: "{\"path\": \".\", \"name_glob\": \"*.gd \"}")
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError, results[0].outputJSON)
         XCTAssertTrue(results[0].outputJSON.contains("a.gd"),
@@ -1846,12 +1847,12 @@ final class ToolsFileSystemTests: XCTestCase {
         XCTAssertFalse(results[0].outputJSON.contains("b.txt"))
     }
 
-    func testListFiles_emptyNameGlob_listsAll() throws {
+    func testListFiles_emptyNameGlob_listsAll() async throws {
         // name_glob:"" must mean "no filter", not "match nothing" (^$).
         try "x".write(to: tempDir.appendingPathComponent("a.gd"), atomically: true, encoding: .utf8)
         try "x".write(to: tempDir.appendingPathComponent("b.txt"), atomically: true, encoding: .utf8)
         let call = StepToolCall(name: "list_files", argumentsJSON: "{\"path\": \".\", \"name_glob\": \"\"}")
-        let results = runtime.executeAll(context: context, toolCalls: [call])
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertFalse(results[0].isError, results[0].outputJSON)
         XCTAssertTrue(results[0].outputJSON.contains("a.gd"),

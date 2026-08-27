@@ -59,14 +59,14 @@ final class DocumentTextExtractorTests: XCTestCase {
     func testExtractText_returnsNilForUnsupportedExtension() {
         let txtFile = tempDir.appendingPathComponent("hello.swift")
         try! "func main() {}".write(to: txtFile, atomically: true, encoding: .utf8)
-        XCTAssertNil(DocumentTextExtractor.extractText(from: txtFile))
+        XCTAssertNil(DocumentTextExtractor.extract(from: txtFile)?.extractedText)
     }
 
     // MARK: - PDF Extraction
 
     func testExtractText_pdf_extractsText() {
         let pdfURL = createTestPDF(text: "Hello from PDF document")
-        let result = DocumentTextExtractor.extractText(from: pdfURL)
+        let result = DocumentTextExtractor.extract(from: pdfURL)?.extractedText
         XCTAssertNotNil(result)
         XCTAssertTrue(result!.contains("Hello from PDF document"))
     }
@@ -79,17 +79,17 @@ final class DocumentTextExtractorTests: XCTestCase {
         pdfDoc.insert(page, at: 0)
         pdfDoc.write(to: pdfURL)
 
-        let result = DocumentTextExtractor.extractText(from: pdfURL)
-        XCTAssertNotNil(result)
-        XCTAssertTrue(result!.contains("[Could not extract text"))
-        XCTAssertTrue(result!.contains("no selectable text"))
+        let outcome = DocumentTextExtractor.extract(from: pdfURL)
+        XCTAssertNil(outcome?.extractedText, "an empty page yields no text")
+        XCTAssertEqual(outcome?.reason, "PDF has no selectable text")
     }
 
     func testExtractText_pdf_missingFile_returnsFailureMessage() {
         let fakeURL = tempDir.appendingPathComponent("missing.pdf")
-        let result = DocumentTextExtractor.extractText(from: fakeURL)
-        XCTAssertNotNil(result)
-        XCTAssertTrue(result!.contains("[Could not extract text"))
+        guard let outcome = DocumentTextExtractor.extract(from: fakeURL) else {
+            return XCTFail(".pdf is a supported extension and must resolve to a strategy")
+        }
+        guard case .failure = outcome else { return XCTFail("expected .failure, got \(outcome)") }
     }
 
     // MARK: - Process-lifetime cache (mtime+size keyed)
@@ -102,8 +102,8 @@ final class DocumentTextExtractorTests: XCTestCase {
     /// returns the cached string in microseconds.
     func testExtractText_pdf_repeatedCallsOnUnchangedFile_returnIdenticalContent() {
         let pdfURL = createTestPDF(text: "Cached PDF body content")
-        let first = DocumentTextExtractor.extractText(from: pdfURL)
-        let second = DocumentTextExtractor.extractText(from: pdfURL)
+        let first = DocumentTextExtractor.extract(from: pdfURL)?.extractedText
+        let second = DocumentTextExtractor.extract(from: pdfURL)?.extractedText
         XCTAssertNotNil(first)
         XCTAssertNotNil(second)
         XCTAssertEqual(first, second,
@@ -118,12 +118,10 @@ final class DocumentTextExtractorTests: XCTestCase {
         let rtfURL = tempDir.appendingPathComponent("not-yet-created.rtf")
         // First call on a missing file — failure message expected, must NOT
         // poison the cache.
-        let firstAttempt = DocumentTextExtractor.extractText(from: rtfURL)
-        XCTAssertNotNil(firstAttempt)
-        XCTAssertTrue(
-            DocumentTextExtractor.isFailureMessage(firstAttempt!),
-            "First read on missing file must surface a failure message; got: \(firstAttempt!)"
-        )
+        let firstAttempt = DocumentTextExtractor.extract(from: rtfURL)
+        guard case .failure = firstAttempt else {
+            return XCTFail("First read on missing file must classify as .failure; got: \(String(describing: firstAttempt))")
+        }
 
         // Now create the file with valid content and re-extract. If the
         // failure message had been cached, this would (incorrectly) return
@@ -131,19 +129,46 @@ final class DocumentTextExtractorTests: XCTestCase {
         let content = #"{\rtf1\ansi Now this file exists and is readable}"#
         try content.write(to: rtfURL, atomically: true, encoding: .utf8)
 
-        let secondAttempt = DocumentTextExtractor.extractText(from: rtfURL)
-        XCTAssertNotNil(secondAttempt)
-        XCTAssertFalse(
-            DocumentTextExtractor.isFailureMessage(secondAttempt!),
-            "After file becomes readable, extract must return real content (not cached failure). Got: \(secondAttempt!)"
-        )
-        XCTAssertTrue(
-            secondAttempt!.contains("Now this file exists"),
-            "Expected newly-written RTF content; got: \(secondAttempt!)"
+        let secondAttempt = DocumentTextExtractor.extract(from: rtfURL)?.extractedText
+        XCTAssertEqual(
+            secondAttempt?.contains("Now this file exists"), true,
+            "After the file becomes readable, extraction must return real content rather than a cached failure. Got: \(String(describing: secondAttempt))"
         )
     }
 
-    /// When the file changes on disk, the next `extractText` MUST miss the cache
+    /// The twin of the test above, for the outcome it deliberately treats differently.
+    ///
+    /// An `.empty` verdict IS cached: unlike a transient failure it is a stable property of
+    /// the bytes, and a folder of scanned PDFs otherwise re-runs PDFKit on every search. The
+    /// key still has to notice a real change, so the safety half is what this pins — replace
+    /// the scan with a text-bearing PDF and the next read must see it.
+    func testExtract_emptyOutcome_isCachedButStillInvalidatedByAFileChange() throws {
+        let url = tempDir.appendingPathComponent("scan.pdf")
+        let blank = PDFDocument()
+        blank.insert(PDFPage(), at: 0)
+        XCTAssertTrue(blank.write(to: url))
+
+        let first = DocumentTextExtractor.extract(from: url)
+        guard case .empty(_, .wholeDocument) = first else {
+            return XCTFail("a text-free PDF must classify as whole-document empty: \(String(describing: first))")
+        }
+        // A repeat read of the unchanged file returns the same verdict (cache hit or not,
+        // the answer must not drift).
+        guard case .empty = DocumentTextExtractor.extract(from: url) else {
+            return XCTFail("repeat read must stay empty")
+        }
+
+        let withText = createTestPDF(text: "NOW THERE IS TEXT")
+        try fm.removeItem(at: url)
+        try fm.moveItem(at: withText, to: url)
+
+        XCTAssertEqual(
+            DocumentTextExtractor.extract(from: url)?.extractedText?.contains("NOW THERE IS TEXT"), true,
+            "a cached emptiness must not survive the file being replaced"
+        )
+    }
+
+    /// When the file changes on disk, the next extraction MUST miss the cache
     /// and re-extract — otherwise a `search` after an edit would silently return
     /// stale content and the LLM would act on old data. The cache key is
     /// `(path, mtime, size)`; this test rewrites the same RTF path with
@@ -155,7 +180,7 @@ final class DocumentTextExtractorTests: XCTestCase {
         let rtfURL = tempDir.appendingPathComponent("changing.rtf")
         let originalContent = #"{\rtf1\ansi Original RTF body content}"#
         try originalContent.write(to: rtfURL, atomically: true, encoding: .utf8)
-        let first = DocumentTextExtractor.extractText(from: rtfURL)
+        let first = DocumentTextExtractor.extract(from: rtfURL)?.extractedText
         XCTAssertNotNil(first)
         XCTAssertTrue(first!.contains("Original RTF body content"),
                       "First read must extract original content; got: \(first ?? "nil")")
@@ -168,7 +193,7 @@ final class DocumentTextExtractorTests: XCTestCase {
         let replacementContent = #"{\rtf1\ansi Replaced RTF body — must invalidate cache}"#
         try replacementContent.write(to: rtfURL, atomically: true, encoding: .utf8)
 
-        let afterReplace = DocumentTextExtractor.extractText(from: rtfURL)
+        let afterReplace = DocumentTextExtractor.extract(from: rtfURL)?.extractedText
         XCTAssertNotNil(afterReplace)
         XCTAssertTrue(
             afterReplace!.contains("Replaced RTF body"),
@@ -187,7 +212,7 @@ final class DocumentTextExtractorTests: XCTestCase {
         let rtfContent = #"{\rtf1\ansi Hello from RTF document}"#
         try! rtfContent.write(to: rtfURL, atomically: true, encoding: .utf8)
 
-        let result = DocumentTextExtractor.extractText(from: rtfURL)
+        let result = DocumentTextExtractor.extract(from: rtfURL)?.extractedText
         XCTAssertNotNil(result)
         XCTAssertTrue(result!.contains("Hello from RTF document"))
     }
@@ -202,7 +227,7 @@ final class DocumentTextExtractorTests: XCTestCase {
         let html = "<html><body><p>Hello from HTML</p></body></html>"
         try! html.write(to: htmlURL, atomically: true, encoding: .utf8)
 
-        let result = DocumentTextExtractor.extractText(from: htmlURL)
+        let result = DocumentTextExtractor.extract(from: htmlURL)?.extractedText
         XCTAssertNil(result,
                      "extractText must return nil for .html so the caller's raw UTF-8 path handles it; got: \(String(describing: result))")
     }
@@ -210,7 +235,7 @@ final class DocumentTextExtractorTests: XCTestCase {
     func testExtractText_htm_returnsNil() {
         let url = tempDir.appendingPathComponent("legacy.htm")
         try! "<p>hi</p>".write(to: url, atomically: true, encoding: .utf8)
-        XCTAssertNil(DocumentTextExtractor.extractText(from: url))
+        XCTAssertNil(DocumentTextExtractor.extract(from: url)?.extractedText)
     }
 
     // MARK: - RTFD Extraction
@@ -224,7 +249,7 @@ final class DocumentTextExtractorTests: XCTestCase {
             atomically: true, encoding: .utf8
         )
 
-        let result = DocumentTextExtractor.extractText(from: rtfdURL)
+        let result = DocumentTextExtractor.extract(from: rtfdURL)?.extractedText
         XCTAssertNotNil(result)
         XCTAssertTrue(result!.contains("Hello from RTFD package"),
                       "RTFD extraction should read TXT.rtf inside: got \(result ?? "nil")")
@@ -235,11 +260,11 @@ final class DocumentTextExtractorTests: XCTestCase {
         try fm.createDirectory(at: rtfdURL, withIntermediateDirectories: true)
         // No TXT.rtf inside the package.
 
-        let result = DocumentTextExtractor.extractText(from: rtfdURL)
-        XCTAssertNotNil(result)
-        XCTAssertTrue(DocumentTextExtractor.isFailureMessage(result!),
-                      "RTFD without TXT.rtf should return failure message: got \(result!)")
-        XCTAssertTrue(result!.contains("missing TXT.rtf"))
+        let outcome = DocumentTextExtractor.extract(from: rtfdURL)
+        guard case .failure = outcome else {
+            return XCTFail("RTFD without TXT.rtf must classify as .failure: got \(String(describing: outcome))")
+        }
+        XCTAssertEqual(outcome?.reason, "RTFD package missing TXT.rtf")
     }
 
     // MARK: - XLSX Extraction
@@ -253,7 +278,7 @@ final class DocumentTextExtractorTests: XCTestCase {
             ]
         )
 
-        let result = DocumentTextExtractor.extractText(from: xlsxURL)
+        let result = DocumentTextExtractor.extract(from: xlsxURL)?.extractedText
         XCTAssertNotNil(result)
         XCTAssertTrue(result!.contains("Name"), "Should contain header")
         XCTAssertTrue(result!.contains("Age"), "Should contain header")
@@ -287,7 +312,7 @@ final class DocumentTextExtractorTests: XCTestCase {
             sheetXML: sheetXML
         )
 
-        let result = DocumentTextExtractor.extractText(from: xlsxURL)
+        let result = DocumentTextExtractor.extract(from: xlsxURL)?.extractedText
         XCTAssertNotNil(result)
         XCTAssertTrue(result!.contains("Hello World"), "Rich-text should be concatenated: got \(result!)")
         XCTAssertTrue(result!.contains("Simple"))
@@ -306,7 +331,7 @@ final class DocumentTextExtractorTests: XCTestCase {
         """
         let docxURL = try createDOCX(documentXML: docXML)
 
-        let result = DocumentTextExtractor.extractText(from: docxURL)
+        let result = DocumentTextExtractor.extract(from: docxURL)?.extractedText
         XCTAssertNotNil(result)
         XCTAssertTrue(result!.contains("Hello World"),
                       "DOCX extraction should preserve <w:t> content: got \(result!)")
@@ -324,7 +349,7 @@ final class DocumentTextExtractorTests: XCTestCase {
         """
         let docxURL = try createDOCX(documentXML: docXML)
 
-        let result = DocumentTextExtractor.extractText(from: docxURL)
+        let result = DocumentTextExtractor.extract(from: docxURL)?.extractedText
         XCTAssertNotNil(result)
         XCTAssertTrue(result!.contains("First paragraph"))
         XCTAssertTrue(result!.contains("Second paragraph"))
@@ -346,7 +371,7 @@ final class DocumentTextExtractorTests: XCTestCase {
         """
         let docxURL = try createDOCX(documentXML: docXML)
 
-        let result = DocumentTextExtractor.extractText(from: docxURL)
+        let result = DocumentTextExtractor.extract(from: docxURL)?.extractedText
         XCTAssertNotNil(result)
         XCTAssertTrue(result!.contains("Before image"))
         XCTAssertTrue(result!.contains("After image"))
@@ -373,7 +398,7 @@ final class DocumentTextExtractorTests: XCTestCase {
         """
         let odtURL = try createODT(contentXML: contentXML)
 
-        let result = DocumentTextExtractor.extractText(from: odtURL)
+        let result = DocumentTextExtractor.extract(from: odtURL)?.extractedText
         XCTAssertNotNil(result)
         XCTAssertTrue(result!.contains("Hello ODT"),
                       "ODT extraction should preserve <text:p> content: got \(result!)")
@@ -396,7 +421,7 @@ final class DocumentTextExtractorTests: XCTestCase {
         """
         let odtURL = try createODT(contentXML: contentXML)
 
-        let result = DocumentTextExtractor.extractText(from: odtURL)
+        let result = DocumentTextExtractor.extract(from: odtURL)?.extractedText
         XCTAssertNotNil(result)
         XCTAssertTrue(result!.contains("Chapter One"), "heading should be in output: \(result!)")
         XCTAssertTrue(result!.contains("This is the body of chapter one."))
@@ -428,7 +453,7 @@ final class DocumentTextExtractorTests: XCTestCase {
         """
         let odtURL = try createODT(contentXML: contentXML)
 
-        let result = DocumentTextExtractor.extractText(from: odtURL)
+        let result = DocumentTextExtractor.extract(from: odtURL)?.extractedText
         XCTAssertNotNil(result)
         XCTAssertTrue(result!.contains("Main body sentence"))
         XCTAssertTrue(result!.contains("Continuation of main body"))
@@ -453,7 +478,7 @@ final class DocumentTextExtractorTests: XCTestCase {
         """
         let docxURL = try createDOCX(documentXML: docXML)
 
-        let result = DocumentTextExtractor.extractText(from: docxURL)
+        let result = DocumentTextExtractor.extract(from: docxURL)?.extractedText
         XCTAssertNotNil(result)
         XCTAssertTrue(result!.contains("before-break"))
         XCTAssertTrue(result!.contains("after-break"))
@@ -474,14 +499,13 @@ final class DocumentTextExtractorTests: XCTestCase {
             .init(name: "word/document.xml", data: Data(truncatedXML.utf8), method: .deflate)
         ])
 
-        let result = DocumentTextExtractor.extractText(from: docxURL)
-        XCTAssertNotNil(result)
-        XCTAssertFalse(DocumentTextExtractor.isFailureMessage(result!),
-                       "partial content should surface, not the generic failure: \(result!)")
-        XCTAssertTrue(result!.contains("valid start"),
-                      "runBuffer must flush on parse abort so mid-run text is salvaged: \(result!)")
-        XCTAssertTrue(result!.contains("XML parse stopped early"),
-                      "parse abort must append the warning marker: \(result!)")
+        let outcome = DocumentTextExtractor.extract(from: docxURL)
+        XCTAssertEqual(outcome?.extractedText?.contains("valid start"), true,
+                       "runBuffer must flush on parse abort so mid-run text is salvaged: \(String(describing: outcome))")
+        // The abort rides `warnings` ALONGSIDE the text rather than being glued into it —
+        // salvaged content and a caveat about it are two facts, not one string.
+        XCTAssertEqual(outcome?.warnings.contains { $0.contains("XML parse stopped early") }, true,
+                       "parse abort must be reported as a warning: \(String(describing: outcome))")
     }
 
     func testExtractDOCX_malformedXML_truncatedBeforeContent_surfacesWarningNotBlankMessage() throws {
@@ -497,12 +521,17 @@ final class DocumentTextExtractorTests: XCTestCase {
             .init(name: "word/document.xml", data: Data(truncatedXML.utf8), method: .deflate)
         ])
 
-        let result = DocumentTextExtractor.extractText(from: docxURL)
-        XCTAssertNotNil(result)
-        XCTAssertTrue(result!.contains("XML parse stopped early"),
-                      "pre-content abort must surface the parse warning: \(result!)")
-        XCTAssertFalse(result!.contains("DOCX contains no text"),
-                       "must not mask parse failure as 'blank document': \(result!)")
+        let outcome = DocumentTextExtractor.extract(from: docxURL)
+        // A parse that aborted before any content is a FAILURE, not a blank document — and
+        // it must not be returned as TEXT either, which is what handing back the bare
+        // warning marker used to do.
+        guard case .failure = outcome else {
+            return XCTFail("pre-content abort must classify as .failure: \(String(describing: outcome))")
+        }
+        XCTAssertEqual(outcome?.reason?.contains("XML parse stopped early"), true,
+                       "the failure must name the parse abort: \(String(describing: outcome))")
+        XCTAssertNotEqual(outcome?.reason, "DOCX contains no text",
+                          "must not mask parse failure as 'blank document'")
     }
 
     func testExtractODT_malformedXML_truncatedBeforeContent_surfacesWarningNotBlankMessage() throws {
@@ -516,20 +545,26 @@ final class DocumentTextExtractorTests: XCTestCase {
             .init(name: "content.xml", data: Data(truncatedXML.utf8), method: .deflate)
         ])
 
-        let result = DocumentTextExtractor.extractText(from: odtURL)
-        XCTAssertNotNil(result)
-        XCTAssertTrue(result!.contains("XML parse stopped early"),
-                      "pre-content abort must surface the parse warning: \(result!)")
-        XCTAssertFalse(result!.contains("ODT contains no text"),
-                       "must not mask parse failure as 'blank document': \(result!)")
+        let outcome = DocumentTextExtractor.extract(from: odtURL)
+        guard case .failure = outcome else {
+            return XCTFail("pre-content abort must classify as .failure: \(String(describing: outcome))")
+        }
+        XCTAssertEqual(outcome?.reason?.contains("XML parse stopped early"), true,
+                       "the failure must name the parse abort: \(String(describing: outcome))")
+        XCTAssertNotEqual(outcome?.reason, "ODT contains no text",
+                          "must not mask parse failure as 'blank document'")
     }
 
     // MARK: - XLSX partial-failure error propagation
 
     func testExtractXLSX_sharedStringsCRCInvalid_warnsButContinues() throws {
         // Corrupt the sharedStrings entry's CRC so `ZIPReader.readEntry` throws
-        // `.crcMismatch` — extractXLSX must catch it, flag sharedStringsFailed,
-        // and still surface numeric sheet content with a warning prepended.
+        // `.crcMismatch` — the extractor must catch it, flag sharedStringsFailed,
+        // and still surface numeric sheet content while reporting the caveat.
+        //
+        // The caveat rides `warnings` rather than being prepended to the text: a reader
+        // that scans bytes (the search scanner) cannot tell a prepended notice from the
+        // spreadsheet's own words, and would have matched a query against it.
         let sharedXML = """
         <?xml version="1.0" encoding="UTF-8"?>
         <sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><si><t>hello</t></si></sst>
@@ -553,12 +588,15 @@ final class DocumentTextExtractorTests: XCTestCase {
                   method: .deflate),
         ])
 
-        let result = DocumentTextExtractor.extractText(from: xlsxURL)
-        XCTAssertNotNil(result)
-        XCTAssertTrue(result!.contains("shared string table unreadable"),
-                      "sharedStrings CRC error must surface the named warning: \(result!)")
-        XCTAssertTrue(result!.contains("99"),
-                      "numeric cells must still appear after the warning: \(result!)")
+        let outcome = DocumentTextExtractor.extract(from: xlsxURL)
+        XCTAssertEqual(
+            outcome?.warnings.contains { $0.contains("shared string table unreadable") }, true,
+            "sharedStrings CRC error must surface the named warning: \(String(describing: outcome))"
+        )
+        XCTAssertEqual(outcome?.extractedText?.contains("99"), true,
+                       "numeric cells must still be extracted: \(String(describing: outcome))")
+        XCTAssertEqual(outcome?.extractedText?.contains("shared string table unreadable"), false,
+                       "the caveat must not be inlined into the searchable text")
     }
 
     func testExtractXLSX_sharedStringsFailure_butSheetSurvives_warnsInOutput() throws {
@@ -580,7 +618,7 @@ final class DocumentTextExtractorTests: XCTestCase {
             .init(name: "xl/worksheets/sheet1.xml", data: Data(sheetXML.utf8), method: .deflate),
         ])
 
-        let result = DocumentTextExtractor.extractText(from: xlsxURL)
+        let result = DocumentTextExtractor.extract(from: xlsxURL)?.extractedText
         XCTAssertNotNil(result)
         XCTAssertTrue(result!.contains("42"), "numeric cell should still render: \(result!)")
         // sharedStrings entry missing is treated as empty (valid case);
@@ -598,7 +636,7 @@ final class DocumentTextExtractorTests: XCTestCase {
             "Second slide content here",
         ])
 
-        let result = DocumentTextExtractor.extractText(from: pptxURL)
+        let result = DocumentTextExtractor.extract(from: pptxURL)?.extractedText
         XCTAssertNotNil(result)
         XCTAssertTrue(result!.contains("Slide 1"))
         XCTAssertTrue(result!.contains("Welcome to the presentation"))
@@ -640,7 +678,7 @@ final class DocumentTextExtractorTests: XCTestCase {
         let pdfURL = tempDir.appendingPathComponent("roundtrip.pdf")
         try! pdfData.write(to: pdfURL)
 
-        let extracted = DocumentTextExtractor.extractText(from: pdfURL)
+        let extracted = DocumentTextExtractor.extract(from: pdfURL)?.extractedText
         XCTAssertNotNil(extracted)
         XCTAssertTrue(extracted!.contains("Roundtrip PDF test content"))
     }
@@ -654,26 +692,14 @@ final class DocumentTextExtractorTests: XCTestCase {
         let rtfURL = tempDir.appendingPathComponent("roundtrip.rtf")
         try! rtfData.write(to: rtfURL)
 
-        let extracted = DocumentTextExtractor.extractText(from: rtfURL)
+        let extracted = DocumentTextExtractor.extract(from: rtfURL)?.extractedText
         XCTAssertNotNil(extracted)
         XCTAssertTrue(extracted!.contains("Roundtrip RTF test content"))
     }
 
-    // MARK: - Failure Detection
-
-    func testIsFailureMessage_detectsFailures() {
-        let failure = "[Could not extract text from report.pdf: could not open PDF]"
-        XCTAssertTrue(DocumentTextExtractor.isFailureMessage(failure))
-    }
-
-    func testIsFailureMessage_rejectsRealContent() {
-        XCTAssertFalse(DocumentTextExtractor.isFailureMessage("Hello from PDF document"))
-        XCTAssertFalse(DocumentTextExtractor.isFailureMessage(""))
-    }
-
     // MARK: - CreateArtifactTool format threading
 
-    func testCreateArtifactTool_passesFormatInSignal() {
+    func testCreateArtifactTool_passesFormatInSignal() async {
         let tool = CreateArtifactTool.makeInstance(dependencies: ToolHandlerDependencies(
             workFolderRoot: tempDir,
             resolver: SandboxPathResolver(workFolderRoot: tempDir, internalDir: tempDir),
@@ -687,7 +713,7 @@ final class DocumentTextExtractorTests: XCTestCase {
         ))
         let context = ToolExecutionContext(workFolderRoot: tempDir, taskID: 0, runID: 0, roleID: "r")
         let args: [String: Any] = ["name": "Report", "content": "# Report", "format": "pdf"]
-        let result = tool.handle(context: context, args: args)
+        let result = await tool.handle(context: context, args: args)
 
         XCTAssertFalse(result.isError)
         if case .artifact(let name, let content, let format) = result.signal {
@@ -699,7 +725,7 @@ final class DocumentTextExtractorTests: XCTestCase {
         }
     }
 
-    func testCreateArtifactTool_nilFormatWhenOmitted() {
+    func testCreateArtifactTool_nilFormatWhenOmitted() async {
         let tool = CreateArtifactTool.makeInstance(dependencies: ToolHandlerDependencies(
             workFolderRoot: tempDir,
             resolver: SandboxPathResolver(workFolderRoot: tempDir, internalDir: tempDir),
@@ -713,7 +739,7 @@ final class DocumentTextExtractorTests: XCTestCase {
         ))
         let context = ToolExecutionContext(workFolderRoot: tempDir, taskID: 0, runID: 0, roleID: "r")
         let args: [String: Any] = ["name": "Report", "content": "# Report"]
-        let result = tool.handle(context: context, args: args)
+        let result = await tool.handle(context: context, args: args)
 
         if case .artifact(_, _, let format) = result.signal {
             XCTAssertNil(format)
@@ -890,7 +916,7 @@ final class DocumentTextExtractorTests: XCTestCase {
         let rtf = #"{\rtf1\ansi\deff0 "# + oversize + "}"
         try rtf.write(to: rtfURL, atomically: true, encoding: .utf8)
 
-        let result = DocumentTextExtractor.extractText(from: rtfURL)
+        let result = DocumentTextExtractor.extract(from: rtfURL)?.extractedText
         XCTAssertNotNil(result)
         XCTAssertTrue(result!.hasSuffix("bytes)"),
                       "result must carry the truncation marker: …\(result!.suffix(40))")
@@ -926,12 +952,12 @@ final class DocumentTextExtractorTests: XCTestCase {
         try "<html><body><p>not actually RTF</p></body></html>"
             .write(to: rtfURL, atomically: true, encoding: .utf8)
 
-        let result = DocumentTextExtractor.extractText(from: rtfURL)
-        XCTAssertNotNil(result)
-        XCTAssertTrue(DocumentTextExtractor.isFailureMessage(result!),
-                      "non-RTF content in a .rtf file must produce a failure message: \(result!)")
-        XCTAssertFalse(result!.contains("not actually RTF"),
-                       "non-RTF content must not be returned as decoded text: \(result!)")
+        let outcome = DocumentTextExtractor.extract(from: rtfURL)
+        guard case .failure = outcome else {
+            return XCTFail("non-RTF content in a .rtf file must classify as .failure: \(String(describing: outcome))")
+        }
+        XCTAssertNil(outcome?.extractedText,
+                     "non-RTF content must not be returned as decoded text")
     }
 
     // MARK: - XLSX inline-string multi-run (B1)
@@ -955,7 +981,7 @@ final class DocumentTextExtractorTests: XCTestCase {
             .init(name: "xl/worksheets/sheet1.xml", data: Data(sheetXML.utf8), method: .deflate),
         ])
 
-        let result = DocumentTextExtractor.extractText(from: xlsxURL)
+        let result = DocumentTextExtractor.extract(from: xlsxURL)?.extractedText
         XCTAssertNotNil(result)
         XCTAssertTrue(result!.contains("solo"),
                       "single-run inline string must still render: \(result!)")
@@ -990,7 +1016,7 @@ final class DocumentTextExtractorTests: XCTestCase {
                   overrideCRC: 0xBAADF00D),
         ])
 
-        let result = DocumentTextExtractor.extractText(from: xlsxURL)
+        let result = DocumentTextExtractor.extract(from: xlsxURL)?.extractedText
         XCTAssertNotNil(result)
         XCTAssertTrue(result!.contains("GOOD"),
                       "surviving sheet must render: \(result!)")
@@ -1020,7 +1046,7 @@ final class DocumentTextExtractorTests: XCTestCase {
             .init(name: "xl/worksheets/sheet1.xml", data: Data(sheetXML.utf8), method: .deflate),
         ])
 
-        let result = DocumentTextExtractor.extractText(from: xlsxURL)
+        let result = DocumentTextExtractor.extract(from: xlsxURL)?.extractedText
         XCTAssertNotNil(result)
         XCTAssertTrue(result!.contains("part-one"),
                       "sharedStrings rich-text runs must concatenate: \(result!)")
@@ -1033,12 +1059,9 @@ final class DocumentTextExtractorTests: XCTestCase {
         try #"{\rtf1\ansi\deff0 Legitimate RTF content}"#
             .write(to: rtfURL, atomically: true, encoding: .utf8)
 
-        let result = DocumentTextExtractor.extractText(from: rtfURL)
-        XCTAssertNotNil(result)
-        XCTAssertFalse(DocumentTextExtractor.isFailureMessage(result!),
-                       "valid RTF must not be rejected by the type check: \(result!)")
-        XCTAssertTrue(result!.contains("Legitimate RTF content"),
-                      "valid RTF must decode: \(result!)")
+        let result = DocumentTextExtractor.extract(from: rtfURL)?.extractedText
+        XCTAssertEqual(result?.contains("Legitimate RTF content"), true,
+                       "valid RTF must decode and must not be rejected by the type check: \(String(describing: result))")
     }
 
     func testExtractXLSX_inlineStringMultipleRuns_concatenatesAllT() throws {
@@ -1059,7 +1082,7 @@ final class DocumentTextExtractorTests: XCTestCase {
             .init(name: "xl/worksheets/sheet1.xml", data: Data(sheetXML.utf8), method: .deflate),
         ])
 
-        let result = DocumentTextExtractor.extractText(from: xlsxURL)
+        let result = DocumentTextExtractor.extract(from: xlsxURL)?.extractedText
         XCTAssertNotNil(result)
         XCTAssertTrue(result!.contains("hello"),
                       "multi-run inline string must concatenate all <t> runs: \(result!)")

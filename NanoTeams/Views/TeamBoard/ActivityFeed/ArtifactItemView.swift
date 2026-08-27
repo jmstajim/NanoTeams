@@ -141,7 +141,7 @@ extension ArtifactItemView: Equatable {
     static func == (lhs: ArtifactItemView, rhs: ArtifactItemView) -> Bool {
         lhs.artifact == rhs.artifact
             && lhs.role == rhs.role
-            && lhs.roleDefinition?.id == rhs.roleDefinition?.id
+            && lhs.roleDefinition?.renderIdentity == rhs.roleDefinition?.renderIdentity
             && lhs.showHeader == rhs.showHeader
             && lhs.originTaskID == rhs.originTaskID
             && lhs.workFolderURL == rhs.workFolderURL
@@ -153,6 +153,7 @@ extension ArtifactItemView: Equatable {
 // MARK: - Preview
 
 #Preview("Variants") {
+    @Previewable @State var previewStore = PreviewStore.make()
     VStack(spacing: 16) {
         ArtifactItemView(
             artifact: Artifact(name: "Product Requirements", icon: "doc.text", description: "PRD for the feature"),
@@ -174,5 +175,5 @@ extension ArtifactItemView: Equatable {
     .padding()
     .frame(width: 500)
     .background(Colors.surfacePrimary)
-    .environment(NTMSOrchestrator(repository: NTMSRepository()))
+    .environment(previewStore)
 }

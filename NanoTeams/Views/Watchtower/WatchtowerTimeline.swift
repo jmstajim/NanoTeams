@@ -1,5 +1,15 @@
 import SwiftUI
 
+/// The per-body-pass watch key for the timeline memo: a store WRITE counter plus the
+/// two view-local filters. Deliberately a named `Equatable` struct rather than a tuple
+/// — `onChange(of:)` needs `Equatable`, and a named type is where the reason the key
+/// is CHEAP (and therefore over-fires) can live next to the fields.
+private struct TimelineWatchKey: Equatable {
+    let storeWrites: Int
+    let taskFilter: Int?
+    let clearedUpTo: Date?
+}
+
 // MARK: - Watchtower Timeline
 
 /// Right column of watchtower showing chronological activity from all tasks
@@ -20,6 +30,11 @@ struct WatchtowerTimeline: View {
     /// twice — on every `mutateTask`.
     @State private var cachedEvents: [TimelineEvent] = []
 
+    /// The `inputsVersion` the cached timeline was built from, so the fold that
+    /// used to run per body pass now runs once per store write — see
+    /// `timelineWatchKey`.
+    @State private var builtInputsVersion: Int?
+
     var body: some View {
         VStack(spacing: 0) {
             // Filter header
@@ -37,7 +52,7 @@ struct WatchtowerTimeline: View {
         }
         .background(Colors.surfaceOverlay)
         .onAppear { rebuildEvents() }
-        .onChange(of: timelineInputsVersion) { _, _ in rebuildEvents() }
+        .onChange(of: timelineWatchKey) { _, _ in rebuildEvents() }
     }
 
     // MARK: - Components
@@ -166,8 +181,35 @@ struct WatchtowerTimeline: View {
         return []
     }
 
-    /// Cheap fold over everything `buildTimeline` reads — the only thing this
-    /// view evaluates per body pass now.
+    /// What this view evaluates on EVERY body pass: two view-local filters and a
+    /// store WRITE counter. All three are O(1) to read and to compare.
+    ///
+    /// `timelineInputsVersion` below is the real question — "did anything the builder
+    /// reads move" — and answering it is Theta(runs x steps) with three `String`
+    /// hashes per step. It used to sit here, in the `onChange` KEY, which SwiftUI
+    /// evaluates on every pass whether or not the handler fires (CLAUDE.md #113), on
+    /// the app's launch destination and default detail pane, whose body observes
+    /// `store.activeTask` and therefore re-evaluates on every `mutateTask`
+    /// (DEBTS D-26, recorded as the a6 axis's one `verdict: defect`).
+    ///
+    /// The split keeps BOTH properties. `storeWriteRevision` over-fires by
+    /// construction — it counts writes, not changes — so the handler runs more often
+    /// than the timeline changes; `rebuildEvents` then pays the exact fold ONCE and
+    /// returns early when it matches. Net: O(1) per body pass, one fold per store
+    /// write, one rebuild per real change. A cheaper KEY that tried to answer the
+    /// real question directly would risk the one failure a memo must never have —
+    /// a key that fails to move when the built timeline would differ — which is what
+    /// `WatchtowerTimelineInputsVersionTests` exists to prevent, field by field.
+    private var timelineWatchKey: TimelineWatchKey {
+        TimelineWatchKey(
+            storeWrites: store.storeWriteRevision,
+            taskFilter: selectedTaskFilter,
+            clearedUpTo: clearedUpToDate
+        )
+    }
+
+    /// The exact change-detector `buildTimeline` needs, evaluated once per store
+    /// write from `rebuildEvents` rather than once per body pass.
     private var timelineInputsVersion: Int {
         let team = store.activeTask.map { store.resolvedTeam(for: $0) }
         return WatchtowerTimelineBuilder.inputsVersion(
@@ -180,6 +222,12 @@ struct WatchtowerTimeline: View {
     }
 
     private func rebuildEvents() {
+        // The fold the `onChange` key used to carry. Paid here, once per store write,
+        // and it is what makes the over-firing watch key harmless.
+        let version = timelineInputsVersion
+        guard version != builtInputsVersion else { return }
+        builtInputsVersion = version
+
         let roles = store.activeTask.map { store.resolvedTeam(for: $0).roles } ?? []
         cachedEvents = WatchtowerTimelineBuilder.buildTimeline(
             task: store.activeTask,
@@ -214,7 +262,8 @@ private struct ClearTimelineButton: View {
 // MARK: - Preview
 
 #Preview {
+    @Previewable @State var previewStore = PreviewStore.make()
     WatchtowerTimeline(onTaskSelect: { _ in }, clearedUpToDate: .constant(nil))
-        .environment(NTMSOrchestrator(repository: NTMSRepository()))
+        .environment(previewStore)
         .frame(width: 500, height: 600)
 }

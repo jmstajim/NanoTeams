@@ -272,13 +272,9 @@ extension LLMExecutionService {
 
         // Build cleaned/guarded messages outside the closure (same Harmony-token
         // cleaning + non-empty guard as `appendLLMMessage`).
-        let toolCallContent = ConversationRepairService.cleanHarmonyTokens("""
-        [CALL] \(toolName)
-        Arguments: \(argumentsJSON)
-        
-        [RESULT]
-        \(llmEnvelope)
-        """)
+        let toolCallContent = ConversationRepairService.cleanHarmonyTokens(
+            TaskMutationService.toolResultComposite(
+                toolName: toolName, argumentsJSON: argumentsJSON, resultJSON: llmEnvelope))
         let toolMsg = toolCallContent.isEmpty
             ? nil
             : LLMMessage(role: .tool, content: toolCallContent)
@@ -401,7 +397,7 @@ extension LLMExecutionService {
             // `.tool` turns outright — making this the only surviving evidence in that seed
             // that a call failed at all.
             //
-            // Deliberately NOT the `.retryNudge` the eight `handleNoToolCalls` sites carry.
+            // Deliberately NOT the `.retryNudge` every `handleNoToolCalls` site carries.
             // Those follow a bare assistant turn, and the loop warning spans SEVERAL cards;
             // nothing else on screen records either, so their rows are the whole point. The
             // discriminator is origin, not position: does this comment on one event the feed

@@ -126,7 +126,8 @@ final class AutovisorPendingHumanGuardTests: NTMSOrchestratorTestBase, @unchecke
         let mgrID = await parkedManager()
         let auto = QuickCaptureFormState.QueuedChatMessage(
             text: "Event update", attachments: [], clippedTexts: [],
-            targetRoleID: nil, isFromAutomatedSupervisor: true)!
+            targetRoleID: nil, isFromAutomatedSupervisor: true,
+            kind: .autovisorEventNotice)!
         formState.appendQueuedMessage(auto, for: mgrID)
         await makeFailedStartupTask()
         let before = runCount(mgrID)
@@ -187,7 +188,8 @@ final class AutovisorPendingHumanGuardTests: NTMSOrchestratorTestBase, @unchecke
         let mgrID = await parkedManager()
         let auto = QuickCaptureFormState.QueuedChatMessage(
             text: "Event update", attachments: [], clippedTexts: [],
-            targetRoleID: nil, isFromAutomatedSupervisor: true)!
+            targetRoleID: nil, isFromAutomatedSupervisor: true,
+            kind: .autovisorEventNotice)!
         formState.appendQueuedMessage(auto, for: mgrID)
         await sut.setTaskRecurrence(
             taskID: mgrID, recurrence: TaskRecurrence(rule: .interval(seconds: 60), isEnabled: true))

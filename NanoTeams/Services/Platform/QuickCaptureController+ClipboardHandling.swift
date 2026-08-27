@@ -52,10 +52,10 @@ extension QuickCaptureController {
 
         if answerMode {
             formState.answerAttachments.append(contentsOf: outcome.staged)
-            if let clip = outcome.clip { formState.answerClippedTexts.append(clip) }
+            if let clip = outcome.clip { formState.answerClippedTexts.append(Clip(text: clip)) }
         } else {
             formState.attachments.append(contentsOf: outcome.staged)
-            if let clip = outcome.clip { formState.clippedTexts.append(clip) }
+            if let clip = outcome.clip { formState.clippedTexts.append(Clip(text: clip)) }
         }
         if let failure = outcome.failureMessage { store?.lastErrorMessage = failure }
     }

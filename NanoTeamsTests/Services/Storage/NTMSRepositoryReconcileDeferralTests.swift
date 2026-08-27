@@ -926,6 +926,52 @@ final class NTMSRepositoryReconcileDeferralTests: XCTestCase {
         }
     }
 
+    /// A DOWNGRADE install must not lower the watermark.
+    ///
+    /// The gate is `versionBumped || !pending.isEmpty`, so the pending arm also fires when the
+    /// running build is OLDER than the one this folder last reconciled against. Stamping
+    /// `currentAppVersion` there rewinds the watermark, and re-installing the newer build then
+    /// re-runs a full `.allTemplated` pass — a fresh clobber of every prompt the user edited.
+    ///
+    /// Unreachable from every other fixture here: they all seed `lastAppliedAppVersion = ""`,
+    /// which makes `versionBumped` true and hides the pending-only arm.
+    func testDowngradeWithPendingTeam_doesNotLowerTheWatermark() throws {
+        _ = try sut.openOrCreateWorkFolder(at: root)
+        let f = try seedStaleFAANGPrompt()
+
+        try seedTask(
+            makeTask(
+                title: "Busy",
+                roleStatuses: [f.roleID: .working],
+                steps: [StepExecution(id: f.roleID, role: .softwareEngineer,
+                                      title: "SE", status: .running)],
+                teamID: f.teamID
+            ),
+            summaryStatus: .running
+        )
+
+        // One open to populate the pending set.
+        _ = try sut.openOrCreateWorkFolder(at: root)
+
+        let store = AtomicJSONStore()
+        var state = try store.read(WorkFolderState.self, from: paths.workFolderJSON)
+        XCTAssertEqual(state.pendingReconcileTeamIDs, [f.teamID],
+                       "anti-vacuum: without a pending team the gate never takes the second arm")
+
+        // Now stamp a watermark AHEAD of this build — the downgrade case.
+        let future = "12.34.56"
+        XCTAssertEqual(AppVersion.compare(AppVersion.current, future), -1,
+                       "anti-vacuum: fixture only means anything while the stamp is ahead of the build")
+        state.lastAppliedAppVersion = future
+        try store.write(state, to: paths.workFolderJSON)
+
+        _ = try sut.openOrCreateWorkFolder(at: root)
+
+        let after = try store.read(WorkFolderState.self, from: paths.workFolderJSON)
+        XCTAssertEqual(after.lastAppliedAppVersion, future,
+                       "a pending-only retry must not rewind the watermark to an older build")
+    }
+
     // MARK: - P0-c: the scan must not be poisoned by one bad file
 
     /// Nothing ever auto-recovers an individual `task.json`, so fail-closing the

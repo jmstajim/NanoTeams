@@ -57,6 +57,7 @@ struct SupervisorInputCard: View {
                     ReadOnlyAttachmentGrid(
                         attachmentPaths: answerAttachmentPaths,
                         clippedTexts: answerClippedTexts,
+                        clipSeed: "supervisor-answer-\(thinkingID.uuidString)",
                         workFolderURL: workFolderURL
                     )
                 }

@@ -42,8 +42,8 @@ struct VisionSettingsView: View {
 }
 
 #Preview {
-    @Previewable @State var store = NTMSOrchestrator(repository: NTMSRepository())
-    @Previewable @State var catalog = ModelCatalog()
+    @Previewable @State var store = PreviewStore.make()
+    @Previewable @State var catalog = PreviewStore.catalog()
     VisionSettingsView()
         .environment(store)
         .environment(store.configuration)

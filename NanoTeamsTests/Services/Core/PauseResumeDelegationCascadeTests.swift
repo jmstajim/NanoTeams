@@ -17,9 +17,15 @@ final class PauseResumeDelegationCascadeTests: XCTestCase {
         return TestOrchestrator.make(repository: repo)
     }
 
+    /// Registers a REAL suspended awaiter for `childID` and waits until it is visible.
+    ///
+
     // MARK: - Mid-Delegation Detection
 
-    func testStepHasActiveDelegation_truePathPreventsLLMCancel() async {
+    /// RED: delete the mid-delegation `continue` from `pauseRun`'s per-step loop → the step is
+    /// cancelled and parked while its handler is suspended non-cancellably inside `register`,
+    /// orphaning that continuation.
+    func testPauseRun_suspendedDelegationHandler_isNotCancelled() async {
         // Given: an orchestrator with a parent task whose latest run has a step
         // carrying `activeDelegationChildID` set.
         let store = makeOrchestrator()
@@ -56,16 +62,56 @@ final class PauseResumeDelegationCascadeTests: XCTestCase {
             }
         }
 
+        // The premise the prose always claimed: a handler is actually suspended on child 999.
+        let handler = await registerSuspendedDelegationHandler(on: store, childID: 999)
+        defer { store.completionAwaiter.cancelAll(taskID: 999); handler.cancel() }
+
         // When: pauseRun is called.
-        // Then: the LLM cancellation path is skipped because step is mid-delegation.
-        // We verify by ensuring the engine state transitions to .paused but the
-        // step's status remains `.running` (not `.paused` — pauseStep was skipped).
+        // Then: the LLM cancellation path is skipped because a handler is suspended.
+        // We verify by ensuring the step's status remains `.running` (pauseStep was skipped).
         await store.pauseRun(taskID: parentID)
 
         let postPauseTask = store.loadedTask(parentID)
         let stepStatusAfterPause = postPauseTask?.runs.last?.steps.first?.status
         XCTAssertEqual(stepStatusAfterPause, .running,
                        "Mid-delegation step must NOT be marked .paused — its handler keeps awaiting the child.")
+        XCTAssertTrue(store.completionAwaiter.hasWaiters(for: 999),
+                      "and the handler must still be suspended afterwards")
+    }
+
+    /// The other half of the same predicate, and the shape that reaches the defect with NO
+    /// restart involved: `awaitDelegationCompletion`'s `.parentMessageQueued` arm returns while
+    /// deliberately leaving the marker set, so the step is `.running` with a live tool loop and
+    /// nothing awaiting the child.
+    ///
+    /// RED: revert the predicate to `step.activeDelegationChildID != nil` → the step stays
+    /// `.running` with its LLM execution uncancelled while the engine reports `.paused`, i.e.
+    /// Pause silently does not stop a bash- and file-editing agent.
+    func testPauseRun_markerWithoutSuspendedHandler_pausesTheStepAndCancelsItsLLM() async {
+        let store = makeOrchestrator()
+        let workFolderRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("NanoTeams-pause-nohandler-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: workFolderRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workFolderRoot) }
+
+        await store.openWorkFolder(workFolderRoot)
+        guard let parentID = await store.createTask(title: "Parent", supervisorTask: "...") else {
+            return XCTFail("task creation failed")
+        }
+        await store.mutateTask(taskID: parentID) { task in
+            var step = StepExecution(id: "pm", role: .productManager, title: "PM Step")
+            step.status = .running
+            step.setActiveDelegation(childID: 999)
+            task.runs.append(Run(id: 0, steps: [step]))
+        }
+        XCTAssertFalse(store.completionAwaiter.hasWaiters(for: 999),
+                       "premise: the marker is set but NOTHING is awaiting the child")
+
+        await store.pauseRun(taskID: parentID)
+
+        XCTAssertEqual(
+            store.loadedTask(parentID)?.runs.last?.steps.first?.status, .paused,
+            "with no handler suspended there is nothing to preserve — Pause must park the step")
     }
 
     // MARK: - Cascading Pause
@@ -139,6 +185,9 @@ final class PauseResumeDelegationCascadeTests: XCTestCase {
             let run = Run(id: 0, steps: [delegatingStep, siblingStep])
             task.runs.append(run)
         }
+
+        let handler = await registerSuspendedDelegationHandler(on: store, childID: 999)
+        defer { store.completionAwaiter.cancelAll(taskID: 999); handler.cancel() }
 
         await store.pauseRun(taskID: parentID)
 
@@ -214,6 +263,17 @@ final class PauseResumeDelegationCascadeTests: XCTestCase {
             task.runs.append(Run(id: 0, steps: [delegating, sibling]))
         }
         XCTAssertTrue(childMutated, "Child mutation must persist (ensureTaskLoaded should have put it in loadedTasks)")
+
+        // Both delegating steps must have a REAL suspended handler, or they are not
+        // mid-delegation at all and pause is right to park them.
+        let parentHandler = await registerSuspendedDelegationHandler(on: store, childID: childID)
+        let childHandler = await registerSuspendedDelegationHandler(on: store, childID: grandchildID)
+        defer {
+            store.completionAwaiter.cancelAll(taskID: childID)
+            store.completionAwaiter.cancelAll(taskID: grandchildID)
+            parentHandler.cancel()
+            childHandler.cancel()
+        }
 
         // Grandchild: a single working step doing real LLM work.
         let grandchildMutated = await store.mutateTask(taskID: grandchildID) { task in

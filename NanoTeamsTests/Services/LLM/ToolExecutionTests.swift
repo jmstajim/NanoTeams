@@ -77,6 +77,18 @@ final class ToolExecutionTests: XCTestCase {
         var onMain: Bool?
     }
 
+    /// `Thread.isMainThread` and `Thread.sleep` are `@available(*, noasync)`, and registry
+    /// handlers became `async` when `ToolHandler.handle` did. Both probes below want exactly
+    /// what the attribute warns about — reading the thread, and OCCUPYING it — so the escape
+    /// is a synchronous wrapper rather than a rewrite that would change what is pinned.
+    /// `Task.sleep` in `holdThread` would SUSPEND instead of holding, and the suspended task
+    /// would then observe the cancel in flight — the opposite of the "a sync handler already
+    /// running completes" arm this test exists to pin.
+    private nonisolated static func isOnMainThread() -> Bool { Thread.isMainThread }
+    private nonisolated static func holdThread(_ seconds: TimeInterval) {
+        Thread.sleep(forTimeInterval: seconds)
+    }
+
     // MARK: - executeToolCalls: Authorization
 
     func testExecuteToolCalls_unauthorizedTool_returnsError() async {
@@ -561,14 +573,19 @@ final class ToolExecutionTests: XCTestCase {
     /// `Thread.isMainThread` during `handle()`. Caller is `@MainActor`; the
     /// handler must observe `false` because `executeToolCalls` wraps the runtime
     /// dispatch in `Task.detached`. A regression that reverts to a synchronous
-    /// `runtime.executeAll(...)` would silently observe `true` — that's the
+    /// `await runtime.executeAll(...)` would silently observe `true` — that's the
     /// original main-thread-hang regression class.
+    ///
+    /// The `Task.detached` hop is the WHOLE mechanism, and the handler being `async` did not add
+    /// a second one — measured, not assumed. Under `SWIFT_APPROACHABLE_CONCURRENCY` (SE-0461) a
+    /// `nonisolated async` function runs on the CALLER's executor, so an async handler reached
+    /// from a `@MainActor` caller would run on the main actor exactly as the sync one did.
     func testExecuteToolCalls_runsHandlerOffMainActor() async {
         let probeName = "probe_thread_isolation"
         let captured = ThreadCaptureBox()
         let registry = ToolRegistry()
         registry.register(name: probeName) { _, _ in
-            captured.onMain = Thread.isMainThread
+            captured.onMain = Self.isOnMainThread()
             return ToolExecutionResult(
                 toolName: probeName,
                 argumentsJSON: "{}",
@@ -608,11 +625,11 @@ final class ToolExecutionTests: XCTestCase {
         let probe2Name = "probe_fast"
         let registry = ToolRegistry()
         registry.register(name: probe1Name) { _, _ in
-            // Sync sleep — handlers are non-async by contract, so cancellation
-            // can only be observed BETWEEN handlers in `ToolRuntime.executeAll`.
-            // The 250 ms hold gives the test time to call `cancelAllExecutions`
-            // while probe #1 is still running.
-            Thread.sleep(forTimeInterval: 0.25)
+            // Sync hold — a handler body that never suspends (bash, xcodebuild, git all
+            // block their thread), so cancellation can only be observed BETWEEN handlers in
+            // `ToolRuntime.executeAll`. The 250 ms hold gives the test time to call
+            // `cancelAllExecutions` while probe #1 is still running.
+            Self.holdThread(0.25)
             return ToolExecutionResult(
                 toolName: probe1Name,
                 argumentsJSON: "{}",

@@ -59,9 +59,9 @@ final class ToolArgumentCoercionHandlerTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func run(_ tool: String, _ argsJSON: String) -> ToolExecutionResult {
+    private func run(_ tool: String, _ argsJSON: String) async -> ToolExecutionResult {
         let call = StepToolCall(name: tool, argumentsJSON: argsJSON)
-        return runtime.executeAll(context: context, toolCalls: [call])[0]
+        return await runtime.executeAll(context: context, toolCalls: [call])[0]
     }
 
     /// Writes `body` at `relativePath`, creating intermediate directories.
@@ -120,11 +120,11 @@ final class ToolArgumentCoercionHandlerTests: XCTestCase {
     /// and return the depth-1 set while still reporting success. Asserting
     /// against the no-arg baseline is what makes the claim falsifiable:
     /// it proves the deeper entry appeared BECAUSE of the argument.
-    func testListFiles_depthAsString_deepensTraversalVersusDefault() throws {
+    func testListFiles_depthAsString_deepensTraversalVersusDefault() async throws {
         try makeNestedTree()
 
-        let baseline = run("list_files", "{\"path\": \"tree\"}")
-        let stringDepth = run("list_files", "{\"path\": \"tree\", \"depth\": \"1\"}")
+        let baseline = await run("list_files", "{\"path\": \"tree\"}")
+        let stringDepth = await run("list_files", "{\"path\": \"tree\", \"depth\": \"1\"}")
 
         XCTAssertFalse(baseline.isError, "baseline listing must succeed; got: \(baseline.outputJSON)")
         XCTAssertFalse(stringDepth.isError, "string depth must succeed; got: \(stringDepth.outputJSON)")
@@ -141,11 +141,11 @@ final class ToolArgumentCoercionHandlerTests: XCTestCase {
     /// A coercion that parses but off-by-ones (or truncates) would pass the
     /// versus-default test above while still returning the wrong tier. Pinning
     /// string == literal at a third depth closes that gap.
-    func testListFiles_depthAsString_equivalentToNumericLiteral() throws {
+    func testListFiles_depthAsString_equivalentToNumericLiteral() async throws {
         try makeNestedTree()
 
-        let asString = run("list_files", "{\"path\": \"tree\", \"depth\": \"3\"}")
-        let asNumber = run("list_files", "{\"path\": \"tree\", \"depth\": 3}")
+        let asString = await run("list_files", "{\"path\": \"tree\", \"depth\": \"3\"}")
+        let asNumber = await run("list_files", "{\"path\": \"tree\", \"depth\": 3}")
 
         XCTAssertFalse(asString.isError, "got: \(asString.outputJSON)")
         XCTAssertFalse(asNumber.isError, "got: \(asNumber.outputJSON)")
@@ -161,13 +161,13 @@ final class ToolArgumentCoercionHandlerTests: XCTestCase {
 
     /// `max_results` defaults to 50, so a rejected `"2"` returns every hit —
     /// a cap the model asked for and silently did not get.
-    func testSearch_maxResultsAsString_capsMatchCount() throws {
+    func testSearch_maxResultsAsString_capsMatchCount() async throws {
         for i in 1...6 {
             try write("cap/hit\(i).txt", "NEEDLE")
         }
 
-        let uncapped = run("search", "{\"query\": \"NEEDLE\"}")
-        let capped = run("search", "{\"query\": \"NEEDLE\", \"max_results\": \"2\"}")
+        let uncapped = await run("search", "{\"query\": \"NEEDLE\"}")
+        let capped = await run("search", "{\"query\": \"NEEDLE\", \"max_results\": \"2\"}")
 
         XCTAssertFalse(uncapped.isError, "got: \(uncapped.outputJSON)")
         XCTAssertFalse(capped.isError, "got: \(capped.outputJSON)")
@@ -182,11 +182,11 @@ final class ToolArgumentCoercionHandlerTests: XCTestCase {
     /// `context_before` defaults to 2. Requesting 4 as a string must widen the
     /// window — a rejected value leaves the default in place, so the model
     /// receives less context than it asked for with no signal.
-    func testSearch_contextBeforeAsString_widensContextWindow() throws {
+    func testSearch_contextBeforeAsString_widensContextWindow() async throws {
         let lines = (1...20).map { $0 == 10 ? "CTXNEEDLE" : "filler \($0)" }
         try write("ctx/file.txt", lines.joined(separator: "\n"))
 
-        let r = run("search", "{\"query\": \"CTXNEEDLE\", \"context_before\": \"4\"}")
+        let r = await run("search", "{\"query\": \"CTXNEEDLE\", \"context_before\": \"4\"}")
 
         XCTAssertFalse(r.isError, "got: \(r.outputJSON)")
         guard let match = searchMatches(r.outputJSON).first else {
@@ -205,12 +205,12 @@ final class ToolArgumentCoercionHandlerTests: XCTestCase {
     /// code path. It used to rely on `context_before`'s default being non-zero; both context
     /// defaults are now 0 (search returns just the matching line unless asked otherwise), which
     /// would have made this test vacuous.
-    func testSearch_contextAfterAsStringZero_suppressesTrailingContext() throws {
+    func testSearch_contextAfterAsStringZero_suppressesTrailingContext() async throws {
         let lines = (1...20).map { $0 == 10 ? "ZERONEEDLE" : "filler \($0)" }
         try write("ctx/zero.txt", lines.joined(separator: "\n"))
 
-        let r = run("search",
-                    "{\"query\": \"ZERONEEDLE\", \"context_before\": 2, \"context_after\": \"0\"}")
+        let r = await run("search",
+                          "{\"query\": \"ZERONEEDLE\", \"context_before\": 2, \"context_after\": \"0\"}")
 
         XCTAssertFalse(r.isError, "got: \(r.outputJSON)")
         guard let match = searchMatches(r.outputJSON).first else {
@@ -229,11 +229,11 @@ final class ToolArgumentCoercionHandlerTests: XCTestCase {
     /// with no failure channel: when the bare string was rejected, `paths`
     /// became nil and the executor walked the WHOLE work folder while still
     /// reporting success — the model believed it had searched one directory.
-    func testSearch_pathsAsBareString_scopesTheWalk() throws {
+    func testSearch_pathsAsBareString_scopesTheWalk() async throws {
         try write("inside/hit.txt", "SCOPENEEDLE")
         try write("outside/hit.txt", "SCOPENEEDLE")
 
-        let scoped = run("search", "{\"query\": \"SCOPENEEDLE\", \"paths\": \"inside\"}")
+        let scoped = await run("search", "{\"query\": \"SCOPENEEDLE\", \"paths\": \"inside\"}")
 
         XCTAssertFalse(scoped.isError, "got: \(scoped.outputJSON)")
         XCTAssertEqual(searchMatchPaths(scoped.outputJSON), ["inside/hit.txt"],
@@ -245,11 +245,11 @@ final class ToolArgumentCoercionHandlerTests: XCTestCase {
     /// bridge to `[String]`. Dropping the NSNull keeps the constraint alive;
     /// rejecting the whole array re-opens the same scope widening, and mapping
     /// NSNull through `String(describing:)` would inject a bogus "null" path.
-    func testSearch_pathsArrayWithNullElement_stillScopesTheWalk() throws {
+    func testSearch_pathsArrayWithNullElement_stillScopesTheWalk() async throws {
         try write("inside/hit.txt", "NULLNEEDLE")
         try write("outside/hit.txt", "NULLNEEDLE")
 
-        let scoped = run("search", "{\"query\": \"NULLNEEDLE\", \"paths\": [\"inside\", null]}")
+        let scoped = await run("search", "{\"query\": \"NULLNEEDLE\", \"paths\": [\"inside\", null]}")
 
         XCTAssertFalse(scoped.isError,
                        "a null element must be dropped, not turned into an unresolvable path; "
@@ -264,9 +264,9 @@ final class ToolArgumentCoercionHandlerTests: XCTestCase {
     /// opposite of the instruction: it builds the tree the model refused. The
     /// on-disk assertion is the load-bearing one — an error envelope alone
     /// would not prove the directory was left alone.
-    func testWriteFile_createDirsAsStringFalse_refusesToCreateParent() throws {
-        let r = run("write_file",
-                    "{\"path\": \"nodir/f.txt\", \"content\": \"body\", \"create_dirs\": \"false\"}")
+    func testWriteFile_createDirsAsStringFalse_refusesToCreateParent() async throws {
+        let r = await run("write_file",
+                          "{\"path\": \"nodir/f.txt\", \"content\": \"body\", \"create_dirs\": \"false\"}")
 
         XCTAssertTrue(r.isError, "create_dirs:\"false\" with a missing parent must fail; got: \(r.outputJSON)")
         XCTAssertEqual(errorCode(r.outputJSON), ToolErrorCode.notADirectory.rawValue,
@@ -279,9 +279,9 @@ final class ToolArgumentCoercionHandlerTests: XCTestCase {
     /// honored, and anything else keeps the CALLER's default rather than
     /// collapsing to `false`. A coercer that mapped unknown strings to false
     /// would break every write into a not-yet-existing directory.
-    func testWriteFile_createDirsUncoercible_keepsCallerDefault() throws {
-        let r = run("write_file",
-                    "{\"path\": \"yesdir/f.txt\", \"content\": \"body\", \"create_dirs\": \"maybe\"}")
+    func testWriteFile_createDirsUncoercible_keepsCallerDefault() async throws {
+        let r = await run("write_file",
+                          "{\"path\": \"yesdir/f.txt\", \"content\": \"body\", \"create_dirs\": \"maybe\"}")
 
         XCTAssertFalse(r.isError,
                        "an uncoercible bool must fall back to the default (true), not to false; "
@@ -296,13 +296,13 @@ final class ToolArgumentCoercionHandlerTests: XCTestCase {
     /// so a rejected `"true"` rewrites exactly one of three occurrences and
     /// still returns a success envelope — the model reads "done" and moves on
     /// with two stale call sites behind it.
-    func testEditFile_replaceAllAsStringTrue_replacesEveryOccurrence() throws {
+    func testEditFile_replaceAllAsStringTrue_replacesEveryOccurrence() async throws {
         let body = ["let a = OLD", "let b = OLD", "let c = OLD"].joined(separator: "\n")
         let url = try write("edit/target.swift", body)
 
-        let r = run("edit_file",
-                    "{\"path\": \"edit/target.swift\", \"old_text\": \"OLD\", "
-                        + "\"new_text\": \"NEW\", \"replace_all\": \"true\"}")
+        let r = await run("edit_file",
+                          "{\"path\": \"edit/target.swift\", \"old_text\": \"OLD\", "
+                              + "\"new_text\": \"NEW\", \"replace_all\": \"true\"}")
 
         XCTAssertFalse(r.isError, "got: \(r.outputJSON)")
         XCTAssertEqual(payload(r.outputJSON)?["replacements_made"] as? Int, 3,
@@ -321,8 +321,8 @@ final class ToolArgumentCoercionHandlerTests: XCTestCase {
     /// `must_exist` defaults to TRUE, so a rejected `"false"` turns an
     /// explicitly-tolerant delete into a hard error the model has to recover
     /// from — the opposite of the requested semantics.
-    func testDeleteFile_mustExistAsStringFalse_succeedsOnMissingPath() throws {
-        let r = run("delete_file", "{\"path\": \"ghost.txt\", \"must_exist\": \"false\"}")
+    func testDeleteFile_mustExistAsStringFalse_succeedsOnMissingPath() async throws {
+        let r = await run("delete_file", "{\"path\": \"ghost.txt\", \"must_exist\": \"false\"}")
 
         XCTAssertFalse(r.isError,
                        "must_exist:\"false\" on a missing path must succeed; got: \(r.outputJSON)")
@@ -341,11 +341,11 @@ final class ToolArgumentCoercionHandlerTests: XCTestCase {
     /// `invalidValue` passes a lone "must not say Missing" test, and one always
     /// reporting `missingRequired` is the original bug that sent models hunting
     /// for a phantom omission.
-    func testRequiredInt_uncoercibleVersusAbsent_produceDistinctMessages() throws {
+    func testRequiredInt_uncoercibleVersusAbsent_produceDistinctMessages() async throws {
         try write("err/file.txt", "line one")
 
-        let uncoercible = run("read_lines", "{\"path\": \"err/file.txt\", \"start_line\": \"five\"}")
-        let absent = run("read_lines", "{\"path\": \"err/file.txt\"}")
+        let uncoercible = await run("read_lines", "{\"path\": \"err/file.txt\", \"start_line\": \"five\"}")
+        let absent = await run("read_lines", "{\"path\": \"err/file.txt\"}")
 
         XCTAssertTrue(uncoercible.isError, "got: \(uncoercible.outputJSON)")
         XCTAssertTrue(absent.isError, "got: \(absent.outputJSON)")
@@ -370,10 +370,10 @@ final class ToolArgumentCoercionHandlerTests: XCTestCase {
     /// JSON `null` counts as ABSENT, not as a malformed value — the model
     /// omitted a value rather than supplying garbage, so the guidance it needs
     /// is "you forgot this", not "fix your type".
-    func testRequiredInt_jsonNull_reportedAsMissingNotInvalid() throws {
+    func testRequiredInt_jsonNull_reportedAsMissingNotInvalid() async throws {
         try write("err/null.txt", "line one")
 
-        let r = run("read_lines", "{\"path\": \"err/null.txt\", \"start_line\": null}")
+        let r = await run("read_lines", "{\"path\": \"err/null.txt\", \"start_line\": null}")
 
         XCTAssertTrue(r.isError, "got: \(r.outputJSON)")
         XCTAssertTrue((errorMessage(r.outputJSON) ?? "").contains("Missing"),

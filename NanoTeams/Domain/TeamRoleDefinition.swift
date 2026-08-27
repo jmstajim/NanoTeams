@@ -319,6 +319,49 @@ nonisolated extension TeamRoleDefinition {
 
 }
 
+// MARK: - Render identity
+
+/// Every PRESENTATION field of a role: what a rendered surface shows for it.
+///
+/// Exists because `TeamRoleDefinition.==` is an identity shortcut
+/// (`lhs.id == rhs.id`, see below — CLAUDE.md #42), so it answers "is this the
+/// same role", never "would this role draw differently". Views wrapped in
+/// `.equatable()` need the second question: SwiftUI skips the whole subtree
+/// when `==` says equal, so a member the body renders but `==` cannot see has
+/// its updates silently dropped. Every `.equatable()` card in the activity feed
+/// compared `roleDefinition?.id` and rendered `name` / `icon` /
+/// `iconBackground`, so renaming or recolouring a role in the Team editor left
+/// the open feed showing the old label and the old avatar.
+///
+/// **The whole presentation SET, not the fields today's callers happen to
+/// read.** `iconColor` reaches no feed card right now; including it anyway is
+/// the point — a projection narrowed to current readers under-compares the
+/// moment one more field is read, which is the exact bug this type closes, and
+/// its absence would read as "there are none" (CLAUDE.md #92). Six short
+/// strings, so it is also cheaper than a whole-struct comparison, which would
+/// walk `prompt` and `toolIDs` on every diff pass — and would over-fire on
+/// `updatedAt`, which moves without changing a pixel.
+nonisolated struct RoleRenderIdentity: Equatable {
+    let id: String
+    let name: String
+    let icon: String
+    let iconColor: String
+    let iconBackground: String
+    /// `[TeamRoleDefinition].roleName(for:)` falls back to `systemRoleID`
+    /// before the built-in display name, so it participates in what renders.
+    let systemRoleID: String?
+}
+
+nonisolated extension TeamRoleDefinition {
+    var renderIdentity: RoleRenderIdentity {
+        RoleRenderIdentity(
+            id: id, name: name, icon: icon,
+            iconColor: iconColor, iconBackground: iconBackground,
+            systemRoleID: systemRoleID
+        )
+    }
+}
+
 // MARK: - Hashable
 
 nonisolated extension TeamRoleDefinition: Hashable {

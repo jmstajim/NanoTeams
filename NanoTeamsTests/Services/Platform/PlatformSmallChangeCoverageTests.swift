@@ -159,7 +159,7 @@ final class PlatformSmallChangeCoverageTests: XCTestCase, @unchecked Sendable {
         let chat = QuickCaptureMode.taskWorking(roleName: "r", isChatMode: true)
         XCTAssertFalse(state.canSubmit(mode: chat), "nothing to send yet")
 
-        state.answerClippedTexts = ["a clip"]
+        state.answerClippedTexts = [Clip].minting(["a clip"])
         XCTAssertTrue(state.canSubmit(mode: chat), "a clip alone is a message")
 
         state.answerClippedTexts = []

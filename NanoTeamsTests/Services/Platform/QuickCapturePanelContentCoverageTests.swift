@@ -126,22 +126,41 @@ final class QuickCapturePanelContentCoverageTests: XCTestCase {
         XCTAssertTrue(controller._testPanel?._testHasContent == true)
     }
 
-    /// `pendingWorkingMode` is a one-shot: `+TaskCreation` sets it after a submit so the
-    /// panel flips to the loader without waiting for the engine to report `.running`.
-    /// It must CLEAR on read, or the panel is pinned to the loader and the user can never
-    /// get back to a composer.
+    /// The property the deleted `pendingWorkingMode` one-shot was standing in for: the
+    /// working surface is held by a FACT, so it lasts exactly as long as the fact and
+    /// cannot pin the panel.
     ///
-    /// RED: drop `pendingWorkingMode = false` → the flag stays set and this fails.
-    func testUpdatePanelContent_pendingWorkingMode_isConsumedOnce() async throws {
-        try PanelHostingAvailability.skipUnlessTheFormCanBeHosted()
+    /// The old pin asserted that the flag cleared on read — it had to, because the flag
+    /// forced the loader for ONE rebuild while `resolveMode` still answered `.overlay`
+    /// underneath. Re-aimed rather than deleted (CLAUDE.md #104): a pin going red because
+    /// its subject retired is a report, not a licence to drop the coverage. What survives
+    /// the deletion is this — the mode tracks the run-start claim in both directions.
+    ///
+    /// RED: drop the `isInitializingRun` branch from `DefaultQuickCaptureModeCoordinator`
+    /// → the first assertion sees `.overlay`. Restore a latch that outlives the claim →
+    /// the second one does.
+    func testUpdatePanelContent_whileTheRunStartIsClaimed_resolvesTheInitializingMode() async {
         let controller = await makeWiredController()
-        controller._testPresentPanelSync()
+        guard let taskID = await store.createTask(title: "t", supervisorTask: "b") else {
+            return XCTFail("Expected the task to be created")
+        }
+        await store.switchTask(to: taskID)
+        controller.isTaskSelected = true
 
-        controller.pendingWorkingMode = true
-        controller.updatePanelContent()
+        XCTAssertTrue(store.engineState.beginRunStart(taskID),
+                      "Anti-vacuum: the fixture must actually hold the claim, or both "
+                          + "assertions below pass against a task nothing is starting")
+        if case .taskInitializing = controller._testResolveMode() {} else {
+            XCTFail("A claimed run start must resolve to `.taskInitializing`, not the "
+                + "new-task composer — that flip-back is the reported bug")
+        }
 
-        XCTAssertFalse(controller.pendingWorkingMode,
-                       "a one-shot flag left set pins the panel to the loader forever")
+        store.engineState.endRunStart(taskID)
+
+        if case .taskInitializing = controller._testResolveMode() {
+            XCTFail("The mode must not outlive the claim: with no fact left to hold it, "
+                + "the panel would show `Initializing…` over a running engine")
+        }
     }
 
     // MARK: - The four submit destinations

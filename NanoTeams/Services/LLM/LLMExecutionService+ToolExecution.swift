@@ -148,7 +148,7 @@ extension LLMExecutionService {
                     errorMessage: item.message
                 )
             }
-            return runtime.executeAll(context: context, toolCalls: toolsToExecute)
+            return await runtime.executeAll(context: context, toolCalls: toolsToExecute)
         }
         // The handoff itself needs no guard: this method is actor-isolated, so the write below and
         // any read of it are adjacent statements with no suspension point between them. A guard

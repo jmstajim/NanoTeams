@@ -1,4 +1,7 @@
 import SwiftUI
+#if DEBUG
+import Synchronization
+#endif
 
 // MARK: - Paired Assistant Message
 
@@ -286,8 +289,21 @@ nonisolated enum ActivityFeedBuilder {
         stepArtifactContentCache: [String: Set<String>],
         debugModeEnabled: Bool,
         activeQuestions: [ActiveSupervisorQuestion] = [],
-        isStreaming: (UUID) -> Bool
+        isStreaming isStreamingQuery: (UUID) -> Bool
     ) -> [TaggedItem] {
+        // Every ask of the caller's closure goes through here so `StreamQueryProbe`
+        // can count them — the seam `ActivityFeedBuilderSortCostTests` uses to pin
+        // the ask at Θ(N) rather than Θ(N log N). A local FUNCTION, not a closure
+        // literal: `isStreamingQuery` is non-escaping, and a closure that captured
+        // it would be an escaping capture of a non-escaping parameter. The probe
+        // call compiles away in release; the indirection stays in both so the two
+        // configurations run the same shape.
+        func isStreaming(_ id: UUID) -> Bool {
+            #if DEBUG
+            StreamQueryProbe.note()
+            #endif
+            return isStreamingQuery(id)
+        }
         var items: [TeamActivityTimelineItem] = []
 
         // Compute once — `emitItems` matches `msg.id` against this set to suppress
@@ -372,12 +388,30 @@ nonisolated enum ActivityFeedBuilder {
         // items would synthesize a spurious cross-team band right before a
         // content-less "Waiting" bubble. Concurrent streaming items in the
         // active task order among themselves by `createdAt`.
-        let sorted = items.sorted { lhs, rhs in
-            let lhsPinned = lhs.isStreamingItem(isStreaming: isStreaming) && lhs.originTaskID == activeTaskID
-            let rhsPinned = rhs.isStreamingItem(isStreaming: isStreaming) && rhs.originTaskID == activeTaskID
-            if lhsPinned != rhsPinned { return !lhsPinned }
-            return lhs.createdAt < rhs.createdAt
+        //
+        // Decorate–sort–undecorate: the pin flag is computed ONCE per item, not
+        // twice per comparison. `isStreaming` is the caller's closure and reaches
+        // `StreamingPreviewManager` (an `@Observable`), and `sorted` performs
+        // Θ(N log N) comparisons, so asking inside the comparator asked it
+        // 2·N·log₂N times per rebuild — at four rebuilds per model turn
+        // (`TimelineRebuildProbe`) over a conversation that only grows. Now Θ(N).
+        //
+        // The permutation is identical by construction, not by luck: the
+        // comparator is still a pure function of the same two values, so every
+        // comparison returns exactly what it returned before — which is what
+        // discharges DEBTS D-24's requirement that the equal-key order be pinned
+        // before this sort is touched (`continuesTurn` derives turn grouping from
+        // adjacency here). `ActivityFeedBuilderSortCostTests` pins it anyway,
+        // because "identical by construction" is an argument and a pin is a
+        // mechanism.
+        let sorted = zip(items, items.map {
+            $0.isStreamingItem(isStreaming: isStreaming) && $0.originTaskID == activeTaskID
+        })
+        .sorted { lhs, rhs in
+            if lhs.1 != rhs.1 { return !lhs.1 }
+            return lhs.0.createdAt < rhs.0.createdAt
         }
+        .map(\.0)
 
         // Index descendants by task ID for boundary annotation lookups.
         var descendantsByID: [Int: DescendantTask] = [:]
@@ -415,7 +449,7 @@ nonisolated enum ActivityFeedBuilder {
             // this, a re-park clearing `step.supervisorAnswer` (single-slot) made
             // the user's answer vanish from the feed entirely, even though the LLM
             // had already consumed it.
-            let askCallCount = step.toolCalls.filter { $0.name == ToolNames.askSupervisor }.count
+            let askCallCount = step.toolCalls.count { $0.name == ToolNames.askSupervisor }
             // Materialize the answer ids ONLY when a card can actually own one. With no
             // `ask_supervisor` call — the overwhelming majority of steps — `prefix(0)`
             // discarded the whole array, so the filter+map was a full pass over an
@@ -884,3 +918,20 @@ nonisolated enum ActivityFeedBuilder {
         return tagged
     }
 }
+
+#if DEBUG
+/// Counts how many times `buildTimelineItems` asks the caller's `isStreaming`
+/// closure. A work counter, not a clock — this repo pins performance as work
+/// done (`Ratchet/WallClockPerformancePinTests`).
+///
+/// The number is the point: the closure reaches `StreamingPreviewManager`, an
+/// `@Observable`, and until 2026-08-25 the pin-to-bottom sort asked it TWICE PER
+/// COMPARISON, i.e. `2 · N · log N` times per rebuild for a feed of N items, at
+/// four rebuilds per model turn. It is now asked once per item.
+nonisolated enum StreamQueryProbe {
+    private static let _queries = Atomic<Int>(0)
+    static func note() { _queries.wrappingAdd(1, ordering: .relaxed) }
+    static func queries() -> Int { _queries.load(ordering: .relaxed) }
+    static func reset() { _queries.store(0, ordering: .relaxed) }
+}
+#endif

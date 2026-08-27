@@ -172,13 +172,34 @@ final class SeatbeltSandboxTests: XCTestCase {
 
     // MARK: - Per-folder permissions
 
-    func testProfile_workFolderWriteOff_omitsWorkSubpathButKeepsTemp() {
+    /// Re-aimed 2026-08-25 (CLAUDE.md #104, #89). This asserted that the work path was
+    /// ABSENT from the profile, which was a proxy for "not writable" and stopped being
+    /// one the moment the work folder started being explicitly DENIED: `(subpath "…")`
+    /// occurs in both allow and deny clauses, so the old needle could not tell the
+    /// grant being withheld from the grant being revoked, and it read the stronger
+    /// profile as a regression.
+    ///
+    /// The fixture is the whole point and must stay under `/tmp`: it canonicalizes
+    /// under `/private/tmp`, so with `tempWrite` on by default the temp grant covered
+    /// it and the work folder was writable with its own grant switched OFF. The
+    /// neighbouring assertion's comment already knew the two paths collide — it worked
+    /// around the collision for the temp half and left the work half reading the
+    /// collision as success.
+    ///
+    /// RED: drop the `workCoveredByTemp` term from the narrow-write deny → no deny
+    /// clause names the work folder and the "explicitly denied" assertion fails.
+    func testProfile_workFolderWriteOff_deniesWorkButKeepsTemp() {
         let work = URL(fileURLWithPath: "/tmp/nanoteams-perm-nowork").resolvingSymlinksInPath()
         let profile = SeatbeltSandbox.profile(
             workFolderRoot: work, permissions: BashSandboxPermissions(workFolderWrite: false))
+
         XCTAssertFalse(
-            profile.contains("(subpath \"\(work.path)\")"),
-            "work folder must NOT be writable when its write grant is off")
+            profile.contains("(allow file-write*\n    (subpath \"\(work.path)\")"),
+            "work folder must not carry a WRITE GRANT when its write grant is off")
+        XCTAssertTrue(
+            profile.contains("(deny file-write*") && profile.contains("(subpath \"\(work.path)\")"),
+            "work folder lives under /private/tmp, so the temp grant reaches it — the "
+                + "profile must revoke it explicitly, not merely decline to grant it:\n\(profile)")
         // Assert the exact temp GRANT clause, not a bare `/private/tmp` substring — a
         // work folder that canonicalizes under /private/tmp would otherwise collide.
         XCTAssertTrue(profile.contains("(subpath \"/private/tmp\")"), "temp writes remain by default")
@@ -313,8 +334,12 @@ final class SeatbeltSandboxTests: XCTestCase {
 
     /// Behavioral inverse of `testProfile_confinesWritesToWorkFolder`: with the
     /// work-folder write grant OFF, a write INSIDE the work folder is denied.
-    /// Uses a home-based work folder so the temp-dir allow (still on by default)
-    /// doesn't cover it.
+    ///
+    /// The fixture sits under HOME, which until 2026-08-25 was a workaround — the
+    /// temp-dir allow covered a work folder under `$TMPDIR` and this test would have
+    /// failed there, which is the defect it was quietly stepping around. That is fixed
+    /// (`workCoveredByTemp`), so HOME is now just a second layout worth covering, and
+    /// the temp layout has its own live pin in `SeatbeltCanonicalPathCoverageTests`.
     func testProfile_workFolderWriteOff_blocksInsideWrite() throws {
         let fm = FileManager.default
         guard fm.isExecutableFile(atPath: BashConstants.sandboxExecPath) else {
@@ -337,15 +362,15 @@ final class SeatbeltSandboxTests: XCTestCase {
     }
 
     func testIsSandboxDenialFailure() {
-        XCTAssertTrue(SeatbeltSandbox.isSandboxDenialFailure(
+        XCTAssertTrue(SeatbeltSandbox.isWrapperDiagnostic(
             exitCode: 1, stderr: "sandbox-exec: execvp() failed"))
-        XCTAssertTrue(SeatbeltSandbox.isSandboxDenialFailure(
+        XCTAssertTrue(SeatbeltSandbox.isWrapperDiagnostic(
             exitCode: 65, stderr: "sandbox_apply: Operation not permitted"))
         // A normal non-zero exit (the command itself failed) is NOT a sandbox failure.
-        XCTAssertFalse(SeatbeltSandbox.isSandboxDenialFailure(
+        XCTAssertFalse(SeatbeltSandbox.isWrapperDiagnostic(
             exitCode: 1, stderr: "ls: no such file or directory"))
         // exit 0 is never a sandbox failure.
-        XCTAssertFalse(SeatbeltSandbox.isSandboxDenialFailure(exitCode: 0, stderr: ""))
+        XCTAssertFalse(SeatbeltSandbox.isWrapperDiagnostic(exitCode: 0, stderr: ""))
     }
 
     // MARK: - Temp directory trim
@@ -642,5 +667,65 @@ final class SeatbeltSandboxTests: XCTestCase {
         XCTAssertFalse(
             fm.fileExists(atPath: probe.path),
             "a write to the project root must be blocked when the project root IS a credential store")
+    }
+
+    // MARK: - What a launch verdict obliges (D-7)
+
+    /// The `reportNothingRan` arm is the reason this decision was extracted: through `BashTool`
+    /// it is unreachable, because the profile is built internally and NO `BashSandboxPermissions`
+    /// value can make `sandbox-exec` refuse it (measured — `SeatbeltSandbox.profile` always
+    /// emits `(allow process*)`, so even a starved profile lands in `.confinedBeforeStart`).
+    /// It is also the arm whose failure is worst: a command reported as "not run" that in fact
+    /// ran unconfined, or the reverse.
+    ///
+    /// RED: drop `!fallbackAllowed` from the rule → a rejection with the fallback ON reports
+    /// "nothing ran" instead of retrying, and the retry assertion fails.
+    func testResponse_wrapperRejectedWithNoFallback_meansNothingRan() {
+        XCTAssertEqual(
+            SeatbeltSandbox.response(
+                ranSandboxed: true, launch: .wrapperRejected, fallbackAllowed: false),
+            .reportNothingRan)
+    }
+
+    func testResponse_wrapperRejectedWithFallback_licensesTheUnconfinedRetry() {
+        XCTAssertEqual(
+            SeatbeltSandbox.response(
+                ranSandboxed: true, launch: .wrapperRejected, fallbackAllowed: true),
+            .retryUnconfined)
+    }
+
+    /// The confinement doing its job is NOT a wrapper fault. Retrying it unconfined would defeat
+    /// the profile the user asked for, and reporting "nothing ran" would hide a real result
+    /// (exit 134, no output) behind an environment error.
+    ///
+    /// RED: widen the rule to `launch != .childRan` → both assertions here fail.
+    func testResponse_confinedBeforeStart_isNeverRetriedAndNeverCalledNeverRun() {
+        for fallback in [true, false] {
+            XCTAssertEqual(
+                SeatbeltSandbox.response(
+                    ranSandboxed: true, launch: .confinedBeforeStart, fallbackAllowed: fallback),
+                .reportTheResult,
+                "fallbackAllowed: \(fallback)")
+        }
+    }
+
+    /// `ranSandboxed: false` is the POST-FALLBACK path: the command demonstrably ran, so the
+    /// stale verdict from the first attempt must not speak for the second. Without this guard a
+    /// successful unconfined retry would report itself as never having run.
+    ///
+    /// RED: drop `ranSandboxed` from the rule → this returns `.retryUnconfined`, i.e. an
+    /// infinite retry of a run that already happened.
+    func testResponse_unsandboxedRun_carriesNoVerdictFromTheSandboxedAttempt() {
+        XCTAssertEqual(
+            SeatbeltSandbox.response(
+                ranSandboxed: false, launch: .wrapperRejected, fallbackAllowed: true),
+            .reportTheResult)
+    }
+
+    func testResponse_childRan_reportsTheResult() {
+        XCTAssertEqual(
+            SeatbeltSandbox.response(
+                ranSandboxed: true, launch: .childRan, fallbackAllowed: true),
+            .reportTheResult)
     }
 }

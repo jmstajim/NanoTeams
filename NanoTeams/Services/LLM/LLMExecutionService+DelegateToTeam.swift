@@ -467,7 +467,7 @@ extension LLMExecutionService {
                 // brand-new run. Re-read the child's task state after pause
                 // and short-circuit to the corresponding terminal outcome
                 // when that happened.
-                await delegate.pauseRun(taskID: childTID)
+                let childPaused = await delegate.pauseRun(taskID: childTID)
                 if let childTask = delegate.loadedTask(childTID), childTask.closedAt != nil {
                     await clearDelegationFields(parentTID: parentTID, stepID: stepID, delegate: delegate)
                     return await buildSuccessEnvelope(
@@ -487,6 +487,22 @@ extension LLMExecutionService {
                     return makeErrorEnvelope(
                         code: .commandFailed,
                         message: "Delegated task #\(childTID) failed concurrently with a Supervisor interrupt: \(reason)"
+                    )
+                }
+                // The pause is what the `paused_by_supervisor` envelope ASSERTS, so a pause that
+                // did not take must not be reported as one — the role would then reason about a
+                // stopped child that is running, and `forward_to_team` would inject guidance
+                // into a live run. The two re-checks above already cover the cases where the
+                // child legitimately went terminal instead; anything left is a genuine failure
+                // to stop it. (CLAUDE.md #51 — `pauseRun`'s honest result has to be read at
+                // every site that depends on it, not only at the Autovisor verb.)
+                guard childPaused else {
+                    return makeErrorEnvelope(
+                        code: .commandFailed,
+                        message: "Could not pause delegated task #\(childTID) to deliver the "
+                            + "Supervisor's message, and it is neither closed nor failed. The "
+                            + "child may still be running — re-read it with task_status before "
+                            + "sending further instructions."
                     )
                 }
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)

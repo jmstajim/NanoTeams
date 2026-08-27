@@ -192,6 +192,51 @@ final class DelegationPausedEnvelopeTests: XCTestCase {
         XCTAssertEqual(data["supervisor_message"] as? String, "team is looping, stop")
     }
 
+    /// The pause is what the `paused_by_supervisor` envelope ASSERTS. A pause that did not
+    /// take must not be reported as one: the role would then reason about a stopped child that
+    /// is still running, and `forward_to_team` would inject guidance into a live run.
+    ///
+    /// The two terminal re-checks above this guard cover the cases where the child legitimately
+    /// went terminal instead — here it did neither, so the pause is a genuine failure.
+    ///
+    /// RED: restore `_ = await delegate.pauseRun(...)` (discard the result) → a
+    /// `paused_by_supervisor` success envelope comes back for a child that never stopped, and
+    /// both assertions fail.
+    func testAwaitDelegationCompletion_pauseDidNotTake_refusesToReportItAsPaused() async throws {
+        let parentRoleDef = TeamRoleDefinition(
+            id: "coding_agent_coding_agent", name: "Coding Agent", prompt: "p",
+            toolIDs: [ToolNames.delegateToTeam], usePlanningPhase: false,
+            dependencies: RoleDependencies(), allowDelegationToGeneratedTeams: true)
+        let parentTeam = Team(
+            name: "Parent", roles: [parentRoleDef], artifacts: [],
+            settings: TeamSettings(), graphLayout: TeamGraphLayout())
+        let targetTeam = Team(
+            name: "Engineering Team", roles: [], artifacts: [],
+            settings: TeamSettings(), graphLayout: TeamGraphLayout())
+
+        delegate.scriptedAwaitOutcomes = [.parentMessageQueued(text: "stop please")]
+        delegate.pauseRunResult = false
+
+        let envelope = await service.awaitDelegationCompletion(
+            childTID: 42, parentTID: 1, stepID: "coding_agent_coding_agent",
+            parentRoleDef: parentRoleDef, parentTeam: parentTeam, targetTeam: targetTeam,
+            isGeneratedFlow: false, generationWarnings: [],
+            client: StubLLMClient(), config: stubConfig(), delegate: delegate)
+
+        XCTAssertEqual(delegate.pauseRunCalls, [42], "premise: the pause was attempted")
+        let dict = try parseJSON(envelope)
+        XCTAssertEqual(
+            dict["ok"] as? Bool, false,
+            "a pause that did not take must not come back as a success envelope: \(envelope)")
+        XCTAssertFalse(
+            envelope.contains("paused_by_supervisor"),
+            "the role must not be told the child is stopped when it is not: \(envelope)")
+        XCTAssertTrue(
+            envelope.contains("task_status"),
+            "the remedy — re-read the child before sending more instructions — has to be "
+                + "named, or the role has no next move: \(envelope)")
+    }
+
     // MARK: - Helpers
 
     private func parseJSON(_ s: String) throws -> [String: Any] {

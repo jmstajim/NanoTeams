@@ -185,7 +185,7 @@ extension MeetingMessageItemView: Equatable {
             && lhs.message.role == rhs.message.role
             && lhs.message.messageType == rhs.message.messageType
             && (lhs.message.toolSummaries ?? []) == (rhs.message.toolSummaries ?? [])
-            && lhs.roleDefinition?.id == rhs.roleDefinition?.id
+            && lhs.roleDefinition?.renderIdentity == rhs.roleDefinition?.renderIdentity
             && lhs.showHeader == rhs.showHeader
             && lhs.roleLabelOverride == rhs.roleLabelOverride
             && lhs.roleTeamSuffix == rhs.roleTeamSuffix

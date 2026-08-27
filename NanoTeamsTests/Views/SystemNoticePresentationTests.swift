@@ -17,15 +17,20 @@ import XCTest
 /// assertion a hand-maintained list would silently stop making.
 final class SystemNoticePresentationTests: XCTestCase {
 
-    /// The five system-authored contexts. Spelled out here rather than read
+    /// The six system-authored contexts. Spelled out here rather than read
     /// back from the production table — a pin that sources its expectation from
     /// the thing it pins asserts nothing.
     ///
     /// `.screenDescription` is deliberately absent: it is runtime-GENERATED but it is
     /// CONTENT — the only record of what the model was shown — so collapsing it to a
     /// one-liner would hide the substance the model then acted on.
+    ///
+    /// `.autovisorEvent` is the newest member and the only one that is ALSO a loop-detector
+    /// information boundary (`carriesUnsolicitedInformation`) — system-authored is about who
+    /// wrote the turn, not about whether anyone asked for it.
     private static let expectedNoticeContexts: Set<MessageSourceContext> = [
         .retryNudge, .loopCorrection, .serverError, .toolAcknowledgement, .runtimeWarning,
+        .autovisorEvent,
     ]
 
     /// The notice kinds that render RED. `.serverError` is a failed LLM call; `.runtimeWarning`
@@ -97,6 +102,14 @@ final class SystemNoticePresentationTests: XCTestCase {
         XCTAssertEqual(notice?.isError, true)
     }
 
+    func testResolve_autovisorEvent_labels() {
+        let notice = SystemNoticePresentation.resolve(context: .autovisorEvent, content: "b")
+        XCTAssertEqual(notice?.rowLabel, "system: event")
+        XCTAssertEqual(notice?.windowTitle, "event")
+        XCTAssertEqual(notice?.isError, false,
+                       "nothing failed — the folder moved, which is news, not an error")
+    }
+
     /// Exactly the failure kinds render red. A correction painted red reads as a crash the user
     /// must act on; a failure painted neutral is the disk filling up in grey six-point text.
     func testResolve_exactlyTheFailureKindsRenderRed() {
@@ -117,7 +130,7 @@ final class SystemNoticePresentationTests: XCTestCase {
         XCTAssertNil(SystemNoticePresentation.resolve(context: .screenDescription, content: "a UI"))
     }
 
-    /// Drift guard against `MessageSourceContext.displayLabel`. Four of the five
+    /// Drift guard against `MessageSourceContext.displayLabel`. Five of the six
     /// kinds have a Domain label; the row must agree with it or the same concept
     /// would read differently in the feed row and in the transcript's `(retry)`
     /// anchor. `.serverError` is the documented exception — Domain deliberately
@@ -136,6 +149,9 @@ final class SystemNoticePresentationTests: XCTestCase {
         XCTAssertEqual(
             SystemNoticePresentation.resolve(context: .runtimeWarning, content: "b")?.windowTitle,
             MessageSourceContext.runtimeWarning.displayLabel)
+        XCTAssertEqual(
+            SystemNoticePresentation.resolve(context: .autovisorEvent, content: "b")?.windowTitle,
+            MessageSourceContext.autovisorEvent.displayLabel)
 
         XCTAssertEqual(MessageSourceContext.serverError.displayLabel, "serverError",
                        "Domain still has no label for it — the raw-value fallback is pinned by "
@@ -279,10 +295,154 @@ final class SystemNoticePresentationTests: XCTestCase {
         XCTAssertFalse(notice?.preview.hasSuffix("…") == true)
     }
 
+    /// The loop correction, built the way production builds it: the nudge `LoopRecoveryPolicy`
+    /// really emits, read through `LLMMessage.displayContent` — which is what
+    /// `TeamActivityFeedView.bubbleInputs` passes to `MessageBubbleView`.
+    ///
+    /// Until 2026-08-24 every `.loopCorrection` fixture in this suite (and the `#Preview` beside
+    /// `SystemNoticeRow`) was a hand-written single sentence that no code path emits, so none of
+    /// them could see that the real body opens with `--- LOOP CORRECTION ---` and the row
+    /// rendered `system: loop correction   --- LOOP CORRECTION ---`. CLAUDE.md #56, reading #3:
+    /// zero reds because the fixture never selected the production shape.
+    private func realLoopCorrectionDisplayContent(
+        diagnostic: String = "substring \"abc\" repeated 4 times consecutively"
+    ) -> String {
+        guard case .retryWithNudge(let nudge) = LoopRecoveryPolicy.decide(
+            signal: .withinMessage(diagnostic: diagnostic),
+            breakCount: 1, maxRetries: 2,
+            supervisorMode: .autonomous, isChatMode: true,
+            canParkForSupervisor: false, roleName: "R")
+        else {
+            XCTFail("the within-budget branch must produce a nudge")
+            return ""
+        }
+        return LLMMessage(role: .user, content: nudge, sourceContext: .loopCorrection)
+            .displayContent
+    }
+
+    func testResolve_realLoopCorrection_previewsItsSentence_notTheDelimiter() {
+        let notice = SystemNoticePresentation.resolve(
+            context: .loopCorrection, content: realLoopCorrectionDisplayContent())
+        XCTAssertEqual(notice?.rowLabel, "system: loop correction")
+        XCTAssertEqual(notice?.preview.contains(MessageSourceContext.loopCorrectionBlockOpen), false,
+                       "the row would then duplicate its own label and carry no information")
+        XCTAssertEqual(
+            notice?.preview.hasPrefix("The turn immediately before this note was discarded"), true,
+            "the preview must open on the correction's own sentence")
+    }
+
+    /// Anti-vacuum for the test above: the production nudge really does still carry the
+    /// delimiters on the wire, so the clean preview is the strip working — not the delimiters
+    /// having quietly been dropped from the correction altogether.
+    func testRealLoopCorrection_stillCarriesTheDelimitersOnTheWire() {
+        guard case .retryWithNudge(let nudge) = LoopRecoveryPolicy.decide(
+            signal: .withinMessage(diagnostic: "d"), breakCount: 1, maxRetries: 2,
+            supervisorMode: .autonomous, isChatMode: true,
+            canParkForSupervisor: false, roleName: "R")
+        else { return XCTFail("expected a nudge") }
+        XCTAssertTrue(nudge.hasPrefix(MessageSourceContext.loopCorrectionBlockOpen))
+        XCTAssertTrue(nudge.hasSuffix(MessageSourceContext.loopCorrectionBlockClose))
+    }
+
+    /// The degenerate body — markers with nothing between them — must reduce to an empty
+    /// preview, i.e. label only. Previously it produced the open marker.
+    func testResolve_loopCorrectionWithEmptyBody_previewIsEmpty() {
+        let raw = MessageSourceContext.loopCorrectionBlockOpen + "\n\n"
+            + MessageSourceContext.loopCorrectionBlockClose
+        let display = LLMMessage(role: .user, content: raw, sourceContext: .loopCorrection)
+            .displayContent
+        let notice = SystemNoticePresentation.resolve(context: .loopCorrection, content: display)
+        XCTAssertNotNil(notice)
+        XCTAssertEqual(notice?.preview, "")
+    }
+
     func testResolve_serverErrorNote_previewKeepsTheAttemptCounter() {
         let content = "LLM server error (attempt 2/3): The request timed out. Retrying in 10s…"
         let notice = SystemNoticePresentation.resolve(context: .serverError, content: content)
         XCTAssertEqual(notice?.preview, content)
         XCTAssertEqual(notice?.isError, true)
+    }
+
+    // MARK: - Preview header skip (.autovisorEvent)
+
+    /// Built from the PRODUCTION composer, not a hand-typed lookalike: the row's usefulness
+    /// depends on the skip matching what `composeAutovisorEventNotice` actually emits, and a
+    /// fixture that merely resembles it would keep passing after the composer changed.
+    ///
+    /// RED: drop the `.autovisorEvent` entry from `previewSkippedHeaders` → the row reads
+    /// `system: event  Event update while you are reviewing…`, i.e. the label twice and the
+    /// news nowhere.
+    func testResolve_autovisorEvent_previewIsTheFirstBullet_notTheBanner() {
+        let content = NTMSOrchestrator.composeAutovisorEventNotice([
+            .init(taskID: 35, title: "M15 — Fix streak counter", trigger: .needsSupervisor),
+            .init(taskID: 7, title: "B", trigger: .failed),
+        ])
+        let notice = SystemNoticePresentation.resolve(context: .autovisorEvent, content: content)
+        XCTAssertEqual(
+            notice?.preview,
+            "- Task #35 \"M15 — Fix streak counter\" is waiting for a supervisor answer "
+                + "(answer_task_question).")
+        XCTAssertFalse(notice?.preview.contains("Event update while you are reviewing") ?? true)
+    }
+
+    /// The degenerate body — the banner and nothing else, which production guards against but
+    /// a future caller without that guard would produce. Label only, never a re-shown banner.
+    func testResolve_autovisorEvent_headerOnlyBody_previewIsEmpty() {
+        let notice = SystemNoticePresentation.resolve(
+            context: .autovisorEvent,
+            content: MessageSourceContext.autovisorEventNoticeHeader)
+        XCTAssertNotNil(notice, "the verdict is context-only — an empty preview is still a notice")
+        XCTAssertEqual(notice?.preview, "")
+    }
+
+    /// The skip is anchored to the FIRST non-empty line. A banner appearing again further down
+    /// is body text and must survive.
+    func testPreviewLine_skipsOnlyTheLeadingOccurrence() {
+        let header = MessageSourceContext.autovisorEventNoticeHeader
+        let preview = SystemNoticePresentation.previewLine(
+            from: "\(header)\n\(header)", skippingLeadingLine: header)
+        XCTAssertEqual(preview, header, "the second occurrence is content, not a banner")
+    }
+
+    /// A body that opens with something else is untouched — the skip must not scan ahead and
+    /// delete a banner from the middle of a notice.
+    func testPreviewLine_leadingLineDiffers_nothingIsSkipped() {
+        let header = MessageSourceContext.autovisorEventNoticeHeader
+        let preview = SystemNoticePresentation.previewLine(
+            from: "- Task #1 failed.\n\(header)", skippingLeadingLine: header)
+        XCTAssertEqual(preview, "- Task #1 failed.")
+    }
+
+    /// Blank lines before the banner still let it be recognised — `previewLine` skips empties
+    /// on its way to the first real line, and the skip has to agree with that.
+    func testPreviewLine_leadingBlanksBeforeTheHeader_stillSkip() {
+        let header = MessageSourceContext.autovisorEventNoticeHeader
+        let preview = SystemNoticePresentation.previewLine(
+            from: "\n  \n\(header)\n- Task #1 failed.", skippingLeadingLine: header)
+        XCTAssertEqual(preview, "- Task #1 failed.")
+    }
+
+    func testPreviewLine_noSkipArgument_behavesExactlyAsBefore() {
+        let header = MessageSourceContext.autovisorEventNoticeHeader
+        XCTAssertEqual(SystemNoticePresentation.previewLine(from: "\(header)\n- x"), header)
+    }
+
+    /// An empty skip string must not swallow the first line — `""` is not a header.
+    func testPreviewLine_emptySkipArgument_skipsNothing() {
+        let preview = SystemNoticePresentation.previewLine(
+            from: "first\nsecond", skippingLeadingLine: "")
+        XCTAssertEqual(preview, "first")
+    }
+
+    /// The other five kinds have no entry in `previewSkippedHeaders`, so their previews are
+    /// unchanged — the skip is opt-in per kind, not a new global rule.
+    func testResolve_otherKinds_previewsAreUnaffectedByTheSkipTable() {
+        let body = MessageSourceContext.autovisorEventNoticeHeader + "\n- Task #1 failed."
+        for context in Self.expectedNoticeContexts where context != .autovisorEvent {
+            XCTAssertEqual(
+                SystemNoticePresentation.resolve(context: context, content: body)?.preview,
+                MessageSourceContext.autovisorEventNoticeHeader,
+                "\(context) must not inherit another kind's header skip")
+        }
     }
 }

@@ -34,6 +34,12 @@ nonisolated struct AutovisorTuning: Codable, Hashable {
     /// detector returns `.hang` (an in-flight tool suppresses the verdict). Raise
     /// for slow local models that legitimately think for minutes.
     var stuckHangSeconds: TimeInterval
+    /// Seconds of silence allowed while a request is in flight and NOT ONE generation delta has
+    /// arrived — the model is still loading or the prompt is still being processed, and the
+    /// server emits nothing at all in that window. Prefill cost is hardware- and
+    /// context-dependent, which makes this the strongest of the three for being a knob.
+    /// See `AutovisorConstants.stuckPrefillHangSeconds` for the measurement behind the default.
+    var stuckPrefillHangSeconds: TimeInterval
     /// A repeating tool-call / output signal only counts as a live loop when its
     /// latest occurrence is within this window — guards against `resetStepForRevision`
     /// audit history re-flagging a just-restarted role.
@@ -47,6 +53,7 @@ nonisolated struct AutovisorTuning: Codable, Hashable {
         maxConcurrentManagedTasks: Int = AutovisorConstants.maxConcurrentManagedTasks,
         maxManagedTasksPerReview: Int = AutovisorConstants.maxManagedTasksPerReview,
         stuckHangSeconds: TimeInterval = AutovisorConstants.stuckHangSeconds,
+        stuckPrefillHangSeconds: TimeInterval = AutovisorConstants.stuckPrefillHangSeconds,
         stuckLoopRecencySeconds: TimeInterval = AutovisorConstants.stuckLoopRecencySeconds
     ) {
         // Caps floored at 1 — a 0 cap means the manager could never create a task.
@@ -54,6 +61,12 @@ nonisolated struct AutovisorTuning: Codable, Hashable {
         self.maxManagedTasksPerReview = max(1, maxManagedTasksPerReview)
         self.stuckHangSeconds = max(Self.minStuckSeconds, stuckHangSeconds)
         self.stuckLoopRecencySeconds = max(Self.minStuckSeconds, stuckLoopRecencySeconds)
+        // Cross-field, and the only clamp here that is not a floor: a pre-token budget SMALLER
+        // than the general one falsifies the whole design (the window that emits nothing would
+        // be judged more harshly than the one that emits tokens). A hand-edited settings.json
+        // can express it, and this is the persistence boundary where it must not survive.
+        self.stuckPrefillHangSeconds = max(
+            self.stuckHangSeconds, max(Self.minStuckSeconds, stuckPrefillHangSeconds))
     }
 
     // Forward-compatible decode: every field falls back to its default + clamp so a
@@ -68,6 +81,8 @@ nonisolated struct AutovisorTuning: Codable, Hashable {
                 ?? AutovisorConstants.maxManagedTasksPerReview,
             stuckHangSeconds: try c.decodeIfPresent(TimeInterval.self, forKey: .stuckHangSeconds)
                 ?? AutovisorConstants.stuckHangSeconds,
+            stuckPrefillHangSeconds: try c.decodeIfPresent(TimeInterval.self, forKey: .stuckPrefillHangSeconds)
+                ?? AutovisorConstants.stuckPrefillHangSeconds,
             stuckLoopRecencySeconds: try c.decodeIfPresent(TimeInterval.self, forKey: .stuckLoopRecencySeconds)
                 ?? AutovisorConstants.stuckLoopRecencySeconds
         )
@@ -82,6 +97,7 @@ nonisolated struct AutovisorTuning: Codable, Hashable {
             maxConcurrentManagedTasks: maxConcurrentManagedTasks,
             maxManagedTasksPerReview: maxManagedTasksPerReview,
             stuckHangSeconds: stuckHangSeconds,
+            stuckPrefillHangSeconds: stuckPrefillHangSeconds,
             stuckLoopRecencySeconds: stuckLoopRecencySeconds
         )
     }

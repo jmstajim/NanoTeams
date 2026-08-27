@@ -188,13 +188,13 @@ final class EngineWakeTests: NTMSOrchestratorTestBase, @unchecked Sendable {
                      "a closed task is terminal — the wake must not revive its engine")
     }
 
-    /// RED: drop the `startingRunTaskIDs` / `forcingRunTaskIDs` guard → the wake registers and
+    /// RED: drop the `initializingRunTaskIDs` / `forcingRunTaskIDs` guard → the wake registers and
     /// starts an engine against the OLD run while `startRun` is suspended mid-`createNewRun`;
     /// `startRun`'s own `start()` is then swallowed by its `guard state != .running`.
     func testWakeEngine_whileStartRunIsInFlight_isRefused() async {
         guard let f = await makeEngineFreeReviewTask() else { return }
-        sut.startingRunTaskIDs.insert(f.id)
-        defer { sut.startingRunTaskIDs.remove(f.id) }
+        _ = sut.engineState.beginRunStart(f.id)
+        defer { sut.engineState.endRunStart(f.id) }
 
         XCTAssertFalse(sut.wakeEngine(taskID: f.id),
                        "a run already being created will start the engine itself")
@@ -253,8 +253,8 @@ final class EngineWakeTests: NTMSOrchestratorTestBase, @unchecked Sendable {
     /// route.
     func testRequestRevision_wakeRefused_reportsInsteadOfStayingSilent() async {
         guard let f = await makeEngineFreeReviewTask() else { return }
-        sut.startingRunTaskIDs.insert(f.id)
-        defer { sut.startingRunTaskIDs.remove(f.id) }
+        _ = sut.engineState.beginRunStart(f.id)
+        defer { sut.engineState.endRunStart(f.id) }
         let before = sut.errorSurfaceCount
 
         await sut.requestRevision(taskID: f.id, roleID: f.roleID, comment: "redo it")
@@ -269,27 +269,67 @@ final class EngineWakeTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     // MARK: - The sixth member: resumeRun's mid-delegation short-circuit
 
-    /// RED: revert the mid-delegation arm to `taskEngines[taskID]?.resume()` → Resume does
-    /// nothing at all.
+    /// RED: revert the mid-delegation arm to `taskEngines[taskID]?.resume()` → Resume creates no
+    /// engine at all.
     ///
-    /// `StatusRecoveryService` never clears `step.delegation.activeChildID`, so after a crash
-    /// mid-delegation the short-circuit predicate is still true while `taskEngines` is empty —
-    /// and its early `return` skips the total `engineForTask` at the end of `resumeRun`. This is
-    /// the worst member of the class because it has a visible button.
-    func testResumeRun_midDelegationAfterRestart_startsTheEngine() async {
+    /// The short-circuit's early `return` skips the total `engineForTask` at the end of
+    /// `resumeRun`, so a raw `?.resume()` on an absent engine does nothing. This is the worst
+    /// member of the silent-wake class because it has a visible button.
+    ///
+    /// Reachable as a PAUSE of a live delegation: `pauseRun` deliberately leaves such a step
+    /// uncancelled, so the handler stays suspended while the engine is gone. It is NOT the
+    /// restart path — after a restart no handler exists, `hasWaiters` is false and
+    /// `StatusRecoveryService` has cleared the marker, so the step takes the ordinary restart
+    /// route. Re-aimed 2026-08-25 (CLAUDE.md #104): the previous fixture seeded the marker with
+    /// no awaiter, which after the predicate moved to `hasWaiters` stopped selecting this branch
+    /// — the test would have gone VACUOUS rather than red, the failure mode nobody notices.
+    func testResumeRun_midDelegationWithSuspendedHandler_startsTheEngine() async {
         guard let f = await makeEngineFreeReviewTask(stepStatus: .paused) else { return }
         await sut.mutateTask(taskID: f.id) { task in
             task.runs[0].steps[0].setActiveDelegation(childID: 999)
             task.runs[0].roleStatuses[f.roleID] = .working
         }
-        XCTAssertNotNil(sut.loadedTask(f.id)?.runs.last?.steps.first?.activeDelegationChildID,
-                        "premise: the persisted delegation marker survives a restart")
+        let handler = Task { @MainActor in _ = await sut.completionAwaiter.register(taskID: 999) }
+        var attempts = 0
+        while !sut.completionAwaiter.hasWaiters(for: 999), attempts < 50 {
+            try? await Task.sleep(for: .milliseconds(1))
+            attempts += 1
+        }
+        defer { sut.completionAwaiter.cancelAll(taskID: 999); handler.cancel() }
+        XCTAssertTrue(
+            sut.completionAwaiter.hasWaiters(for: 999),
+            "premise: a delegate_to_team handler is suspended on child #999, so resumeRun "
+                + "takes the short-circuit rather than the ordinary restart route")
 
         await sut.resumeRun(taskID: f.id)
 
         XCTAssertNotNil(sut.taskEngines[f.id],
                         "Resume on a parent stuck mid-delegation must revive its engine")
         XCTAssertEqual(sut.taskEngines[f.id]?.state, .running)
+        sut.stopEngine(for: f.id)
+    }
+
+    /// The complement, and where the retired fact is re-pinned as its negation: a marker with
+    /// NO suspended handler — what a restart leaves behind, and what pause-and-decide leaves
+    /// mid-run — must NOT take the short-circuit.
+    ///
+    /// RED: revert `stepHasSuspendedDelegationHandler` to the bare marker test → the
+    /// short-circuit fires, the paused step is never restarted, and Resume leaves the role dead
+    /// behind a live engine.
+    func testResumeRun_markerWithoutSuspendedHandler_takesTheNormalRestartPath() async {
+        guard let f = await makeEngineFreeReviewTask(stepStatus: .paused) else { return }
+        await sut.mutateTask(taskID: f.id) { task in
+            task.runs[0].steps[0].setActiveDelegation(childID: 999)
+            task.runs[0].roleStatuses[f.roleID] = .working
+        }
+        XCTAssertFalse(sut.completionAwaiter.hasWaiters(for: 999),
+                       "premise: the marker is set but nothing is awaiting the child")
+
+        await sut.resumeRun(taskID: f.id)
+
+        XCTAssertNotEqual(
+            sut.loadedTask(f.id)?.runs.last?.steps.first?.status, .paused,
+            "the step must be restarted, not left parked behind the mid-delegation short-circuit")
         sut.stopEngine(for: f.id)
     }
 
