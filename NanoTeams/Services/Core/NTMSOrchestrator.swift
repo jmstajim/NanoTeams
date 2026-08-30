@@ -576,14 +576,18 @@ final class NTMSOrchestrator {
     /// the baseline so a stuck task is delivered once, not every poll. Deliberately SEPARATE
     /// from `autovisorNotifiedAttentionKeys` (the mid-review injection dedup set —
     /// pruned + `formUnion`'d during a pass): that one is delivery bookkeeping WITHIN a
-    /// pass, this one records what a pass was STARTED for. Only `.needsSupervisor` keys are
-    /// pruned here — a question the manager answered is over, and keeping its key made every
-    /// follow-up question on the same task read as already-delivered (CLAUDE.md #74); the
-    /// other triggers keep their level semantics, because there a flicker is a remedy that
-    /// did not take (a restarted role failing again), and re-passing on it is a tight loop.
-    /// Set at every pass start (`seedAutovisorNotifiedKeysForPassStart`), pruned + recorded
-    /// in `wakeAutovisorForEvents`, and single-key-retired by
-    /// `noteSupervisorQuestionResolved`. The record in `wakeAutovisorForEvents` happens
+    /// pass, this one records what a pass was STARTED for. WHERE a spent key is retired is
+    /// derived per trigger from `AutovisorAttentionTrigger.keyRetirement`, never listed at
+    /// any one site (CLAUDE.md #143) — a key is retired on the `upsertTaskSummary` edge when
+    /// its level is a pure function of the index row, by the wake's prune when its level ORs
+    /// in something no index write observes, and not at all when its remedy is an attempt
+    /// rather than a consumption. Keeping a spent key made the next occurrence of the same
+    /// condition read as already-delivered (#74) — for questions until 2026-08-20, and for
+    /// Review until 2026-08-30.
+    /// FOUR maintainers: set at every pass start (`seedAutovisorNotifiedKeysForPassStart`),
+    /// pruned + recorded in `wakeAutovisorForEvents`, and single-key-retired by
+    /// `noteSupervisorQuestionResolved` and `noteDerivedStatusTransition`.
+    /// The record in `wakeAutovisorForEvents` happens
     /// synchronously before the `await` — that synchronous record is the
     /// SOLE serialization between the concurrent observer + poll callers (a second wake
     /// for the same conditions sees them as not-fresh and bails, so neither
@@ -911,6 +915,16 @@ final class NTMSOrchestrator {
         // Folder-scoped ids: keeping them would let one folder's task 3 answer
         // for another's, the same class as the QuickCapture cleanup below.
         taskFacts.clear()
+        // The Autovisor's four id-keyed sets are the same class and were the sites this
+        // guard had not reached (CLAUDE.md #51). A surviving `(3, .completed)` makes the
+        // NEXT folder's task 3 read as already-reviewed and silently denies it a pass —
+        // and the wake's prune cannot undo that, since a task legitimately sitting at
+        // Review is among the still-matching keys it preserves. A stale `seen` id denies
+        // the new folder's task 3 its `onTaskCreated` trigger the same way.
+        autovisorLastPassAttentionKeys = []
+        autovisorNotifiedAttentionKeys = []
+        autovisorLoopParkRedelivered = []
+        autovisorSeenTaskIDs = []
         snapshot = nil
         activeTaskID = nil
         activeTask = nil
@@ -954,9 +968,15 @@ final class NTMSOrchestrator {
     /// call sites used to spell `snap.tasksIndex.upsert(task.toSummary())`
     /// inline; routing them here is what makes a fourth one impossible to add
     /// without noticing (CLAUDE.md #51).
+    ///
+    /// It is also the one place a row TRANSITION is observable — synchronously, on both
+    /// `mutateTask` branches, with or without a window mounted — which is why an Autovisor
+    /// retirement that must not be MISSED is recorded here rather than sampled later by a
+    /// wake. See `noteRowLevelsCleared`.
     func upsertTaskSummary(_ summary: TaskSummary, in snap: inout WorkFolderContext) {
-        snap.tasksIndex.upsert(summary)
+        let previousRow = snap.tasksIndex.upsert(summary)
         taskFacts.apply(summary)
+        noteRowLevelsCleared(from: previousRow, to: summary)
     }
 
     private func syncSelectedRunID(

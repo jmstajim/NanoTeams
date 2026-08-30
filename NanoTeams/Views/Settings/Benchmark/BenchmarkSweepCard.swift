@@ -297,7 +297,7 @@ struct BenchmarkSweepCard: View {
     /// "no chat models" and "no answer" are deliberately different sentences: the first is a fact
     /// the server stated about itself, the second is the absence of one. And neither is ever
     /// worded "offline" — a server that refuses an unauthorized request is running perfectly well.
-    static func statusText(for server: BenchmarkSweepServer) -> String {
+    nonisolated static func statusText(for server: BenchmarkSweepServer) -> String {
         guard server.isIncluded else { return "skipped" }
         switch server.outcome {
         case .none: return "not scanned"
@@ -430,7 +430,7 @@ struct BenchmarkSweepCard: View {
     ///
     /// A measured row shows its figure; the row being measured borrows the runner's own per-sample
     /// sentence rather than keeping a second copy of it.
-    static func detail(
+    nonisolated static func detail(
         for state: BenchmarkSweepEntry.State, targetPhase: GenerationBenchmarkRunner.Phase
     ) -> String {
         switch state {

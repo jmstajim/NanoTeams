@@ -624,11 +624,13 @@ final class ToolExecutionTests: XCTestCase {
         let probe1Name = "probe_slow"
         let probe2Name = "probe_fast"
         let registry = ToolRegistry()
+        let probe1Started = ToolProbeStartSignal()
         registry.register(name: probe1Name) { _, _ in
             // Sync hold — a handler body that never suspends (bash, xcodebuild, git all
             // block their thread), so cancellation can only be observed BETWEEN handlers in
             // `ToolRuntime.executeAll`. The 250 ms hold gives the test time to call
             // `cancelAllExecutions` while probe #1 is still running.
+            probe1Started.signal()
             Self.holdThread(0.25)
             return ToolExecutionResult(
                 toolName: probe1Name,
@@ -666,8 +668,17 @@ final class ToolExecutionTests: XCTestCase {
             )
         }
 
-        // Wait for probe #1 to actually start running on the cooperative pool.
-        try? await Task.sleep(for: .milliseconds(80))
+        // This window is TWO-SIDED — the cancel must land after probe #1 starts and before its
+        // 250 ms hold ends — and a fixed 80 ms sleep guessed at both ends, so a miss in either
+        // direction broke a DIFFERENT assertion below (DEBTS.md D-30). The lower bound is now a
+        // FACT: probe #1 raises a signal as its first statement, so the wait ends exactly when
+        // it is running. That also widens the upper margin from "250 − 80, if the sleep landed"
+        // to the full hold measured from the real start. Same shape as
+        // `VisionAndComputerUseApprovalFlowTests.hold(_:)`, which waits for the waiter to be
+        // REGISTERED rather than for a duration.
+        await waitUntil("probe #1 to begin running on the cooperative pool") {
+            probe1Started.hasStarted
+        }
         service.cancelAllExecutions()
 
         let batch = await executeTask.value
@@ -1004,4 +1015,17 @@ final class ToolExecutionTests: XCTestCase {
         service._testRegisterStepTask(stepID: stepID, taskID: taskID)
         mockDelegate.taskToMutate = task
     }
+}
+
+
+/// A one-way flag a tool handler can raise from OFF the main actor, so a test can wait for
+/// "the handler is running" instead of sleeping for a guess at how long starting it takes.
+/// `NSLock` rather than an actor because the handler body is synchronous by construction — the
+/// whole point of the probe it serves is that it never suspends.
+private final class ToolProbeStartSignal: @unchecked Sendable {
+    private let lock = NSLock()
+    private var started = false
+
+    func signal() { lock.withLock { started = true } }
+    var hasStarted: Bool { lock.withLock { started } }
 }

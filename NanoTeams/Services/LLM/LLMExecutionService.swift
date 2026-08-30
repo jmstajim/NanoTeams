@@ -141,12 +141,12 @@ final class LLMExecutionService {
     let delegationTimeoutSeconds: TimeInterval
 
     /// Tears a step's bash-approval state down: resumes any pending waiter with
-    /// `.deny` (fail safe) and drops the pending record. Called from every teardown
-    /// path that removes the `executionStates` entry.
+    /// `.cancelled` (fail safe — held commands still never run) and drops the pending
+    /// record. Called from every teardown path that removes the `executionStates` entry.
     func clearBashState(stepID: String, taskID: Int) {
         failPendingBashApprovals(stepID: stepID, taskID: taskID)
         pendingBashApprovals[TaskStepKey(taskID: taskID, stepID: stepID)] = nil
-        // Computer-use PER-STEP teardown rides the same paths: fail any held approval (deny) so a
+        // Computer-use PER-STEP teardown rides the same paths: fail any held approval (cancel) so a
         // paused step never leaves a hung waiter. The per-run app allowlist + capture count are
         // per-TASK — cleared by `clearComputerUseTaskState`, NOT here (clearing them per-step
         // wiped an "always allow for the rest of the run" grant the moment any step finished).
@@ -379,15 +379,15 @@ final class LLMExecutionService {
             delegate?.clearStreamingPreview(stepID: key.stepID, taskID: key.taskID)
         }
         executionStates.removeAll()
-        bashApprovalWaiters.values.forEach { $0.values.forEach { $0.resolve(.deny) } }
+        bashApprovalWaiters.values.forEach { $0.values.forEach { $0.resolve(.cancelled) } }
         bashApprovalWaiters.removeAll()
         pendingBashApprovals.removeAll()
-        // Same teardown for computer-use: resolve every held waiter with `.deny` (fail safe),
+        // Same teardown for computer-use: resolve every held waiter with `.cancelled` (fail safe),
         // drop the per-run app grants + capture counts, and clear the published cards directly —
         // `executionStates.removeAll()` above bypasses the per-key `clearBashState`, so without
         // this a held action leaks a stale card into a newly-opened folder and an "always allow
         // in app" grant survives into a same-numbered task there.
-        computerUseApprovalWaiters.values.forEach { $0.values.forEach { $0.resolve(.deny) } }
+        computerUseApprovalWaiters.values.forEach { $0.values.forEach { $0.resolve(.cancelled) } }
         computerUseApprovalWaiters.removeAll()
         computerUseSessionAllowedApps.removeAll()
         computerUseCaptureCountByTask.removeAll()

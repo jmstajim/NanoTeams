@@ -557,10 +557,16 @@ final class ToolErrorNotePolicyTests: XCTestCase {
                 + "anything")
     }
 
-    /// The three arms that add nothing must KEEP adding nothing. Named separately from the
+    /// The four arms that add nothing must KEEP adding nothing. Named separately from the
     /// pin above because that one is satisfied by silence, and silence is exactly what a
     /// regression here would reintroduce noise into.
-    func testTheThreeSilentArms_staySilent() async throws {
+    ///
+    /// `cancelled` joined the three for a DIFFERENT reason and is asserted here anyway: the
+    /// other three are silent because the direction would restate the envelope, while this one
+    /// is silent because no direction is true — the run stopped, and on resume the step
+    /// re-issues, so both "fix the arguments" (the default arm it used to fall into) and "do
+    /// not retry" are wrong.
+    func testTheFourSilentArms_staySilent() async throws {
         let planRequired = LLMExecutionService.makeUnavailableToolResult(
             call: StepToolCall(name: "edit_file", argumentsJSON: "{}"),
             canonicalName: "edit_file", scope: "for this role",
@@ -573,9 +579,28 @@ final class ToolErrorNotePolicyTests: XCTestCase {
         let anchorAmbiguous = try await runEdit(
             fileContents: "m  \nn\nz\nm\t\nn\n", oldText: "m\nn", fileName: "amb.txt")
 
+        let cancelled = makeCancelledResult(toolName: ToolNames.bash, argumentsJSON: "{}")
+
         XCTAssertNil(ToolErrorNotePolicy.direction(for: planRequired), "plan_required")
         XCTAssertNil(ToolErrorNotePolicy.direction(for: anchorNotFound), "ANCHOR_NOT_FOUND (typed)")
         XCTAssertNil(ToolErrorNotePolicy.direction(for: anchorAmbiguous), "ANCHOR_AMBIGUOUS")
+        XCTAssertNil(ToolErrorNotePolicy.direction(for: cancelled), "CANCELLED")
+    }
+
+    /// Both producers of a `CANCELLED` envelope reach the same silent arm: `ToolRuntime` /
+    /// `ToolErrorHandler` build theirs from a tool name, the approval gates from the held
+    /// `StepToolCall`. The two spellings must not drift into two behaviours.
+    func testCancelled_bothEnvelopeSpellings_areSilent() {
+        let fromRuntime = makeCancelledResult(toolName: ToolNames.bash, argumentsJSON: "{}")
+        let fromGate = makeCancelledResult(
+            for: StepToolCall(providerID: "tc_0", name: ToolNames.bash,
+                              argumentsJSON: #"{"command":"make install"}"#))
+
+        XCTAssertEqual(fromRuntime.outputJSON, fromGate.outputJSON,
+                       "one condition must have one wire shape")
+        XCTAssertNil(ToolErrorNotePolicy.direction(for: fromGate))
+        XCTAssertEqual(fromGate.providerID, "tc_0",
+                       "the gate's synthetic must carry the call's providerID or the wire orphans")
     }
 
     // MARK: - Helpers

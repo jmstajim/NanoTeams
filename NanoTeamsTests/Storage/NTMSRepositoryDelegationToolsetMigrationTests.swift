@@ -144,7 +144,7 @@ final class NTMSRepositoryDelegationToolsetMigrationTests: XCTestCase {
         let codingAgentTeam = context.workFolder.teams.first { $0.templateID == "codingAgent" }
         XCTAssertNotNil(codingAgentTeam, "Coding Agent must bootstrap as a default team")
 
-        try repository.updateTeams(at: workFolder) { teams in
+        try repository.updateTeams(at: workFolder, activeTask: nil) { teams in
             guard let teamIdx = teams.firstIndex(where: { $0.templateID == "codingAgent" }),
                   let roleIdx = teams[teamIdx].roles.firstIndex(where: { !$0.isSupervisor })
             else {

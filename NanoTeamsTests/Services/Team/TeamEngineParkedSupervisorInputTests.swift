@@ -304,8 +304,21 @@ final class TeamEngineParkedSupervisorInputTests: XCTestCase {
 
         await fulfillment(of: [reparked], timeout: 2.0)
         XCTAssertEqual(sut.state, .needsSupervisorInput)
+
+        // The re-park above is armed by the SEEDED status of s2 and says nothing about s1 —
+        // `runStepCalls` is written two suspensions deep inside the fire-and-forget
+        // `reconcileAfterPause`, so asserting on it here was a race the test happened to win
+        // (DEBTS.md D-30). The neighbour 55 lines up already polls exactly this value with the
+        // comment "spawns the restart asynchronously — poll briefly"; one of the two was
+        // guarded and the other was not (CLAUDE.md #51).
+        await waitUntil("the answered step s1 to be restarted") {
+            self.mockStore.runStepCalls.contains("s1")
+        }
+
         // The answered step was restarted despite the sibling's open question.
         XCTAssertTrue(mockStore.runStepCalls.contains("s1"), "Answered step must restart")
+        // Negative, and it is checked only AFTER the positive wait above: that is what closes
+        // the window in which a wrongly-restarted s2 could still appear.
         XCTAssertFalse(mockStore.runStepCalls.contains("s2"), "Unanswered parked step must NOT restart")
     }
 }

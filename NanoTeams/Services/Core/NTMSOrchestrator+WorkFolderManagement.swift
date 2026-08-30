@@ -979,7 +979,8 @@ extension NTMSOrchestrator {
     func updateWorkFolderContext(_ context: String) async {
         guard let url = workFolderURL else { return }
         do {
-            let snapshot = try workFolderManagementService.updateWorkFolderContext(context, at: url)
+            let snapshot = try workFolderManagementService.updateWorkFolderContext(
+                context, at: url, activeTask: activeTask)
             apply(snapshot)
         } catch {
             self.lastErrorMessage = error.localizedDescription
@@ -989,7 +990,8 @@ extension NTMSOrchestrator {
     func updateSelectedScheme(_ scheme: String?) async {
         guard let url = workFolderURL else { return }
         do {
-            let snapshot = try workFolderManagementService.updateSelectedScheme(scheme, at: url)
+            let snapshot = try workFolderManagementService.updateSelectedScheme(
+                scheme, at: url, activeTask: activeTask)
             apply(snapshot)
         } catch {
             self.lastErrorMessage = error.localizedDescription

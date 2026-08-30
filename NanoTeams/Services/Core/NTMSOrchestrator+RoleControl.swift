@@ -316,10 +316,18 @@ extension NTMSOrchestrator {
     ///   `answerSupervisorQuestion` with a "Supervisor Feedback: …" prefix so the existing
     ///   supervisor-continuation path replays the step's `wireTranscript` and appends the
     ///   answer turn. `answerSupervisorQuestion` auto-resumes.
-    /// - **Branch B** — step was mid-stream (`.running`) when paused. Cancellation did
-    ///   not persist a terminal transcript arm, so
-    ///   `runStep` will rebuild `fullConversation` from `step.messages` on resume. Append
-    ///   the feedback there and set `revisionComment` as the artifact-completion gate.
+    /// - **Branch B** — step was mid-stream (`.running`) when paused. Append the feedback
+    ///   to `step.messages` and set `revisionComment` as the artifact-completion gate.
+    ///   On resume `runStep` normally replays a transcript: the cancellation arm DOES
+    ///   persist one (`LLMExecutionService+StepLifecycle`'s `catch is CancellationError`),
+    ///   so `ConversationReplay.resume` returns it and the revision-continuation branch
+    ///   appends the feedback turn and its `.supervisorFeedback` bubble. Only a step
+    ///   paused before it ever completed a request has neither a transcript nor an
+    ///   `llmConversation`; there `PromptBuilder` relays the `StepMessage` appended here
+    ///   as the wire copy and the send site records the bubble separately.
+    ///   (This paragraph claimed the opposite — "cancellation did not persist a terminal
+    ///   transcript arm, so `runStep` will rebuild from `step.messages`" — from before
+    ///   `wireTranscript` existed. CLAUDE.md #79.)
     ///
     /// In both branches the step's current `status` is `.paused` (set by `pauseStep`).
     /// The needsSupervisorInput flag disambiguates what it was doing pre-pause.

@@ -9,10 +9,14 @@ import XCTest
 ///
 /// 1. The wire user message carries exactly ONE "Supervisor Feedback: " prefix.
 /// 2. The prior conversation is REPLAYED and the feedback APPENDED — not re-synthesized.
-/// 3. The persisted display `LLMMessage` is tagged `sourceContext: .changeRequest` —
-///    without the tag, `sourceContextDisplayLabel` falls back to "(consultation)"
-///    (the exact label bug this guards against; the parameter defaults to `nil`,
-///    so dropping it compiles silently).
+/// 3. The persisted display `LLMMessage` is tagged `sourceContext: .supervisorFeedback` —
+///    a tag of SOME kind is mandatory (without one `sourceContextDisplayLabel` falls back
+///    to "(consultation)", and the parameter defaults to `nil` so dropping it compiles
+///    silently), and this particular one is what makes the bubble render as the
+///    Supervisor's own utterance: no secondary label, and the wire-side
+///    "Supervisor Feedback: " marker stripped for display while staying in `content`.
+///    It is deliberately NOT `.changeRequest`, which still names a different fact — the
+///    `request_changes` team-vote outcome, attributed to the requesting role.
 /// 4. Legacy `revisionComment` values persisted by pre-fix builds (already prefixed)
 ///    are stripped before prefixing — the doubled prefix cannot resurrect.
 @MainActor
@@ -87,8 +91,40 @@ final class RevisionContinuationSendPathTests: XCTestCase {
         let feedback = step?.llmConversation.last(where: { $0.role == .user })
         XCTAssertEqual(feedback?.content, "Supervisor Feedback: Fix the restart bug.")
         XCTAssertEqual(feedback?.sourceRole, .supervisor)
-        XCTAssertEqual(feedback?.sourceContext, .changeRequest,
-                       "Without the tag the bubble renders '(consultation)' — the label bug")
+        XCTAssertEqual(feedback?.sourceContext, .supervisorFeedback,
+                       "Without a tag the bubble renders '(consultation)' — the label bug")
+
+        // The three display consequences of that tag, asserted here rather than only on a
+        // hand-built fixture: this is the one test that drives the REAL send path, so it is
+        // the only place they are pinned against what production actually persists.
+        XCTAssertNil(feedback?.sourceContextDisplayLabel,
+                     "no secondary '(…)' label beside the crowned role name")
+        XCTAssertEqual(feedback?.displayContent, "Fix the restart bug.",
+                       "the marker is stripped for display…")
+        XCTAssertEqual(feedback?.content, "Supervisor Feedback: Fix the restart bug.",
+                       "…and NOT from the persisted body, which is replayed onto the wire")
+        XCTAssertEqual(
+            feedback?.sourceContext?.mayEmbedAttachmentMarkers, false,
+            "and it must not join the attachment-marker pass: `stripAttachedFiles` "
+                + "truncates at the first '## Attached Files', which a comment quoting a "
+                + "task brief can legitimately contain")
+    }
+
+    /// The sibling half of the same invariant (CLAUDE.md #60): re-tagging the revision path
+    /// must not drag the `request_changes` team-vote outcome along with it. Without this,
+    /// one mutation covers both halves and the split that motivated the new case is untested.
+    func testChangeRequestContext_stillNamesTheTeamVoteOutcome() {
+        let voteOutcome = LLMMessage(
+            role: .user,
+            content: "Change request APPROVED by team vote.",
+            sourceRole: .codeReviewer,
+            sourceContext: .changeRequest
+        )
+        XCTAssertEqual(voteOutcome.sourceContextDisplayLabel, "change request",
+                       "it keeps its label — the header names a teammate, not the Supervisor")
+        XCTAssertFalse(
+            MessageSourceContext.changeRequest.rendersAsSupervisorUtterance,
+            "and it must not render as a Supervisor utterance: the crown would be a lie")
     }
 
     func testRevisionContinuation_legacyPrefixedComment_doesNotDoublePrefix() async throws {
@@ -197,6 +233,72 @@ final class RevisionContinuationSendPathTests: XCTestCase {
     /// Step shaped exactly like the engine leaves it after `resetStepForRevision` +
     /// `prepareStepForExecution`: `.running`, a replayable conversation, raw
     /// revisionComment, no supervisor answer (the `hasRevisionFeedback` precondition).
+    /// The narrow hole the replay branch cannot cover: a step corrected before it ever
+    /// completed a request has no `wireTranscript` and an empty `llmConversation`, so
+    /// `ConversationReplay.resume` returns nil and the branch above does not fire. The model
+    /// still receives the feedback — `PromptBuilder` relays the `.supervisor` `StepMessage`
+    /// the trigger site appended — but nothing used to write the display record, so the
+    /// correction was invisible in the feed and in `conversation_log.md`.
+    ///
+    /// Two halves, and the second is what makes the fix non-obvious: the bubble must appear
+    /// AND the wire must still carry the feedback exactly ONCE. Appending to `conversation`
+    /// here as the replay branch does would send it twice.
+    ///
+    /// RED: delete the display append → the first assertion fails. Change it to also append
+    /// to `conversation` → the prefix count becomes 2 and the second fails.
+    func testFreshConversation_recordsTheBubble_andSendsTheFeedbackOnce() async throws {
+        let stepID = "swe_fresh_correction"
+        let task = makeCorrectedBeforeFirstRequestTask(
+            taskID: 9, stepID: stepID, revisionComment: "Fix the citations."
+        )
+        mockDelegate.taskToMutate = task
+
+        service.startStepExecution(
+            stepID: stepID, taskID: 9,
+            task: task, runIndex: 0, stepIndex: 0)
+        try await waitUntil { !self.stubClient.capturedCalls.isEmpty }
+        await service.cancelStepExecution(stepID: stepID, taskID: 9)
+
+        let step = mockDelegate.taskToMutate?.runs.last?.steps.first(where: { $0.id == stepID })
+        let feedback = step?.llmConversation.last(where: { $0.role == .user })
+        XCTAssertEqual(feedback?.sourceContext, .supervisorFeedback,
+                       "the correction must reach the feed even with no transcript to replay")
+        XCTAssertEqual(feedback?.displayContent, "Fix the citations.")
+
+        let wire = stubClient.capturedCalls[0].messages
+            .compactMap(\.content)
+            .joined(separator: "\n")
+        XCTAssertEqual(
+            wire.components(separatedBy: MessageSourceContext.supervisorFeedbackPrefix).count, 2,
+            "exactly one copy on the wire — `PromptBuilder` already relayed the StepMessage, "
+                + "so the display append must not also extend `conversation`")
+        XCTAssertTrue(
+            wire.contains("Fix the citations."),
+            "anti-vacuity: the feedback really is on this wire, so the count above is "
+                + "measuring a present string rather than an absent one")
+    }
+
+    /// `correctRole` Branch B applied to a step paused before its first request returned:
+    /// the `StepMessage` and `revisionComment` are set, but the cancellation arm stored an
+    /// empty transcript and no conversation had accumulated.
+    private func makeCorrectedBeforeFirstRequestTask(
+        taskID: Int, stepID: String, revisionComment: String
+    ) -> NTMSTask {
+        let step = StepExecution(
+            id: stepID,
+            role: .softwareEngineer,
+            title: "SWE Step",
+            status: .running,
+            messages: [StepMessage(
+                role: .supervisor,
+                content: MessageSourceContext.supervisorFeedbackPrefix + revisionComment)],
+            llmConversation: [],
+            revisionComment: revisionComment
+        )
+        let run = Run(id: 0, steps: [step])
+        return NTMSTask(id: taskID, title: "Test", supervisorTask: "Goal", runs: [run])
+    }
+
     private func makeRevisionContinuationTask(
         taskID: Int, stepID: String, revisionComment: String
     ) -> NTMSTask {

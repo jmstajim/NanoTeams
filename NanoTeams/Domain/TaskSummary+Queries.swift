@@ -80,6 +80,23 @@ nonisolated extension TaskSummary {
     /// False only for a legacy index row that predates the field. A destructive
     /// sweep must bail on these rather than treat unknown as "answered".
     var supervisorInputStateIsKnown: Bool { hasPendingSupervisorInput != nil }
+
+    /// "A role on this task is parked on an acceptance decision."
+    ///
+    /// The ONLY sanctioned way to read `hasRolesAwaitingAcceptance` affirmatively, and
+    /// deliberately total: a row written before the field existed reads `false` here, so an
+    /// unknown row wakes nobody rather than waking on a guess.
+    ///
+    /// Do NOT substitute the engine mirror (`taskEngineStates[id] == .needsAcceptance`).
+    /// After a relaunch `mapDerivedStatusToEngineState` seeds `.paused` for a task whose row
+    /// still records the gate, so the mirror and the row answer different questions with
+    /// different lifetimes (CLAUDE.md #91) — the same reason `isWaitingForSupervisor` exists
+    /// beside `status == .needsSupervisorInput`.
+    var hasRoleAtAcceptanceGate: Bool { hasRolesAwaitingAcceptance == true }
+
+    /// False only for a legacy index row that predates the field — "don't know", which a
+    /// destructive sweep must not read as "no gate".
+    var acceptanceGateStateIsKnown: Bool { hasRolesAwaitingAcceptance != nil }
 }
 
 /// What the task index knows about "is this task waiting on the Supervisor".

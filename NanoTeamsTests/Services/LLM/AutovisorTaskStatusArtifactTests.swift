@@ -423,6 +423,49 @@ final class AutovisorTaskStatusArtifactTests: XCTestCase {
         XCTAssertNil(rows.first(where: { $0.id == 2 })?.waiting_for_supervisor)
     }
 
+    // MARK: - list_tasks roles_awaiting_acceptance
+
+    func testHandleListTasks_gatedTask_carriesRolesAwaitingAcceptance() async throws {
+        // A task stalled at a mid-pipeline acceptance gate derives `running`, so `status`
+        // alone tells the manager nothing is needed. The wake now fires for this condition,
+        // and a FRESH pass carries no event notice — it starts at `list_tasks` — so without
+        // this field the woken pass reads "running", does nothing, and the wake burns a run.
+        let index = TasksIndex(tasks: [
+            TaskSummary(id: 1, title: "Gated", status: .running, hasRolesAwaitingAcceptance: true),
+        ])
+        let projection = WorkFolderProjection(
+            state: WorkFolderState(name: "t"), settings: ProjectSettings(), teams: [])
+        mockDelegate.snapshot = WorkFolderContext(
+            projection: projection, tasksIndex: index, toolDefinitions: [])
+
+        struct Row: Decodable { let id: Int; let status: String; let roles_awaiting_acceptance: Bool? }
+        struct Env: Decodable { struct D: Decodable { let tasks: [Row] }; let data: D }
+        let rows = try JSONDecoder().decode(Env.self, from: Data(await service.handleListTasks().utf8)).data.tasks
+        XCTAssertEqual(rows.first(where: { $0.id == 1 })?.status, "running",
+                       "premise: the status is exactly what cannot report this")
+        XCTAssertEqual(rows.first(where: { $0.id == 1 })?.roles_awaiting_acceptance, true)
+    }
+
+    func testHandleListTasks_ungatedAndLegacyTasks_omitTheField() async throws {
+        // Present-only-when-true, same convention and same reason as `waiting_for_supervisor`:
+        // an absent value must never assert a state the payload cannot prove, and a legacy
+        // index row written before the field existed knows nothing.
+        let index = TasksIndex(tasks: [
+            TaskSummary(id: 1, title: "Busy", status: .running, hasRolesAwaitingAcceptance: false),
+            TaskSummary(id: 2, title: "Legacy", status: .running, hasRolesAwaitingAcceptance: nil),
+        ])
+        let projection = WorkFolderProjection(
+            state: WorkFolderState(name: "t"), settings: ProjectSettings(), teams: [])
+        mockDelegate.snapshot = WorkFolderContext(
+            projection: projection, tasksIndex: index, toolDefinitions: [])
+
+        struct Row: Decodable { let id: Int; let roles_awaiting_acceptance: Bool? }
+        struct Env: Decodable { struct D: Decodable { let tasks: [Row] }; let data: D }
+        let rows = try JSONDecoder().decode(Env.self, from: Data(await service.handleListTasks().utf8)).data.tasks
+        XCTAssertNil(rows.first(where: { $0.id == 1 })?.roles_awaiting_acceptance)
+        XCTAssertNil(rows.first(where: { $0.id == 2 })?.roles_awaiting_acceptance)
+    }
+
     // MARK: - chat_mode / role_kind wire fields
 
     func testHandleTaskStatus_chatModeTask_reportsChatModeTrue() async throws {

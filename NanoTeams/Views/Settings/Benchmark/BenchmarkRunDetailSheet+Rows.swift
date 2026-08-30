@@ -33,12 +33,12 @@ extension BenchmarkRunDetailSheet {
         let isVoid: Bool
     }
 
-    static let sampleColumnTitles = [
+    nonisolated static let sampleColumnTitles = [
         "#", "Prompt", "Output", "TTFT", "Prefill", "Generation", "Load", "Total", "Stop",
         "Outcome",
     ]
 
-    static func subtitle(for run: GenerationBenchmarkRun) -> String {
+    nonisolated static func subtitle(for run: GenerationBenchmarkRun) -> String {
         [
             run.provider.displayName,
             run.baseURLString.endpointHostLabel,
@@ -55,7 +55,7 @@ extension BenchmarkRunDetailSheet {
     /// cache — so a reader who wants to know what loading cost has nowhere else to look. It
     /// carries `stoppedEarly` on every healthy run, which is why its outcome reads as a note
     /// rather than as a failure.
-    static func sampleRows(for samples: [GenerationBenchmarkSample]) -> [SampleRow] {
+    nonisolated static func sampleRows(for samples: [GenerationBenchmarkSample]) -> [SampleRow] {
         samples
             .sorted {
                 if $0.phase != $1.phase { return $0.phase == .warmup }
@@ -94,7 +94,7 @@ extension BenchmarkRunDetailSheet {
     /// Output tokens, with the reasoning share named where the provider separates it — the number
     /// beside it is the denominator of the Generation cell, and a reader comparing two models on
     /// speed alone would otherwise miss that one of them spent most of it thinking.
-    private static func outputTokenCell(_ sample: GenerationBenchmarkSample) -> String {
+    private nonisolated static func outputTokenCell(_ sample: GenerationBenchmarkSample) -> String {
         guard let output = sample.outputTokens else { return BenchmarkMetricsPolicy.noValue }
         guard let reasoning = sample.reasoningOutputTokens, reasoning > 0 else { return "\(output)" }
         return "\(output) (\(reasoning) thinking)"
@@ -104,7 +104,7 @@ extension BenchmarkRunDetailSheet {
     /// and the cell says which. The two are different facts on different clocks, and a column that
     /// silently mixed them would be exactly the "an inference indistinguishable from a
     /// measurement" defect the Format column was rewritten to avoid.
-    private static func loadCell(_ sample: GenerationBenchmarkSample) -> String {
+    private nonisolated static func loadCell(_ sample: GenerationBenchmarkSample) -> String {
         if let server = sample.modelLoadMs {
             return BenchmarkMetricsPolicy.formatDuration(server)
         }
@@ -114,7 +114,7 @@ extension BenchmarkRunDetailSheet {
 
     /// The app's clock, and the server's beside it where the server keeps one. The gap between
     /// them is transport and scheduling — the difference between a slow model and a busy machine.
-    private static func totalCell(_ sample: GenerationBenchmarkSample) -> String {
+    private nonisolated static func totalCell(_ sample: GenerationBenchmarkSample) -> String {
         let app = BenchmarkMetricsPolicy.formatDuration(sample.totalMs)
         guard let server = sample.serverTotalMs else { return app }
         return app + " · srv " + BenchmarkMetricsPolicy.formatDuration(server)
@@ -122,7 +122,7 @@ extension BenchmarkRunDetailSheet {
 
     /// What became of a sample. Empty for one that counted — a word there would put "ok" on every
     /// healthy row and bury the one row that says something.
-    static func outcome(_ sample: GenerationBenchmarkSample) -> String {
+    nonisolated static func outcome(_ sample: GenerationBenchmarkSample) -> String {
         guard let void = sample.void else { return "" }
         let reason = sample.phase == .warmup && void == .stoppedEarly
             ? "stopped once warm"
@@ -131,7 +131,7 @@ extension BenchmarkRunDetailSheet {
         return "\(reason) — \(detail)"
     }
 
-    private static func count(_ value: Int?) -> String {
+    private nonisolated static func count(_ value: Int?) -> String {
         value.map { "\($0)" } ?? BenchmarkMetricsPolicy.noValue
     }
 
@@ -142,7 +142,7 @@ extension BenchmarkRunDetailSheet {
     /// Format and Quantization appear here even though `serverFields` may also carry them: these
     /// are the typed fields, promoted at decode so they are present on rows recorded before the
     /// columns existed, while the dictionary below is whatever the server actually sent.
-    static func conditionRows(for run: GenerationBenchmarkRun) -> [DetailRow] {
+    nonisolated static func conditionRows(for run: GenerationBenchmarkRun) -> [DetailRow] {
         var rows: [DetailRow] = [
             DetailRow(label: "Provider", value: run.provider.displayName),
             DetailRow(label: "Endpoint", value: run.baseURLString),
@@ -179,51 +179,51 @@ extension BenchmarkRunDetailSheet {
         return rows
     }
 
-    static func serverFieldRows(for run: GenerationBenchmarkRun) -> [DetailRow] {
+    nonisolated static func serverFieldRows(for run: GenerationBenchmarkRun) -> [DetailRow] {
         // Key-sorted so two runs of the same model can be read side by side, and VERBATIM: this
         // string is what you would match against a model card or another tool's output, and a
         // tidied-up spelling would match nothing.
         run.serverFields.keys.sorted().map { DetailRow(label: $0, value: run.serverFields[$0] ?? "") }
     }
 
-    static func samplingParameterRows(for run: GenerationBenchmarkRun) -> [DetailRow] {
+    nonisolated static func samplingParameterRows(for run: GenerationBenchmarkRun) -> [DetailRow] {
         run.samplingParameters.keys.sorted().map {
             DetailRow(label: $0, value: run.samplingParameters[$0] ?? "")
         }
     }
 
-    private static func yesNo(_ value: Bool) -> String { value ? "yes" : "no" }
+    private nonisolated static func yesNo(_ value: Bool) -> String { value ? "yes" : "no" }
 
     // MARK: Wording
 
-    static let ratesHelp =
+    nonisolated static let ratesHelp =
         "The medians this run contributes to the tables, over its usable samples. The same figures "
             + "the Runs row shows, plus the two it has no column for: how much of the output was "
             + "reasoning, and the app's own timing of a generation the server measured itself."
 
-    static let samplesHelp =
+    nonisolated static let samplesHelp =
         "Every sample this run took, including the warm-up and every one the medians excluded — "
             + "with the reason. The warm-up pays for loading the model and is stopped as soon as "
             + "it is decoding, so it is the only place the load cost is visible, and its "
             + "\"stopped once warm\" note is the healthy outcome rather than a failure."
 
-    static let conditionsHelp =
+    nonisolated static let conditionsHelp =
         "What was asked for and what the machine was doing at the time. A run measured while "
             + "thermally throttled or in Low Power Mode describes that state as much as the model."
 
-    static let serverFieldsHelp =
+    nonisolated static let serverFieldsHelp =
         "What the server reported about itself and the loaded model, verbatim and untranslated. "
             + "The key set differs between providers and between builds by design — a field a "
             + "server starts reporting tomorrow lands here without a schema change."
 
-    static let samplingHelp =
+    nonisolated static let samplingHelp =
         "The generation parameters the model was loaded with, where the server reports them."
 
-    static let noServerFields =
+    nonisolated static let noServerFields =
         "This server reported nothing about itself on this run. Recorded as silence rather than "
             + "as empty values — the two are different, and only one of them is a measurement."
 
-    static func noSamplingParameters(provider: LLMProvider) -> String {
+    nonisolated static func noSamplingParameters(provider: LLMProvider) -> String {
         switch provider {
         case .lmStudio:
             "LM Studio keeps sampling parameters in its per-model config and does not report them "

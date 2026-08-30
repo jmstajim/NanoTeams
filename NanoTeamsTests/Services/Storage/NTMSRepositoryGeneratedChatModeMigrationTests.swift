@@ -471,7 +471,7 @@ final class NTMSRepositoryGeneratedChatModeMigrationTests: XCTestCase {
     private func seedGeneratedTeamTask(withRun: Bool, title: String = "Gen") throws -> Int {
         var context = try repository.openOrCreateWorkFolder(at: tempDir)
         if !context.projection.teams.contains(where: { $0.isGeneratedPlaceholder }) {
-            context = try repository.updateTeams(at: tempDir) { teams in
+            context = try repository.updateTeams(at: tempDir, activeTask: nil) { teams in
                 teams.append(TeamTemplateFactory.generatedTeam())
             }
         }

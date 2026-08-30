@@ -242,16 +242,13 @@ extension TeamActivityFeedView {
                 isStreamingToolCall: streaming.isStreamingToolCall
             )
         }
-        // `.supervisorAnswer` joins `.supervisorMessage`: unpaired answers
-        // (escalation / Autovisor idle park) render as durable Supervisor
-        // bubbles, and an answer embedding `## Attached Files` / clip markers
-        // must surface thumbnail cards, not raw marker text. (Paired answers
-        // never reach a bubble outside debug mode.)
-        let isSupervisorMsg = msg.sourceContext == .supervisorMessage
-            || msg.sourceContext == .supervisorAnswer
+        // Which contexts can carry marker sections is stated on the value
+        // (`mayEmbedAttachmentMarkers`) rather than re-listed here — the same
+        // question is asked by `ConversationTranscriptRenderer`, and the two
+        // lists had already drifted apart.
         let inputs = ActivityFeedBuilder.bubbleDisplayInputs(
             raw: msg.displayContent,
-            isSupervisorMessage: isSupervisorMsg
+            isSupervisorMessage: msg.sourceContext?.mayEmbedAttachmentMarkers == true
         )
         return .committed(
             content: inputs.text,

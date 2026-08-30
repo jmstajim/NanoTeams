@@ -351,8 +351,8 @@ struct AutovisorSettingsView: View {
                 SettingsToggleRow(title: "Wake when a task fails", icon: "xmark.octagon", isOn: $activation.onTaskFailed)
                 rowCaption("Wake to triage or restart a failed task.")
 
-                SettingsToggleRow(title: "Wake when a task completes", icon: "checkmark.circle", isOn: $activation.onTaskCompleted)
-                rowCaption("Wake to review results, close, or decide what's next.")
+                SettingsToggleRow(title: "Wake when a task needs a review decision", icon: "checkmark.circle", isOn: $activation.onTaskCompleted)
+                rowCaption("Wake when a task finishes, or when one role finishes and the rest of its team is waiting on your acceptance.")
 
                 SettingsToggleRow(title: "Wake when a new task is created", icon: "plus.circle", isOn: $activation.onTaskCreated)
                 rowCaption("Wake when a human adds a top-level task Autovisor hasn't seen yet.")

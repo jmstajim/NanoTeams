@@ -21,6 +21,33 @@ final class TasksIndexUpsertTests: XCTestCase {
         TasksIndex(schemaVersion: 1, tasks: rows, nextTaskID: 99)
     }
 
+    /// `upsert` hands back the row it REPLACED, because that value exists only for the
+    /// duration of the call and `NTMSOrchestrator.upsertTaskSummary` needs it to retire the
+    /// Autovisor's spent attention keys on the edge where a condition's level clears.
+    ///
+    /// Pinned directly rather than only through that consumer: the mutation `return summary`
+    /// — handing back the row just written — makes every transition compare new-against-new,
+    /// silently disabling the whole retirement, and nothing else in the tree reads this value.
+    /// Covers all three exit paths, since the insert and the two replace branches each return
+    /// separately.
+    func testUpsert_returnsTheRowItReplaced() {
+        var idx = index([summary(1, 0), summary(2, 10)])
+
+        XCTAssertNil(idx.upsert(summary(9, 5)), "a row seen for the first time replaced nothing")
+
+        // Replace branch #1: a moved stamp (remove + re-insert).
+        let movedStamp = idx.upsert(summary(2, -5, title: "touched"))
+        XCTAssertEqual(movedStamp?.title, "task-2", "the value handed back is the OLD row")
+        XCTAssertEqual(idx.tasks.first(where: { $0.id == 2 })?.title, "touched",
+                       "…while the index holds the new one")
+
+        // Replace branch #2: an unchanged stamp (converge write, replaced in place).
+        let sameStamp = idx.upsert(summary(1, 0, title: "converged"))
+        XCTAssertEqual(sameStamp?.title, "task-1",
+                       "the in-place converge branch must return the old row too — it is the "
+                           + "branch a recovery-sweep re-summarize takes")
+    }
+
     /// The common case: the mutated row carries a fresh `MonotonicClock` stamp, so it is
     /// provably the newest and belongs at the front.
     ///

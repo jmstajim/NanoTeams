@@ -3,7 +3,7 @@ import SwiftUI
 /// Compact SF Symbol picker — shows selected icon as a button, opens popover grid on click.
 struct IconPickerButton: View {
     @Binding var selectedIcon: String
-    var iconForeground: Color = .white
+    var iconForeground: Color = Colors.textOnAccent
     var iconBackground: Color = Colors.accent
     @ScaledMetric(relativeTo: .body) private var buttonSize: CGFloat = 32
     @ScaledMetric(relativeTo: .body) private var gridItemSize: CGFloat = 28
@@ -131,7 +131,7 @@ struct IconPickerButton: View {
         IconPickerButton(selectedIcon: $icon)
         IconPickerButton(
             selectedIcon: $icon,
-            iconForeground: .white,
+            iconForeground: Colors.textOnAccent,
             iconBackground: Colors.success
         )
     }

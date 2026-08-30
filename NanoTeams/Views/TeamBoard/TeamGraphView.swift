@@ -83,7 +83,7 @@ struct TeamGraphView: View {
         return Bounds(minX: minX, maxX: maxX, minY: minY, maxY: maxY)
     }
 
-    private static let runtimeNodeHeight: CGFloat = GraphTokens.nodeHeight
+    private nonisolated static let runtimeNodeHeight: CGFloat = GraphTokens.nodeHeight
 
     /// Calculate scale factor so the graph fits within the view
     nonisolated static func fitScale(viewSize: CGSize, bounds: Bounds?, visibleCount: Int) -> CGFloat {
@@ -103,7 +103,7 @@ struct TeamGraphView: View {
 
     /// Extra horizontal margin to accommodate connection curves and labels
     /// that extend beyond the outermost nodes (e.g. skip-level Bezier control points).
-    private static let connectionOvershoot: CGFloat = 80
+    private nonisolated static let connectionOvershoot: CGFloat = 80
 
     /// Graph-local offset: translates node positions so all coordinates are positive
     /// within a fixed-size frame. Prevents Canvas clipping at negative coordinates.

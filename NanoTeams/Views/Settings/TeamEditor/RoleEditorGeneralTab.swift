@@ -7,7 +7,7 @@ struct RoleEditorGeneralTab: View {
     let isEditingSupervisor: Bool
 
     private var resolvedIconForeground: Color {
-        Color(hex: editorState.roleIconColor) ?? .white
+        Color(hex: editorState.roleIconColor) ?? Colors.textOnAccent
     }
 
     private var resolvedIconBackground: Color {

@@ -612,7 +612,7 @@ final class NTMSRepositoryTests: XCTestCase {
         let initial = try sut.openOrCreateWorkFolder(at: root)
         XCTAssertEqual(initial.workFolder.settings.context, "", "Initial context should be empty")
 
-        let updated = try sut.updateWorkFolderContext(at: root, context: "A cool project")
+        let updated = try sut.updateWorkFolderContext(at: root, context: "A cool project", activeTask: nil)
         XCTAssertEqual(updated.workFolder.settings.context, "A cool project",
                        "Context should be updated")
 
@@ -629,7 +629,7 @@ final class NTMSRepositoryTests: XCTestCase {
         _ = try sut.openOrCreateWorkFolder(at: root)
 
         // Modify the work folder context so we can detect a reset
-        _ = try sut.updateWorkFolderContext(at: root, context: "Custom context")
+        _ = try sut.updateWorkFolderContext(at: root, context: "Custom context", activeTask: nil)
 
         // Create a task so there is data to reset
         _ = try sut.createTask(at: root, title: "Will be lost", supervisorTask: "Goal")
@@ -708,7 +708,7 @@ final class NTMSRepositoryTests: XCTestCase {
         var settings = initial.workFolder.settings
         settings.context = "Modified via updateProject"
 
-        let updated = try sut.updateSettings(at: root) { $0 = settings }
+        let updated = try sut.updateSettings(at: root, activeTask: nil) { $0 = settings }
 
         XCTAssertEqual(updated.workFolder.settings.context, "Modified via updateProject")
 
@@ -816,7 +816,7 @@ final class NTMSRepositoryTests: XCTestCase {
         wf.teams.remove(at: engineeringIndex!)
         XCTAssertEqual(wf.teams.count, Team.defaultTeams.count - 1)
 
-        _ = try sut.updateTeams(at: root) { $0 = wf.teams }
+        _ = try sut.updateTeams(at: root, activeTask: nil) { $0 = wf.teams }
 
         // Re-open — missing team should be merged back
         let reopened = try sut.openOrCreateWorkFolder(at: root)
@@ -845,7 +845,7 @@ final class NTMSRepositoryTests: XCTestCase {
         }
 
         wf.teams[teamIdx].roles[roleIdx].dependencies.requiredArtifacts = ["World Compendium"]
-        _ = try sut.updateTeams(at: root) { $0 = wf.teams }
+        _ = try sut.updateTeams(at: root, activeTask: nil) { $0 = wf.teams }
 
         // Re-open — sync should add "NPC Compendium" back (producer exists in team)
         let reopened = try sut.openOrCreateWorkFolder(at: root)

@@ -226,8 +226,8 @@ nonisolated final class InMemoryConfigurationStorage: ConfigurationStorage, @unc
     func object(forKey key: String) -> Any? { withLock { store[key] } }
     func set(_ value: Any?, forKey key: String) {
         withLock {
-            if let value { store[key] = value } else { store.removeValue(forKey: key) }
+            if let value { store[key] = value } else { _ = store.removeValue(forKey: key) }
         }
     }
-    func removeObject(forKey key: String) { withLock { store.removeValue(forKey: key) } }
+    func removeObject(forKey key: String) { withLock { _ = store.removeValue(forKey: key) } }
 }

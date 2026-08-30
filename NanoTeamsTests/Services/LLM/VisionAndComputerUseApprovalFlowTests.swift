@@ -808,23 +808,27 @@ final class VisionAndComputerUseApprovalFlowTests: XCTestCase {
         XCTAssertEqual(decision, .allow, "a mis-keyed deny must never have been delivered")
     }
 
-    /// Pause cancels the step's task while an action is held ⇒ `.deny`. Fail-safe: an unapproved
-    /// OS action is never run.
-    func testApproval_cancellationResolvesAsDeny() async {
+    /// Pause cancels the step's task while an action is held ⇒ `.cancelled`. Fail-safe is
+    /// unchanged — an unapproved OS action is never run — but the outcome is not a REFUSAL, and
+    /// the gate turns each into a different envelope: `.deny` names the Supervisor, `.cancelled`
+    /// emits `CANCELLED`. This used to resolve `.deny`, so a paused run told the model the
+    /// Supervisor had refused an action they were never shown.
+    func testApproval_cancellationResolvesAsCancelled() async {
         let request = approvalRequest()
         let running = await hold(request)
 
         running.cancel()
         let decision = await running.value
 
-        XCTAssertEqual(decision, .deny, "a cancelled approval denies, it never runs")
+        XCTAssertEqual(decision, .cancelled, "a cancelled approval never runs — and never refuses")
         XCTAssertNil(service.computerUseApprovalWaiters[TaskStepKey(taskID: taskID, stepID: stepID)],
                      "the cancelled waiter must still be unregistered")
     }
 
     /// Per-step teardown (`failPendingComputerUseApprovals`, reached from `clearBashState` on every
-    /// step-completion / cancel path) resolves everything still held with `.deny` and drops the key.
-    func testApproval_perStepTeardown_deniesEveryHeldActionAndDropsTheKey() async {
+    /// step-completion / cancel path) resolves everything still held with `.cancelled` and drops
+    /// the key.
+    func testApproval_perStepTeardown_cancelsEveryHeldActionAndDropsTheKey() async {
         let key = TaskStepKey(taskID: taskID, stepID: stepID)
         let first = await hold(approvalRequest(actionKey: "a"))
         let second = await hold(approvalRequest(actionKey: "b"))
@@ -834,20 +838,20 @@ final class VisionAndComputerUseApprovalFlowTests: XCTestCase {
 
         let firstDecision = await first.value
         let secondDecision = await second.value
-        XCTAssertEqual(firstDecision, .deny)
-        XCTAssertEqual(secondDecision, .deny)
+        XCTAssertEqual(firstDecision, .cancelled)
+        XCTAssertEqual(secondDecision, .cancelled)
         XCTAssertNil(service.computerUseApprovalWaiters[key])
     }
 
     /// Same teardown reached through the shared per-step entry point the step lifecycle actually
     /// calls, so a refactor that drops the computer-use half of `clearBashState` is caught.
-    func testApproval_clearBashState_alsoDeniesHeldComputerUseActions() async {
+    func testApproval_clearBashState_alsoCancelsHeldComputerUseActions() async {
         let running = await hold(approvalRequest())
 
         service.clearBashState(stepID: stepID, taskID: taskID)
 
         let decision = await running.value
-        XCTAssertEqual(decision, .deny)
+        XCTAssertEqual(decision, .cancelled)
         XCTAssertNil(service.computerUseApprovalWaiters[TaskStepKey(taskID: taskID, stepID: stepID)])
     }
 
@@ -895,16 +899,16 @@ final class VisionAndComputerUseApprovalFlowTests: XCTestCase {
                      "the key is dropped only once the dictionary empties")
     }
 
-    /// Full teardown (work-folder switch): every held waiter denies, the registry empties, and the
-    /// orchestrator's published cards are cleared DIRECTLY — the orphaned `didEnd` callbacks may
-    /// land after a new folder has already rendered.
-    func testApproval_cancelAllExecutions_deniesHeldActionsAndClearsPublishedCards() async {
+    /// Full teardown (work-folder switch): every held waiter cancels, the registry empties, and
+    /// the orchestrator's published cards are cleared DIRECTLY — the orphaned `didEnd` callbacks
+    /// may land after a new folder has already rendered.
+    func testApproval_cancelAllExecutions_cancelsHeldActionsAndClearsPublishedCards() async {
         let running = await hold(approvalRequest())
 
         service.cancelAllExecutions()
 
         let decision = await running.value
-        XCTAssertEqual(decision, .deny)
+        XCTAssertEqual(decision, .cancelled)
         XCTAssertTrue(service.computerUseApprovalWaiters.isEmpty)
         XCTAssertEqual(delegate.clearAllComputerUseApprovalRequestsCallCount, 1)
     }

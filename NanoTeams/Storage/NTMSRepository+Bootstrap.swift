@@ -288,7 +288,21 @@ nonisolated extension NTMSRepository {
         // UUID names mean each crash leaves a unique file that the next successful
         // write can't recycle (unlike the legacy shared-name pattern). Run BEFORE
         // any writeIfMissing below so we never touch a temp this process created.
-        sweepOrphanTempFiles(under: paths.internalDir)
+        //
+        // ONCE PER FOLDER PER PROCESS. `bootstrapIfNeeded` is reached from every
+        // `preparePaths`, i.e. from all five narrow writers and from create/delete/
+        // setActiveTask — so this crash-recovery sweep was running a RECURSIVE
+        // enumeration of the whole `.nanoteams/internal/` tree on every settings write.
+        // That tree grows with tasks × runs × steps (`step_log.jsonl`,
+        // `network_log.jsonl`, `tool_calls.jsonl`, build diagnostics) and is never
+        // pruned, so the cost of a ~1 KB write grew with the folder's whole history.
+        // The orphans it hunts can only be created by a crash — i.e. by a PREVIOUS
+        // process — so once per folder is the cadence its own purpose asks for, and the
+        // ordering contract above is preserved: the first bootstrap for a folder still
+        // sweeps before that folder's first `writeIfMissing`.
+        if Self.markSweptIfNeeded(paths.internalDir) {
+            sweepOrphanTempFiles(under: paths.internalDir)
+        }
 
         let stateDefault = WorkFolderState(
             id: UUID(),
@@ -320,6 +334,27 @@ nonisolated extension NTMSRepository {
     /// in the same bootstrap pass so we don't accidentally consume a temp this
     /// process just created. Single-instance app + single-folder bootstrap means
     /// no other writers race us at this point.
+    /// Process-global "already swept this folder" registry, keyed by the canonical
+    /// internal-dir path — the same shape `TaskStreamStore` uses for its per-file
+    /// serial queues. Returns `true` exactly once per folder per process, for the
+    /// caller that should perform the sweep.
+    ///
+    /// `NTMSRepository` is a `nonisolated struct` reachable from any actor, so the
+    /// registry carries its own lock rather than relying on the caller's isolation.
+    private static let sweptLock = NSLock()
+    nonisolated(unsafe) private static var sweptInternalDirs: Set<String> = []
+
+    static func markSweptIfNeeded(_ internalDir: URL) -> Bool {
+        sweptLock.withLock { sweptInternalDirs.insert(internalDir.standardizedFileURL.path).inserted }
+    }
+
+    /// Test seam: a folder re-opened inside one test process must be able to sweep again,
+    /// and a test that asserts the ONCE-per-folder property needs to establish its own
+    /// starting point rather than inherit whatever earlier tests left in a process-global.
+    static func _testResetSweepRegistry() {
+        sweptLock.withLock { sweptInternalDirs.removeAll() }
+    }
+
     func sweepOrphanTempFiles(under internalDir: URL) {
         guard let enumerator = fileManager.enumerator(
             at: internalDir,

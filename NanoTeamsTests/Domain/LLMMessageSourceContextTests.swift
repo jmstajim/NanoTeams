@@ -111,24 +111,155 @@ final class LLMMessageSourceContextTests: XCTestCase {
         XCTAssertEqual(msg.displayContent, raw)
     }
 
+    /// `correctRole` Branch A stacks two markers: it hands the feedback to
+    /// `answerSupervisorQuestion`, which prepends its own. Stripping only the outer one left
+    /// `Supervisor Feedback: ` visible in the bubble — the same leak the revision path had,
+    /// reached through the other branch of the same button.
+    ///
+    /// The LABEL stays: unlike an unprompted correction, this one answers a question the role
+    /// asked, and "(supervisor answer)" says which — that is not a repeat of the header.
+    ///
+    /// RED: drop the composed form from `attributionPrefixes` → the inner marker survives.
+    func testDisplayContent_correctRoleBranchA_stripsBothStackedMarkers() {
+        let content = MessageSourceContext.supervisorAnswerPrefix
+            + MessageSourceContext.supervisorFeedbackPrefix
+            + "Use the other API."
+        let msg = LLMMessage(
+            role: .user, content: content,
+            sourceRole: .supervisor, sourceContext: .supervisorAnswer
+        )
+        XCTAssertEqual(msg.displayContent, "Use the other API.")
+        XCTAssertEqual(msg.sourceContextDisplayLabel, "supervisor answer",
+                       "the label survives — it names which question came back")
+    }
+
+    /// The controlled comparison for the test above: a PLAIN answer still strips exactly one
+    /// marker, so the composed entry cannot be over-eager.
+    func testDisplayContent_plainSupervisorAnswer_stripsOneMarker() {
+        let msg = LLMMessage(
+            role: .user,
+            content: MessageSourceContext.supervisorAnswerPrefix + "Yes, proceed.",
+            sourceRole: .supervisor, sourceContext: .supervisorAnswer
+        )
+        XCTAssertEqual(msg.displayContent, "Yes, proceed.")
+    }
+
+    // MARK: - displayLabel completeness
+
+    /// Every context's label is human prose, never its camelCase raw value.
+    ///
+    /// `displayLabel` falls back to `?? rawValue` on a map miss, and that fallback is not
+    /// display-only: `ConversationTranscriptRenderer` writes the label into
+    /// `conversation_log.md`, a per-run audit artifact diffed against `network_log.jsonl`.
+    /// So a forgotten row does not fail — it quietly puts `Supervisor (supervisorFeedback)`
+    /// on disk. Nothing else reddens on that, which is why this sweep exists.
+    ///
+    /// Sweeps `allCases`, so a case added later is covered without editing a list.
+    ///
+    /// RED: delete any row from `displayLabelMap` → this fails naming the case.
+    func testDisplayLabel_neverLeaksACamelCaseRawValue() {
+        XCTAssertGreaterThanOrEqual(MessageSourceContext.allCases.count, 15,
+                                    "anti-vacuity: a short allCases would check almost nothing")
+        for context in MessageSourceContext.allCases {
+            // `.serverError` is the one documented absence: the red bubble and the
+            // self-describing body already say what it is, so it renders no label at all
+            // (`sourceContextDisplayLabel` returns nil) and never reaches this fallback.
+            if context == .serverError { continue }
+            XCTAssertFalse(
+                context.displayLabel.contains(where: \.isUppercase),
+                "\(context.rawValue) has no `displayLabelMap` row, so `displayLabel` fell "
+                    + "back to its raw value — which would print camelCase into the feed "
+                    + "header and conversation_log.md"
+            )
+        }
+    }
+
+    // MARK: - legacy decode normalization
+
+    /// Feedback recorded before `.supervisorFeedback` existed re-renders correctly, so a run
+    /// already on disk is not stuck with the old label and the leaked prefix.
+    ///
+    /// RED: drop any of the three gates in `normalizingLegacyContext` → one of the three
+    /// assertions below fails. The content gate is the one worth keeping in view: `sourceRole`
+    /// is reachable by the MODEL (`ask_teammate`'s raw `teammate` argument resolves through
+    /// `Role.builtInRole(for:) ?? .custom(id:)`), so a rule gated on the role alone could be
+    /// aimed at a bubble the model chose.
+    func testDecode_legacyRevisionFeedback_isRetaggedAsSupervisorFeedback() throws {
+        func decode(content: String, role: Role?, context: MessageSourceContext?) throws -> LLMMessage {
+            let original = LLMMessage(
+                role: .user, content: content, sourceRole: role, sourceContext: context)
+            let data = try JSONEncoder().encode(original)
+            return try JSONDecoder().decode(LLMMessage.self, from: data)
+        }
+        let prefix = MessageSourceContext.supervisorFeedbackPrefix
+
+        XCTAssertEqual(
+            try decode(content: prefix + "fix it", role: .supervisor, context: .changeRequest)
+                .sourceContext,
+            .supervisorFeedback,
+            "all three gates met — this is exactly what the revision branch used to persist"
+        )
+        XCTAssertEqual(
+            try decode(content: "Change request APPROVED by team vote.",
+                       role: .codeReviewer, context: .changeRequest).sourceContext,
+            .changeRequest,
+            "the `request_changes` vote outcome keeps its case — it is a different fact, and "
+                + "re-tagging it would put a crown on a teammate's bubble"
+        )
+        XCTAssertEqual(
+            try decode(content: "please look at the supervisor's notes",
+                       role: .supervisor, context: .changeRequest).sourceContext,
+            .changeRequest,
+            "role matches but the body carries no marker — the content gate is what makes "
+                + "the rule independent of how a role id happens to resolve"
+        )
+    }
+
     // MARK: - sourceContextDisplayLabel (bubble label contract)
 
     func testSourceContextDisplayLabel_changeRequest() {
-        // Revision-continuation feedback messages carry `.changeRequest` so the
-        // bubble renders "(change request)" — pinned because the appendLLMMessage
-        // parameter defaults to nil, and dropping it compiles silently.
+        // `.changeRequest` now names ONE thing: the `request_changes` team-vote outcome,
+        // attributed to the REQUESTING role. The fixture carries that role deliberately —
+        // a `.supervisor` one with the feedback prefix is the shape the legacy-decode rule
+        // re-tags, so pinning it here would document a state production cannot produce
+        // (CLAUDE.md #126).
         let msg = LLMMessage(
             role: .user,
-            content: "Supervisor Feedback: fix it",
-            sourceRole: .supervisor,
+            content: "Change request APPROVED by team vote.",
+            sourceRole: .codeReviewer,
             sourceContext: .changeRequest
         )
         XCTAssertEqual(msg.sourceContextDisplayLabel, "change request")
     }
 
+    /// The Supervisor's revision feedback shows NO secondary label — the crowned avatar and
+    /// the role name already say who spoke, and the turn is unprompted, so "(change request)"
+    /// only repeated the header while naming the wrong mechanism.
+    ///
+    /// RED: drop `.supervisorFeedback` from `rendersAsSupervisorUtterance` → this fails, and
+    /// the bubble goes back to carrying a label.
+    func testSourceContextDisplayLabel_supervisorFeedback_isSuppressed() {
+        let msg = LLMMessage(
+            role: .user,
+            content: MessageSourceContext.supervisorFeedbackPrefix + "fix it",
+            sourceRole: .supervisor,
+            sourceContext: .supervisorFeedback
+        )
+        XCTAssertNil(msg.sourceContextDisplayLabel)
+        XCTAssertEqual(
+            msg.displayContent, "fix it",
+            "and the wire-side marker is stripped for display — it stays in `content`"
+        )
+        XCTAssertTrue(
+            msg.content.hasPrefix(MessageSourceContext.supervisorFeedbackPrefix),
+            "anti-vacuity: the strip must be a DISPLAY transform, not a rewrite of the "
+                + "persisted body, which is replayed onto the wire verbatim"
+        )
+    }
+
     func testSourceContextDisplayLabel_sourceRoleWithoutContext_fallsBackToConsultation() {
         // The trap branch: ANY message with a sourceRole but no sourceContext renders
-        // "(consultation)". This is why revision feedback must set `.changeRequest` —
+        // "(consultation)". This is why revision feedback must set a context at all —
         // the original mislabel bug was exactly this fallback firing.
         let msg = LLMMessage(
             role: .user,
@@ -742,6 +873,38 @@ final class LLMMessageSourceContextTests: XCTestCase {
         }
     }
 
+    /// A human wrote it, and it is still NOT a boundary — the one combination the taxonomy
+    /// above does not already cover, and the one most likely to be re-derived wrongly.
+    ///
+    /// The discriminator is the ARRIVAL MECHANISM, not the speaker: the `true` pair is
+    /// defined by "came off the queued-message pipeline", and `.supervisorAnswer` is a human
+    /// too and sits on the `false` side. Revision feedback is appended by the step's own
+    /// re-entry, so it is the `.delegatedQuestion` shape — a third party stamping into the
+    /// watched role's conversation.
+    ///
+    /// The second consumer is what makes it load-bearing rather than tidy.
+    /// `ConversationInformationBoundary.lastArrival` is read by `NTMSOrchestrator+Streaming`
+    /// AND by `AutovisorStuckEvaluator`, whose verdict drives `restart_role`. The entity that
+    /// writes most revision comments on a managed task IS the Autovisor manager, so counting
+    /// this `true` would let a manager reset its own managed role's loop cutoff by
+    /// re-requesting changes — self-immunization across two agents instead of within one.
+    ///
+    /// RED: flip `.supervisorFeedback` to `true` → this fails, and a manager that keeps
+    /// requesting changes can no longer be scored as stuck.
+    func testRevisionFeedback_isNotABoundary_despiteBeingHumanAuthored() {
+        XCTAssertFalse(MessageSourceContext.supervisorFeedback.carriesUnsolicitedInformation)
+        XCTAssertFalse(
+            MessageSourceContext.supervisorAnswer.carriesUnsolicitedInformation,
+            "the controlled comparison: another human-authored context on the same side, "
+                + "which is what shows the discriminator is arrival and not the speaker"
+        )
+        XCTAssertTrue(
+            MessageSourceContext.supervisorMessage.carriesUnsolicitedInformation,
+            "and the Supervisor context that IS queued stays true — otherwise this test "
+                + "would pass against a predicate that returned false for everything"
+        )
+    }
+
     /// Why the tables above are hand-written lists and not a sweep over `allCases`.
     ///
     /// A sweep asserts that a new case falls on some default side, and here there IS no safe
@@ -754,12 +917,15 @@ final class LLMMessageSourceContextTests: XCTestCase {
     ///
     /// RED: add a `default:` arm here → a new case stops breaking this file, and the tables
     /// silently stop covering the enum.
-    private enum Bucket { case boundary, solicitedAnswer, delegationChatter, appAuthored }
+    private enum Bucket {
+        case boundary, solicitedAnswer, delegationChatter, appAuthored, unqueuedHumanTurn
+    }
 
     private func bucket(_ context: MessageSourceContext) -> Bucket {
         switch context {
         case .supervisorMessage, .autovisorEvent: return .boundary
         case .consultation, .meeting, .changeRequest, .supervisorAnswer: return .solicitedAnswer
+        case .supervisorFeedback: return .unqueuedHumanTurn
         case .delegatedQuestion, .delegationEscalation: return .delegationChatter
         case .serverError, .loopCorrection, .retryNudge,
              .toolAcknowledgement, .runtimeWarning, .screenDescription: return .appAuthored
@@ -773,7 +939,7 @@ final class LLMMessageSourceContextTests: XCTestCase {
     /// already forces the author of a new case through `bucket`, so a literal list here would
     /// add a second place to forget and no coverage.
     func testBucketing_agreesWithThePredicate() {
-        XCTAssertGreaterThanOrEqual(MessageSourceContext.allCases.count, 14,
+        XCTAssertGreaterThanOrEqual(MessageSourceContext.allCases.count, 15,
                                     "anti-vacuity: a short allCases would check almost nothing")
         for context in MessageSourceContext.allCases {
             XCTAssertEqual(

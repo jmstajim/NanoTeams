@@ -44,6 +44,16 @@ extension NTMSOrchestrator {
             // task's streams were open was deferred by the in-use census, and
             // without this the sweep waited for an unrelated settings change.
             self.sweepResidencyAfterEngineTransition(state)
+            // Immediate Autovisor event wake. Every engine transition is a candidate
+            // condition — `.needsSupervisorInput` is the trigger read from the live mirror,
+            // and `.needsAcceptance` / `.done` / `.failed` are what move the derived status a
+            // watched task is judged by. This seam rather than a SwiftUI observer for the
+            // same reason `noteAutovisorLoopPark` above sits here: the Autovisor's whole
+            // purpose is running unattended, and with the main window closed (menu-bar /
+            // Quick Capture, a supported mode) a `.onChange` in `MainLayoutView` does not
+            // exist — leaving a ≤60 s poll as the only path to a manager that is supposed to
+            // react to events. Over-firing is free; see `scheduleAutovisorWake`.
+            self.scheduleAutovisorWake()
         }
         taskEngines[taskID] = engine
         return engine

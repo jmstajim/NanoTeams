@@ -19,16 +19,27 @@ final class BundledContentFingerprintPinTests: XCTestCase {
     /// To update: run this test, copy the "got" value from the failure message,
     /// paste it here, and bump `MARKETING_VERSION` in `project.pbxproj` (BOTH
     /// app-target entries — the `1.0` pair belongs to the test target).
-    // 1.9.3 — the manager's `hang` line now tells it apart from a long prefill: when the
-    // diagnostic says NO TOKENS AT ALL have arrived, the server may still be loading the
-    // model or processing the prompt, and a restart discards that work so the next attempt
-    // pays for it again (D-17). One bundled surface moved: the `autovisor` role prompt.
-    // Verified to be the ONLY cause by reverting just that file and watching this pin go
-    // green, so the bump delivers this change and nothing a concurrent edit slipped in.
+    // 1.9.4 — the Autovisor manager prompt gained one bullet: `roles_awaiting_acceptance: true`
+    // on a task still reporting `"running"` means a role FINISHED and the whole pipeline is
+    // parked on the Supervisor's decision, so the pass must reach for `manage_role accept`
+    // instead of spending a wake on a task it reads as busy. One bundled surface moved: the
+    // `autovisor` role prompt, the same one 1.9.3 moved.
     //
-    // Like 1.9.2, this bump DOES deliver: a role prompt reaches an existing folder only
-    // through the version-gated reconcile.
-    private static let expectedFingerprint = "80fa39ce7b314ad3"
+    // Uniqueness derived, not assumed — and derived without the revert 1.9.3 paid for, because
+    // three commands answer it. **Anchor the range on the SHIP commit `dd22fa89`, not on the
+    // bump `c735d4eb`**: they are 33 commits apart, and picking the bump is what made the D-29
+    // record in DEBTS.md claim an untouched file that had moved by 151 lines.
+    //   git diff --name-only dd22fa89..HEAD -- NanoTeams/Domain/SystemTemplates*
+    //     → exactly one file, `SystemTemplates+RolePrompts.swift`, one added line.
+    //   git diff dd22fa89..HEAD -- NanoTeams/Services/Tools/ | grep 'static let schema'
+    //     → empty. Tool definitions feed the fingerprint through `ToolHandlerRegistry
+    //       .allSchemas`; only `BashHandlers.handle` changed, never a `schema`.
+    //   git diff --stat 1002010f..HEAD -- NanoTeams/Domain/ NanoTeams/Services/Team/
+    //     → EMPTY, so nothing could have moved the value after the bump recorded it.
+    //
+    // Like 1.9.2 and 1.9.3, this bump DOES deliver: a role prompt reaches an existing folder
+    // only through the version-gated reconcile.
+    private static let expectedFingerprint = "811aa7447abd335b"
 
     func testBundledContent_hasNotChangedWithoutAVersionBump() {
         let actual = BundledContentFingerprint.current

@@ -2,10 +2,18 @@ import Foundation
 
 // MARK: - Bash approval types
 
-/// A human's verdict on a `bash` command awaiting approval.
+/// A human's verdict on a `bash` command awaiting approval — plus the case where
+/// there is no verdict at all.
 nonisolated enum BashApprovalDecision: Hashable {
     case allow
     case deny
+    /// The hold ended WITHOUT a human answer: Pause, work-folder switch, or teardown
+    /// cancelled the step task. Fail-safe is unchanged — the command still does not
+    /// run — but the outcome is not a refusal, and the model must not be told it was
+    /// one. A two-case enum could not say this, so every one of those paths resolved
+    /// `.deny` and shipped the human-declined envelope for a decision nobody made
+    /// (CLAUDE.md #152).
+    case cancelled
 }
 
 /// The command a step is currently HOLDING for the human's in-loop approval.
@@ -53,8 +61,10 @@ extension LLMExecutionService {
     /// - `.ask` → AUTO judge (mode `.auto`); or, with a human present, the command
     ///   is HELD and the gate AWAITS the human's Allow/Deny in-loop — the model is
     ///   never asked to re-issue. On Allow the call passes through (runs for real);
-    ///   on Deny a denial is synthesized. With no human (autonomous / Autovisor /
-    ///   headless) the `.ask` command is denied — set Auto to run unattended.
+    ///   on Deny a denial is synthesized; on `.cancelled` (Pause / teardown, no human
+    ///   answer) a `CANCELLED` envelope is synthesized instead — same fail-safe, a
+    ///   different fact. With no human (autonomous / Autovisor / headless) the `.ask`
+    ///   command is denied — set Auto to run unattended.
     func gateBashCalls(
         resolvedToolCalls: [StepToolCall],
         allowedToolNames: Set<String>,
@@ -128,7 +138,7 @@ extension LLMExecutionService {
                     // bypasses the model — nothing is sent back asking it to re-issue.
                     // Allow → leave the index unhandled so the call flows to
                     // executeToolCalls and runs for real; Deny → synthesize a denial.
-                    // A Pause cancels the await → `.deny` (fail safe; re-prompts on resume).
+                    // A Pause cancels the await → `.cancelled` (fail safe; re-prompts on resume).
                     // `offerAlways` is suppressed during the phase, and that is a safety rule,
                     // not tidiness. "Always allow" persists a permanent, global allow rule
                     // (`NTMSOrchestrator+BashAdvice`), so a human approving `rm -rf build` while
@@ -145,8 +155,23 @@ extension LLMExecutionService {
                     case .allow:
                         continue
                     case .deny:
+                        // Third person, because the reader is the MODEL. "You" in every
+                        // other envelope in this tree means the model itself (`your
+                        // arguments`, `your plan`, `your role`) — spelling the human's
+                        // act as "You declined" told the model it had refused the command
+                        // it had just asked to run. Terse on purpose: the alternative
+                        // ("choose a different approach") arrives one turn later from
+                        // `ToolErrorNotePolicy.direction`'s `bash_denied` arm, and saying
+                        // it here too is the duplication documented below as removed.
                         synthetic[idx] = makeBashDeniedResult(
-                            call: call, reason: "You declined to approve this command.")
+                            call: call, reason: "The Supervisor denied this command.")
+                    case .cancelled:
+                        // Not a denial: the run was paused / torn down while the command
+                        // was held. `BASH_DENIED` would earn the don't-retry direction for
+                        // a block that does not exist — and this envelope is PERSISTED into
+                        // the step's conversation, so it would still be there telling the
+                        // model that on resume, when the very same command is re-held.
+                        synthetic[idx] = makeCancelledResult(for: call)
                     }
                 } else {
                     // Manual mode with no human (autonomous team / Autovisor / headless)

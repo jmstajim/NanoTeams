@@ -156,6 +156,44 @@ final class ComputerUsePermissionServiceTests: XCTestCase {
         }
     }
 
+    /// Twin of `BashPermissionServiceTests.testEveryReason_isWrittenInTheThirdPerson` — same
+    /// route (the gate's no-human arm interpolates these), same defect: the capture reason read
+    /// "confirm sharing your screen" and the mutating-action reason was a bare imperative
+    /// ("Confirm this action."), both aimed at the one party that cannot act on them.
+    func testEveryReason_isWrittenInTheThirdPerson() {
+        let click = ComputerUseAction.click(x: 1, y: 1, button: "left", double: false, target: "SomeApp")
+        let capture = ComputerUseAction.capture(target: "screen", windowTitle: nil)
+        let typing = ComputerUseAction.typeText(text: "hunter2", target: "SomeApp")
+        let cases: [(String, ComputerUsePermissionDecision)] = [
+            ("self-guard", ComputerUsePermissionService.evaluate(
+                input(click, isSelf: true), policy: policy(mode: .manual))),
+            ("out of bounds", ComputerUsePermissionService.evaluate(
+                input(click, bounds: false), policy: policy(mode: .manual))),
+            ("mode off", ComputerUsePermissionService.evaluate(
+                input(click), policy: policy(mode: .off))),
+            ("blocked typing", ComputerUsePermissionService.evaluate(
+                input(typing), policy: policy(mode: .manual, typing: ["hunter2"]))),
+            ("allowlist", ComputerUsePermissionService.evaluate(
+                input(click, allowed: false), policy: policy(mode: .manual, allowlist: ["Safari"]))),
+            ("first capture", ComputerUsePermissionService.evaluate(
+                input(capture), policy: policy(mode: .manual))),
+            ("mutating action", ComputerUsePermissionService.evaluate(
+                input(click), policy: policy(mode: .manual))),
+        ]
+        var reasonsSeen = 0
+        for (label, decision) in cases {
+            guard let text = reason(decision) else {
+                return XCTFail("\(label): expected a reason-bearing decision")
+            }
+            reasonsSeen += 1
+            let words = text.lowercased().split(whereSeparator: { !$0.isLetter && $0 != "\'" })
+            XCTAssertFalse(
+                words.contains(where: { ["you", "your", "yours", "yourself"].contains(String($0)) }),
+                "\(label): the reader is the model, so the human's part is third person — got: \(text)")
+        }
+        XCTAssertEqual(reasonsSeen, cases.count, "anti-vacuity: every case must yield a reason")
+    }
+
     func testSelfGuard_winsOverOffMode() {
         let click = ComputerUseAction.click(x: 1, y: 1, button: "left", double: false, target: "NanoTeams")
         let d = ComputerUsePermissionService.evaluate(input(click, isSelf: true), policy: policy(mode: .off))

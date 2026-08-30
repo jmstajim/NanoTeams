@@ -18,7 +18,8 @@ import Foundation
 /// and three of them added nothing else at all — `plan_required` paraphrased the
 /// instruction the envelope had just given, `anchor_ambiguous` and the typed
 /// `anchor_not_found` returned the envelope's message byte-for-byte. Those three
-/// now return `nil`.
+/// now return `nil`, and `cancelled` joined them for a different reason: not that
+/// the direction restated the fact, but that no direction was TRUE (see its arm).
 ///
 /// The reason recorded for copying — that synthesizing here would misreport
 /// `MeetingToolExecutor`'s "in this meeting" scope as a role-level rejection —
@@ -119,13 +120,23 @@ nonisolated enum ToolErrorNotePolicy {
             //
             // The alternatives stay here rather than moving into the envelopes,
             // because only ONE of the five names any: the no-human arm points at a
-            // supervisor-side setting. Deny-rule, declined, judge and mode-Off all
-            // stop at the reason, so a model told merely "denied" would have nowhere
+            // supervisor-side setting. Deny-rule, Supervisor-denied, judge and mode-Off
+            // all stop at the reason, so a model told merely "denied" would have nowhere
             // to go. (That one arm used to spell its own generic alternative on top
             // of this one — the duplication is gone from the envelope, not here.)
             return "Do NOT retry this command — the block is set by policy, not by your "
                 + "arguments. Choose a different approach, use a read-only or "
                 + "already-approved command, or ask the Supervisor."
+
+        case "cancelled":
+            // Nothing to add, and nothing that WOULD be true. The run stopped — the
+            // loop this note would be appended to is ending, and on resume the step
+            // re-runs and re-issues. Every direction on offer is wrong here: "fix the
+            // arguments" (the default arm's, which this code used to fall into) blames
+            // a call that was never rejected, and "do not retry" contradicts the resume
+            // that re-issues it. The envelope's own sentence — "cancelled by user (run
+            // paused or interrupted)" — is the whole fact and needs no steering.
+            return nil
 
         case "identical_write_loop":
             // The args ARE the rejected duplicate, so retrying hits the guard again.

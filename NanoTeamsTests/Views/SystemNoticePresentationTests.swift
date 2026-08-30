@@ -61,7 +61,7 @@ final class SystemNoticePresentationTests: XCTestCase {
     func testResolve_coversEveryCase_soTheTableIsNotVacuous() {
         // Guards the guard: if `allCases` ever came back short the loop above
         // would pass while checking almost nothing.
-        XCTAssertGreaterThanOrEqual(MessageSourceContext.allCases.count, 10)
+        XCTAssertGreaterThanOrEqual(MessageSourceContext.allCases.count, 15)
         XCTAssertTrue(Self.expectedNoticeContexts.isSubset(of: Set(MessageSourceContext.allCases)))
     }
 

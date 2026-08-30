@@ -32,7 +32,7 @@ typealias ComputerUseApprovalWaiter = ApprovalWaiter<ComputerUseApprovalDecision
 extension LLMExecutionService {
 
     /// Suspends the tool loop until the human approves or denies the action — or the step is
-    /// cancelled (Pause / teardown), which resolves to `.deny` (fail-safe; never runs an
+    /// cancelled (Pause / teardown), which resolves to `.cancelled` (fail-safe; never runs an
     /// unapproved action). Publishes a `ComputerUseApprovalRequest` to the UI for the duration.
     func awaitComputerUseApproval(request: ComputerUseApprovalRequest) async -> ComputerUseApprovalDecision {
         let key = TaskStepKey(taskID: request.taskID, stepID: request.stepID)
@@ -46,7 +46,8 @@ extension LLMExecutionService {
                 waiter.attach(cont)
             }
         } onCancel: {
-            waiter.resolve(.deny)
+            // `.cancelled`, not `.deny` — see `BashApprovalDecision.cancelled`.
+            waiter.resolve(.cancelled)
         }
 
         computerUseApprovalWaiters[key]?[request.actionKey] = nil
@@ -65,10 +66,11 @@ extension LLMExecutionService {
         computerUseApprovalWaiters[TaskStepKey(taskID: taskID, stepID: stepID)]?[actionKey]?.resolve(decision)
     }
 
-    /// Resumes every still-pending computer-use waiter for a step with `.deny` (teardown safety).
+    /// Resumes every still-pending computer-use waiter for a step with `.cancelled` (teardown
+    /// safety). Idempotent — a human's decision that landed first is not overwritten.
     func failPendingComputerUseApprovals(stepID: String, taskID: Int) {
         let key = TaskStepKey(taskID: taskID, stepID: stepID)
-        computerUseApprovalWaiters[key]?.values.forEach { $0.resolve(.deny) }
+        computerUseApprovalWaiters[key]?.values.forEach { $0.resolve(.cancelled) }
         computerUseApprovalWaiters[key] = nil
     }
 

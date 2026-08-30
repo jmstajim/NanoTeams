@@ -125,6 +125,31 @@ final class ConversationInformationBoundaryTests: XCTestCase {
         }
     }
 
+    /// A HUMAN wrote it and it still opens no boundary — the discriminator is arrival, not
+    /// the speaker. Revision feedback is appended by the step's own re-entry rather than off
+    /// the queued-message pipeline, so it is the delegation shape: a third party stamping
+    /// into the watched role's conversation.
+    ///
+    /// This matters most through the SECOND consumer of `lastArrival`,
+    /// `AutovisorStuckEvaluator`, whose verdict drives `restart_role`: the Autovisor manager
+    /// writes most revision comments on a task it manages, so a boundary here would let it
+    /// reset its own managed role's loop cutoff by re-requesting changes.
+    ///
+    /// RED: flip `.supervisorFeedback` to `true` in `carriesUnsolicitedInformation` → this
+    /// fails, and a manager stuck in a request-changes cycle stops being scored as stuck.
+    func testRevisionFeedback_opensNoBoundary() {
+        XCTAssertNil(
+            ConversationInformationBoundary.lastArrival(in: [msg(.supervisorFeedback, at: 3)]),
+            "a Supervisor correction is not news the role failed to ask for — it is the "
+                + "answer to the role's own finished work"
+        )
+        XCTAssertNotNil(
+            ConversationInformationBoundary.lastArrival(in: [msg(.supervisorMessage, at: 3)]),
+            "anti-vacuity: the queued Supervisor context still DOES open one, so this pin "
+                + "cannot pass against a helper that returned nil for everything"
+        )
+    }
+
     /// Stamped into the PARENT's conversation by a delegated CHILD, at a cadence the parent
     /// does not control — they would mask a parent looping on `delegate_to_team`.
     func testDelegationChatter_opensNoBoundary() {

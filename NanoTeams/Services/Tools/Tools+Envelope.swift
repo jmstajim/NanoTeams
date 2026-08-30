@@ -169,12 +169,20 @@ nonisolated func makePlanRequiredResult(
 
 // MARK: - Cancellation Result
 
-/// Unified `cancelled` envelope. Two callers converge here so downstream
+/// The one wording for "this call did not produce a result because the run stopped".
+/// Impersonal by construction: the reader is the model, and no party to the run
+/// refused anything — see the approval-gate overload below for what that fixes.
+nonisolated private let cancelledEnvelopeMessage =
+    "Tool call cancelled by user (run paused or interrupted)."
+
+/// Unified `cancelled` envelope. Three callers converge here so downstream
 /// classifiers see one wire shape regardless of which layer cancelled:
 /// - `ToolRuntime.executeAll` emits one per call in a pre/mid-cancelled batch.
 /// - `ToolErrorHandler.execute` rethrows `ProcessRunnerError.cancelled` into
 ///   this envelope so a SIGTERMed `xcodebuild` looks identical to a Supervisor
 ///   pause arriving between two `list_files` calls.
+/// - the `bash` / computer-use approval gates, via the `StepToolCall` overload
+///   below, when a held approval is abandoned rather than answered.
 nonisolated func makeCancelledResult(
     toolName: String,
     argumentsJSON: String,
@@ -184,12 +192,25 @@ nonisolated func makeCancelledResult(
         providerID: providerID,
         toolName: toolName,
         argumentsJSON: argumentsJSON,
-        outputJSON: makeErrorEnvelope(
-            code: .cancelled,
-            message: "Tool call cancelled by user (run paused or interrupted)."
-        ),
+        outputJSON: makeErrorEnvelope(code: .cancelled, message: cancelledEnvelopeMessage),
         isError: true
     )
+}
+
+/// The pre-execution overload: a call the approval gates intercepted before it ran,
+/// when the hold was ABANDONED (Pause / work-folder switch / teardown) rather than
+/// answered. Routes through `ToolExecutionResult.synthetic(for:)` — the single source
+/// of truth for threading a call's `providerID`, so the wire `tool_call_id` resolves
+/// and the model never sees an orphaned tool call.
+///
+/// Shares `cancelledEnvelopeMessage` with the overload above deliberately: a paused
+/// batch already emits that sentence for the calls after the held one, and two
+/// spellings of one condition is the defect `ToolErrorCode.cancelled` exists to avoid.
+nonisolated func makeCancelledResult(for call: StepToolCall) -> ToolExecutionResult {
+    ToolExecutionResult.synthetic(
+        for: call,
+        outputJSON: makeErrorEnvelope(code: .cancelled, message: cancelledEnvelopeMessage),
+        isError: true)
 }
 
 // MARK: - Supervisor Question Result

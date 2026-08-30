@@ -84,16 +84,6 @@ final class ConcurrentSameTeamTasksScenarioTests: NTMSOrchestratorTestBase, @unc
         return (taskID, runningTask, messageID)
     }
 
-    /// Polls until `condition` is true or the deadline passes.
-    private func waitUntil(
-        timeoutSeconds: Double = 10,
-        _ condition: @MainActor () -> Bool
-    ) async {
-        let deadline = Date().addingTimeInterval(timeoutSeconds)
-        while !condition() && Date() < deadline {
-            try? await Task.sleep(for: .milliseconds(50))
-        }
-    }
 
     // MARK: - The incident
 
@@ -118,7 +108,7 @@ final class ConcurrentSameTeamTasksScenarioTests: NTMSOrchestratorTestBase, @unc
 
         // Phase 40's engine genuinely runs and registers its OWN execution on the
         // shared stepID — the collision is exercised for real, not simulated.
-        await waitUntil {
+        await waitUntil("Phase 40's engine to register its own execution on the shared stepID") {
             self.sut.llmExecutionService._testHasExecutionState(stepID: stepID, taskID: phase40ID)
         }
         XCTAssertTrue(
@@ -206,7 +196,9 @@ final class ConcurrentSameTeamTasksScenarioTests: NTMSOrchestratorTestBase, @unc
                 client: GatedClient(gate: gateA, content: "alpha: phase 39 engineering notes"),
                 config: config, tools: [], conversationMessages: [], networkLogger: nil)
         }
-        await waitUntil { self.sut.streamingPreviewManager.hasReceivedStreamActivity(stepID: stepID, taskID: taskA) }
+        await waitUntil("task A's stream activity to surface") {
+            self.sut.streamingPreviewManager.hasReceivedStreamActivity(stepID: stepID, taskID: taskA)
+        }
 
         let streamB = Task { @MainActor in
             try await service.performStreamingCall(
@@ -214,7 +206,9 @@ final class ConcurrentSameTeamTasksScenarioTests: NTMSOrchestratorTestBase, @unc
                 client: GatedClient(gate: gateB, content: "bravo: phase 40 audio system"),
                 config: config, tools: [], conversationMessages: [], networkLogger: nil)
         }
-        await waitUntil { self.sut.streamingPreviewManager.hasReceivedStreamActivity(stepID: stepID, taskID: taskB) }
+        await waitUntil("task B's stream activity to surface") {
+            self.sut.streamingPreviewManager.hasReceivedStreamActivity(stepID: stepID, taskID: taskB)
+        }
 
         // Both indicators live at once — what the user saw before one vanished.
         XCTAssertTrue(sut.streamingPreviewManager.hasReceivedStreamActivity(stepID: stepID, taskID: taskA))

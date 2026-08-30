@@ -64,6 +64,12 @@ extension LLMExecutionService {
             /// alone would send you to resume it (re-asking the question) instead of
             /// answering it with answer_task_question.
             var waiting_for_supervisor: Bool?
+            /// Present (and `true`) only when a role on this task finished and the pipeline
+            /// is parked on your acceptance decision — never `false`, same reason as above.
+            /// Such a task reads `running` here because downstream work is still to come,
+            /// so `status` alone cannot tell you it is stalled: accept (or request changes
+            /// on) the ids task_status reports under `roles_needing_acceptance`.
+            var roles_awaiting_acceptance: Bool?
         }
         struct ListData: Codable { var tasks: [TaskRow] }
 
@@ -73,7 +79,8 @@ extension LLMExecutionService {
                 id: $0.id, title: $0.title, status: $0.status.rawValue,
                 chat_mode: $0.isChatMode,
                 updated_seconds_ago: max(0, Int(now.timeIntervalSince($0.updatedAt))),
-                waiting_for_supervisor: $0.isWaitingForSupervisor ? true : nil
+                waiting_for_supervisor: $0.isWaitingForSupervisor ? true : nil,
+                roles_awaiting_acceptance: $0.hasRoleAtAcceptanceGate ? true : nil
             )
         }
         return makeSuccessEnvelope(data: ListData(tasks: rows))
@@ -221,10 +228,7 @@ extension LLMExecutionService {
         // "ids match steps[].role_id" contract this field promises.
         var rolesNeedingAcceptance: [String]?
         if let run {
-            let stepRoleIDs = Set(run.steps.map(\.effectiveRoleID))
-            let ids = AcceptanceService.getPendingAcceptances(roleStatuses: run.roleStatuses)
-                .filter { stepRoleIDs.contains($0) }
-                .sorted()
+            let ids = AcceptanceService.actionableAcceptanceGates(run: run)
             if !ids.isEmpty { rolesNeedingAcceptance = ids }
         }
 

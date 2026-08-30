@@ -686,6 +686,13 @@ nonisolated extension NTMSRepository {
                     // disk, so the recomputed `hasPendingSupervisorInput` would
                     // be a false NEGATIVE — and writing `false` over a true row
                     // wipes persisted seen-state (#91). Keep the row's answer.
+                    //
+                    // This list is per FIELD, not per row: `hasRolesAwaitingAcceptance`
+                    // is deliberately absent because it reads `run.roleStatuses` and
+                    // `step.effectiveRoleID`, which the split does not strip (it takes
+                    // only the four per-step stream arrays), so it recomputes faithfully
+                    // here. That is a property of what `splittingStreams` strips and can
+                    // change, so it is pinned rather than trusted.
                     refreshed.hasPendingSupervisorInput = tasksIndex.tasks[i].hasPendingSupervisorInput
                 }
                 if tasksIndex.tasks[i] != refreshed {

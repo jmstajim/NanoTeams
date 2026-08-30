@@ -34,28 +34,39 @@ enum ToolErrorCode: String, Codable {
     /// message text is embedded in `error.message` so the parent role can
     /// re-evaluate on its next tool-loop iteration.
     case delegationInterrupted = "DELEGATION_INTERRUPTED"
-    /// The tool call was cancelled before it produced a result. Two sources:
+    /// The tool call was cancelled before it produced a result. Three sources:
     /// (a) `ToolRuntime.executeAll` saw `Task.isCancelled` between handlers and
     /// emitted a synthetic envelope for the unrun calls; (b) `ProcessRunner.run`
     /// observed `Task.isCancelled` mid-subprocess and SIGTERMed/SIGKILLed the
-    /// child, then threw `ProcessRunnerError.cancelled`. Both routes converge
-    /// on this code so downstream classifiers see one signal, not "command_failed
-    /// that happens to mention 'cancelled'".
+    /// child, then threw `ProcessRunnerError.cancelled`; (c) the `bash` /
+    /// computer-use approval gates held a call for a human and the hold was
+    /// ABANDONED — Pause, work-folder switch, teardown — rather than answered.
+    /// All three routes converge on this code so downstream classifiers see one
+    /// signal, not "command_failed that happens to mention 'cancelled'".
+    ///
+    /// (c) is the reason this code is not merely cosmetic next to `BASH_DENIED`:
+    /// the gate's envelope is persisted into the step's conversation, and the
+    /// step re-runs on resume — so mislabelling an abandoned hold as a denial
+    /// left the model permanently told the Supervisor had refused a command they
+    /// were never asked about, under a don't-retry direction (2026-08-30).
     case cancelled = "CANCELLED"
     /// `bash` command blocked by the command-permission layer: a deny rule
-    /// matched, the Auto judge rejected it, or human approval was required but
-    /// unavailable (Manual mode in an autonomous / Autovisor / headless context —
-    /// Auto mode runs unattended). Distinct from `COMMAND_FAILED` (the command
-    /// ran and exited non-zero) — a denied command never executed. Routed to a
-    /// don't-retry guidance via `ToolErrorNotePolicy.direction`'s `bash_denied` case.
+    /// matched, the Auto judge rejected it, the Supervisor answered Deny on a held
+    /// command, or human approval was required but unavailable (Manual mode in an
+    /// autonomous / Autovisor / headless context — Auto mode runs unattended).
+    /// Distinct from `COMMAND_FAILED` (the command ran and exited non-zero) — a
+    /// denied command never executed — and from `CANCELLED`, which is the same
+    /// held command with NO answer. Routed to a don't-retry guidance via
+    /// `ToolErrorNotePolicy.direction`'s `bash_denied` case.
     /// (A foreground timeout is surfaced as a success envelope with
     /// `timed_out: true`, not an error code.)
     case bashDenied = "BASH_DENIED"
     /// A computer-use action (`ui_click` / `ui_type` / `ui_key` / `ui_scroll` /
     /// `screen_capture`) was blocked by the computer-use permission layer: mode Off,
     /// a self-guard / allowlist / blocked-pattern deny, out-of-bounds coordinates,
-    /// the Auto judge rejected it, or human approval was required but unavailable.
-    /// Distinct from `COMMAND_FAILED` (the OS action ran and failed).
+    /// the Auto judge rejected it, the Supervisor answered Deny, or human approval
+    /// was required but unavailable. Distinct from `COMMAND_FAILED` (the OS action
+    /// ran and failed) and from `CANCELLED` (an abandoned hold — see there).
     case computerUseDenied = "COMPUTER_USE_DENIED"
 }
 

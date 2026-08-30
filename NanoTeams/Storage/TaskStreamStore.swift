@@ -229,6 +229,9 @@ nonisolated enum TaskStreamStore {
             guard fileManager.fileExists(atPath: url.path) else { return nil }
             let entries = JSONLFileLog.decodeLines(
                 StepLogEntry.self, from: url, decoder: decoder, fileManager: fileManager)
+            #if DEBUG
+            countHydrate(entries.count)
+            #endif
             var streams = StepStreams()
             var convIndex: [UUID: Int] = [:]
             var callIndex: [UUID: Int] = [:]
@@ -299,6 +302,24 @@ nonisolated enum TaskStreamStore {
     static func _testBytesWritten() -> Int { registryLock.withLock { _bytesWritten } }
     static func _testResetBytesWritten() { registryLock.withLock { _bytesWritten = 0 } }
     private static func countBytes(_ n: Int) { registryLock.withLock { _bytesWritten += n } }
+
+    /// Work-bound seam: log files actually READ back, and the entries replayed out of
+    /// them, since reset. The read twin of `_bytesWritten`, added 2026-08-30 because the
+    /// write side had a counter and the read side had none — so "the narrow work-folder
+    /// writers re-hydrate the whole conversation history on every call" was arguable from
+    /// the code and provable by nothing. Counted INSIDE `hydrate`, past the
+    /// file-exists guard, for CLAUDE.md #62's reason: a counter at the call site would
+    /// report intent, not work.
+    nonisolated(unsafe) private static var _hydrateReads = 0
+    nonisolated(unsafe) private static var _hydrateEntries = 0
+    static func _testHydrateReads() -> Int { registryLock.withLock { _hydrateReads } }
+    static func _testHydrateEntries() -> Int { registryLock.withLock { _hydrateEntries } }
+    static func _testResetHydrateCounters() {
+        registryLock.withLock { _hydrateReads = 0; _hydrateEntries = 0 }
+    }
+    private static func countHydrate(_ entries: Int) {
+        registryLock.withLock { _hydrateReads += 1; _hydrateEntries += entries }
+    }
 
     /// Work-bound seam: stream ELEMENTS examined by the diff passes since reset.
     ///

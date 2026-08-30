@@ -161,7 +161,7 @@ nonisolated enum AgentInstructionsScanner {
         var mainPath: String?
         var mainContent: String?
         for candidate in rootTier + nestedTier {
-            guard let content = readInjectableText(at: candidate.url, fileManager: fileManager) else { continue }
+            guard let content = readInjectableText(at: candidate.url) else { continue }
             mainPath = candidate.relativePath
             mainContent = content
             break
@@ -180,7 +180,7 @@ nonisolated enum AgentInstructionsScanner {
             // User-promoted listed file → content-injected too (readable text
             // only; a binary silently stays listed). Exclusion wins.
             let content: String? = (!isExcluded && injectedSet.contains(hit.relativePath))
-                ? readInjectableText(at: hit.url, fileManager: fileManager)
+                ? readInjectableText(at: hit.url)
                 : nil
             items.append(.init(relativePath: hit.relativePath, source: .discovered,
                                isExcluded: isExcluded,
@@ -201,7 +201,7 @@ nonisolated enum AgentInstructionsScanner {
             // Text → content-injected (unless the user toggled injection off);
             // image/binary/empty → path-listed.
             let isExcluded = excluded.contains(manual)
-            let content = isExcluded ? nil : readInjectableText(at: url, fileManager: fileManager)
+            let content = isExcluded ? nil : readInjectableText(at: url)
             items.append(.init(relativePath: manual, source: .manual,
                                isExcluded: isExcluded, injectedContent: content))
         }
@@ -242,7 +242,7 @@ nonisolated enum AgentInstructionsScanner {
             // the walk).
             let content = item.injectedContent == nil
                 ? nil
-                : readInjectableText(at: url, fileManager: fileManager)
+                : readInjectableText(at: url)
             items.append(.init(relativePath: item.relativePath, source: item.source,
                                isExcluded: item.isExcluded, injectedContent: content))
         }
@@ -255,7 +255,7 @@ nonisolated enum AgentInstructionsScanner {
     /// text, else `nil`. Probes the first `probeBytes` before committing to the
     /// full read so large binaries misnamed as instruction files aren't loaded
     /// whole just to fail decoding.
-    private static func readInjectableText(at url: URL, fileManager: FileManager) -> String? {
+    private static func readInjectableText(at url: URL) -> String? {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         let prefix = (try? handle.read(upToCount: probeBytes)) ?? Data()
         try? handle.close()

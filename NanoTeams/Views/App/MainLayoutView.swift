@@ -140,26 +140,6 @@ struct MainLayoutView: View {
             // bootstrap completes.
             taskState.loadSeenSet(for: newID)
         }
-        // Same reasoning as the wait sweep above, and this handler does not even
-        // read the value — it needs an EDGE. Two revisions, never merged: the
-        // comments on both handlers explain why (this one must keep firing on
-        // `.failed` / `.done`, which the wait fact does not distinguish).
-        .onChange(of: store.taskFacts.statusRevision) { _, _ in
-            // Immediate Autovisor wake on ANY derived task-status change. The
-            // itemizer (`autovisorAttentionItems`) reads BOTH live engine state
-            // (needsSupervisor) AND derived summary status (failed / completed /
-            // created); the sibling `taskEngineStates` observer below covers only
-            // the former. A team-generation failure flips the task to `.failed`
-            // WITHOUT an engine transition (no engine is ever created), so without
-            // this it would reach the manager only via the ≤60s poll backstop.
-            // Mirror the itemizer here so no watchable condition depends on the
-            // poll for delivery. Cheap + safe to over-fire: `wakeAutovisorForEvents`
-            // self-guards (feature off / no manager → no-op) and is deliver-once —
-            // a `.running` transition matches no trigger and no-ops, and a duplicate
-            // wake for a condition already recorded in `autovisorLastPassAttentionKeys`
-            // bails (the same synchronous serialization the two observers already rely on).
-            Task { await store.wakeAutovisorForEvents() }
-        }
         .task {
             await store.bootstrapDefaultStorageIfNeeded()
             // Amortize NSOpenPanel allocation so the first `+` click in
@@ -230,14 +210,15 @@ struct MainLayoutView: View {
         }
         .modifier(RunStartPanelRefresh(initializingRunTaskIDs: engineState.initializingRunTaskIDs))
         .onChange(of: engineState.taskEngineStates) {
-            // Single handler: refreshes the panel + drives queue flush. The controller
-            // owns both concerns so the wiring is testable without mounting the view.
+            // Refreshes the panel + drives queue flush. The controller owns both concerns
+            // so the wiring is testable without mounting the view.
+            //
+            // The Autovisor event-wake that used to ride here moved to the orchestrator's
+            // own `engine.onStateChanged` (`NTMSOrchestrator+EngineManagement`), and the
+            // engine-less generation-failure case to its own site. A manager whose whole
+            // purpose is running unattended cannot have its wake live in a view that does
+            // not exist while the main window is closed.
             QuickCaptureController.shared.handleEngineStateChanged()
-            // Immediate event-wake for the Autovisor (a task entered
-            // needsSupervisorInput / failed / completed). Debounced (fresh pass)
-            // or injected live into the conversation (manager mid-review) inside;
-            // the poll loop is the level-triggered backstop.
-            Task { await store.wakeAutovisorForEvents() }
         }
         .onChange(of: store.activeTask?.closedAt) { _, newValue in
             QuickCaptureController.shared.handleActiveTaskClosedAtChanged(

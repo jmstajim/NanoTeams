@@ -1672,7 +1672,14 @@ final class TeamEngineTests: XCTestCase {
         )
 
         sut.start()
-        try? await Task.sleep(for: .milliseconds(300))
+        // Not a duration. `start()` spawns the reconcile, and 300 ms was a guess about how long
+        // it takes rather than a statement about what must happen — so the test passed or failed
+        // on scheduler luck and asserted nothing on a slow runner (DEBTS.md D-30). The condition
+        // IS the claim; the sibling at `testCancelRoleTasks_staleTask_isReplaced` joins the
+        // spawned task directly, which is the stricter shape where a handle is reachable.
+        await waitUntil("start() to reconcile the paused step and restart role 'a'") {
+            self.mockStore.runStepCalls.contains("a")
+        }
 
         XCTAssertTrue(mockStore.runStepCalls.contains("a"),
                       "start() must reconcile: a .working role with a .paused step is restarted")

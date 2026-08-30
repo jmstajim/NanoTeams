@@ -101,11 +101,14 @@ nonisolated enum ConversationTranscriptRenderer {
             let anchor = makeAnchor(time: message.createdAt, roleName: name + label, stepID: stepID)
             lines.append(anchor)
             // Same transform the bubble applies (`MessageBubbleView`): strip the
-            // `Supervisor:\n` prefix (displayContent), then — for `.supervisorMessage`
-            // turns only — pull out attached-file / clip sections.
+            // attribution prefix (`displayContent`), then — for the contexts that can
+            // actually compose them — pull out attached-file / clip sections. Both
+            // questions are answered by the value, so this file and the feed cannot
+            // drift; this one used to omit `.supervisorAnswer`, which put raw marker
+            // text on disk for a turn the feed rendered as cards.
             let inputs = ActivityFeedBuilder.bubbleDisplayInputs(
                 raw: message.displayContent,
-                isSupervisorMessage: message.sourceContext == .supervisorMessage
+                isSupervisorMessage: message.sourceContext?.mayEmbedAttachmentMarkers == true
             )
             lines.append(quote(inputs.text))
             appendAttachments(paths: inputs.paths, clips: inputs.clippedTexts, into: &lines)

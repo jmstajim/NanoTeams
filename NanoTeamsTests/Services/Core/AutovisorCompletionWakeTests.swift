@@ -107,6 +107,19 @@ final class AutovisorCompletionWakeTests: NTMSOrchestratorTestBase, @unchecked S
 
     private func runCount(_ taskID: Int) -> Int { sut.loadedTask(taskID)?.runs.count ?? -1 }
 
+    /// Polls until `condition` holds or the deadline passes. The orchestrator's event wake
+    /// is fire-and-forget (`scheduleAutovisorWake` — the seam it is called from is a
+    /// synchronous @MainActor mutation that must not suspend), so a test that drives it
+    /// indirectly has to wait for the spawned Task rather than assert straight after.
+    private func waitUntil(timeout: TimeInterval = 3, _ condition: () -> Bool) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return condition()
+    }
+
     // MARK: - stuck conditions are deliver-once, not re-pass-every-poll (review finding)
 
     func testStuckCondition_alreadyReviewed_doesNotReWake() async {
@@ -198,6 +211,88 @@ final class AutovisorCompletionWakeTests: NTMSOrchestratorTestBase, @unchecked S
                 NTMSOrchestrator.AutovisorAttentionKey(taskID: startupID, trigger: .completed)),
             "the fresh-pass wake must record the reviewed condition as the new freshness baseline")
         sut.stopEngineForTask(mgrID)
+    }
+
+    // MARK: - the reported bug, end to end
+
+    func testRequestChanges_thenNewArtifact_wakesParkedManagerAgain() async {
+        // The full reported sequence, through the real verbs: the manager reviews a task at
+        // Review, requests changes, the role revises and submits a NEW artifact — and the
+        // manager must wake again to look at it.
+        //
+        // It did not, because `(X, .completed)` stayed in the deliver-once baseline while X
+        // was out of Review, so X's RETURN read as already-delivered. Nothing here can rescue
+        // that but the seam: the wake's prune serves `.levelSample` triggers only and cannot
+        // touch a `.completed` key at all, so deleting the `noteDerivedStatusTransition` call
+        // from `upsertTaskSummary` turns this red with no neighbouring mechanism to hide it.
+        let mgrID = await parkedManager()
+        let x = await makeCompletedStartupTask()
+        await registerRoles(["r"], onTeamOf: x)
+        let completedKey = NTMSOrchestrator.AutovisorAttentionKey(taskID: x, trigger: .completed)
+
+        // 1 — the first Review wakes a pass, which baselines the condition.
+        let before = runCount(mgrID)
+        await sut.wakeAutovisorForEvents()
+        XCTAssertGreaterThan(runCount(mgrID), before,
+                             "premise: the first Review must wake the parked manager")
+        XCTAssertTrue(sut.autovisorLastPassAttentionKeys.contains(completedKey),
+                      "premise: that pass recorded the Review as its deliver-once baseline")
+        sut.stopEngineForTask(mgrID)
+        sut.engineState[mgrID] = .needsSupervisorInput   // the pass ends and parks again
+        let afterFirstPass = runCount(mgrID)
+
+        // 2 — the manager requests changes. No wake runs between here and step 3, which is
+        // what attributes the retirement to the seam rather than to a lucky sample.
+        await sut.requestRevision(taskID: x, roleID: "r", comment: "redo the summary")
+        sut.stopEngine(for: x)   // `requestRevision` wakes the task's engine; keep it out of the test
+        XCTAssertEqual(sut.loadedTask(x)?.runs.last?.roleStatuses["r"], .revisionRequested,
+                       "premise: the change request must land, or the level never clears")
+        XCTAssertEqual(sut.snapshot?.tasksIndex.tasks.first(where: { $0.id == x })?.status, .running,
+                       "premise: a `.revisionRequested` role takes the task out of Review")
+        XCTAssertFalse(sut.autovisorLastPassAttentionKeys.contains(completedKey),
+                       "the spent Review key must be retired on the mutation's own seam")
+
+        // 3 — the role revises and submits the new artifact: X returns to Review.
+        await sut.mutateTask(taskID: x) { $0.runs[0].roleStatuses["r"] = .needsAcceptance }
+        XCTAssertEqual(sut.snapshot?.tasksIndex.tasks.first(where: { $0.id == x })?.status,
+                       .needsSupervisorAcceptance, "premise: the revised artifact returns X to Review")
+
+        await sut.wakeAutovisorForEvents()
+
+        XCTAssertGreaterThan(runCount(mgrID), afterFirstPass,
+                             "THE BUG: a task returning to Review with a revised artifact is a "
+                                 + "condition the manager has never seen, and must wake it again")
+        sut.stopEngineForTask(mgrID)
+    }
+
+    // MARK: - the wake reaches the manager without a view mounted
+
+    func testEngineTransition_wakesTheManager_withNothingCallingTheWake() async {
+        // Both event wakes used to be `.onChange` modifiers on `MainLayoutView`, so with the
+        // main window closed — menu bar / Quick Capture, a supported mode, and the mode an
+        // agent whose whole purpose is running unattended actually lives in — no event
+        // reached the manager at all and only the ≤60 s poll did. The wake now rides
+        // `engine.onStateChanged`, which exists whether or not anything is on screen.
+        //
+        // NOTHING here calls `wakeAutovisorForEvents`, and no `mutateTask` in the fixtures
+        // touches an engine — so the engine transition `requestRevision` causes on `driver`
+        // is the only thing that can start the manager's pass. RED: delete the
+        // `scheduleAutovisorWake()` call from `engineForTask`'s state observer.
+        let mgrID = await parkedManager()
+        _ = await makeCompletedStartupTask()            // the condition to be noticed
+        let driver = await makeCompletedStartupTask()   // the task whose ENGINE will transition
+        await registerRoles(["r"], onTeamOf: driver)
+        XCTAssertNil(sut.taskEngines[driver],
+                     "premise: no engine exists yet, so nothing has transitioned")
+        let before = runCount(mgrID)
+
+        await sut.requestRevision(taskID: driver, roleID: "r", comment: "redo it")
+
+        let woke = await waitUntil { self.runCount(mgrID) > before }
+        sut.stopEngine(for: driver)
+        sut.stopEngineForTask(mgrID)
+        XCTAssertTrue(woke, "an engine transition must reach the Autovisor on its own — the "
+            + "manager cannot depend on a window being open to be told anything")
     }
 
     // MARK: - pass-start seed recomputes stuck into the freshness baseline

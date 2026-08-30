@@ -33,7 +33,7 @@ struct MessageBubbleHeader: View {
     VStack(alignment: .leading, spacing: 12) {
         MessageBubbleHeader(
             roleName: "Engineer",
-            tintColor: .blue,
+            tintColor: Colors.info,
             sourceLabel: "GPT-5",
             timestamp: .now,
             isStreaming: false
@@ -41,7 +41,7 @@ struct MessageBubbleHeader: View {
 
         MessageBubbleHeader(
             roleName: "Reviewer",
-            tintColor: .orange,
+            tintColor: Colors.warning,
             sourceLabel: nil,
             timestamp: .now,
             isStreaming: true

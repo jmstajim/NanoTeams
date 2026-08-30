@@ -122,10 +122,10 @@ nonisolated struct LMStudioDownloadedModelStore: DownloadedModelStore {
         guard let entries = try? fileManager.contentsOfDirectory(
             at: url, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
         ) else { return 0 }
-        return entries.filter {
+        return entries.count {
             $0.pathExtension.lowercased() == "gguf"
                 && !$0.lastPathComponent.lowercased().hasPrefix("mmproj-")
-        }.count
+        }
     }
 
     /// Recursive size. Prefers allocated size (what the volume actually spends)

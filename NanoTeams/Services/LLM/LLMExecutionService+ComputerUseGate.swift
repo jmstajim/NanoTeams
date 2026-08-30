@@ -3,12 +3,15 @@ import Foundation
 
 // MARK: - Computer-use approval decision
 
-/// A human's verdict on a held computer-use action.
+/// A human's verdict on a held computer-use action — plus the case where there is no verdict.
 nonisolated enum ComputerUseApprovalDecision: Hashable, Sendable {
     case allow
     case deny
     /// Allow this action AND auto-allow further actions on the same app for the rest of the run.
     case alwaysAllowApp
+    /// The hold ended WITHOUT a human answer (Pause / work-folder switch / teardown). Twin of
+    /// `BashApprovalDecision.cancelled` — see it for why this is not a `.deny`.
+    case cancelled
 }
 
 // MARK: - The gate
@@ -81,8 +84,14 @@ extension LLMExecutionService {
                         if let app = resolvedInput.resolvedTargetKey { allowComputerUseAppForRun(taskID: taskID, bundleOrName: app) }
                         continue
                     case .deny:
+                        // Third person — the reader is the model, and "you" everywhere else in
+                        // this tree means the model. Twin of the `bash` gate's deny arm.
                         synthetic[idx] = makeComputerUseDeniedResult(
-                            call: call, reason: "You declined to approve this action.")
+                            call: call, reason: "The Supervisor denied this action.")
+                    case .cancelled:
+                        // Paused / torn down while held — no human refused anything, so this is
+                        // a cancellation, not a `COMPUTER_USE_DENIED`. Twin of the `bash` gate.
+                        synthetic[idx] = makeCancelledResult(for: call)
                     }
                 } else {
                     // Twin of the `bash` gate's no-human arm — same rule: name a recourse

@@ -591,7 +591,6 @@ final class PlatformQuickCapturePanelGeometryTests: XCTestCase {
     /// and restore so these tests neither depend on nor damage the developer's
     /// real saved panel position.
     private var autosaveName: String!
-    private static let autosaveDefaultsKey = "NSWindow Frame " + UserDefaultsKeys.quickCapturePanelFrame
 
     private var floor: NSSize { QuickCapturePanel.panelMinSize }
 

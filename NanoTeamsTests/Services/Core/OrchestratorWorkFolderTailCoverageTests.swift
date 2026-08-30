@@ -51,32 +51,32 @@ final class AOrchFailingRepository: NTMSRepositoryProtocol, @unchecked Sendable 
         try inner.openOrCreateWorkFolder(at: workFolderRoot)
     }
 
-    func updateWorkFolderContext(at workFolderRoot: URL, context: String) throws -> WorkFolderContext {
-        try inner.updateWorkFolderContext(at: workFolderRoot, context: context)
+    func updateWorkFolderContext(at workFolderRoot: URL, context: String, activeTask: NTMSTask?) throws -> WorkFolderContext {
+        try inner.updateWorkFolderContext(at: workFolderRoot, context: context, activeTask: activeTask)
     }
 
-    func updateSelectedScheme(at workFolderRoot: URL, scheme: String?) throws -> WorkFolderContext {
-        try inner.updateSelectedScheme(at: workFolderRoot, scheme: scheme)
+    func updateSelectedScheme(at workFolderRoot: URL, scheme: String?, activeTask: NTMSTask?) throws -> WorkFolderContext {
+        try inner.updateSelectedScheme(at: workFolderRoot, scheme: scheme, activeTask: activeTask)
     }
 
     func updateWorkFolderState(
-        at workFolderRoot: URL, mutate: (inout WorkFolderState) -> Void
+        at workFolderRoot: URL, activeTask: NTMSTask?, mutate: (inout WorkFolderState) -> Void
     ) throws -> WorkFolderContext {
-        try inner.updateWorkFolderState(at: workFolderRoot, mutate: mutate)
+        try inner.updateWorkFolderState(at: workFolderRoot, activeTask: activeTask, mutate: mutate)
     }
 
     func updateSettings(
-        at workFolderRoot: URL, mutate: (inout ProjectSettings) -> Void
+        at workFolderRoot: URL, activeTask: NTMSTask?, mutate: (inout ProjectSettings) -> Void
     ) throws -> WorkFolderContext {
         if failUpdateSettings { throw Refused(what: "updateSettings") }
-        return try inner.updateSettings(at: workFolderRoot, mutate: mutate)
+        return try inner.updateSettings(at: workFolderRoot, activeTask: activeTask, mutate: mutate)
     }
 
     func updateTeams(
-        at workFolderRoot: URL, mutate: (inout [Team]) -> Void
+        at workFolderRoot: URL, activeTask: NTMSTask?, mutate: (inout [Team]) -> Void
     ) throws -> WorkFolderContext {
         updateTeamsCalls += 1
-        return try inner.updateTeams(at: workFolderRoot, mutate: mutate)
+        return try inner.updateTeams(at: workFolderRoot, activeTask: activeTask, mutate: mutate)
     }
 
     func resetWorkFolderSettings(at workFolderRoot: URL) throws -> WorkFolderContext {

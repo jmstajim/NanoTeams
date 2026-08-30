@@ -18,12 +18,14 @@ import Observation
 /// nothing at all: the status handler discards both parameters, and the wait
 /// handler early-returns while the seen-set is empty.
 ///
-/// **Why two revisions, never one.** The two facts drive different machinery and
-/// the comments at `MainLayoutView`'s two `onChange` sites explain why merging
-/// them is wrong: the status edge must keep waking the Autovisor on `.failed` /
-/// `.done`, which the wait fact does not distinguish, and the seen-set sweep must
-/// key on the DURABLE wait fact, not on `TaskStatus` — a status-keyed sweep read
-/// recovery's launch-time parking as "answered" and wiped the persisted set.
+/// **Why the wait fact has a revision and the status does not.** The seen-set sweep
+/// needs an EDGE and must key on the DURABLE wait fact, not on `TaskStatus` — a
+/// status-keyed sweep read recovery's launch-time parking as "answered" and wiped
+/// the persisted set. The status side used to carry a twin `statusRevision` for the
+/// Autovisor's event wake; that wake moved onto the orchestrator's own engine-state
+/// seam on 2026-08-30 (a manager that runs unattended cannot depend on a view that
+/// is gone while the main window is closed), which left the counter with no reader.
+/// `statusByTaskID` stayed: it answers `MainLayoutView.activeTaskDerivedStatus`.
 ///
 /// **One home.** Every mutation arrives through `TasksIndex.upsert`'s outcome or
 /// through a whole-index replacement, so the projection cannot drift from the
@@ -35,23 +37,22 @@ final class TaskFactsProjection {
     private(set) var statusByTaskID: [Int: TaskStatus] = [:]
     private(set) var waitStateByTaskID: [Int: SupervisorWaitState] = [:]
 
-    /// Bumped only when some task's derived status changed (or a row appeared /
-    /// disappeared). Cheap `onChange` key: an `Int` compare, not a `Dictionary` one.
-    private(set) var statusRevision: Int = 0
-
-    /// Bumped only when some task's durable wait state changed. Deliberately
-    /// separate from `statusRevision` — see the type's note.
+    /// Bumped only when some task's durable wait state changed — the seen-set sweep's
+    /// `onChange` key: an `Int` compare, not a `Dictionary` one. There is deliberately no
+    /// status twin; see the type's note.
     private(set) var waitRevision: Int = 0
 
     // MARK: - Incremental maintenance
 
-    /// Applies one row. Bumps a revision only when that row's fact actually moved,
-    /// so an `updatedAt` tick — the overwhelming majority of mutations — is inert.
+    /// Applies one row. Bumps `waitRevision` only when that row's wait fact actually
+    /// moved, so an `updatedAt` tick — the overwhelming majority of mutations — is inert.
+    ///
+    /// Deliberately says nothing about the PREVIOUS row. `TasksIndex.upsert` returns that,
+    /// and one fact must not have two sources (CLAUDE.md #91) — this class is a projection
+    /// OF rows, so it can only ever answer for the slice it keeps, and a consumer needing
+    /// more would quietly grow a second, narrower history beside the index's.
     func apply(_ summary: TaskSummary) {
-        let status = summary.status
-        if statusByTaskID.updateValue(status, forKey: summary.id) != status {
-            statusRevision &+= 1
-        }
+        statusByTaskID[summary.id] = summary.status
         let wait = SupervisorWaitState(summary)
         if waitStateByTaskID.updateValue(wait, forKey: summary.id) != wait {
             waitRevision &+= 1
@@ -78,7 +79,6 @@ final class TaskFactsProjection {
         }
         if statuses != statusByTaskID {
             statusByTaskID = statuses
-            statusRevision &+= 1
         }
         if waits != waitStateByTaskID {
             waitStateByTaskID = waits
@@ -89,7 +89,7 @@ final class TaskFactsProjection {
     /// Work folder closed: the ids are folder-scoped, so keeping them would let
     /// one folder's task 3 answer for another's.
     func clear() {
-        if !statusByTaskID.isEmpty { statusByTaskID = [:]; statusRevision &+= 1 }
+        if !statusByTaskID.isEmpty { statusByTaskID = [:] }
         if !waitStateByTaskID.isEmpty { waitStateByTaskID = [:]; waitRevision &+= 1 }
     }
 }

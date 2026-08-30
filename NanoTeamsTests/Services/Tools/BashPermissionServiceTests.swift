@@ -28,6 +28,48 @@ final class BashPermissionServiceTests: XCTestCase {
         if case .ask = d { return true }; return false
     }
 
+    /// Every reason this evaluator produces is MODEL-read: the approval card carries no reason,
+    /// and the only consumer is the gate's no-human arm, which interpolates it into "This command
+    /// needs human approval (<reason>), but no human is available to review it." Second person
+    /// there addresses the model — which is not the party being described.
+    ///
+    /// Swept across every decision rather than pinned per string: the manual arm is the one that
+    /// carried "needs your approval", and a per-string test would have said nothing about the
+    /// next reason someone adds.
+    func testEveryReason_isWrittenInTheThirdPerson() {
+        let cases: [(String, BashPermissionDecision)] = [
+            ("mode off", BashPermissionService.evaluate(command: "ls", policy: policy(mode: .off))),
+            ("empty", BashPermissionService.evaluate(command: "   ", policy: policy())),
+            ("deny rule", BashPermissionService.evaluate(command: "rm -rf /", policy: policy(deny: ["rm"]))),
+            ("manual", BashPermissionService.evaluate(command: "ls -la", policy: policy(mode: .manual))),
+            ("ask rule", BashPermissionService.evaluate(
+                command: "git push", policy: policy(mode: .semiAutomatic, ask: ["git"]))),
+            ("in-place writer", BashPermissionService.evaluate(
+                command: "sed -i s/a/b/ f.txt", policy: policy(mode: .semiAutomatic))),
+            ("default review", BashPermissionService.evaluate(
+                command: "make install", policy: policy(mode: .semiAutomatic))),
+        ]
+        var reasonsSeen = 0
+        for (label, decision) in cases {
+            guard let text = reason(decision) else {
+                return XCTFail("\(label): expected a reason-bearing decision")
+            }
+            reasonsSeen += 1
+            let words = text.lowercased().split(whereSeparator: { !$0.isLetter && $0 != "\'" })
+            XCTAssertFalse(
+                words.contains(where: { ["you", "your", "yours", "yourself"].contains(String($0)) }),
+                "\(label): the reader is the model, so the human's part is third person — got: \(text)")
+        }
+        XCTAssertEqual(reasonsSeen, cases.count, "anti-vacuity: every case must yield a reason")
+    }
+
+    private func reason(_ d: BashPermissionDecision) -> String? {
+        switch d {
+        case .deny(let r), .ask(let r): return r
+        case .allow: return nil
+        }
+    }
+
     // MARK: - Mode
 
     func testModeOff_deniesEverything() {

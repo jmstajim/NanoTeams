@@ -154,7 +154,7 @@ struct BenchmarkRunCard: View {
         isRunning(phase)
     }
 
-    static func statusText(for phase: GenerationBenchmarkRunner.Phase) -> String {
+    nonisolated static func statusText(for phase: GenerationBenchmarkRunner.Phase) -> String {
         switch phase {
         case .idle: "Ready"
         case .preparing: "Reading model details…"
@@ -178,7 +178,7 @@ struct BenchmarkRunCard: View {
     /// The `~` rides the VALUE, not the column heading: within one column some rows can be exact
     /// (a server that measured its own prefill) and others approximate, and one heading cannot
     /// say both.
-    static func decorate(value: String, unit: String, approximate: Bool) -> String {
+    nonisolated static func decorate(value: String, unit: String, approximate: Bool) -> String {
         // An absent figure gets neither marker nor unit: "~— tok/s" claims an approximate
         // measurement, and "— tok/s" reads as a measurement of nothing per second.
         guard value != BenchmarkMetricsPolicy.noValue else { return value }

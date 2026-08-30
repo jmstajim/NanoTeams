@@ -42,7 +42,7 @@ typealias BashApprovalWaiter = ApprovalWaiter<BashApprovalDecision>
 extension LLMExecutionService {
 
     /// Suspends the tool loop until the human approves or denies `command` — or the
-    /// step is cancelled (Pause / teardown), which resolves to `.deny` so the await
+    /// step is cancelled (Pause / teardown), which resolves to `.cancelled` so the await
     /// returns promptly and the command is never run unapproved. Publishes a
     /// `BashApprovalRequest` to the UI for the duration and keeps
     /// `pendingBashApprovals` populated so the on-demand "Ask AI" advisor can judge
@@ -91,7 +91,10 @@ extension LLMExecutionService {
         } onCancel: {
             // Pause / work-folder switch cancels the step task. Fail safe — never run
             // an unapproved command; on resume the step re-runs and re-prompts.
-            waiter.resolve(.deny)
+            // `.cancelled`, not `.deny`: the fail-safe is identical, but the FACT is not,
+            // and the gate's envelope is persisted into the step's conversation — a
+            // `.deny` here told the model on resume that the human had refused.
+            waiter.resolve(.cancelled)
         }
 
         bashApprovalWaiters[key]?[commandKey] = nil
@@ -111,11 +114,12 @@ extension LLMExecutionService {
         bashApprovalWaiters[TaskStepKey(taskID: taskID, stepID: stepID)]?[commandKey]?.resolve(decision)
     }
 
-    /// Resumes every still-pending waiter for a step with `.deny` (teardown safety —
-    /// called from `clearBashState`). Idempotent: an already-settled waiter no-ops.
+    /// Resumes every still-pending waiter for a step with `.cancelled` (teardown safety —
+    /// called from `clearBashState`). Idempotent: an already-settled waiter no-ops, so a
+    /// human's `.deny` that landed first is never overwritten by this.
     func failPendingBashApprovals(stepID: String, taskID: Int) {
         let key = TaskStepKey(taskID: taskID, stepID: stepID)
-        bashApprovalWaiters[key]?.values.forEach { $0.resolve(.deny) }
+        bashApprovalWaiters[key]?.values.forEach { $0.resolve(.cancelled) }
         bashApprovalWaiters[key] = nil
     }
 }

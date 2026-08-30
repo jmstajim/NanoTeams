@@ -20,6 +20,35 @@ nonisolated enum MessageSourceContext: String, Codable, CaseIterable {
     /// from `.supervisorAnswer` — those are paired with `ask_supervisor` tool calls
     /// and rendered separately by `ActivityFeedBuilder`.
     case supervisorMessage
+    /// Revision feedback the Supervisor typed against a role — "Request changes" and the
+    /// mid-stream "Correct role", plus the `## AMENDMENT REQUEST` block an approved
+    /// `request_changes` vote produces. Written where the feedback reaches the LLM, in
+    /// `LLMExecutionService+StepLifecycle`'s revision-continuation branch, carrying
+    /// ``supervisorFeedbackPrefix``.
+    ///
+    /// **Why not `.supervisorMessage`,** which it borrowed the styling of and looks
+    /// identical on screen: that context is `mayEmbedAttachmentMarkers`, and the extraction
+    /// it enables TRUNCATES the body at the first line-anchored `## Attached Files`
+    /// (`ActivityFeedBuilder.stripAttachedFiles`). A revision comment can legitimately
+    /// contain that heading — the Autovisor's `manage_role(comment:)` schema tells the
+    /// manager to draw the text from the task's brief, and `effectiveSupervisorBrief`
+    /// composes exactly that heading — while no `revisionCommentAttachmentPaths` field
+    /// exists to make the markers real. Sharing the case would silently eat the tail of
+    /// those comments. The revision sheets are text-only, so the honest answer is a case
+    /// that renders as the Supervisor WITHOUT the marker pass.
+    ///
+    /// **Why not `.changeRequest`,** which it used to wear: that case is also written by
+    /// `request_changes`'s team-vote outcome, attributed to the REQUESTING role (TPM /
+    /// Code Reviewer / SRE) — two unrelated facts in one case, so neither could be
+    /// labelled without lying about the other. It was chosen defensively, to dodge the
+    /// generic `"(consultation)"` fallback in ``LLMMessage/sourceContextDisplayLabel``,
+    /// not because a Supervisor's correction is a change request.
+    ///
+    /// Discriminating on `sourceRole == .supervisor` instead of a case of its own is not
+    /// available: `ask_teammate`'s `teammate` argument is a raw model-supplied string that
+    /// `ToolResultDispatching` resolves through `Role.builtInRole(for:) ?? .custom(id:)`,
+    /// so a model can already mint `sourceRole == .supervisor` at will.
+    case supervisorFeedback
     /// Question that arrived from a delegated child team's `ask_supervisor` call
     /// while this role's `delegate_to_team` handler was awaiting completion. The
     /// question is appended to this role's `step.llmConversation` for activity-feed
@@ -167,6 +196,23 @@ nonisolated enum MessageSourceContext: String, Codable, CaseIterable {
     /// at a cadence the parent does not control, and would mask a parent looping on
     /// `delegate_to_team`.
     ///
+    /// **`.supervisorFeedback` is `false` even though a human wrote it**, which is the answer
+    /// most likely to be re-derived wrongly, so: the discriminator above is the ARRIVAL
+    /// MECHANISM, not the speaker. `.supervisorAnswer` is a human too and is `false`; the
+    /// `true` pair is defined by "came through the queued-message pipeline", and a revision
+    /// comment does not — it is appended by the step's own re-entry. It is the
+    /// `.delegatedQuestion` shape: a third party stamps it into the watched role's
+    /// conversation. That third party is very often the Autovisor manager
+    /// (`AutovisorHandlers`' `manage_role` → `NTMSOrchestrator.requestRevision`), which
+    /// matters because the boundary has TWO consumers and the second one is not a log line:
+    /// `ConversationInformationBoundary.lastArrival` is read by `NTMSOrchestrator+Streaming`
+    /// (the in-run detector) AND by `AutovisorStuckEvaluator`, whose verdict drives
+    /// `restart_role`. Counting it `true` would let a manager reset its own managed role's
+    /// loop cutoff by re-requesting changes — the cross-agent form of the self-immunization
+    /// this list exists to prevent. It also buys nothing: `resetStepForRevision` retains the
+    /// pre-revision history, which `LoopScanner.scanCommitted`'s cutoff already excludes by
+    /// recency.
+    ///
     /// **`.retryNudge` on the `false` side is load-bearing**: the repetition warning is
     /// persisted with exactly that context, so calling it unsolicited information would let
     /// the detector reset itself with its own warning — it would fire once and then never
@@ -187,6 +233,7 @@ nonisolated enum MessageSourceContext: String, Codable, CaseIterable {
         case .supervisorMessage, .autovisorEvent:
             return true
         case .consultation, .meeting, .changeRequest, .supervisorAnswer,
+             .supervisorFeedback,
              .delegatedQuestion, .delegationEscalation,
              .serverError, .loopCorrection, .retryNudge,
              .toolAcknowledgement, .runtimeWarning, .screenDescription:
@@ -200,6 +247,12 @@ nonisolated enum MessageSourceContext: String, Codable, CaseIterable {
         .changeRequest: "change request",
         .supervisorAnswer: "supervisor answer",
         .supervisorMessage: "message",
+        // Suppressed on the bubble by `rendersAsSupervisorUtterance`, so this entry never
+        // reaches the feed. It is here because `displayLabel` falls back to `?? rawValue`,
+        // and the fallback is not display-only: `ConversationTranscriptRenderer` writes the
+        // label into `conversation_log.md`, a per-run audit artifact diffed against
+        // `network_log.jsonl`. A missing row would put camelCase on disk.
+        .supervisorFeedback: "supervisor feedback",
         .delegatedQuestion: "delegated question",
         .delegationEscalation: "escalation",
         .loopCorrection: "loop correction",
@@ -211,6 +264,84 @@ nonisolated enum MessageSourceContext: String, Codable, CaseIterable {
     ]
 
     var displayLabel: String { Self.displayLabelMap[self] ?? rawValue }
+
+    /// Does this turn render as the Supervisor's OWN utterance — no secondary `(source)`
+    /// label beside the role name, and the filled bubble that matches the initial task
+    /// brief?
+    ///
+    /// The decision lives on the VALUE because it is read by two files that cannot see each
+    /// other (`LLMMessage.sourceContextDisplayLabel` and `MessageBubbleView`), and a
+    /// hand-written `== .supervisorMessage` at each was how `.supervisorAnswer` came to be
+    /// bolted onto one of the four render facets and none of the others (CLAUDE.md #51).
+    ///
+    /// `.supervisorAnswer` is deliberately NOT here, and that is a per-member re-check
+    /// rather than an oversight (CLAUDE.md #119): it answers a call the model itself made,
+    /// so `(supervisor answer)` states something the crowned header does not — which of the
+    /// role's own questions came back. `.supervisorMessage` and `.supervisorFeedback` are
+    /// unprompted, and there the label only repeats the avatar.
+    var rendersAsSupervisorUtterance: Bool {
+        switch self {
+        case .supervisorMessage, .supervisorFeedback:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// May this turn's body carry `## Attached Files` / `## Clipped Text` marker sections
+    /// that the feed should lift into thumbnail cards?
+    ///
+    /// Only the surfaces that COMPOSE such markers qualify — the Quick Capture composer
+    /// (queued chat, `forward_to_team`) and the Supervisor answer sheet. It is not a
+    /// cosmetic flag: `ActivityFeedBuilder.stripAttachedFiles` truncates the body at the
+    /// first marker, so turning it on for a context whose text merely QUOTES the heading
+    /// deletes everything after it. `.supervisorFeedback` is off for exactly that reason —
+    /// `RevisionSheet` / `CorrectRoleSheet` are text-only and there is no
+    /// `revisionCommentAttachmentPaths` to make a marker mean anything.
+    ///
+    /// Both readers — the feed (`TeamActivityFeedView+Streaming.resolveBubbleInputs`) and
+    /// `conversation_log.md` (`ConversationTranscriptRenderer`) — go through this property.
+    /// They used to disagree: the feed covered `.supervisorAnswer`, the transcript did not,
+    /// so an answer carrying markers rendered as cards on screen and as raw marker text on
+    /// disk.
+    var mayEmbedAttachmentMarkers: Bool {
+        switch self {
+        case .supervisorMessage, .supervisorAnswer:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Attribution markers this context prepends to its WIRE content, longest-lived form
+    /// first. Empty for contexts that send their body bare.
+    ///
+    /// The markers exist for the model — on a flattened wire (both providers merge
+    /// consecutive user-side turns) they are what separates a Supervisor turn from the tool
+    /// result above it. The bubble already names the speaker, so `displayContent` strips
+    /// them; driving that from one table is what keeps a new prefix from reaching the feed
+    /// just because someone forgot an arm.
+    var attributionPrefixes: [String] {
+        switch self {
+        case .supervisorMessage:
+            // Legacy single-line form second: messages persisted by builds before the
+            // marker went multiline still render cleanly after upgrade.
+            return [Self.supervisorMessagePrefix, "Supervisor: "]
+        case .supervisorAnswer:
+            // Composed form FIRST, and it is not hypothetical: `correctRole` Branch A (the
+            // role was waiting on `ask_supervisor` when it paused) routes the correction
+            // through `answerSupervisorQuestion` with the feedback marker already attached,
+            // so the persisted body reads `Supervisor answer: Supervisor Feedback: …`.
+            // Stripping only the outer one left the inner marker on screen — the same leak
+            // this table exists to close, one branch over.
+            return [Self.supervisorAnswerPrefix + Self.supervisorFeedbackPrefix,
+                    Self.supervisorAnswerPrefix]
+        case .supervisorFeedback:
+            return [Self.supervisorFeedbackPrefix]
+        default:
+            return []
+        }
+    }
 
     /// Shared attribution marker prepended to queued Supervisor turns. Single
     /// source of truth so the write side (`NTMSOrchestrator.consumeQueuedSupervisorMessage`)
@@ -231,6 +362,13 @@ nonisolated enum MessageSourceContext: String, Codable, CaseIterable {
     /// or baked into the single `StepMessage` copy that the stateless rebuild relays
     /// (`PromptBuilder` reads `step.messages`). Single source of truth across the
     /// write sites (`requestRevision`, `correctRole`) and the send site.
+    ///
+    /// The feedback text has THREE homes and only one of them is tagged: `revisionComment`
+    /// holds it raw, `step.messages` holds the prefixed `StepMessage` the stateless rebuild
+    /// relays (a `StepMessage` has no `sourceContext` field at all), and `llmConversation`
+    /// holds the ``supervisorFeedback``-tagged `LLMMessage` the activity feed renders. So the
+    /// case governs DISPLAY only — the marker itself still ships on the wire from both send
+    /// sites, unchanged.
     static let supervisorFeedbackPrefix = "Supervisor Feedback: "
 
     /// Delimiters wrapping a `.loopCorrection` turn (`LoopRecoveryPolicy.retryWithNudge`).
@@ -340,10 +478,10 @@ nonisolated struct LLMMessage: Codable, Identifiable, Hashable {
     /// Display label for the message's source context (e.g. "(consultation)", "(input)").
     /// Returns nil for regular assistant/system messages without special context.
     var sourceContextDisplayLabel: String? {
-        // `.supervisorMessage` is rendered with bubble styling matching the
+        // Supervisor utterances are rendered with bubble styling matching the
         // initial Supervisor task brief — the avatar + role name already convey
         // the context, so no secondary "(message)" label.
-        if sourceContext == .supervisorMessage { return nil }
+        if sourceContext?.rendersAsSupervisorUtterance == true { return nil }
         // The red bubble + self-describing content already convey "server error";
         // a "(serverError)" label would be redundant noise.
         if sourceContext == .serverError { return nil }
@@ -353,41 +491,32 @@ nonisolated struct LLMMessage: Codable, Identifiable, Hashable {
         return nil
     }
 
-    /// Content ready for rendering in the activity feed. For `.supervisorMessage`
-    /// turns, strips the leading attribution marker (`MessageSourceContext.supervisorMessagePrefix`)
-    /// — it's there so the LLM can identify the speaker when the turn lands in a
-    /// combined `input` string alongside tool results and memory blocks, but the
-    /// bubble already shows the role name above, so the prefix is redundant UI noise.
+    /// Content ready for rendering in the activity feed: the persisted body with its
+    /// wire-side attribution marker removed.
     ///
-    /// Also accepts the legacy single-line `"Supervisor: "` form so messages
-    /// persisted by earlier builds still render cleanly after upgrade.
+    /// The markers exist so the LLM can identify the speaker when the turn lands in a
+    /// combined `input` string alongside tool results and memory blocks, but the bubble
+    /// already shows the role name above, so on screen they are redundant noise. Which
+    /// marker belongs to which context is stated once, on
+    /// ``MessageSourceContext/attributionPrefixes`` — a context that grows a marker and
+    /// forgets an arm here is the defect that let `"Supervisor Feedback: "` render for as
+    /// long as it did.
     ///
-    /// `.supervisorAnswer` turns strip `supervisorAnswerPrefix` the same way —
-    /// unpaired answers (escalation / Autovisor idle park) render as durable
-    /// Supervisor bubbles whose header already attributes the speaker.
+    /// `.loopCorrection` is the one context whose framing is not a leading prefix: it is
+    /// wrapped in delimiters addressed to the provider, stripped by their own helper.
     var displayContent: String {
-        switch sourceContext {
-        case .supervisorMessage:
-            let multiline = MessageSourceContext.supervisorMessagePrefix
-            if content.hasPrefix(multiline) {
-                return String(content.dropFirst(multiline.count))
-            }
-            let inline = "Supervisor: "
-            if content.hasPrefix(inline) {
-                return String(content.dropFirst(inline.count))
-            }
-            return content
-        case .supervisorAnswer:
-            let prefix = MessageSourceContext.supervisorAnswerPrefix
-            if content.hasPrefix(prefix) {
-                return String(content.dropFirst(prefix.count))
-            }
-            return content
-        case .loopCorrection:
+        if sourceContext == .loopCorrection {
             return Self.strippingLoopCorrectionBlock(content)
-        default:
-            return content
         }
+        for prefix in sourceContext?.attributionPrefixes ?? [] {
+            // `.anchored` match rather than `hasPrefix` + `dropFirst(prefix.count)`: the
+            // range comes back from the same single pass, so the marker's length is never
+            // counted. `String.count` walks graphemes, and these bodies are whole
+            // conversation turns.
+            guard let marker = content.range(of: prefix, options: .anchored) else { continue }
+            return String(content[marker.upperBound...])
+        }
+        return content
     }
 
     /// Removes the wire-side framing from a `.loopCorrection` body.
@@ -432,6 +561,37 @@ nonisolated struct LLMMessage: Codable, Identifiable, Hashable {
         // downgrade — degrades to `nil` instead of throwing and failing the whole
         // message (and the step / task) to decode.
         let sourceContextRaw = try c.decodeIfPresent(String.self, forKey: .sourceContext)
-        self.sourceContext = sourceContextRaw.flatMap(MessageSourceContext.init(rawValue:))
+        let decodedContext = sourceContextRaw.flatMap(MessageSourceContext.init(rawValue:))
+        self.sourceContext = Self.normalizingLegacyContext(
+            decodedContext, sourceRole: self.sourceRole, content: self.content)
+    }
+
+    /// Re-tags revision feedback persisted before ``MessageSourceContext/supervisorFeedback``
+    /// existed, so an already-recorded run re-renders as the Supervisor's own utterance
+    /// instead of keeping the `(change request)` label and the leaked `Supervisor Feedback: `
+    /// prefix. Re-encoding persists the corrected tag, so it converts on first mutation.
+    ///
+    /// **Three gates, not one.** `.changeRequest` alone is wrong — the case is still live for
+    /// the `request_changes` team-vote outcome. `sourceRole == .supervisor` alone is not
+    /// enough either, and the reason is worth stating: the field is reachable by the MODEL
+    /// (`ask_teammate`'s `teammate` argument is a raw string resolved through
+    /// `Role.builtInRole(for:) ?? .custom(id:)`), and `Role.fromDefinition` carries a legacy
+    /// `id == "supervisor"` branch that diverges from the `isSupervisor` predicate the engine
+    /// actually excludes on (CLAUDE.md #91). The content gate removes the dependency on both:
+    /// the vote outcome's body is prose ("Change request APPROVED by team vote…") and never
+    /// carries this marker, while the revision branch always writes it.
+    ///
+    /// Scope: LIVE runs re-render `conversation_log.md` on their next turn; a frozen run's
+    /// log on disk keeps the old label, since nothing re-renders it without a mutation.
+    private static func normalizingLegacyContext(
+        _ context: MessageSourceContext?,
+        sourceRole: Role?,
+        content: String
+    ) -> MessageSourceContext? {
+        guard context == .changeRequest,
+              sourceRole == .supervisor,
+              content.hasPrefix(MessageSourceContext.supervisorFeedbackPrefix)
+        else { return context }
+        return .supervisorFeedback
     }
 }

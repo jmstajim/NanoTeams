@@ -188,9 +188,13 @@ nonisolated extension Run {
             }
         }
 
-        // Acceptance needed (skip in chat mode; skip steps already shown above)
+        // Acceptance needed (skip in chat mode; skip steps already shown above).
+        // The gate set comes from `AcceptanceService` rather than being re-spelled here:
+        // the same rule decides `task_status`'s `roles_needing_acceptance` and the durable
+        // fact the Autovisor's wake reads, and three copies of it would drift (CLAUDE.md
+        // #51). The `seenStepIDs` dedup below stays — that is presentation, not the rule.
         if !isChatMode {
-            for (roleID, status) in roleStatuses where status == .needsAcceptance {
+            for roleID in AcceptanceService.actionableAcceptanceGates(run: self) {
                 let roleName = teamRoles.first { $0.id == roleID }?.name ?? Role.fromID(roleID).displayName
                 if let step = steps.last(where: { $0.effectiveRoleID == roleID }),
                    !seenStepIDs.contains(step.id) {

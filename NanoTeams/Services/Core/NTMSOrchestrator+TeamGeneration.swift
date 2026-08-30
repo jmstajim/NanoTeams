@@ -184,6 +184,13 @@ extension NTMSOrchestrator {
             }
             if !isCancellation {
                 lastErrorMessage = message
+                // The one condition the engine-state seam structurally cannot speak for: a
+                // generation failure flips the task to `.failed` with NO engine in existence
+                // to transition, so `onStateChanged` never fires and the manager's `.failed`
+                // trigger would wait for the ≤60 s poll. Named site rather than a blanket
+                // status-edge hook — every other derived-status move that matters to the
+                // manager rides an engine transition.
+                scheduleAutovisorWake()
             }
             return false
         }

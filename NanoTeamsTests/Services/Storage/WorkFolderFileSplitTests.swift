@@ -63,7 +63,7 @@ final class WorkFolderFileSplitTests: XCTestCase {
     func testContextEditTouchesOnlySettingsFile() throws {
         let before = snapshotContent()
 
-        _ = try sut.updateWorkFolderContext(at: root, context: "Updated context")
+        _ = try sut.updateWorkFolderContext(at: root, context: "Updated context", activeTask: nil)
 
         let after = snapshotContent()
         XCTAssertEqual(before.wf, after.wf, "workfolder.json must not change")
@@ -74,7 +74,7 @@ final class WorkFolderFileSplitTests: XCTestCase {
     func testSchemeEditTouchesOnlySettingsFile() throws {
         let before = snapshotContent()
 
-        _ = try sut.updateSelectedScheme(at: root, scheme: "NanoTeams")
+        _ = try sut.updateSelectedScheme(at: root, scheme: "NanoTeams", activeTask: nil)
 
         let after = snapshotContent()
         XCTAssertEqual(before.wf, after.wf)
@@ -85,7 +85,7 @@ final class WorkFolderFileSplitTests: XCTestCase {
     func testTeamEditTouchesOnlyTeamsFile() throws {
         let before = snapshotContent()
 
-        _ = try sut.updateTeams(at: root) { teams in
+        _ = try sut.updateTeams(at: root, activeTask: nil) { teams in
             guard !teams.isEmpty else { return }
             teams[0].name = "Renamed Team"
         }
@@ -106,7 +106,7 @@ final class WorkFolderFileSplitTests: XCTestCase {
 
         let before = snapshotContent()
 
-        _ = try sut.updateWorkFolderState(at: root) { state in
+        _ = try sut.updateWorkFolderState(at: root, activeTask: nil) { state in
             state.activeTeamID = targetID
         }
 
@@ -122,7 +122,7 @@ final class WorkFolderFileSplitTests: XCTestCase {
 
         let before = snapshotContent()
 
-        _ = try sut.updateWorkFolderState(at: root) { state in
+        _ = try sut.updateWorkFolderState(at: root, activeTask: nil) { state in
             state.activeTaskID = 0 // arbitrary change
         }
 
@@ -158,8 +158,8 @@ final class WorkFolderFileSplitTests: XCTestCase {
         // workfolder.json.activeTaskID to a random UUID — openOrCreateWorkFolder
         // has a stale-active-task sweep that would rewrite workfolder.json on
         // the next open, which would pollute the "preserved" assertion below.
-        _ = try sut.updateWorkFolderContext(at: root, context: "WAIT WHAT") // will be lost
-        _ = try sut.updateTeams(at: root) { teams in
+        _ = try sut.updateWorkFolderContext(at: root, context: "WAIT WHAT", activeTask: nil) // will be lost
+        _ = try sut.updateTeams(at: root, activeTask: nil) { teams in
             teams[0].name = "Must Survive Corruption"
         }
 
@@ -189,7 +189,7 @@ final class WorkFolderFileSplitTests: XCTestCase {
     }
 
     func testCorruptedTeamsFilePreservesOtherFiles() throws {
-        _ = try sut.updateWorkFolderContext(at: root, context: "Survives Corruption")
+        _ = try sut.updateWorkFolderContext(at: root, context: "Survives Corruption", activeTask: nil)
         let settingsBefore = try Data(contentsOf: paths.settingsJSON)
 
         try "garbage".write(to: paths.teamsJSON, atomically: true, encoding: .utf8)
@@ -209,7 +209,7 @@ final class WorkFolderFileSplitTests: XCTestCase {
     }
 
     func testCorruptedWorkFolderJSONPreservesOtherFiles() throws {
-        _ = try sut.updateWorkFolderContext(at: root, context: "Must Survive")
+        _ = try sut.updateWorkFolderContext(at: root, context: "Must Survive", activeTask: nil)
         let settingsBefore = try Data(contentsOf: paths.settingsJSON)
         let teamsBefore = try Data(contentsOf: paths.teamsJSON)
 
@@ -251,7 +251,7 @@ final class WorkFolderFileSplitTests: XCTestCase {
         // just need `activeTeamID` to reference something the recovered
         // teams.json cannot resolve.
         let danglingID: NTMSID = "nonexistent_team_\(UUID().uuidString.prefix(8))"
-        _ = try sut.updateWorkFolderState(at: root) { state in
+        _ = try sut.updateWorkFolderState(at: root, activeTask: nil) { state in
             state.activeTeamID = danglingID
         }
 

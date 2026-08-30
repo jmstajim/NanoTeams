@@ -159,15 +159,27 @@ extension NTMSOrchestrator {
         // in-memory state matches what landed on disk (the user's partial
         // mutation is visible via lastErrorMessage and the UI reflects reality).
         do {
+            // The in-memory active task, handed to every writer instead of letting each
+            // one re-read and re-hydrate it. None of these three writes can change the
+            // task's CONTENT — they write workfolder.json / settings.json / teams.json —
+            // so re-reading it cost O(entire conversation history) on the MainActor per
+            // call and, worse, could hand `apply(_:)` a disk copy older than this one
+            // (`mutateTask` commits in memory first and detaches the write — invariant
+            // #6). `assembleContext` still re-reads when the id no longer matches, which
+            // is the only case where the caller's copy is not the active task.
+            let cachedActiveTask = activeTask
             var lastContext: WorkFolderContext?
             if stateChanged {
-                lastContext = try repository.updateWorkFolderState(at: url) { $0 = projection.state }
+                lastContext = try repository.updateWorkFolderState(
+                    at: url, activeTask: cachedActiveTask) { $0 = projection.state }
             }
             if settingsChanged {
-                lastContext = try repository.updateSettings(at: url) { $0 = projection.settings }
+                lastContext = try repository.updateSettings(
+                    at: url, activeTask: cachedActiveTask) { $0 = projection.settings }
             }
             if teamsChanged {
-                lastContext = try repository.updateTeams(at: url) { $0 = projection.teams }
+                lastContext = try repository.updateTeams(
+                    at: url, activeTask: cachedActiveTask) { $0 = projection.teams }
             }
             if let ctx = lastContext {
                 apply(ctx)

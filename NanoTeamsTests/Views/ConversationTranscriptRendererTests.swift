@@ -246,6 +246,47 @@ final class ConversationTranscriptRendererTests: XCTestCase {
         XCTAssertFalse(md.contains("## Attached Files"))
     }
 
+    /// The transcript and the feed must answer "can this turn embed attachment markers?"
+    /// identically. They did not: the feed covered `.supervisorAnswer`, this file covered
+    /// only `.supervisorMessage`, so an answer carrying markers rendered as thumbnail cards
+    /// on screen and as raw marker text on disk. Both now read
+    /// `MessageSourceContext.mayEmbedAttachmentMarkers`.
+    ///
+    /// RED: narrow the predicate back to `== .supervisorMessage` → this fails.
+    func testSupervisorAnswer_extractsEmbeddedAttachments_matchingTheFeed() {
+        let content = "\(MessageSourceContext.supervisorAnswerPrefix)USE_THIS\n\n## Attached Files\n- docs/api.pdf"
+        let msg = LLMMessage(
+            role: .user, content: content,
+            sourceRole: .supervisor, sourceContext: .supervisorAnswer
+        )
+        let md = render([.llmMessage(message: msg, role: .supervisor, stepID: "eng", originTaskID: 0)])
+        XCTAssertTrue(md.contains("USE_THIS"))
+        XCTAssertTrue(md.contains("docs/api.pdf"))
+        XCTAssertFalse(md.contains("## Attached Files"))
+    }
+
+    /// The other side of the same predicate, and the reason it is not simply "every
+    /// Supervisor turn": `stripAttachedFiles` TRUNCATES at the first line-anchored marker.
+    /// Revision feedback can legitimately quote one — the Autovisor's `manage_role(comment:)`
+    /// draws its text from the task brief, which composes that exact heading — and there is
+    /// no attachment list behind it, so extracting would silently delete the tail.
+    ///
+    /// RED: add `.supervisorFeedback` to `mayEmbedAttachmentMarkers` → the tail vanishes and
+    /// this fails.
+    func testSupervisorFeedback_quotingAMarker_keepsItsTail() {
+        let content = "\(MessageSourceContext.supervisorFeedbackPrefix)FIX_LINE_NUMBERS\n\n## Attached Files\n- TAIL_MUST_SURVIVE.md"
+        let msg = LLMMessage(
+            role: .user, content: content,
+            sourceRole: .supervisor, sourceContext: .supervisorFeedback
+        )
+        let md = render([.llmMessage(message: msg, role: .supervisor, stepID: "eng", originTaskID: 0)])
+        XCTAssertTrue(md.contains("FIX_LINE_NUMBERS"))
+        XCTAssertTrue(md.contains("TAIL_MUST_SURVIVE.md"),
+                      "the body is quoted whole — nothing was treated as an attachment list")
+        XCTAssertFalse(md.contains("(supervisor feedback)"),
+                       "and it carries no secondary label, matching the bubble")
+    }
+
     // MARK: - Flat-feed ordering (items in order, pending block last)
 
     func testMultipleItems_preserveOrder_pendingBlockLast() {

@@ -152,11 +152,15 @@ nonisolated extension ActivityFeedBuilder {
         return contents
     }
 
-    /// Resolves the bubble inputs for a message turn. For
-    /// `.supervisorMessage` turns it strips the embedded `## Attached Files`
-    /// / `## Clipped Text` markers and returns the cleaned text alongside
-    /// the extracted paths/clips. For all other turns it returns `raw`
+    /// Resolves the bubble inputs for a message turn. When the caller says the turn's
+    /// context can embed them (`MessageSourceContext.mayEmbedAttachmentMarkers`) it strips
+    /// the embedded `## Attached Files` / `## Clipped Text` markers and returns the cleaned
+    /// text alongside the extracted paths/clips. For all other turns it returns `raw`
     /// verbatim with empty paths/clips.
+    ///
+    /// The flag is not cosmetic and must not be passed `true` speculatively: `stripAttachedFiles`
+    /// TRUNCATES at the first line-anchored marker, so a turn that merely quotes the heading
+    /// loses everything after it.
     ///
     /// The non-obvious bit: when `isSupervisorMessage` is true and the user
     /// attached a file but typed nothing, `stripAttachedFiles` returns
@@ -184,6 +188,13 @@ nonisolated extension ActivityFeedBuilder {
     /// content from any other source context indicates a real bug
     /// upstream and should surface as a visible avatar-only bubble so
     /// the regression doesn't get swallowed.
+    ///
+    /// That includes `.supervisorFeedback`, which shares the bubble styling but not this
+    /// suppression, and the narrowing is the reason: the C4 race below is a property of the
+    /// QUEUED-CHAT delivery, and revision feedback does not come through it. Its trigger
+    /// sites reject a whitespace-only comment (`rawFeedback` + an `isEmpty` guard) and
+    /// `resetStepForRevision` substitutes a canned sentence rather than nothing, so an empty
+    /// one is a genuine defect and must stay visible.
     ///
     /// Filtering at the builder (rather than the dispatcher) keeps the
     /// feed dispatcher's `MessageBubbleView` slot at one structural

@@ -138,6 +138,29 @@ final class ActivityFeedBuilderSupervisorMessageFilterTests: XCTestCase {
         XCTAssertFalse(ActivityFeedBuilder.shouldSuppressEmptySupervisorMessage(msg))
     }
 
+    /// `.supervisorFeedback` shares the bubble STYLING with `.supervisorMessage` but not this
+    /// suppression, and the narrowing is deliberate rather than an omission: the C4 race this
+    /// filter exists for is a property of the QUEUED-CHAT delivery, which revision feedback
+    /// does not use. Its trigger sites reject a whitespace-only comment and
+    /// `resetStepForRevision` substitutes a canned sentence rather than nothing — so an empty
+    /// one is a real upstream defect and must stay visible as a ghost bubble.
+    ///
+    /// RED: widen the guard to `rendersAsSupervisorUtterance` → this fails, and a genuine
+    /// empty-feedback regression starts disappearing from the feed instead of showing.
+    func testShouldSuppress_supervisorFeedbackContext_isFalse() async {
+        let msg = LLMMessage(
+            createdAt: date(0), role: .user,
+            content: "",
+            sourceRole: .supervisor, sourceContext: .supervisorFeedback
+        )
+        XCTAssertFalse(ActivityFeedBuilder.shouldSuppressEmptySupervisorMessage(msg))
+        XCTAssertTrue(
+            MessageSourceContext.supervisorFeedback.rendersAsSupervisorUtterance,
+            "anti-vacuity: it really does share the Supervisor styling — that is what makes "
+                + "this narrowing a decision rather than a case nobody thought about"
+        )
+    }
+
     func testShouldSuppress_meetingContext_isFalse() async {
         let msg = LLMMessage(
             createdAt: date(0), role: .user,

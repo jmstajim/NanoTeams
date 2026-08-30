@@ -265,7 +265,7 @@ final class ProcessToolResultsTests: XCTestCase {
         installTask(task)
 
         // The reported envelope, verbatim from `+BashGate`'s no-human arm.
-        let denied = #"{"ok":false,"error":{"code":"BASH_DENIED","message":"This command needs human approval (Manual mode — every command needs your approval.), but no human is available to review it. Ask the supervisor to allow unattended command approval."}}"#
+        let denied = #"{"ok":false,"error":{"code":"BASH_DENIED","message":"This command needs human approval (Manual mode — every command is reviewed individually.), but no human is available to review it. Ask the supervisor to allow unattended command approval."}}"#
         let result = makeResult(
             providerID: "tc_0", toolName: ToolNames.bash,
             argumentsJSON: #"{"command":"xcodebuild test"}"#, outputJSON: denied, isError: true

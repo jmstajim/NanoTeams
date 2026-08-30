@@ -482,7 +482,7 @@ final class SearchExecutorParallelEquivalenceTests: XCTestCase {
     /// Injected through `SearchExecutorInput.fileManager`, which is the seam the walk already
     /// takes — so this observes the REAL question ("did the grep occupy the main thread") rather
     /// than a proxy for it such as "is the attribute still written on that declaration".
-    private final class ThreadProbeFileManager: FileManager, @unchecked Sendable {
+    private final class ThreadProbeFileManager: FileManager {
         private let lock = NSLock()
         private var _calls = 0
         private var _sawMainThread = false

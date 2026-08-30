@@ -443,21 +443,33 @@ nonisolated extension TasksIndex {
     ///
     /// Order is established once, at the boundary that loads the index; keeping it is
     /// this method's job. Callers must not re-sort after calling it.
-    mutating func upsert(_ summary: TaskSummary) {
+    /// Returns the row this REPLACED, or `nil` for a row seen for the first time.
+    ///
+    /// The index is the thing that holds rows, so it is the thing that can say what one
+    /// looked like a moment ago — and it already located the row in order to replace it,
+    /// so handing it back costs nothing. `NTMSOrchestrator.upsertTaskSummary` needs it to
+    /// retire the Autovisor's spent attention keys on the EDGE where a condition's level
+    /// clears, rather than sampling for the clear on some later wake (CLAUDE.md #92); a
+    /// caller that tried to read the old row on either side of this call would find the new
+    /// one after, and — for a background task the shell never displayed — nothing before.
+    @discardableResult
+    mutating func upsert(_ summary: TaskSummary) -> TaskSummary? {
         guard let existing = tasks.firstIndex(where: { $0.id == summary.id }) else {
             tasks.insert(summary, at: insertionSlot(for: summary.updatedAt))
-            return
+            return nil
         }
+        let previous = tasks[existing]
         // An unchanged stamp is a CONVERGE write — the recovery sweep re-summarizing a row
         // it did not touch — and it must not perturb the order at all. Removing and
         // re-inserting would push the row to the back of its tie group, which is movement
         // no caller asked for.
         if tasks[existing].updatedAt == summary.updatedAt {
             tasks[existing] = summary
-            return
+            return previous
         }
         tasks.remove(at: existing)
         tasks.insert(summary, at: insertionSlot(for: summary.updatedAt))
+        return previous
     }
 
     /// First index whose `updatedAt` is strictly older than `date` — i.e. where a row
@@ -634,7 +646,26 @@ nonisolated struct TaskSummary: Codable, Identifiable, Hashable {
     /// against the LIVE teams at sweep time, not baked in here.
     var preferredTeamID: NTMSID?
 
-    init(id: Int, title: String, status: TaskStatus, updatedAt: Date = MonotonicClock.shared.now(), isChatMode: Bool = false, parentTaskID: Int? = nil, nextRecurrenceFireAt: Date? = nil, pinnedTeamID: NTMSID? = nil, hasPendingSupervisorInput: Bool? = nil, hasGeneratedTeam: Bool? = nil, preferredTeamID: NTMSID? = nil) {
+    /// Whether a role of the task's active run is parked on an acceptance decision — the
+    /// durable twin of `NTMSTask.hasRolesAwaitingAcceptance`, mirrored here because the
+    /// Autovisor's wake reads `snapshot.tasksIndex` and must be able to see a task STALLED
+    /// at a mid-pipeline gate without loading every task blob. Such a task derives
+    /// `.running`, so no status-based trigger can find it.
+    ///
+    /// **Tri-state on purpose** (CLAUDE.md #91, same contract as `hasPendingSupervisorInput`
+    /// and `hasGeneratedTeam`): `nil` means "this row was written before the field existed",
+    /// which is NOT `false`. Read it through `hasRoleAtAcceptanceGate` /
+    /// `acceptanceGateStateIsKnown` (`TaskSummary+Queries.swift`), never as a raw `== false`.
+    /// An unknown row simply does not fire the trigger — degraded, never destructive — and
+    /// converges on the next work-folder open, when `recoverStaleStatusesAcrossIndex`
+    /// re-summarizes the `.running` rows it already visits.
+    ///
+    /// No `schemaVersion` bump: `TasksIndex` has no version-gated legacy decode branch that
+    /// could re-fire, so #48 does not apply — rows converge individually. Same argument as
+    /// `hasGeneratedTeam` above.
+    var hasRolesAwaitingAcceptance: Bool?
+
+    init(id: Int, title: String, status: TaskStatus, updatedAt: Date = MonotonicClock.shared.now(), isChatMode: Bool = false, parentTaskID: Int? = nil, nextRecurrenceFireAt: Date? = nil, pinnedTeamID: NTMSID? = nil, hasPendingSupervisorInput: Bool? = nil, hasGeneratedTeam: Bool? = nil, preferredTeamID: NTMSID? = nil, hasRolesAwaitingAcceptance: Bool? = nil) {
         self.id = id
         self.title = title
         self.status = status
@@ -646,6 +677,7 @@ nonisolated struct TaskSummary: Codable, Identifiable, Hashable {
         self.hasPendingSupervisorInput = hasPendingSupervisorInput
         self.hasGeneratedTeam = hasGeneratedTeam
         self.preferredTeamID = preferredTeamID
+        self.hasRolesAwaitingAcceptance = hasRolesAwaitingAcceptance
     }
 
     init(from decoder: Decoder) throws {
@@ -661,6 +693,8 @@ nonisolated struct TaskSummary: Codable, Identifiable, Hashable {
         self.hasPendingSupervisorInput = try container.decodeIfPresent(Bool.self, forKey: .hasPendingSupervisorInput)
         self.hasGeneratedTeam = try container.decodeIfPresent(Bool.self, forKey: .hasGeneratedTeam)
         self.preferredTeamID = try container.decodeIfPresent(String.self, forKey: .preferredTeamID)
+        self.hasRolesAwaitingAcceptance =
+            try container.decodeIfPresent(Bool.self, forKey: .hasRolesAwaitingAcceptance)
     }
 }
 
@@ -787,6 +821,25 @@ nonisolated extension NTMSTask {
             && run.roleStatuses.values.allSatisfy { $0.isComplete }
     }
 
+    /// Whether some role of the active run is parked on a Supervisor acceptance decision
+    /// that can actually be acted on.
+    ///
+    /// A task can be fully STALLED on this while deriving `.running`: with the default
+    /// `.afterEachRole` mode a producing role settles to `.needsAcceptance`, the engine's
+    /// run loop transitions to `.needsAcceptance` and RETURNS, but downstream roles are
+    /// still `.ready`/`.idle`, so `derivedStatusFromActiveRun`'s `.done` arm is never
+    /// reached and the task reads "Working". The status is not wrong — downstream work
+    /// genuinely is still to come — which is why this is a SECOND fact rather than a
+    /// different status (see the arguments on `TeamBusyScan.inFlightStatuses` and
+    /// `mapDerivedStatusToEngineState`, both of which read `.running` as "more is coming").
+    ///
+    /// `closedAt` guard mirrors `hasPendingSupervisorInput`'s: belt-and-braces, since
+    /// `finalizeRoleStatusesForClose` already clears the level on close.
+    var hasRolesAwaitingAcceptance: Bool {
+        guard closedAt == nil, let run = runs.last else { return false }
+        return AcceptanceService.hasAcceptanceGate(run: run)
+    }
+
     func toSummary() -> TaskSummary {
         TaskSummary(
             id: id,
@@ -799,7 +852,8 @@ nonisolated extension NTMSTask {
             pinnedTeamID: runs.last?.teamID,
             hasPendingSupervisorInput: hasPendingSupervisorInput,
             hasGeneratedTeam: generatedTeam != nil,
-            preferredTeamID: preferredTeamID
+            preferredTeamID: preferredTeamID,
+            hasRolesAwaitingAcceptance: hasRolesAwaitingAcceptance
         )
     }
 }

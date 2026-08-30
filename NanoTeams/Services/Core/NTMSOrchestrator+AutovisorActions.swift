@@ -32,9 +32,9 @@ extension NTMSOrchestrator {
             // constant defaults when no snapshot is loaded.
             let tuning = snapshot?.workFolder.settings.autovisorTuning ?? .default
             // Runaway guard (dive-deeper finding 7): bound concurrent in-flight work.
-            let runningNonManager = taskEngineStates.filter {
+            let runningNonManager = taskEngineStates.count {
                 $0.value == .running && $0.key != autovisorTaskID
-            }.count
+            }
             if runningNonManager >= tuning.maxConcurrentManagedTasks {
                 return .failure("Too many tasks already running (\(runningNonManager)). Wait for some to finish before creating more.")
             }

@@ -257,9 +257,11 @@ nonisolated enum Colors {
     static var accentBorder: Color { themed(\.accentBorder) }
 
     // MARK: - Text Colors
-    // Use SwiftUI .primary/.secondary/.tertiary for text in views.
-    // These Color values exist for places that need a Color (not ShapeStyle),
-    // e.g. Canvas drawing, NSColor contexts, or graph stroke colors.
+    // Use THESE, never SwiftUI's `.primary`/`.secondary`/`.tertiary`: the system colours
+    // answer to macOS, not to the user's selected theme, so a bare `.secondary` ignores
+    // every palette below. (This block used to say the opposite. It sat in the one
+    // directory `DesignTokenPinTests` exempts from its own scan, so the file that
+    // legitimised the drift was the file the pin could never read — CLAUDE.md #79.)
 
     /// Primary text — main content text (terminal foreground)
     static var textPrimary: Color { themed(\.textPrimary) }

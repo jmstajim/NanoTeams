@@ -72,7 +72,10 @@ nonisolated enum ComputerUsePermissionService {
             if policy.mode == .auto || policy.mode == .semiAutomatic {
                 return .allow
             }
-            return .ask(reason: "First screen capture this run — confirm sharing your screen.")
+            // Model-read (see the sibling note in `BashPermissionService`'s manual arm):
+            // this is interpolated into the gate's no-human envelope, so "confirm sharing
+            // YOUR screen" addressed an imperative to the one party that cannot act on it.
+            return .ask(reason: "First screen capture this run — screen sharing is confirmed once per run.")
         }
 
         // 8. Scroll is a read-oriented viewport move — it can't delete, submit, or grant
@@ -97,7 +100,9 @@ nonisolated enum ComputerUsePermissionService {
         // Auto → judge; Manual / Semi-automatic → human Allow/Deny (denied when no
         // human is available). Semi-automatic reaches here only for mutating
         // actions — its read-only tier (capture, scroll) already allowed above.
-        return .ask(reason: "Confirm this action.")
+        // Model-read, so it states WHY review is required rather than ordering the reader
+        // to confirm — the reader is the model, which has nothing to confirm with.
+        return .ask(reason: "Mutating action — clicks, typing and key presses are reviewed individually.")
     }
 
     /// Case-insensitive match: tries each pattern as a regex, falling back to substring.

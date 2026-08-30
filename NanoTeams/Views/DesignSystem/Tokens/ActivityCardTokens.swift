@@ -12,8 +12,6 @@ nonisolated enum ActivityCardTokens {
     static let cardPadding: CGFloat = Spacing.m  // 12pt
     /// Spacing between content elements
     static let contentSpacing: CGFloat = Spacing.s  // 8pt
-    /// Background opacity for dynamic-color tinted cards
-    static let backgroundOpacity: Double = DynamicTintOpacity.background
     /// Card corner radius
     static let cornerRadius: CGFloat = CornerRadius.medium  // 10pt
 

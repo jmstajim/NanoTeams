@@ -44,7 +44,7 @@ struct ArtifactItemView: View {
 
             VStack(alignment: .leading, spacing: ActivityCardTokens.contentSpacing) {
                 if showHeader {
-                    HStack(spacing: 6) {
+                    HStack(spacing: Spacing.s) {
                         roleNameText(roleName: roleName, teamSuffix: roleTeamSuffix, tintColor: tintColor)
                         Text("produced artifact").font(Typography.termXs).foregroundStyle(Colors.textSecondary)
                         Spacer()

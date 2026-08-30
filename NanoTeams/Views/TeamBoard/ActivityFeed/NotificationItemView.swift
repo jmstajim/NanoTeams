@@ -29,7 +29,7 @@ struct NotificationItemView: View {
                     .padding(ActivityCardTokens.cardPadding)
                     .background(
                         RoundedRectangle.squircle(ActivityCardTokens.cornerRadius)
-                            .fill(resolvedColor.opacity(ActivityCardTokens.backgroundOpacity))
+                            .fill(type.tintColor(isChatMode: isChatMode))
                     )
             }
         }

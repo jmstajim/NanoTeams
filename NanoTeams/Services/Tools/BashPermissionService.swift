@@ -54,7 +54,13 @@ nonisolated enum BashPermissionService {
         //     approvals are all intentionally skipped — the user opted into
         //     confirming each command, so only the deny rules above act silently.
         if policy.mode == .manual {
-            return .ask(reason: "Manual mode — every command needs your approval.")
+            // Reason strings are MODEL-read, not human-read: the approval card carries no
+            // reason, and the only consumer is `gateBashCalls`' no-human arm, which
+            // interpolates this into "This command needs human approval (<reason>), but no
+            // human is available to review it." Written in the second person it produced
+            // "…needs YOUR approval…, but no human is available" — a sentence that
+            // contradicts itself for its one reader. Third person, always.
+            return .ask(reason: "Manual mode — every command is reviewed individually.")
         }
 
         // 1c. Auto mode with judge strictness Off — every command that survives the

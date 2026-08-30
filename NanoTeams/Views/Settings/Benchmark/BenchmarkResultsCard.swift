@@ -61,11 +61,11 @@ struct BenchmarkResultsCard: View {
 
     /// The Runs Grid's coordinate space. Cell frames are REPORTED in it and hover/tap points are
     /// RESOLVED in it, so the two cannot disagree by an ancestor's offset.
-    private static let historyTableSpace = "benchmark-history-table"
+    private nonisolated static let historyTableSpace = "benchmark-history-table"
 
     /// Same contract for the leaderboard Grid — a separate name because the two Grids can never
     /// share an ancestor space without their frames landing in each other's dictionaries.
-    private static let leaderboardTableSpace = "benchmark-leaderboard-table"
+    private nonisolated static let leaderboardTableSpace = "benchmark-leaderboard-table"
 
     /// The clock the date cells format against — only its YEAR is ever read, to decide whether the
     /// year is worth printing. Not `@State`: a stored value would be captured when the card first
@@ -743,7 +743,7 @@ struct BenchmarkResultsCard: View {
         var id: String { column?.rawValue ?? title }
     }
 
-    static let modelColumn = Column(
+    nonisolated static let modelColumn = Column(
         column: .model, title: "Model", unit: nil, help: modelHelp)
 
     /// The titles are literals rather than `ModelLoadDetails.formatLabel` / `.quantizationLabel`,
@@ -751,52 +751,52 @@ struct BenchmarkResultsCard: View {
     /// persisted runs decode by, so its lifetime is "forever" while a heading's lifetime is a
     /// design decision — two facts that happen to agree, and wiring them together would turn a
     /// rewording of this column into a data bug (CLAUDE.md #91).
-    static let formatColumn = Column(
+    nonisolated static let formatColumn = Column(
         column: .format, title: "Format", unit: nil, help: formatHelp)
 
-    static let quantizationColumn = Column(
+    nonisolated static let quantizationColumn = Column(
         column: .quantization, title: "Quantization", unit: nil, help: quantizationHelp)
 
-    static let providerColumn = Column(
+    nonisolated static let providerColumn = Column(
         column: .provider, title: "Provider", unit: nil, help: providerHelp)
 
     /// Titled `Version`, not `Server`, since the endpoint moved under the model name: a column
     /// called Server that holds `0.4.21` while the server itself is nowhere on screen is the exact
     /// confusion this table was reported for.
-    static let versionColumn = Column(
+    nonisolated static let versionColumn = Column(
         column: .providerVersion, title: "Version", unit: "server", help: versionHelp)
 
-    static let generationColumn = Column(
+    nonisolated static let generationColumn = Column(
         column: .generation, title: "Generation", unit: "median tok/s", help: generationHelp)
 
-    static let bestColumn = Column(
+    nonisolated static let bestColumn = Column(
         column: .best, title: "Best run", unit: "tok/s", help: bestHelp)
 
     /// The one abbreviation everybody in the field uses for this quantity, with its expansion
     /// underneath. No unit line: `formatDuration` prints "410 ms" / "1.4 s", so the cell carries it.
-    static let ttftColumn = Column(
+    nonisolated static let ttftColumn = Column(
         column: .timeToFirstToken, title: "TTFT", unit: "time to first token", help: firstTokenHelp)
 
     /// `Prefill` is what the serving literature calls this phase; llama.cpp and Ollama spell the
     /// same measurement `prompt eval`. The old title, `Prompt`, named neither.
-    static let prefillColumn = Column(
+    nonisolated static let prefillColumn = Column(
         column: .prefill, title: "Prefill", unit: "prompt tok/s", help: promptHelp)
 
-    static let runsColumn = Column(
+    nonisolated static let runsColumn = Column(
         column: .runCount, title: "Runs", unit: nil, help: runsHelp)
 
     /// No unit line, by the same rule as `Model`, `Provider` and `Runs`: the title is already
     /// plain words naming what the cell holds, and a second line would be a restatement rather
     /// than an expansion. The cell prints an abbreviated date; the full timestamp is on hover.
-    static let lastRunColumn = Column(
+    nonisolated static let lastRunColumn = Column(
         column: .lastMeasured, title: "Last run", unit: nil, help: lastRunHelp)
 
     // MARK: Runs-tab headings
 
     /// `Date` and `Samples` exist only on the Runs tab and sort nothing — hence `column: nil`.
-    static let dateColumn = Column(column: nil, title: "Date", unit: nil, help: dateHelp)
+    nonisolated static let dateColumn = Column(column: nil, title: "Date", unit: nil, help: dateHelp)
 
-    static let samplesColumn = Column(
+    nonisolated static let samplesColumn = Column(
         column: nil, title: "Samples", unit: nil, help: samplesHelp)
 
     /// The Runs tab's Generation heading is NOT `generationColumn`, and the difference is the
@@ -805,14 +805,14 @@ struct BenchmarkResultsCard: View {
     /// so the unit line drops the word "median" (there is only one run to median over) and the
     /// help says what it is a median OF. Reusing the leaderboard's string would have this tab
     /// claim a median "across this model's runs" on a row that IS one run.
-    static let historyGenerationColumn = Column(
+    nonisolated static let historyGenerationColumn = Column(
         column: nil, title: "Generation", unit: "tok/s", help: historyGenerationHelp)
 
     /// Left-to-right, exactly as the table draws them. The header row still calls `header(_:)` per
     /// column rather than iterating this — a `ForEach` inside a `GridRow` is one cell's worth of
     /// layout risk for no gain — so this list exists to be ASSERTED against, and the pin that every
     /// abbreviation carries its expansion reads it.
-    static let columns: [Column] = [
+    nonisolated static let columns: [Column] = [
         modelColumn, formatColumn, quantizationColumn, providerColumn, versionColumn,
         generationColumn, bestColumn, ttftColumn, prefillColumn, runsColumn, lastRunColumn,
     ]
@@ -826,49 +826,49 @@ struct BenchmarkResultsCard: View {
     /// Its existence is the point as much as its contents: these headings used to be string
     /// literals inside the Grid, so every pin about naming, units and uniqueness read `columns`
     /// and covered exactly half the screen.
-    static let historyColumns: [Column] = [
+    nonisolated static let historyColumns: [Column] = [
         dateColumn, modelColumn, formatColumn, quantizationColumn,
         historyGenerationColumn, ttftColumn, prefillColumn, samplesColumn,
     ]
 
-    static let noResultsYet = "No results yet. Run the benchmark above to record one."
+    nonisolated static let noResultsYet = "No results yet. Run the benchmark above to record one."
 
     /// Says which runs go, because the row shows fewer than the delete removes: a throttled or
     /// older-prompt run of the same model on the same server has no line of its own here.
-    static let deleteRowHelp =
+    nonisolated static let deleteRowHelp =
         "Delete every run of this model on this server. The confirmation says how many."
 
-    static let deleteRunHelp = "Delete this one run and its samples."
+    nonisolated static let deleteRunHelp = "Delete this one run and its samples."
 
-    static let detailHelp =
+    nonisolated static let detailHelp =
         "Everything recorded with this run: every sample including the ones the medians excluded "
             + "and why, the machine's state at the time, and what the server said about itself."
 
-    static let deleteAllHelp = "Delete every recorded run and sample."
+    nonisolated static let deleteAllHelp = "Delete every recorded run and sample."
 
     /// Why the delete controls are inert right now. Without it a disabled trash icon is a bug.
-    static let measuringHelp =
+    nonisolated static let measuringHelp =
         "A benchmark is running. It records its result when it finishes, so deleting is held back "
             + "until then — otherwise a row removed now would come back on its own."
 
     /// Names the model AND the server because both are searched — a filter that only said "model"
     /// would make the two rows this table deliberately keeps apart look unreachable.
-    static let filterPlaceholder = "Filter by model or server"
+    nonisolated static let filterPlaceholder = "Filter by model or server"
 
     /// Repeats the query back. An empty table under a full field is the one state where the reader
     /// needs to be told what was asked, not just what was found.
-    static func noMatches(for query: String, mode: Mode) -> String {
+    nonisolated static func noMatches(for query: String, mode: Mode) -> String {
         let subject = mode == .leaderboard ? "model" : "run"
         return "No \(subject) matches \"\(query.trimmingCharacters(in: .whitespacesAndNewlines))\"."
     }
 
     /// `nil` while the field is empty: "9 of 9" beside an untouched filter states nothing.
-    static func matchCountLabel(visible: Int, total: Int, query: String) -> String? {
+    nonisolated static func matchCountLabel(visible: Int, total: Int, query: String) -> String? {
         guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         return "\(visible) of \(total)"
     }
 
-    static let modelHelp =
+    nonisolated static let modelHelp =
         "One row per model AND server. The same model measured against two endpoints is two rows — "
             + "they are two machines, and averaging them would describe neither. The endpoint has no "
             + "column of its own: hover a model's name to see which server that row was measured "
@@ -876,7 +876,7 @@ struct BenchmarkResultsCard: View {
 
     /// Carries the paragraph that used to live in `modelHelp`, because the fact moved with the
     /// value: a reader wanting to know what SAFETENSORS means now hovers the column that holds it.
-    static let formatHelp =
+    nonisolated static let formatHelp =
         "The model's file format as the server reported it, VERBATIM and untranslated — and the "
             + "two servers answer slightly different questions with that word. LM Studio names the "
             + "runtime it will use (GGUF, MLX); Ollama names the weights on disk (GGUF, safetensors), "
@@ -885,7 +885,7 @@ struct BenchmarkResultsCard: View {
             + "this table would be indistinguishable from a measurement. A dash means the server "
             + "reported none."
 
-    static let quantizationHelp =
+    nonisolated static let quantizationHelp =
         "How the weights were quantized, exactly as the server spells it — Q4_K_M, 4bit, nvfp4, "
             + "MXFP4. Never normalized into one vocabulary: this string is what you would search for, "
             + "or match against a model card or another tool's output, and a tidied-up spelling would "
@@ -901,7 +901,7 @@ struct BenchmarkResultsCard: View {
     /// leaderboard row is N runs and its abbreviated `Last run` cell drops the time, so the full
     /// timestamp needs somewhere to live. A Runs row IS one run and already prints its own date,
     /// so repeating it here would tell the reader what the cell beside their pointer says.
-    static func endpointTooltip(
+    nonisolated static func endpointTooltip(
         provider: LLMProvider, endpoint: String, lastMeasured: Date? = nil
     ) -> String {
         let measured = "Measured on \(provider.displayName) at \(endpoint.endpointHostLabel)"
@@ -909,15 +909,15 @@ struct BenchmarkResultsCard: View {
         return measured + ". Most recent run: \(runTimestampFull(lastMeasured))"
     }
 
-    static let providerHelp = "Which local server produced these figures."
+    nonisolated static let providerHelp = "Which local server produced these figures."
 
-    static let versionHelp =
+    nonisolated static let versionHelp =
         "The version of the local inference SERVER — Ollama 0.32.14, LM Studio 0.4.21 — as it "
             + "reported itself on the most recent run behind this row. Not the model's version, not "
             + "the inference engine's (llama.cpp and MLX builds are recorded with the run, not shown "
             + "here), and not this app's. A dash means the server does not report one."
 
-    static let generationHelp =
+    nonisolated static let generationHelp =
         "How fast the model WRITES, in tokens per second, once it has started — reading the prompt "
             + "is the separate Prefill column. Ollama's logs call this eval rate, llama-bench calls it "
             + "tg, serving docs call it decode. This is the MEDIAN across this model's runs, which is why "
@@ -925,42 +925,42 @@ struct BenchmarkResultsCard: View {
             + "server reports its own decoding rate the number is the server's; where none does, the "
             + "app times the window itself and the figure is marked with a ~."
 
-    static let bestHelp =
+    nonisolated static let bestHelp =
         "The same quantity as Generation — tokens per second of writing — but from the single "
             + "FASTEST run instead of the median of them. It is shown beside the median rather than "
             + "instead of it: the gap between the two is how much this model's speed varies between "
             + "runs, and neither number can say that alone."
 
-    static let firstTokenHelp =
+    nonisolated static let firstTokenHelp =
         "TTFT — time to first token: how long from sending the request to the first token "
             + "appearing, as the median across runs. It contains queueing, loading the model and "
             + "reading the prompt — that is what it means, not a defect — so it is never used as a "
             + "generation denominator."
 
-    static let promptHelp =
+    nonisolated static let promptHelp =
         "Prefill: how fast the server READS the prompt, in tokens per second, before it writes "
             + "anything. The same measurement llama.cpp and Ollama log as prompt eval and llama-bench "
             + "reports as pp. Measured over a fixed \(BenchmarkPrompt.measuredPromptTokens)-token "
             + "prompt. A ~ means the server did not "
             + "report the time and the app inferred it from the wait for the first token."
 
-    static let runsHelp =
+    nonisolated static let runsHelp =
         "How many RUNS this row's medians were taken over — not how many samples. A median over one "
             + "run must not read as a median over seven. \"2 of 5\" means three of the five runs "
             + "produced no usable sample at all and are behind none of these figures."
 
-    static let lastRunHelp =
+    nonisolated static let lastRunHelp =
         "When the most recent run behind this row was measured. It is also the run that supplied "
             + "the Version, Format and Quantization columns, which is why a row can rank on months-"
             + "old numbers while describing the model as it is configured today. The cell is "
             + "abbreviated; hover a row's model name for the full timestamp."
 
-    static let dateHelp =
+    nonisolated static let dateHelp =
         "When this run was started — one row here is one run, newest first. The year is "
             + "printed only when it is not the current one; hover a row's model name for the "
             + "full timestamp."
 
-    static let samplesHelp =
+    nonisolated static let samplesHelp =
         "How many of this run's samples were USABLE — the figures on this row are medians over "
             + "those. \"2 of 5\" means three produced nothing that could be measured; open the row "
             + "to see what happened to each. The warm-up is in neither number: it is stopped on "
@@ -968,7 +968,7 @@ struct BenchmarkResultsCard: View {
             + "sample after every healthy run."
 
     /// Deliberately not `generationHelp`. See `historyGenerationColumn`.
-    static let historyGenerationHelp =
+    nonisolated static let historyGenerationHelp =
         "How fast the model WROTE on this one run, in tokens per second — reading the prompt is the "
             + "separate Prefill column. Ollama's logs call this eval rate, llama-bench calls it tg, "
             + "serving docs call it decode. This is the median across THIS RUN's usable samples; "
@@ -985,7 +985,7 @@ struct BenchmarkResultsCard: View {
     ///
     /// The ranking clause is leaderboard-only. The Runs tab is ordered by date and ranks nothing,
     /// so promising "ranked last" there would describe a rule that surface does not have.
-    static func throttledTooltip(everyContributingRun: Bool) -> String {
+    nonisolated static func throttledTooltip(everyContributingRun: Bool) -> String {
         let subject = everyContributingRun
             ? "Every run behind this figure was" : "This run was"
         let ranking = everyContributingRun ? " Throttled rows are always ranked last." : ""
@@ -1001,7 +1001,7 @@ struct BenchmarkResultsCard: View {
     /// capsules these columns replaced drew NOTHING in that case, and were right to — a chip
     /// stands alone, and an em-dash inside one claims a value the server never sent. Under a
     /// heading the reverse holds: a blank cell in a grid reads as a rendering fault.
-    static func descriptorCell(_ text: String?) -> String {
+    nonisolated static func descriptorCell(_ text: String?) -> String {
         text ?? BenchmarkMetricsPolicy.noValue
     }
 
@@ -1035,7 +1035,7 @@ struct BenchmarkResultsCard: View {
     /// `"Aug 21, 2026 at 2:03 PM"` in full on every row — 23 characters, the widest single-line
     /// cell in either table, and 5 of them repeating the same year down the column. The full form
     /// survives in `runTimestampFull`, where nothing has to fit.
-    static func runTimestamp(_ date: Date, now: Date, includingTime: Bool) -> String {
+    nonisolated static func runTimestamp(_ date: Date, now: Date, includingTime: Bool) -> String {
         let calendar = Calendar.current
         let sameYear = calendar.component(.year, from: date) == calendar.component(.year, from: now)
         var style = Date.FormatStyle.dateTime.day().month(.abbreviated)
@@ -1046,7 +1046,7 @@ struct BenchmarkResultsCard: View {
 
     /// The unabbreviated form, for the places that are not a table cell: tooltips and the
     /// accessibility label of a delete button, which has to name unambiguously what it removes.
-    static func runTimestampFull(_ date: Date) -> String {
+    nonisolated static func runTimestampFull(_ date: Date) -> String {
         date.formatted(date: .abbreviated, time: .shortened)
     }
 
@@ -1057,7 +1057,7 @@ struct BenchmarkResultsCard: View {
     /// describing a model that failed three times, and the count alone says the opposite of that.
     /// A clean row stays a bare `"2"`: `"2 of 2"` is the noise this must not add, and a reader who
     /// sees the long form anywhere learns that the short form means nothing went wrong.
-    static func runsCell(priced: Int, failed: Int) -> String {
+    nonisolated static func runsCell(priced: Int, failed: Int) -> String {
         failed > 0 ? "\(priced) of \(priced + failed)" : "\(priced)"
     }
 
@@ -1066,11 +1066,11 @@ struct BenchmarkResultsCard: View {
     ///
     /// The warm-up is never in either number — it is stopped on purpose the moment it has done its
     /// job, so counting it would report a lost sample after every healthy run.
-    static func samplesCell(usable: Int, voided: Int) -> String {
+    nonisolated static func samplesCell(usable: Int, voided: Int) -> String {
         voided > 0 ? "\(usable) of \(usable + voided)" : "\(usable)"
     }
 
-    static func rateCell(rate: Double?, approximate: Bool, tip: String) -> RateCell {
+    nonisolated static func rateCell(rate: Double?, approximate: Bool, tip: String) -> RateCell {
         let text = BenchmarkRunCard.decorate(
             value: BenchmarkMetricsPolicy.formatRate(rate), unit: "", approximate: approximate)
         let measured = text != BenchmarkMetricsPolicy.noValue
@@ -1080,7 +1080,7 @@ struct BenchmarkResultsCard: View {
     /// An unsortable heading (`column: nil`) never grows an arrow: `nil == sortColumn` is false for
     /// every case, so the guard returns the bare title. A `Date` heading wearing a ▼ that clicking
     /// cannot change is a control that lies about being one.
-    static func headerLabel(
+    nonisolated static func headerLabel(
         _ title: String,
         column: BenchmarkLeaderboard.SortColumn?,
         sortColumn: BenchmarkLeaderboard.SortColumn,
@@ -1092,7 +1092,7 @@ struct BenchmarkResultsCard: View {
 
     /// First click on a column picks the direction that answers the question the column asks:
     /// "who is fastest" is descending, "who is slowest to first token" is ascending.
-    static func defaultDescending(for column: BenchmarkLeaderboard.SortColumn) -> Bool {
+    nonisolated static func defaultDescending(for column: BenchmarkLeaderboard.SortColumn) -> Bool {
         switch column {
         case .generation, .best, .prefill, .runCount, .lastMeasured: true
         case .model, .format, .quantization, .provider, .providerVersion, .timeToFirstToken:
@@ -1105,7 +1105,7 @@ struct BenchmarkResultsCard: View {
     /// "No results yet. Run the benchmark above" is only true of an untouched history. Delete the
     /// last comparable run and it becomes a lie sitting an inch above a footer that says N runs
     /// are listed under Runs — two sentences contradicting each other on one card.
-    static func emptyLeaderboardText(runCount: Int, hiddenRunCount: Int) -> String {
+    nonisolated static func emptyLeaderboardText(runCount: Int, hiddenRunCount: Int) -> String {
         guard runCount > 0 else { return noResultsYet }
         if hiddenRunCount == runCount {
             return "Nothing to rank: "
@@ -1124,7 +1124,7 @@ struct BenchmarkResultsCard: View {
     ///
     /// `nil` when there is no table: a footer describing columns that are not on screen is the
     /// same defect as an empty state describing a history that is not empty.
-    static func footer(mode: Mode, hiddenRunCount: Int, hasRows: Bool) -> String? {
+    nonisolated static func footer(mode: Mode, hiddenRunCount: Int, hasRows: Bool) -> String? {
         guard hasRows else { return nil }
         switch mode {
         case .leaderboard:

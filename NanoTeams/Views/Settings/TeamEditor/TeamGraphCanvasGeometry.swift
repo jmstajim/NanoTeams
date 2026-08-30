@@ -219,7 +219,7 @@ extension TeamGraphCanvasGeometry {
     /// `SearchExecutorCounterTests` already wrote down: the test target runs
     /// parallel and CI hardware is thermally variable, so a wall-clock threshold
     /// loose enough not to flake is too loose to catch anything.
-    nonisolated(unsafe) static let _probes = Atomic<Int>(0)
+    nonisolated static let _probes = Atomic<Int>(0)
     static func _testProbes() -> Int { _probes.load(ordering: .relaxed) }
     static func _testResetProbes() { _probes.store(0, ordering: .relaxed) }
 }

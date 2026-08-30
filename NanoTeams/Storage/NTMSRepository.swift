@@ -116,7 +116,8 @@ nonisolated struct NTMSRepository: WorkFolderRepository, TaskRepository, ToolRep
     // MARK: - Narrow update methods (one file per method)
 
     /// Update just the user-editable project settings. Writes **only** `settings.json`.
-    func updateWorkFolderContext(at workFolderRoot: URL, context: String) throws
+    func updateWorkFolderContext(at workFolderRoot: URL, context: String,
+                                 activeTask: NTMSTask?) throws
         -> WorkFolderContext
     {
         let paths = try preparePaths(at: workFolderRoot)
@@ -125,23 +126,27 @@ nonisolated struct NTMSRepository: WorkFolderRepository, TaskRepository, ToolRep
         settings.context = context
         try store.write(settings, to: paths.settingsJSON)
 
-        return try assembleContext(paths: paths, settings: settings)
+        return try assembleContext(paths: paths, settings: settings,
+                                   activeTask: activeTask, activeTaskProvided: true)
     }
 
-    func updateSelectedScheme(at workFolderRoot: URL, scheme: String?) throws -> WorkFolderContext {
+    func updateSelectedScheme(at workFolderRoot: URL, scheme: String?,
+                              activeTask: NTMSTask?) throws -> WorkFolderContext {
         let paths = try preparePaths(at: workFolderRoot)
 
         var settings = try store.read(ProjectSettings.self, from: paths.settingsJSON)
         settings.selectedScheme = scheme
         try store.write(settings, to: paths.settingsJSON)
 
-        return try assembleContext(paths: paths, settings: settings)
+        return try assembleContext(paths: paths, settings: settings,
+                                   activeTask: activeTask, activeTaskProvided: true)
     }
 
     /// Applies a mutation to `WorkFolderState` and writes **only** `workfolder.json`.
     @discardableResult
     func updateWorkFolderState(
         at workFolderRoot: URL,
+        activeTask: NTMSTask?,
         mutate: (inout WorkFolderState) -> Void
     ) throws -> WorkFolderContext {
         let paths = try preparePaths(at: workFolderRoot)
@@ -149,13 +154,15 @@ nonisolated struct NTMSRepository: WorkFolderRepository, TaskRepository, ToolRep
         mutate(&state)
         state.updatedAt = MonotonicClock.shared.now()
         try store.write(state, to: paths.workFolderJSON)
-        return try assembleContext(paths: paths, workFolderState: state)
+        return try assembleContext(paths: paths, workFolderState: state,
+                                   activeTask: activeTask, activeTaskProvided: true)
     }
 
     /// Applies a mutation to `ProjectSettings` and writes **only** `settings.json`.
     @discardableResult
     func updateSettings(
         at workFolderRoot: URL,
+        activeTask: NTMSTask?,
         mutate: (inout ProjectSettings) -> Void
     ) throws -> WorkFolderContext {
         let paths = try preparePaths(at: workFolderRoot)
@@ -163,13 +170,15 @@ nonisolated struct NTMSRepository: WorkFolderRepository, TaskRepository, ToolRep
         mutate(&settings)
         try store.write(settings, to: paths.settingsJSON)
 
-        return try assembleContext(paths: paths, settings: settings)
+        return try assembleContext(paths: paths, settings: settings,
+                                   activeTask: activeTask, activeTaskProvided: true)
     }
 
     /// Applies a mutation to the teams array and writes **only** `teams.json`.
     @discardableResult
     func updateTeams(
         at workFolderRoot: URL,
+        activeTask: NTMSTask?,
         mutate: (inout [Team]) -> Void
     ) throws -> WorkFolderContext {
         let paths = try preparePaths(at: workFolderRoot)
@@ -177,7 +186,8 @@ nonisolated struct NTMSRepository: WorkFolderRepository, TaskRepository, ToolRep
         mutate(&teamsFile.teams)
         try store.write(teamsFile, to: paths.teamsJSON)
 
-        return try assembleContext(paths: paths, teamsFile: teamsFile)
+        return try assembleContext(paths: paths, teamsFile: teamsFile,
+                                   activeTask: activeTask, activeTaskProvided: true)
     }
 
     /// Build a `WorkFolderContext` from provided data, reading from disk only for
@@ -201,7 +211,15 @@ nonisolated struct NTMSRepository: WorkFolderRepository, TaskRepository, ToolRep
         let index = try tasksIndex ?? store.read(TasksIndex.self, from: paths.tasksIndexJSON)
 
         var resolvedActiveTask: NTMSTask?
-        if activeTaskProvided {
+        // The id guard is what lets the narrow writers hand their in-memory copy in.
+        // Skipping the read is the smaller half of why: `mutateTask` commits the task in
+        // memory on `@MainActor` and only THEN detaches the disk write (invariant #6), so
+        // a copy read from disk inside that window is OLDER than the one the caller holds
+        // — and `apply(_:)` assigns it straight onto `activeTask`, silently reverting the
+        // newest mutation. Trusting the caller closes that window; the guard makes it safe
+        // when the same write moved `activeTaskID` somewhere else.
+        // `nil == nil` is the no-active-task case and takes the same branch: no read.
+        if activeTaskProvided, activeTask?.id == state.activeTaskID {
             resolvedActiveTask = activeTask
         } else if let activeID = state.activeTaskID {
             let ancestors = index.ancestorIDs(of: activeID)

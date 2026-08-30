@@ -157,8 +157,13 @@ final class AutovisorReAskWakeTests: NTMSOrchestratorTestBase, @unchecked Sendab
         _ = await sut.answerSupervisorQuestion(stepID: "r", taskID: chatID, answer: "Use Postgres.")
         sut.stopEngineForTask(chatID)   // the resume spawns a run loop this test isn't about
 
-        await askAgain(chatID)
+        // Sampled BEFORE the second question, not after: since the engine-state observer
+        // schedules its own wake, Q2 may reach the manager through that path instead of the
+        // explicit call below. The property under test is "a second question wakes the
+        // manager", not "this particular caller does" — measuring across both keeps the pin
+        // on the property and independent of which one gets there first.
         let before = runCount(mgrID)
+        await askAgain(chatID)
 
         await sut.wakeAutovisorForEvents()
 
@@ -279,11 +284,23 @@ final class AutovisorReAskWakeTests: NTMSOrchestratorTestBase, @unchecked Sendab
         return taskID
     }
 
-    func testPrune_touchesOnlyNeedsSupervisor_soAResolvedFailureStaysDelivered() async {
-        // Widening the prune to every trigger restores a real tight loop: the manager wakes
-        // on `.failed`, restarts the role, the status leaves `.failed` (key pruned), the role
-        // fails again → "fresh" → another pass, once per failure latency until auto-off.
-        // Only `.needsSupervisor` names a discrete episode the manager's remedy consumes.
+    func testPrune_servesOnlyLevelSampleTriggers_soAResolvedFailureStaysDelivered() async {
+        // This prune serves exactly the triggers whose `keyRetirement` is `.levelSample` —
+        // the ones whose level ORs in a representation no index write can observe, so only a
+        // sample can learn their clear. `.needsSupervisor` is one: `summaryAwaitsSupervisor`
+        // reads the engine mirror as well as the row.
+        //
+        // `.failed` is retired NOWHERE, and that is the assertion below: its remedy is a
+        // restart, an ATTEMPT rather than a consumption, so a role that fails again would
+        // wake a fresh pass per failure latency until auto-off — one `createNewRun` each.
+        //
+        // Note what this test does NOT say. Until 2026-08-30 its name and comment claimed the
+        // exemption for every trigger but `.needsSupervisor`, argued entirely from `.failed`'s
+        // case — and `.completed` sat inside that unexamined "every other" (CLAUDE.md #119).
+        // `.completed`'s level is `summary.status` alone, so it is retired on the
+        // `upsertTaskSummary` EDGE by `noteDerivedStatusTransition`, not here; a task that
+        // left Review and came back with a revised artifact is a condition the manager has
+        // never seen. `AutovisorReviewRetirementTests` owns that half.
         let mgrID = await parkedManager()
         await sut.mutateWorkFolder { $0.settings.autovisorActivation.onTaskFailed = true }
         let chatID = await makeAskingChatTask()          // a STANDING question keeps the wake quiet

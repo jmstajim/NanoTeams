@@ -233,8 +233,8 @@ struct MessageBubbleView: View {
                 }
 
                 if hasMessageContent {
-                    // `.supervisorMessage` matches the Supervisor's other
-                    // feed utterances (initial-task-brief styling). See
+                    // A Supervisor utterance matches the Supervisor's other
+                    // feed turns (initial-task-brief styling). See
                     // `SelectableMessageText` for streaming/append-only
                     // and `LazyVStack` height-stability rationale.
                     let contentText = SelectableMessageText(content: content)
@@ -257,7 +257,7 @@ struct MessageBubbleView: View {
                                 messageID: message.id,
                                 fullText: content
                             )
-                        } else if message.sourceContext == .supervisorMessage {
+                        } else if message.sourceContext?.rendersAsSupervisorUtterance == true {
                             contentText
                                 .padding(ActivityCardTokens.cardPadding)
                                 .background(

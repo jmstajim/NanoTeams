@@ -191,7 +191,7 @@ nonisolated enum AgentSkillsScanner {
 
             case .flatFiles, .markdownTree, .tomlTree:
                 // Non-UTF-8 / empty candidates are not real skills — skip.
-                guard let probe = probeText(at: entry.fileURL, fileManager: fileManager) else { continue }
+                guard let probe = probeText(at: entry.fileURL) else { continue }
                 let name: String
                 let description: String?
                 switch spec.layout {
@@ -227,7 +227,7 @@ nonisolated enum AgentSkillsScanner {
         agentID: String, agentLabel: String, kindLabel: String,
         origin: AgentSkillOrigin, displayPath: String, fileManager: FileManager
     ) -> AgentSkillsSnapshot.Item? {
-        guard let probe = probeText(at: fileURL, fileManager: fileManager) else { return nil }
+        guard let probe = probeText(at: fileURL) else { return nil }
         let fm = SkillMetadataExtractor.frontmatterFields(["name", "description"], in: probe)
         let name = fm["name"] ?? fallbackName
         guard !name.isEmpty else { return nil }
@@ -382,11 +382,11 @@ nonisolated enum AgentSkillsScanner {
     private static func collectClaudePluginItems(
         projectRoot: URL?, homeDirectory: URL, fileManager: FileManager
     ) -> [AgentSkillsSnapshot.Item] {
-        let enabled = enabledPluginKeys(projectRoot: projectRoot, homeDirectory: homeDirectory, fileManager: fileManager)
+        let enabled = enabledPluginKeys(projectRoot: projectRoot, homeDirectory: homeDirectory)
         guard !enabled.isEmpty else { return [] }
 
         let installPaths = pluginInstallPaths(homeDirectory: homeDirectory, fileManager: fileManager)
-        let marketplaces = marketplaceLocations(homeDirectory: homeDirectory, fileManager: fileManager)
+        let marketplaces = marketplaceLocations(homeDirectory: homeDirectory)
 
         var skills: [AgentSkillsSnapshot.Item] = []
         var commands: [AgentSkillsSnapshot.Item] = []
@@ -419,7 +419,7 @@ nonisolated enum AgentSkillsScanner {
             var cmdIsDir: ObjCBool = false
             guard fileManager.fileExists(atPath: commandsDir.path, isDirectory: &cmdIsDir), cmdIsDir.boolValue else { continue }
             for entry in walkTree(rootURL: commandsDir, ext: ".md", fileManager: fileManager) {
-                guard let probe = probeText(at: entry.fileURL, fileManager: fileManager) else { continue }
+                guard let probe = probeText(at: entry.fileURL) else { continue }
                 let relPath = "\(key)/commands/\(entry.relPath)"
                 commands.append(.init(
                     id: "\(pluginCommandAgentID)|\(AgentSkillOrigin.global.rawValue)|\(relPath)",
@@ -443,7 +443,7 @@ nonisolated enum AgentSkillsScanner {
     /// OFF in a higher-precedence file overrides an ON in a lower one. Keys are
     /// `"<plugin>@<marketplace>"`. Read leniently per-key: a non-bool value (stray
     /// hand-edit / `null`) skips that one key, never drops the whole file.
-    private static func enabledPluginKeys(projectRoot: URL?, homeDirectory: URL, fileManager: FileManager) -> Set<String> {
+    private static func enabledPluginKeys(projectRoot: URL?, homeDirectory: URL) -> Set<String> {
         var files: [URL] = [homeDirectory.appendingPathComponent(".claude/settings.json")]
         if let projectRoot {
             files.append(projectRoot.appendingPathComponent(".claude/settings.json"))
@@ -486,7 +486,7 @@ nonisolated enum AgentSkillsScanner {
 
     /// Marketplace name → its `installLocation` (fallback plugin-dir resolution
     /// when a plugin isn't in `installed_plugins.json`).
-    private static func marketplaceLocations(homeDirectory: URL, fileManager: FileManager) -> [String: URL] {
+    private static func marketplaceLocations(homeDirectory: URL) -> [String: URL] {
         let url = homeDirectory.appendingPathComponent(".claude/plugins/known_marketplaces.json")
         guard let data = try? Data(contentsOf: url),
               let decoded = try? JSONCoderFactory.makeWireDecoder().decode([String: MarketplaceDTO].self, from: data) else { return [:] }
@@ -541,7 +541,7 @@ nonisolated enum AgentSkillsScanner {
 
     /// Reads the leading `probeBytes` as tolerant UTF-8 (drops up to 3 trailing
     /// bytes cut mid-character). Returns nil for a binary or empty file.
-    private static func probeText(at url: URL, fileManager: FileManager) -> String? {
+    private static func probeText(at url: URL) -> String? {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         let prefix = (try? handle.read(upToCount: probeBytes)) ?? Data()
         try? handle.close()

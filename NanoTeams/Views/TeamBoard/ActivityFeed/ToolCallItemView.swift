@@ -48,7 +48,7 @@ struct ToolCallItemView: View {
                 ActivityFeedRoleAvatar(role: role, roleDefinition: roleDefinition, onTap: onAvatarTap)
 
                 VStack(alignment: .leading, spacing: ActivityCardTokens.contentSpacing) {
-                    HStack(spacing: 6) {
+                    HStack(spacing: Spacing.s) {
                         roleNameText(roleName: roleName, teamSuffix: roleTeamSuffix, tintColor: tintColor)
                         Spacer()
                         Text(call.createdAt.formatted(date: .omitted, time: .shortened))

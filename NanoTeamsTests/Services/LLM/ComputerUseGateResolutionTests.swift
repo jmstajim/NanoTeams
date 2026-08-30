@@ -199,9 +199,15 @@ final class ComputerUseGateResolutionTests: XCTestCase {
             taskID: taskID, stepID: stepID, actionKey: request.actionKey, decision: .deny)
         let results = await running.value
         assertIsComputerUseDeny(results[0])
+        // The assertion used to read `contains("declined")` under this very message, and passed
+        // precisely because the string did NOT name the human: it said "You declined to approve
+        // this action.", addressing the model — which is the one party that did not decide.
         XCTAssertTrue(
-            denyMessage(results[0]).contains("declined"),
+            denyMessage(results[0]).contains("Supervisor"),
             "a human deny must name the human, got: \(denyMessage(results[0]))")
+        XCTAssertFalse(
+            denyMessage(results[0]).lowercased().contains("you"),
+            "the reader is the model; second person names the wrong actor, got: \(denyMessage(results[0]))")
         XCTAssertTrue(
             delegate.computerUseApprovalBeganRequests.isEmpty,
             "the held request must be cleared once the await resolves")
@@ -233,6 +239,24 @@ final class ComputerUseGateResolutionTests: XCTestCase {
             taskID: taskID, stepID: stepID, actionKey: request.actionKey, decision: .allow)
         let results = await running.value
         XCTAssertTrue(results.isEmpty, "allow → no synthetic → the call passes through and runs for real")
+    }
+
+    /// Teardown resolves held waiters directly instead of through cancellation — the second
+    /// route into the same fail-safe, and the `alwaysAllowApp` grant must not be minted by it.
+    func testTeardown_whileHolding_cancels_andGrantsNothing() async {
+        let (running, request) = await gateHolding(
+            [call(ToolNames.uiClick, #"{"x":10,"y":10,"target":"ZZZPhantomApp"}"#)],
+            policy: ComputerUsePolicy(mode: .manual))
+        guard request != nil else { return }
+
+        service.failPendingComputerUseApprovals(stepID: stepID, taskID: taskID)
+        let results = await running.value
+        XCTAssertTrue(
+            results[0]?.outputJSON.contains(ToolErrorCode.cancelled.rawValue) ?? false,
+            "expected a CANCELLED envelope, got: \(results[0]?.outputJSON ?? "nil")")
+        XCTAssertTrue(
+            service.computerUseSessionAllowedApps[taskID]?.isEmpty ?? true,
+            "an abandoned hold must not mint an always-allow grant")
     }
 
     /// Non-pointer actions take the `default:` arm: no crosshair, and with no capture seeded,
@@ -616,9 +640,13 @@ final class ComputerUseGateResolutionTests: XCTestCase {
                        "a non-Auto mode must never fall back to the unattended judge")
     }
 
-    /// A cancelled step (Pause / teardown) resolves a held approval as deny — an unapproved
-    /// action is never run.
-    func testGate_cancellationWhileHolding_resolvesAsDeny() async {
+    /// A cancelled step (Pause / teardown) never runs the held action — but it is not a DENIAL
+    /// either: nobody answered. Twin of `BashGateTests`\'
+    /// `testManualHumanApproval_cancellation_resolvesAsCancelled`, and the same reasoning
+    /// applies, since this envelope is persisted into the step\'s conversation and the step
+    /// re-runs on resume: a `COMPUTER_USE_DENIED` here left the model permanently told the
+    /// Supervisor had refused an action they were never shown.
+    func testGate_cancellationWhileHolding_resolvesAsCancelledNotDenied() async {
         let (running, request) = await gateHolding(
             [call(ToolNames.uiClick, #"{"x":10,"y":10}"#)],
             policy: ComputerUsePolicy(mode: .manual))
@@ -626,7 +654,13 @@ final class ComputerUseGateResolutionTests: XCTestCase {
 
         running.cancel()
         let results = await running.value
-        assertIsComputerUseDeny(results[0])
+        XCTAssertEqual(results[0]?.isError, true, "a cancelled hold must never run the action")
+        XCTAssertTrue(
+            results[0]?.outputJSON.contains(ToolErrorCode.cancelled.rawValue) ?? false,
+            "expected a CANCELLED envelope, got: \(results[0]?.outputJSON ?? "nil")")
+        XCTAssertFalse(
+            denyMessage(results[0]).lowercased().contains("declin"),
+            "nobody declined, got: \(denyMessage(results[0]))")
     }
 
     /// An unparseable action fails CLOSED: the map is sparse-by-omission, so skipping it

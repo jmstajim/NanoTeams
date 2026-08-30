@@ -5,8 +5,8 @@ import XCTest
 /// Pins the ONE hazard a derived projection carries: drifting from the thing it
 /// mirrors.
 ///
-/// `TaskFactsProjection` exists so `MainLayoutView`'s two `onChange` keys are
-/// `Int` compares instead of whole-index `Dictionary` rebuilds evaluated on every
+/// `TaskFactsProjection` exists so the shell's `onChange` key is an `Int` compare
+/// instead of a whole-index `Dictionary` rebuild evaluated on every
 /// body pass (i.e. on every `mutateTask`). That trade is only sound while the
 /// projection agrees with `snapshot.tasksIndex.tasks` after EVERY path that can
 /// move a row — so each path is driven for real and the projection is re-derived
@@ -85,10 +85,11 @@ final class TaskFactsProjectionParityTests: NTMSOrchestratorTestBase, @unchecked
         XCTAssertTrue(sut.taskFacts.waitStateByTaskID.isEmpty)
     }
 
-    /// The revisions are the `onChange` keys, so an `updatedAt`-only mutation —
-    /// the overwhelming majority — must move NEITHER. Without this the projection
-    /// would be correct but useless: the shell would churn exactly as before.
-    func testUpdatedAtOnlyMutation_movesNeitherRevision() async throws {
+    /// `waitRevision` is the `onChange` key and `statusByTaskID` feeds the retirement
+    /// seam, so an `updatedAt`-only mutation — the overwhelming majority — must move
+    /// NEITHER. Without this the projection would be correct but useless: the shell would
+    /// churn exactly as before, and every write would look like a status transition.
+    func testUpdatedAtOnlyMutation_movesNeitherFact() async throws {
         await sut.openWorkFolder(tempDir)
         guard let id = await sut.createTask(title: "A", supervisorTask: "s") else {
             return XCTFail("createTask returned nil")
@@ -100,7 +101,7 @@ final class TaskFactsProjectionParityTests: NTMSOrchestratorTestBase, @unchecked
             ])]
         }
 
-        let statusRev = sut.taskFacts.statusRevision
+        let statuses = sut.taskFacts.statusByTaskID
         let waitRev = sut.taskFacts.waitRevision
         for i in 0..<5 {
             _ = await sut.mutateTask(taskID: id) { task in
@@ -108,17 +109,17 @@ final class TaskFactsProjectionParityTests: NTMSOrchestratorTestBase, @unchecked
                     LLMMessage(role: .assistant, content: "turn \(i)"))
             }
         }
-        XCTAssertEqual(sut.taskFacts.statusRevision, statusRev,
-                       "appending a message changes no derived status — the Autovisor "
-                           + "wake must not fire for it")
+        XCTAssertEqual(sut.taskFacts.statusByTaskID, statuses,
+                       "appending a message changes no derived status — so the seam sees no "
+                           + "transition and retires none of the Autovisor's attention keys")
         XCTAssertEqual(sut.taskFacts.waitRevision, waitRev,
                        "…and no durable wait fact either")
         assertParity("five appends")
     }
 
-    /// The two revisions are deliberately separate: merging them would make a
-    /// status change sweep the seen set, and a wait flip the only Autovisor wake.
-    func testStatusAndWaitRevisions_moveIndependently() async throws {
+    /// The two facts are deliberately separate: merging them would make a status
+    /// change sweep the seen set, and a wait flip the only thing the shell reacts to.
+    func testStatusAndWaitFacts_moveIndependently() async throws {
         await sut.openWorkFolder(tempDir)
         guard let id = await sut.createTask(title: "A", supervisorTask: "s") else {
             return XCTFail("createTask returned nil")
@@ -131,12 +132,11 @@ final class TaskFactsProjectionParityTests: NTMSOrchestratorTestBase, @unchecked
         }
 
         let waitRev = sut.taskFacts.waitRevision
-        let statusRev = sut.taskFacts.statusRevision
         _ = await sut.mutateTask(taskID: id) { task in
             task.runs[0].steps[0].status = .failed
         }
-        XCTAssertGreaterThan(sut.taskFacts.statusRevision, statusRev,
-                             "a `.failed` step must move the status revision")
+        XCTAssertEqual(sut.taskFacts.statusByTaskID[id], .failed,
+                       "a `.failed` step must move the status fact")
         XCTAssertEqual(sut.taskFacts.waitRevision, waitRev,
                        "…and must NOT move the wait revision — failing is not waiting")
     }

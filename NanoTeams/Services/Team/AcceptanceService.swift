@@ -228,6 +228,38 @@ nonisolated extension AcceptanceService {
         }
     }
 
+    /// The roles of `run` parked on a Supervisor acceptance decision that can ACTUALLY be
+    /// acted on, sorted. The one definition of "this run is gated", read by the Watchtower's
+    /// banner, `task_status`'s `roles_needing_acceptance`, and the durable fact the
+    /// Autovisor's wake is judged by — three surfaces that must never disagree about what
+    /// is gated (CLAUDE.md #51).
+    ///
+    /// The step intersection is load-bearing, not cosmetic. `roleStatuses` can hold an entry
+    /// for a role deleted from the roster while the task was live (see `requestRevision`'s
+    /// `RoleRosterGuard`), and `manage_role accept` resolves a STEP — so an id with no step
+    /// row is un-actionable. Surfacing one would be a banner nobody can clear and a manager
+    /// pass with nothing to do, whose level never goes quiet.
+    static func actionableAcceptanceGates(run: Run) -> [String] {
+        let stepRoleIDs = Set(run.steps.map(\.effectiveRoleID))
+        return getPendingAcceptances(roleStatuses: run.roleStatuses)
+            .filter { stepRoleIDs.contains($0) }
+            .sorted()
+    }
+
+    /// `!actionableAcceptanceGates(run:).isEmpty`, without building either collection.
+    ///
+    /// Separate member because the caller is `NTMSTask.toSummary()`, which runs on EVERY
+    /// `mutateTask` — i.e. on every LLM message, wire persist and tool result. The `Set` +
+    /// two arrays above are the right shape for a surface that needs the ids and the wrong
+    /// one for a predicate; the scan over `steps` happens only for the rare `.needsAcceptance`
+    /// entry, and short-circuits on the first hit. The two must agree — that they do is
+    /// pinned rather than assumed.
+    static func hasAcceptanceGate(run: Run) -> Bool {
+        run.roleStatuses.contains { roleID, status in
+            status == .needsAcceptance && run.steps.contains { $0.effectiveRoleID == roleID }
+        }
+    }
+
     // MARK: - Acceptance Validation
 
     /// Error messages for statuses that cannot be accepted. Absent key (.needsAcceptance) = valid.

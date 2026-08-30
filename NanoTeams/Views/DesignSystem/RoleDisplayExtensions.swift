@@ -47,8 +47,13 @@ extension TeamRoleDefinition {
     var completionTypeDisplayColor: Color { completionType.displayColor }
 
     /// Resolved icon foreground color from hex string.
+    ///
+    /// `iconColor` is a user-editable persisted hex, so a malformed value really does reach
+    /// the fallback. `textOnAccent` is theme-determined contrast for a glyph sitting on an
+    /// accent fill — which is this glyph's job; a hardcoded `.white` is wrong on the light
+    /// and paper themes.
     var resolvedIconColor: Color {
-        Color(hex: iconColor) ?? .white
+        Color(hex: iconColor) ?? Colors.textOnAccent
     }
 
     /// Resolved icon background color from hex string.
@@ -115,17 +120,17 @@ extension RoleCompletionType {
     private static let displayColorMap: [RoleCompletionType: Color] = [
         .producing: Colors.success,
         .advisory: Colors.teal,
-        .observer: .secondary,
+        .observer: Colors.textSecondary,
     ]
 
-    var displayColor: Color { Self.displayColorMap[self] ?? .secondary }
+    var displayColor: Color { Self.displayColorMap[self] ?? Colors.textSecondary }
 }
 
 // MARK: - ChangeRequestStatus Display Extensions
 
 extension ChangeRequestStatus {
     private static let statusColorMap: [ChangeRequestStatus: Color] = [
-        .pending: .secondary,
+        .pending: Colors.neutral,
         .approved: Colors.success,
         .rejected: Colors.error,
         .escalated: Colors.warning,
@@ -134,5 +139,25 @@ extension ChangeRequestStatus {
         .failed: Colors.error,
     ]
 
-    var statusColor: Color { Self.statusColorMap[self] ?? .secondary }
+    var statusColor: Color { Self.statusColorMap[self] ?? Colors.neutral }
+
+    /// Pre-computed tint fill paired with ``statusColor``, for the status badge behind the
+    /// label.
+    ///
+    /// A map rather than `statusColor.opacity(...)`: this is a CLOSED set of seven statuses
+    /// resolving to four tokens, not a runtime-supplied colour, so the tints are known ahead
+    /// of time and the design system already ships them. `DynamicTintOpacity` is for colours
+    /// that arrive as a parameter (`ActivityFeedIconAvatar`'s `color`), and reaching for it
+    /// here produced a hand-rolled tint over a theme-ignoring `.secondary`.
+    private static let statusTintColorMap: [ChangeRequestStatus: Color] = [
+        .pending: Colors.neutralTint,
+        .approved: Colors.successTint,
+        .rejected: Colors.errorTint,
+        .escalated: Colors.warningTint,
+        .supervisorApproved: Colors.successTint,
+        .supervisorRejected: Colors.errorTint,
+        .failed: Colors.errorTint,
+    ]
+
+    var statusTintColor: Color { Self.statusTintColorMap[self] ?? Colors.neutralTint }
 }

@@ -200,14 +200,18 @@ extension LLMExecutionService {
                     conversation = resume.messages
                         + [ChatMessage(role: .user, content: outbound)]
                     // Persist to llmConversation for activity feed display.
-                    // `.changeRequest` labels the bubble "(change request)" — without a
-                    // sourceContext, `sourceContextDisplayLabel` falls back to the generic
-                    // "(consultation)" for any message with a sourceRole.
+                    // `.supervisorFeedback` renders it as the Supervisor's own utterance —
+                    // crowned bubble, no secondary label, and the `Supervisor Feedback: `
+                    // marker above stripped for display only (it stays on the wire, where
+                    // it is what separates this turn from the tool result before it).
+                    // A `sourceContext` of some kind is mandatory, not decorative: without
+                    // one, `sourceContextDisplayLabel` falls back to the generic
+                    // "(consultation)" for any message carrying a `sourceRole`.
                     await self.appendLLMMessage(
                         stepID: stepID, taskID: taskID, role: .user,
                         content: outbound,
                         sourceRole: .supervisor,
-                        sourceContext: .changeRequest)
+                        sourceContext: .supervisorFeedback)
                 } else if let resume = resumeConversation {
                     // A step that suspended WITHOUT a Supervisor answer or a
                     // revision — an ordinary pause, or a stop/resume — still has
@@ -221,6 +225,26 @@ extension LLMExecutionService {
                     conversation = resume.messages
                 } else {
                     conversation = fullConversation
+                    if hasRevisionFeedback, let feedback = step.revisionComment {
+                        // No transcript to replay, so the branch above could not fire and
+                        // the correction had no feed bubble at all — the case is a step
+                        // corrected before it ever completed a request (`correctRole`
+                        // Branch B on a step paused that early), where the cancellation
+                        // arm stored an empty transcript and `llmConversation` is still
+                        // empty.
+                        //
+                        // DISPLAY ONLY — `conversation` is deliberately untouched. On this
+                        // path the wire copy is already in `fullConversation`: the trigger
+                        // site appended a `StepMessage`, and `PromptBuilder` relays every
+                        // `.supervisor` step message as a `user` turn. Appending here too
+                        // would send the correction twice.
+                        await self.appendLLMMessage(
+                            stepID: stepID, taskID: taskID, role: .user,
+                            content: MessageSourceContext.supervisorFeedbackPrefix
+                                + MessageSourceContext.rawFeedback(feedback),
+                            sourceRole: .supervisor,
+                            sourceContext: .supervisorFeedback)
+                    }
                 }
 
                 // A replayed transcript still carries the previous entry's tags,

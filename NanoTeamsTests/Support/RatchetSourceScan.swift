@@ -81,6 +81,37 @@ enum RatchetSourceScan {
             .joined(separator: "\n")
     }
 
+    /// Line comments removed AND every string literal's CONTENTS blanked, keeping the quotes.
+    ///
+    /// For needles that would otherwise read a fixture as code. Measured: a preview in
+    /// `TeamBoardView+Previews` passes fake file content to a tool-summary fixture, and that
+    /// content spells `static let primary: Color = .blue` — which `DesignTokenPinTests`' value
+    /// needle read as a live violation. A pin that reports a string literal teaches its readers
+    /// to add opt-out markers to prose, which is how a gate stops meaning anything.
+    ///
+    /// Quotes are kept so column-ish structure survives; only what is between them goes. Same
+    /// single-character escape test as `strippingLineComments`, and the same reason.
+    static func strippingStringLiterals(_ source: String) -> String {
+        strippingLineComments(source)
+            .components(separatedBy: "\n")
+            .map { line -> String in
+                var out = ""
+                var inString = false
+                var previous: Character?
+                for character in line {
+                    if character == "\"", previous != "\\" {
+                        inString.toggle()
+                        out.append(character)
+                    } else if !inString {
+                        out.append(character)
+                    }
+                    previous = character
+                }
+                return out
+            }
+            .joined(separator: "\n")
+    }
+
     private static func strippingLineComment(inLine line: String) -> String {
         var out = ""
         var inString = false

@@ -32,11 +32,6 @@ final class FinishAdvisoryRoleTests: NTMSOrchestratorTestBase, @unchecked Sendab
         return taskID
     }
 
-    /// Wait briefly for the fire-and-forget `Task { }` in `finishAdvisoryRole` to complete.
-    private func waitForFinish() async {
-        try? await Task.sleep(for: .milliseconds(200))
-    }
-
     // MARK: - Running Step
 
     func testFinishAdvisoryRole_withRunningStep_setsStepDone() async {
@@ -51,8 +46,14 @@ final class FinishAdvisoryRoleTests: NTMSOrchestratorTestBase, @unchecked Sendab
             step: step, roleID: roleID, roleStatus: .working
         )
 
+        // Deliberately the FIRE-AND-FORGET wrapper, and the only site that still uses it: it
+        // is the UI's entry point (button actions) and one line of in-scope production code,
+        // so converting every site to the awaitable core would leave it uncovered. Waits on
+        // the outcome rather than on a duration.
         sut.finishAdvisoryRole(taskID: taskID, roleID: roleID)
-        await waitForFinish()
+        await waitUntil("the fire-and-forget finish to mark the role done") {
+            self.sut.activeTask?.runs.last?.roleStatuses[roleID] == .done
+        }
 
         let run = sut.activeTask?.runs.last
         XCTAssertEqual(run?.roleStatuses[roleID], .done)
@@ -78,8 +79,7 @@ final class FinishAdvisoryRoleTests: NTMSOrchestratorTestBase, @unchecked Sendab
             step: step, roleID: roleID, roleStatus: .working
         )
 
-        sut.finishAdvisoryRole(taskID: taskID, roleID: roleID)
-        await waitForFinish()
+        _ = await sut.finishAdvisoryRoleAwaiting(taskID: taskID, roleID: roleID)
 
         let run = sut.activeTask?.runs.last
         XCTAssertEqual(run?.roleStatuses[roleID], .done)
@@ -95,8 +95,7 @@ final class FinishAdvisoryRoleTests: NTMSOrchestratorTestBase, @unchecked Sendab
             step: nil, roleID: roleID, roleStatus: .ready
         )
 
-        sut.finishAdvisoryRole(taskID: taskID, roleID: roleID)
-        await waitForFinish()
+        _ = await sut.finishAdvisoryRoleAwaiting(taskID: taskID, roleID: roleID)
 
         let run = sut.activeTask?.runs.last
         XCTAssertEqual(run?.roleStatuses[roleID], .done)
@@ -127,8 +126,7 @@ final class FinishAdvisoryRoleTests: NTMSOrchestratorTestBase, @unchecked Sendab
             step: step, roleID: roleID, roleStatus: .ready
         )
 
-        sut.finishAdvisoryRole(taskID: taskID, roleID: roleID)
-        await waitForFinish()
+        _ = await sut.finishAdvisoryRoleAwaiting(taskID: taskID, roleID: roleID)
 
         let run = sut.activeTask?.runs.last
         XCTAssertEqual(run?.roleStatuses[roleID], .done)
@@ -140,8 +138,7 @@ final class FinishAdvisoryRoleTests: NTMSOrchestratorTestBase, @unchecked Sendab
     func testFinishAdvisoryRole_nonExistentTask_doesNotCrash() async {
         await sut.openWorkFolder(tempDir)
 
-        sut.finishAdvisoryRole(taskID: Int(), roleID: "fake")
-        await waitForFinish()
+        _ = await sut.finishAdvisoryRoleAwaiting(taskID: Int(), roleID: "fake")
 
         // Should not crash — method returns early
     }
@@ -155,8 +152,7 @@ final class FinishAdvisoryRoleTests: NTMSOrchestratorTestBase, @unchecked Sendab
             task.runs = []
         }
 
-        sut.finishAdvisoryRole(taskID: taskID, roleID: "whatever")
-        await waitForFinish()
+        _ = await sut.finishAdvisoryRoleAwaiting(taskID: taskID, roleID: "whatever")
 
         // Should not crash
     }
@@ -194,8 +190,7 @@ final class FinishAdvisoryRoleTests: NTMSOrchestratorTestBase, @unchecked Sendab
             task.runs = [run]
         }
 
-        sut.finishAdvisoryRole(taskID: taskID, roleID: advisoryRoleID)
-        await waitForFinish()
+        _ = await sut.finishAdvisoryRoleAwaiting(taskID: taskID, roleID: advisoryRoleID)
 
         let run = sut.activeTask?.runs.last
         // Advisory role finished
@@ -223,8 +218,7 @@ final class FinishAdvisoryRoleTests: NTMSOrchestratorTestBase, @unchecked Sendab
 
         let beforeFinish = MonotonicClock.shared.now()
 
-        sut.finishAdvisoryRole(taskID: taskID, roleID: roleID)
-        await waitForFinish()
+        _ = await sut.finishAdvisoryRoleAwaiting(taskID: taskID, roleID: roleID)
 
         let completedAt = sut.activeTask?.runs.last?.steps.first?.completedAt
         XCTAssertNotNil(completedAt)

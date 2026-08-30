@@ -353,7 +353,23 @@ final class SearchIndexCoordinatorTests: XCTestCase {
         let client2 = RecordingEmbedClient()
         let c2 = makeCoordinatorWithMockEmbedder(client2)
         await c2.start()
-        await waitUntilVectorReady(c2)
+
+        // NOT `waitUntilVectorReady` here, and the difference is the whole test. `start()`
+        // seeds `.ready` from DISK before it schedules anything, so that wait returns on its
+        // first iteration — and the negative assertion below then runs BEFORE the window in
+        // which a re-embed could occur has opened, let alone closed. A regression that does
+        // re-embed issues its batch several suspensions later and passes unnoticed
+        // (DEBTS.md D-30).
+        //
+        // "Nothing must have happened" needs the window CLOSED, which takes two steps: a real
+        // join on the token pipeline (not a sleep), then a bounded drain until both task slots
+        // are empty. Only then is zero a fact rather than a coincidence of timing.
+        _ = await c2.awaitIndex()
+        for _ in 0..<200 {
+            if c2._testCurrentTokenBuildTaskIsNil, c2._testCurrentVectorBuildTaskIsNil { break }
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(5))
+        }
 
         XCTAssertEqual(client2.callCount, 0,
                        "Reopening a folder with on-disk vectors must not re-embed")
@@ -612,23 +628,57 @@ final class SearchIndexCoordinatorTests: XCTestCase {
     /// Without the reset, the coordinator is permanently disarmed for
     /// FS-event-driven respawns after the first stop/start cycle —
     /// `startVectorBuild`'s gate refuses every subsequent invocation.
-    /// Locks in [SearchIndexCoordinator.swift:118](`isStopped = false`) in
-    /// `start()` so a future refactor can't drop it silently.
+    ///
+    /// ## This test was VACUOUS until 2026-08-29, and its own RED marker proved it
+    ///
+    /// It used to wait for `.ready` after the restart and assert `count > 0`. Neither observes
+    /// the reset. `stop()` does not clear `vectorIndexState` (see its body — it clears the
+    /// watcher, the flags and the tasks, never the state), and `start()` re-seeds the state from
+    /// DISK via `await vectorIndex.load()` BEFORE it calls `scheduleEnsureFresh()`. So the second
+    /// wait returned on its first iteration, without a single suspension, against the index the
+    /// FIRST lifecycle had already built — and `count > 0` was answered by that same old index.
+    ///
+    /// The proof is the marker this docstring used to carry: removing `isStopped = false` from
+    /// `start()` left the test GREEN, because `load()` is not gated by that flag. A RED marker
+    /// that does not go red is worse than none — it certifies coverage that does not exist
+    /// (DEBTS.md D-30).
+    ///
+    /// What discriminates is a NEW embed batch: B.swift's tokens can only reach the index if
+    /// `startVectorBuild` was allowed to run, which is exactly what the flag gates.
+    ///
+    /// RED: drop `isStopped = false` from `SearchIndexCoordinator.start()` → the restarted
+    /// coordinator's build is gated to a no-op, no batch is issued, and the wait below fails
+    /// naming what it waited for. Verified 2026-08-29: red with the mutation, green without.
     func testStartAfterStop_reArmsCoordinator() async throws {
         try write("A.swift", content: "alpha beta gamma delta")
-        let c = makeCoordinatorWithMockEmbedder(RecordingEmbedClient())
+        let client = RecordingEmbedClient()
+        let c = makeCoordinatorWithMockEmbedder(client)
 
         // First lifecycle: start -> stop. After this, isStopped is true.
         await c.start()
         await waitUntilVectorReady(c)
         await c.stop()
+        let callsAfterStop = client.callCount
 
         // Second lifecycle: start again. If isStopped weren't cleared, the
         // vector build would never complete because every `startVectorBuild`
         // call would be gated to no-op.
         try write("B.swift", content: "epsilon zeta eta theta")
         await c.start()
-        await waitUntilVectorReady(c)
+
+        // NOT `waitUntilVectorReady`: `start()` seeds `.ready` from disk before scheduling
+        // anything, so that wait is answered by the previous lifecycle and observes nothing.
+        await waitUntil("the restarted coordinator to embed B.swift's new tokens") {
+            client.callCount > callsAfterStop
+        }
+        // Two separate claims, so two waits. The batch above proves the rebuild was ALLOWED to
+        // run (the thing `isStopped = false` gates); `.ready` proves it FINISHED. Collapsing
+        // them loses the first, and asserting `.ready` right after the batch fails on
+        // `building(processed: 4, total: 4)` — measured, not predicted.
+        await waitUntil("the rebuild to settle to .ready") {
+            if case .ready = c.vectorIndexState { return true }
+            return false
+        }
 
         guard case .ready(_, _, let count) = c.vectorIndexState else {
             XCTFail("Expected .ready after restart, got \(c.vectorIndexState)")

@@ -180,7 +180,7 @@ nonisolated struct BashTool: ToolHandler {
                     isPlanningPhase: context.isPlanningPhase,
                     exitCode: result.exitCode, stderr: result.stderr)
                 if ranSandboxed, launch == .confinedBeforeStart {
-                    meta.warnings = (meta.warnings ?? []) + [
+                    meta.warnings += [
                         "The sandbox profile denied the reads the shell needs to start, so the command never ran. This is the confinement working, not an argument problem — narrow what the command touches, or ask the Supervisor to widen the bash sandbox scopes."
                     ]
                 }

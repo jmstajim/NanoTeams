@@ -138,9 +138,14 @@ final class SystemNoticeWiringTests: XCTestCase {
                            "\(context) is classified by SystemNoticePresentation; a branch here "
                                + "would be a second, drifting copy of that decision")
         }
-        // Anti-vacuum: the scan is looking at the right file.
-        XCTAssertTrue(code.contains(".supervisorMessage"),
-                      "the supervisor-message branch is expected to still be inline")
+        // Anti-vacuum: the scan is looking at the right file. Re-aimed from
+        // `.supervisorMessage` when the Supervisor-utterance branch moved from a literal
+        // context comparison to a property on the value — the symbol this pin names was
+        // deleted by the fix, not by a regression (CLAUDE.md #104). The invariant survives
+        // unchanged: the view still carries exactly one non-notice branch, and this asserts
+        // it is here to be read.
+        XCTAssertTrue(code.contains("rendersAsSupervisorUtterance"),
+                      "the Supervisor-utterance branch is expected to still be inline")
     }
 
     func testSystemNoticeRow_opensTheDetailWindow() throws {

@@ -98,6 +98,41 @@ final class AutovisorStuckEvaluatorTests: XCTestCase {
         )
     }
 
+    /// The cross-agent form of self-immunization, pinned through the Autovisor consumer —
+    /// the one `ConversationInformationBoundary.lastArrival` caller whose verdict drives an
+    /// ACTION (`restart_role`) rather than a log line.
+    ///
+    /// The manager writes most revision comments on a task it manages (`manage_role` →
+    /// `requestRevision`). If `.supervisorFeedback` opened a boundary, a manager spinning on
+    /// request-changes would refresh its own cutoff with every repeat and could never be
+    /// scored as stuck — the same trap `.retryNudge` is kept out of on the in-run side, one
+    /// agent further out.
+    ///
+    /// RED: flip `.supervisorFeedback` to `true` in `carriesUnsolicitedInformation` → this
+    /// fails, and a manager wedged in a revision cycle stops being detected.
+    func testLoop_identicalToolCalls_splitByItsOwnRevisionFeedback_stillFlagged() {
+        let first = now.addingTimeInterval(-9)
+        let calls = (0..<DelegationConstants.repetitionMinIdenticalToolCalls).map {
+            toolCall("task_status", #"{"task_id":7}"#, at: first.addingTimeInterval(Double($0) * 2))
+        }
+        // Feedback the MANAGER itself caused, landing in the same slot the event notice
+        // occupies in the test above — the only difference is the context.
+        let feedback = LLMMessage(
+            createdAt: first.addingTimeInterval(1),
+            role: .user,
+            content: MessageSourceContext.supervisorFeedbackPrefix + "Fix the citations.",
+            sourceRole: .supervisor,
+            sourceContext: .supervisorFeedback
+        )
+        let s = step(createdAt: now.addingTimeInterval(-60), toolCalls: calls, llm: [feedback])
+        let v = AutovisorStuckEvaluator.evaluate(step: s, now: now, lastStreamActivityAt: now)
+        XCTAssertTrue(
+            v.isStuck,
+            "a revision comment is not news arriving on a cadence the manager cannot control "
+                + "— it is the manager's own output, so it must not reset the loop cutoff"
+        )
+    }
+
     /// The boundary resets the count; it does not grant immunity. A manager that gets
     /// an event and THEN spins on one call is still stuck.
     ///

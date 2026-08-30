@@ -2,8 +2,10 @@ import XCTest
 @testable import NanoTeams
 
 /// Corner-case tests for the pure Autovisor wake predicate
-/// (`NTMSOrchestrator.autovisorNeedsAttention`). All four activation triggers are
-/// LEVEL-triggered (re-evaluated every tick; the caller's debounce bounds frequency).
+/// (`NTMSOrchestrator.autovisorNeedsAttention`). EVERY case of
+/// `AutovisorAttentionTrigger` is LEVEL-triggered (re-evaluated every tick; the caller's
+/// deliver-once baseline bounds frequency) — stated as a property because this header read
+/// "All four activation triggers" while there were five, and nothing noticed (#143).
 ///
 /// Key contract pinned here: the completion trigger keys on the DERIVED `.needsSupervisorAcceptance`
 /// ("Review") status, NOT `.done`. A finished task derives to Review until the manager closes it;
@@ -19,11 +21,14 @@ final class AutovisorWakeDecisionTests: XCTestCase {
     /// `waiting` is the DURABLE "someone is owed a Supervisor answer" fact
     /// (`TaskSummary.hasPendingSupervisorInput`), deliberately tri-state: `nil` is an
     /// index row written before the field existed, which is not the same as `false`.
+    /// `gate` is the durable "a role is parked on an acceptance decision" fact
+    /// (`TaskSummary.hasRolesAwaitingAcceptance`), tri-state for the same reason.
     private func sum(
-        _ id: Int, _ status: TaskStatus, chat: Bool = false, waiting: Bool? = nil
+        _ id: Int, _ status: TaskStatus, chat: Bool = false, waiting: Bool? = nil,
+        gate: Bool? = nil
     ) -> TaskSummary {
         TaskSummary(id: id, title: "t\(id)", status: status, isChatMode: chat,
-                    hasPendingSupervisorInput: waiting)
+                    hasPendingSupervisorInput: waiting, hasRolesAwaitingAcceptance: gate)
     }
 
     private func act(
@@ -253,10 +258,53 @@ final class AutovisorWakeDecisionTests: XCTestCase {
     // MARK: - engine/derived divergence
 
     func testEngineNeedsAcceptance_summaryRunning_completionDoesNotFire() {
-        // Completion keys on the DERIVED summary.status, not the live engine `.needsAcceptance`
-        // (a closed task can leave a stale engine `.needsAcceptance` → matching it would loop).
+        // Neither trigger reads the engine MIRROR. The mirror and the row have different
+        // lifetimes (CLAUDE.md #91): after a relaunch `mapDerivedStatusToEngineState` seeds
+        // `.paused` for a task whose row still records the gate, and a torn-down engine can
+        // leave a stale entry behind — so a wake keyed on it would fire for conditions that
+        // no longer exist and never for ones that do. Mid-pipeline gates ARE now seen, via
+        // the durable row fact instead; `testAcceptanceGate_*` below is the control pair.
         XCTAssertFalse(attn([sum(1, .running)], engine: [1: .needsAcceptance],
                             activation: act(needsSupervisor: true, completed: true), seen: [1]))
+    }
+
+    // MARK: - mid-pipeline acceptance gate (durable fact, never the engine mirror)
+
+    func testAcceptanceGate_firesWhileTheTaskStillDerivesRunning() {
+        // The stall this trigger exists for: with the default `.afterEachRole` mode a role
+        // finishes, the run loop transitions to `.needsAcceptance` and RETURNS, but the
+        // downstream roles are still `.ready`, so the task derives `.running` and NO
+        // status-based trigger can see it. The pipeline is parked and nothing wakes.
+        let got = items([sum(1, .running, gate: true)], activation: act(completed: true), seen: [1])
+        XCTAssertEqual(got.map(\.trigger), [.acceptanceGate])
+    }
+
+    func testAcceptanceGate_legacyRowUnknown_doesNotFire() {
+        // Tri-state: `nil` is "this row predates the field", not "no gate". Reading unknown
+        // as yes would wake the manager for a condition the row cannot prove.
+        XCTAssertFalse(attn([sum(1, .running, gate: nil)], activation: act(completed: true), seen: [1]))
+    }
+
+    func testAcceptanceGate_atReview_emitsOnlyCompleted() {
+        // Disjoint by construction: at Review a gated role exists too, so without the
+        // `status != .needsSupervisorAcceptance` qualifier one condition would emit two keys
+        // and the manager would get two bullets naming the same thing.
+        let got = items([sum(1, .needsSupervisorAcceptance, gate: true)],
+                        activation: act(completed: true), seen: [1])
+        XCTAssertEqual(got.map(\.trigger), [.completed])
+    }
+
+    func testAcceptanceGate_chatMode_doesNotFire() {
+        // Checked per member, not inherited: a chat-mode run loop never parks on the
+        // acceptance gate at all, so the failure this trigger names cannot occur there.
+        XCTAssertFalse(attn([sum(1, .running, chat: true, gate: true)],
+                            activation: act(completed: true), seen: [1]))
+    }
+
+    func testAcceptanceGate_sharesTheCompletionFlag() {
+        // One toggle, two conditions — turning "wake for a review decision" off must silence
+        // BOTH, or the setting lies about what it controls.
+        XCTAssertFalse(attn([sum(1, .running, gate: true)], activation: act(completed: false), seen: [1]))
     }
 
     // MARK: - empties / no-match

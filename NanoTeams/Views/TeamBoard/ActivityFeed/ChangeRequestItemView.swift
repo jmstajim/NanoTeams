@@ -18,7 +18,7 @@ struct ChangeRequestItemView: View {
             ActivityFeedIconAvatar(icon: "arrow.triangle.2.circlepath", color: Colors.warning)
 
             VStack(alignment: .leading, spacing: ActivityCardTokens.contentSpacing) {
-                HStack(spacing: 6) {
+                HStack(spacing: Spacing.s) {
                     Text(requesterName)
                         .font(Typography.captionSemibold)
                         .foregroundStyle(requesterRole.tintColor)
@@ -72,7 +72,7 @@ struct ChangeRequestItemView: View {
             .foregroundStyle(status.statusColor)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
-            .background(RoundedRectangle.squircle(CornerRadius.micro).fill(status.statusColor.opacity(DynamicTintOpacity.badge)))
+            .background(RoundedRectangle.squircle(CornerRadius.micro).fill(status.statusTintColor))
     }
 }
 

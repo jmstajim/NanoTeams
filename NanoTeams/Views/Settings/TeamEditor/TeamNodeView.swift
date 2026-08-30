@@ -81,13 +81,14 @@ struct TeamNodeView: View {
             )
             .shadow(isDragging ? .elevated : .card)
             .scaleEffect(isDragging ? 1.05 : 1.0)
-            .background(
-                GeometryReader { proxy in
-                    Color.clear
-                        .onAppear { onMeasure?(proxy.size) }
-                        .onChange(of: proxy.size) { _, newSize in onMeasure?(newSize) }
-                }
-            )
+            // Reports its own size outward; the layout here consumes no geometry, which is
+            // what makes `onGeometryChange` the right tool and `GeometryReader` the wrong one
+            // (CLAUDE.md #19 — the reader takes the layout over greedily to answer a question
+            // nothing in the layout asked). It also replaces BOTH hooks: the modifier delivers
+            // the initial value, so `.onAppear` is redundant, and it delivers changes, so
+            // `.onChange` is too. The sibling doing this job on the other graph surface
+            // (`TeamGraphView`) was migrated first; this was the last measurement reader left.
+            .onGeometryChange(for: CGSize.self) { $0.size } action: { onMeasure?($0) }
             .position(
                 x: position.x + dragOffset.width,
                 y: position.y + dragOffset.height
@@ -166,7 +167,7 @@ struct TeamNodeView: View {
         TeamNodeView(
             roleName: "Junior Engineer",
             icon: "wrench.and.screwdriver",
-            tintColor: .blue,
+            tintColor: Colors.info,
             dependencies: RoleDependencies(
                 requiredArtifacts: [
                     "Dependency 1"
@@ -184,7 +185,7 @@ struct TeamNodeView: View {
         TeamNodeView(
             roleName: "Software Engineer",
             icon: "hammer",
-            tintColor: .green,
+            tintColor: Colors.success,
             dependencies: RoleDependencies(
                 requiredArtifacts: [
                     "Dependency 1",
@@ -204,7 +205,7 @@ struct TeamNodeView: View {
         TeamNodeView(
             roleName: "Tech Lead",
             icon: "cpu",
-            tintColor: .orange,
+            tintColor: Colors.warning,
             dependencies: RoleDependencies(
                 requiredArtifacts: [
                     "Dependency 1",
@@ -226,7 +227,7 @@ struct TeamNodeView: View {
         TeamNodeView(
             roleName: "Architect",
             icon: "building.columns",
-            tintColor: .purple,
+            tintColor: Colors.purple,
             dependencies: RoleDependencies(
                 requiredArtifacts: [
                     "Dependency 1",

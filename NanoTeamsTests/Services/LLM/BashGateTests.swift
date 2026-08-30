@@ -76,6 +76,14 @@ final class BashGateTests: XCTestCase {
         return err["code"] as? String
     }
 
+    private func errorMessage(_ json: String) -> String {
+        guard let data = json.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let err = obj["error"] as? [String: Any]
+        else { return "" }
+        return (err["message"] as? String) ?? ""
+    }
+
     /// Spawns the gate and waits until it HOLDS a command awaiting human approval
     /// (the gate publishes a `BashApprovalRequest` via the delegate before it
     /// suspends). Returns the running task + the held command key so the test can
@@ -161,13 +169,56 @@ final class BashGateTests: XCTestCase {
         XCTAssertEqual(errorCode(results[0]?.outputJSON ?? ""), ToolErrorCode.bashDenied.rawValue)
     }
 
-    func testManualHumanApproval_cancellation_resolvesAsDeny() async {
-        // Pause cancels the step task while a command is held → fail safe (never run
-        // an unapproved command). The await resolves `.deny` → synthetic denial.
+    /// The message is read by the MODEL, and it describes what a HUMAN did — so it names the
+    /// human. It used to read "You declined to approve this command.", which told a model that
+    /// had just asked to run the command that it had refused its own request. Every other
+    /// second-person string in the tree ("your arguments", "your plan") means the model.
+    func testManualHumanApproval_deny_namesTheSupervisorAndNotTheModel() async {
+        let (task, key) = await gateHolding([bashCall("make install")], policy: BashPolicy(mode: .manual))
+        service.resolveBashApproval(taskID: 1, stepID: "step1", commandKey: key, decision: .deny)
+        let results = await task.value
+        let message = errorMessage(results[0]?.outputJSON ?? "")
+        XCTAssertTrue(message.contains("Supervisor"), "a human deny must name the human, got: \(message)")
+        XCTAssertFalse(
+            message.lowercased().contains("you"),
+            "the reader is the model; second person names the wrong actor, got: \(message)")
+    }
+
+    func testManualHumanApproval_cancellation_resolvesAsCancelled() async {
+        // Pause cancels the step task while a command is held → fail safe (never run an
+        // unapproved command), but NOT a denial: nobody answered. The envelope is persisted
+        // into the step's conversation and the step re-runs on resume, so a `BASH_DENIED`
+        // here left the model permanently told the Supervisor had refused — under a
+        // don't-retry direction — for a command it is about to be re-offered.
         let (task, _) = await gateHolding([bashCall("make install")], policy: BashPolicy(mode: .manual))
         task.cancel()
         let results = await task.value
-        XCTAssertEqual(results[0]?.isError, true, "a cancelled (paused) approval denies, it does not run")
+        XCTAssertEqual(results[0]?.isError, true, "a cancelled (paused) approval never runs the command")
+        XCTAssertEqual(errorCode(results[0]?.outputJSON ?? ""), ToolErrorCode.cancelled.rawValue)
+        let message = errorMessage(results[0]?.outputJSON ?? "")
+        XCTAssertFalse(message.lowercased().contains("declin"), "nobody declined, got: \(message)")
+        XCTAssertFalse(message.lowercased().contains("denied"), "nobody denied, got: \(message)")
+    }
+
+    /// Teardown (work-folder switch, `clearBashState`) resolves held waiters directly rather
+    /// than through task cancellation — the second route into the same fail-safe, and the one
+    /// a cancellation-only test would miss.
+    func testTeardown_whileHolding_synthesizesCancelledNotDenied() async {
+        let (task, _) = await gateHolding([bashCall("make install")], policy: BashPolicy(mode: .manual))
+        service.failPendingBashApprovals(stepID: "step1", taskID: 1)
+        let results = await task.value
+        XCTAssertEqual(errorCode(results[0]?.outputJSON ?? ""), ToolErrorCode.cancelled.rawValue)
+    }
+
+    /// A human's Deny that landed FIRST must survive the teardown that follows it: `ApprovalWaiter`
+    /// is one-shot, so the later `.cancelled` no-ops. Without this the ordinary Deny→step-ends
+    /// sequence would relabel every refusal as a cancellation.
+    func testDenyThenTeardown_keepsTheDenial() async {
+        let (task, key) = await gateHolding([bashCall("make install")], policy: BashPolicy(mode: .manual))
+        service.resolveBashApproval(taskID: 1, stepID: "step1", commandKey: key, decision: .deny)
+        service.failPendingBashApprovals(stepID: "step1", taskID: 1)
+        let results = await task.value
+        XCTAssertEqual(errorCode(results[0]?.outputJSON ?? ""), ToolErrorCode.bashDenied.rawValue)
     }
 
     func testAlwaysConfirm_readOnlyCommand_isHeldNotAutoAllowed() async {
@@ -204,6 +255,29 @@ final class BashGateTests: XCTestCase {
             XCTFail("must NOT emit a supervisorQuestion in an autonomous (no-human) context")
         }
         XCTAssertNil(service.pendingBashApproval(stepID: "step1", taskID: 1))
+    }
+
+    /// The no-human arm INTERPOLATES `BashPermissionDecision.ask(reason:)` into a sentence the
+    /// model reads, so the reason has to be written for that reader. It was not: the composed
+    /// text read "This command needs human approval (Manual mode — every command needs YOUR
+    /// approval.), but no human is available to review it." — self-contradictory for the one
+    /// party that reads it. Assert the whole composition, not the halves: the defect lived in
+    /// neither file alone, only in the sentence they make together.
+    func testManual_noHuman_composedReasonReadsAsOneCoherentSentence() async {
+        let results = await gate(
+            [bashCall("make install")],
+            policy: BashPolicy(mode: .manual),
+            supervisorMode: .autonomous)
+        let message = errorMessage(results[0]?.outputJSON ?? "")
+
+        XCTAssertEqual(
+            message,
+            "This command needs human approval (Manual mode — every command is reviewed "
+                + "individually.), but no human is available to review it. "
+                + "Ask the supervisor to allow unattended command approval.")
+        XCTAssertFalse(
+            message.lowercased().contains("your"),
+            "the reason is model-read; second person addresses the wrong party, got: \(message)")
     }
 
     // MARK: - Gate-bypass regressions (command-key parity with the handler)

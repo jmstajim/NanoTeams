@@ -30,8 +30,8 @@ final class BenchmarkRowBandGeometryHarnessTests: XCTestCase, @unchecked Sendabl
     struct Fixture: View {
         let interaction: BenchmarkRowInteractionState<UUID>
         let gridFrame: GridFrameBox
-        static let space = "harness-table"
-        static let rootSpace = "harness-root"
+        nonisolated static let space = "harness-table"
+        nonisolated static let rootSpace = "harness-root"
 
         // Row 0 wraps at narrow width (tall row); rows 1–2 stay short — the height inequality
         // the defect needs.

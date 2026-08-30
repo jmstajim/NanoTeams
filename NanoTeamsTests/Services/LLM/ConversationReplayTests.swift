@@ -106,6 +106,10 @@ final class ConversationReplayTests: XCTestCase {
     func testRebuild_keepsEverySentContext() {
         let sent: [MessageSourceContext] = [
             .supervisorAnswer, .supervisorMessage, .consultation, .meeting, .changeRequest,
+            // Revision feedback IS sent — it is the whole point of the re-entry that writes
+            // it. Only its LABEL and its display prefix changed; the persisted body is
+            // replayed onto the wire verbatim, prefix included.
+            .supervisorFeedback,
             // The thinking-loop correction IS sent — it is the entire recovery, since a
             // stateless resend without it is byte-identical to the request that looped.
             // Dropping it here would silently restore the pre-fix behaviour on the

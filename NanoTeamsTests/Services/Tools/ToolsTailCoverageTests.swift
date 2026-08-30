@@ -936,15 +936,15 @@ final class ToolsTailFileWriteHandlerTests: XCTestCase {
     }
 
     private func write(_ args: [String: Any]) async -> ToolExecutionResult {
-        await WriteFileTool(resolver: resolver(), fileManager: await fm).handle(context: context(), args: args)
+        await WriteFileTool(resolver: resolver(), fileManager: fm).handle(context: context(), args: args)
     }
 
     private func edit(_ args: [String: Any]) async -> ToolExecutionResult {
-        await EditFileTool(resolver: resolver(), fileManager: await fm).handle(context: context(), args: args)
+        await EditFileTool(resolver: resolver(), fileManager: fm).handle(context: context(), args: args)
     }
 
     private func delete(_ args: [String: Any]) async -> ToolExecutionResult {
-        await DeleteFileTool(resolver: resolver(), fileManager: await fm).handle(context: context(), args: args)
+        await DeleteFileTool(resolver: resolver(), fileManager: fm).handle(context: context(), args: args)
     }
 
     // MARK: - write_file
@@ -1241,7 +1241,7 @@ final class ToolsTailBashHandlerTests: XCTestCase {
     }
 
     func testSandboxDisabled_reportsSandboxedFalse() async {
-        let result = await tool(sandboxed: await false).handle(context: context(), args: ["command": "true"])
+        let result = await tool(sandboxed: false).handle(context: context(), args: ["command": "true"])
         XCTAssertEqual(toolsTailEnvelope(result).data?["sandboxed"] as? Bool, false)
     }
 

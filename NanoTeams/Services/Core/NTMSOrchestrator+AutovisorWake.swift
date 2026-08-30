@@ -189,10 +189,10 @@ extension NTMSOrchestrator {
     /// • any other state — an immediate FRESH review pass for a not-yet-seen condition
     ///   (a parked `wait_for_events` engine is superseded, not continued). A condition
     ///   already in `autovisorLastPassAttentionKeys` is not re-delivered FOR AS LONG AS IT
-    ///   KEEPS MATCHING (deliver-once). A `.needsSupervisor` condition that goes quiet is
-    ///   retired from that baseline — by `noteSupervisorQuestionResolved` when an answer
-    ///   resolves it, or by this method's own prune otherwise — so the NEXT question on the
-    ///   same task is a new condition and wakes.
+    ///   KEEPS MATCHING (deliver-once). A condition that goes QUIET is retired from that
+    ///   baseline — where, per trigger, is derived from
+    ///   `AutovisorAttentionTrigger.keyRetirement` — so the NEXT occurrence on the same task
+    ///   is a new condition and wakes.
     ///
     /// `includeStuck` enables the `onTaskStuck` evaluation — passed `true` ONLY by
     /// the per-minute poll backstop. The hot engine-state observer leaves it `false`
@@ -226,7 +226,7 @@ extension NTMSOrchestrator {
         autovisorNotifiedAttentionKeys = autovisorNotifiedAttentionKeys.filter {
             stillMatchingKeys.contains($0) || ($0.trigger == .stuck && !stuckEvaluated)
         }
-        // Retire spent `.needsSupervisor` keys from the deliver-once baseline too, so
+        // Retire spent `.levelSample` keys from the deliver-once baseline too, so
         // "delivered once" means once per QUESTION rather than once per task for the life
         // of the process. `answerSupervisorQuestion` retires a key the moment it resolves
         // one (`noteSupervisorQuestionResolved`); this covers the clearing paths that carry
@@ -236,20 +236,24 @@ extension NTMSOrchestrator {
         // quiet is usually the one carrying NO items at all (the manager answered the task
         // and it resumed to `.running`), and that is the only moment this can be learned.
         //
-        // ONLY `.needsSupervisor`. The other triggers keep their level semantics because
-        // there a "flicker" is noise, not news: the manager's remedy for `.failed` is a
-        // restart, so pruning that key would make a deterministically-failing role wake a
-        // fresh pass every failure latency until auto-off — one `createNewRun` each, each
-        // resetting `autovisorCreationsThisReview`. A question is different in kind: the
-        // remedy CONSUMES it, and the next one is a thing the manager has never seen. The
-        // recurrence sweep remains the re-review for everything still standing.
+        // The population is DERIVED from `AutovisorAttentionTrigger.keyRetirement`, never
+        // listed here (CLAUDE.md #143) — read that property for the per-member arguments.
+        // This prune serves exactly the triggers whose level ORs in a representation no
+        // index write observes, so only a sample can learn their clear. `.completed` is NOT
+        // one of them: its level is `summary.status` alone, every write of which passes
+        // through `upsertTaskSummary`, so it is retired on that EDGE by
+        // `noteDerivedStatusTransition` and must not be sampled here — a sampling GC expires
+        // on absence of evidence, and the clear-plus-re-fire between two samples is exactly
+        // the reported bug. Until 2026-08-30 this filter named `.needsSupervisor` directly
+        // and justified the exemption for every other trigger from `.failed`'s case alone;
+        // that argued-once-inherited-by-all shape is what hid the defect (#119).
         //
         // Cannot weaken the concurrent-wake serialization below, and the argument is per
         // key: `hasFreshCondition` only ever tests keys that ARE in `items`, and any such
         // key is in `stillMatchingKeys`, so it survives. A key this drops is one the
         // freshness gate would not have looked at.
         autovisorLastPassAttentionKeys = autovisorLastPassAttentionKeys.filter {
-            $0.trigger != .needsSupervisor || stillMatchingKeys.contains($0)
+            $0.trigger.keyRetirement != .levelSample || stillMatchingKeys.contains($0)
         }
         guard !items.isEmpty else { return }
 
@@ -309,9 +313,9 @@ extension NTMSOrchestrator {
         // (deliver-once — the prune above retires a question that went quiet); the periodic
         // recurrence sweep re-reviews any it didn't resolve, so a standing unresolved
         // condition can't tight-loop. The baseline is recomputed at pass start INCLUDING
-        // stuck (`seedAutovisorNotifiedKeysForPassStart`) — one of the baseline's THREE
-        // maintainers, beside this method's prune+record and the single-key retirement in
-        // `noteSupervisorQuestionResolved` — so a stuck task is delivered
+        // stuck (`seedAutovisorNotifiedKeysForPassStart`) — one of the baseline's FOUR
+        // maintainers, beside this method's prune+record and the single-key retirements in
+        // `noteSupervisorQuestionResolved` and `noteDerivedStatusTransition` — so a stuck task is delivered
         // ONCE (not every poll tick) and a no-longer-stuck one is dropped (a fresh stuck
         // episode re-wakes). Fixes the wedge where a task the manager CREATED mid-pass
         // produced its artifact / called ask_supervisor AFTER it parked: never in the
@@ -401,6 +405,77 @@ extension NTMSOrchestrator {
         autovisorLoopParkRedelivered.remove(key)
     }
 
+    /// Retires the deliver-once bookkeeping for every condition whose level is readable from
+    /// the task's INDEX ROW and has just cleared — the sibling of
+    /// `noteSupervisorQuestionResolved` for the triggers a row edge can speak for.
+    ///
+    /// The bug it fixes: task X reaches Review, so `(X, .completed)` enters the baseline. The
+    /// manager calls `manage_role request_changes` → `requestRevision` writes
+    /// `roleStatuses[r] = .revisionRequested`, which is neither `isComplete` nor
+    /// `.needsAcceptance`, so `derivedStatusFromActiveRun`'s `.done` arm returns `.running`
+    /// and the Review level goes quiet. The role then revises, submits a NEW artifact and
+    /// settles back to `.needsAcceptance`, X derives Review again — and `hasFreshCondition`
+    /// read FALSE, because the key from the FIRST Review had never been retired. A key names
+    /// the CONDITION, not the occurrence (CLAUDE.md #74), so it has to be retired when the
+    /// occurrence ends or it answers for the next one.
+    ///
+    /// An EDGE, deliberately, not a sample. `wakeAutovisorForEvents`' prune could only learn
+    /// this if some wake happened to land while the condition was quiet; with no window
+    /// mounted the sole sampler is the 60 s poll, and a sub-60 s revision round trip is
+    /// ordinary for a local model — so the reported case would survive a merely-widened
+    /// prune. Recording it here, inside the same synchronous @MainActor mutation that clears
+    /// the level, cannot be mis-sampled (#92: expire only on positive evidence).
+    ///
+    /// Called from `upsertTaskSummary` because that is the ONE way an in-memory index row is
+    /// written (see its own doc, CLAUDE.md #51) — both `mutateTask` branches reach it, with
+    /// or without a window — and because it is the one instant at which the previous derived
+    /// status still exists. Deliberately NOT the engine mirror: after a relaunch
+    /// `mapDerivedStatusToEngineState` seeds `.paused` for a task whose row still says
+    /// Review, so mirror and row answer different questions (#91) — the same story
+    /// `summaryAwaitsSupervisor` tells about the wait fact.
+    ///
+    /// Both sets are retired, because both were sampling the same level: the mid-review
+    /// injection set (`autovisorNotifiedAttentionKeys`, pruned at the top of the wake) had
+    /// the identical blind spot, so a Review→running→Review round trip completing between
+    /// two polls silently dropped the live event notice too. One class, not one site (#51).
+    /// The loop-park ledger goes with them for the reason its own doc gives: a spent entry
+    /// must not deny the next, genuinely distinct episode its one free re-delivery.
+    ///
+    /// Cost on the hottest write path in the app: a walk of the trigger cases evaluating two
+    /// trivial row predicates for the two `.statusSeam` members. What must stay cheap is
+    /// `levelHolds` itself — and behind it `AcceptanceService.hasAcceptanceGate`, which is
+    /// why that has an allocation-free short-circuiting form separate from the id-listing
+    /// one its display siblings use.
+    ///
+    /// Reads no settings on purpose: `upsertTaskSummary` runs BEFORE `snapshot` is assigned,
+    /// so anything read from it here would be one mutation stale. Nor is a gate needed —
+    /// keys only ever enter these sets while the feature is on, so for an off folder the
+    /// sets are empty and every `remove` is a no-op.
+    func noteRowLevelsCleared(from previous: TaskSummary?, to current: TaskSummary) {
+        guard let previous else { return }
+        for trigger in AutovisorAttentionTrigger.allCases
+            where trigger.keyRetirement == .statusSeam
+            && trigger.levelHolds(for: previous) && !trigger.levelHolds(for: current) {
+            let key = AutovisorAttentionKey(taskID: current.id, trigger: trigger)
+            autovisorLastPassAttentionKeys.remove(key)
+            autovisorNotifiedAttentionKeys.remove(key)
+            autovisorLoopParkRedelivered.remove(key)
+        }
+    }
+
+    /// Fire-and-forget event wake, for the synchronous seams that observe a condition
+    /// arrive: `wakeAutovisorForEvents` is `async`, and its callers here are inside
+    /// `@MainActor` mutations that must not suspend (invariant #6).
+    ///
+    /// Safe to over-fire by construction — the wake self-guards (feature off, no manager →
+    /// no-op), a transition matching no trigger finds `items` empty, and a condition already
+    /// in the deliver-once baseline bails at `hasFreshCondition`. The synchronous record
+    /// before `startAutovisorPass`'s `await` is what keeps two concurrent wakes from
+    /// double-starting a pass, and it covers this caller like any other.
+    func scheduleAutovisorWake() {
+        Task { await wakeAutovisorForEvents() }
+    }
+
     /// Roll back the attention baseline a pass never earned, once.
     ///
     /// `autovisorLastPassAttentionKeys` means "the manager has reviewed these", and it
@@ -448,7 +523,7 @@ extension NTMSOrchestrator {
     /// Pure read over the supplied snapshots — no engine, no side effects — so it is unit-testable
     /// with hand-built `TaskSummary` values.
     ///
-    /// All five triggers are LEVEL-triggered: a task that stays in a matching state keeps the
+    /// EVERY case of `AutovisorAttentionTrigger` is LEVEL-triggered: a task that stays in a matching state keeps the
     /// manager wake-eligible every tick. The caller's deliver-once freshness baseline
     /// (`autovisorLastPassAttentionKeys`) bounds how often that actually spawns a run (a condition
     /// already reviewed isn't re-delivered), and the per-minute poll backstop is the level-triggered
@@ -485,8 +560,105 @@ extension NTMSOrchestrator {
     /// per-condition, not per-task. No raw value on purpose — the cases are never
     /// persisted or wire-facing, and a `String` raw value would falsely signal a
     /// stability contract (the `FeatureTipID` / `LoopSignal.scope` convention).
-    nonisolated enum AutovisorAttentionTrigger {
-        case needsSupervisor, failed, completed, created, stuck
+    nonisolated enum AutovisorAttentionTrigger: CaseIterable {
+        case needsSupervisor, failed, completed, acceptanceGate, created, stuck
+
+        /// WHERE a spent key for this trigger is retired from the deliver-once baseline.
+        ///
+        /// Exhaustive, with no `default:`, so the author of a sixth trigger has to ANSWER
+        /// this rather than inherit an answer. That inheritance is the bug this property
+        /// was extracted for (CLAUDE.md #119): the prune's exemption was argued entirely
+        /// from `.failed`'s case and `.completed` was swept into the same bucket, so a
+        /// Review consumed by `request_changes` kept its key and the revised artifact's
+        /// return to Review read as already-delivered.
+        ///
+        /// The answer is DERIVED, not a preference (#143). A key can be retired at the
+        /// `upsertTaskSummary` seam iff the trigger's LEVEL is a pure function of the index
+        /// row — every write of that row passes through the seam, so the edge cannot be
+        /// missed. It needs the wake's level SAMPLE iff some representation of its level
+        /// moves with no index write, because then no seam can observe the clear (#91:
+        /// read the representation whose lifetime matches the question).
+        var keyRetirement: AutovisorKeyRetirement {
+            switch self {
+            // `summaryAwaitsSupervisor` ORs in `engineStates[id] == .needsSupervisorInput`,
+            // which no index write observes — so the clear is only learnable by sampling.
+            // `noteSupervisorQuestionResolved` covers the resolutions that carry an answer;
+            // the prune is the net for the rest.
+            case .needsSupervisor: .levelSample
+            // Level is `summary.status == .needsSupervisorAcceptance` and nothing else.
+            case .completed: .statusSeam
+            // Level is the durable `hasRolesAwaitingAcceptance` on the same row. Its remedy
+            // (`manage_role accept` / `request_changes`) consumes the gate, and the level
+            // cannot re-arm without a role running an LLM step to completion — so no tight
+            // loop is reachable, and without retirement two consecutive gates on one task
+            // share a key and the second is never delivered (#74).
+            case .acceptanceGate: .statusSeam
+            // The remedy is a RESTART — an attempt, not a consumption. A deterministically
+            // failing role re-fails in milliseconds, so retiring this key would wake a fresh
+            // pass per failure latency until auto-off, each one a `createNewRun` that resets
+            // `autovisorCreationsThisReview`.
+            case .failed: .never
+            // `autovisorSeenTaskIDs` IS this level's clear; there is no separate episode.
+            case .created: .levelClearIsDelivery
+            // Time-based and unevaluated on the observer path, so "absent from `items`"
+            // means "not looked at", not "cleared" (#92). Owned by the pass-start recompute.
+            case .stuck: .passStartRecompute
+            }
+        }
+
+        /// Does this trigger's level hold for `summary`, judged from the index row alone?
+        ///
+        /// The ONE definition of each row-derived level, read from both directions (#91):
+        /// the itemizer asks "does it hold NOW", the seam retirement asks "did it hold
+        /// BEFORE and not now". Two spellings would let a widened level leave the
+        /// retirement watching for something that no longer exists.
+        ///
+        /// Meaningful only for triggers whose level is a pure function of the row — the
+        /// others return `false` and are excluded by their `keyRetirement` anyway.
+        func levelHolds(for summary: TaskSummary) -> Bool {
+            switch self {
+            case .completed:
+                summary.status == .needsSupervisorAcceptance
+            case .acceptanceGate:
+                // Three qualifiers, each with its own argument.
+                //
+                // • `status != .needsSupervisorAcceptance` makes this and `.completed`
+                //   DISJOINT by construction: at Review a gated role exists too, so without
+                //   it one condition emits two keys and two bullets. The property is "parked
+                //   on an acceptance decision that no other trigger already names" (#143).
+                // • `!isChatMode` is checked per member, not inherited: a chat-mode run loop
+                //   never parks on the gate at all (it skips the acceptance arm), so the
+                //   "loop exited silently" failure this trigger exists for cannot occur
+                //   there — it falls to the deadlock arm and `.failed`, which `onTaskFailed`
+                //   already covers.
+                // • the DURABLE row fact, never the engine mirror — see
+                //   `hasRoleAtAcceptanceGate`.
+                summary.status != .needsSupervisorAcceptance
+                    && !summary.isChatMode
+                    && summary.hasRoleAtAcceptanceGate
+            // A row-derived level too, but `keyRetirement` is `.never` — see there.
+            case .failed:
+                summary.status == .failed
+            case .needsSupervisor, .created, .stuck:
+                false
+            }
+        }
+    }
+
+    /// Where a spent `AutovisorAttentionKey` is retired. See
+    /// `AutovisorAttentionTrigger.keyRetirement` for how a case is chosen — it is derived
+    /// from where the trigger's level lives, not picked.
+    nonisolated enum AutovisorKeyRetirement {
+        /// On the `upsertTaskSummary` edge, by `noteDerivedStatusTransition`.
+        case statusSeam
+        /// By `wakeAutovisorForEvents`' prune, which samples the level on every wake.
+        case levelSample
+        /// Never — a flicker here means the remedy did not take.
+        case never
+        /// No key is involved: delivering the notice IS what clears the level.
+        case levelClearIsDelivery
+        /// By `seedAutovisorNotifiedKeysForPassStart`'s recompute, once per pass.
+        case passStartRecompute
     }
 
     /// Dedup identity of one attention condition — the task and the trigger,
@@ -550,7 +722,7 @@ extension NTMSOrchestrator {
         return engineState == .needsSupervisorInput
     }
 
-    /// Itemized form of `autovisorNeedsAttention` — same five trigger rules, but
+    /// Itemized form of `autovisorNeedsAttention` — the same per-trigger rules, but
     /// returns WHAT matched so the mid-review injection path can compose a notice
     /// and dedup per condition. Order: watchable order, triggers in the fixed
     /// sequence below (deterministic for tests and notice text).
@@ -562,13 +734,28 @@ extension NTMSOrchestrator {
         stuck: Set<Int> = []
     ) -> [AutovisorAttentionItem] {
         watchable.flatMap { summary -> [AutovisorAttentionItem] in
+            // The row-derived triggers ask the trigger itself whether its level holds, so the
+            // level and the retirement that watches for its clear cannot drift apart (#91).
             var triggers: [AutovisorAttentionTrigger] = []
             if act.onTaskNeedsSupervisor,
                Self.summaryAwaitsSupervisor(summary, engineState: engineStates[summary.id]) {
                 triggers.append(.needsSupervisor)
             }
-            if act.onTaskFailed, summary.status == .failed { triggers.append(.failed) }
-            if act.onTaskCompleted, summary.status == .needsSupervisorAcceptance { triggers.append(.completed) }
+            if act.onTaskFailed, AutovisorAttentionTrigger.failed.levelHolds(for: summary) {
+                triggers.append(.failed)
+            }
+            if act.onTaskCompleted, AutovisorAttentionTrigger.completed.levelHolds(for: summary) {
+                triggers.append(.completed)
+            }
+            // Same flag as `.completed`, and the rationale is restated per member on the flag
+            // itself (#119): both mean "a task is parked on your review decision". The remedy
+            // differs — `control_task close` vs `manage_role accept` — but the wake question
+            // is identical, and the acceptance mode that produces mid-pipeline gates is a
+            // per-team setting most users never open, so a sixth toggle would ask something
+            // they have no basis to answer.
+            if act.onTaskCompleted, AutovisorAttentionTrigger.acceptanceGate.levelHolds(for: summary) {
+                triggers.append(.acceptanceGate)
+            }
             if act.onTaskCreated, !seen.contains(summary.id) { triggers.append(.created) }
             if act.onTaskStuck, stuck.contains(summary.id) { triggers.append(.stuck) }
             return triggers.map { AutovisorAttentionItem(taskID: summary.id, title: summary.title, trigger: $0) }
@@ -601,6 +788,9 @@ extension NTMSOrchestrator {
                 return "- \(task) failed (task_status to triage)."
             case .completed:
                 return "- \(task) finished and awaits review (review it, then control_task close)."
+            case .acceptanceGate:
+                return "- \(task) has a role waiting for acceptance and its pipeline is "
+                    + "stalled until you decide (task_status, then manage_role accept)."
             case .created:
                 return "- New task: \(task) was created."
             case .stuck:

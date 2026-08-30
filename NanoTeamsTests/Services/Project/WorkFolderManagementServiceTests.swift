@@ -62,21 +62,21 @@ final class WorkFolderManagementServiceTests: XCTestCase {
     func testUpdateWorkFolderContext_UpdatesContext() throws {
         _ = try service.openOrCreateWorkFolder(at: tempDir)
 
-        let context = try service.updateWorkFolderContext("New context", at: tempDir)
+        let context = try service.updateWorkFolderContext("New context", at: tempDir, activeTask: nil)
         XCTAssertEqual(context.workFolder.settings.context, "New context")
     }
 
     func testUpdateWorkFolderContext_TrimsWhitespace() throws {
         _ = try service.openOrCreateWorkFolder(at: tempDir)
 
-        let context = try service.updateWorkFolderContext("  Trimmed  \n", at: tempDir)
+        let context = try service.updateWorkFolderContext("  Trimmed  \n", at: tempDir, activeTask: nil)
         XCTAssertEqual(context.workFolder.settings.context, "Trimmed")
     }
 
     func testUpdateWorkFolderContext_EmptyString() throws {
         _ = try service.openOrCreateWorkFolder(at: tempDir)
 
-        let context = try service.updateWorkFolderContext("", at: tempDir)
+        let context = try service.updateWorkFolderContext("", at: tempDir, activeTask: nil)
         XCTAssertEqual(context.workFolder.settings.context, "")
     }
 
@@ -85,14 +85,14 @@ final class WorkFolderManagementServiceTests: XCTestCase {
     func testUpdateSelectedScheme_SetsScheme() throws {
         _ = try service.openOrCreateWorkFolder(at: tempDir)
 
-        let context = try service.updateSelectedScheme("NanoTeams", at: tempDir)
+        let context = try service.updateSelectedScheme("NanoTeams", at: tempDir, activeTask: nil)
         XCTAssertEqual(context.workFolder.settings.selectedScheme, "NanoTeams")
     }
 
     func testUpdateSelectedScheme_ClearsScheme() throws {
         _ = try service.openOrCreateWorkFolder(at: tempDir)
 
-        let context = try service.updateSelectedScheme(nil, at: tempDir)
+        let context = try service.updateSelectedScheme(nil, at: tempDir, activeTask: nil)
         XCTAssertNil(context.workFolder.settings.selectedScheme)
     }
 
@@ -108,7 +108,7 @@ final class WorkFolderManagementServiceTests: XCTestCase {
 
     func testRoundTrip_ContextPersistsAcrossOpens() throws {
         _ = try service.openOrCreateWorkFolder(at: tempDir)
-        _ = try service.updateWorkFolderContext("Persisted context", at: tempDir)
+        _ = try service.updateWorkFolderContext("Persisted context", at: tempDir, activeTask: nil)
 
         // Use fresh service to simulate fresh open
         let context2 = try freshService.openOrCreateWorkFolder(at: tempDir)
@@ -117,7 +117,7 @@ final class WorkFolderManagementServiceTests: XCTestCase {
 
     func testRoundTrip_SchemePersistsAcrossOpens() throws {
         _ = try service.openOrCreateWorkFolder(at: tempDir)
-        _ = try service.updateSelectedScheme("MyScheme", at: tempDir)
+        _ = try service.updateSelectedScheme("MyScheme", at: tempDir, activeTask: nil)
 
         // Use fresh service to simulate fresh open
         let context2 = try freshService.openOrCreateWorkFolder(at: tempDir)

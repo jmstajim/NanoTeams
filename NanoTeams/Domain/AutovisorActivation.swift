@@ -20,7 +20,19 @@ nonisolated struct AutovisorActivation: Codable, Hashable {
     var onTaskNeedsSupervisor: Bool
     /// Wake when a folder task fails (triage / restart).
     var onTaskFailed: Bool
-    /// Wake when a folder task completes (review results / close / decide next).
+    /// Wake when a folder task is parked on the Supervisor's REVIEW DECISION.
+    ///
+    /// Two conditions share this flag, and the rationale is restated per member here rather
+    /// than only at the triggers (CLAUDE.md #119 — a reason recorded once for a class is
+    /// what guarantees nobody re-checks it for the next member):
+    /// • the whole task finished and derives `.needsSupervisorAcceptance` — remedy
+    ///   `control_task close`;
+    /// • one role finished and the pipeline is STALLED at a mid-pipeline acceptance gate
+    ///   while the task still derives `.running` — remedy `manage_role accept`.
+    /// The remedies differ; the question put to the manager ("something is waiting on your
+    /// review decision") is identical, which is why they are one toggle. The acceptance mode
+    /// that produces mid-pipeline gates is a per-team setting most users never open, so a
+    /// separate flag would ask them something they have no basis to answer.
     var onTaskCompleted: Bool
     /// Wake when a new (e.g. human-created) top-level task appears. Consumed by
     /// `wakeAutovisorForEvents` against the orchestrator's seen-task set.

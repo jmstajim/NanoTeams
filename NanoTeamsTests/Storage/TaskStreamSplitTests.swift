@@ -408,6 +408,53 @@ final class TaskStreamSplitTests: XCTestCase {
                        "the refusal must leave the log byte-identical")
     }
 
+    /// Which mirrored `TaskSummary` facts a RAW read can still recompute.
+    ///
+    /// The heal in `NTMSRepository+Reconcile` patches `hasPendingSupervisorInput` back from
+    /// the row for an unhydrated task, because that fact walks `step.toolCalls` — which the
+    /// split STRIPS — so recomputing it would write a false `false` over a true row and wipe
+    /// persisted seen-state. `hasRolesAwaitingAcceptance` is deliberately NOT in that patch
+    /// list: it reads `run.roleStatuses` and `step.effectiveRoleID`, which the split does not
+    /// touch.
+    ///
+    /// That exclusion rests on a claim about WHICH FIELDS `splittingStreams` strips, and the
+    /// strip list can change — so the claim is pinned rather than trusted to a comment.
+    /// RED: add `roleStatuses` to `splittingStreams`' strip list → the raw read recomputes the
+    /// gate as `false` and the equality against the hydrated answer fails.
+    ///
+    /// What this does NOT pin, measured rather than assumed: adding the acceptance fact to
+    /// the heal's `!streamsHydrated` patch list leaves this GREEN, because the fixture reads
+    /// `toSummary()` directly and never traverses the heal (CLAUDE.md #56, reading 3). The
+    /// residual defect there is mild and self-correcting — a split task's row would keep its
+    /// stale value until the task's next `mutateTask` re-summarizes it — which is why the
+    /// load-bearing property, and the one whose breakage would be silent, is pinned here
+    /// instead of the patch list itself.
+    func testRawReadOfSplitTask_recomputesTheAcceptanceGate_butNotTheSupervisorWait() throws {
+        let id = try makeTask()
+        var task = try repository.loadTask(at: root, taskID: id)
+        task.runs[0].roleStatuses["engineer"] = .needsAcceptance
+        task.runs[0].steps[0].status = .done
+        // A pending `ask_supervisor` lives in `toolCalls` — a stream the split strips.
+        task.runs[0].steps[0].needsSupervisorInput = true
+        task.runs[0].steps[0].supervisorQuestion = "Which database?"
+        task.runs[0].steps[0].llmConversation = [LLMMessage(role: .assistant, content: "turn")]
+        task.updatedAt = MonotonicClock.shared.now()
+        try repository.updateTaskOnly(at: root, task: task)
+
+        let hydrated = try repository.loadTask(at: root, taskID: id)
+        XCTAssertTrue(hydrated.streamsHydrated, "fixture sanity")
+        XCTAssertEqual(hydrated.toSummary().hasRolesAwaitingAcceptance, true)
+
+        let raw = try store.read(NTMSTask.self, from: paths.taskJSON(taskID: id))
+        XCTAssertFalse(raw.streamsHydrated, "premise: this read is the unhydrated one")
+        XCTAssertEqual(raw.toSummary().hasRolesAwaitingAcceptance, true,
+                       "the acceptance gate survives a raw read — roleStatuses and step ids "
+                           + "are not stream arrays, so the heal must NOT patch this field")
+        XCTAssertEqual(raw.toSummary().hasRolesAwaitingAcceptance,
+                       hydrated.toSummary().hasRolesAwaitingAcceptance,
+                       "…and it agrees with the hydrated answer")
+    }
+
     /// A step log that cannot be written must FAIL the mutation loudly —
     /// stripping the arrays from the blob after a silent flush failure would
     /// lose the delta with no trace. And the failure must be clean: the next

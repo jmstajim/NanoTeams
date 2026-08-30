@@ -36,6 +36,20 @@ nonisolated enum ActivityNotificationType: Hashable {
         }
     }
 
+    /// Pre-computed tint fill paired with ``color(isChatMode:)``, for the card background
+    /// behind the notification body.
+    ///
+    /// A second switch rather than `color(...).opacity(...)`: the notification types resolve
+    /// to a CLOSED set of three tokens, so every tint is known ahead of time and the design
+    /// system already ships it. `DynamicTintOpacity` is reserved for colours that arrive as a
+    /// parameter — see `ActivityFeedIconAvatar`, which takes one.
+    func tintColor(isChatMode: Bool) -> Color {
+        switch self {
+        case .supervisorInput: return isChatMode ? Colors.neutralTint : Colors.warningTint
+        case .failed: return Colors.errorTint
+        }
+    }
+
     func title(for role: Role, isChatMode: Bool = false) -> String {
         switch self {
         case .supervisorInput(_, let answer, _, _, _, _, _):

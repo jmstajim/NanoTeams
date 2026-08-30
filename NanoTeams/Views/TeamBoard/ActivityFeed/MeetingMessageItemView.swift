@@ -30,7 +30,7 @@ struct MeetingMessageItemView: View {
 
             VStack(alignment: .leading, spacing: Spacing.xs) {
                 if showHeader {
-                    HStack(spacing: 6) {
+                    HStack(spacing: Spacing.s) {
                         roleNameText(roleName: roleName, teamSuffix: roleTeamSuffix, tintColor: tintColor)
                         messageTypeTag(message.messageType)
                         Spacer()

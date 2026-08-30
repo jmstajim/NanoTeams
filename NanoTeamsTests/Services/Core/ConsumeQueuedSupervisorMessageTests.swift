@@ -864,7 +864,7 @@ final class ConsumeQueuedSupervisorMessageTests: NTMSOrchestratorTestBase, @unch
     /// Persistence failure must return the WHOLE mixed batch to the queue head — a partial
     /// requeue would lose the human's message while keeping the notice, or the reverse.
     func testConsume_mixedBatch_persistFailure_requeuesEverything() async {
-        let (taskID, stepID) = await createTaskWithRunningStep()
+        let (taskID, _) = await createTaskWithRunningStep()
         _ = queue(taskID: taskID, text: "посмотри парсер", targetRoleID: "pm")
         _ = queue(taskID: taskID, text: eventNoticeText(), targetRoleID: "pm",
                   kind: .autovisorEventNotice)
