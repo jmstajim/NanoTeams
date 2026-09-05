@@ -41,12 +41,14 @@ nonisolated struct WatchtowerDismissKey: Hashable, Sendable {
 
 // MARK: - Shared type-ID vocabulary
 
-/// The single spelling of each notification family's within-task identity, shared by
+/// The single spelling of the within-task identity of the three event-retired
+/// notification families — `.supervisorInput`, `.acceptance` and `.failed` — shared by
 /// `WatchtowerNotificationType.dismissID` (Views — builds keys when banners render)
 /// and the orchestrator's event-driven retirement (Services — expires keys when the
-/// state that produced a banner is consumed). Without one owner the two spellings
-/// drift, and a retirement that misses is invisible: the stale key just keeps
-/// suppressing the NEXT instance of the banner.
+/// state that produced a banner is consumed: `retireRoleBannerDismissals` for the
+/// role families, `answerSupervisorQuestion` for the question). Without one owner the
+/// two spellings drift, and a retirement that misses is invisible: the stale key just
+/// keeps suppressing the NEXT instance of the banner.
 ///
 /// The `acceptance::` / `failed::` prefixes are load-bearing, not decorative: both
 /// families used to spell their typeID as the bare `stepID`, so dismissing a failed
@@ -55,10 +57,25 @@ nonisolated extension WatchtowerDismissKey {
     static func acceptanceTypeID(stepID: String) -> String { "acceptance::\(stepID)" }
     static func failedTypeID(stepID: String) -> String { "failed::\(stepID)" }
 
+    /// `.supervisorInput`: the asking `ask_supervisor` call's persisted UUID when there is one
+    /// (chat mode: every turn), else the question text — the flag-only escalation path has no
+    /// call to name. Deliberately NO family prefix: this is the byte-for-byte spelling
+    /// `WatchtowerNotificationType.dismissID` has always written, so every key already on disk
+    /// keeps matching. The `acceptance::`/`failed::` rename accepted a "banner returns once"
+    /// cost because bare stepIDs collided across families; `stepID::<uuid|text>` collides with
+    /// nothing, so there is no reason to pay it here.
+    static func supervisorInputTypeID(stepID: String, toolCallID: UUID?, question: String) -> String {
+        "\(stepID)::\(toolCallID?.uuidString ?? question)"
+    }
+
     static func acceptance(taskID: Int, stepID: String) -> Self {
         Self(taskID: taskID, typeID: acceptanceTypeID(stepID: stepID))
     }
     static func failed(taskID: Int, stepID: String) -> Self {
         Self(taskID: taskID, typeID: failedTypeID(stepID: stepID))
+    }
+    static func supervisorInput(taskID: Int, stepID: String, toolCallID: UUID?, question: String) -> Self {
+        Self(taskID: taskID,
+             typeID: supervisorInputTypeID(stepID: stepID, toolCallID: toolCallID, question: question))
     }
 }

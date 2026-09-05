@@ -32,61 +32,78 @@ nonisolated enum ModelTokenCleaner {
         return c
     }
 
-    /// The PER-DELTA counterpart of `stripTokens`, for a buffer an incremental writer
-    /// grows: decides in `O(delta)` whether the last `newDeltaCount` characters could have
-    /// completed a token at all, and only then pays the strip. Behaviour is byte-identical
-    /// to stripping the whole buffer after every delta — which is `Θ(N²/delta)` across a
-    /// stream, because the DECISION alone cost two whole-buffer searches every time.
-    ///
-    /// **The window is the GATE, not the edit.** A span this cleaner will delete is at
-    /// most `maxTokenSpan` characters (`isTokenSpan` refuses anything longer, or anything
-    /// carrying `{` / a newline). A span COMPLETED by this delta has its closing `>`
-    /// inside the delta, so its first character sits at distance
-    /// `≤ newDeltaCount + maxTokenSpan - 2` from the end — inside a window of
-    /// `newDeltaCount + maxTokenSpan - 1`. Same sizing argument `StreamMarkerWindow` makes
-    /// for the Harmony needle (`Services/LLM/StreamMarkerWindow.swift`); one rule, two
-    /// implementations, because `Utilities` may not depend on `Services`.
-    ///
-    /// **Stripping only the window would NOT be equivalent, and this is why it doesn't.**
-    /// `stripTokensInPlace` is a single forward pass whose cursor position decides which
-    /// opener pairs with which closer, so a pass started mid-buffer can pair differently;
-    /// and a deletion can pull two previously-distant tokens within `maxTokenSpan` of each
-    /// other, creating a pair no tail window contains. Measured: a windowed EDIT diverged
-    /// from the whole-buffer behaviour on 3 of 40 009 randomized token-dense inputs. So
-    /// the window only decides WHETHER to strip; the strip itself stays whole-buffer and
-    /// byte-identical to what ran before. Re-measured after that change: **0 divergences
-    /// in 400 009 cases**, generated from an alphabet of sentinels, partial sentinels,
-    /// braces, newlines and multi-scalar graphemes.
-    ///
-    /// Cost: `O(delta)` per call, plus one whole-buffer pass on the calls where a token
-    /// boundary actually lands in the tail — units of times per stream instead of every
-    /// time. The buffer-long `<|` this cleaner deliberately KEEPS (a mangled
-    /// `<|tool_call{`) leaves the window as soon as the reply grows past it, which is what
-    /// stops it re-firing the strip forever.
+    /// The PER-DELTA counterpart of `stripTokens`, for a buffer an incremental writer grows:
+    /// a thin wrapper — `tailMayCompleteToken` decides in `O(delta)` whether the last
+    /// `newDeltaCount` characters could have completed a token, and only then the whole
+    /// buffer pays `stripTokensInPlace`. Byte-identical to stripping the whole buffer after
+    /// every delta; the window sizing and why it is the GATE and not the EDIT live on the gate.
     static func stripTokensInTail(_ content: inout String, newDeltaCount: Int) {
+        guard tailMayCompleteToken(content, newDeltaCount: newDeltaCount) else { return }
+        stripTokensInPlace(&content)
+    }
+
+    /// The gate of `stripTokensInTail`, exposed for a caller that keeps the RAW buffer and a buffer
+    /// DERIVED from it (`PromptImprovementDisplay`). Decides in `O(delta)` whether the last
+    /// `newDeltaCount` characters could have completed a token at all. Stripping the whole buffer
+    /// after every delta is `Θ(N²/delta)` across a stream, because the DECISION alone cost two
+    /// whole-buffer searches every time.
+    ///
+    /// **The window is the GATE, not the edit.** A span this cleaner will delete is at most
+    /// `maxTokenSpan` characters (`isTokenSpan` refuses anything longer, or anything carrying `{`
+    /// / a newline). A span COMPLETED by this delta has its closing `>` inside the delta, so its
+    /// first character sits at distance `≤ newDeltaCount + maxTokenSpan - 2` from the end —
+    /// inside a window of `newDeltaCount + maxTokenSpan - 1`. Same sizing argument
+    /// `StreamMarkerWindow` makes for the Harmony needle (`Services/LLM/StreamMarkerWindow.swift`);
+    /// one rule, two implementations, because `Utilities` may not depend on `Services`.
+    ///
+    /// Two contracts, both O(delta):
+    /// 1. On an incrementally-stripped buffer (the `stripTokensInTail` contract): `false` proves
+    ///    a whole-buffer strip would change nothing.
+    /// 2. On a RAW buffer: `false` proves `stripTokens(raw) == stripTokens(rawBeforeDelta) + delta`.
+    ///    Every opener outside the window either already had its first `|>` before the delta (same
+    ///    decision) or now pairs with one that makes its span > `maxTokenSpan` — KEPT verbatim,
+    ///    exactly how the unresolved opener was rendered before the delta. Pinned by
+    ///    `ModelTokenCleanerTailTests.testTailMayCompleteToken_false_provesAppendOnlyStrip_onRawBuffer`.
+    ///
+    /// **Stripping only the window would NOT be equivalent, and this is why the gate is all the
+    /// window does.** `stripTokensInPlace` is a single forward pass whose cursor position decides
+    /// which opener pairs with which closer, so a pass started mid-buffer can pair differently;
+    /// and a deletion can pull two previously-distant tokens within `maxTokenSpan` of each other,
+    /// creating a pair no tail window contains. Measured: a windowed EDIT diverged from the
+    /// whole-buffer behaviour on 3 of 40 009 randomized token-dense inputs. So the window only
+    /// decides WHETHER to strip; the strip itself stays whole-buffer and byte-identical to what
+    /// ran before. Re-measured after that change: **0 divergences in 400 009 cases**, generated
+    /// from an alphabet of sentinels, partial sentinels, braces, newlines and multi-scalar
+    /// graphemes.
+    ///
+    /// Cost: `O(delta)` per call; the caller pays one whole-buffer pass only on the calls where a
+    /// token boundary actually lands in the tail — units of times per stream instead of every
+    /// time. The buffer-long `<|` this cleaner deliberately KEEPS (a mangled `<|tool_call{`)
+    /// leaves the window as soon as the reply grows past it, which is what stops it re-firing the
+    /// strip forever.
+    static func tailMayCompleteToken(_ content: String, newDeltaCount: Int) -> Bool {
         let windowLength = max(newDeltaCount, 0) + maxTokenSpan - 1
         let start = content.index(
             content.endIndex, offsetBy: -windowLength, limitedBy: content.startIndex
         ) ?? content.startIndex
-
         // Tested on the Substring so the common (no-token) delta allocates nothing.
-        guard containsModelTokens(content[start...]) else { return }
-
-        stripTokensInPlace(&content)
+        return containsModelTokens(content[start...])
     }
-
 
     // MARK: - Private
 
     /// Longest span a `<|…|>` token may occupy. A sentinel is a short label; the longest
     /// this app has seen is `<|channel|>` at 11. The cap only ever declines to delete.
-    /// Read by `stripTokensInTail` to size its window — the two must move together.
+    /// Read by `tailMayCompleteToken` to size its window — the two must move together.
     private static let maxTokenSpan = 32
 
     /// Single forward pass building a fresh string — deliberately NOT in-place
     /// `removeSubrange`: skipping a non-token `<|` requires carrying a cursor across the
     /// mutation, and `String.Index` is invalidated by it.
     private static func stripTokensInPlace(_ content: inout String) {
+        #if DEBUG
+        _stripWork.wrappingAdd(content.count, ordering: .relaxed)
+        #endif
         guard content.contains("<|") else { return }
 
         var result = ""
@@ -154,7 +171,7 @@ nonisolated enum ModelTokenCleaner {
     /// - Parameter content: The raw LLM response content
     /// - Returns: True if the content contains `<|...|>` style tokens
     ///
-    /// Generic over `StringProtocol` so `stripTokensInTail` can ask about its window
+    /// Generic over `StringProtocol` so `tailMayCompleteToken` can ask about its window
     /// WITHOUT materializing it — the gate must not cost what it gates (CLAUDE.md #106).
     static func containsModelTokens(_ content: some StringProtocol) -> Bool {
         #if DEBUG
@@ -164,8 +181,8 @@ nonisolated enum ModelTokenCleaner {
     }
 
     #if DEBUG
-    /// Work-bound seam for `ModelTokenCleanerTailTests`: characters this GATE has been
-    /// asked about since the last reset. Same shape as
+    /// Work-bound seam for `ModelTokenCleanerTailTests` and `PromptImprovementDisplayTests`:
+    /// characters this GATE has been asked about since the last reset. Same shape as
     /// `WorkFolderContextPromptPlanner._testScalarWork`.
     ///
     /// It lives inside the gate, not beside its call site, and that placement is the whole
@@ -181,5 +198,16 @@ nonisolated enum ModelTokenCleaner {
     private static let _gateWork = Atomic<Int>(0)
     static func _testGateWork() -> Int { _gateWork.load(ordering: .relaxed) }
     static func _testResetGateWork() { _gateWork.store(0, ordering: .relaxed) }
+
+    /// Work-bound seam for the STRIP: characters handed to `stripTokensInPlace` since the last
+    /// reset, counted BEFORE its `contains("<|")` guard — that guard is itself an O(buffer) pass
+    /// and is what a per-delta caller pays on every recompute, whether or not a token is found.
+    /// Same placement as `_gateWork`: inside the work, not beside a call site — a counter next
+    /// to the call would pin a consequence, not the decision (CLAUDE.md #62; measured on
+    /// `_gateWork`) — so a caller that hands the whole buffer to the strip on every delta is
+    /// reported as exactly that. Read by `PromptImprovementDisplayTests`.
+    private static let _stripWork = Atomic<Int>(0)
+    static func _testStripWork() -> Int { _stripWork.load(ordering: .relaxed) }
+    static func _testResetStripWork() { _stripWork.store(0, ordering: .relaxed) }
     #endif
 }

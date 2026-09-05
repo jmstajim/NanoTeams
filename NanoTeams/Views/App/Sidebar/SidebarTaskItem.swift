@@ -1,10 +1,17 @@
 import Foundation
 
-struct SidebarTaskItem: Identifiable {
+/// One sidebar row's render inputs, as built by `SidebarViewLogic.buildSidebarTaskItems`
+/// and cached by `SidebarViewLogic.RowsMemo` across body passes.
+///
+/// No `updatedAt` here on purpose — `mutateTask` re-stamps its row on every write, so a
+/// stamp inside a cached item would either invalidate the memo per message or freeze the
+/// visible "just now". `SidebarTaskRow` takes the live value from
+/// `TaskFactsProjection.updatedAtByTaskID` instead (one home, CLAUDE.md #91).
+/// `Equatable` so the memo's output can be checked against a fresh build.
+struct SidebarTaskItem: Identifiable, Equatable {
     let id: Int
     let title: String
     let status: TaskStatus
-    let updatedAt: Date
     var isChatMode: Bool = false
     var hasUnreadInput: Bool = false
     var isEngineRunning: Bool = false

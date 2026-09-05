@@ -526,29 +526,7 @@ final class FDomainValueTypeTailTests: XCTestCase {
         XCTAssertEqual(sut.workFolder.teams.map(\.name), ["Replacement"])
     }
 
-    // MARK: Readiness / run selection
-
-    /// `getRoleReadiness` for an unknown role id returns `isReady: false` with an EMPTY
-    /// missing list — the one shape where "not ready" carries no blocking artifact.
-    /// `blockingReason` must answer nil there rather than building the degenerate
-    /// string `"Waiting for: "`, which would show up in the graph as a role waiting on
-    /// nothing.
-    ///
-    /// RED: delete the `if missingArtifacts.isEmpty { return nil }` guard ->
-    /// `blockingReason` becomes "Waiting for: " and `XCTAssertNil` fails.
-    func testRoleReadiness_unknownRole_hasNoBlockingReason() {
-        let readiness = ArtifactDependencyResolver.getRoleReadiness(
-            roleID: "no-such-role",
-            roles: [],
-            producedArtifacts: []
-        )
-
-        XCTAssertFalse(readiness.isReady)
-        XCTAssertTrue(readiness.missingArtifacts.isEmpty)
-        XCTAssertNil(readiness.blockingReason,
-                     "an unknown role is blocked by nothing nameable — 'Waiting for: ' with an "
-                         + "empty list is worse than no reason at all")
-    }
+    // MARK: Run selection
 
     /// `isSelectedRunActive` with no task at all. The run-history toolbar reads this to
     /// decide whether the run controls are live; a `true` here would offer Pause/Resume

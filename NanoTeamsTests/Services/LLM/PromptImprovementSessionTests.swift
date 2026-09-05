@@ -181,6 +181,31 @@ final class PromptImprovementSessionTests: XCTestCase {
         XCTAssertEqual(field.writes, ["Clear ", "Clear prompt."])
     }
 
+    /// The field sees exactly the single-shot display after every delta, including the two
+    /// writes of `""` when a fence completes under an already-written field: delta 1 shows "`",
+    /// delta 2 "``", delta 3 completes the fence and hides it — `lastWritten` is non-nil, so the
+    /// empty text IS written — delta 4's "\n" writes "" again, delta 5 "Body".
+    ///
+    /// RED: read `display.text` BEFORE `display.append(delta)` in `ingest` → every write lags one
+    /// delta: the first `""` is swallowed by the `lastWritten == nil` early return, writes become
+    /// `["`", "``", "", ""]` and `field.text` is `""` instead of `"Body"`.
+    /// RED: skip the write whenever `text.isEmpty`, regardless of `lastWritten` → writes become
+    /// `["`", "``", "Body"]`.
+    func testIngest_fieldWritesFollowSingleShotDisplay_forCharByCharFence() async {
+        let box = StreamBox()
+        let session = makeSession(box: box)
+        let field = Field("original")
+        start(session, field: field)
+
+        for delta in ["`", "`", "`", "\n", "Body"] {
+            session.ingest(delta: delta, generation: session.generation)
+        }
+
+        XCTAssertEqual(field.writes, ["`", "``", "", "", "Body"])
+        XCTAssertEqual(field.text, "Body")
+        XCTAssertEqual(session.phase, .streaming)
+    }
+
     // MARK: - Completion
 
     func testCompletion_writesPostProcessedFinal_andArmsRevert() async {
@@ -574,49 +599,6 @@ final class PromptImprovementSessionTests: XCTestCase {
         session.revert()
 
         XCTAssertEqual(field.text, "v1 edited by user")
-    }
-
-    // MARK: - Display transform
-
-    func testDisplayText_stripsTokens() {
-        XCTAssertEqual(PromptImprovementSession.displayText("A<|channel|>B"), "AB")
-    }
-
-    func testDisplayText_dropsOpeningFenceLine() {
-        XCTAssertEqual(PromptImprovementSession.displayText("```\nBody"), "Body")
-        XCTAssertEqual(PromptImprovementSession.displayText("```text\nBody"), "Body")
-    }
-
-    func testDisplayText_dropsOpeningFenceAfterBlankLines() {
-        XCTAssertEqual(PromptImprovementSession.displayText("\n  \n```\nBody"), "\n  \nBody")
-    }
-
-    func testDisplayText_noFence_unchanged() {
-        XCTAssertEqual(PromptImprovementSession.displayText("Plain text\nsecond line"),
-                       "Plain text\nsecond line")
-    }
-
-    func testDisplayText_incompleteFencePrefix_untouched() {
-        // "``" may still grow into a fence — shown as-is until it does.
-        XCTAssertEqual(PromptImprovementSession.displayText("``"), "``")
-    }
-
-    func testDisplayText_innerFenceNotFirstLine_preserved() {
-        let input = "Use this:\n```\ncode\n```"
-        XCTAssertEqual(PromptImprovementSession.displayText(input), input)
-    }
-
-    func testDisplayText_bareFenceOnly_returnsEmpty() {
-        // Only an opening fence has arrived — nothing visible yet, so the
-        // caller stays in `waitingForFirstDelta` (display is empty).
-        XCTAssertEqual(PromptImprovementSession.displayText("```"), "")
-        XCTAssertEqual(PromptImprovementSession.displayText("```json"), "")
-    }
-
-    func testDisplayText_incompleteTokenMidStream_shownVerbatim() {
-        // A half-arrived `<|` token has no closing `|>` yet — `stripTokens`
-        // leaves it; it disappears once the token completes on a later delta.
-        XCTAssertEqual(PromptImprovementSession.displayText("Body <|chan"), "Body <|chan")
     }
 
     // MARK: - Additional guard corners

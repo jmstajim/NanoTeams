@@ -1,7 +1,4 @@
 import SwiftUI
-#if DEBUG
-import Synchronization
-#endif
 
 // MARK: - Streaming Bubble Logic (pure, unit-testable)
 //
@@ -9,29 +6,13 @@ import Synchronization
 // resolvers and their value types (BubbleInputs / StreamingSnapshot /
 // BubbleSchedule). All static + pure — no instance state — so the
 // streaming/committed bubble state machine is testable without the view.
+//
+// The implicit-stream-target law ("the ONE message a `.running` step streams
+// into: its latest VISIBLE turn by `createdAt`") no longer lives here — it is
+// folded into `ActivityFeedBuilder.emitItems`' message walk and surfaces as
+// `TimelineBuild.implicitStreamTargetIDs`. The verbatim expression survives
+// only as the oracle in `TeamActivityFeedImplicitStreamTargetTests`.
 extension TeamActivityFeedView {
-
-    /// The ONE message a `.running` step implicitly streams into: its latest
-    /// VISIBLE turn. Nil when the step is not running or has no visible turn.
-    ///
-    /// One pass, nothing materialized. The `max(by: createdAt)` law is kept
-    /// deliberately — `last` is NOT equivalent, because `commitStreamingContent`
-    /// re-stamps a committed turn forward and a tool turn can carry a later
-    /// timestamp than the assistant turn that produced it (pinned by
-    /// `testReturnsTrue_whenLatestVisibleMessage_evenIfToolTurnHasLaterTimestamp`).
-    /// Visible-message filter mirrors `ActivityFeedBuilder.emitItems`.
-    static func implicitStreamTargetID(in step: StepExecution) -> UUID? {
-        guard step.status == .running else { return nil }
-        var latest: LLMMessage?
-        for message in step.llmConversation
-            where message.role != .system && message.role != .tool {
-            #if DEBUG
-            ImplicitStreamTargetProbe.noteExamined()
-            #endif
-            if latest == nil || message.createdAt > latest!.createdAt { latest = message }
-        }
-        return latest?.id
-    }
 
     // MARK: - Bubble inputs (testable resolver)
 
@@ -258,19 +239,3 @@ extension TeamActivityFeedView {
         )
     }
 }
-
-#if DEBUG
-/// Work-bound seam for the implicit-stream-target scan: conversation messages
-/// EXAMINED since the last reset.
-///
-/// The defect it pins is not a wrong answer but a wrong CADENCE — the scan used
-/// to run once per rendered bubble instead of once per step per rebuild — so a
-/// behavioural test cannot see it. Counter placed inside the scan, per
-/// CLAUDE.md #62.
-nonisolated enum ImplicitStreamTargetProbe {
-    private static let _examined = Atomic<Int>(0)
-    static func noteExamined() { _examined.wrappingAdd(1, ordering: .relaxed) }
-    static func _testExamined() -> Int { _examined.load(ordering: .relaxed) }
-    static func _testResetExamined() { _examined.store(0, ordering: .relaxed) }
-}
-#endif

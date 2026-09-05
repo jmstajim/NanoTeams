@@ -1,10 +1,30 @@
 import XCTest
 @testable import NanoTeams
 
-/// Coverage for the four delegation-policy validation cases added to
-/// `TeamValidationService.validate(team:allTeams:)`.
+/// Coverage for the four delegation-policy validation cases emitted by
+/// `TeamValidationService.validateDelegationPolicy(team:allTeams:)` — the live
+/// validator behind the Team Editor banner (`TeamEditorValidation.issues`).
+///
+/// Severity is asserted through `ValidationError.isError`, the same bit the banner
+/// reads for a row's icon and tint. Until 2026-09-04 these tests reached the validator
+/// THROUGH `validate(team:allTeams:)`, an aggregator that partitioned every issue into
+/// `errors` / `warnings` by that bit and otherwise only ran artifact-chain checks no
+/// production surface ever called; it was deleted as dead code, and `policy(team:allTeams:)`
+/// below is the partition line that survives (CLAUDE.md #104).
 @MainActor
 final class TeamValidationServiceDelegationTests: XCTestCase {
+
+    /// The live validator's issues, split by `ValidationError.isError` — errors tint
+    /// the banner red, warnings render amber; neither gates Save.
+    private struct PolicyOutcome {
+        let errors: [TeamValidationService.ValidationError]
+        let warnings: [TeamValidationService.ValidationError]
+    }
+
+    private func policy(team: Team, allTeams: [Team]) -> PolicyOutcome {
+        let issues = TeamValidationService.validateDelegationPolicy(team: team, allTeams: allTeams)
+        return PolicyOutcome(errors: issues.filter(\.isError), warnings: issues.filter { !$0.isError })
+    }
 
     private func supervisor() -> TeamRoleDefinition {
         TeamRoleDefinition(
@@ -71,7 +91,7 @@ final class TeamValidationServiceDelegationTests: XCTestCase {
             roles: [supervisor(), pm, eng],
             reportsTo: ["pm": "sup", "eng": "pm"]
         )
-        let result = TeamValidationService.validate(team: team, allTeams: [team])
+        let result = policy(team: team, allTeams: [team])
         XCTAssertTrue(result.errors.contains(.nonTopLevelDelegator(roleID: "pm")),
                       "PM reports to Supervisor → subordinate, not peer → must fail eligibility.")
         XCTAssertTrue(result.errors.contains(.nonTopLevelDelegator(roleID: "eng")),
@@ -90,7 +110,7 @@ final class TeamValidationServiceDelegationTests: XCTestCase {
         )
         // Empty reportsTo — agent is peer with Supervisor.
         let team = makeTeam(roles: [supervisor(), agent], reportsTo: [:])
-        let result = TeamValidationService.validate(team: team, allTeams: [team])
+        let result = policy(team: team, allTeams: [team])
         XCTAssertFalse(result.errors.contains { issue in
             if case .nonTopLevelDelegator = issue { return true }
             return false
@@ -111,7 +131,7 @@ final class TeamValidationServiceDelegationTests: XCTestCase {
         // pm is peer-level with Supervisor (no reportsTo) so the only policy
         // exercised by this test is the one under check, not the eligibility rule.
         let team = makeTeam(roles: [supervisor(), pm], reportsTo: [:])
-        let result = TeamValidationService.validate(team: team, allTeams: [team])
+        let result = policy(team: team, allTeams: [team])
         XCTAssertTrue(result.errors.contains(.delegationToSelf(roleID: "pm", teamID: "team-A")))
     }
 
@@ -129,7 +149,7 @@ final class TeamValidationServiceDelegationTests: XCTestCase {
         // pm is peer-level with Supervisor (no reportsTo) so the only policy
         // exercised by this test is the one under check, not the eligibility rule.
         let team = makeTeam(roles: [supervisor(), pm], reportsTo: [:])
-        let result = TeamValidationService.validate(team: team, allTeams: [team])
+        let result = policy(team: team, allTeams: [team])
         XCTAssertTrue(result.warnings.contains(.unknownDelegationTeam(roleID: "pm", teamID: "team-zzz")),
                       "Should be warning, not error — team may have been deleted post-config.")
         XCTAssertFalse(result.errors.contains(.unknownDelegationTeam(roleID: "pm", teamID: "team-zzz")))
@@ -155,7 +175,7 @@ final class TeamValidationServiceDelegationTests: XCTestCase {
         // pm is peer-level with Supervisor (no reportsTo) so the only policy
         // exercised by this test is the one under check, not the eligibility rule.
         let team = makeTeam(roles: [supervisor(), pm], reportsTo: [:])
-        let result = TeamValidationService.validate(team: team, allTeams: [team])
+        let result = policy(team: team, allTeams: [team])
         XCTAssertTrue(result.warnings.contains(.noDelegationTargets(roleID: "pm")))
     }
 
@@ -173,7 +193,7 @@ final class TeamValidationServiceDelegationTests: XCTestCase {
             allowDelegationToGeneratedTeams: false
         )
         let team = makeTeam(roles: [supervisor(), pm], reportsTo: [:])
-        let result = TeamValidationService.validate(team: team, allTeams: [team])
+        let result = policy(team: team, allTeams: [team])
         XCTAssertFalse(result.warnings.contains(.noDelegationTargets(roleID: "pm")),
                        "Empty settings → hasDelegationConfigured=false → loop guard skips the rule.")
     }
@@ -190,7 +210,7 @@ final class TeamValidationServiceDelegationTests: XCTestCase {
         // pm is peer-level with Supervisor (no reportsTo) so the only policy
         // exercised by this test is the one under check, not the eligibility rule.
         let team = makeTeam(roles: [supervisor(), pm], reportsTo: [:])
-        let result = TeamValidationService.validate(team: team, allTeams: [team])
+        let result = policy(team: team, allTeams: [team])
         XCTAssertFalse(result.warnings.contains(.noDelegationTargets(roleID: "pm")),
                        "Generated-team permission means delegate_to_team's catalog will have at least the sentinel.")
     }
@@ -214,7 +234,7 @@ final class TeamValidationServiceDelegationTests: XCTestCase {
         // NEW model `hasDelegationConfigured=false` (settings empty), so the loop
         // guard skips and no error fires.
         let team = makeTeam(roles: [supervisor(), pm], reportsTo: ["pm": "sup"])
-        let result = TeamValidationService.validate(team: team, allTeams: [team])
+        let result = policy(team: team, allTeams: [team])
         XCTAssertFalse(result.errors.contains { issue in
             if case .nonTopLevelDelegator = issue { return true }
             return false
@@ -238,7 +258,7 @@ final class TeamValidationServiceDelegationTests: XCTestCase {
             allowDelegationToGeneratedTeams: false
         )
         let home = makeTeam(id: "team-A", roles: [supervisor(), pm], reportsTo: [:])
-        let result = TeamValidationService.validate(team: home, allTeams: [home, chatTarget])
+        let result = policy(team: home, allTeams: [home, chatTarget])
 
         XCTAssertTrue(result.warnings.contains(.noDelegationTargets(roleID: "pm")),
                       "A whitelist of only chat-mode (non-delegatable) teams leaves no valid target.")
@@ -259,7 +279,7 @@ final class TeamValidationServiceDelegationTests: XCTestCase {
             allowDelegationToGeneratedTeams: false
         )
         let home = makeTeam(id: "team-A", roles: [supervisor(), pm], reportsTo: [:])
-        let result = TeamValidationService.validate(team: home, allTeams: [home, realTarget])
+        let result = policy(team: home, allTeams: [home, realTarget])
 
         XCTAssertFalse(result.warnings.contains(.noDelegationTargets(roleID: "pm")),
                        "A known, delegatable target must satisfy the valid-target check.")

@@ -252,23 +252,6 @@ final class EmptyTeamTemplateTests: XCTestCase {
         XCTAssertTrue(TeamManagementService.validate(team).isEmpty)
     }
 
-    func testEmpty_supervisorTeammateLoopIsNotACircularDependency() {
-        // Non-obvious and load-bearing: Supervisor requires "Result", Teammate requires
-        // "Supervisor Task" — a cycle on paper. It is legal only because
-        // `validateNoCircularDependencies` skips Supervisor edges ("review requirements,
-        // not execution edges"). `startup()` relies on the same rule. Asserting merely
-        // "no errors" would not say WHICH rule a future validator refactor broke.
-        let team = TeamTemplateFactory.empty(name: "Alpha Team")
-        let result = TeamValidationService.validate(team: team, allTeams: [team])
-
-        XCTAssertTrue(result.isValid, "Unexpected errors: \(result.errors)")
-        XCTAssertFalse(result.errors.contains { if case .circularDependency = $0 { return true }; return false })
-        XCTAssertFalse(result.errors.contains { if case .missingProducer = $0 { return true }; return false })
-        // Both artifacts are consumed, so the freshly created team shows no warning banner.
-        XCTAssertFalse(result.warnings.contains { if case .orphanArtifact = $0 { return true }; return false },
-                       "Unexpected warnings: \(result.warnings)")
-    }
-
     func testEmpty_isNotABundledTemplate() {
         // The 9-vs-8 skew between metadata and allTemplates is intentional.
         XCTAssertFalse(TeamTemplateFactory.allTemplates.contains { $0.templateID == TeamTemplateFactory.emptyTemplateID })

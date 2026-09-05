@@ -76,6 +76,25 @@ final class DelegationLoopWatcher {
 
     // MARK: - Post-commit detection
 
+    /// Whether a committed scan on this task can do anything at all — the same first
+    /// question `considerCommitted` asks itself, exposed so a caller can skip BUILDING
+    /// the arguments.
+    ///
+    /// The arguments are not cheap. `NTMSOrchestrator.commitStreaming` walked the whole
+    /// conversation to build the assistant tail and again for the information boundary,
+    /// once per committed assistant turn, BEFORE this guard ran — Θ(N) per turn on an
+    /// uncapped conversation, i.e. Θ(N²) across a chat session, on the MainActor, for a
+    /// scan that returns immediately on every task that is not a delegation child.
+    ///
+    /// The policy stays HERE rather than being spelled `task.parentTaskID != nil` at the
+    /// call site: "which tasks does this watcher watch" has one home, and
+    /// `considerCommitted` still asks it itself — so a caller that forgets this is
+    /// slower, never wrong (CLAUDE.md #91).
+    func watchesCommitted(taskID: Int) -> Bool {
+        guard let orchestrator else { return false }
+        return isChildTask(taskID, in: orchestrator)
+    }
+
     /// Runs once per `commitStreaming` boundary on a child task. Scans the
     /// finalized conversation + tool-call history via `LoopScanner.scanCommitted`
     /// (tool-call sequence → within-message → across-messages, first signal wins)
@@ -105,41 +124,37 @@ final class DelegationLoopWatcher {
     /// No default, for the reason spelled out on `LoopScanner.scanCommitted`: `nil` is
     /// an assertion about the caller's conversation, not a policy this type can pick,
     /// and getting it wrong silently reverts the fix rather than failing.
-    /// Whether a committed scan on this task can do anything at all — the same first
-    /// question `considerCommitted` asks itself, exposed so a caller can skip BUILDING
-    /// the arguments.
     ///
-    /// The arguments are not cheap. `NTMSOrchestrator.commitStreaming` walked the whole
-    /// conversation to build the assistant tail and again for the information boundary,
-    /// once per committed assistant turn, BEFORE this guard ran — Θ(N) per turn on an
-    /// uncapped conversation, i.e. Θ(N²) across a chat session, on the MainActor, for a
-    /// scan that returns immediately on every task that is not a delegation child.
-    ///
-    /// The policy stays HERE rather than being spelled `task.parentTaskID != nil` at the
-    /// call site: "which tasks does this watcher watch" has one home, and
-    /// `considerCommitted` still asks it itself — so a caller that forgets this is
-    /// slower, never wrong (CLAUDE.md #91).
-    func watchesCommitted(taskID: Int) -> Bool {
-        guard let orchestrator else { return false }
-        return isChildTask(taskID, in: orchestrator)
-    }
-
+    /// Taken as an `@autoclosure` so the caller's
+    /// `ConversationInformationBoundary.lastArrival(in: step.llmConversation)` — a full walk by
+    /// design (`.max()`, order-independent) — is evaluated only past the two guards at the top
+    /// of `considerCommitted`. The win is NARROW and is stated as such: `watchesCommitted` already
+    /// lets the call site skip BUILDING the tuple arguments for a non-child, so this buys the walk
+    /// only for a CHILD task inside its cooldown window. The cooldown is the second gate, decided
+    /// here with the clock read this method already makes — the caller cannot pre-check it
+    /// without a second `MonotonicClock.shared.now()`, which is an ORDERING source — so deferring
+    /// the argument is the gate-free way to stop paying for a walk this branch discards
+    /// (CLAUDE.md #106). Evaluated at most once (`InformationBoundaryProbe` pins both counts).
+    /// Sibling left eager on purpose (CLAUDE.md #51): `AutovisorStuckEvaluator.evaluate` calls
+    /// `lastArrival` per evaluation TICK, after its own guards, not per committed turn.
     func considerCommitted(
         taskID: Int,
         recentAssistant: [(thinking: String?, content: String, createdAt: Date)],
         toolCalls: [(name: String, argsJSON: String, createdAt: Date)],
-        informationBoundary: Date?
+        informationBoundary: @autoclosure () -> Date?
     ) {
         guard let orchestrator else { return }
         guard isChildTask(taskID, in: orchestrator) else { return }
         let now = MonotonicClock.shared.now()
         if isInCooldown(taskID: taskID, now: now) { return }
+        // Past both gates: the only place the walk behind the autoclosure is paid for.
+        let boundary = informationBoundary()
         let cutoff = lastTriggerByChildTask[taskID] ?? .distantPast
         guard let signal = LoopScanner.scanCommitted(
             recentAssistant: recentAssistant,
             toolCalls: toolCalls,
             cutoffDate: cutoff,
-            informationBoundary: informationBoundary,
+            informationBoundary: boundary,
             scope: .thinkingAndContent
         ) else { return }
         fireInterrupt(

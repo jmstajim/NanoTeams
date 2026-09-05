@@ -125,8 +125,9 @@ final class AdvisoryAutoFinishTests: XCTestCase {
 
     /// Drives the backstop `n` times and returns the last stop.
     ///
-    /// Each turn gets a FRESH empty `conversationMessages`, so `detectMessageLoop` sees
-    /// `.noLoop` and the generic-nudge path is exercised in isolation. The
+    /// Each turn gets a FRESH empty `conversationMessages`, so the helper re-seeds an empty
+    /// message-loop ring from it (`seedMessageLoopRing: true`, its default) and
+    /// `classifyMessageLoop` answers `.noLoop`; the generic-nudge path is exercised in isolation. The
     /// `.repetitiveNonTool` path is covered separately by
     /// `testRepetitiveIdenticalTurns_stillReachTheCap`, which shares one conversation —
     /// both now feed the same counter, which is the point of making it shape-independent.

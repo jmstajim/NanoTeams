@@ -113,4 +113,78 @@ final class StoreConfigurationDismissScopeTests: XCTestCase {
         config.resetToDefaults()
         XCTAssertTrue(config.dismissedKeys(forWorkFolder: folderA).isEmpty)
     }
+
+    // MARK: - A no-op is not a write (CLAUDE.md #106)
+
+    /// `Set.remove` of a non-member changes nothing and still fires `didSet` — a whole-set
+    /// re-serialisation to UserDefaults for the COMMON case (every answer retires a key
+    /// that is almost never there). Counted, never timed.
+    ///
+    /// RED: delete `guard dismissedNotificationKeys.contains(entry) else { return }` in
+    /// `undismissNotification` → the absent-key call writes, `_testWrites() == 1`.
+    /// GREEN control (CLAUDE.md #56): write `Array(dismissedNotificationKeys).sorted()`
+    /// instead of `Array(...)` in the `didSet` — a legitimate retune, still one write.
+    func testUndismiss_absentKey_isNotAPersistenceWrite() {
+        DismissalStoreProbe._testReset()
+        config.undismissNotification(workFolderID: folderA, key: key1)
+        XCTAssertEqual(DismissalStoreProbe._testWrites(), 0, "absent key ⇒ nothing to persist")
+
+        config.dismissNotification(workFolderID: folderA, key: key1)
+        DismissalStoreProbe._testReset()
+        config.undismissNotification(workFolderID: folderA, key: key1)
+        XCTAssertEqual(DismissalStoreProbe._testWrites(), 1, "anti-vacuum: a real retirement is exactly one write")
+        XCTAssertFalse(config.isDismissed(workFolderID: folderA, key: key1))
+    }
+
+    /// The batch form (the GC sweep and `retireRoleBannerDismissals`): a disjoint set is
+    /// subtracted without a write; one hit costs one write and drops only the hits.
+    ///
+    /// RED: delete `guard !hits.isEmpty else { return }` in `undismissNotifications` →
+    /// `subtract` of a disjoint set fires `didSet`, `_testWrites() == 1` on the no-hit call.
+    func testUndismissBatch_noHits_isNotAPersistenceWrite() {
+        config.dismissNotification(workFolderID: folderA, key: key1)
+        DismissalStoreProbe._testReset()
+        config.undismissNotifications(workFolderID: folderA, keys: [key2])
+        XCTAssertEqual(DismissalStoreProbe._testWrites(), 0, "no hit ⇒ no write")
+        XCTAssertTrue(config.isDismissed(workFolderID: folderA, key: key1))
+
+        config.undismissNotifications(workFolderID: folderA, keys: [key1, key2])
+        XCTAssertEqual(DismissalStoreProbe._testWrites(), 1, "one hit among two keys ⇒ exactly one write")
+        XCTAssertTrue(config.dismissedKeys(forWorkFolder: folderA).isEmpty)
+    }
+
+    /// `MainLayoutView.dismissNotifications` re-dismisses every visible banner on each
+    /// chat open, so an already-dismissed key is the hot no-op on the insert side.
+    ///
+    /// RED: delete `guard !dismissedNotificationKeys.contains(entry) else { return }` in
+    /// `dismissNotification` → `insert` of a member fires `didSet`, `_testWrites() == 1`.
+    func testDismiss_alreadyDismissed_isNotAPersistenceWrite() {
+        DismissalStoreProbe._testReset()
+        config.dismissNotification(workFolderID: folderA, key: key1)
+        XCTAssertEqual(DismissalStoreProbe._testWrites(), 1, "anti-vacuum: a first dismissal is exactly one write")
+
+        DismissalStoreProbe._testReset()
+        config.dismissNotification(workFolderID: folderA, key: key1)
+        XCTAssertEqual(DismissalStoreProbe._testWrites(), 0, "already dismissed ⇒ nothing to persist")
+        XCTAssertEqual(config.dismissedKeys(forWorkFolder: folderA), [key1])
+    }
+
+    /// `forgetDismissals` (`closeTask` / `TaskManagementState.forgetTask`) is the fourth
+    /// writer, and a task that never had a banner dismissed is the common closed task —
+    /// a filter that drops nothing must not re-serialise the set either.
+    ///
+    /// RED: delete `guard kept.count != dismissedNotificationKeys.count else { return }`
+    /// in `forgetDismissals` → the reassignment fires `didSet`, `_testWrites() == 1` on
+    /// the no-key call.
+    func testForget_taskWithNoDismissals_isNotAPersistenceWrite() {
+        config.dismissNotification(workFolderID: folderA, key: key1)
+        DismissalStoreProbe._testReset()
+        config.forgetDismissals(workFolderID: folderA, taskID: 99)
+        XCTAssertEqual(DismissalStoreProbe._testWrites(), 0, "no key of that task ⇒ no write")
+        XCTAssertTrue(config.isDismissed(workFolderID: folderA, key: key1), "and nothing else was touched")
+
+        config.forgetDismissals(workFolderID: folderA, taskID: key1.taskID)
+        XCTAssertEqual(DismissalStoreProbe._testWrites(), 1, "anti-vacuum: forgetting a task that has a key is exactly one write")
+        XCTAssertFalse(config.isDismissed(workFolderID: folderA, key: key1))
+    }
 }

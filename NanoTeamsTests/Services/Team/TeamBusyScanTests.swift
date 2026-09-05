@@ -16,12 +16,13 @@ final class TeamBusyScanTests: XCTestCase {
 
     private func makeTask(
         id: Int,
+        runID: Int = 0,
         runTeamID: NTMSID?,
         stepStatus: StepStatus,
         closed: Bool = false
     ) -> NTMSTask {
         var task = NTMSTask(id: id, title: "T\(id)", supervisorTask: "do it")
-        var run = Run(id: 0)
+        var run = Run(id: runID)
         run.teamID = runTeamID
         var step = StepExecution(id: "worker", role: .softwareEngineer, title: "Work")
         step.status = stepStatus
@@ -99,11 +100,12 @@ final class TeamBusyScanTests: XCTestCase {
     /// Only the LATEST run pins the team — historical runs of a task that has
     /// since been switched to another team must not lock the old one.
     func testOnlyTheLatestRunIsConsulted() {
-        var task = makeTask(id: 1, runTeamID: otherTeamID, stepStatus: .running)
+        // `Run.id` is `let` (it is the run's POSITION — see `RunService.runIndex`), so the
+        // current run is built as id 1 and the historical run slotted in front of it.
+        var task = makeTask(id: 1, runID: 1, runTeamID: otherTeamID, stepStatus: .running)
         var historical = Run(id: 0)
         historical.teamID = teamID
         task.runs.insert(historical, at: 0)
-        task.runs[1].id = 1
 
         XCTAssertFalse(TeamBusyScan.hasInFlightRun(teamID: teamID, tasks: [task]))
         XCTAssertTrue(TeamBusyScan.hasInFlightRun(teamID: otherTeamID, tasks: [task]))

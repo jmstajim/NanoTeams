@@ -358,7 +358,11 @@ nonisolated struct GitDiffTool: ToolHandler {
             // `return` would suspend at the closing brace instead, which reads as if it returned
             // promptly and does not.
             let root = workFolderRoot
-            async let diffTask = Self.git(gitArgs, in: root)
+            // `gitArgs` is a `var` built above; capturing it directly in the `async let` is a
+            // warning under `-swift-version 5` (what the mirror CI builds with) and an ERROR in
+            // the Swift 6 language mode. Same immutable-copy shape as `root` on the line above.
+            let diffArgs = gitArgs
+            async let diffTask = Self.git(diffArgs, in: root)
             async let untrackedTask = Self.untrackedFiles(paths: paths, cached: cached, in: root)
             let result = try await diffTask
             let probe = await untrackedTask

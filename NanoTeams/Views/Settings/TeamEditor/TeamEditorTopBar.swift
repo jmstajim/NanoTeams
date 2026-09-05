@@ -41,7 +41,7 @@ struct TeamEditorTopBar<Picker: View, Actions: View>: View {
             .accessibilityLabel("Validation: \(content.label)")
     }
 
-    /// `✓ graph valid` (success) / `▲ N issues` (warning) / `✗ N issues` (error)
+    /// `✓ graph valid` (success) / `◆ N issues` (warning) / `✗ N issues` (error)
     /// per JSX spec — matches `TeamEditor.jsx` lines 414–417.
     private var validationContent: (glyph: String, label: String, color: Color) {
         let errors = issues.count(where: \.isError)

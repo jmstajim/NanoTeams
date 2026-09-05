@@ -3,6 +3,9 @@ import SwiftUI
 /// Track-row style: thin colored status bar on the leading edge, bold title, metadata below.
 struct SidebarTaskRow: View {
     let task: SidebarTaskItem
+    /// The row's live stamp, read by the caller from `TaskFactsProjection.updatedAtByTaskID`
+    /// rather than carried inside `task` — a cached item must not freeze "just now".
+    let updatedAt: Date
     var isSelected: Bool = false
     /// 1-based row index in the filtered list — rendered as a `01`/`02` mono
     /// prefix per the design's tmux task ledger. `nil` hides the gutter (back
@@ -65,7 +68,7 @@ struct SidebarTaskRow: View {
     }
 
     private var timestampView: some View {
-        Text(task.updatedAt.relativeTimestamp)
+        Text(updatedAt.relativeTimestamp)
             .font(Typography.caption)
             .foregroundStyle(Colors.textTertiary)
             .lineLimit(1)
@@ -152,28 +155,36 @@ private extension Date {
 #Preview("Task Row — All States") {
     VStack(alignment: .leading, spacing: 0) {
         SidebarTaskRow(
-            task: SidebarTaskItem(id: 0, title: "Implement sorting algorithms", status: .running, updatedAt: Date(), isEngineRunning: true)
+            task: SidebarTaskItem(id: 0, title: "Implement sorting algorithms", status: .running, isEngineRunning: true),
+            updatedAt: Date()
         )
         SidebarTaskRow(
-            task: SidebarTaskItem(id: 0, title: "Refactor auth module", status: .running, updatedAt: Date(), isEngineRunning: true)
+            task: SidebarTaskItem(id: 0, title: "Refactor auth module", status: .running, isEngineRunning: true),
+            updatedAt: Date()
         )
         SidebarTaskRow(
-            task: SidebarTaskItem(id: 0, title: "Add dark mode support", status: .paused, updatedAt: Date())
+            task: SidebarTaskItem(id: 0, title: "Add dark mode support", status: .paused),
+            updatedAt: Date()
         )
         SidebarTaskRow(
-            task: SidebarTaskItem(id: 0, title: "Database migration", status: .waiting, updatedAt: Date())
+            task: SidebarTaskItem(id: 0, title: "Database migration", status: .waiting),
+            updatedAt: Date()
         )
         SidebarTaskRow(
-            task: SidebarTaskItem(id: 0, title: "Design API endpoints", status: .needsSupervisorInput, updatedAt: Date())
+            task: SidebarTaskItem(id: 0, title: "Design API endpoints", status: .needsSupervisorInput),
+            updatedAt: Date()
         )
         SidebarTaskRow(
-            task: SidebarTaskItem(id: 0, title: "Build notification system", status: .needsSupervisorAcceptance, updatedAt: Date())
+            task: SidebarTaskItem(id: 0, title: "Build notification system", status: .needsSupervisorAcceptance),
+            updatedAt: Date()
         )
         SidebarTaskRow(
-            task: SidebarTaskItem(id: 0, title: "Fix login bug", status: .done, updatedAt: Date())
+            task: SidebarTaskItem(id: 0, title: "Fix login bug", status: .done),
+            updatedAt: Date()
         )
         SidebarTaskRow(
-            task: SidebarTaskItem(id: 0, title: "Deploy to production", status: .failed, updatedAt: Date())
+            task: SidebarTaskItem(id: 0, title: "Deploy to production", status: .failed),
+            updatedAt: Date()
         )
     }
     .padding(.horizontal, Spacing.s)
@@ -185,19 +196,23 @@ private extension Date {
 #Preview("Task Row — Selected vs Normal") {
     VStack(alignment: .leading, spacing: Spacing.xxs) {
         SidebarTaskRow(
-            task: SidebarTaskItem(id: 0, title: "Selected task (active)", status: .running, updatedAt: Date(), isEngineRunning: true),
+            task: SidebarTaskItem(id: 0, title: "Selected task (active)", status: .running, isEngineRunning: true),
+            updatedAt: Date(),
             isSelected: true
         )
         SidebarTaskRow(
-            task: SidebarTaskItem(id: 0, title: "Selected task (not active)", status: .paused, updatedAt: Date()),
+            task: SidebarTaskItem(id: 0, title: "Selected task (not active)", status: .paused),
+            updatedAt: Date(),
             isSelected: true
         )
         SidebarTaskRow(
-            task: SidebarTaskItem(id: 0, title: "Normal task", status: .running, updatedAt: Date(), isEngineRunning: true),
+            task: SidebarTaskItem(id: 0, title: "Normal task", status: .running, isEngineRunning: true),
+            updatedAt: Date(),
             isSelected: false
         )
         SidebarTaskRow(
-            task: SidebarTaskItem(id: 0, title: "Normal task (active)", status: .done, updatedAt: Date()),
+            task: SidebarTaskItem(id: 0, title: "Normal task (active)", status: .done),
+            updatedAt: Date(),
             isSelected: false
         )
     }
@@ -214,18 +229,18 @@ private extension Date {
                 id: 0,
                 title: "Implement comprehensive user authentication system with OAuth2 and JWT token refresh",
                 status: .running,
-                updatedAt: Date(),
                 isEngineRunning: true
             ),
+            updatedAt: Date(),
             isSelected: true
         )
         SidebarTaskRow(
             task: SidebarTaskItem(
                 id: 0,
                 title: "A",
-                status: .done,
-                updatedAt: Date()
-            )
+                status: .done
+            ),
+            updatedAt: Date()
         )
     }
     .padding(.horizontal, Spacing.s)
@@ -237,19 +252,24 @@ private extension Date {
 #Preview("Task Row — Time Variations") {
     VStack(alignment: .leading, spacing: 0) {
         SidebarTaskRow(
-            task: SidebarTaskItem(id: 0, title: "Just created", status: .running, updatedAt: Date(), isEngineRunning: true)
+            task: SidebarTaskItem(id: 0, title: "Just created", status: .running, isEngineRunning: true),
+            updatedAt: Date()
         )
         SidebarTaskRow(
-            task: SidebarTaskItem(id: 0, title: "Updated 15 min ago", status: .paused, updatedAt: Date(timeIntervalSinceNow: -900))
+            task: SidebarTaskItem(id: 0, title: "Updated 15 min ago", status: .paused),
+            updatedAt: Date(timeIntervalSinceNow: -900)
         )
         SidebarTaskRow(
-            task: SidebarTaskItem(id: 0, title: "Updated 3 hours ago", status: .waiting, updatedAt: Date(timeIntervalSinceNow: -10800))
+            task: SidebarTaskItem(id: 0, title: "Updated 3 hours ago", status: .waiting),
+            updatedAt: Date(timeIntervalSinceNow: -10800)
         )
         SidebarTaskRow(
-            task: SidebarTaskItem(id: 0, title: "Updated 2 days ago", status: .done, updatedAt: Date(timeIntervalSinceNow: -172800))
+            task: SidebarTaskItem(id: 0, title: "Updated 2 days ago", status: .done),
+            updatedAt: Date(timeIntervalSinceNow: -172800)
         )
         SidebarTaskRow(
-            task: SidebarTaskItem(id: 0, title: "Updated 2 weeks ago", status: .done, updatedAt: Date(timeIntervalSinceNow: -1_209_600))
+            task: SidebarTaskItem(id: 0, title: "Updated 2 weeks ago", status: .done),
+            updatedAt: Date(timeIntervalSinceNow: -1_209_600)
         )
     }
     .padding(.horizontal, Spacing.s)

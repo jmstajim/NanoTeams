@@ -301,9 +301,8 @@ nonisolated struct Team: Codable, Identifiable {
     /// `RoleDependencies.requiredArtifacts` / `producesArtifacts` hold names,
     /// `artifact(withName:)` / `rolesProducing` / `rolesRequiring` /
     /// `supervisorRequiredArtifacts` look up by name, `TeamGraphLayoutCalculator`
-    /// builds `[artifactName: roleID]`, `TeamValidationService` keys
-    /// `missingProducer` / `orphanArtifact` on names, and step artifacts are
-    /// written to `artifact_<slugify(name)>.md`. So renaming the artifact
+    /// builds `[artifactName: roleID]`, and step artifacts are written to
+    /// `artifact_<slugify(name)>.md`. So renaming the artifact
     /// WITHOUT this cascade orphans every producer/consumer edge in the team.
     ///
     /// Scope is exactly the two per-role arrays — verified exhaustively against
@@ -321,9 +320,8 @@ nonisolated struct Team: Codable, Identifiable {
     /// Rewriting is an **order-preserving dedupe**, not a plain `map`. Order is
     /// load-bearing (it feeds `StepExecution.title` and the `create_artifact`
     /// schema enum), and renaming `A` → `B` on a role that already lists `B`
-    /// would otherwise manufacture a duplicate entry — which
-    /// `TeamValidationService` reports as a blocking `duplicateProducer` error
-    /// naming the same role twice.
+    /// would otherwise manufacture a duplicate entry — the same artifact twice
+    /// in that role's title and twice in its schema enum.
     ///
     /// No-op (including no `updatedAt` bump) when nothing actually changed.
     mutating func renameArtifactReferences(from oldName: String, to newName: String) {

@@ -351,6 +351,10 @@ final class NTMSRepositoryTests: XCTestCase {
     func testDeleteTask_nonExistentTask_throws() throws {
         let root = try makeProjectRoot()
         _ = try sut.openOrCreateWorkFolder(at: root)
+        _ = try sut.createTask(at: root, title: "Bystander", supervisorTask: "b")
+        let p = paths(for: root)
+        let indexBefore = try FileIdentity(of: p.tasksIndexJSON)
+        let stateBefore = try FileIdentity(of: p.workFolderJSON)
 
         let fakeID = 999
         XCTAssertThrowsError(try sut.deleteTask(at: root, taskID: fakeID)) { error in
@@ -364,6 +368,17 @@ final class NTMSRepositoryTests: XCTestCase {
                 XCTFail("Expected taskNotFound, got \(repoError)")
             }
         }
+
+        // The existence guard throws from INSIDE `mutateTasksIndex`'s body, which runs
+        // before its sort/write — so a miss leaves BOTH files untouched, exactly as the
+        // pre-lock guard did. Asserted on inode + mtime, not bytes: the encoder is
+        // deterministic and the sort of a sorted index is a no-op, so a guard that slipped
+        // BELOW the write would rewrite the file byte-identical and a `Data` compare would
+        // stay green over exactly that regression (`FileIdentity`).
+        XCTAssertEqual(try FileIdentity(of: p.tasksIndexJSON), indexBefore,
+                       "taskNotFound must not rewrite tasks_index.json")
+        XCTAssertEqual(try FileIdentity(of: p.workFolderJSON), stateBefore,
+                       "taskNotFound must not rewrite workfolder.json")
     }
 
     // MARK: - 19. updateTaskOnly_persistsTask

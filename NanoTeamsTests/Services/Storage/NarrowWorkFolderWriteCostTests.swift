@@ -112,6 +112,8 @@ final class NarrowWorkFolderWriteCostTests: XCTestCase {
                        "a task whose id is not the active one must not be bound as active")
         XCTAssertGreaterThan(TaskStreamStore._testHydrateReads(), 0,
                              "the id guard must fall back to the disk read, not to nil")
+        XCTAssertGreaterThan(TaskStreamStore._testHydrateEntries(), 0,
+                             "the fallback read must replay the step log's entries, not merely open the file")
     }
 
     /// The lost-update half. The orchestrator's in-memory task is NEWER than disk inside

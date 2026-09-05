@@ -160,22 +160,32 @@ nonisolated extension NTMSRepository {
 
         var state = try store.read(WorkFolderState.self, from: paths.workFolderJSON)
 
-        // Verify task exists before attempting deletion
-        let existingIndex = try store.read(TasksIndex.self, from: paths.tasksIndexJSON)
-        guard existingIndex.tasks.contains(where: { $0.id == taskID }) else {
-            throw NTMSRepositoryError.taskNotFound(taskID)
-        }
-        // Capture ancestor chain BEFORE removing from the index — once removed,
-        // the chain can't be reconstructed.
-        let ancestors = existingIndex.ancestorIDs(of: taskID)
-
-        // The on-disk delete below is recursive — it takes every delegated
-        // child's subtree with it — so the index must drop the DESCENDANT rows
-        // too, or every later open's stale-status sweep re-selects orphan rows
-        // pointing at deleted paths and reports "could not recover" forever.
-        let doomed = Set([taskID] + existingIndex.descendantIDs(of: taskID))
-        let tasksIndex = try mutateTasksIndex(paths: paths) {
-            $0.tasks.removeAll { doomed.contains($0.id) }
+        // Existence, ancestry and the doomed set are read from the SAME snapshot the
+        // removal mutates, under `tasksIndexLock` — a snapshot taken outside the lock
+        // could miss a delegation child that `createTask` appended in the gap, leaving
+        // an orphan row (mirrors `updateTaskOnly`'s fused read). Until 2026-09-02 this
+        // read the index once unlocked and applied a `doomed` set computed from that
+        // copy inside the locked RMW.
+        //
+        // The ancestor chain is captured BEFORE the rows go — once removed, it can't
+        // be reconstructed — and threaded out through a captured var, exactly as
+        // `createTask` threads `taskID` out of its allocation closure.
+        //
+        // The on-disk delete below is recursive — it takes every delegated child's
+        // subtree with it — so the index must drop the DESCENDANT rows too, or every
+        // later open's stale-status sweep re-selects orphan rows pointing at deleted
+        // paths and reports "could not recover" forever.
+        //
+        // `taskNotFound` thrown from the body propagates out of `mutateTasksIndex`
+        // BEFORE its sort and write, so a miss leaves the file unmodified.
+        var ancestors: [Int] = []
+        let tasksIndex = try mutateTasksIndex(paths: paths) { index in
+            guard index.tasks.contains(where: { $0.id == taskID }) else {
+                throw NTMSRepositoryError.taskNotFound(taskID)
+            }
+            ancestors = index.ancestorIDs(of: taskID)
+            let doomed = Set([taskID] + index.descendantIDs(of: taskID))
+            index.tasks.removeAll { doomed.contains($0.id) }
         }
 
         // Remove public task dir (attachments + runs/artifacts) and internal task dir (task.json + runs/logs).
@@ -231,9 +241,18 @@ nonisolated extension NTMSRepository {
         // race: parallel roles (CLAUDE.md #45) reach here through concurrent
         // `Task.detached` writers, and two unserialized read-modify-write
         // cycles on one file can lose whichever summary lands first.
+        //
+        // AND one pass over its rows: `parentLinks(locating:)` hands back the hop
+        // map for the ancestor walk and the row slot for the upsert from the same
+        // loop. Until 2026-09-02 the walk built the map and `upsert(_:)` then
+        // searched the same rows again for the row it replaces. `index` is a local
+        // read once below and nothing mutates it between the pass and the upsert
+        // (`splittingStreams` / `store.write` touch files, not `index`), so the slot
+        // is still current when it is consumed.
         try Self.tasksIndexLock.withLock {
             var index = try store.read(TasksIndex.self, from: paths.tasksIndexJSON)
-            let ancestors = index.ancestorIDs(of: task.id)
+            let located = index.parentLinks(locating: task.id)
+            let ancestors = index.ancestorIDs(of: task.id, links: located.links)
             let taskURL = paths.taskJSON(taskID: task.id, ancestors: ancestors)
             guard fileManager.fileExists(atPath: taskURL.path) else {
                 throw NTMSRepositoryError.taskNotFound(task.id)
@@ -267,7 +286,7 @@ nonisolated extension NTMSRepository {
             let stripped = try splittingStreams(task, paths: paths, ancestors: ancestors)
             try store.write(stripped, to: taskURL)
 
-            index.upsert(task.toSummary())
+            index.upsert(task.toSummary(), at: located.position)
             try store.write(index, to: paths.tasksIndexJSON)
         }
     }
@@ -300,6 +319,19 @@ nonisolated extension NTMSRepository {
     /// summary append, i.e. inside the exact unlocked window a concurrent
     /// `updateTaskOnly` must survive. Set only from tests; nil in production.
     nonisolated(unsafe) static var _testCreateTaskBeforeSummaryAppend: (() -> Void)?
+
+    /// Test seam: invoked by `mutateTasksIndex` AFTER its locked `store.read` and
+    /// BEFORE `body` — the point where a writer that committed before this RMW
+    /// becomes visible to it. Runs UNDER `tasksIndexLock` (`NSLock` is not
+    /// reentrant), so the hook must not call any repository method that takes the
+    /// lock; it edits the freshly read snapshot directly, which is exactly what a
+    /// completed concurrent `createTask` looks like from here. It sits INSIDE the
+    /// RMW rather than before it because a hook fired before the read cannot tell
+    /// a body that derives from THIS snapshot from one that derived from an earlier,
+    /// unlocked read — both would see what the hook wrote
+    /// (`TasksIndexConcurrencyTests`, the deleteTask window). Set only from tests;
+    /// nil in production.
+    nonisolated(unsafe) static var _testMutateTasksIndexAfterRead: ((inout TasksIndex) -> Void)?
     #endif
 
     /// Reads, mutates, sorts, and writes the tasks index — under `tasksIndexLock`.
@@ -318,6 +350,9 @@ nonisolated extension NTMSRepository {
     func mutateTasksIndex(paths: NTMSPaths, _ body: (inout TasksIndex) throws -> Void) throws -> TasksIndex {
         try Self.tasksIndexLock.withLock {
             var index = try store.read(TasksIndex.self, from: paths.tasksIndexJSON)
+            #if DEBUG
+            Self._testMutateTasksIndexAfterRead?(&index)
+            #endif
             try body(&index)
             index.tasks.sort(by: { $0.updatedAt > $1.updatedAt })
             try store.write(index, to: paths.tasksIndexJSON)

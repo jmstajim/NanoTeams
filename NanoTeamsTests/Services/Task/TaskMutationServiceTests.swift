@@ -7,6 +7,10 @@ final class TaskMutationServiceTests: XCTestCase {
     private let fileManager = FileManager.default
     private var tempDir: URL!
     private var repository: NTMSRepository!
+    /// Only the end-to-end streaming pin below builds one; nil for every other test.
+    private var store: NTMSOrchestrator!
+    private var embeddingClient: RecordingLLMClient!
+    private var chatLifecycleClient: RecordingLLMClient!
 
     override func setUp() async throws {
         try await super.setUp()
@@ -22,6 +26,9 @@ final class TaskMutationServiceTests: XCTestCase {
         if let tempDir {
             try? fileManager.removeItem(at: tempDir)
         }
+        store = nil
+        embeddingClient = nil
+        chatLifecycleClient = nil
         repository = nil
         tempDir = nil
         try await super.tearDown()
@@ -529,28 +536,6 @@ final class TaskMutationServiceTests: XCTestCase {
         XCTAssertEqual(step?.messages.first?.id, messageID)
     }
 
-    func testCommitStreamingContent_updatesExistingStepMessage() throws {
-        var (task, stepID) = try createTaskWithStep()
-
-        // Pre-create LLMMessage and StepMessage
-        let messageID = UUID()
-        let emptyMsg = LLMMessage(id: messageID, role: .assistant, content: "")
-        TaskMutationService.appendLLMMessage(emptyMsg, to: stepID, in: &task)
-        let partialStepMsg = StepMessage(id: messageID, role: .softwareEngineer, content: "Partial...")
-        TaskMutationService.appendMessage(partialStepMsg, to: stepID, in: &task)
-
-        // Commit with final content
-        TaskMutationService.commitStreamingContent(
-            stepID: stepID, messageID: messageID,
-            content: "Updated content", thinking: nil,
-            role: .softwareEngineer, in: &task
-        )
-
-        let step = task.runs.last?.steps.first { $0.id == stepID }
-        XCTAssertEqual(step?.messages.count, 1)
-        XCTAssertEqual(step?.messages.first?.content, "Updated content")
-    }
-
     func testCommitStreamingContent_emptyContentDoesNotCreateStepMessage() throws {
         var (task, stepID) = try createTaskWithStep()
 
@@ -567,6 +552,72 @@ final class TaskMutationServiceTests: XCTestCase {
 
         let step = task.runs.last?.steps.first { $0.id == stepID }
         XCTAssertEqual(step?.messages.count, 0)
+    }
+
+    /// The invariant `commitStreamingContent` now stands on: `step.messages` never
+    /// carries the streaming `messageID` before the commit. The id is minted per
+    /// streaming turn in `performStreamingCall`, `beginStreaming` writes only
+    /// `llmConversation` (plus the preview), and the first `commitStreaming` clears the
+    /// id from `StreamingPreviewManager` — so the commit is a plain append, not an
+    /// update-or-append, and this drives the REAL `beginStreaming` to pin that.
+    ///
+    /// RED: add `messages.append(StepMessage(id: messageID, …))` to
+    /// `NTMSOrchestrator.beginStreaming` → two entries carry the id (the scenario the
+    /// deleted `lastIndex` branch guarded against, now pinned as impossible).
+    func testBeginStreamingThenCommit_endToEnd_messagesHoldsExactlyOneEntryWithMessageID() async throws {
+        embeddingClient = RecordingLLMClient()
+        chatLifecycleClient = RecordingLLMClient()
+        store = TestOrchestrator.make(
+            embeddingClient: embeddingClient,
+            chatLifecycleClient: chatLifecycleClient
+        )
+        await store.openWorkFolder(tempDir)
+        let created = await store.createTask(title: "T", supervisorTask: "goal")
+        let taskID = try XCTUnwrap(created)
+        await store.mutateTask(taskID: taskID) { task in
+            task.runs = [Run(id: 0, steps: [
+                StepExecution(id: "swe", role: .softwareEngineer, title: "SWE", status: .running),
+            ])]
+        }
+        let messageID = UUID()
+
+        await store.beginStreaming(stepID: "swe", taskID: taskID, messageID: messageID, role: .softwareEngineer)
+        let planted = store.loadedTask(taskID)?.runs.last?.steps.first { $0.id == "swe" }
+        XCTAssertEqual(planted?.llmConversation.map(\.id), [messageID],
+                       "beginStreaming plants the turn in llmConversation …")
+        XCTAssertEqual(planted?.messages.count, 0, "… and nowhere else")
+
+        await store.commitStreaming(stepID: "swe", taskID: taskID, content: "final answer", thinking: nil)
+
+        let step = store.loadedTask(taskID)?.runs.last?.steps.first { $0.id == "swe" }
+        XCTAssertEqual(step?.messages.filter { $0.id == messageID }.count, 1,
+                       "exactly ONE StepMessage carries the streaming id after the commit")
+        XCTAssertEqual(step?.messages.count, 1)
+        XCTAssertEqual(step?.messages.first?.content, "final answer")
+        XCTAssertEqual(step?.llmConversation.filter { $0.id == messageID }.count, 1,
+                       "the planted turn is filled in place, never duplicated")
+    }
+
+    /// `step.messages` feeds `PromptBuilder`, so a blank turn there is prompt pollution.
+    /// Whitespace (spaces, newlines, tabs) is blank — the guard trims before it decides.
+    ///
+    /// RED: drop the `trimmingCharacters` guard (append unconditionally) → `messages.count`
+    /// is 1.
+    func testCommitStreamingContent_whitespaceOnlyContent_appendsNoStepMessage() throws {
+        var (task, stepID) = try createTaskWithStep()
+        let messageID = UUID()
+        TaskMutationService.appendLLMMessage(
+            LLMMessage(id: messageID, role: .assistant, content: ""), to: stepID, in: &task)
+
+        TaskMutationService.commitStreamingContent(
+            stepID: stepID, messageID: messageID,
+            content: "  \n\t \n", thinking: nil,
+            role: .softwareEngineer, in: &task)
+
+        let step = task.runs.last?.steps.first { $0.id == stepID }
+        XCTAssertEqual(step?.messages.count, 0, "whitespace-only content must not become a StepMessage")
+        XCTAssertEqual(step?.llmConversation.first { $0.id == messageID }?.content, "  \n\t \n",
+                       "the planted LLM turn is still filled (it renders as nothing)")
     }
 
     /// `beginStreaming` plants the empty assistant turn at stream START; the
@@ -754,39 +805,6 @@ final class TaskMutationServiceTests: XCTestCase {
         XCTAssertNil(msg?.thinking)
         XCTAssertGreaterThan(msg!.createdAt, before, "Re-stamp is unconditional once the message is found")
         XCTAssertEqual(step?.messages.count, 0, "Empty content must not create a StepMessage")
-    }
-
-    /// Deliberate asymmetry: commit re-stamps the `llmConversation` message's
-    /// `createdAt` (the feed sort key) but must NOT re-stamp an existing
-    /// `StepMessage`'s `createdAt`. `step.messages` ordering feeds PromptBuilder, not
-    /// the activity feed — pinned so a future "consistency" refactor that re-stamps
-    /// both doesn't silently reorder prompt history.
-    func testCommitStreamingContent_existingStepMessage_createdAtNotRestamped() throws {
-        var (task, stepID) = try createTaskWithStep()
-
-        let messageID = UUID()
-        TaskMutationService.appendLLMMessage(
-            LLMMessage(id: messageID, role: .assistant, content: ""), to: stepID, in: &task)
-        TaskMutationService.appendMessage(
-            StepMessage(id: messageID, role: .softwareEngineer, content: "partial"),
-            to: stepID, in: &task)
-        let stepMsgBefore = task.runs.last!.steps[0].messages.first { $0.id == messageID }!.createdAt
-        let llmMsgBefore = task.runs.last!.steps[0].llmConversation.first { $0.id == messageID }!.createdAt
-
-        TaskMutationService.commitStreamingContent(
-            stepID: stepID, messageID: messageID,
-            content: "final", thinking: nil, role: .softwareEngineer, in: &task)
-
-        let step = task.runs.last?.steps.first { $0.id == stepID }
-        let stepMsg = step?.messages.first { $0.id == messageID }
-        let llmMsg = step?.llmConversation.first { $0.id == messageID }
-        XCTAssertEqual(stepMsg?.content, "final", "StepMessage content is updated")
-        XCTAssertEqual(
-            stepMsg?.createdAt, stepMsgBefore,
-            "Existing StepMessage.createdAt must NOT be re-stamped — it feeds PromptBuilder ordering, not the feed")
-        XCTAssertGreaterThan(
-            llmMsg!.createdAt, llmMsgBefore,
-            "But the llmConversation message (the feed sort key) IS re-stamped")
     }
 
     /// `thinking` is only written when non-empty (`if let thinking, !thinking.isEmpty`),

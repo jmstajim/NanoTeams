@@ -2,15 +2,18 @@ import XCTest
 
 @testable import NanoTeams
 
-/// `ModelTokenCleaner.stripTokensInTail` — the per-delta gate in front of the strip.
+/// `ModelTokenCleaner.stripTokensInTail` and its gate `tailMayCompleteToken` — the per-delta
+/// decision in front of the strip, and the thin wrapper that acts on it.
 ///
-/// Two obligations, and they need separate tests because they fail separately:
-///   1. it must produce EXACTLY what stripping the whole buffer after every delta
-///      produced (the shape it replaced), and
-///   2. the work it does must be linear in the stream, not quadratic.
+/// Three obligations, and they need separate tests because they fail separately:
+///   1. the wrapper must produce EXACTLY what stripping the whole buffer after every delta
+///      produced (the shape it replaced),
+///   2. the work the gate does must be linear in the stream, not quadratic, and
+///   3. the gate's RAW-buffer contract, which `PromptImprovementDisplay` leans on: gate-silent
+///      ⟹ `stripTokens(A + d) == stripTokens(A) + d`.
 ///
 /// (2) is invisible in output — the pre-fix code was correct and merely slow — so it is
-/// pinned through `_testTailGateWork` rather than through a rendered string (CLAUDE.md #62).
+/// pinned through `_testGateWork` rather than through a rendered string (CLAUDE.md #62).
 final class ModelTokenCleanerTailTests: XCTestCase {
 
     /// The behaviour being replaced: strip the WHOLE buffer after every delta.
@@ -131,6 +134,58 @@ final class ModelTokenCleanerTailTests: XCTestCase {
         var negative = "<|channel|>y"
         ModelTokenCleaner.stripTokensInTail(&negative, newDeltaCount: -5)
         XCTAssertEqual(negative, "y")
+    }
+
+    // MARK: - Raw-buffer contract
+
+    /// The second contract of `tailMayCompleteToken`, the one `PromptImprovementDisplay` leans
+    /// on: asked about a RAW (never-stripped) buffer, `false` proves that stripping the whole
+    /// buffer equals stripping the buffer-before-the-delta and appending the delta verbatim. That
+    /// is what lets a caller keep `raw` and a DERIVED buffer and grow the derived one by
+    /// `+= delta` on a silent gate.
+    ///
+    /// Hand pairs first (a kept long opener whose closer arrives; a split sentinel that must
+    /// fire), then 5 000 seeded pairs from the sentinel alphabet; the gate must have been silent
+    /// on at least 1 000 of them or the equality was never exercised.
+    ///
+    /// RED: drop `+ maxTokenSpan - 1` from the window → A = `"<|"` + 28 a's, d = `"|>"` reports
+    /// false while `stripTokens(A + d)` is `""` and `stripTokens(A) + d` is `A + d`.
+    func testTailMayCompleteToken_false_provesAppendOnlyStrip_onRawBuffer() {
+        // A 44-char span is over `maxTokenSpan`: the strip KEEPS it, so both sides equal A + d.
+        let longA = "<|" + String(repeating: "a", count: 40)
+        XCTAssertFalse(ModelTokenCleaner.tailMayCompleteToken(longA + "|>", newDeltaCount: 2))
+        XCTAssertEqual(ModelTokenCleaner.stripTokens(longA + "|>"), longA + "|>")
+        XCTAssertEqual(ModelTokenCleaner.stripTokens(longA) + "|>", longA + "|>")
+        // A 32-char span sits AT the cap and is deleted — the gate must fire for it.
+        let capA = "<|" + String(repeating: "a", count: 28)
+        XCTAssertTrue(ModelTokenCleaner.tailMayCompleteToken(capA + "|>", newDeltaCount: 2))
+        XCTAssertEqual(ModelTokenCleaner.stripTokens(capA + "|>"), "")
+        // A split sentinel must fire.
+        XCTAssertTrue(ModelTokenCleaner.tailMayCompleteToken("x <|chan" + "nel|>", newDeltaCount: 5))
+
+        let alphabet = [
+            "<|channel|>", "<|", "|>", "<|tool_call>", "{", "\n", " ", "a", "aaaaaaaaaaaa",
+            "<|start\nmid|>", "|", "<", ">",
+        ]
+        var rng = SeededGenerator(seed: 2026)
+        var silent = 0
+        for _ in 0..<5000 {
+            var a = ""
+            for _ in 0..<Int.random(in: 0...6, using: &rng) {
+                a += alphabet[Int.random(in: 0..<alphabet.count, using: &rng)]
+            }
+            var d = ""
+            for _ in 0..<Int.random(in: 1...3, using: &rng) {
+                d += alphabet[Int.random(in: 0..<alphabet.count, using: &rng)]
+            }
+            guard !ModelTokenCleaner.tailMayCompleteToken(a + d, newDeltaCount: d.count) else { continue }
+            silent += 1
+            XCTAssertEqual(
+                ModelTokenCleaner.stripTokens(a + d), ModelTokenCleaner.stripTokens(a) + d,
+                "gate was silent but the delta changed the strip: A=\(a.debugDescription) "
+                    + "d=\(d.debugDescription)")
+        }
+        XCTAssertGreaterThanOrEqual(silent, 1000, "anti-vacuum: the equality was barely exercised")
     }
 
     // MARK: - Work bound

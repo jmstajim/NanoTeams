@@ -174,9 +174,11 @@ final class IterationTerminalArmsCoverageTests: XCTestCase {
     /// the production incrementer (`handleNoToolCalls` bumps it at its very first
     /// line), so the iteration under test supplies the turn that trips it.
     ///
-    /// A fresh empty conversation per call keeps `detectMessageLoop` from firing
-    /// on the accumulated nudges — that branch escalates too, and the test must
-    /// be able to attribute the terminal to the ceiling and nothing else.
+    /// A fresh empty conversation per call keeps the message-loop branch from
+    /// firing on the accumulated nudges: the helper re-seeds an empty ring from
+    /// it (`seedMessageLoopRing: true`, its default) and `classifyMessageLoop`
+    /// answers `.noLoop`. That branch escalates too, and the test must be able
+    /// to attribute the terminal to the ceiling and nothing else.
     private func primeNonProductiveTurnsToOneBelowCeiling(task: NTMSTask) async {
         for i in 1..<LLMConstants.maxNonProductiveTurns {
             var throwaway: [ChatMessage] = []

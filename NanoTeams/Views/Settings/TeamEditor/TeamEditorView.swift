@@ -23,10 +23,10 @@ nonisolated enum TeamEditorValidation {
 
     /// Combines structural validation (`TeamManagementService.validate` — always
     /// errors) with delegation policy (`TeamValidationService.validateDelegationPolicy`
-    /// — severity per `ValidationError.isError`), each rendered via
-    /// `displayMessage(in:)`. Dependency/orphan checks are intentionally excluded:
-    /// they were never surfaced in this banner and would light up warnings on
-    /// otherwise-valid teams.
+    /// — severity per `ValidationError.isError`) and attached-skill resolution
+    /// (`validateAttachedSkills`), each rendered via `displayMessage(in:)`. These
+    /// are the ONLY two `TeamValidationService` members the banner calls — pinned
+    /// by `TeamEditorValidationTests.testBannerCallsExactlyTheTwoLiveValidators`.
     /// - Parameter knownSkillIDs: ids the agent-skill scanner discovered. Empty
     ///   means "no catalogue yet" and skips the attached-skill check entirely —
     ///   see `TeamValidationService.validateAttachedSkills`. Defaults to empty so

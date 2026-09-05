@@ -108,7 +108,7 @@ final class SidebarUnreadIndicatorTests: XCTestCase {
     func testStatusColor_unreadInput_returnsInfo() {
         let item = SidebarTaskItem(
             id: 0, title: "Chat", status: .needsSupervisorInput,
-            updatedAt: Date(), isChatMode: true, hasUnreadInput: true
+            isChatMode: true, hasUnreadInput: true
         )
         // statusColor: if hasUnreadInput → info
         XCTAssertTrue(item.hasUnreadInput)
@@ -118,7 +118,7 @@ final class SidebarUnreadIndicatorTests: XCTestCase {
     func testStatusColor_noUnread_usesStatusTint() {
         let item = SidebarTaskItem(
             id: 0, title: "Chat", status: .needsSupervisorInput,
-            updatedAt: Date(), isChatMode: true, hasUnreadInput: false
+            isChatMode: true, hasUnreadInput: false
         )
         XCTAssertFalse(item.hasUnreadInput)
     }
@@ -135,7 +135,7 @@ final class SidebarUnreadIndicatorTests: XCTestCase {
 
     func testPulseCondition_engineRunning_noPulseWhenUnread() {
         let item = SidebarTaskItem(
-            id: 0, title: "Chat", status: .running, updatedAt: Date(),
+            id: 0, title: "Chat", status: .running,
             isChatMode: true, hasUnreadInput: true, isEngineRunning: true
         )
         XCTAssertFalse(shouldPulse(item), "Pulse should NOT be active when hasUnreadInput is true")
@@ -143,7 +143,7 @@ final class SidebarUnreadIndicatorTests: XCTestCase {
 
     func testPulseCondition_engineRunning_pulsesWhenNoUnread() {
         let item = SidebarTaskItem(
-            id: 0, title: "Chat", status: .running, updatedAt: Date(),
+            id: 0, title: "Chat", status: .running,
             isChatMode: true, hasUnreadInput: false, isEngineRunning: true
         )
         XCTAssertTrue(shouldPulse(item), "Pulse should be active when engine is running and no unread")
@@ -154,7 +154,7 @@ final class SidebarUnreadIndicatorTests: XCTestCase {
         // (chat-mode override surfaces idle as `.running`) but the engine is
         // `.paused`, so isEngineRunning is false → no pulse.
         let item = SidebarTaskItem(
-            id: 0, title: "Chat", status: .running, updatedAt: Date(),
+            id: 0, title: "Chat", status: .running,
             isChatMode: true, hasUnreadInput: false, isEngineRunning: false
         )
         XCTAssertFalse(shouldPulse(item), "Pulse should NOT be active when engine is not running, even if status is .running")
@@ -164,7 +164,7 @@ final class SidebarUnreadIndicatorTests: XCTestCase {
         // Regression: background chat task that was never opened this session.
         // engineState[taskID] is nil, mapped to isEngineRunning=false → no pulse.
         let item = SidebarTaskItem(
-            id: 0, title: "Chat", status: .running, updatedAt: Date(),
+            id: 0, title: "Chat", status: .running,
             isChatMode: true, hasUnreadInput: false, isEngineRunning: false
         )
         XCTAssertFalse(shouldPulse(item), "Pulse should NOT be active for never-opened background tasks")
@@ -174,7 +174,7 @@ final class SidebarUnreadIndicatorTests: XCTestCase {
         // When the LLM is waiting for the user, engine state is .needsSupervisorInput,
         // not .running, so the icon stays static even before the user marks it seen.
         let item = SidebarTaskItem(
-            id: 0, title: "Chat", status: .needsSupervisorInput, updatedAt: Date(),
+            id: 0, title: "Chat", status: .needsSupervisorInput,
             isChatMode: true, hasUnreadInput: true, isEngineRunning: false
         )
         XCTAssertFalse(shouldPulse(item), "Pulse should NOT be active when engine is in .needsSupervisorInput")
@@ -192,7 +192,6 @@ final class SidebarUnreadIndicatorTests: XCTestCase {
         let chatTaskAfterRestart = SidebarTaskItem(
             id: 1, title: "расскажи больше про ва...",
             status: .running, // derived; chat override surfaces idle as .running
-            updatedAt: Date(timeIntervalSinceNow: -36_000), // 10h ago, matches user screenshot
             isChatMode: true,
             hasUnreadInput: false,
             isEngineRunning: false // engine is .paused after StatusRecoveryService
@@ -207,7 +206,6 @@ final class SidebarUnreadIndicatorTests: XCTestCase {
         let backgroundChat = SidebarTaskItem(
             id: 2, title: "расскажи больше про ва...",
             status: .running,
-            updatedAt: Date(timeIntervalSinceNow: -36_000),
             isChatMode: true,
             hasUnreadInput: false,
             isEngineRunning: false // never loaded → engineState[2] == nil → false
@@ -222,7 +220,7 @@ final class SidebarUnreadIndicatorTests: XCTestCase {
     /// the chat icon pulses. The user can see "the assistant is replying".
     func testUserPath_chatLLMGenerating_pulses() {
         let item = SidebarTaskItem(
-            id: 0, title: "Chat", status: .running, updatedAt: Date(),
+            id: 0, title: "Chat", status: .running,
             isChatMode: true, hasUnreadInput: false, isEngineRunning: true
         )
         XCTAssertTrue(shouldPulse(item), "While LLM generates, the icon must pulse")
@@ -233,7 +231,7 @@ final class SidebarUnreadIndicatorTests: XCTestCase {
     /// precedence (statusColor turns `info`) when the user hasn't viewed it yet.
     func testUserPath_chatLLMFinishedAsksUser_pulseStopsUnreadShows() {
         let item = SidebarTaskItem(
-            id: 0, title: "Chat", status: .needsSupervisorInput, updatedAt: Date(),
+            id: 0, title: "Chat", status: .needsSupervisorInput,
             isChatMode: true, hasUnreadInput: true, isEngineRunning: false
         )
         XCTAssertFalse(shouldPulse(item), "Pulse must stop when LLM hands off to the user")
@@ -246,7 +244,7 @@ final class SidebarUnreadIndicatorTests: XCTestCase {
         sut.markSupervisorInputSeen(taskID: 0) // simulate user viewed the question
         sut.unmarkSupervisorInputSeen(taskID: 0) // simulate clear-on-answer in the orchestrator
         let item = SidebarTaskItem(
-            id: 0, title: "Chat", status: .running, updatedAt: Date(),
+            id: 0, title: "Chat", status: .running,
             isChatMode: true, hasUnreadInput: false, isEngineRunning: true
         )
         XCTAssertTrue(shouldPulse(item), "Pulse must resume once the LLM starts the next turn")
@@ -259,11 +257,11 @@ final class SidebarUnreadIndicatorTests: XCTestCase {
     /// engines, so Task A must keep pulsing.
     func testUserPath_taskARunsWhileViewingB_taskAStillPulses() {
         let taskA = SidebarTaskItem(
-            id: 1, title: "FAANG: refactor auth", status: .running, updatedAt: Date(),
+            id: 1, title: "FAANG: refactor auth", status: .running,
             isChatMode: false, hasUnreadInput: false, isEngineRunning: true
         )
         let taskB = SidebarTaskItem(
-            id: 2, title: "FAANG: docs", status: .paused, updatedAt: Date(),
+            id: 2, title: "FAANG: docs", status: .paused,
             isChatMode: false, hasUnreadInput: false, isEngineRunning: false
         )
         XCTAssertTrue(shouldPulse(taskA), "Background-running task A must keep its pulse while user views B")
@@ -277,7 +275,7 @@ final class SidebarUnreadIndicatorTests: XCTestCase {
     /// the old gate, it pulsed; with the new gate, it stays static.
     func testUserPath_nonChatStaleRunningStatus_noPulse() {
         let item = SidebarTaskItem(
-            id: 0, title: "FAANG: stuck", status: .running, updatedAt: Date(),
+            id: 0, title: "FAANG: stuck", status: .running,
             isChatMode: false, hasUnreadInput: false, isEngineRunning: false
         )
         XCTAssertFalse(shouldPulse(item),
@@ -287,7 +285,7 @@ final class SidebarUnreadIndicatorTests: XCTestCase {
     /// Non-chat task that's actively running. Pulse must be on.
     func testUserPath_nonChatActiveRun_pulses() {
         let item = SidebarTaskItem(
-            id: 0, title: "FAANG: live", status: .running, updatedAt: Date(),
+            id: 0, title: "FAANG: live", status: .running,
             isChatMode: false, hasUnreadInput: false, isEngineRunning: true
         )
         XCTAssertTrue(shouldPulse(item), "Active non-chat run must pulse")
@@ -296,7 +294,7 @@ final class SidebarUnreadIndicatorTests: XCTestCase {
     // MARK: - SidebarTaskItem default
 
     func testSidebarTaskItem_isEngineRunning_defaultsFalse() {
-        let item = SidebarTaskItem(id: 0, title: "Test", status: .running, updatedAt: Date())
+        let item = SidebarTaskItem(id: 0, title: "Test", status: .running)
         XCTAssertFalse(item.isEngineRunning,
                        "Default isEngineRunning=false ensures unmodified construction sites cannot accidentally pulse")
     }

@@ -1,7 +1,11 @@
 import Foundation
 
 nonisolated struct Run: Codable, Identifiable, Hashable {
-    var id: Int
+    /// The run's POSITION in `NTMSTask.runs` — `RunService.createTeamRun`, the sole
+    /// appender, stamps `id: task.runs.count`, and `RunService.runIndex` answers by-id
+    /// questions in O(1) on that basis. `let`, so no site can relabel a run after
+    /// construction (the compile-time leg of `Ratchet/RunIDIsPositionPinTests`).
+    let id: Int
     var createdAt: Date
     var updatedAt: Date
     var steps: [StepExecution]

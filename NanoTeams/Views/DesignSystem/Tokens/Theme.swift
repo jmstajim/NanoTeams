@@ -137,8 +137,20 @@ nonisolated enum Theme: String, CaseIterable, Identifiable, Sendable {
     /// Called from `NanoTeamsApp.init` so the user's prior pick survives the
     /// AppAppearance → Theme consolidation. Idempotent: no-op once
     /// `activeTheme` is set.
+    ///
+    /// Takes `any ConfigurationStorage` rather than `UserDefaults` for the reason the
+    /// `_storage` slot above exists: the test target runs parallel host processes sharing
+    /// one defaults domain, so a test that wrote through `UserDefaults.standard` here
+    /// would be visible to every other worker (DEBTS.md D-4). The production call site
+    /// passes nothing and still gets `UserDefaults.standard`.
+    ///
+    /// Shipped 2026-06-21; carried no date until 2026-09-05, which is why the scan that
+    /// guards dated obligations could not see it (DEBTS.md D-32).
+    /// TODO(2026-Q4): remove once all live installs have migrated.
     @discardableResult
-    static func migrateLegacyAppearanceIfNeeded(defaults: UserDefaults = .standard) -> Bool {
+    static func migrateLegacyAppearanceIfNeeded(
+        defaults: any ConfigurationStorage = UserDefaults.standard
+    ) -> Bool {
         guard defaults.string(forKey: UserDefaultsKeys.activeTheme) == nil else { return false }
         guard let legacy = defaults.string(forKey: UserDefaultsKeys.appAppearance) else { return false }
         let mapped: Theme?

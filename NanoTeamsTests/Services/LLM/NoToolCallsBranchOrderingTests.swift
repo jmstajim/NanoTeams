@@ -416,6 +416,146 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
         )
     }
 
+    /// The prose-plan branch reads the phase verdict the iteration already derived
+    /// (`Authorization.wireIsMidPlanning`) instead of rescanning the wire. The probe lives inside
+    /// the two scan closures (`briefIndex`, `wireCarriesClosedMarker`), so a rescan here cannot
+    /// hide behind an unchanged answer.
+    ///
+    /// RED: revert the branch to `if PlanningPhasePolicy.isMidPlanning(conversationMessages) {`
+    /// → `examined()` reads ≥ 600 (one brief scan stopping at index 2 plus a full closed-marker
+    /// scan) while the scratchpad is still recorded.
+    func testProsePlanBranch_doesNotRescanTheWire() async {
+        var messages: [ChatMessage] = [
+            ChatMessage(role: .system, content: "You are Software Engineer."),
+            ChatMessage(role: .user, content: "Build a calculator"),
+            ChatMessage(role: .user, content: PlanningPhasePolicy.planningBrief(
+                exploreToolNames: [ToolNames.search], expectedArtifacts: [])),
+        ]
+        for i in 0..<300 {
+            messages.append(ChatMessage(role: .assistant, content: "finding \(i)"))
+            messages.append(ChatMessage(role: .user, content: "go on"))
+        }
+        XCTAssertGreaterThanOrEqual(messages.count, 600, "premise: a long mid-planning wire")
+
+        PlanningWireScanProbe.reset()
+        let stop = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: "I'll read ContentView.swift, then add the evaluator.",
+            sawHarmonyMarker: false,
+            task: task,
+            roleDefinition: nil,
+            conversationMessages: &messages,
+            wireIsMidPlanning: true
+        )
+
+        guard case .continueLoop = stop else {
+            return XCTFail("Expected .continueLoop, got \(stop)")
+        }
+        XCTAssertEqual(
+            mockDelegate.taskToMutate?.runs[0].steps[0].scratchpad,
+            "I'll read ContentView.swift, then add the evaluator.",
+            "anti-vacuum: the prose-plan branch must have been reached")
+        XCTAssertEqual(PlanningWireScanProbe.examined(), 0,
+                       "the branch must read the carried verdict, not rescan the wire — "
+                           + "two O(conversation) passes per no-tool turn")
+    }
+
+    /// Loop detection reads the step's ring, not the wire. The shape where the old reversed
+    /// walk was Θ(N): a tool-heavy conversation whose only qualifying assistant turn is the
+    /// last one, so the walk never found its three matches and examined everything.
+    ///
+    /// The seed is the one honest Θ(N) and is paid explicitly BEFORE the probe is reset;
+    /// `seedMessageLoopRing: false` keeps the helper from paying it again on the test's behalf.
+    ///
+    /// RED: revert the classifier call in `handleNoToolCalls` to
+    /// `detectMessageLoop(conversationMessages: conversationMessages)` → `examined()` reads ≥ 2000.
+    func testLoopDetection_doesNotWalkTheWire_whenTheRingIsSeeded() async {
+        var messages: [ChatMessage] = [ChatMessage(role: .system, content: "s")]
+        for i in 0..<1_000 {
+            messages.append(ChatMessage(
+                role: .assistant, content: nil,
+                toolCalls: [ChatToolCall(id: "c\(i)", name: ToolNames.readFile, argumentsJSON: "{}")]))
+            messages.append(ChatMessage(role: .tool, content: "{\"ok\":true}", toolCallID: "c\(i)"))
+        }
+        messages.append(ChatMessage(role: .assistant, content: "I think we are done here."))
+        service._testSeedMessageLoopRing(stepID: stepID, taskID: task.id, from: messages)
+        XCTAssertEqual(service._testMessageLoopRing(stepID: stepID, taskID: task.id),
+                       ["I think we are done here."], "premise: one qualifying turn, seeded")
+
+        MessageLoopScanProbe.reset()
+        let stop = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: "I think we are done here.",
+            sawHarmonyMarker: false,
+            task: task,
+            roleDefinition: nil,
+            conversationMessages: &messages,
+            seedMessageLoopRing: false
+        )
+
+        guard case .continueLoop = stop else {
+            return XCTFail("Expected .continueLoop, got \(stop)")
+        }
+        XCTAssertTrue((messages.last?.content ?? "").contains("did not call any tools"),
+                      "anti-vacuum: loop detection ran and answered `.noLoop`, so the generic "
+                          + "nudge follows; got: \(messages.last?.content ?? "nil")")
+        XCTAssertEqual(MessageLoopScanProbe.examined(), 0,
+                       "the detector must classify the ring, not walk 2000 wire messages per turn")
+    }
+
+    /// The companion that proves the classifier ran on the RING. The sibling above cannot
+    /// tell `.noLoop` from "the block did not run" — its generic nudge follows on both — so
+    /// here the ring is seeded from a SEPARATE wire of three identical prose turns while the
+    /// 2001-message wire the helper is driven on holds ONE qualifying turn. A `.repetitiveNonTool`
+    /// verdict is one the wire cannot produce: it proves the ring was the classifier's input,
+    /// and `examined() == 0` proves the walk did not run beside it.
+    ///
+    /// RED: revert the classifier call to `detectMessageLoop(conversationMessages:)` → the
+    /// generic nudge replaces `near-identical` AND `examined()` reads ≥ 2000; delete the whole
+    /// `if !isStepInRevision { switch classifyMessageLoop … }` block → the generic nudge replaces
+    /// `near-identical`.
+    func testLoopDetection_classifiesTheRing_notTheWire() async {
+        let repeated = "I think we are done here."
+        let seedWire: [ChatMessage] = (0..<3).flatMap { _ in
+            [ChatMessage(role: .assistant, content: repeated),
+             ChatMessage(role: .user, content: "go on")]
+        }
+        service._testSeedMessageLoopRing(stepID: stepID, taskID: task.id, from: seedWire)
+        XCTAssertEqual(service._testMessageLoopRing(stepID: stepID, taskID: task.id),
+                       [repeated, repeated, repeated], "premise: three identical turns in the ring")
+
+        var messages: [ChatMessage] = [ChatMessage(role: .system, content: "s")]
+        for i in 0..<1_000 {
+            messages.append(ChatMessage(
+                role: .assistant, content: nil,
+                toolCalls: [ChatToolCall(id: "c\(i)", name: ToolNames.readFile, argumentsJSON: "{}")]))
+            messages.append(ChatMessage(role: .tool, content: "{\"ok\":true}", toolCallID: "c\(i)"))
+        }
+        messages.append(ChatMessage(role: .assistant, content: "A different closing remark."))
+        XCTAssertEqual(ConversationRepairService.detectMessageLoop(conversationMessages: messages),
+                       .noLoop, "premise: the wire holds one qualifying turn and cannot be a loop")
+
+        MessageLoopScanProbe.reset()
+        let stop = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: "A different closing remark.",
+            sawHarmonyMarker: false,
+            task: task,
+            roleDefinition: nil,
+            conversationMessages: &messages,
+            seedMessageLoopRing: false
+        )
+
+        guard case .continueLoop = stop else {
+            return XCTFail("Expected .continueLoop, got \(stop)")
+        }
+        XCTAssertTrue((messages.last?.content ?? "").contains("near-identical"),
+                      "a repetitive verdict the wire cannot produce — the ring was the input; "
+                          + "got: \(messages.last?.content ?? "nil")")
+        XCTAssertEqual(MessageLoopScanProbe.examined(), 0,
+                       "the ring answered, so the 2001-message walk must not have run beside it")
+    }
+
     // MARK: - Planning phase: a failed tool call is not a plan (regression 2026-08-07)
 
     /// The observed defect, end to end: `gemma-4-e4b` emitted a bare tool call in a

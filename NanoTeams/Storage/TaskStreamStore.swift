@@ -472,6 +472,14 @@ nonisolated enum TaskStreamStore {
         }
     }
 
+    /// Appends an unseen id; overwrites a seen id IN PLACE with the later record
+    /// for that same id. For `streams.toolCalls` this is one of the writers
+    /// `AskCallIndex.isPrefix` relies on (it validates by `(count, last id)`): the
+    /// id at every position is unchanged by construction, and the overwritten
+    /// element can only differ in the result fields the log records — no writer
+    /// of `StepExecution.toolCalls` rewrites `name`. The `&streams.toolCalls`
+    /// call site is what `AskCallIndexTests.testToolCallsWriterSet_isClosed`
+    /// matches, since this generic body never spells the identifier.
     private static func replayByID<T: Identifiable>(
         _ element: T, into array: inout [T], index: inout [T.ID: Int]
     ) {

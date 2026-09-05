@@ -284,7 +284,8 @@ nonisolated enum TaskMutationService {
     }
 
     /// Commits streaming content to both step.llmConversation (LLMMessage) and step.messages (StepMessage).
-    /// Updates the pre-created LLMMessage with final content/thinking, and creates/updates the StepMessage.
+    /// Updates the pre-created LLMMessage with final content/thinking, and appends the StepMessage
+    /// (never updates one — `messages` cannot carry this id before the call; see the invariant below).
     /// - Parameters:
     ///   - stepID: The step ID.
     ///   - messageID: The message ID (shared between LLMMessage and StepMessage).
@@ -328,12 +329,16 @@ nonisolated enum TaskMutationService {
             task.runs[ri].steps[si].llmConversation[idx].createdAt = now
         }
 
-        // Update or create StepMessage in step.messages (used by PromptBuilder and
-        // extractLatestStepOutput). `lastIndex` for the same reason as the conversation
-        // above: the target was appended by this very turn.
-        if let idx = task.runs[ri].steps[si].messages.lastIndex(where: { $0.id == messageID }) {
-            task.runs[ri].steps[si].messages[idx].content = content
-        } else if !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        // Create the StepMessage in step.messages (used by PromptBuilder and
+        // extractLatestStepOutput). Append only — `messages` never carries this id before
+        // this call: the id is minted per streaming turn (`performStreamingCall`) and
+        // `beginStreaming` writes only `llmConversation`; every other `messages` writer
+        // constructs its `StepMessage` with a fresh default id, and `commitStreaming`
+        // clears the id from `StreamingPreviewManager` on the first commit, so a second
+        // commit for the same turn cannot even name it. An "update existing" lookup here
+        // was a per-turn walk of the whole array (O(k) per turn, O(k²) per run) that could
+        // never hit. Whitespace-only content appends nothing — that array feeds the prompt.
+        if !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let stepMessage = StepMessage(id: messageID, createdAt: now, role: role, content: content)
             task.runs[ri].steps[si].messages.append(stepMessage)
         }

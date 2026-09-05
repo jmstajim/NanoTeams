@@ -169,7 +169,7 @@ extension NativeLMStudioClient {
     /// injection-boundary sentence, and per-tool entries. NO `## Tool Calling`
     /// header. NO trailing operational reminder (removed 2026-05 — role-specific
     /// rules live in the template's `## Final reminder` / `## Output format`
-    /// sections per Liu2024 §0.3). The boundary sentence is the ONE deliberate
+    /// sections per playbook §1.4 [Liu2024]). The boundary sentence is the ONE deliberate
     /// exception to keeping operational text out of this body: it must ride the
     /// body (not templates) to reach existing work folders without a reconcile
     /// bump — see the inline comment at its insertion point.

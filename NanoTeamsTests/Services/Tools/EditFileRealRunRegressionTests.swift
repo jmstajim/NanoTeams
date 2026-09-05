@@ -17,7 +17,11 @@ import XCTest
 ///    the same whitespace advice.
 ///
 /// Fixtures are byte-exact (`EditFileRealRunFixtures`); the ugly indentation is the
-/// point. Each test names the log timestamp so a failure points back at the call.
+/// point. Each test names the timestamp of the call it replays, so a failure points
+/// back at that call. Those times are the run log's own REBASED BY +11 h into the
+/// test target's 20:00–02:00 band — subtract 11 h to read them against the log.
+/// They are prefix-matched keys: a selector here and its fixture move together, or
+/// `failure(at:)` traps the test host instead of reddening a test.
 final class EditFileRealRunRegressionTests: XCTestCase {
     private let fileManager = FileManager.default
     private var tempDir: URL!
@@ -98,7 +102,7 @@ final class EditFileRealRunRegressionTests: XCTestCase {
 
     // MARK: - Tier 3a: the model's indentation is translatable
 
-    /// 10:08:26.484 — `SettingsModel.swift`. The model opened the block with four
+    /// 21:08:26.484 — `SettingsModel.swift`. The model opened the block with four
     /// spaces and closed it with FIVE; the file uses four for both. That is a
     /// well-defined map (`4→4, 8→8, 5→4`), so the edit applies and the replacement's
     /// stray fifth space is rewritten into the file's convention.
@@ -106,7 +110,7 @@ final class EditFileRealRunRegressionTests: XCTestCase {
     /// RED: drop the tier-3 branch in `whitespaceTolerantEdit` → ANCHOR_NOT_FOUND.
     /// RED: return `newLines` unmapped instead of `reindented` → the file keeps `     }`.
     func testReal_settingsModelInit_isAutoReindented() async throws {
-        let failure = EditFileRealRunFixtures.failure(at: "2026-08-15T10:08:26.484")
+        let failure = EditFileRealRunFixtures.failure(at: "2026-08-15T21:08:26.484")
         let result = try await replay(failure)
 
         XCTAssertFalse(result.isError, result.outputJSON)
@@ -135,7 +139,7 @@ final class EditFileRealRunRegressionTests: XCTestCase {
 
     // MARK: - Tier 3b: the irregular window, resolved per line
 
-    /// 09:58:38.469 — `SessionHistoryStore.swift`, the very first failure of the run.
+    /// 20:58:38.469 — `SessionHistoryStore.swift`, the very first failure of the run.
     /// The anchor's `"    "` corresponds to `"     "` on the doc-comment lines and to
     /// `"    "` on the members — the per-depth map's one genuine conflict, and the
     /// run's only located-but-refused call. Per line the conflict never existed:
@@ -146,7 +150,7 @@ final class EditFileRealRunRegressionTests: XCTestCase {
     /// `reindentToFileConvention`) → the five-space doc comment collapses to four
     /// and the first line-anchored assert fails.
     func testReal_sessionHistoryDocComments_landsKeepingTheFilesFiveSpaceDocs() async throws {
-        let failure = EditFileRealRunFixtures.failure(at: "2026-08-15T09:58:38.469")
+        let failure = EditFileRealRunFixtures.failure(at: "2026-08-15T20:58:38.469")
         let result = try await replay(failure)
 
         XCTAssertFalse(result.isError, result.outputJSON)
@@ -171,7 +175,7 @@ final class EditFileRealRunRegressionTests: XCTestCase {
                       "the kept depths are disclosed: \(Self.warningTexts(result))")
     }
 
-    /// 09:59:01.393 — the guess-loop escalation, 23 seconds after the failure above.
+    /// 20:59:01.393 — the guess-loop escalation, 23 seconds after the failure above.
     /// Having been told to check whitespace, the model shifted its anchor to NINE and
     /// FIVE spaces where the file has eight and four. That map is consistent, and the
     /// replacement reproduces the anchor and then APPENDS two properties at depths the
@@ -189,7 +193,7 @@ final class EditFileRealRunRegressionTests: XCTestCase {
     ///
     /// RED: restore `return nil` for unmapped prefixes → ANCHOR_NOT_FOUND, file untouched.
     func testReal_encoderTail_appendsAndKeepsTheNewLinesIndentation() async throws {
-        let failure = EditFileRealRunFixtures.failure(at: "2026-08-15T09:59:01.393")
+        let failure = EditFileRealRunFixtures.failure(at: "2026-08-15T20:59:01.393")
         let result = try await replay(failure)
 
         XCTAssertFalse(result.isError, result.outputJSON)
@@ -222,7 +226,7 @@ final class EditFileRealRunRegressionTests: XCTestCase {
 
     // MARK: - Absent anchors: the dominant real failure
 
-    /// 10:08:30.067 — `ContentView.swift`. `struct StatCard` does not exist in that
+    /// 21:08:30.067 — `ContentView.swift`. `struct StatCard` does not exist in that
     /// file under any spelling; the model invented it while emitting 56 tool calls in
     /// one response, before any of the reads in the same batch had returned.
     ///
@@ -233,7 +237,7 @@ final class EditFileRealRunRegressionTests: XCTestCase {
     /// RED: fold `.absent` back into the generic `anchorNotFoundMessage` → the
     /// whitespace assertion fails.
     func testReal_hallucinatedStatCard_reportsAbsentNotWhitespace() async throws {
-        let failure = EditFileRealRunFixtures.failure(at: "2026-08-15T10:08:30.067")
+        let failure = EditFileRealRunFixtures.failure(at: "2026-08-15T21:08:30.067")
         XCTAssertTrue(failure.oldText.hasPrefix("    struct StatCard"), "fixture drifted")
 
         let result = try await replay(failure)
@@ -249,13 +253,13 @@ final class EditFileRealRunRegressionTests: XCTestCase {
 
     // MARK: - Diverging anchors: stale, not absent
 
-    /// 10:08:30.143 — the anchor starts matching, then breaks: the model wrote
+    /// 21:08:30.143 — the anchor starts matching, then breaks: the model wrote
     /// `VStack(spacing: 20)`, the file says `24`. It cannot diff its anchor against a
     /// file it is not looking at, so the message names both sides and the line.
     ///
     /// RED: report `.absent` for a partial match → the divergence assertions fail.
     func testReal_vStackSpacing_reportsTheDivergingLine() async throws {
-        let failure = EditFileRealRunFixtures.failure(at: "2026-08-15T10:08:30.143")
+        let failure = EditFileRealRunFixtures.failure(at: "2026-08-15T21:08:30.143")
         let result = try await replay(failure)
         let text = message(result)
 
@@ -266,11 +270,11 @@ final class EditFileRealRunRegressionTests: XCTestCase {
                        "a partial match is stale, not absent: \(text)")
     }
 
-    /// 10:08:30.362 — `SettingsView.swift`, a second diverging case in a different
+    /// 21:08:30.362 — `SettingsView.swift`, a second diverging case in a different
     /// file so the first is not pinning a coincidence. `Section("General")` vs the
     /// file's `Section("Daily Reminder")`.
     func testReal_settingsViewSection_reportsTheDivergingLine() async throws {
-        let failure = EditFileRealRunFixtures.failure(at: "2026-08-15T10:08:30.362")
+        let failure = EditFileRealRunFixtures.failure(at: "2026-08-15T21:08:30.362")
         let result = try await replay(failure)
         let text = message(result)
 
@@ -281,14 +285,14 @@ final class EditFileRealRunRegressionTests: XCTestCase {
 
     // MARK: - The batch that produced most of this
 
-    /// 10:08:30.191 and .213 — the SAME `edit_file`, byte-for-byte (2795 characters of
+    /// 21:08:30.191 and .213 — the SAME `edit_file`, byte-for-byte (2795 characters of
     /// arguments), twice in one assistant response. `deduplicateToolCalls` existed but
     /// was gated on a streaming break that this reply never tripped, so both executed.
     ///
     /// RED: re-gate the collapse on a streaming break having fired → two calls survive.
     func testReal_identicalMainContentCall_executesOnce() throws {
-        let first = EditFileRealRunFixtures.failure(at: "2026-08-15T10:08:30.191")
-        let second = EditFileRealRunFixtures.failure(at: "2026-08-15T10:08:30.213")
+        let first = EditFileRealRunFixtures.failure(at: "2026-08-15T21:08:30.191")
+        let second = EditFileRealRunFixtures.failure(at: "2026-08-15T21:08:30.213")
         XCTAssertEqual(first.oldText, second.oldText, "fixture drifted")
         XCTAssertEqual(first.newText, second.newText, "fixture drifted")
 
@@ -474,8 +478,8 @@ final class EditFileRealRunRegressionTests: XCTestCase {
         XCTAssertEqual(EditFileRealRunFixtures.failures.count, 31, "fixture set drifted")
         XCTAssertTrue(unclassified.isEmpty, "unclassified: \(unclassified)")
         // 10 across three steps of the same tolerance: 8 when tier 3 landed, +1
-        // when the append rule landed (09:59:01.393), +1 when per-line alignment
-        // dissolved the map conflict at 09:58:38.469 — the run's ONE
+        // when the append rule landed (20:59:01.393), +1 when per-line alignment
+        // dissolved the map conflict at 20:58:38.469 — the run's ONE
         // located-but-refused call, whose anchor depth corresponded to two file
         // depths. No located refusals remain in this corpus; the buckets left are
         // the honest ones — stale copies and hallucinated code.

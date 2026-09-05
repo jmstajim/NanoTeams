@@ -40,24 +40,26 @@ final class EmptyTeamLifecycleTests: XCTestCase {
                       "With the Supervisor Task produced, the starter role must be ready to execute.")
     }
 
+    /// The mirror image, through the same live query the engine uses. The starter role is
+    /// blocked by exactly one artifact, the Supervisor Task — pinned on the fixture so a
+    /// future edit cannot make it "blocked" by an empty requirement list that reads as ready.
+    ///
+    /// RED: in `ArtifactDependencyResolver.findReadyRoles` drop the `allSatisfied` gate and
+    /// append every non-excluded role → the teammate is ready with nothing produced and the
+    /// first assertion fails.
     func testTeammate_isBlockedBeforeTheSupervisorTaskExists() {
         let team = makeStarter()
-        let teammateID = team.nonSupervisorRoles[0].id
+        let teammate = team.nonSupervisorRoles[0]
 
         let ready = ArtifactDependencyResolver.findReadyRoles(
             roles: team.roles,
             producedArtifacts: []
         )
-        XCTAssertFalse(ready.contains(teammateID))
-
-        let readiness = ArtifactDependencyResolver.getRoleReadiness(
-            roleID: teammateID,
-            roles: team.roles,
-            producedArtifacts: []
-        )
-        XCTAssertFalse(readiness.isReady)
-        XCTAssertEqual(readiness.missingArtifacts, [SystemTemplates.supervisorTaskArtifactName],
-                       "The blocking reason must name the Supervisor Task, not be silently empty.")
+        XCTAssertFalse(ready.contains(teammate.id),
+                       "Nothing produced yet — the starter role must wait for the Supervisor Task.")
+        XCTAssertEqual(teammate.dependencies.requiredArtifacts,
+                       [SystemTemplates.supervisorTaskArtifactName],
+                       "What blocks it must be the Supervisor Task by name, not a silently empty list.")
     }
 
     /// The starter is not a novel graph shape — it is `startup()` with generic names. This
@@ -65,10 +67,11 @@ final class EmptyTeamLifecycleTests: XCTestCase {
     /// to either the starter or the resolver cannot make them diverge unnoticed.
     ///
     /// Includes the counter-intuitive one: `getExecutionOrder()` returns **nil** for BOTH,
-    /// because the resolver's graph (unlike `validateNoCircularDependencies`) does NOT
-    /// exclude Supervisor edges, so Supervisor→Teammate→Supervisor reads as a cycle. That is
-    /// pre-existing and harmless — the engine schedules via `findReadyRoles`, never via
-    /// `getExecutionOrder` — but a test asserting a non-nil order here would be wrong.
+    /// because the resolver's graph does NOT exclude the Supervisor's review edge (the engine
+    /// excludes the Supervisor as a ROLE in `TeamEngine.findReadyRoles`, not as an edge), so
+    /// Supervisor→Teammate→Supervisor reads as a cycle. That is pre-existing and harmless —
+    /// the engine schedules via `findReadyRoles`, never via `getExecutionOrder` — but a test
+    /// asserting a non-nil order here would be wrong.
     func testStarterDependencyGraph_behavesExactlyLikeTheStartupTemplate() {
         let starter = makeStarter()
         let startup = TeamTemplateFactory.startup()
@@ -97,8 +100,6 @@ final class EmptyTeamLifecycleTests: XCTestCase {
             )
             XCTAssertNil(resolver.getExecutionOrder(),
                          "[\(team.name)] the resolver counts the Supervisor's review edge, so both teams cycle")
-            XCTAssertTrue(TeamValidationService.validate(team: team, allTeams: [team]).isValid,
-                          "[\(team.name)] and neither is a validation error")
         }
     }
 
@@ -201,50 +202,6 @@ final class EmptyTeamLifecycleTests: XCTestCase {
         XCTAssertTrue(Set(imported.roles.map(\.id)).isDisjoint(with: Set(original.roles.map(\.id))))
         XCTAssertEqual(imported.settings.hierarchy.reportsTo, [after.id: imported.roles[0].id],
                        "hierarchy must be remapped to the imported ids")
-    }
-
-    // MARK: - The edit the starter invites
-
-    /// The starter is a scaffold — deleting the Teammate is an expected first move. It must
-    /// fail LOUDLY (the Team Editor banner), not leave a team that silently never completes:
-    /// the Supervisor still requires "Result" and now nothing produces it.
-    func testDeletingTheTeammate_surfacesAMissingProducerError() {
-        var team = makeStarter()
-        team.removeRole(team.nonSupervisorRoles[0].id)
-
-        let result = TeamValidationService.validate(team: team, allTeams: [team])
-
-        XCTAssertFalse(result.isValid)
-        XCTAssertTrue(
-            result.errors.contains {
-                if case .missingProducer(let artifact, _) = $0 {
-                    return artifact == TeamTemplateFactory.resultArtifactName
-                }
-                return false
-            },
-            "Expected a missingProducer('Result') error, got: \(result.errors)"
-        )
-    }
-
-    /// The mirror image: clearing the Supervisor's requirement turns the starter back into a
-    /// chat team, and the now-unconsumed "Result" is a WARNING (orphan), never an error — so
-    /// the user is informed without being blocked.
-    func testClearingTheSupervisorRequirement_degradesToChatModeWithAnOrphanWarning() {
-        var team = makeStarter()
-        team.roles[0].dependencies.requiredArtifacts = []
-
-        XCTAssertTrue(team.isChatMode)
-        let result = TeamValidationService.validate(team: team, allTeams: [team])
-        XCTAssertTrue(result.isValid, "an orphan artifact must not block the team: \(result.errors)")
-        XCTAssertTrue(
-            result.warnings.contains {
-                if case .orphanArtifact(let artifact, _) = $0 {
-                    return artifact == TeamTemplateFactory.resultArtifactName
-                }
-                return false
-            },
-            "Expected an orphanArtifact('Result') warning, got: \(result.warnings)"
-        )
     }
 
     // MARK: - Degenerate names

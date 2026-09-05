@@ -15,7 +15,7 @@ import XCTest
 ///    (custom user templates created before the chip existed keep working).
 /// 5. Built-in templates ship with both chips at the tail — `## Final reminder`
 ///    is no longer the literal last line of any built-in step / meeting
-///    template body, but the chip placement preserves Liu2024 §0.3 (the
+///    template body, but the chip placement preserves playbook §1.4 [Liu2024] (the
 ///    runtime can position FR anywhere by editing the template).
 final class ControlEverythingPromptTests: XCTestCase {
 

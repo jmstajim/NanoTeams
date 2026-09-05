@@ -132,6 +132,27 @@ extension LLMExecutionService {
         /// discarded and the implementation phase deserves its own warning.
         var warnedLoopSignatures: Set<String> = []
 
+        /// The wire's last `ConversationRepairService.messageLoopWindow` assistant turns that
+        /// carry content and no tool calls, oldest-first — exactly
+        /// `ConversationRepairService.recentNoToolAssistantContents(in: conversationMessages)`
+        /// at every read.
+        ///
+        /// Maintained, not recomputed: `detectMessageLoop` walked `conversationMessages.reversed()`
+        /// on every no-tool turn, and a tool-heavy conversation has no qualifying turn near its
+        /// tail, so the walk was Θ(N) per iteration on an uncapped array
+        /// (`LLMConstants.maxToolIterations == 0`). `reseedMessageLoopRing` rebuilds it from the
+        /// wire at every event that assembles, replaces or shrinks the array — step entry
+        /// (`+StepLifecycle`, beside `seedTagCounters`: a replayed transcript already carries
+        /// turns), the planning boundary slice, the poisoned-tail repair; `appendAssistantTurn`
+        /// (`processStreamingResult`, the single site that appends an assistant turn) pushes;
+        /// `resetConversationScopedState` below clears. Consumed at one place: `handleNoToolCalls`,
+        /// through `classifyMessageLoop` (`appendAssistantTurn`'s read is the push's
+        /// read-modify-write, not a consumer).
+        ///
+        /// Cleared by `resetConversationScopedState` for the reason every field there is: it
+        /// describes an array that no longer exists — callers re-seed from the replacement.
+        var recentNoToolAssistantContents: [String] = []
+
         /// Count of consecutive turns, by ANY role, that produced no productive activity.
         /// A turn is "non-productive" when it has (a) no tool calls at all, (b) tool calls
         /// consisting only of `ask_supervisor` — auto-answered in autonomous mode, so the
@@ -268,6 +289,8 @@ extension LLMExecutionService {
             // And its sibling, for the same reason: a probe that couldn't answer while the
             // model was cold deserves one more chance now that the phase has turned over.
             probedVisionKeys = []
+            // The ring described the replaced array; the caller re-seeds from the new one.
+            recentNoToolAssistantContents = []
         }
 
         /// Cancels the running task and resets all fields to defaults.

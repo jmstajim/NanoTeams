@@ -3,9 +3,30 @@ import XCTest
 
 /// Coverage for `TeamEditorValidation.issues(team:allTeams:)` — the pure builder
 /// behind the Team Editor's validation banner. Pins the severity mapping
-/// (structural → error, delegation → forwarded severity) and the deliberate
-/// scope (delegation + structural only; dependency/orphan checks excluded).
+/// (structural → error, delegation → forwarded severity) and the scope: structural
+/// checks plus exactly the two live `TeamValidationService` validators, pinned at the
+/// source because after 2026-09-04 there is no other validator left to exclude.
 final class TeamEditorValidationTests: XCTestCase {
+
+    private static let editorPath = "NanoTeams/Views/Settings/TeamEditor/TeamEditorView.swift"
+    private static let servicePath = "NanoTeams/Services/Team/TeamValidationService.swift"
+    private static let liveValidators = ["validateDelegationPolicy", "validateAttachedSkills"]
+
+    /// Comment-stripped source (CLAUDE.md #89): `issues`' own doc comment names both members.
+    private func strippedSource(_ path: String) throws -> String {
+        RatchetSourceScan.strippingLineComments(
+            try String(contentsOf: RatchetSourceScan.repoRoot.appendingPathComponent(path),
+                       encoding: .utf8))
+    }
+
+    /// Every `TeamValidationService.<member>` reference in `code`, in source order.
+    private static func serviceMembers(in code: String) -> [String] {
+        let pattern = try! NSRegularExpression(pattern: #"TeamValidationService\.([A-Za-z_][A-Za-z0-9_]*)"#)
+        let range = NSRange(code.startIndex..., in: code)
+        return pattern.matches(in: code, range: range).map {
+            String(code[Range($0.range(at: 1), in: code)!])
+        }
+    }
 
     // MARK: - Fixtures
 
@@ -81,27 +102,43 @@ final class TeamEditorValidationTests: XCTestCase {
                       "unknownDelegationTeam / noDelegationTargets are warnings — severity must be forwarded, not forced to error.")
     }
 
-    // MARK: - Scope: dependency/orphan checks are NOT surfaced
+    // MARK: - Scope: the banner calls exactly the two live validators (source pin)
 
-    func testDependencyIssues_areNotSurfacedInBanner() {
-        // A role requiring an artifact no one produces is a genuine dependency
-        // error — but the editor banner intentionally only shows structural +
-        // delegation issues, never dependency/orphan ones.
-        let engineer = TeamRoleDefinition(
-            id: "swe", name: "Engineer", prompt: "p",
-            toolIDs: [], usePlanningPhase: false,
-            dependencies: RoleDependencies(requiredArtifacts: ["Nonexistent Plan"], producesArtifacts: ["Notes"])
-        )
-        let team = makeTeam(roles: [engineer])  // non-empty name + role → no structural; not a delegator
+    /// A structural fact pinned at the source: `TeamEditorValidation.issues` reaches
+    /// `TeamValidationService` through `validateDelegationPolicy` and `validateAttachedSkills`
+    /// and nothing else. Until 2026-09-04 a behavioural test proved the scope by building a
+    /// dependency error the banner did NOT surface; the validator that produced that error was
+    /// deleted as dead code, so the fact is structural now and is pinned as such — a third
+    /// member wired in here is a decision about the banner, not a drive-by.
+    ///
+    /// RED: add `issues += TeamValidationService.validateDelegationPolicy(team: team, allTeams: allTeams).map { … }`
+    /// a second time (or any third member) inside `issues(team:allTeams:knownSkillIDs:)` → the
+    /// member list gains an entry and the equality fails naming it. Both sides are sorted: the
+    /// law is "exactly these two members, each once" — the order of the two `issues +=` lines
+    /// is not part of it, so swapping them stays green.
+    func testBannerCallsExactlyTheTwoLiveValidators() throws {
+        let code = try strippedSource(Self.editorPath)
+        guard let body = RatchetSourceScan.functionBody(after: "static func issues(", in: code)
+        else { return XCTFail("`TeamEditorValidation.issues` not found — re-aim this pin") }
 
-        let bannerIssues = TeamEditorValidation.issues(team: team, allTeams: [team])
-        XCTAssertTrue(bannerIssues.isEmpty,
-                      "Dependency/orphan issues must NOT appear in the editor banner.")
+        XCTAssertEqual(Self.serviceMembers(in: body).sorted(), Self.liveValidators.sorted(),
+                       "the banner's `TeamValidationService` surface is exactly the two live validators")
+    }
 
-        // Sanity: the dependency issue genuinely exists — it's deliberately excluded,
-        // not absent. (missingProducer is an error in the full validator.)
-        let full = TeamValidationService.validate(roleDefinitions: team.roles)
-        XCTAssertFalse(full.errors.isEmpty,
-                       "Precondition: the team really does have a dependency error that the banner suppresses.")
+    /// Anti-vacuum for the pin above (CLAUDE.md #104): both needles are still DECLARED on the
+    /// service under the names searched for, and they are the only validators it declares — a
+    /// rename or a third `validate…` entry reddens THIS file and says which needle to re-aim.
+    ///
+    /// RED: rename `validateAttachedSkills` in `TeamValidationService.swift` → the second
+    /// `contains` fails; add a third `static func validate…` there → the count assertion fails.
+    func testTheTwoLiveValidatorsAreTheOnlyOnesDeclared() throws {
+        let service = try strippedSource(Self.servicePath)
+        for name in Self.liveValidators {
+            XCTAssertTrue(service.contains("static func \(name)("),
+                          "`\(name)` was renamed or removed — re-aim `liveValidators`")
+        }
+        let declared = service.components(separatedBy: "static func validate").count - 1
+        XCTAssertEqual(declared, Self.liveValidators.count,
+                       "a validator the banner does not call is either dead code or a banner decision")
     }
 }

@@ -668,6 +668,310 @@ final class TeamActivityFeedViewModelOrchestrationTests: XCTestCase {
         XCTAssertNotEqual(base, withMeeting, "meetingMessageCount must affect fingerprint")
     }
 
+    // MARK: - Ask-index cache and escalation-thinking memo
+
+    /// A step parked WITHOUT an ask (drift / refusal cap, Autovisor idle park) used to
+    /// pay `toolCalls.last(where: ask)` — an absence proof over the whole array — on
+    /// EVERY `recomputeSteps` tick, before the fingerprint short-circuit. The view
+    /// model's `AskCallIndex` cache makes the steady-state tick examine nothing.
+    ///
+    /// RED: in `TeamActivityFeedViewModel.askIndex(taskID:step:)` pass `extending: nil`
+    /// (or drop the `askIndexByStep[key] = index` store) → examined reads 192.
+    func testRecomputeSteps_parkedStepWithoutAsk_examinesToolCallsOnceAcrossTicks() {
+        let role = makeRole(id: "r1")
+        let context = makeContext(
+            run: Run(id: 0, steps: [parkedStepWithoutAsk(id: "r1", toolCallCount: 64)]), roles: [role])
+
+        AskCallIndexProbe.reset()
+        viewModel.recomputeSteps(context: context)
+        XCTAssertEqual(AskCallIndexProbe.examined(), 64, "anti-vacuum: the first tick scans the array")
+
+        AskCallIndexProbe.reset()
+        for _ in 0..<3 { viewModel.recomputeSteps(context: context) }
+
+        XCTAssertEqual(AskCallIndexProbe.examined(), 0, "an unchanged array is never re-examined")
+        XCTAssertEqual(viewModel.cachedSupervisorQuestions.count, 1, "and the chip is still there")
+    }
+
+    /// RED: in `TeamActivityFeedViewModel.askIndex(taskID:step:)` pass `extending: nil`
+    /// → the tick after the append rescans all 66 calls, not the 2 appended.
+    func testRecomputeSteps_afterToolCallAppend_examinesOnlyTheDelta() {
+        let role = makeRole(id: "r1")
+        var step = parkedStepWithoutAsk(id: "r1", toolCallCount: 64)
+        viewModel.recomputeSteps(context: makeContext(run: Run(id: 0, steps: [step]), roles: [role]))
+
+        step.toolCalls += [
+            StepToolCall(name: "read_file", argumentsJSON: "{}"),
+            StepToolCall(name: "read_file", argumentsJSON: "{}"),
+        ]
+        AskCallIndexProbe.reset()
+        viewModel.recomputeSteps(context: makeContext(run: Run(id: 0, steps: [step]), roles: [role]))
+
+        XCTAssertEqual(AskCallIndexProbe.examined(), 2, "only the two appended calls are examined")
+    }
+
+    /// The escalation card's `thinking` is resolved by a fresh `ThinkingResolver`
+    /// build — an O(k log k) sort — on every rebuild, at the feed's 50 ms streaming
+    /// cadence. The value cannot change once the answer exists, so it is memoized.
+    ///
+    /// RED: in `escalationThinking(step:answerMessageID:compute:)` return `compute()`
+    /// without consulting or storing the dictionary → builds reads 1 on the second rebuild.
+    func testRebuildTimeline_escalationCardThinking_resolvedOnceAcrossRebuilds() {
+        let step = settledEscalationStep(
+            id: "r1",
+            messages: [
+                LLMMessage(createdAt: date(50), role: .assistant, content: "Going idle.", thinking: "T1"),
+                LLMMessage(createdAt: date(200), role: .user, content: "Supervisor answer: fix", sourceContext: .supervisorAnswer),
+                LLMMessage(createdAt: date(300), role: .assistant, content: "Investigating.", thinking: "T2"),
+            ],
+            answer: "fix", updatedAt: date(310))
+
+        ThinkingResolverBuildProbe.reset()
+        viewModel.rebuildTimeline(steps: [step], run: nil, activeTaskID: 1, debugModeEnabled: false, isStreaming: { _ in false })
+        XCTAssertEqual(ThinkingResolverBuildProbe.builds(), 1, "anti-vacuum: the first rebuild resolves")
+        XCTAssertEqual(escalationCard(in: viewModel.cachedTimelineItems)?.thinking, "T1")
+
+        ThinkingResolverBuildProbe.reset()
+        viewModel.rebuildTimeline(steps: [step], run: nil, activeTaskID: 1, debugModeEnabled: false, isStreaming: { _ in false })
+
+        XCTAssertEqual(ThinkingResolverBuildProbe.builds(), 0, "the second rebuild is a memo hit")
+        XCTAssertEqual(escalationCard(in: viewModel.cachedTimelineItems)?.thinking, "T1")
+    }
+
+    /// A new answer cycle is a NEW key: the card re-anchors on the latest answer
+    /// (the law of `testEscalationAnsweredCard_multiRound_anchorsOnLatestAnswer`).
+    ///
+    /// RED: key the memo by `TaskStepKey` alone (drop `answerMessageID` from
+    /// `EscalationThinkingKey`) → the stale "round1" is served.
+    func testEscalationThinkingMemo_newAnswerCycle_reResolvesToTheLatestAnchor() {
+        let round1 = LLMMessage(createdAt: date(50), role: .assistant, content: "Parking.", thinking: "round1")
+        let answer1 = LLMMessage(createdAt: date(100), role: .user, content: "Supervisor answer: one", sourceContext: .supervisorAnswer)
+        var step = settledEscalationStep(id: "r1", messages: [round1, answer1], answer: "one", updatedAt: date(110))
+        viewModel.rebuildTimeline(steps: [step], run: nil, activeTaskID: 1, debugModeEnabled: false, isStreaming: { _ in false })
+        XCTAssertEqual(escalationCard(in: viewModel.cachedTimelineItems)?.thinking, "round1", "anti-vacuum")
+
+        let round2 = LLMMessage(createdAt: date(250), role: .assistant, content: "Parking again.", thinking: "round2")
+        let answer2 = LLMMessage(createdAt: date(300), role: .user, content: "Supervisor answer: two", sourceContext: .supervisorAnswer)
+        step.llmConversation += [round2, answer2]
+        step.supervisorAnswer = "two"
+        step.updatedAt = date(310)
+        viewModel.rebuildTimeline(steps: [step], run: nil, activeTaskID: 1, debugModeEnabled: false, isStreaming: { _ in false })
+
+        let card = escalationCard(in: viewModel.cachedTimelineItems)
+        XCTAssertEqual(card?.thinking, "round2")
+        XCTAssertEqual(card?.createdAt, answer2.createdAt)
+    }
+
+    /// The memoized value must equal a FRESH resolution even after the step keeps
+    /// running past the answer — the candidates at or before the answer are frozen.
+    /// The oracle is the verbatim resolver over the live conversation, computed here.
+    ///
+    /// The step already carries post-answer turns (and an `updatedAt` stamped after
+    /// them) at the FIRST rebuild — the one that POPULATES the memo — so the anchor
+    /// matters at population time. With the post-answer turns appended only after
+    /// the first rebuild, a memo anchored on `step.updatedAt` also read "pre-answer"
+    /// and the mutation below stayed green (measured: M12 of the 2026-09-04 matrix).
+    ///
+    /// RED: memoize under the legacy anchor (`step.updatedAt`) instead of
+    /// `answerMsg.createdAt` inside the `compute` closure → the memo is populated
+    /// with "post-answer 1", so `first` is not "pre-answer" and, after the append,
+    /// the hit disagrees with the fresh oracle.
+    func testEscalationThinkingMemo_valueEqualsFreshResolution_afterPostAnswerTurnsAppend() {
+        // Construction order IS timestamp order: `LLMMessage.init` stamps `createdAt`
+        // from `MonotonicClock`, so the pre-answer turn must be built before the answer
+        // and the post-answer turns after it.
+        let preAnswer = LLMMessage(role: .assistant, content: "Idle.", thinking: "pre-answer")
+        let answer = LLMMessage(role: .user, content: "Supervisor answer: go", sourceContext: .supervisorAnswer)
+        func postAnswerTurn(_ turn: Int) -> LLMMessage {
+            LLMMessage(role: .assistant, content: "turn \(turn)", thinking: "post-answer \(turn)")
+        }
+        var step = settledEscalationStep(
+            id: "r1", messages: [preAnswer, answer, postAnswerTurn(0), postAnswerTurn(1)],
+            answer: "go", updatedAt: MonotonicClock.shared.now())
+        viewModel.rebuildTimeline(steps: [step], run: nil, activeTaskID: 1, debugModeEnabled: false, isStreaming: { _ in false })
+        let first = escalationCard(in: viewModel.cachedTimelineItems)?.thinking
+        XCTAssertEqual(first, "pre-answer", "the memo is populated with the answer-anchored value")
+
+        for turn in 2..<5 { step.llmConversation.append(postAnswerTurn(turn)) }
+        step.updatedAt = MonotonicClock.shared.now()
+        viewModel.rebuildTimeline(steps: [step], run: nil, activeTaskID: 1, debugModeEnabled: false, isStreaming: { _ in false })
+
+        let fresh = ThinkingResolver(conversation: step.llmConversation).thinking(atOrBefore: answer.createdAt)
+        let memoized = escalationCard(in: viewModel.cachedTimelineItems)?.thinking
+        XCTAssertEqual(fresh, "pre-answer", "oracle sanity")
+        XCTAssertEqual(memoized, fresh)
+        XCTAssertEqual(memoized, first, "unchanged from the first rebuild")
+    }
+
+    /// RED: remove the two `removeAll()` lines from `resetForTaskSwitch` → both
+    /// counters read 0 on the second pass.
+    func testResetForTaskSwitch_clearsAskIndexAndThinkingMemo() {
+        let roles = [makeRole(id: "r1"), makeRole(id: "r2")]
+        let parked = parkedStepWithoutAsk(id: "r1", toolCallCount: 64)
+        let settled = settledEscalationStep(
+            id: "r2",
+            messages: [
+                LLMMessage(createdAt: date(50), role: .assistant, content: "Idle.", thinking: "T1"),
+                LLMMessage(createdAt: date(200), role: .user, content: "Supervisor answer: go", sourceContext: .supervisorAnswer),
+            ],
+            answer: "go", updatedAt: date(210))
+        let context = makeContext(run: Run(id: 0, steps: [parked, settled]), roles: roles)
+
+        viewModel.recomputeAndRebuild(context: context)
+        AskCallIndexProbe.reset()
+        ThinkingResolverBuildProbe.reset()
+        // A second pass that REALLY rebuilds: `composerVisible` is a fingerprint
+        // component, so flipping it defeats the short-circuit while leaving the
+        // steps identical. (`debugModeEnabled` is not in the fingerprint — a pass
+        // that only flipped it never rebuilt, and `builds == 0` was vacuous for the
+        // memo; measured by the M10 mutation reading 1 red where 2 were predicted.)
+        var warm = context
+        warm.composerVisible = false
+        viewModel.recomputeAndRebuild(context: warm)
+        XCTAssertGreaterThan(viewModel.timelineVersion, 1, "anti-vacuum: the warm pass rebuilt")
+        XCTAssertEqual(AskCallIndexProbe.examined(), 0, "anti-vacuum: warm caches examine nothing")
+        XCTAssertEqual(ThinkingResolverBuildProbe.builds(), 0, "anti-vacuum: warm memo builds nothing")
+
+        viewModel.resetForTaskSwitch()
+        AskCallIndexProbe.reset()
+        ThinkingResolverBuildProbe.reset()
+        viewModel.recomputeAndRebuild(context: context)
+
+        XCTAssertEqual(AskCallIndexProbe.examined(), parked.toolCalls.count, "the index was rebuilt from scratch")
+        XCTAssertEqual(ThinkingResolverBuildProbe.builds(), 1, "the card's thinking was re-resolved")
+    }
+
+    /// The two runtime caches are keyed by `TaskStepKey`, so a descendant's entries
+    /// survive only as long as the feed walks that descendant. When the walked set
+    /// shrinks (a child unloads) `pruneRuntimeCaches` drops its entries — otherwise
+    /// the dictionaries grow with every descendant the feed ever showed.
+    ///
+    /// Eviction is proved by the work that re-appears: after the descendant is
+    /// walked again, its 64-call array is rescanned in full and its escalation
+    /// card's thinking is re-resolved — both would be cache hits had the entries
+    /// survived. Probes are snapshotted BEFORE the pass that does the work.
+    ///
+    /// RED: replace the body of `pruneRuntimeCaches(walkedTaskIDs:)` with `return`
+    /// (never prune) → both counters read 0 on the third pass.
+    func testRecomputeAndRebuild_descendantUnloaded_dropsItsCacheEntries() {
+        let roles = [makeRole(id: "r1"), makeRole(id: "r2")]
+        let activeRun = Run(id: 0, steps: [makeStep(roleDefinitionID: "r1")])
+        let child = makeDescendant(
+            taskID: 7, roles: roles,
+            run: Run(id: 0, steps: [parkedStepWithoutAsk(id: "r1", toolCallCount: 64), warmableSettledStep()]))
+        let withChild = makeContext(run: activeRun, roles: roles, descendants: [child])
+        let withoutChild = makeContext(run: activeRun, roles: roles)
+
+        AskCallIndexProbe.reset()
+        ThinkingResolverBuildProbe.reset()
+        viewModel.recomputeAndRebuild(context: withChild)
+        XCTAssertEqual(AskCallIndexProbe.examined(), 64, "anti-vacuum: the child's array is scanned once")
+        XCTAssertEqual(ThinkingResolverBuildProbe.builds(), 1, "anti-vacuum: the child's card is resolved once")
+
+        // The child unloads: the walked set shrinks to the active task alone.
+        viewModel.recomputeAndRebuild(context: withoutChild)
+
+        // It comes back: its entries must be gone, so the work is paid again.
+        AskCallIndexProbe.reset()
+        ThinkingResolverBuildProbe.reset()
+        viewModel.recomputeAndRebuild(context: withChild)
+        XCTAssertEqual(AskCallIndexProbe.examined(), 64, "the child's ask index was evicted and rebuilt")
+        XCTAssertEqual(ThinkingResolverBuildProbe.builds(), 1, "the child's thinking memo was evicted and re-resolved")
+    }
+
+    /// The steady-state tick: the same active task and the same descendant walked
+    /// twice keep both caches warm — an unchanged walked set never prunes.
+    ///
+    /// RED: drop the `guard walkedTaskIDs != cachedWalkedTaskIDs` line AND replace
+    /// the two `filter` predicates with `false` (prune everything on every tick) →
+    /// the second pass rescans 64 and resolves 1.
+    func testRecomputeAndRebuild_sameWalkedSet_keepsWarmCaches() {
+        let roles = [makeRole(id: "r1"), makeRole(id: "r2")]
+        let activeRun = Run(id: 0, steps: [makeStep(roleDefinitionID: "r1")])
+        let child = makeDescendant(
+            taskID: 7, roles: roles,
+            run: Run(id: 0, steps: [parkedStepWithoutAsk(id: "r1", toolCallCount: 64), warmableSettledStep()]))
+        let context = makeContext(run: activeRun, roles: roles, descendants: [child])
+        viewModel.recomputeAndRebuild(context: context)
+        let version = viewModel.timelineVersion
+
+        AskCallIndexProbe.reset()
+        ThinkingResolverBuildProbe.reset()
+        // A pass that REALLY rebuilds (see `testResetForTaskSwitch_clearsAskIndexAndThinkingMemo`).
+        var again = context
+        again.composerVisible = false
+        viewModel.recomputeAndRebuild(context: again)
+
+        XCTAssertGreaterThan(viewModel.timelineVersion, version, "anti-vacuum: the second pass rebuilt")
+        XCTAssertEqual(AskCallIndexProbe.examined(), 0, "the child's ask index stayed warm")
+        XCTAssertEqual(ThinkingResolverBuildProbe.builds(), 0, "the child's thinking memo stayed warm")
+    }
+
+    /// A settled escalation step whose card has exactly one thinking candidate.
+    private func warmableSettledStep() -> StepExecution {
+        settledEscalationStep(
+            id: "r2",
+            messages: [
+                LLMMessage(createdAt: date(50), role: .assistant, content: "Idle.", thinking: "T1"),
+                LLMMessage(createdAt: date(200), role: .user, content: "Supervisor answer: go", sourceContext: .supervisorAnswer),
+            ],
+            answer: "go", updatedAt: date(210))
+    }
+
+    /// A delegated child of the active task (`activeTaskID` is `Int()` == 0 in
+    /// `makeContext`). Its steps share ids with the parent's on purpose —
+    /// `StepExecution.id` is the role id (CLAUDE.md invariant #5).
+    private func makeDescendant(
+        taskID: Int, roles: [TeamRoleDefinition], run: Run
+    ) -> ActivityFeedBuilder.DescendantTask {
+        ActivityFeedBuilder.DescendantTask(
+            task: NTMSTask(
+                id: taskID, title: "Child", supervisorTask: "G", runs: [run],
+                parentTaskID: 0, parentRoleID: "r1", delegationDepth: 1),
+            run: run,
+            teamRoles: roles,
+            teamName: "Startup",
+            delegationDepth: 1,
+            delegatedFromRoleName: "Role r1"
+        )
+    }
+
+    private func date(_ offset: TimeInterval) -> Date {
+        Date(timeIntervalSinceReferenceDate: offset)
+    }
+
+    /// A step parked by a cap: flag set, stored question, NO `ask_supervisor` call.
+    private func parkedStepWithoutAsk(id: String, toolCallCount: Int) -> StepExecution {
+        StepExecution(
+            id: id, role: .custom(id: id), title: "Parked", status: .needsSupervisorInput,
+            toolCalls: (0..<toolCallCount).map { _ in StepToolCall(name: "read_file", argumentsJSON: "{}") },
+            needsSupervisorInput: true, supervisorQuestion: "cap"
+        )
+    }
+
+    /// An answered escalation: no ask calls, flag cleared, question + answer set.
+    private func settledEscalationStep(
+        id: String, messages: [LLMMessage], answer: String, updatedAt: Date
+    ) -> StepExecution {
+        StepExecution(
+            id: id, role: .custom(id: id), title: "Settled", status: .running, updatedAt: updatedAt,
+            toolCalls: [], needsSupervisorInput: false,
+            supervisorQuestion: "Idle — waiting for events.", supervisorAnswer: answer,
+            llmConversation: messages
+        )
+    }
+
+    private func escalationCard(
+        in items: [ActivityFeedBuilder.TaggedItem]
+    ) -> (thinking: String?, createdAt: Date)? {
+        for tagged in items {
+            if case let .notification(_, _, .supervisorInput(_, _, _, _, _, thinking, _), createdAt, _) = tagged.item {
+                return (thinking, createdAt)
+            }
+        }
+        return nil
+    }
+
     // MARK: - Fixtures
 
     private func makeRole(id: String) -> TeamRoleDefinition {
@@ -698,7 +1002,8 @@ final class TeamActivityFeedViewModelOrchestrationTests: XCTestCase {
     private func makeContext(
         run: Run?,
         roles: [TeamRoleDefinition],
-        debug: Bool = false
+        debug: Bool = false,
+        descendants: [ActivityFeedBuilder.DescendantTask] = []
     ) -> TeamActivityFeedViewModel.BuildContext {
         TeamActivityFeedViewModel.BuildContext(
             run: run,
@@ -713,7 +1018,8 @@ final class TeamActivityFeedViewModelOrchestrationTests: XCTestCase {
             supervisorProjectFolderURL: nil,
             workFolderURL: nil,
             debugModeEnabled: debug,
-            isStreaming: { _ in false }
+            isStreaming: { _ in false },
+            descendantTasks: descendants
         )
     }
 

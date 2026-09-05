@@ -2,8 +2,8 @@ import XCTest
 @testable import NanoTeams
 
 /// Coverage for `TeamValidationService.ValidationError.displayMessage(in:)` —
-/// the human-readable bridge that surfaces validation issues (delegation +
-/// dependency) in the Team Editor banner. Each message must resolve role IDs to
+/// the human-readable bridge that surfaces validation issues (delegation policy +
+/// attached skills) in the Team Editor banner. Each message must resolve role IDs to
 /// display names and fall back to the raw ID for unresolved roles, never render
 /// blank, and include the salient artifact / team identifiers.
 @MainActor
@@ -93,42 +93,18 @@ final class TeamValidationServiceDisplayMessageTests: XCTestCase {
         XCTAssertTrue(msg.lowercased().contains("target"))
     }
 
-    // MARK: - Dependency cases
+    // MARK: - Attached-skill case
 
-    func testMissingProducer_message_namesRequiringRole_andArtifact() {
-        let team = makeTeam(roles: [role(id: "swe", name: "Engineer")])
+    /// The one attached-skill case must name the role and surface the dangling skill id — the
+    /// id is the only handle the user has to find and detach the attachment.
+    func testUnknownAttachedSkill_message_namesRole_andIncludesSkillID() {
+        let team = makeTeam(roles: [role(id: "pm", name: "Product Manager")])
         let msg = TeamValidationService.ValidationError
-            .missingProducer(artifact: "Implementation Plan", requiredBy: "swe").displayMessage(in: team)
+            .unknownAttachedSkill(roleID: "pm", skillID: "skills/ghost-skill").displayMessage(in: team)
 
-        XCTAssertTrue(msg.contains("Engineer"))
-        XCTAssertTrue(msg.contains("Implementation Plan"))
-    }
-
-    func testDuplicateProducer_message_listsAllRoleNames() {
-        let team = makeTeam(roles: [role(id: "a", name: "Alpha"), role(id: "b", name: "Beta")])
-        let msg = TeamValidationService.ValidationError
-            .duplicateProducer(artifact: "Design Spec", roleIDs: ["a", "b"]).displayMessage(in: team)
-
-        XCTAssertTrue(msg.contains("Design Spec"))
-        XCTAssertTrue(msg.contains("Alpha"))
-        XCTAssertTrue(msg.contains("Beta"))
-    }
-
-    func testCircularDependency_message_joinsRoleNamesAsChain() {
-        let team = makeTeam(roles: [role(id: "a", name: "Alpha"), role(id: "b", name: "Beta")])
-        let msg = TeamValidationService.ValidationError
-            .circularDependency(roleIDs: ["a", "b", "a"]).displayMessage(in: team)
-
-        XCTAssertTrue(msg.contains("Alpha → Beta → Alpha"), "Chain must render resolved names joined by arrows. Got: \(msg)")
-    }
-
-    func testOrphanArtifact_message_namesProducer_andArtifact() {
-        let team = makeTeam(roles: [role(id: "a", name: "Alpha")])
-        let msg = TeamValidationService.ValidationError
-            .orphanArtifact(artifact: "Engineering Notes", producedBy: "a").displayMessage(in: team)
-
-        XCTAssertTrue(msg.contains("Alpha"))
-        XCTAssertTrue(msg.contains("Engineering Notes"))
+        XCTAssertTrue(msg.contains("Product Manager"))
+        XCTAssertTrue(msg.contains("skills/ghost-skill"), "Must surface the dangling skill id so the user can find/detach it. Got: \(msg)")
+        XCTAssertTrue(msg.lowercased().contains("skill"))
     }
 
     // MARK: - Integration: every emitted policy issue renders a role-named message

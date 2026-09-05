@@ -1,4 +1,7 @@
 import Foundation
+#if DEBUG
+import Synchronization
+#endif
 
 /// Pure (presentation-free) logic lifted out of `SidebarView`'s computed properties so
 /// the row-building, filter-counting, CTA-label, and Autovisor-row decisions are
@@ -34,6 +37,10 @@ enum SidebarViewLogic {
     /// BACKGROUND one) is holding a `bash` command awaiting Allow/Deny — the in-loop
     /// hold keeps the step `.running`, so this badge is the only sidebar signal that a
     /// non-active task is waiting on a command decision.
+    ///
+    /// No `updatedAt` on the item: the row reads the live stamp from
+    /// `TaskFactsProjection.updatedAtByTaskID`, so the array this returns can be cached
+    /// across body passes by `RowsMemo` without freezing the visible "just now".
     static func buildSidebarTaskItems(
         summaries: [TaskSummary],
         seenSupervisorInputTaskIDs: Set<Int>,
@@ -41,7 +48,13 @@ enum SidebarViewLogic {
         engineStates: [Int: TeamEngineState],
         initializingTaskIDs: Set<Int> = []
     ) -> [SidebarTaskItem] {
-        summaries.map { task in
+        // Inside the builder, not beside its caller: a counter next to the call reports
+        // that the caller INTENDED a build; one here reports that the O(T) work ran
+        // (CLAUDE.md #62). `SidebarRowsMemoTests` bounds it at one per N message appends.
+        #if DEBUG
+        SidebarRowsBuildProbe.noteBuild()
+        #endif
+        return summaries.map { task in
             // Keyed on the DURABLE fact, never on `status`: `StatusRecoveryService`
             // parks every waiting step to `.paused` at launch without clearing the
             // question, so a status check goes dark on exactly the chats that are
@@ -53,7 +66,6 @@ enum SidebarViewLogic {
                 id: task.id,
                 title: task.title,
                 status: task.status,
-                updatedAt: task.updatedAt,
                 isChatMode: task.isChatMode,
                 hasUnreadInput: hasUnread,
                 isEngineRunning: engineStates[task.id] == .running,
@@ -61,6 +73,46 @@ enum SidebarViewLogic {
                 isRecurring: task.nextRecurrenceFireAt != nil,
                 hasPendingBashApproval: bashApprovalTaskIDs.contains(task.id)
             )
+        }
+    }
+
+    /// Every input `buildSidebarTaskItems` reads, by value, so a body pass can decide
+    /// "same rows as last time" with one compare instead of rebuilding.
+    ///
+    /// The index rows enter through `rowsRevision` (`TaskFactsProjection`), which the
+    /// write side moves when the row LIST changed (a row new, moved, or different in a
+    /// non-stamp field) and on every whole-index replacement (`replaceAll` / `clear`) —
+    /// never on the `updatedAt`-only tick a message append produces. `autovisorTaskID` is the second input of
+    /// `TaskService.taskSummaries` (it hides the manager row). The four view-side sets are
+    /// compared by value: engine states are an `[Int: TeamEngineState]` compare, O(E) enum
+    /// compares with no `String` work; the seen / bash / initializing sets are small.
+    struct RowsKey: Equatable {
+        var rowsRevision: Int
+        var autovisorTaskID: Int?
+        var seenSupervisorInputTaskIDs: Set<Int>
+        var bashApprovalTaskIDs: Set<Int>
+        var engineStates: [Int: TeamEngineState]
+        var initializingTaskIDs: Set<Int>
+    }
+
+    /// The sidebar's row cache: one key, one array. A hit is a `RowsKey` compare; a miss
+    /// runs `build` once and keeps its result. Pure value type — the `@ObservationIgnored`
+    /// slot that lets a body pass write it lives on `TaskManagementState`, because a view
+    /// may not write its own `@State` during body.
+    ///
+    /// Output invariant: the cached array IS a previous output of the exact pipeline
+    /// `build` runs, and the key covers every input that pipeline reads — so a hit returns
+    /// what a fresh build would (`SidebarRowsMemoTests.testCachedRowsEqualAFreshBuild`).
+    struct RowsMemo {
+        private(set) var key: RowsKey?
+        private(set) var cachedItems: [SidebarTaskItem] = []
+
+        mutating func items(for key: RowsKey, build: () -> [SidebarTaskItem]) -> [SidebarTaskItem] {
+            if self.key == key { return cachedItems }
+            let built = build()
+            self.key = key
+            cachedItems = built
+            return built
         }
     }
 
@@ -154,3 +206,17 @@ enum SidebarViewLogic {
         )
     }
 }
+
+#if DEBUG
+/// Work counter for `SidebarViewLogic.buildSidebarTaskItems` — one increment per O(T) row
+/// build, wired INSIDE the builder so a bound asserted against it is a bound on the work
+/// (CLAUDE.md #57/#62), not on a caller's intent. Read by `SidebarRowsMemoTests`
+/// (builds per N head-task mutations == 1) and reset per test. Same idiom as
+/// `StreamQueryProbe` / `TasksIndexWorkProbe`; compiles away in release.
+nonisolated enum SidebarRowsBuildProbe {
+    private static let _builds = Atomic<Int>(0)
+    static func noteBuild() { _builds.wrappingAdd(1, ordering: .relaxed) }
+    static func builds() -> Int { _builds.load(ordering: .relaxed) }
+    static func reset() { _builds.store(0, ordering: .relaxed) }
+}
+#endif

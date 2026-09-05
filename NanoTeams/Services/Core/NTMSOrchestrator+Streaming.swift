@@ -148,7 +148,9 @@ extension NTMSOrchestrator {
             // the `.assistant` slice above cannot see it, and the watcher only ever
             // receives tuples. Bounds the tool-call scan so a child that was handed
             // guidance mid-delegation (`forward_to_team`) isn't reported as looping for
-            // acting on it.
+            // acting on it. Evaluated only past the watcher's cooldown gate — the parameter
+            // is an `@autoclosure`; keep it as an expression, not a hoisted `let`, or the
+            // laziness is silently lost.
             delegationLoopWatcher.considerCommitted(
                 taskID: taskID,
                 recentAssistant: recentAssistant,

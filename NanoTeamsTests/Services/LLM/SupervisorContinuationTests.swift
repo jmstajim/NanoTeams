@@ -163,8 +163,7 @@ final class SupervisorContinuationTests: XCTestCase {
             title: "Quest Master",
             status: .running
         )
-        var run = Run(id: 0, steps: [step])
-        run.id = 0
+        let run = Run(id: 0, steps: [step])
         task.runs = [run]
         return task
     }

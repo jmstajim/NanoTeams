@@ -35,7 +35,17 @@ struct SidebarView: View {
         // in `filterChips`, `expandedSearchField`, and 3× in `taskList`). Each
         // evaluation rebuilt the whole `SidebarTaskItem` array from `tasksIndex`, and
         // this view is always mounted and reads `store.snapshot` — so the pass ran on
-        // every `mutateTask`, i.e. on every LLM message.
+        // every `mutateTask`, i.e. on every LLM message. Since 2026-09-03 the array is
+        // ALSO memoised on `TaskFactsProjection.rowsRevision`, `store.autovisorTaskID`
+        // (the second input of `TaskService.taskSummaries`) and the four view-side inputs
+        // (seen / bash / engine states / initializing) — `TaskManagementState.sidebarRows`
+        // — so a hit is a key compare. Honest scope: the body still re-runs per `mutateTask` through its
+        // other `store.snapshot` roots (`autovisorTaskID`, `workFolder`, the
+        // `onChange(of: store.snapshot?.projection.id)` key) and through
+        // `taskFacts.updatedAtByTaskID`, which every row reads and every `mutateTask`
+        // writes. A hit skips the index walk and the row build; `filteredTasks` and
+        // `filterCounts` still run Θ(T) over the cached value-type array — the memo removes
+        // the expensive part of the pass, it does not reduce the pass count.
         let tasks = allTasks
         let visibleTasks = taskState.filteredTasks(from: tasks)
         taskList(visibleTasks)
@@ -181,13 +191,7 @@ struct SidebarView: View {
     // MARK: - Task Data
 
     private var allTasks: [SidebarTaskItem] {
-        SidebarViewLogic.buildSidebarTaskItems(
-            summaries: store.taskSummaries(filter: .all),
-            seenSupervisorInputTaskIDs: taskState.seenSupervisorInputTaskIDs,
-            bashApprovalTaskIDs: Set(store.bashApprovalRequests.keys.map(\.taskID)),
-            engineStates: engineState.taskEngineStates,
-            initializingTaskIDs: engineState.initializingRunTaskIDs
-        )
+        taskState.sidebarRows(store: store, engineState: engineState)
     }
 
     /// Live state for the Autovisor nav entry (resolution delegated to
@@ -478,6 +482,11 @@ struct SidebarView: View {
                         Button { selectedItem = .task(task.id) } label: {
                             SidebarTaskRow(
                                 task: task,
+                                // O(1) from the projection, not from the cached item —
+                                // parity (`TaskFactsProjectionParityTests`) pins the lookup
+                                // non-nil for every index row; `.distantPast` renders as a
+                                // visibly wrong date rather than a fabricated "just now".
+                                updatedAt: store.taskFacts.updatedAtByTaskID[task.id] ?? .distantPast,
                                 isSelected: selectedItem == .task(task.id),
                                 displayIndex: offset + 1
                             )
@@ -774,6 +783,9 @@ private func makePreviewStore(
             toolDefinitions: [],
             activeTaskID: activeTaskID
         )
+        // Assigning `snapshot` directly bypasses `apply`, so the projection must be fed
+        // by hand or every preview row's stamp falls back to `.distantPast`.
+        s.taskFacts.replaceAll(with: tasks)
     }
     if engineRunning { s.engineState[0] = .running }
     return s
@@ -838,6 +850,7 @@ private func makePreviewStoreWithAutovisor(
         toolDefinitions: [],
         activeTaskID: nil
     )
+    store.taskFacts.replaceAll(with: tasks)
     if let autovisorEngineState {
         store.engineState[previewAutovisorTaskID] = autovisorEngineState
     }

@@ -961,7 +961,10 @@ final class NTMSOrchestrator {
         )
     }
 
-    /// The ONE way an in-memory index row is written.
+    /// The ONE way an in-memory index row is written — and the one per-row path by which
+    /// `TaskFactsProjection.rowsRevision` moves conditionally (the whole-index paths,
+    /// `apply(_:)` → `replaceAll` and `discardWorkFolderState` → `clear()`, bump it
+    /// unconditionally).
     ///
     /// `tasksIndex` and `taskFacts` describe the same rows, so they must move
     /// together or the shell reacts to a fact the index no longer holds. Three
@@ -974,9 +977,9 @@ final class NTMSOrchestrator {
     /// retirement that must not be MISSED is recorded here rather than sampled later by a
     /// wake. See `noteRowLevelsCleared`.
     func upsertTaskSummary(_ summary: TaskSummary, in snap: inout WorkFolderContext) {
-        let previousRow = snap.tasksIndex.upsert(summary)
-        taskFacts.apply(summary)
-        noteRowLevelsCleared(from: previousRow, to: summary)
+        let outcome = snap.tasksIndex.upsert(summary)
+        taskFacts.apply(summary, outcome: outcome)
+        noteRowLevelsCleared(from: outcome.previous, to: summary)
     }
 
     private func syncSelectedRunID(
@@ -989,12 +992,13 @@ final class NTMSOrchestrator {
 
         let newActiveRunID = task.runs.last?.id
 
-        // A direct `contains` rather than `Set(task.runs.map(\.id))`: this runs on every
-        // active-task mutation (i.e. every LLM message), and the set was allocated — array
-        // plus hash table — to answer ONE membership question. `task.runs` grows
-        // monotonically for a recurring task (a daily recurrence is ~90 runs a quarter).
+        // O(1), not a scan — `Run.id` is the run's position (see `RunService.runIndex`).
+        // This runs on every active-task mutation, i.e. every LLM message, and `task.runs`
+        // grows monotonically for a recurring task (~90 runs a quarter at daily cadence).
+        // Until 2026-09-02 it was `task.runs.contains(where:)`, itself a replacement for a
+        // `Set(task.runs.map(\.id))` allocated to answer ONE membership question.
         if let previousSelectedRunID,
-           task.runs.contains(where: { $0.id == previousSelectedRunID }) {
+           RunService.runIndex(in: task, runID: previousSelectedRunID) != nil {
             if let previousActiveRunID, previousSelectedRunID == previousActiveRunID,
                previousActiveRunID != newActiveRunID
             {

@@ -1,5 +1,8 @@
 import Foundation
 import Observation
+#if DEBUG
+import Synchronization
+#endif
 
 // MARK: - Configuration Storage
 
@@ -207,26 +210,45 @@ final class StoreConfiguration {
     /// `seenSupervisorInputKeys` uses, and for the same reason (task IDs are
     /// per-folder sequential ints). Mutated only through the typed helpers below;
     /// `private(set)` so no caller can hand-roll an un-namespaced entry.
+    ///
+    /// Every helper checks membership before mutating (`contains` per key; the filtered
+    /// count in `forgetDismissals`): `Set.insert` of a member, `Set.remove` of a
+    /// non-member and a filter that drops nothing leave the set unchanged but still fire `didSet`, i.e.
+    /// a whole-set re-serialisation to UserDefaults plus an observation tick — and the
+    /// no-op IS the common case (every answer retires a key that is almost never there,
+    /// `MainLayoutView` re-dismisses every visible banner on each chat open). A check
+    /// that decides whether to write must not cost the write (CLAUDE.md #106); pinned by
+    /// `DismissalStoreProbe`.
     private(set) var dismissedNotificationKeys: Set<String> {
         didSet {
+            #if DEBUG
+            DismissalStoreProbe.noteWrite()
+            #endif
             storage.set(Array(dismissedNotificationKeys), forKey: Keys.dismissedNotificationIDs)
         }
     }
 
     func dismissNotification(workFolderID: UUID, key: WatchtowerDismissKey) {
-        dismissedNotificationKeys.insert(Self.dismissEntry(workFolderID: workFolderID, key: key))
+        let entry = Self.dismissEntry(workFolderID: workFolderID, key: key)
+        guard !dismissedNotificationKeys.contains(entry) else { return }
+        dismissedNotificationKeys.insert(entry)
     }
 
     func undismissNotification(workFolderID: UUID, key: WatchtowerDismissKey) {
-        dismissedNotificationKeys.remove(Self.dismissEntry(workFolderID: workFolderID, key: key))
+        let entry = Self.dismissEntry(workFolderID: workFolderID, key: key)
+        guard dismissedNotificationKeys.contains(entry) else { return }
+        dismissedNotificationKeys.remove(entry)
     }
 
     /// Batch form — one `didSet`, therefore one `UserDefaults` write and one
     /// observation tick, for a garbage-collection sweep that expires several keys.
+    /// Membership is checked per KEY (O(|keys|) hashed lookups), never by walking the
+    /// stored set; no hit ⇒ no write.
     func undismissNotifications(workFolderID: UUID, keys: Set<WatchtowerDismissKey>) {
-        guard !keys.isEmpty else { return }
-        let entries = Set(keys.map { Self.dismissEntry(workFolderID: workFolderID, key: $0) })
-        dismissedNotificationKeys.subtract(entries)
+        let hits = keys.map { Self.dismissEntry(workFolderID: workFolderID, key: $0) }
+            .filter { dismissedNotificationKeys.contains($0) }
+        guard !hits.isEmpty else { return }
+        dismissedNotificationKeys.subtract(hits)
     }
 
     func isDismissed(workFolderID: UUID, key: WatchtowerDismissKey) -> Bool {
@@ -247,11 +269,16 @@ final class StoreConfiguration {
         return result
     }
 
-    /// Drops every dismissal belonging to one task — called when the task is deleted,
-    /// so a reused row can never inherit a stale suppression.
+    /// Drops every dismissal belonging to one task — called when the task is closed or
+    /// deleted, so nothing of it rides the set into later sessions. A task that never had
+    /// a banner dismissed is the common closed task, and a filter that drops nothing must
+    /// not re-serialise the set (see the property's doc).
     func forgetDismissals(workFolderID: UUID, taskID: Int) {
         let prefix = "\(workFolderID.uuidString):t\(taskID)::"
-        dismissedNotificationKeys = dismissedNotificationKeys.filter { !$0.hasPrefix(prefix) }
+        let kept = dismissedNotificationKeys.filter { !$0.hasPrefix(prefix) }
+        // The filter is the membership check here; a count compare costs nothing more.
+        guard kept.count != dismissedNotificationKeys.count else { return }
+        dismissedNotificationKeys = kept
     }
 
     private static func dismissEntry(workFolderID: UUID, key: WatchtowerDismissKey) -> String {
@@ -927,8 +954,6 @@ final class StoreConfiguration {
 
     init(storage: any ConfigurationStorage = UserDefaults.standard) {
         self.storage = storage
-        Self.migrateExpandedSearchKeys(storage)
-        Self.purgeRetiredKeys(storage)
         Self.purgeStaleDefaultGlobalContext(storage)
         self.providerEndpointMemory = storage.data(forKey: Keys.llmProviderEndpoints)
             .flatMap { try? JSONDecoder().decode([String: ProviderEndpoint].self, from: $0) }
@@ -972,6 +997,7 @@ final class StoreConfiguration {
         // leave permanent garbage; the visible cost is that a handful of pre-upgrade
         // dismissals reappear once, which is the safe direction (a banner returning
         // beats a banner suppressed forever).
+        // TODO(2026-Q4): remove once all live installs have purged.
         storage.removeObject(forKey: Keys.legacyDismissedNotificationIDsV1)
         let rawTipIDs = (storage.object(forKey: Keys.dismissedFeatureTipIDs) as? [String]) ?? []
         self.dismissedFeatureTipIDs = Set(rawTipIDs)
@@ -1077,7 +1103,10 @@ final class StoreConfiguration {
             self.bashSandboxPermissions = BashSandboxPermissions()
         }
         self.bashAllowUnsandboxedFallback = storage.bool(forKey: Keys.bashAllowUnsandboxedFallback)
-        // Migrate the legacy plain `bashJudgeModel` string into the override struct.
+        // One-shot migration of the legacy plain `bashJudgeModel` string into the
+        // override struct. Shipped 2026-06-27; carried no date until 2026-09-05, which
+        // is why the scan that guards dated obligations could not see it (DEBTS.md D-32).
+        // TODO(2026-Q4): remove once all live installs have migrated.
         if let data = storage.data(forKey: Keys.bashJudgeLLMOverride),
            let decoded = try? JSONCoderFactory.makeDateDecoder().decode(LLMOverride.self, from: data),
            !decoded.isEmpty {
@@ -1087,8 +1116,8 @@ final class StoreConfiguration {
             let migrated = LLMOverride(modelName: legacyModel)
             self.bashJudgeLLMOverride = migrated
             // Write through ONCE and drop the legacy key (didSet doesn't fire during
-            // init). Mirrors `migrateExpandedSearchKeys` — without this the migration
-            // re-runs every launch and could resurrect a later-cleared override.
+            // init) — without this the migration re-runs every launch and could
+            // resurrect an override the user later cleared.
             if let data = try? JSONCoderFactory.makePersistenceEncoder().encode(migrated) {
                 storage.set(data, forKey: Keys.bashJudgeLLMOverride)
             }
@@ -1115,51 +1144,6 @@ final class StoreConfiguration {
 
     // MARK: - Migration
 
-    /// One-shot migration: copies legacy `expandedSearch*` UserDefaults keys
-    /// into the new `exploratorySearch*` keys and removes the originals.
-    /// Idempotent — after the first run there's nothing left to migrate.
-    /// TODO(2026-Q3): remove once all live installs have migrated.
-    private static func migrateExpandedSearchKeys(_ storage: any ConfigurationStorage) {
-        let pairs: [(old: String, new: String)] = [
-            ("NanoTeams.search.expandedSearchEnabled.v1",           UserDefaultsKeys.exploratorySearchEnabled),
-            ("NanoTeams.search.expandedSearchEmbeddingConfig.v1",   UserDefaultsKeys.exploratorySearchEmbeddingConfig),
-            ("NanoTeams.search.expandedSearchPerTokenThreshold.v1", UserDefaultsKeys.exploratorySearchPerTokenThreshold),
-            ("NanoTeams.search.expandedSearchPhraseThreshold.v1",   UserDefaultsKeys.exploratorySearchPhraseThreshold),
-        ]
-        for (oldKey, newKey) in pairs {
-            // Copy only when the new key is empty — never clobber a value the
-            // user committed to under the new name. But always drop the legacy
-            // key afterwards so the next migration run is a no-op.
-            if storage.object(forKey: newKey) == nil, let value = storage.object(forKey: oldKey) {
-                storage.set(value, forKey: newKey)
-            }
-            storage.removeObject(forKey: oldKey)
-        }
-    }
-
-    /// One-shot cleanup of UserDefaults keys whose settings were retired.
-    /// Idempotent — after the first run there is nothing left to remove.
-    ///
-    /// Retiring a setting deletes its `Keys` entry, which also deletes the
-    /// `removeObject` line in `resetToDefaults` — so without this the stored
-    /// value survives forever on upgraded installs, invisible to the app and
-    /// untouched even by a full reset. The literals are spelled out because
-    /// the constants no longer exist.
-    ///
-    /// Retired 2026-07 when LM Studio became the sole owner of sampling
-    /// (`temperature` / `max_output_tokens` are no longer sent on the wire).
-    /// TODO(2026-Q4): remove once all live installs have purged.
-    private static func purgeRetiredKeys(_ storage: any ConfigurationStorage) {
-        let retired = [
-            "llmMaxTokens",                    // un-prefixed legacy key
-            "llmTemperature",                  // un-prefixed legacy key
-            "NanoTeams.vision.maxTokens.v1",
-        ]
-        for key in retired where storage.object(forKey: key) != nil {
-            storage.removeObject(forKey: key)
-        }
-    }
-
     /// One-shot: drop a stored `globalContext` byte-identical to any RETIRED
     /// default, so the current `AppDefaults.globalContext` applies again.
     ///
@@ -1184,7 +1168,12 @@ final class StoreConfiguration {
     /// shipped default is a copy, never a choice, so removing it cannot discard
     /// a customisation. Bumping the key to `.v2` would — that is why this is a
     /// targeted purge and not a version bump.
-    /// Idempotent. TODO(2027-Q2): remove once all live installs have migrated.
+    /// Idempotent. Deliberately carries NO `TODO(<year>-Q<n>)`: every future retirement
+    /// of a `globalContext` default re-arms this purge by adding a literal to
+    /// `AppDefaults.retiredGlobalContextDefaults`, so the only action a date could ever
+    /// prompt is extending it — and a date that can only be extended is noise in the scan
+    /// that guards real deadlines. What discharges this is the roster going empty, not a
+    /// quarter passing (DEBTS.md D-32, 2026-09-05).
     private static func purgeStaleDefaultGlobalContext(_ storage: any ConfigurationStorage) {
         // Unwrap BEFORE the roster lookup. The old `Optional<String> == String`
         // comparison typechecked; `[String].contains` does not, and the shortcut
@@ -1369,3 +1358,21 @@ final class StoreConfiguration {
     }
     nonisolated deinit {}
 }
+
+#if DEBUG
+/// Work-bound seam for the persisted dismissal set: how many times `didSet`
+/// re-serialised the WHOLE set to UserDefaults since the last reset.
+///
+/// It lives inside the `didSet`, not beside a call site, for the reason CLAUDE.md #62
+/// records: the defect being pinned is a mutation that changes nothing and still
+/// writes, and a counter placed at the helper's entry would count calls whether or
+/// not they wrote. A regression here is invisible in OUTPUT — a redundant identical
+/// write returns exactly the same dismissal state — which is why the pin is a
+/// counter, not an assertion on the set.
+nonisolated enum DismissalStoreProbe {
+    private static let _writes = Atomic<Int>(0)
+    static func noteWrite() { _writes.wrappingAdd(1, ordering: .relaxed) }
+    static func _testWrites() -> Int { _writes.load(ordering: .relaxed) }
+    static func _testReset() { _writes.store(0, ordering: .relaxed) }
+}
+#endif

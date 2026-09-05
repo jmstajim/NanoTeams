@@ -73,11 +73,9 @@ final class SidebarSeenIndicatorE2ETests: XCTestCase {
     func testFilteredTasks_seenTask_stillVisible_underRunningFilter() {
         let seen = SidebarTaskItem(id: 7, title: "Seen",
                                    status: .running,
-                                   updatedAt: MonotonicClock.shared.now(),
                                    isChatMode: false)
         let unseen = SidebarTaskItem(id: 8, title: "Unseen",
                                      status: .running,
-                                     updatedAt: MonotonicClock.shared.now(),
                                      isChatMode: false)
 
         sut.markSupervisorInputSeen(taskID: 7)

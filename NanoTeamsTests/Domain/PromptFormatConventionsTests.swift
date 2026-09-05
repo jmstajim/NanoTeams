@@ -138,14 +138,6 @@ final class PromptFormatConventionsTests: XCTestCase {
 
     // MARK: - Invariant 2: section headers are Title Case, not ALL-CAPS
 
-    /// Whitelisted single-word ALL-CAPS section titles that intentionally
-    /// remain uppercase as load-bearing emphasis (per existing
-    /// SystemTemplatesSectionPinTests pinning). These are exempt from the
-    /// Title-Case rule.
-    private static let allCapsTitleExemptions: Set<String> = [
-        "## PLANNING PHASE",  // PromptBuilder planning-phase prompt — load-bearing marker
-    ]
-
     func testSectionHeaders_areNotAllCaps() {
         // Matches `## SOMETHING` where SOMETHING is at least 4 chars and
         // entirely uppercase letters / spaces (no lowercase letter anywhere
@@ -162,7 +154,6 @@ final class PromptFormatConventionsTests: XCTestCase {
             for match in matches {
                 let header = ns.substring(with: match.range)
                 let trimmed = header.trimmingCharacters(in: .whitespaces)
-                if Self.allCapsTitleExemptions.contains(trimmed) { continue }
                 XCTFail("[\(label)] ALL-CAPS section header `\(trimmed)` — use Title Case (e.g. `## Memories`)")
             }
         }

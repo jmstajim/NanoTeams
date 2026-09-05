@@ -367,8 +367,9 @@ protocol LLMStreamingDelegate: AnyObject {
     func replaceStreamingPreview(stepID: String, taskID: Int, messageID: UUID, role: Role, content: String)
     /// Appends thinking content to the streaming preview for a step.
     func appendStreamingThinking(stepID: String, taskID: Int, content: String)
-    /// Commits streaming: updates the pre-created LLMMessage with final content and thinking,
-    /// and updates/creates the corresponding StepMessage.
+    /// Commits streaming: fills the pre-created LLMMessage with final content and thinking,
+    /// and appends the StepMessage for the turn (the id is minted per streaming turn, so no
+    /// prior StepMessage carries it).
     func commitStreaming(stepID: String, taskID: Int, content: String, thinking: String?) async
     /// Discards a top-level looping generation: removes the pre-created empty
     /// `LLMMessage` (by `messageID`) and clears the streaming preview. Called by

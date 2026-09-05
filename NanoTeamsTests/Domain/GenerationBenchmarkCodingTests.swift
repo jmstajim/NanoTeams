@@ -32,7 +32,7 @@ final class GenerationBenchmarkCodingTests: XCTestCase {
     func testSample_legacyRowWithoutOptionalFields_decodes() throws {
         let json = """
         {"id":"\(UUID().uuidString)","runID":"\(UUID().uuidString)",
-         "recordedAt":"2026-08-19T10:00:00.000Z","phase":"measured","sampleIndex":0}
+         "recordedAt":"2026-08-19T21:00:00.000Z","phase":"measured","sampleIndex":0}
         """
         let sample = try decoder.decode(GenerationBenchmarkSample.self, from: Data(json.utf8))
         XCTAssertNil(sample.outputTokens)
@@ -45,7 +45,7 @@ final class GenerationBenchmarkCodingTests: XCTestCase {
     /// median, and the history quietly reports fewer samples than it holds.
     func testSample_missingPhase_defaultsToMeasured() throws {
         let json = """
-        {"runID":"\(UUID().uuidString)","recordedAt":"2026-08-19T10:00:00.000Z"}
+        {"runID":"\(UUID().uuidString)","recordedAt":"2026-08-19T21:00:00.000Z"}
         """
         let sample = try decoder.decode(GenerationBenchmarkSample.self, from: Data(json.utf8))
         XCTAssertEqual(sample.phase, .measured)
@@ -89,7 +89,7 @@ final class GenerationBenchmarkCodingTests: XCTestCase {
 
     func testRun_legacyRowWithoutOptionalFields_decodes() throws {
         let json = """
-        {"id":"\(UUID().uuidString)","startedAt":"2026-08-19T10:00:00.000Z",
+        {"id":"\(UUID().uuidString)","startedAt":"2026-08-19T21:00:00.000Z",
          "provider":"lmStudio"}
         """
         let run = try decoder.decode(GenerationBenchmarkRun.self, from: Data(json.utf8))
@@ -108,7 +108,7 @@ final class GenerationBenchmarkCodingTests: XCTestCase {
     /// though the file states the format in plain sight.
     func testRun_legacyRow_promotesFormatAndQuantizationFromServerFields() throws {
         let json = """
-        {"id":"\(UUID().uuidString)","startedAt":"2026-08-19T10:00:00.000Z",
+        {"id":"\(UUID().uuidString)","startedAt":"2026-08-19T21:00:00.000Z",
          "provider":"ollama",
          "serverFields":{"Format":"gguf","Quantization":"Q4_K_M"}}
         """
@@ -128,7 +128,7 @@ final class GenerationBenchmarkCodingTests: XCTestCase {
     /// promoted — the fallback reads the exact labels the clients wrote, not a fuzzy match.
     func testRun_legacyRow_lowercaseServerFieldKeys_areNotPromoted() throws {
         let json = """
-        {"id":"\(UUID().uuidString)","startedAt":"2026-08-19T10:00:00.000Z",
+        {"id":"\(UUID().uuidString)","startedAt":"2026-08-19T21:00:00.000Z",
          "provider":"ollama","serverFields":{"format":"gguf","quantization":"Q4_K_M"}}
         """
         let run = try decoder.decode(GenerationBenchmarkRun.self, from: Data(json.utf8))
@@ -141,7 +141,7 @@ final class GenerationBenchmarkCodingTests: XCTestCase {
     /// field stops being the authority its name claims.
     func testRun_typedFieldsWinOverServerFieldsOnDecode() throws {
         let json = """
-        {"id":"\(UUID().uuidString)","startedAt":"2026-08-19T10:00:00.000Z",
+        {"id":"\(UUID().uuidString)","startedAt":"2026-08-19T21:00:00.000Z",
          "provider":"lmStudio","modelFormat":"mlx","quantization":"4bit",
          "serverFields":{"Format":"gguf","Quantization":"Q4_K_M"}}
         """
@@ -214,7 +214,7 @@ final class GenerationBenchmarkCodingTests: XCTestCase {
     /// a failure. RED: make either key required → every historical row stops loading.
     func testSample_writtenBeforeTheseFieldsExisted_stillDecodes() throws {
         let json = """
-        {"runID":"\(UUID().uuidString)","recordedAt":"2026-08-19T10:00:00.000Z",\
+        {"runID":"\(UUID().uuidString)","recordedAt":"2026-08-19T21:00:00.000Z",\
         "phase":"measured","sampleIndex":0,"totalMs":18000}
         """
         let decoded = try JSONCoderFactory.makeDateDecoder()

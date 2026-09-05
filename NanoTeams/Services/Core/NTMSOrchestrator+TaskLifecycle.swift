@@ -204,26 +204,26 @@ extension NTMSOrchestrator {
             // Finalize any non-done steps and their roles.
             // Critical for chat mode where advisory roles run indefinitely.
             // No-op for non-chat tasks (all steps already .done at acceptance time).
-            guard var run = task.runs.last else { return }
-            let now = MonotonicClock.shared.now()
-            for i in run.steps.indices {
-                let status = run.steps[i].status
-                if status == .running || status == .paused || status == .needsSupervisorInput {
-                    run.steps[i].status = .done
-                    run.steps[i].completedAt = now
-                    run.roleStatuses[run.steps[i].effectiveRoleID] = .done
+            RunService.mutateActiveRun(in: &task) { run in
+                let now = MonotonicClock.shared.now()
+                for i in run.steps.indices {
+                    let status = run.steps[i].status
+                    if status == .running || status == .paused || status == .needsSupervisorInput {
+                        run.steps[i].status = .done
+                        run.steps[i].completedAt = now
+                        run.roleStatuses[run.steps[i].effectiveRoleID] = .done
+                    }
                 }
+                // Finalize every remaining non-terminal role to `.done` — closing is an
+                // implicit acceptance of completed work AND a finalization of roles that
+                // never ran (idle / ready / revisionRequested / needsAcceptance, plus a
+                // .working role whose step is still .pending). `.failed` is preserved.
+                // Supersedes the old needsAcceptance-only pass; without it the team graph
+                // keeps rendering non-terminal pills on the closed task (it reads
+                // `roleStatuses` raw).
+                run.finalizeRoleStatusesForClose()
+                run.updatedAt = now
             }
-            // Finalize every remaining non-terminal role to `.done` — closing is an
-            // implicit acceptance of completed work AND a finalization of roles that
-            // never ran (idle / ready / revisionRequested / needsAcceptance, plus a
-            // .working role whose step is still .pending). `.failed` is preserved.
-            // Supersedes the old needsAcceptance-only pass; without it the team graph
-            // keeps rendering non-terminal pills on the closed task (it reads
-            // `roleStatuses` raw).
-            run.finalizeRoleStatusesForClose()
-            run.updatedAt = now
-            task.runs[task.runs.count - 1] = run
         }
         guard success else { return false }
         // A closed task produces no banners (WatchtowerInboxBuilder gates on closedAt),

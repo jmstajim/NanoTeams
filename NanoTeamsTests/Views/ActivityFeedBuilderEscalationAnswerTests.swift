@@ -7,7 +7,7 @@ import XCTest
 /// idle park — no `ask_supervisor` tool call) must stay visible in the feed
 /// FOREVER, across re-parks.
 ///
-/// Mechanism under test (`escalationCard(for:)` + the pairing-aware
+/// Mechanism under test (`escalationCard(for:askIndex:isActive:)` + the pairing-aware
 /// `.supervisorAnswer` suppression in `emitItems`):
 /// - While `step.supervisorAnswer` is set (just answered), the synthesized
 ///   Q&A card owns the latest unpaired answer — its bubble is suppressed so
@@ -18,10 +18,11 @@ import XCTest
 ///   Pre-fix, the suppression was unconditional and the user's message
 ///   vanished from the UI entirely ("пропало сообщение после отправки
 ///   сообщения автовизору").
-/// - Answers paired with real `ask_supervisor` tool calls (first
-///   `askCallCount` in conversation order — the SAME index rule the
-///   answered-notification loop uses) keep rendering inside their ask cards
-///   only: zero change to the normal path.
+/// - Answers paired with real `ask_supervisor` tool calls (the first
+///   `asks.count` — `StepFeedAux.askIndex.count` — `.supervisorAnswer` messages
+///   in conversation order, the SAME index rule the answered-notification loop
+///   uses) keep rendering inside their ask cards only: zero change to the
+///   normal path.
 final class ActivityFeedBuilderEscalationAnswerTests: XCTestCase {
 
     override func setUp() {

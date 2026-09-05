@@ -270,6 +270,7 @@ nonisolated extension NTMSRepository {
         // pre-split format. Idempotent — after first launch the file is gone. This
         // is NOT a migration (we don't read the old data); it's housekeeping to
         // avoid leaving a 100 KB stale file on disk.
+        // TODO(2026-Q4): remove once all live installs have purged.
         let legacyProjectJSON = paths.internalDir.appendingPathComponent("project.json", isDirectory: false)
         if fileManager.fileExists(atPath: legacyProjectJSON.path) {
             do {

@@ -256,6 +256,17 @@ nonisolated enum ActivityFeedBuilder {
 
     // MARK: - Build
 
+    /// One rebuild's two outputs, produced by the SAME walk over the same steps.
+    nonisolated struct TimelineBuild {
+        let items: [TaggedItem]
+        /// Message ids that are the implicit stream target of a `.running` step
+        /// — its latest visible turn by `createdAt`, at most one per running
+        /// step, for the active task and every descendant walked. Derived
+        /// inside `emitItems`' message walk, so it can never name a message of
+        /// a step this build did not walk.
+        let implicitStreamTargetIDs: Set<UUID>
+    }
+
     /// Builds the sorted, annotated activity timeline from domain data.
     /// - Parameters:
     ///   - steps: Pre-filtered step executions for the active team members.
@@ -274,6 +285,11 @@ nonisolated enum ActivityFeedBuilder {
     ///     V1 cosmetic risk.
     ///   - debugModeEnabled: When true, includes all messages without filtering.
     ///   - isStreaming: Returns true if the message with the given ID is actively streaming.
+    ///
+    /// A projection of `buildTimeline(...)`. Kept with this exact signature so
+    /// the ConversationLog renderer and the test corpus keep one call shape;
+    /// the view model calls `buildTimeline` to also receive the implicit
+    /// stream targets and to hand in its per-step caches.
     static func buildTimelineItems(
         steps: [StepExecution],
         run: Run?,
@@ -291,6 +307,59 @@ nonisolated enum ActivityFeedBuilder {
         activeQuestions: [ActiveSupervisorQuestion] = [],
         isStreaming isStreamingQuery: (UUID) -> Bool
     ) -> [TaggedItem] {
+        buildTimeline(
+            steps: steps,
+            run: run,
+            teamRoles: teamRoles,
+            activeTaskID: activeTaskID,
+            descendantTasks: descendantTasks,
+            supervisorBrief: supervisorBrief,
+            supervisorBriefDate: supervisorBriefDate,
+            supervisorTask: supervisorTask,
+            supervisorClippedTexts: supervisorClippedTexts,
+            supervisorAttachmentPaths: supervisorAttachmentPaths,
+            supervisorProjectFolderURL: supervisorProjectFolderURL,
+            stepArtifactContentCache: stepArtifactContentCache,
+            debugModeEnabled: debugModeEnabled,
+            activeQuestions: activeQuestions,
+            isStreaming: isStreamingQuery
+        ).items
+    }
+
+    /// The full build: items plus the implicit-stream-target set, one walk.
+    ///
+    /// Two extra closures let a caller with per-step runtime caches supply them
+    /// without the builder growing state (it stays stateless — the detached
+    /// ConversationLog render shares it and must not see a view's memo):
+    ///   - `askIndex(originTaskID, step)` — the step's `AskCallIndex`. The
+    ///     default scans `step.toolCalls`; the view model returns an index
+    ///     extended suffix-only from its `TaskStepKey`-keyed cache.
+    ///   - `escalationThinking(key, answerMessageID, compute)` — the escalation
+    ///     card's resolved `thinking` for the answer turn `answerMessageID`. The
+    ///     default calls `compute()`; the view model memoizes by that key (see
+    ///     `ThinkingResolver` for why the value is frozen once the answer exists).
+    /// Both are non-escaping and passed straight through to `emitItems` — not
+    /// wrapped in closure literals, for the reason the `isStreaming` local
+    /// function below exists.
+    static func buildTimeline(
+        steps: [StepExecution],
+        run: Run?,
+        teamRoles: [TeamRoleDefinition] = [],
+        activeTaskID: Int = 0,
+        descendantTasks: [DescendantTask] = [],
+        supervisorBrief: String? = nil,
+        supervisorBriefDate: Date? = nil,
+        supervisorTask: String? = nil,
+        supervisorClippedTexts: [String] = [],
+        supervisorAttachmentPaths: [String] = [],
+        supervisorProjectFolderURL: URL? = nil,
+        stepArtifactContentCache: [String: Set<String>],
+        debugModeEnabled: Bool,
+        activeQuestions: [ActiveSupervisorQuestion] = [],
+        askIndex: (Int, StepExecution) -> AskCallIndex = { AskCallIndex(toolCalls: $1.toolCalls) },
+        escalationThinking: (TaskStepKey, UUID, () -> String?) -> String? = { _, _, compute in compute() },
+        isStreaming isStreamingQuery: (UUID) -> Bool
+    ) -> TimelineBuild {
         // Every ask of the caller's closure goes through here so `StreamQueryProbe`
         // can count them — the seam `ActivityFeedBuilderSortCostTests` uses to pin
         // the ask at Θ(N) rather than Θ(N log N). A local FUNCTION, not a closure
@@ -305,6 +374,7 @@ nonisolated enum ActivityFeedBuilder {
             return isStreamingQuery(id)
         }
         var items: [TeamActivityTimelineItem] = []
+        var implicitStreamTargets: Set<UUID> = []
 
         // Compute once — `emitItems` matches `msg.id` against this set to suppress
         // the assistant bubble whose turn the question card is currently fronting.
@@ -325,6 +395,7 @@ nonisolated enum ActivityFeedBuilder {
         // Active task: emit items as before, stamped with activeTaskID.
         emitItems(
             into: &items,
+            implicitStreamTargets: &implicitStreamTargets,
             steps: steps,
             run: run,
             teamRoles: teamRoles,
@@ -332,6 +403,8 @@ nonisolated enum ActivityFeedBuilder {
             stepArtifactContentCache: stepArtifactContentCache,
             debugModeEnabled: debugModeEnabled,
             suppressedMessageIDs: suppressedMessageIDs,
+            askIndex: askIndex,
+            escalationThinking: escalationThinking,
             isStreaming: isStreaming
         )
 
@@ -343,6 +416,7 @@ nonisolated enum ActivityFeedBuilder {
         for descendant in descendantTasks {
             emitItems(
                 into: &items,
+                implicitStreamTargets: &implicitStreamTargets,
                 steps: descendant.run.steps,
                 run: descendant.run,
                 teamRoles: descendant.teamRoles,
@@ -350,6 +424,8 @@ nonisolated enum ActivityFeedBuilder {
                 stepArtifactContentCache: stepArtifactContentCache,
                 debugModeEnabled: debugModeEnabled,
                 suppressedMessageIDs: suppressedMessageIDs,
+                askIndex: askIndex,
+                escalationThinking: escalationThinking,
                 isStreaming: isStreaming
             )
         }
@@ -416,13 +492,36 @@ nonisolated enum ActivityFeedBuilder {
         // Index descendants by task ID for boundary annotation lookups.
         var descendantsByID: [Int: DescendantTask] = [:]
         for d in descendantTasks { descendantsByID[d.task.id] = d }
-        return annotate(sorted, activeTaskID: activeTaskID, descendantsByID: descendantsByID)
+        return TimelineBuild(
+            items: annotate(sorted, activeTaskID: activeTaskID, descendantsByID: descendantsByID),
+            implicitStreamTargetIDs: implicitStreamTargets
+        )
     }
 
     // MARK: - Per-task emission
 
+    /// Everything the second step loop needs that the first step loop already
+    /// derived — computed ONCE per step per build and read back by POSITION.
+    ///
+    /// Indexed by the step's position in `steps`, never by `step.id`: the id is
+    /// the role id and repeats across descendant tasks within one build.
+    private struct StepFeedAux {
+        /// Positions of the step's `ask_supervisor` calls (one `toolCalls` pass,
+        /// or none when the caller's cache already describes the array).
+        let askIndex: AskCallIndex
+        /// Positions in `llmConversation` of every `.supervisorAnswer` message,
+        /// in conversation order — the SAME ordered filter both loops used to
+        /// materialize separately, so answer k still pairs with ask k.
+        let answerIndices: [Int]
+        /// The settled escalation card, when the step renders one.
+        let card: EscalationCard?
+        /// `step.hasActiveSupervisorInput`, evaluated once.
+        let isActive: Bool
+    }
+
     private static func emitItems(
         into items: inout [TeamActivityTimelineItem],
+        implicitStreamTargets: inout Set<UUID>,
         steps: [StepExecution],
         run: Run?,
         teamRoles: [TeamRoleDefinition],
@@ -430,8 +529,13 @@ nonisolated enum ActivityFeedBuilder {
         stepArtifactContentCache: [String: Set<String>],
         debugModeEnabled: Bool,
         suppressedMessageIDs: Set<UUID> = [],
+        askIndex: (Int, StepExecution) -> AskCallIndex,
+        escalationThinking: (TaskStepKey, UUID, () -> String?) -> String?,
         isStreaming: (UUID) -> Bool
     ) {
+        var aux: [StepFeedAux] = []
+        aux.reserveCapacity(steps.count)
+
         // Step messages, tool calls, and artifacts
         for step in steps {
             let role = step.role
@@ -439,33 +543,64 @@ nonisolated enum ActivityFeedBuilder {
             let artifactContents: Set<String> = debugModeEnabled ? [] : (stepArtifactContentCache[step.id] ?? [])
 
             // Pairing-aware `.supervisorAnswer` suppression. The first
-            // `askCallCount` answer messages (conversation order — the SAME index
+            // `asks.count` answer messages (conversation order — the SAME index
             // rule the answered-notification loop below uses, so the two surfaces
             // can't disagree) pair with `ask_supervisor` tool calls and render
             // inside their Q&A cards. The escalation card (no ask calls — drift
             // caps / Autovisor idle park) owns at most the LATEST answer, and only
-            // while its gate holds (`escalationCard(for:)`). Every OTHER answer is
-            // UNPAIRED and falls through to a durable Supervisor bubble — without
-            // this, a re-park clearing `step.supervisorAnswer` (single-slot) made
-            // the user's answer vanish from the feed entirely, even though the LLM
-            // had already consumed it.
-            let askCallCount = step.toolCalls.count { $0.name == ToolNames.askSupervisor }
-            // Materialize the answer ids ONLY when a card can actually own one. With no
-            // `ask_supervisor` call — the overwhelming majority of steps — `prefix(0)`
-            // discarded the whole array, so the filter+map was a full pass over an
-            // UNBOUNDED conversation (`maxToolIterations == 0`; nothing prunes it) paid on
-            // every feed rebuild, i.e. on every appended turn. Same shape, same reason, as
-            // the `last(where:)`-not-`filter{}.last` note in
-            // `ActivityFeedBuilder+SupervisorQuestions` — that fix was never swept here.
-            let pairedAnswerIDs: Set<UUID> = askCallCount == 0 ? [] : Set(
-                step.llmConversation
-                    .lazy
-                    .filter { $0.sourceContext == .supervisorAnswer }
-                    .map(\.id)
-                    .prefix(askCallCount))
-            let cardOwnedAnswerID = Self.escalationCard(for: step)?.answerMessage?.id
+            // while its gate holds (`escalationCard(for:askIndex:isActive:)`). Every
+            // OTHER answer is UNPAIRED and falls through to a durable Supervisor
+            // bubble — without this, a re-park clearing `step.supervisorAnswer`
+            // (single-slot) made the user's answer vanish from the feed entirely,
+            // even though the LLM had already consumed it.
+            //
+            // One per-step auxiliary, derived here and read by the second loop
+            // through `aux`. This used to be separate passes per step per rebuild
+            // over `toolCalls` / `llmConversation` — a `count`, a `filter`, two
+            // `contains`, two `last(where:)` and two gated `.supervisorAnswer`
+            // filters — plus three `hasActiveSupervisorInput` evaluations (an O(1)
+            // flag check that walks the conversation tail only when the trailing
+            // call is an ask), on receivers with no ceiling
+            // (`LLMConstants.maxToolIterations == 0`) and on the feed's 50 ms
+            // streaming cadence. Now: one `toolCalls` pass (or none, when the
+            // caller's cache already describes the array) and the ONE conversation
+            // walk below that emits the bubbles anyway.
+            let asks = askIndex(originTaskID, step)
+            let stepIsActive = step.hasActiveSupervisorInput
+            let card = Self.escalationCard(for: step, askIndex: asks, isActive: stepIsActive)
+            let cardOwnedAnswerID = card?.answerMessage?.id
+            var answerIndices: [Int] = []
 
-            for msg in step.llmConversation where msg.role != .system && msg.role != .tool {
+            // Implicit stream target: the ONE message a `.running` step streams
+            // into — its latest VISIBLE turn by `createdAt`. Strict `>` keeps the
+            // FIRST maximum; `max(by: createdAt)` and not `last`, because
+            // `commitStreamingContent` re-stamps a committed turn forward and a
+            // tool turn can carry a later timestamp than the assistant turn that
+            // produced it. Folded into this walk — the walk that emits the very
+            // bubbles the pill decorates — so the set and the items can never
+            // describe different steps. The verbatim law survives as the oracle
+            // in `TeamActivityFeedImplicitStreamTargetTests`.
+            let trackImplicitTarget = step.status == .running
+            var latestVisible: LLMMessage?
+
+            for (position, msg) in step.llmConversation.enumerated() {
+                // Answer ordinal bookkeeping runs over the FULL conversation, before
+                // the visible-role guard, so it counts exactly what the old
+                // `filter { .supervisorAnswer }` counted.
+                var isPairedAnswer = false
+                if msg.sourceContext == .supervisorAnswer {
+                    isPairedAnswer = answerIndices.count < asks.count
+                    answerIndices.append(position)
+                }
+                guard msg.role != .system && msg.role != .tool else { continue }
+                if trackImplicitTarget {
+                    #if DEBUG
+                    ImplicitStreamTargetProbe.noteExamined()
+                    #endif
+                    if latestVisible == nil || msg.createdAt > latestVisible!.createdAt {
+                        latestVisible = msg
+                    }
+                }
                 let hasThinking = msg.thinking.map {
                     !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 } ?? false
@@ -478,7 +613,7 @@ nonisolated enum ActivityFeedBuilder {
                 if !debugModeEnabled && msg.role == .user {
                     if msg.sourceRole == nil && msg.sourceContext == nil { continue }
                     if msg.sourceContext == .supervisorAnswer,
-                       pairedAnswerIDs.contains(msg.id) || msg.id == cardOwnedAnswerID {
+                       isPairedAnswer || msg.id == cardOwnedAnswerID {
                         continue  // rendered inside its ask card / the escalation Q&A card
                     }
                 }
@@ -514,6 +649,9 @@ nonisolated enum ActivityFeedBuilder {
                 let displayRole = msg.sourceRole ?? role
                 items.append(.llmMessage(message: msg, role: displayRole, stepID: step.id, originTaskID: originTaskID))
             }
+            if trackImplicitTarget, let id = latestVisible?.id {
+                implicitStreamTargets.insert(id)
+            }
 
             for call in step.toolCalls {
                 items.append(.toolCall(call: call, role: role, stepID: step.id, originTaskID: originTaskID))
@@ -522,6 +660,9 @@ nonisolated enum ActivityFeedBuilder {
             for artifact in step.artifacts {
                 items.append(.artifact(artifact: artifact, role: role, stepID: step.id, originTaskID: originTaskID))
             }
+
+            aux.append(StepFeedAux(
+                askIndex: asks, answerIndices: answerIndices, card: card, isActive: stepIsActive))
         }
 
         // Meeting messages
@@ -541,31 +682,25 @@ nonisolated enum ActivityFeedBuilder {
         // (including the multi-round race where `step.supervisorAnswer` is
         // stale from a previous round) are owned by the docked composer and
         // skipped here. `StepExecution.hasActiveSupervisorInput` is the shared predicate.
-        for step in steps {
-            let askCalls = step.toolCalls.filter { $0.name == ToolNames.askSupervisor }
-            // Gated on the discriminator computed one line above, mirroring the
-            // fixed sibling ~80 lines up: `answerMessages` is read ONLY inside the
-            // `askCalls.enumerated()` loop below, so on a step with no ask call —
-            // the overwhelming majority — this whole pass was discarded. Emptiness
-            // only, never a `prefix`: the INDEX pairing between `askCalls` and
-            // `answerMessages` is load-bearing (see the note above `pairedAnswerIDs`),
-            // and narrowing the array would silently re-pair answers to asks.
-            //
-            // Honest weight: `emitItems` already walks `step.llmConversation`
-            // unconditionally in its first loop, and `items.sorted` dominates both,
-            // so this removes a constant factor under Θ(N log N) — not an order.
-            let answerMessages = askCalls.isEmpty
-                ? []
-                : step.llmConversation.filter { $0.sourceContext == .supervisorAnswer }
-            let stepIsActive = step.hasActiveSupervisorInput
+        for (stepIndex, step) in steps.enumerated() {
+            // Everything derived in the first loop, read back by POSITION (the id
+            // repeats across descendants). The INDEX pairing between the ask
+            // positions and the answer positions is load-bearing (see the note
+            // above `asks` in the first loop): answer k pairs with ask k, and
+            // narrowing either array would silently re-pair them.
+            let a = aux[stepIndex]
+            let stepIsActive = a.isActive
 
             // Built LAZILY — only a step that actually renders an ask card pays
             // the O(k log k) build; steps with no ask calls pay nothing, exactly
             // as the per-call reverse scans this replaces cost nothing there.
             var thinkingResolver: ThinkingResolver?
 
-            for (index, call) in askCalls.enumerated() {
-                let isLast = index == askCalls.count - 1
+            for (index, position) in a.askIndex.positions.enumerated() {
+                let call = step.toolCalls[position]
+                assert(call.name == ToolNames.askSupervisor,
+                       "AskCallIndex describes a different array — a `toolCalls` writer broke the closed set")
+                let isLast = index == a.askIndex.positions.count - 1
                 if isLast && stepIsActive { continue }
 
                 let question: String
@@ -580,8 +715,8 @@ nonisolated enum ActivityFeedBuilder {
                 }
 
                 let rawAnswer: String?
-                if index < answerMessages.count {
-                    let content = answerMessages[index].content
+                if index < a.answerIndices.count {
+                    let content = step.llmConversation[a.answerIndices[index]].content
                     let prefix = MessageSourceContext.supervisorAnswerPrefix
                     rawAnswer = content.hasPrefix(prefix)
                         ? String(content.dropFirst(prefix.count))
@@ -598,8 +733,8 @@ nonisolated enum ActivityFeedBuilder {
                 let thinking = thinkingResolver?.thinking(atOrBefore: call.createdAt)
 
                 // Use answer timestamp (when Supervisor responded), fall back to call timestamp
-                let answerTimestamp = index < answerMessages.count
-                    ? answerMessages[index].createdAt
+                let answerTimestamp = index < a.answerIndices.count
+                    ? step.llmConversation[a.answerIndices[index]].createdAt
                     : call.createdAt
 
                 appendSupervisorInputNotification(
@@ -621,17 +756,18 @@ nonisolated enum ActivityFeedBuilder {
             // `ask_supervisor` tool call, then `answerSupervisorQuestion` writes
             // `supervisorAnswer` + flips the flag to false. Without this
             // synthesized notification, the answered Q&A would vanish from feed
-            // history (the inner loop above iterates `askCalls`, which is empty
-            // for the escalation path). Active state is owned by
+            // history (the inner loop above iterates the ask positions, which are
+            // empty for the escalation path). Active state is owned by
             // `activeSupervisorQuestions` (composer chip), so we only emit
             // history once the step is no longer active.
             //
-            // Gate + answer message come from `escalationCard(for:)` — the SAME
-            // helper the message loop's bubble suppression consults, so the card
-            // and the durable answer bubble can never both render (or both drop).
-            // Once a re-park clears `supervisorAnswer`, the helper returns nil:
-            // this card yields and the answer survives as a Supervisor bubble.
-            if let card = Self.escalationCard(for: step) {
+            // Gate + answer message come from `escalationCard(for:askIndex:isActive:)`
+            // — the SAME value the message loop's bubble suppression consulted (via
+            // `aux`), so the card and the durable answer bubble can never both
+            // render (or both drop). Once a re-park clears `supervisorAnswer`, the
+            // helper returns nil: this card yields and the answer survives as a
+            // Supervisor bubble.
+            if let card = a.card {
                 // Latest answer turn = the stable anchor for sort position, item
                 // identity, AND the thinking bound. `step.updatedAt` is re-stamped
                 // by every later mutation (tool calls, messages), which made the
@@ -645,10 +781,26 @@ nonisolated enum ActivityFeedBuilder {
                 // `supervisorAnswer` — every live escalation-path writer routes
                 // through it, so legacy data keeps the old behavior and new data
                 // never hits the fallback.
+                //
+                // With an answer turn the resolved thinking is handed to the
+                // caller's `escalationThinking` memo under (step, answer id): the
+                // candidates at or before the answer are frozen once it exists (see
+                // `ThinkingResolver`), so the value cannot change until a NEW answer
+                // changes the key. The legacy nil-answer arm is never memoized —
+                // its anchor moves with `updatedAt`.
                 let answerMsg = card.answerMessage
                 let anchor = answerMsg?.createdAt ?? step.updatedAt
-                let thinking = ThinkingResolver(conversation: step.llmConversation)
-                    .thinking(atOrBefore: anchor)
+                let thinking: String?
+                if let answerMsg {
+                    thinking = escalationThinking(
+                        TaskStepKey(taskID: originTaskID, stepID: step.id), answerMsg.id
+                    ) {
+                        ThinkingResolver(conversation: step.llmConversation).thinking(atOrBefore: anchor)
+                    }
+                } else {
+                    thinking = ThinkingResolver(conversation: step.llmConversation)
+                        .thinking(atOrBefore: anchor)
+                }
                 appendSupervisorInputNotification(
                     into: &items,
                     step: step,
@@ -698,9 +850,18 @@ nonisolated enum ActivityFeedBuilder {
         let answerMessage: LLMMessage?
     }
 
-    static func escalationCard(for step: StepExecution) -> EscalationCard? {
-        guard !step.toolCalls.contains(where: { $0.name == ToolNames.askSupervisor }),
-              !step.hasActiveSupervisorInput,
+    /// `askIndex` and `isActive` are the step's own `AskCallIndex` and
+    /// `hasActiveSupervisorInput`, passed in rather than recomputed so one
+    /// build evaluates each exactly once per step (`EscalationCardProbe` counts
+    /// this function's evaluations; `ActivityFeedBuilderTests` pin `== 1`).
+    static func escalationCard(
+        for step: StepExecution, askIndex: AskCallIndex, isActive: Bool
+    ) -> EscalationCard? {
+        #if DEBUG
+        EscalationCardProbe.noteEvaluated()
+        #endif
+        guard askIndex.isEmpty,
+              !isActive,
               let question = step.supervisorQuestion?
               .trimmingCharacters(in: .whitespacesAndNewlines),
               !question.isEmpty,
@@ -933,5 +1094,35 @@ nonisolated enum StreamQueryProbe {
     static func note() { _queries.wrappingAdd(1, ordering: .relaxed) }
     static func queries() -> Int { _queries.load(ordering: .relaxed) }
     static func reset() { _queries.store(0, ordering: .relaxed) }
+}
+
+/// Counts evaluations of `ActivityFeedBuilder.escalationCard(for:askIndex:isActive:)`.
+///
+/// Until 2026-09-04 the gate was evaluated TWICE per step per `emitItems` call
+/// — once for the bubble suppression in the first step loop and again for the
+/// card emission in the second — and its first clause was a `contains(where:)`
+/// over `toolCalls` proving ABSENCE, i.e. a full pass. The value now lives in
+/// the per-step aux; the counter sits inside the function (CLAUDE.md #62) so a
+/// re-added second call reads as `2`, not as "same output".
+nonisolated enum EscalationCardProbe {
+    private static let _evaluations = Atomic<Int>(0)
+    static func noteEvaluated() { _evaluations.wrappingAdd(1, ordering: .relaxed) }
+    static func evaluations() -> Int { _evaluations.load(ordering: .relaxed) }
+    static func reset() { _evaluations.store(0, ordering: .relaxed) }
+}
+
+/// Work-bound seam for the implicit-stream-target scan: conversation messages
+/// EXAMINED since the last reset.
+///
+/// The defect it pins is not a wrong answer but a wrong CADENCE — the scan used
+/// to run once per rendered bubble instead of once per step per rebuild — so a
+/// behavioural test cannot see it. Counter placed inside the scan, per
+/// CLAUDE.md #62. Lives here since the scan was folded into `emitItems`' own
+/// message walk; before that it sat beside the view's separate per-step resolver.
+nonisolated enum ImplicitStreamTargetProbe {
+    private static let _examined = Atomic<Int>(0)
+    static func noteExamined() { _examined.wrappingAdd(1, ordering: .relaxed) }
+    static func _testExamined() -> Int { _examined.load(ordering: .relaxed) }
+    static func _testResetExamined() { _examined.store(0, ordering: .relaxed) }
 }
 #endif

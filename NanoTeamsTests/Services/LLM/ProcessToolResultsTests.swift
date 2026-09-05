@@ -877,6 +877,7 @@ final class ProcessToolResultsTests: XCTestCase {
             config: LLMConfig(),
             tracker: tracker,
             memoryStore: MemoryTagStore(),
+            wireIsMidPlanning: false,
             conversationMessages: &conversation,
             networkLogger: nil
         )

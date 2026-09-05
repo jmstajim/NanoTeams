@@ -7,23 +7,6 @@ import Foundation
 /// Use static methods for one-off queries (backward-compatible API).
 nonisolated struct ArtifactDependencyResolver {
 
-    // MARK: - Role Readiness
-
-    struct RoleReadiness: Equatable {
-        let roleID: String
-        let isReady: Bool
-        let missingArtifacts: [String]
-        let satisfiedArtifacts: [String]
-
-        var blockingReason: String? {
-            guard !isReady else { return nil }
-            if missingArtifacts.isEmpty {
-                return nil
-            }
-            return "Waiting for: \(missingArtifacts.joined(separator: ", "))"
-        }
-    }
-
     // MARK: - Cached State
 
     private let roles: [TeamRoleDefinition]
@@ -151,71 +134,6 @@ nonisolated struct ArtifactDependencyResolver {
         }
 
         return readyRoles
-    }
-
-    /// Gets detailed readiness information for a specific role.
-    static func getRoleReadiness(
-        roleID: String,
-        roles: [TeamRoleDefinition],
-        producedArtifacts: Set<String>
-    ) -> RoleReadiness {
-        guard let role = roles.first(where: { $0.id == roleID }) else {
-            return RoleReadiness(
-                roleID: roleID,
-                isReady: false,
-                missingArtifacts: [],
-                satisfiedArtifacts: []
-            )
-        }
-
-        var missing: [String] = []
-        var satisfied: [String] = []
-
-        for artifact in role.dependencies.requiredArtifacts {
-            if producedArtifacts.contains(artifact) {
-                satisfied.append(artifact)
-            } else {
-                missing.append(artifact)
-            }
-        }
-
-        return RoleReadiness(
-            roleID: roleID,
-            isReady: missing.isEmpty,
-            missingArtifacts: missing,
-            satisfiedArtifacts: satisfied
-        )
-    }
-
-    /// Returns the artifacts that are blocking a role from starting.
-    static func getBlockingArtifacts(
-        for roleID: String,
-        roles: [TeamRoleDefinition],
-        producedArtifacts: Set<String>
-    ) -> [String] {
-        getRoleReadiness(
-            roleID: roleID,
-            roles: roles,
-            producedArtifacts: producedArtifacts
-        ).missingArtifacts
-    }
-
-    /// Gets readiness information for all roles.
-    static func getAllReadinessStates(
-        roles: [TeamRoleDefinition],
-        producedArtifacts: Set<String>
-    ) -> [String: RoleReadiness] {
-        var result: [String: RoleReadiness] = [:]
-
-        for role in roles {
-            result[role.id] = getRoleReadiness(
-                roleID: role.id,
-                roles: roles,
-                producedArtifacts: producedArtifacts
-            )
-        }
-
-        return result
     }
 
     /// Computes a valid execution order for roles based on dependencies.

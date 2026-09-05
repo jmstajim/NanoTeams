@@ -45,6 +45,35 @@ final class MessageLoopDetectorTests: XCTestCase {
         }
     }
 
+    /// `sample` is the NEWEST refusal — the one the Supervisor question quotes back. The old
+    /// walk collected newest-first and read `recent[0]`; the split walk returns oldest-first, so
+    /// the classifier must read the LAST entry. Three refusals in different wording make the
+    /// two ends distinguishable; the identical-refusal vectors above cannot tell them apart.
+    ///
+    /// RED: change `sample:` in `classifyMessageLoop` to `recent[0]` → this reads the oldest
+    /// refusal ("…create files.") instead of the newest ("…write to this sandbox.").
+    func testDetect_refusalLoop_sampleIsTheNewestRefusal() {
+        let oldest = "I'm sorry, but I don't have the ability to create files."
+        let newest = "I'm sorry, but I can't write to this sandbox."
+        let messages: [ChatMessage] = [
+            .init(role: .assistant, content: oldest),
+            .init(role: .user, content: "Please try again."),
+            .init(role: .assistant, content: "I'm sorry, but I cannot modify the repository."),
+            .init(role: .user, content: "Take another pass."),
+            .init(role: .assistant, content: newest),
+        ]
+        let outcome = ConversationRepairService.detectMessageLoop(conversationMessages: messages)
+        guard case .refusalLoop(let count, let sample) = outcome else {
+            return XCTFail("Expected refusalLoop, got \(outcome)")
+        }
+        XCTAssertEqual(count, 3)
+        XCTAssertEqual(sample, newest, "the sample must be the wire's LAST refusal, not its first")
+        XCTAssertEqual(
+            ConversationRepairService.classifyMessageLoop(
+                recentNoToolAssistantContents: ConversationRepairService.recentNoToolAssistantContents(in: messages)),
+            outcome, "the split spelling agrees with the reference on the same wire")
+    }
+
     // MARK: - Repetitive non-refusal
 
     func testDetect_threeIdenticalNonRefusals_isRepetitive() {
@@ -60,6 +89,97 @@ final class MessageLoopDetectorTests: XCTestCase {
             return XCTFail("Expected repetitiveNonTool, got \(outcome)")
         }
         XCTAssertEqual(count, 3)
+    }
+
+    // MARK: - Ring ≡ walk
+
+    /// The tool loop no longer calls `detectMessageLoop` per iteration: it keeps
+    /// `StepExecutionState.recentNoToolAssistantContents` — seeded by the same tail walk at
+    /// step entry, pushed once per appended assistant turn through the same membership
+    /// predicate — and hands that ring to `classifyMessageLoop`. This pins that the two
+    /// spellings cannot disagree: for every wire and every split point, seed-then-push equals
+    /// the walk, and the classifier over the ring equals the reference `detectMessageLoop`.
+    ///
+    /// Randomised, because the discriminating inputs (a refusal run longer than the window,
+    /// three refusals in different wording, `toolCalls: []` versus `nil`, empty and nil content)
+    /// are exactly the ones a hand-written vector list forgets. Seeded per trial
+    /// (`SeededGenerator`), so a failing trial replays from the number in its message and the
+    /// dumped wire can be pasted into a hand vector — `xcodebuild` strips assertion messages
+    /// (CLAUDE.md Testing Conventions #7), and a system-seeded counter-example is gone by the
+    /// next run.
+    ///
+    /// What this does NOT pin: the classifier's own semantics. `detectMessageLoop` is composed
+    /// from the same `classifyMessageLoop`, so a classifier-only mutation (say, `sample:` reading
+    /// the oldest entry) changes both sides identically — measured on 2026-09-03, that mutation
+    /// left all 399 targeted tests green. `testDetect_refusalLoop_sampleIsTheNewestRefusal` below
+    /// pins that half against a hand-written wire.
+    ///
+    /// RED: delete the `removeFirst` in `pushMessageLoopContent` → `.refusalLoop(count:)` reports
+    /// 4+ on long refusal runs while the reference says 3 (and the ring stops equalling the walk).
+    func testRing_seedThenPush_agreesWithTheWireWalk_onRandomisedConversations() {
+        let refusalA = "I'm sorry, but I don't have the ability to create files."
+        let refusalB = "I can't write to this sandbox."
+        let contents: [String?] = [refusalA, refusalB, "Okay, continuing.", "", nil]
+        let call = ChatToolCall(id: "c", name: "read_file", argumentsJSON: "{}")
+        let toolCallShapes: [[ChatToolCall]?] = [[call], nil, []]
+        let roles: [MessageRole] = [.assistant, .user, .tool, .system]
+
+        for trial in 0..<400 {
+            let seed = UInt64(trial) &* 0x9E37_79B9_7F4A_7C15
+            var rng = SeededGenerator(seed: seed)
+            let n = Int.random(in: 0...60, using: &rng)
+            var wire: [ChatMessage] = []
+            for i in 0..<n {
+                let role = roles[Int.random(in: 0..<roles.count, using: &rng)]
+                if role == .assistant {
+                    let content = Bool.random(using: &rng)
+                        ? contents[Int.random(in: 0..<contents.count, using: &rng)]
+                        : "distinct \(i)"
+                    wire.append(ChatMessage(
+                        role: .assistant, content: content,
+                        toolCalls: toolCallShapes[Int.random(in: 0..<toolCallShapes.count, using: &rng)]))
+                } else {
+                    wire.append(ChatMessage(role: role, content: "m\(i)"))
+                }
+            }
+            let k = Int.random(in: 0...n, using: &rng)
+
+            var ring = ConversationRepairService.recentNoToolAssistantContents(in: Array(wire[..<k]))
+            for message in wire[k...] where ConversationRepairService.qualifiesForMessageLoop(message) {
+                ConversationRepairService.pushMessageLoopContent(message.content!, into: &ring)
+            }
+
+            let dump = wire.map { message in
+                "\(message.role)/\(message.toolCalls.map { "\($0.count)" } ?? "nil")/\(message.content ?? "nil")"
+            }.joined(separator: " | ")
+            XCTAssertEqual(
+                ring, ConversationRepairService.recentNoToolAssistantContents(in: wire),
+                "trial \(trial) seed=\(seed) n=\(n) k=\(k): seed-then-push must equal the walk "
+                    + "over the whole wire; wire: \(dump)")
+            XCTAssertEqual(
+                ConversationRepairService.classifyMessageLoop(recentNoToolAssistantContents: ring),
+                ConversationRepairService.detectMessageLoop(conversationMessages: wire),
+                "trial \(trial) seed=\(seed) n=\(n) k=\(k): the classifier over the ring must "
+                    + "equal the reference detector; wire: \(dump)")
+        }
+    }
+
+    /// The reference detector and the split halves keep the same window guard at every
+    /// `window`, not just 3 — a `window` of 1 would make every single reply a "loop".
+    ///
+    /// RED: drop `guard window >= 2 else { return .noLoop }` from `classifyMessageLoop` → the
+    /// `window: 1` row classifies three refusals as a `.refusalLoop`.
+    func testClassify_windowBelowTwo_isNoLoop_forEveryInput() {
+        let three = ["I'm sorry, I can't.", "I'm sorry, I can't.", "I'm sorry, I can't."]
+        XCTAssertEqual(
+            ConversationRepairService.classifyMessageLoop(recentNoToolAssistantContents: three, window: 1),
+            .noLoop)
+        XCTAssertEqual(
+            ConversationRepairService.classifyMessageLoop(recentNoToolAssistantContents: three, window: 0),
+            .noLoop)
+        XCTAssertNotEqual(
+            ConversationRepairService.classifyMessageLoop(recentNoToolAssistantContents: three, window: 3),
+            .noLoop, "anti-vacuum: the same input IS a loop at the real window")
     }
 
     // MARK: - No loop
@@ -118,6 +238,39 @@ final class MessageLoopDetectorTests: XCTestCase {
     }
 
     // MARK: - Fingerprint normalization
+
+    /// The membership rule has ONE home (`qualifiesForMessageLoop`) and BOTH sides of the
+    /// ring-≡-walk comparison read it, so a mutation of the predicate moves both sides at once
+    /// and the randomized equivalence sweep stays green. This vector pins the rule itself: an
+    /// assistant turn that CARRIES tool calls never counts, even when it also carries text
+    /// (`testDetect_ignoresAssistantToolCallMessages` gives its tool-call turn `content: nil`, so
+    /// the content clause alone kept it green under that mutation — measured 2026-09-03).
+    ///
+    /// RED: drop `(message.toolCalls?.isEmpty ?? true)` from `qualifiesForMessageLoop` → the three
+    /// refusal-worded tool-call turns qualify and the first wire classifies `.refusalLoop`.
+    func testDetect_assistantTurnWithToolCallsAndText_neverCountsTowardTheLoop() {
+        let call = ChatToolCall(id: "x", name: "read_file", argumentsJSON: "{}")
+        let refusal = "I'm sorry, I can't."
+        let toolTurn = ChatMessage(role: .assistant, content: refusal, toolCallID: nil, toolCalls: [call])
+        let withToolCalls: [ChatMessage] = [
+            toolTurn, .init(role: .tool, content: "r"),
+            toolTurn, .init(role: .tool, content: "r"),
+            toolTurn, .init(role: .tool, content: "r"),
+        ]
+        XCTAssertEqual(
+            ConversationRepairService.detectMessageLoop(conversationMessages: withToolCalls), .noLoop,
+            "three refusal-worded turns that each carry a tool call are tool work, not a loop")
+
+        // Two text-only refusals after them still do not reach the window of three.
+        let twoTextOnly = withToolCalls + [
+            .init(role: .assistant, content: refusal), .init(role: .user, content: "go on"),
+            .init(role: .assistant, content: refusal),
+        ]
+        XCTAssertEqual(
+            ConversationRepairService.detectMessageLoop(conversationMessages: twoTextOnly), .noLoop,
+            "only the two text-only refusals qualify; the tool-call turns must not fill the window")
+        XCTAssertFalse(ConversationRepairService.qualifiesForMessageLoop(toolTurn))
+    }
 
     func testFingerprint_handlesTrailingWhitespace() {
         let a = "I'm sorry, I can't do that."

@@ -60,17 +60,77 @@ final class TeamActivityFeedViewModel {
     /// Steps for the active team, filtered by `filterRoleID` when set. Rebuilt via `recomputeSteps`.
     private(set) var cachedAllSteps: [StepExecution] = []
 
-    /// Per-ORIGIN-task step pools for the merged delegation timeline, rebuilt via
-    /// `recomputeSteps`: active task → `cachedAllSteps`, each loaded descendant →
-    /// its run's steps. `StepExecution.id` is the role ID, shared across tasks on
-    /// the same team — so a bubble's implicit-stream-target resolution must search
-    /// the pool of the bubble's OWNING task, not the active task's (otherwise a
-    /// descendant message is matched against the parent's same-named step).
-    private(set) var cachedStepsByTaskID: [Int: [StepExecution]] = [:]
-    private var cachedActiveTaskID: Int?
-
     /// Active supervisor questions extracted from cached steps. Rebuilt via `recomputeSteps`.
     private(set) var cachedSupervisorQuestions: [ActivityFeedBuilder.ActiveSupervisorQuestion] = []
+
+    // MARK: - Per-step runtime caches
+
+    /// `AskCallIndex` per step, extended suffix-only on every recompute tick and
+    /// every rebuild. Keyed by `TaskStepKey` — `StepExecution.id` is the role id
+    /// and repeats across the descendants interleaved into one feed (CLAUDE.md
+    /// invariant #5), so a bare step id would let a child's index describe the
+    /// parent's array. `@ObservationIgnored`: no view reads it. Pruned in
+    /// `recomputeSteps` when the set of walked tasks changes; cleared on task switch.
+    @ObservationIgnored private var askIndexByStep: [TaskStepKey: AskCallIndex] = [:]
+
+    /// The escalation card's resolved `thinking`, memoized per (step, answer turn).
+    /// Sound because every candidate at or before the answer is frozen once the
+    /// answer exists — see `ThinkingResolver`'s doc for the writer-by-writer
+    /// argument. A new answer cycle changes `answerMessage.id`, hence the key;
+    /// the legacy nil-answer arm (anchor = `step.updatedAt`) is never memoized.
+    /// Bounded by answered escalation cycles of the walked tasks; pruned with the
+    /// index above, cleared on task switch.
+    @ObservationIgnored private var escalationThinkingByAnswer: [EscalationThinkingKey: ResolvedThinking] = [:]
+
+    private struct EscalationThinkingKey: Hashable {
+        let step: TaskStepKey
+        let answerMessageID: UUID
+    }
+
+    /// Wrapper so a resolved `nil` is a cache HIT — `dict[key] = nil` would
+    /// delete the entry and turn every nil-thinking card into a permanent miss.
+    private struct ResolvedThinking {
+        let value: String?
+    }
+
+    /// Task ids whose steps the last `recomputeSteps` walked (active ∪ descendants);
+    /// the caches above are pruned when this set changes.
+    private var cachedWalkedTaskIDs: Set<Int> = []
+
+    /// The step's ask index, extended from the cached one when that still
+    /// describes a prefix of `step.toolCalls`, else rescanned; the result is
+    /// stored back. Called from `recomputeSteps` (composer chip) and from the
+    /// rebuild (feed cards) — both key on the same `TaskStepKey`.
+    func askIndex(taskID: Int, step: StepExecution) -> AskCallIndex {
+        let key = TaskStepKey(taskID: taskID, stepID: step.id)
+        let index = AskCallIndex(toolCalls: step.toolCalls, extending: askIndexByStep[key])
+        askIndexByStep[key] = index
+        return index
+    }
+
+    /// Lookup-or-compute-and-store for the escalation card's thinking.
+    private func escalationThinking(
+        step: TaskStepKey, answerMessageID: UUID, compute: () -> String?
+    ) -> String? {
+        let key = EscalationThinkingKey(step: step, answerMessageID: answerMessageID)
+        if let hit = escalationThinkingByAnswer[key] { return hit.value }
+        let value = compute()
+        escalationThinkingByAnswer[key] = ResolvedThinking(value: value)
+        return value
+    }
+
+    /// Drop cache entries of tasks the feed no longer walks (a descendant that
+    /// unloaded, or the active task changing under the same view model). Only
+    /// runs when the walked-task set actually changed, so the steady-state tick
+    /// pays a set comparison, not a dictionary pass.
+    private func pruneRuntimeCaches(walkedTaskIDs: Set<Int>) {
+        guard walkedTaskIDs != cachedWalkedTaskIDs else { return }
+        cachedWalkedTaskIDs = walkedTaskIDs
+        askIndexByStep = askIndexByStep.filter { walkedTaskIDs.contains($0.key.taskID) }
+        escalationThinkingByAnswer = escalationThinkingByAnswer.filter {
+            walkedTaskIDs.contains($0.key.step.taskID)
+        }
+    }
 
     // MARK: - Timeline Cache
 
@@ -82,16 +142,21 @@ final class TeamActivityFeedViewModel {
     private(set) var cachedTimelineItems: [ActivityFeedBuilder.TaggedItem] = []
 
     /// Message ids that are the implicit stream target of a `.running` step —
-    /// at most one per running step, computed ONCE per rebuild.
+    /// at most one per running step, a BY-PRODUCT of the timeline build.
     ///
     /// Lives here rather than at the bubble because the feed's `VStack` is
     /// deliberately non-lazy (it realizes every row on every body pass), so the
     /// per-bubble spelling walked the step's whole conversation once per bubble:
     /// Θ(M²) per pass in chat mode, where one step holds the entire session.
-    /// Computed in `rebuildTimeline` — the single funnel every rebuild path goes
-    /// through — and NOT in `recomputeSteps`, which `scheduleStructuralRebuild`
-    /// bypasses; a set built there would go stale exactly on the streaming-commit
-    /// path that moves the target.
+    /// Filled from `ActivityFeedBuilder.buildTimeline(...).implicitStreamTargetIDs`
+    /// in `rebuildTimeline` — the single funnel every rebuild path goes through.
+    /// The builder derives the set inside the same message walk that emits the
+    /// bubbles, over the same steps (active task AND every descendant the
+    /// rebuild was handed), so the set can never describe a step the items do
+    /// not — including on the debounced structural path, which never runs
+    /// `recomputeSteps` and where a set read from steps cached at the previous
+    /// tick lagged the items by one turn (the stale-pill fix, pinned by
+    /// `testStructuralRebuild_targetsComeFromTheStepsThatProducedTheItems`).
     ///
     /// The `isPreviewTarget` term is deliberately NOT folded in here: it flips
     /// between rebuilds and the call site reads it live, so freezing it would
@@ -244,7 +309,11 @@ final class TeamActivityFeedViewModel {
         // conditions; the builder applies the other (only turns the card fully
         // renders are suppressible at all).
         let activeQuestions = composerVisible ? cachedSupervisorQuestions : []
-        cachedTimelineItems = ActivityFeedBuilder.buildTimelineItems(
+        // The two per-step caches ride in as closures: the builder stays stateless
+        // (the detached ConversationLog render shares it), and the closures are
+        // non-escaping so a `@MainActor` method is callable from the nonisolated
+        // builder without hopping actors.
+        let build = ActivityFeedBuilder.buildTimeline(
             steps: steps,
             run: run,
             teamRoles: teamRoles,
@@ -259,40 +328,14 @@ final class TeamActivityFeedViewModel {
             stepArtifactContentCache: stepArtifactContentCache,
             debugModeEnabled: debugModeEnabled,
             activeQuestions: activeQuestions,
+            askIndex: { self.askIndex(taskID: $0, step: $1) },
+            escalationThinking: { self.escalationThinking(step: $0, answerMessageID: $1, compute: $2) },
             isStreaming: isStreaming
         )
+        cachedTimelineItems = build.items
         if !cachedTimelineItems.isEmpty { hasEverHadContent = true }
-
-        // One pass per step, in lockstep with the items it annotates. The union
-        // over pools is safe because `LLMMessage.id` is globally unique, and it
-        // mirrors `steps(forOriginTaskID:)`, whose fallback is `cachedAllSteps`.
-        //
-        // `cachedAllSteps` is walked here ONLY when the pools cannot already contain it.
-        // `recomputeSteps` files `cachedAllSteps` into `cachedStepsByTaskID` under the
-        // active task id, so walking both unconditionally walked the ACTIVE task's whole
-        // conversation TWICE on every rebuild — and `implicitStreamTargetID` is itself a
-        // walk of `step.llmConversation`, which grows with the session. The fallback arm
-        // survives because the map has no key to file the steps under when
-        // `context.activeTaskID` is nil, which is exactly when `steps(forOriginTaskID:)`
-        // falls back to `cachedAllSteps` too — the two must agree or a bubble resolves
-        // against a pool the resolver never saw.
-        var targets: Set<UUID> = []
-        let activePoolIsFiled = cachedActiveTaskID.map { cachedStepsByTaskID[$0] != nil } ?? false
-        if !activePoolIsFiled {
-            for step in cachedAllSteps {
-                if let id = TeamActivityFeedView.implicitStreamTargetID(in: step) {
-                    targets.insert(id)
-                }
-            }
-        }
-        for pool in cachedStepsByTaskID.values {
-            for step in pool {
-                if let id = TeamActivityFeedView.implicitStreamTargetID(in: step) {
-                    targets.insert(id)
-                }
-            }
-        }
-        implicitStreamTargetIDs = targets
+        // Same walk, same steps as the items above — see the property's doc.
+        implicitStreamTargetIDs = build.implicitStreamTargetIDs
     }
 
     // MARK: - Artifact Content Cache
@@ -507,10 +550,13 @@ final class TeamActivityFeedViewModel {
         structuralRebuildTask = nil
         hasEverHadContent = false
         cachedTimelineItems.removeAll()
+        // No build, no targets: the set is a by-product of `cachedTimelineItems`.
+        implicitStreamTargetIDs = []
         cachedAllSteps = []
-        cachedStepsByTaskID = [:]
-        cachedActiveTaskID = nil
         cachedSupervisorQuestions = []
+        askIndexByStep.removeAll()
+        escalationThinkingByAnswer.removeAll()
+        cachedWalkedTaskIDs = []
         lastFingerprint = nil
         cacheGeneration += 1  // invalidate in-flight async cache loads
         stepArtifactContentCache.removeAll()
@@ -542,25 +588,15 @@ final class TeamActivityFeedViewModel {
         // Active supervisor questions drive the composer chip + paired-message
         // suppression. `cachedAllSteps` is the displayed run's steps, so a
         // `needsSupervisorInput` flag on one of them is always the live question.
-        cachedSupervisorQuestions = ActivityFeedBuilder.activeSupervisorQuestions(steps: cachedAllSteps)
-
-        cachedActiveTaskID = context.activeTaskID
-        var byTask: [Int: [StepExecution]] = [:]
-        if let activeID = context.activeTaskID { byTask[activeID] = cachedAllSteps }
-        for descendant in context.descendantTasks {
-            byTask[descendant.task.id] = descendant.run.steps
+        // The ask index is the view model's cached one, keyed under the same
+        // `activeTaskID ?? 0` the rebuild stamps, so both consumers hit one entry.
+        let activeTaskID = context.activeTaskID ?? 0
+        var walked: Set<Int> = [activeTaskID]
+        for descendant in context.descendantTasks { walked.insert(descendant.task.id) }
+        pruneRuntimeCaches(walkedTaskIDs: walked)
+        cachedSupervisorQuestions = ActivityFeedBuilder.activeSupervisorQuestions(steps: cachedAllSteps) {
+            self.askIndex(taskID: activeTaskID, step: $0)
         }
-        cachedStepsByTaskID = byTask
-    }
-
-    /// The step pool for a timeline item's owning task. Active task → the
-    /// (role-filtered) `cachedAllSteps`; loaded descendant → its run's steps;
-    /// unknown origin (stale item during a transition) → empty, so the
-    /// implicit-stream-target resolver answers `false` instead of matching a
-    /// same-named step of a DIFFERENT task.
-    func steps(forOriginTaskID originTaskID: Int) -> [StepExecution] {
-        if let pool = cachedStepsByTaskID[originTaskID] { return pool }
-        return originTaskID == cachedActiveTaskID ? cachedAllSteps : []
     }
 
     /// Recompute steps, check fingerprint, refresh artifact cache if artifact count changed,

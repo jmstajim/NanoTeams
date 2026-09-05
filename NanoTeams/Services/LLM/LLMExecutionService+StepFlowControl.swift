@@ -23,6 +23,11 @@ extension LLMExecutionService {
     /// - Parameter allowedToolNames: the set `executeToolCalls` authorizes against this
     ///   iteration (`PlanningPhasePolicy.Authorization.allowed`). Every nudge below that
     ///   names a tool filters through it — see the builders in `+ToolLoopState`.
+    /// - Parameter wireIsMidPlanning: the phase verdict `applyPlanningPhase` derived this
+    ///   iteration (`Authorization.wireIsMidPlanning`). Replaces a per-call
+    ///   `PlanningPhasePolicy.isMidPlanning` rescan of the whole wire — two O(conversation)
+    ///   substring passes per no-tool turn; no default, because a default would assert a fact
+    ///   about the caller's wire.
     func handleNoToolCalls(
         stepID: String,
         result: StreamingResult,
@@ -33,6 +38,7 @@ extension LLMExecutionService {
         tracker _: ToolCallTracker,
         roleDefinition: TeamRoleDefinition?,
         allowedToolNames: Set<String>,
+        wireIsMidPlanning: Bool,
         runtime: ToolRuntime? = nil,
         conversationMessages: inout [ChatMessage]
     ) async -> LLMStepStop {
@@ -190,8 +196,20 @@ extension LLMExecutionService {
         // Loop detection runs first — once the supervisor is asked (or the nudge
         // fires), the other branches are moot. Skipped during revision because
         // the supervisor is already driving.
+        //
+        // The classifier reads the RING, not the wire: `StepExecutionState.recentNoToolAssistantContents`
+        // is the wire's last three qualifying assistant turns, maintained where turns are appended
+        // (`appendAssistantTurn` in +Streaming) and re-seeded where the wire shrinks
+        // (`reseedMessageLoopRing`). `detectMessageLoop` walked `conversationMessages.reversed()`
+        // on every no-tool turn, and a tool-heavy wire has no qualifying turn near its tail, so
+        // that walk was Θ(N) per iteration on an array with no ceiling. The `??` arm keeps a step
+        // with no execution state (torn down mid-iteration) byte-identical to the old answer, at
+        // the old cost.
         if !isStepInRevision(stepID: stepID, taskID: task.id) {
-            switch ConversationRepairService.detectMessageLoop(conversationMessages: conversationMessages) {
+            switch ConversationRepairService.classifyMessageLoop(
+                recentNoToolAssistantContents: executionStates[stepKey]?.recentNoToolAssistantContents
+                    ?? ConversationRepairService.recentNoToolAssistantContents(in: conversationMessages))
+            {
             case .refusalLoop(let count, let sample):
                 let snippet = String(sample.prefix(300))
                 let question = """
@@ -400,7 +418,12 @@ extension LLMExecutionService {
         // on the wire but the phase is over. Writing a "plan" there would both promise a
         // boundary that will never fire and — before the close became terminal — trigger one
         // that sliced away the revision turn the close was protecting.
-        if PlanningPhasePolicy.isMidPlanning(conversationMessages) {
+        //
+        // The fact is derived ONCE per iteration in `applyPlanningPhase` — still from the wire,
+        // never a latch (the removed `planningTransitionDone` latch is the thing this must not
+        // become) — and arrives here as `wireIsMidPlanning`. Re-deriving it was two more
+        // O(conversation) passes per no-tool turn for an answer the iteration already held.
+        if wireIsMidPlanning {
             // A failed tool call is not a plan. The only content test used to be
             // `isEmpty`, so a call the parser dropped was recorded as the step's durable
             // plan — and `implementationWire` keeps exactly that one turn across the
@@ -887,5 +910,30 @@ extension LLMExecutionService {
               let team = resolveTeam(task: task)
         else { return false }
         return team.settings.supervisorMode == .autonomous
+    }
+
+    // MARK: - Message-loop ring
+
+    /// Rebuilds `StepExecutionState.recentNoToolAssistantContents` from `wire` — the same walk
+    /// `ConversationRepairService.detectMessageLoop` performs, run ONCE per event that replaces
+    /// or shrinks the array rather than once per iteration.
+    ///
+    /// Three PRODUCTION call sites, each a shrink/replace event (the two DEBUG helpers in
+    /// `+TestHelpers`, `_testHandleNoToolCalls` and `_testSeedMessageLoopRing`, route through it
+    /// as well and are excluded from the pin's count):
+    ///  1. Step entry (`+StepLifecycle`, beside `seedTagCounters`) — a replayed transcript
+    ///     already carries the turns the detector counts, and the fresh state starts empty.
+    ///  2. The planning boundary (`+PlanningPhase`, `.crossBoundary`) — the slice keeps the
+    ///     prefix before the brief, which may hold qualifying turns; the reset just cleared them.
+    ///  3. A poisoned-tail repair (`+StepLifecycle`, `repairConversationIfNeeded` returned true)
+    ///     — the removed assistant turn carries `toolCalls != nil`, which almost never
+    ///     qualifies, but `toolCalls == []` would, so re-derive rather than argue.
+    ///
+    /// The single APPEND site (`appendAssistantTurn`, +Streaming) pushes instead of reseeding.
+    /// Internal, not private (CLAUDE.md Swift Style #13): called from `+StepLifecycle`,
+    /// `+PlanningPhase` and `+TestHelpers`.
+    func reseedMessageLoopRing(stepKey: TaskStepKey, from wire: [ChatMessage]) {
+        executionStates[stepKey]?.recentNoToolAssistantContents =
+            ConversationRepairService.recentNoToolAssistantContents(in: wire)
     }
 }

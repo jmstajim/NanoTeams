@@ -56,13 +56,13 @@ final class MessageBubbleSupervisorAttachmentsTests: XCTestCase {
         что на этой картинке?
         
         ## Attached Files
-        - .nanoteams/tasks/1/attachments/Screenshot-2026-05-04-152318837.png
+        - .nanoteams/tasks/1/attachments/Screenshot-2026-05-04-212318837.png
         """
 
         let result = bubbleInputs(forContent: content)
 
         XCTAssertEqual(result.text, "что на этой картинке?", "Display text must contain only the user's typed message — no marker sections")
-        XCTAssertEqual(result.paths, [".nanoteams/tasks/1/attachments/Screenshot-2026-05-04-152318837.png"])
+        XCTAssertEqual(result.paths, [".nanoteams/tasks/1/attachments/Screenshot-2026-05-04-212318837.png"])
         XCTAssertEqual(result.clippedTexts, [])
     }
 

@@ -273,8 +273,8 @@ final class DelegateToTeamPeerLevelRuleTests: XCTestCase {
 
     /// Full happy path for the user-facing flow that originally failed:
     /// 1. The shipping Coding Agent template is loaded.
-    /// 2. `TeamValidationService` runs its policy checks against the team — no
-    ///    `nonTopLevelDelegator` error is reported.
+    /// 2. `TeamValidationService.validateDelegationPolicy` runs against the team — no
+    ///    `nonTopLevelDelegator` issue is emitted.
     /// 3. The handler's resolver path (`Role.fromDefinition` → `Role.baseID` →
     ///    `Team.findRole(byIdentifier:)`) lands on the correct def.
     /// 4. `roleIsTopLevelDelegator` agrees on the resolved def.
@@ -284,8 +284,8 @@ final class DelegateToTeamPeerLevelRuleTests: XCTestCase {
 
         // (1) Validation pass.
         let allTeams = [team, TeamTemplateFactory.engineering(), TeamTemplateFactory.startup()]
-        let result = TeamValidationService.validate(team: team, allTeams: allTeams)
-        XCTAssertFalse(result.errors.contains { issue in
+        let issues = TeamValidationService.validateDelegationPolicy(team: team, allTeams: allTeams)
+        XCTAssertFalse(issues.contains { issue in
             if case .nonTopLevelDelegator = issue { return true }
             return false
         }, "Coding Agent must not be flagged as a non-top-level delegator.")

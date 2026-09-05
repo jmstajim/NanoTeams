@@ -46,12 +46,19 @@ extension LLMExecutionService {
             isAutovisor: team?.templateID == AutovisorConstants.teamTemplateID
         )
 
+        // The only two FULL wire scans of the iteration (the `.crossBoundary` arm below re-reads
+        // `briefIndex` twice more — in `discardedSupervisorMessages` and `implementationWire` —
+        // but that arm runs once per step and each read stops at the brief). Both later
+        // consumers of the phase fact (`handleNoToolCalls`, `processScratchpadResult`) receive it as
+        // `Authorization.wireIsMidPlanning`, derived below from these two reads plus the
+        // decision — never by rescanning (CLAUDE.md #106).
+        let wireCarriesBrief = PlanningPhasePolicy.wireCarriesBrief(conversationMessages)
+        let wireCarriesClosedMarker = PlanningPhasePolicy.wireCarriesClosedMarker(conversationMessages)
         let decision = PlanningPhasePolicy.decide(
             isEligible: eligible,
-            wireCarriesBrief: PlanningPhasePolicy.wireCarriesBrief(conversationMessages),
+            wireCarriesBrief: wireCarriesBrief,
             scratchpadIsNil: scratchpadIsNil,
-            wireCarriesClosedMarker: PlanningPhasePolicy.wireCarriesClosedMarker(
-                conversationMessages)
+            wireCarriesClosedMarker: wireCarriesClosedMarker
         )
         // Read fresh every iteration, like every other input above. A user who turns the sandbox
         // off — or switches the mode down to `.manual` — mid-phase moves `bash` into
@@ -62,7 +69,8 @@ extension LLMExecutionService {
         let authorization = PlanningPhasePolicy.authorization(
             for: decision, tools: tools,
             bashAdmitted: bashPolicy?.sandboxEnabled == true
-                && bashPolicy?.mode.allowsUnattendedCommands == true)
+                && bashPolicy?.mode.allowsUnattendedCommands == true,
+            wireCarriesClosedMarker: wireCarriesClosedMarker)
 
         switch decision {
         case .enterPlanning:
@@ -98,6 +106,10 @@ extension LLMExecutionService {
                     notes: step.scratchpad ?? "", expectedArtifacts: expected))
             // The conversation those latches and baselines described no longer exists.
             executionStates[stepKey]?.resetConversationScopedState()
+            // The reset cleared the message-loop ring because the array it described is gone.
+            // The sliced wire (the prefix before the brief plus the seed turn) may still hold
+            // qualifying assistant turns, so re-derive rather than assume empty.
+            reseedMessageLoopRing(stepKey: stepKey, from: conversationMessages)
             // This slice is a DELIBERATE prefix reset. Flag it so the prompt-prefix cache
             // detector does not report the phase boundary as a defect.
             executionStates[stepKey]?.expectedPrefixResetPending = true

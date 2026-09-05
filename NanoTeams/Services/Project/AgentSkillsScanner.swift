@@ -184,7 +184,7 @@ nonisolated enum AgentSkillsScanner {
                 if let item = buildSkillItem(
                     fileURL: entry.fileURL, relPath: entry.relPath, fallbackName: leafDirName(entry.relPath),
                     agentID: spec.agentID, agentLabel: spec.agentLabel, kindLabel: spec.kindLabel,
-                    origin: origin, displayPath: displayPath, fileManager: fileManager
+                    origin: origin, displayPath: displayPath
                 ) {
                     items.append(item)
                 }
@@ -225,7 +225,7 @@ nonisolated enum AgentSkillsScanner {
     private static func buildSkillItem(
         fileURL: URL, relPath: String, fallbackName: String,
         agentID: String, agentLabel: String, kindLabel: String,
-        origin: AgentSkillOrigin, displayPath: String, fileManager: FileManager
+        origin: AgentSkillOrigin, displayPath: String
     ) -> AgentSkillsSnapshot.Item? {
         guard let probe = probeText(at: fileURL) else { return nil }
         let fm = SkillMetadataExtractor.frontmatterFields(["name", "description"], in: probe)
@@ -360,7 +360,7 @@ nonisolated enum AgentSkillsScanner {
             if let item = buildSkillItem(
                 fileURL: entry.fileURL, relPath: entry.relPath, fallbackName: leafDirName(entry.relPath),
                 agentID: looseProjectAgentID, agentLabel: "Claude Code", kindLabel: "Skill",
-                origin: .project, displayPath: entry.relPath, fileManager: fileManager
+                origin: .project, displayPath: entry.relPath
             ) {
                 items.append(item)
             }
@@ -400,7 +400,7 @@ nonisolated enum AgentSkillsScanner {
                 if let item = buildSkillItem(
                     fileURL: fileURL, relPath: "\(key)/\(relSuffix)", fallbackName: fallbackName,
                     agentID: pluginAgentID, agentLabel: "Claude Code", kindLabel: "Plugin Skill",
-                    origin: .global, displayPath: "~/.claude/plugins/\(key)/\(relSuffix)", fileManager: fileManager
+                    origin: .global, displayPath: "~/.claude/plugins/\(key)/\(relSuffix)"
                 ) {
                     skills.append(item)
                 }

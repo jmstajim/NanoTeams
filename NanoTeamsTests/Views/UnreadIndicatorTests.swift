@@ -170,19 +170,19 @@ final class UnreadIndicatorTests: XCTestCase {
     // MARK: - SidebarTaskItem Defaults
 
     func testSidebarTaskItem_hasUnreadInput_defaultsFalse() {
-        let item = SidebarTaskItem(id: 0, title: "Test", status: .running, updatedAt: Date())
+        let item = SidebarTaskItem(id: 0, title: "Test", status: .running)
         XCTAssertFalse(item.hasUnreadInput)
     }
 
     func testSidebarTaskItem_isChatMode_defaultsFalse() {
-        let item = SidebarTaskItem(id: 0, title: "Test", status: .running, updatedAt: Date())
+        let item = SidebarTaskItem(id: 0, title: "Test", status: .running)
         XCTAssertFalse(item.isChatMode)
     }
 
     func testSidebarTaskItem_hasUnreadInput_canBeSetTrue() {
         let item = SidebarTaskItem(
             id: 0, title: "Chat", status: .needsSupervisorInput,
-            updatedAt: Date(), isChatMode: true, hasUnreadInput: true
+            isChatMode: true, hasUnreadInput: true
         )
         XCTAssertTrue(item.hasUnreadInput)
     }

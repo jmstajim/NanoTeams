@@ -233,6 +233,70 @@ final class ConversationAppendInvariantTests: XCTestCase, @unchecked Sendable {
             "anti-vacuity: the scan must actually be seeing the mutation sites")
     }
 
+    /// The tool loop's message-loop ring is pushed at ONE site (`appendAssistantTurn` in
+    /// `processStreamingResult`), and that is sufficient only while no other production code
+    /// appends a `.assistant` `ChatMessage` to the tool-loop wire (CLAUDE.md #51). Scoped to the
+    /// `LLMExecutionService*` extension files — the tool loop's wire is `conversationMessages`,
+    /// threaded `inout` through exactly those — and to every `conversationMessages.append(`
+    /// under `Services/LLM`. `PromptBuilder`, `MeetingToolExecutor` and
+    /// `DelegatedSupervisorAnswerService` also construct assistant `ChatMessage`s, for OTHER
+    /// wires (the initial render, a meeting turn, a delegated-answer seed); none of them holds
+    /// the tool loop's array, which is why the scope is the extension family and not the folder.
+    ///
+    /// Needles are assembled at runtime and line comments stripped.
+    ///
+    /// RED: append an inline `.assistant` `ChatMessage` to `conversationMessages` in any other
+    /// `LLMExecutionService*` file (e.g. in `handleNoToolCalls`), or construct one in that family
+    /// outside `processStreamingResult` → fails naming file:line; the ring would then diverge
+    /// from the wire with every such turn. Recorded limit, not caught: a turn built by a policy
+    /// type OUTSIDE the family and appended by name (`let turn = SomePolicy.assistantTurn(…)`,
+    /// then `conversationMessages.append(turn)`) passes both halves — neither the append's
+    /// argument text nor the family's constructors spell `.assistant`.
+    func testTheWireHasOneAssistantAppendSite() throws {
+        let constructor = "ChatMessage" + "("
+        let assistantRole = "role: " + ".assistant"
+        let appendNeedle = "conversationMessages" + ".append("
+        let streamingFile = "LLMExecutionService+Streaming.swift"
+        let sources = RatchetSourceScan.repoRoot.appendingPathComponent("NanoTeams/Services/LLM")
+
+        var hits: [String] = []
+        var offenders: [String] = []
+        var appendOffenders: [String] = []
+        for url in RatchetSourceScan.swiftFiles(under: sources) {
+            let relative = RatchetSourceScan.relativePath(of: url)
+            let code = RatchetSourceScan.strippingLineComments(
+                try String(contentsOf: url, encoding: .utf8))
+
+            // Half 1: no site under Services/LLM appends an assistant turn to the wire directly.
+            for arguments in RatchetSourceScan.argumentLists(after: appendNeedle, in: code)
+                where arguments.contains(".assistant") {
+                appendOffenders.append("\(relative): \(arguments.prefix(80))")
+            }
+
+            // Half 2: within the tool loop's extension family, the assistant constructor lives
+            // only inside `processStreamingResult`.
+            guard url.lastPathComponent.hasPrefix("LLMExecutionService") else { continue }
+            let body = RatchetSourceScan.functionBody(after: "func processStreamingResult", in: code)
+            for arguments in RatchetSourceScan.argumentLists(after: constructor, in: code)
+                where arguments.contains(assistantRole) {
+                let inside = url.lastPathComponent == streamingFile
+                    && (body?.contains(arguments) ?? false)
+                if inside { hits.append(relative) } else { offenders.append(relative) }
+            }
+        }
+
+        XCTAssertTrue(appendOffenders.isEmpty,
+                      "these append an assistant turn to the wire without going through "
+                          + "`appendAssistantTurn`, so the message-loop ring misses it: "
+                          + "\(appendOffenders)")
+        XCTAssertTrue(offenders.isEmpty,
+                      "a `.assistant` ChatMessage is built for the tool-loop wire outside "
+                          + "`processStreamingResult` — a second append site needs a second ring "
+                          + "push, or the detector goes blind: \(offenders)")
+        XCTAssertGreaterThanOrEqual(hits.count, 1,
+                                    "anti-vacuum: the scan must see the append site it exists to count")
+    }
+
     /// Everything before an unquoted `//`. House shape, verbatim from
     /// `PrefixCacheLedgerOwnershipPinTests`.
     private static func strippingLineComments(_ line: String) -> String {

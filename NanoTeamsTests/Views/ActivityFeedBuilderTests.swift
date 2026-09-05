@@ -1734,6 +1734,129 @@ final class ActivityFeedBuilderTests: XCTestCase {
         )
     }
 
+    // MARK: - 6c. Per-step auxiliary (one pass per step per build)
+
+    /// `emitItems` used to evaluate the escalation-card gate TWICE per step per
+    /// build — once for bubble suppression, once for card emission — and its
+    /// first clause was a `contains(where:)` over `toolCalls` proving absence
+    /// (a full pass). The gate's value now lives in the per-step aux.
+    ///
+    /// RED: in the second step loop replace `a.card` with a fresh
+    /// `Self.escalationCard(for: step, askIndex: a.askIndex, isActive: a.isActive)`
+    /// → evaluations reads 2.
+    func testEscalationCard_evaluatedOncePerStepPerBuild() {
+        let refusal = makeMessage(role: .assistant, content: "I can't find a task.", at: date(50))
+        let answer = makeMessage(
+            role: .user, content: "Supervisor answer: read CLAUDE.md", at: date(200),
+            sourceContext: .supervisorAnswer)
+        let step = makeStep(
+            messages: [refusal, answer],
+            toolCalls: [],
+            status: .running,
+            needsSupervisorInput: false,
+            supervisorQuestion: "Role emitted 3 refusals. Please advise.",
+            supervisorAnswer: "read CLAUDE.md",
+            updatedAt: date(210)
+        )
+
+        EscalationCardProbe.reset()
+        let result = build(steps: [step])
+
+        XCTAssertEqual(EscalationCardProbe.evaluations(), 1,
+                       "the gate is evaluated exactly once per step per build (== 1 is its own anti-vacuum)")
+        let cards = result.filter {
+            if case .notification(_, _, .supervisorInput, _, _) = $0.item { return true }
+            return false
+        }
+        XCTAssertEqual(cards.count, 1, "the card still renders exactly once")
+    }
+
+    /// The refuter's shape: the role asked, did tool work, and was THEN parked by a
+    /// cap. The chip must still carry the earlier ask's identity and timestamp —
+    /// `positions.last` is `lastIndex(where:)`, not "the trailing call".
+    ///
+    /// RED: replace `askIndex(step).lastPosition` in `activeSupervisorQuestions` with
+    /// `step.toolCalls.last?.name == ToolNames.askSupervisor ? step.toolCalls.count - 1 : nil`
+    /// → `toolCallID` becomes a synthetic UUID and `askedAt == step.updatedAt`.
+    func testActiveSupervisorQuestions_earlierAskThenToolWorkThenCapPark_findsTheEarlierAsk() {
+        let ask = makeToolCall(name: TN.askSupervisor, at: date(100), argumentsJSON: #"{"question":"Q1?"}"#)
+        let step = makeStep(
+            role: .productManager,
+            toolCalls: [ask, makeToolCall(at: date(200)), makeToolCall(at: date(300))],
+            status: .needsSupervisorInput,
+            needsSupervisorInput: true,
+            supervisorQuestion: "Cap: please advise",
+            updatedAt: date(400)
+        )
+
+        let questions = ActivityFeedBuilder.activeSupervisorQuestions(steps: [step])
+
+        XCTAssertEqual(questions.count, 1)
+        XCTAssertEqual(questions.first?.toolCallID, ask.id, "the EARLIER ask, not a synthetic id")
+        XCTAssertEqual(questions.first?.askedAt, date(100), "anchored on the ask, not on updatedAt")
+        XCTAssertEqual(questions.first?.question, "Cap: please advise",
+                       "flag-true prefers the stored text over the call's argument")
+        XCTAssertNil(questions.first?.paired, "no assistant turn precedes the ask")
+    }
+
+    /// The index provider is asked ONCE per step per build and its answer is read
+    /// back by the second loop through the aux — and the items are byte-for-byte
+    /// what the default provider produces.
+    ///
+    /// RED: in the second step loop call `askIndex(originTaskID, step)` again instead
+    /// of reading `aux[stepIndex].askIndex` → 6 calls.
+    func testBuildTimeline_asksTheIndexProviderOncePerStep() {
+        let twoAsks = makeStep(
+            role: .productManager,
+            messages: [
+                makeMessage(role: .user, content: "Supervisor answer: A1", at: date(150), sourceContext: .supervisorAnswer),
+                makeMessage(role: .user, content: "Supervisor answer: A2", at: date(250), sourceContext: .supervisorAnswer),
+            ],
+            toolCalls: [
+                makeToolCall(name: TN.askSupervisor, at: date(100), argumentsJSON: #"{"question":"Q1?"}"#),
+                makeToolCall(name: TN.askSupervisor, at: date(200), argumentsJSON: #"{"question":"Q2?"}"#),
+            ],
+            status: .done
+        )
+        let noAsk = makeStep(
+            role: .techLead,
+            messages: [makeMessage(content: "Plan.", at: date(300))],
+            toolCalls: [makeToolCall(at: date(310))],
+            status: .done
+        )
+        let escalation = makeStep(
+            role: .softwareEngineer,
+            messages: [
+                makeMessage(role: .assistant, content: "Idle.", at: date(400), thinking: "parking"),
+                makeMessage(role: .user, content: "Supervisor answer: go", at: date(500), sourceContext: .supervisorAnswer),
+            ],
+            toolCalls: [],
+            status: .running,
+            needsSupervisorInput: false,
+            supervisorQuestion: "Idle — waiting.",
+            supervisorAnswer: "go",
+            updatedAt: date(510)
+        )
+        let steps = [twoAsks, noAsk, escalation]
+
+        var providerCalls = 0
+        let timeline = ActivityFeedBuilder.buildTimeline(
+            steps: steps, run: nil,
+            stepArtifactContentCache: [:], debugModeEnabled: false,
+            askIndex: { _, step in
+                providerCalls += 1
+                return AskCallIndex(toolCalls: step.toolCalls)
+            },
+            isStreaming: { _ in false }
+        )
+        let reference = build(steps: steps)
+
+        XCTAssertEqual(providerCalls, 3, "one ask-index per step per build")
+        XCTAssertEqual(timeline.items.count, reference.count)
+        XCTAssertEqual(timeline.items.map(\.id), reference.map(\.id), "same items, same order as the default provider")
+        XCTAssertGreaterThan(reference.count, 5, "anti-vacuum: the fixture renders bubbles, calls and cards")
+    }
+
     // MARK: - 7. Failed Step Notification
 
     func testFailedNotificationAtCompletedAt() {

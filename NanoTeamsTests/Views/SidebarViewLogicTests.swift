@@ -27,7 +27,7 @@ final class SidebarViewLogicTests: XCTestCase {
     }
 
     private func item(_ id: Int, status: TaskStatus, recurring: Bool = false) -> SidebarTaskItem {
-        SidebarTaskItem(id: id, title: "t\(id)", status: status, updatedAt: t0, isRecurring: recurring)
+        SidebarTaskItem(id: id, title: "t\(id)", status: status, isRecurring: recurring)
     }
 
     // MARK: - buildSidebarTaskItems
@@ -173,6 +173,87 @@ final class SidebarViewLogicTests: XCTestCase {
             engineStates: [:]
         )
         XCTAssertEqual(items.map(\.id), [3, 1, 2], "1:1 projection preserving input order")
+    }
+
+    // MARK: - RowsMemo (pure)
+
+    private func key(
+        rev: Int = 0,
+        autovisor: Int? = nil,
+        seen: Set<Int> = [],
+        bash: Set<Int> = [],
+        engines: [Int: TeamEngineState] = [:],
+        initializing: Set<Int> = []
+    ) -> SidebarViewLogic.RowsKey {
+        SidebarViewLogic.RowsKey(
+            rowsRevision: rev, autovisorTaskID: autovisor,
+            seenSupervisorInputTaskIDs: seen, bashApprovalTaskIDs: bash,
+            engineStates: engines, initializingTaskIDs: initializing)
+    }
+
+    /// A hit is a key compare: the closure runs once for three asks with an equal key,
+    /// and every ask returns the array that one run produced.
+    ///
+    /// RED: make `RowsMemo.items(for:build:)` ignore the cache (`let built = build()`
+    /// unconditionally) → `builds` reads 3.
+    func testRowsMemo_sameKeyReturnsCachedWithoutBuilding() {
+        var memo = SidebarViewLogic.RowsMemo()
+        var builds = 0
+        let expected = [item(1, status: .running), item(2, status: .done)]
+        for _ in 0..<3 {
+            let out = memo.items(for: key(rev: 3)) { builds += 1; return expected }
+            XCTAssertEqual(out, expected, "a hit hands back the built array, never a stale one")
+        }
+        XCTAssertEqual(builds, 1, "three asks with one key = one build")
+    }
+
+    /// Every field of `RowsKey` is an input the builder reads, so varying any ONE of them
+    /// must miss — and the miss must hand back the FRESH result, not the previous array.
+    ///
+    /// RED: change `if self.key == key` to `if self.key != nil` in `RowsMemo` → every later
+    /// ask hits and `builds` stops at 1 (the first `XCTAssertEqual(builds, 2)` fails).
+    func testRowsMemo_changedKeyRebuilds() {
+        var memo = SidebarViewLogic.RowsMemo()
+        var builds = 0
+        func ask(_ k: SidebarViewLogic.RowsKey) -> [SidebarTaskItem] {
+            memo.items(for: k) { builds += 1; return [item(builds, status: .running)] }
+        }
+        XCTAssertEqual(ask(key()), [item(1, status: .running)])
+        XCTAssertEqual(builds, 1)
+
+        let variants: [SidebarViewLogic.RowsKey] = [
+            key(rev: 1),
+            key(rev: 1, autovisor: 99),
+            key(rev: 1, autovisor: 99, seen: [7]),
+            key(rev: 1, autovisor: 99, seen: [7], bash: [8]),
+            key(rev: 1, autovisor: 99, seen: [7], bash: [8], engines: [7: .running]),
+            key(rev: 1, autovisor: 99, seen: [7], bash: [8], engines: [7: .running], initializing: [9]),
+        ]
+        for (i, variant) in variants.enumerated() {
+            let out = ask(variant)
+            XCTAssertEqual(builds, i + 2, "varying field #\(i) of RowsKey must rebuild exactly once")
+            XCTAssertEqual(out, [item(i + 2, status: .running)], "a miss returns what it just built")
+            _ = ask(variant)
+            XCTAssertEqual(builds, i + 2, "…and the same key again is a hit")
+        }
+    }
+
+    /// Anti-vacuum for every bound asserted against `SidebarRowsBuildProbe.builds()`
+    /// (`SidebarRowsMemoTests`): the probe is wired INSIDE the builder, so two builds read 2.
+    /// If this read 0, "builds == 1 across 20 appends" would hold for a sidebar rebuilding
+    /// on every pass (CLAUDE.md #57).
+    ///
+    /// RED: delete the `SidebarRowsBuildProbe.noteBuild()` line inside
+    /// `buildSidebarTaskItems` → `builds()` reads 0.
+    func testBuildProbeCountsEveryBuild() {
+        SidebarRowsBuildProbe.reset()
+        for _ in 0..<2 {
+            _ = SidebarViewLogic.buildSidebarTaskItems(
+                summaries: [summary(1, status: .running)],
+                seenSupervisorInputTaskIDs: [],
+                engineStates: [:])
+        }
+        XCTAssertEqual(SidebarRowsBuildProbe.builds(), 2)
     }
 
     // MARK: - filterCount
@@ -342,7 +423,6 @@ final class SidebarFilterCountsTests: XCTestCase {
     private func item(id: Int, status: TaskStatus, recurring: Bool = false) -> SidebarTaskItem {
         SidebarTaskItem(
             id: id, title: "T\(id)", status: status,
-            updatedAt: Date(timeIntervalSince1970: TimeInterval(id)),
             isChatMode: false, hasUnreadInput: false,
             isEngineRunning: false, isRecurring: recurring,
             hasPendingBashApproval: false)

@@ -202,7 +202,7 @@ final class PlanningPhasePolicyTests: XCTestCase {
         let tools = [tool(ToolNames.updateScratchpad), tool(ToolNames.readFile),
                      tool(ToolNames.bash)]
         let auth = PlanningPhasePolicy.authorization(
-            for: .continuePlanning, tools: tools, bashAdmitted: false)
+            for: .continuePlanning, tools: tools, bashAdmitted: false, wireCarriesClosedMarker: false)
 
         XCTAssertFalse(auth.allowed.contains(ToolNames.bash))
         XCTAssertTrue(auth.withheldByPhase.contains(ToolNames.bash))
@@ -219,7 +219,7 @@ final class PlanningPhasePolicyTests: XCTestCase {
         let tools = [tool(ToolNames.updateScratchpad), tool(ToolNames.readFile),
                      tool(ToolNames.gitLog), tool(ToolNames.bash)]
         let auth = PlanningPhasePolicy.authorization(
-            for: .continuePlanning, tools: tools, bashAdmitted: true)
+            for: .continuePlanning, tools: tools, bashAdmitted: true, wireCarriesClosedMarker: false)
 
         XCTAssertTrue(auth.withheldByPhase.isEmpty, "fixture premise: this role withholds nothing")
         XCTAssertTrue(auth.isPlanningPhase)
@@ -233,7 +233,8 @@ final class PlanningPhasePolicyTests: XCTestCase {
     func testPlanningToolNames_withoutAScheme_xcodeIsNeitherAllowedNorWithheld() {
         let toolsWithoutScheme = [tool(ToolNames.updateScratchpad), tool(ToolNames.readFile)]
         let auth = PlanningPhasePolicy.authorization(
-            for: .continuePlanning, tools: toolsWithoutScheme, bashAdmitted: true)
+            for: .continuePlanning, tools: toolsWithoutScheme, bashAdmitted: true,
+            wireCarriesClosedMarker: false)
 
         XCTAssertFalse(auth.allowed.contains(ToolNames.runXcodebuild))
         XCTAssertFalse(auth.withheldByPhase.contains(ToolNames.runXcodebuild),
@@ -244,7 +245,7 @@ final class PlanningPhasePolicyTests: XCTestCase {
         let tools = [tool(ToolNames.updateScratchpad), tool(ToolNames.search),
                      tool(ToolNames.writeFile)]
         let auth = PlanningPhasePolicy.authorization(
-            for: .continuePlanning, tools: tools, bashAdmitted: true)
+            for: .continuePlanning, tools: tools, bashAdmitted: true, wireCarriesClosedMarker: false)
 
         XCTAssertEqual(auth.allowed, [ToolNames.updateScratchpad, ToolNames.search])
         XCTAssertEqual(auth.withheldByPhase, [ToolNames.writeFile])
@@ -257,11 +258,41 @@ final class PlanningPhasePolicyTests: XCTestCase {
         for decision in [PlanningPhasePolicy.Decision.crossBoundary,
                          .closeWithoutRebuild, .execution] {
             let auth = PlanningPhasePolicy.authorization(
-                for: decision, tools: tools, bashAdmitted: true)
+                for: decision, tools: tools, bashAdmitted: true, wireCarriesClosedMarker: false)
             XCTAssertEqual(auth.allowed, Set(tools.map(\.name)), "\(decision)")
             XCTAssertTrue(auth.withheldByPhase.isEmpty, "\(decision)")
             XCTAssertFalse(auth.isPlanningPhase, "\(decision)")
         }
+    }
+
+    /// `wireIsMidPlanning` is the phase fact AFTER the decision's mutation, derived from the
+    /// caller's pre-mutation closed-marker scan — the five-row table on `authorization`. It is
+    /// NOT `isPlanningPhase`: the (continuePlanning, closed) row is reachable (a revision closed
+    /// the phase, then `create_artifact` cleared `revisionComment` with `scratchpad` still nil)
+    /// and there the step is planning-authorized while the wire is no longer mid-planning.
+    ///
+    /// RED: set `wireIsMidPlanning: true` in the planning arm (drop `!wireCarriesClosedMarker`)
+    /// → the (continuePlanning, closed=true) and (enterPlanning, closed=true) rows fail.
+    func testAuthorization_wireIsMidPlanning_followsTheDecisionAndTheClosedMarker() {
+        let tools = [tool(ToolNames.updateScratchpad), tool(ToolNames.readFile)]
+        let table: [(decision: PlanningPhasePolicy.Decision, closed: Bool, expected: Bool)] = [
+            (.enterPlanning, false, true), (.enterPlanning, true, false),
+            (.continuePlanning, false, true), (.continuePlanning, true, false),
+            (.crossBoundary, false, false), (.crossBoundary, true, false),
+            (.closeWithoutRebuild, false, false), (.closeWithoutRebuild, true, false),
+            (.execution, false, false), (.execution, true, false),
+        ]
+        for row in table {
+            let auth = PlanningPhasePolicy.authorization(
+                for: row.decision, tools: tools, bashAdmitted: true,
+                wireCarriesClosedMarker: row.closed)
+            XCTAssertEqual(auth.wireIsMidPlanning, row.expected,
+                           "decision=\(row.decision) closed=\(row.closed)")
+        }
+        // Anti-vacuum: the field is not simply `false`.
+        XCTAssertTrue(PlanningPhasePolicy.authorization(
+            for: .continuePlanning, tools: tools, bashAdmitted: true,
+            wireCarriesClosedMarker: false).wireIsMidPlanning)
     }
 
     // MARK: - Prompt text

@@ -81,7 +81,7 @@ final class BenchmarkHistoryStoreTests: XCTestCase {
     func testLegacyRowWithoutOptionalKeys_decodes_andVersionIsRaised() throws {
         let legacy = """
         {"id":"\(UUID().uuidString)","runID":"\(UUID().uuidString)",\
-        "recordedAt":"2026-08-18T12:00:00.000Z","phase":"measured","sampleIndex":0,\
+        "recordedAt":"2026-08-18T21:00:00.000Z","phase":"measured","sampleIndex":0,\
         "outputTokens":401,"generationMs":10000}
         """
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -102,7 +102,7 @@ final class BenchmarkHistoryStoreTests: XCTestCase {
         let future = GenerationBenchmarkSample.currentSchemaVersion + 5
         let line = """
         {"schemaVersion":\(future),"id":"\(UUID().uuidString)","runID":"\(UUID().uuidString)",\
-        "recordedAt":"2026-08-18T12:00:00.000Z","phase":"measured","sampleIndex":0}
+        "recordedAt":"2026-08-18T21:00:00.000Z","phase":"measured","sampleIndex":0}
         """
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try (line + "\n").data(using: .utf8)!.write(to: sut.samplesURL)

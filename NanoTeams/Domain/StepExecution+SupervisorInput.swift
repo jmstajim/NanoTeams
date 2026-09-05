@@ -99,6 +99,33 @@ nonisolated extension StepExecution {
         activeAskCall?.id
     }
 
+    /// The text the banner/composer show for this step's question: the persisted
+    /// `supervisorQuestion`, else the last `ask_supervisor` call's parsed args (the
+    /// flag-set/text-not-yet-copied lag). Moved here from `Run.allWatchtowerNotifications`
+    /// so the retirement in `answerSupervisorQuestion` reads the SAME chain the banner was
+    /// keyed on (CLAUDE.md #91). Does not check activeness — callers gate on
+    /// `hasActiveSupervisorInput`, which is why the `last(where:)` walk is not on the
+    /// common path: the banner loop admits only waiting steps and `??` short-circuits
+    /// whenever the text was copied.
+    var supervisorQuestionText: String? {
+        supervisorQuestion
+            ?? toolCalls.last(where: { $0.name == ToolNames.askSupervisor })?.parsedSupervisorQuestion
+    }
+
+    /// Dismiss identity of the Watchtower `.supervisorInput` banner this step produces RIGHT
+    /// NOW — nil when it produces none (the same two conditions `Run.allWatchtowerNotifications`
+    /// applies: waiting AND a question text). Read it BEFORE an answer lands:
+    /// `StepMessagingService.answerSupervisorQuestion` appends the `.supervisorAnswer` message
+    /// that turns `activeSupervisorQuestionID` nil and clears `needsSupervisorInput` in one
+    /// closure. Keyed on `activeSupervisorQuestionID`, never on the trailing call's id: a
+    /// flag-only escalation on a step with an earlier, ANSWERED ask must not inherit that
+    /// call's UUID (see the doc above).
+    func activeSupervisorInputDismissKey(taskID: Int) -> WatchtowerDismissKey? {
+        guard hasActiveSupervisorInput, let question = supervisorQuestionText else { return nil }
+        return .supervisorInput(
+            taskID: taskID, stepID: id, toolCallID: activeSupervisorQuestionID, question: question)
+    }
+
     /// Owed an answer AND reachable right now — the gate for delivering one.
     var canReceiveSupervisorAnswer: Bool {
         hasActiveSupervisorInput && status.acceptsSupervisorAnswer

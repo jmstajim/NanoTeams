@@ -304,4 +304,91 @@ final class ApplyPlanningPhaseWiringTests: XCTestCase {
                        [ToolNames.updateScratchpad, ToolNames.search, ToolNames.runXcodebuild],
                        "…and it is still the planning phase")
     }
+
+    // MARK: - The carried phase fact
+
+    /// `Authorization.wireIsMidPlanning` must equal `PlanningPhasePolicy.isMidPlanning(wire)`
+    /// immediately after `applyPlanningPhase` returns, for every reachable pre-state — that is
+    /// what lets the two later consumers (`handleNoToolCalls`, `processScratchpadResult`) read
+    /// it instead of rescanning the wire. The divergent row is the one that proves
+    /// `isPlanningPhase` is the wrong field to thread: a brief AND the closed marker on the wire
+    /// with the step eligible again (revision closed the phase, `create_artifact` then cleared
+    /// `revisionComment`, scratchpad still nil) decides `.continuePlanning`, so
+    /// `isPlanningPhase == true` while the wire says the phase is over.
+    ///
+    /// RED: define `wireIsMidPlanning` as `isPlanningPhase` (i.e. `wireIsMidPlanning: true` in
+    /// the planning arm of `authorization`) → the brief+closed eligible row fails: carried true,
+    /// wire says false.
+    func testWireIsMidPlanning_agreesWithTheWire_afterEveryReachablePreState() async {
+        let brief = ChatMessage(role: .user, content: PlanningPhasePolicy.planningBrief(
+            exploreToolNames: [ToolNames.search], expectedArtifacts: []))
+        let closed = ChatMessage(role: .user, content: PlanningPhasePolicy.planningClosedTurn)
+        var revised = freshStep()
+        revised.revisionComment = "Fix the naming"
+        var planned = freshStep()
+        planned.scratchpad = "Plan:\n1. Edit Foo"
+
+        let rows: [(label: String, wire: [ChatMessage], step: StepExecution, expectedCarried: Bool)] = [
+            ("fresh → enterPlanning", baseConversation(), freshStep(), true),
+            ("brief only → continuePlanning", baseConversation() + [brief], freshStep(), true),
+            ("brief + scratchpad → crossBoundary", baseConversation() + [brief], planned, false),
+            ("brief + revision → closeWithoutRebuild", baseConversation() + [brief], revised, false),
+            ("brief + closed + revision → execution", baseConversation() + [brief, closed], revised, false),
+            ("brief + closed, eligible again → continuePlanning (divergent row)",
+             baseConversation() + [brief, closed], freshStep(), false),
+        ]
+
+        var sawTheDivergentRow = false
+        for row in rows {
+            var conversation = row.wire
+            let auth = await apply(step: row.step, role: role(usePlanning: true), into: &conversation)
+            XCTAssertEqual(auth.wireIsMidPlanning, PlanningPhasePolicy.isMidPlanning(conversation),
+                           "\(row.label): the carried fact must agree with the wire it describes")
+            XCTAssertEqual(auth.wireIsMidPlanning, row.expectedCarried, row.label)
+            if row.label.contains("divergent") {
+                sawTheDivergentRow = true
+                XCTAssertTrue(auth.isPlanningPhase,
+                              "premise: the step is planning-authorized on this row")
+                XCTAssertFalse(auth.wireIsMidPlanning,
+                               "…and yet the wire is NOT mid-planning — `isPlanningPhase` would "
+                                   + "record a prose plan and promise a boundary `decide` never fires")
+            }
+        }
+        XCTAssertTrue(sawTheDivergentRow, "the table must include the row where the two fields differ")
+    }
+
+    /// The boundary REPLACES the wire, `resetConversationScopedState` clears the message-loop
+    /// ring because of it, and the `.crossBoundary` arm must then re-seed the ring from the
+    /// SLICED wire: the prefix before the brief may still hold qualifying assistant turns, and
+    /// a detector left blind until three new turns arrive is the failure this pins.
+    ///
+    /// RED: drop the `reseedMessageLoopRing` call in the `.crossBoundary` arm → the ring reads
+    /// `[]` instead of the pre-brief turn.
+    func testBoundary_reseedsTheRingFromTheSlicedWire() async {
+        var conversation = baseConversation()
+        conversation.append(ChatMessage(role: .assistant, content: "pre-brief prose"))
+        _ = await apply(step: freshStep(), role: role(usePlanning: true), into: &conversation)
+        for i in 0..<3 {
+            conversation.append(ChatMessage(role: .assistant, content: "exploring \(i)"))
+            conversation.append(ChatMessage(role: .user, content: "go on"))
+        }
+        // What step entry does: the ring describes the wire the phase ran on.
+        service._testSeedMessageLoopRing(stepID: stepID, taskID: task.id, from: conversation)
+        XCTAssertEqual(service._testMessageLoopRing(stepID: stepID, taskID: task.id),
+                       ["exploring 0", "exploring 1", "exploring 2"],
+                       "premise: the ring holds the three post-brief turns before the boundary")
+
+        var planned = freshStep()
+        planned.scratchpad = "Plan:\n1. Edit Foo"
+        let auth = await apply(step: planned, role: role(usePlanning: true), into: &conversation)
+
+        XCTAssertFalse(auth.isPlanningPhase, "premise: the boundary fired")
+        XCTAssertEqual(service._testMessageLoopRing(stepID: stepID, taskID: task.id),
+                       ["pre-brief prose"],
+                       "exactly the qualifying turns of the SLICED wire — nothing from the "
+                           + "exploration, nothing missing from the prefix")
+        XCTAssertEqual(service._testMessageLoopRing(stepID: stepID, taskID: task.id),
+                       ConversationRepairService.recentNoToolAssistantContents(in: conversation),
+                       "ring ≡ walk over the replacement wire")
+    }
 }

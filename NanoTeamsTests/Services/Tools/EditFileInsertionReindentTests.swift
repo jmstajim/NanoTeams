@@ -25,6 +25,10 @@ import XCTest
 /// lines beyond the aligned region are new code the file has no opinion about, and
 /// keep the model's own indentation. A refusal survives only where the evidence
 /// genuinely conflicts.
+///
+/// Clock times below are `EditFileTask28Fixtures`' rebased ones (+5 h off the run
+/// log, for the test target's 20:00–02:00 band) — subtract 5 h to read them against
+/// the log. Durations are unaffected: only the hour field moved.
 final class EditFileInsertionReindentTests: XCTestCase {
     private let fileManager = FileManager.default
     private var tempDir: URL!
@@ -103,7 +107,7 @@ final class EditFileInsertionReindentTests: XCTestCase {
 
     // MARK: - The run
 
-    /// 17:29:12.726 — the anchor the model then repeated twice more verbatim.
+    /// 22:29:12.726 — the anchor the model then repeated twice more verbatim.
     ///
     /// `old_text` is three lines at depths 9, 5, 0 where the file has 8, 4, 0 — a
     /// clean map. `new_text` reproduces those three lines and appends a 25-line
@@ -111,7 +115,7 @@ final class EditFileInsertionReindentTests: XCTestCase {
     ///
     /// RED (before the fix): ANCHOR_NOT_FOUND, file untouched.
     func testReal_libraryEmptyStateInsertion_applies() async throws {
-        let failure = EditFileTask28Fixtures.failure(at: "2026-08-15T17:29:12.726")
+        let failure = EditFileTask28Fixtures.failure(at: "2026-08-15T22:29:12.726")
         let result = try await replay(failure)
 
         XCTAssertFalse(result.isError, result.outputJSON)
@@ -141,7 +145,7 @@ final class EditFileInsertionReindentTests: XCTestCase {
     ///
     /// RED: emit no warning → empty.
     func testReal_insertion_disclosesThePassedThroughLines() async throws {
-        let failure = EditFileTask28Fixtures.failure(at: "2026-08-15T17:29:12.726")
+        let failure = EditFileTask28Fixtures.failure(at: "2026-08-15T22:29:12.726")
         let result = try await replay(failure)
 
         let texts = warnings(result)
@@ -161,7 +165,7 @@ final class EditFileInsertionReindentTests: XCTestCase {
     ///
     /// RED: remove either forwarding branch in `processEdit` → the matching assertion fails.
     func testReal_insertion_disclosuresSurviveTheTagStore() async throws {
-        let failure = EditFileTask28Fixtures.failure(at: "2026-08-15T17:29:12.726")
+        let failure = EditFileTask28Fixtures.failure(at: "2026-08-15T22:29:12.726")
         let result = try await replay(failure)
         XCTAssertFalse(result.isError, result.outputJSON)
 

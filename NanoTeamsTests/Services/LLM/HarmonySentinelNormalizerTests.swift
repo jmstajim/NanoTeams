@@ -199,4 +199,131 @@ final class HarmonySentinelNormalizerTests: XCTestCase {
         XCTAssertTrue(normalized.contains("<|call|>{\"a\":1}"),
                       "the genuine occurrence must be rewritten")
     }
+
+    // MARK: - Truncated canonical sentinel (CastleSurvivorsNT task 12 run 1, 2026-09-05)
+
+    /// `ornith-1.5:35b` on Ollama dropped the canonical marker's closing `>` and abutted
+    /// the payload. Verbatim from the run's turn 41 (`network_log.jsonl`, the last
+    /// assistant turn of the step).
+    func testNormalize_truncatedCanonical_becomesCanonical() {
+        let input = #"<|call|{"name":"bash","arguments":{"command":"git ls-tree -r --name-only dfba13d | grep -i guard_core"}}"#
+        XCTAssertEqual(
+            HarmonySentinelNormalizer.normalize(input),
+            #"<|call|>{"name":"bash","arguments":{"command":"git ls-tree -r --name-only dfba13d | grep -i guard_core"}}"#)
+    }
+
+    /// The payload must survive byte-for-byte — a `bash` command carries pipes, quotes
+    /// and `$?`, and a repair that touched any of them would dispatch a different call
+    /// than the model asked for.
+    func testNormalize_truncatedCanonical_payloadIsUntouched() {
+        let input = #"<|call|{"name":"bash","arguments":{"command":"cd . && git ls-tree -r --name-only dfba13d | grep -i guard_core; echo \"exit $?\""}}"#
+        let output = HarmonySentinelNormalizer.normalize(input)
+        XCTAssertTrue(output.hasPrefix(#"<|call|>{"#))
+        XCTAssertTrue(output.hasSuffix(#"echo \"exit $?\""}}"#))
+    }
+
+    /// Prose then the broken sentinel on its own line — the run's turn 25 shape.
+    func testNormalize_truncatedCanonicalAfterProse_repairsOnlyTheSentinel() {
+        let input = "Let me find guard_core.gd in git.\n" +
+            #"<|call|{"name":"bash","arguments":{}}"#
+        XCTAssertEqual(
+            HarmonySentinelNormalizer.normalize(input),
+            "Let me find guard_core.gd in git.\n" +
+                #"<|call|>{"name":"bash","arguments":{}}"#)
+    }
+
+    func testNormalize_truncatedCanonical_isIdempotent() {
+        let once = HarmonySentinelNormalizer.normalize(#"<|call|{"name":"search"}"#)
+        XCTAssertEqual(HarmonySentinelNormalizer.normalize(once), once)
+        XCTAssertEqual(once, #"<|call|>{"name":"search"}"#)
+    }
+
+    /// Both families in one buffer, repaired left to right — `nextSentinel` orders by
+    /// position, so neither prefix can starve the other.
+    func testNormalize_bothFamiliesInOneBuffer_bothRepaired() {
+        let input = #"<|tool_call>call|>{"name":"search"} then <|call|{"name":"read_file"}"#
+        XCTAssertEqual(
+            HarmonySentinelNormalizer.normalize(input),
+            #"<|call|>{"name":"search"} then <|call|>{"name":"read_file"}"#)
+    }
+
+    // MARK: - Truncated canonical: the negatives are the safety argument
+
+    /// The whole reason this family tolerates no debris. `<|call|>tool_name{…}` is a
+    /// live `CallMarkerStrategy` branch; a debris-tolerant rule would rewrite it and
+    /// `trailingToolName` would drop any identifier `ToolNames.allNames` does not list,
+    /// leaving a nameless payload that resolves to nothing.
+    func testNormalize_canonicalWithToolName_isByteIdentical() {
+        let input = #"<|call|>read_file{"path":"a.swift"}<|end|>"#
+        XCTAssertEqual(HarmonySentinelNormalizer.normalize(input), input)
+    }
+
+    /// Same shape with a name that is NOT a tool — the case a tolerant rule would
+    /// silently strip.
+    func testNormalize_canonicalWithUnknownName_isByteIdentical() {
+        let input = #"<|call|>mystery_tool{"path":"a.swift"}<|end|>"#
+        XCTAssertEqual(HarmonySentinelNormalizer.normalize(input), input)
+    }
+
+    /// A name between the broken sentinel and the payload is NOT repaired: no run has
+    /// produced this shape, and admitting it is exactly what would reach the two cases
+    /// above.
+    func testNormalize_truncatedCanonicalWithDebris_isUntouched() {
+        let input = #"<|call|read_file{"path":"a.swift"}"#
+        XCTAssertEqual(HarmonySentinelNormalizer.normalize(input), input)
+    }
+
+    func testNormalize_truncatedCanonicalWithSpaceBeforeBrace_isUntouched() {
+        let input = #"<|call| {"name":"search"}"#
+        XCTAssertEqual(HarmonySentinelNormalizer.normalize(input), input)
+    }
+
+    func testNormalize_truncatedCanonicalWithNewlineBeforeBrace_isUntouched() {
+        let input = "<|call|\n{\"name\":\"search\"}"
+        XCTAssertEqual(HarmonySentinelNormalizer.normalize(input), input)
+    }
+
+    /// Mid-stream: the sentinel arrived but its payload has not. `nil` here is retried
+    /// on the next delta, never final — same contract as the alien family.
+    func testNormalize_truncatedCanonicalAtBufferEnd_isUntouched() {
+        let input = "Let me call a tool.\n<|call|"
+        XCTAssertEqual(HarmonySentinelNormalizer.normalize(input), input)
+    }
+
+    /// Prose ABOUT the sentinel carries no abutting brace, so it can never be promoted.
+    func testNormalize_proseMentioningCallToken_isUntouched() {
+        let input = "Write <|call| and then the JSON object on the same line."
+        XCTAssertEqual(HarmonySentinelNormalizer.normalize(input), input)
+    }
+
+    /// A canonical envelope and a broken one in the same buffer: the canonical one must
+    /// come through untouched while the broken one is repaired.
+    func testNormalize_canonicalThenTruncated_onlyTheBrokenOneChanges() {
+        let input = #"<|call|>{"name":"search"}<|end|> and <|call|{"name":"read_file"}"#
+        XCTAssertEqual(
+            HarmonySentinelNormalizer.normalize(input),
+            #"<|call|>{"name":"search"}<|end|> and <|call|>{"name":"read_file"}"#)
+    }
+
+    /// `hasNormalizableOccurrence` is the streaming gate, so it must agree with
+    /// `normalize` on every fixture above — a gate that says "nothing to do" over a
+    /// buffer `normalize` would rewrite is a call dropped before the parser is reached.
+    func testHasNormalizableOccurrence_agreesWithNormalize() {
+        let cases: [String] = [
+            #"<|call|{"name":"bash","arguments":{}}"#,
+            #"<|call|>{"name":"bash"}<|end|>"#,
+            #"<|call|>read_file{"path":"a"}"#,
+            #"<|call|read_file{"path":"a"}"#,
+            #"<|call| {"name":"search"}"#,
+            "<|call|",
+            "prose with no sentinel",
+            #"<|tool_call>call|>{"name":"search"}"#,
+        ]
+        for text in cases {
+            let rewritten = HarmonySentinelNormalizer.normalize(text) != text
+            XCTAssertEqual(
+                HarmonySentinelNormalizer.hasNormalizableOccurrence(in: text[...]), rewritten,
+                "gate and rewrite disagree on: \(text)")
+        }
+    }
 }

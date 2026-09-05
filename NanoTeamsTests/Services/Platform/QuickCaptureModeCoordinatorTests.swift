@@ -494,6 +494,67 @@ final class QuickCaptureModeCoordinatorTests: XCTestCase {
         XCTAssertEqual(QuickCapturePresentationPolicy.submitAction(for: nonChat), .disabled)
     }
 
+    // MARK: - Last assistant turn (answer-mode payload)
+
+    /// The payload quotes the NEWEST assistant turn — not the first, and not whatever
+    /// happens to be the tail element. Several assistant turns with later non-assistant
+    /// turns behind them is the shape a real `ask_supervisor` step has (tool results and
+    /// injected user turns follow the last model utterance). Nothing pinned which turn
+    /// the answer overlay quotes before this test.
+    ///
+    /// RED: `last(where:)` → `first(where:)` → `messageContent` reads "first draft"
+    /// instead of "final question context".
+    func testResolveMode_answerMode_quotesTheNewestAssistantTurn_notTheFirstOrTheTail() {
+        var task = makeTask(withQuestion: true)
+        task.runs[0].steps[0].llmConversation = [
+            LLMMessage(role: .assistant, content: "first draft", thinking: "t1"),
+            LLMMessage(role: .user, content: "tool result 1"),
+            LLMMessage(role: .assistant, content: "final question context", thinking: "t2"),
+            LLMMessage(role: .user, content: "tool result 2"),
+            LLMMessage(role: .user, content: "queued supervisor note"),
+        ]
+
+        let mode = sut.resolveMode(
+            isTaskSelected: true,
+            activeTask: task,
+            engineState: .needsSupervisorInput,
+            isInitializingRun: false,
+            activeTeam: makeTeam(),
+            forceNewTaskMode: false
+        )
+        guard case .supervisorAnswer(let payload) = mode else {
+            return XCTFail("Expected .supervisorAnswer, got \(mode)")
+        }
+        XCTAssertEqual(payload.messageContent, "final question context")
+        XCTAssertEqual(payload.thinking, "t2")
+    }
+
+    /// No assistant turn at all → the payload carries no quote, rather than a crash or
+    /// a user turn masquerading as one.
+    ///
+    /// RED: drop the `.assistant` predicate (`last(where:)` → `last`) → `messageContent`
+    /// becomes "queued supervisor note".
+    func testResolveMode_answerMode_noAssistantTurn_carriesNoQuote() {
+        var task = makeTask(withQuestion: true)
+        task.runs[0].steps[0].llmConversation = [
+            LLMMessage(role: .user, content: "queued supervisor note"),
+        ]
+
+        let mode = sut.resolveMode(
+            isTaskSelected: true,
+            activeTask: task,
+            engineState: .needsSupervisorInput,
+            isInitializingRun: false,
+            activeTeam: makeTeam(),
+            forceNewTaskMode: false
+        )
+        guard case .supervisorAnswer(let payload) = mode else {
+            return XCTFail("Expected .supervisorAnswer, got \(mode)")
+        }
+        XCTAssertNil(payload.messageContent)
+        XCTAssertNil(payload.thinking)
+    }
+
     /// A distinct render identity from "working with no role name yet". Collapsing them
     /// would leave the panel showing `Initializing…` after the engine came up, because
     /// the controller rebuilds content only when the identity changes.

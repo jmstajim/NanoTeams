@@ -383,7 +383,7 @@ final class NativeLMStudioRequestBuilderTests: XCTestCase {
     /// those rules moved into the template's `## Final reminder` section (chat-mode
     /// folds its output contract there; producing roles also carry `## Deliverables`)
     /// so they sit at the prompt's
-    /// LITERAL tail (Liu2024 §0.3), not buried inside the tool block. Without
+    /// LITERAL tail (playbook §1.4 [Liu2024]), not buried inside the tool block. Without
     /// this assertion, re-adding the tail reminder would silently re-introduce
     /// duplication between the tool block and the template-level final sections.
     func testBuildRequest_toolSchema_doesNotEmitTailOperationalReminder() {

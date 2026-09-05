@@ -514,7 +514,7 @@ nonisolated enum XcodeBuildRunner {
             let result = try runner.run(args, in: workFolderRoot, timeout: timeout)
             sweep.duration += Date().timeIntervalSince(startedAt)
 
-            sweep.runs.append(SchemeRun(
+            sweep.runs.append(SchemeRun( // run-id:allow-runs-mutation SchemeSweep.runs is [SchemeRun], not NTMSTask.runs
                 scheme: scheme,
                 output: result.stdout + result.stderr,
                 success: result.success,

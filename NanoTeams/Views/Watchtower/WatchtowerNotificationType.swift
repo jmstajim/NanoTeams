@@ -89,16 +89,17 @@ nonisolated enum WatchtowerNotificationType {
     /// this string alone is not a dismissal identity, because `stepID == roleID` and
     /// is therefore shared by every task on the same team.
     ///
-    /// For `.supervisorInput` the discriminator is the asking call's `UUID`, so a
-    /// fresh question on the same step always gets a fresh key even when its text
-    /// repeats byte-for-byte (hardcoded refusal-loop nudges used to collide here).
-    /// The escalation path has no call to name, so it falls back to the question
-    /// text and keeps the old, collision-prone behaviour for that one case.
-    /// `::` separator: step IDs never contain it.
+    /// The three families the orchestrator retires event-wise — `.supervisorInput`,
+    /// `.acceptance`, `.failed` — take their spelling from `WatchtowerDismissKey` (the
+    /// `.supervisorInput` call-UUID / escalation-text fallback is documented on
+    /// `supervisorInputTypeID`), because the two sides must never disagree on a key.
+    /// `.taskDone` / `.timedOut` / `.bashApprovalNeeded` are spelled here: nothing
+    /// retires them by key. `::` separator: step IDs never contain it.
     var dismissID: String {
         switch self {
         case .supervisorInput(let stepID, let question, _, let toolCallID):
-            return "\(stepID)::\(toolCallID?.uuidString ?? question)"
+            return WatchtowerDismissKey.supervisorInputTypeID(
+                stepID: stepID, toolCallID: toolCallID, question: question)
         case .acceptance(let stepID, _, _):
             return WatchtowerDismissKey.acceptanceTypeID(stepID: stepID)
         case .failed(let stepID, _, _):
@@ -175,11 +176,11 @@ nonisolated extension Run {
         // `supervisorQuestion` can lag the predicate during the same race (flag
         // set, text not yet copied), so fall back to parsing the trailing ask
         // call's args — same chain `activeSupervisorQuestions` uses for the
-        // composer chip. Without the fallback the banner is silently skipped.
+        // composer chip. Without the fallback the banner is silently skipped. The
+        // chain lives in `StepExecution.supervisorQuestionText` — shared with the
+        // answer-time retirement, so banner and retirement key on ONE text.
         for step in steps where step.hasActiveSupervisorInput {
-            let question = step.supervisorQuestion
-                ?? step.toolCalls.last(where: { $0.name == ToolNames.askSupervisor })
-                .flatMap { $0.parsedSupervisorQuestion }
+            let question = step.supervisorQuestionText
             if let question {
                 notifications.append(.supervisorInput(
                     stepID: step.id, question: question, role: step.role,

@@ -185,4 +185,29 @@ final class PlanningBoundaryStateResetCoverageTests: XCTestCase {
         XCTAssertFalse(didWarn)
         XCTAssertNil(sut._testLastServerPromptTokens(stepID: stepID, taskID: taskID))
     }
+
+    /// The message-loop ring is the newest member of the list, and it is the same sentence
+    /// again: it holds the last three qualifying assistant turns OF THE ARRAY THAT WAS JUST
+    /// REPLACED. Carried across the slice, the detector would count exploration-phase turns
+    /// against the implementation phase's first replies.
+    ///
+    /// RED: drop `recentNoToolAssistantContents = []` from `resetConversationScopedState` → the
+    /// pre-boundary contents are still there afterwards.
+    func testTheBoundaryClearsTheMessageLoopRing() async {
+        sut._testSeedMessageLoopRing(stepID: stepID, taskID: taskID, from: [
+            ChatMessage(role: .assistant, content: "one"),
+            ChatMessage(role: .user, content: "go"),
+            ChatMessage(role: .assistant, content: "two"),
+            ChatMessage(role: .user, content: "go"),
+            ChatMessage(role: .assistant, content: "three"),
+        ])
+        XCTAssertEqual(sut._testMessageLoopRing(stepID: stepID, taskID: taskID), ["one", "two", "three"],
+                       "precondition: the seed populated the ring")
+
+        sut._testResetConversationScopedState(stepID: stepID, taskID: taskID)
+
+        XCTAssertEqual(sut._testMessageLoopRing(stepID: stepID, taskID: taskID), [],
+                       "the array those contents described no longer exists — the boundary "
+                           + "caller re-seeds from the replacement")
+    }
 }

@@ -347,6 +347,7 @@ extension LLMExecutionService {
         stepID: String,
         taskID: Int,
         memoryStore: MemoryTagStore,
+        wireIsMidPlanning: Bool,
         conversationMessages: inout [ChatMessage],
         outcome: inout ToolResultsOutcome
     ) async -> Bool {
@@ -380,6 +381,7 @@ extension LLMExecutionService {
             result: result,
             stepID: stepID,
             taskID: taskID,
+            wireIsMidPlanning: wireIsMidPlanning,
             conversationMessages: &conversationMessages
         )
         await processCreateArtifactResult(result: result, stepID: stepID, taskID: taskID)

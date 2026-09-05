@@ -253,6 +253,12 @@ extension LLMExecutionService {
                 // handle the conversation already uses for a different payload.
                 // (A fresh conversation has no tags; the scan is a no-op there.)
                 memoryStore.seedTagCounters(replaying: conversation)
+                // Same shape one field over: a replayed transcript already carries the
+                // assistant turns the message-loop detector counts, and the fresh
+                // `StepExecutionState` starts with an empty ring. Seed it once past everything
+                // on the wire — Θ(Δ) because the walk stops at three qualifying turns, honestly
+                // Θ(N) only on a wire holding fewer, and once per entry either way.
+                self.reseedMessageLoopRing(stepKey: stepKey, from: conversation)
 
                 // No per-role iteration ceiling: the global maxToolIterations is 0
                 // (unbounded) for every step, the Autovisor manager included.
@@ -342,6 +348,11 @@ extension LLMExecutionService {
                         if ConversationRepairService.repairConversationIfNeeded(&conversation) {
                             executionStates[TaskStepKey(taskID: taskID, stepID: stepID)]?
                                 .expectedPrefixResetPending = true
+                            // The repair removed a tail and appended a `.user` turn. The removed
+                            // assistant turn carries `toolCalls != nil`, which almost never
+                            // qualifies for the message-loop ring — but `toolCalls == []` would,
+                            // so re-derive rather than argue.
+                            self.reseedMessageLoopRing(stepKey: stepKey, from: conversation)
                         }
                         try await Task.sleep(for: .seconds(retryDelay))
                         continue

@@ -19,7 +19,7 @@ final class SidebarRecurringFilterTests: XCTestCase {
     }
 
     private func item(_ id: Int, recurring: Bool, status: TaskStatus = .running) -> SidebarTaskItem {
-        SidebarTaskItem(id: id, title: "T\(id)", status: status, updatedAt: Date(), isRecurring: recurring)
+        SidebarTaskItem(id: id, title: "T\(id)", status: status, isRecurring: recurring)
     }
 
     func testRecurringFilter_keepsOnlyRecurring_regardlessOfStatus() {

@@ -1,4 +1,7 @@
 import Foundation
+#if DEBUG
+import Synchronization
+#endif
 
 /// Pure decisions for a role step's optional **planning phase**: the opening
 /// stretch where the role may read the work folder, and which it ends by
@@ -121,6 +124,9 @@ nonisolated enum PlanningPhasePolicy {
     /// `wireTranscript` is still recognised as mid-phase.
     static func briefIndex(in messages: [ChatMessage]) -> Int? {
         messages.firstIndex { message in
+            #if DEBUG
+            PlanningWireScanProbe.noteExamined()
+            #endif
             guard message.role == .user, let content = message.content else { return false }
             return content.contains(briefMarker) || content.contains(legacyBriefMarker)
         }
@@ -132,12 +138,15 @@ nonisolated enum PlanningPhasePolicy {
 
     static func wireCarriesClosedMarker(_ messages: [ChatMessage]) -> Bool {
         messages.contains { message in
+            #if DEBUG
+            PlanningWireScanProbe.noteExamined()
+            #endif
             guard message.role == .user, let content = message.content else { return false }
             return content.contains(closedMarker) || content.contains(legacyClosedMarker)
         }
     }
 
-    /// **The single predicate for "this step is still in the planning phase."**
+    /// **The definition of "this step is still in the planning phase."**
     ///
     /// Not `wireCarriesBrief`. `.closeWithoutRebuild` retires the brief's INSTRUCTION by
     /// appending a closing turn, but deliberately leaves the brief itself on the wire — removing
@@ -157,6 +166,17 @@ nonisolated enum PlanningPhasePolicy {
     ///
     /// Derived from the wire, never stored, so it survives a replay from `wireTranscript`
     /// unchanged.
+    ///
+    /// **Zero production call sites, on purpose.** Production reads the carried
+    /// `Authorization.wireIsMidPlanning`, which `authorization(for:tools:bashAdmitted:wireCarriesClosedMarker:)`
+    /// derives from the two scans `applyPlanningPhase` already performs — the same two
+    /// substring walks this function would repeat, and it used to be called once more per
+    /// iteration — by the prose-plan fallback in `handleNoToolCalls` on a no-tool turn, or by
+    /// the writer classification in `processScratchpadResult` on an `update_scratchpad` turn —
+    /// each call two fresh O(conversation) substring passes over an uncapped wire. This
+    /// function stays as the DEFINITION and the reference spelling for the
+    /// tests and the DEBUG helper (`_testHandleNoToolCalls`); the absence of a production
+    /// caller is pinned by `ToolLoopIterationScanWorkTests.testIsMidPlanning_hasNoProductionCallSiteOutsideItsHome`.
     static func isMidPlanning(_ messages: [ChatMessage]) -> Bool {
         wireCarriesBrief(messages) && !wireCarriesClosedMarker(messages)
     }
@@ -252,10 +272,33 @@ nonisolated enum PlanningPhasePolicy {
         /// UNNARROWED bash for the entire phase. It fails precisely where the guarantee matters.
         /// `allowed.isEmpty` fails the same way from the other side.
         let isPlanningPhase: Bool
+        /// Whether the wire is mid-planning AFTER this iteration's mutation — i.e. what
+        /// `isMidPlanning(conversationMessages)` would answer at the two later consumers
+        /// (`handleNoToolCalls`'s prose-plan fallback, `processScratchpadResult`'s writer
+        /// classification). Derived from the pre-mutation scans plus the decision, never by
+        /// a rescan — see the table on `authorization(for:tools:bashAdmitted:wireCarriesClosedMarker:)`.
+        ///
+        /// NOT `isPlanningPhase`, and the divergent row is reachable: an eligible step whose
+        /// wire already carries the closed marker — a revision closed the phase, then
+        /// `create_artifact` cleared `revisionComment` (`+ToolResultSideEffects`) with
+        /// `scratchpad` still nil — decides `.continuePlanning`, so `isPlanningPhase == true`
+        /// while `isMidPlanning(wire) == false`. Threading the wrong field there would record a
+        /// prose "plan" and promise a boundary that `decide` will never fire.
+        ///
+        /// Carried in the iteration's data flow only, never written to `StepExecutionState`:
+        /// a stored phase fact readable before its writer runs is the shape of the removed
+        /// `planningTransitionDone` latch. One documented delta against the live predicate: a
+        /// HUMAN queued Supervisor message whose text literally contains the closed marker,
+        /// delivered by `injectQueuedSupervisorMessage` in the same iteration, reads as
+        /// "closed" to a rescan and as "mid-planning" here — for that iteration only, since
+        /// the next `decide` sees the marker and returns `.execution` either way. Adversarial
+        /// input against an engine-internal marker; recorded, not paid for with a rescan.
+        let wireIsMidPlanning: Bool
 
         static func unrestricted(_ tools: [ToolSchema]) -> Authorization {
             Authorization(
-                allowed: Set(tools.map(\.name)), withheldByPhase: [], isPlanningPhase: false)
+                allowed: Set(tools.map(\.name)), withheldByPhase: [], isPlanningPhase: false,
+                wireIsMidPlanning: false)
         }
     }
 
@@ -340,15 +383,41 @@ nonisolated enum PlanningPhasePolicy {
         return Set(tools.map(\.name)).intersection(planningTools)
     }
 
+    /// `wireCarriesClosedMarker` is the caller's pre-mutation scan (`applyPlanningPhase`
+    /// pays for exactly one `briefIndex` walk and one `wireCarriesClosedMarker` walk per
+    /// iteration) and has NO default: a default would assert a fact about the caller's wire,
+    /// and a forgotten pass-through would then silently revert the derivation — the same rule
+    /// `InformationBoundaryWiringPinTests.testCommittedBoundary_hasNoDefault` enforces.
+    ///
+    /// **`wireIsMidPlanning`, derived per decision** (`isMidPlanning = brief && !closed`, read
+    /// after the mutation the decision performs):
+    ///
+    /// | decision              | effect on (brief, closed) | wireIsMidPlanning |
+    /// |-----------------------|---------------------------|-------------------|
+    /// | `.enterPlanning`      | brief := true             | `!closed`         |
+    /// | `.continuePlanning`   | unchanged (brief == true) | `!closed`         |
+    /// | `.crossBoundary`      | slice at the FIRST brief — nothing after it survives | `false` |
+    /// | `.closeWithoutRebuild`| closed := true            | `false`           |
+    /// | `.execution`          | unchanged                 | `false`           |
+    ///
+    /// `.execution` is `false` by `decide`'s own guard: it is returned either with no brief on
+    /// the wire, or with the closed marker on it. The `.crossBoundary` row rests on ONE premise,
+    /// `closed ⟹ brief` on every engine-authored wire: `planningClosedTurn` is appended only by
+    /// `.closeWithoutRebuild`, whose guard is `wireCarriesBrief`, and every shrink — the slice at
+    /// the first brief, `repairConversationIfNeeded`'s contiguous-tail removal — discards the
+    /// later marker before the earlier brief. So the slice removes both, and the sliced wire
+    /// is never mid-planning.
     static func authorization(
-        for decision: Decision, tools: [ToolSchema], bashAdmitted: Bool
+        for decision: Decision, tools: [ToolSchema], bashAdmitted: Bool,
+        wireCarriesClosedMarker: Bool
     ) -> Authorization {
         switch decision {
         case .enterPlanning, .continuePlanning:
             let all = Set(tools.map(\.name))
             let allowed = planningToolNames(in: tools, bashAdmitted: bashAdmitted)
             return Authorization(
-                allowed: allowed, withheldByPhase: all.subtracting(allowed), isPlanningPhase: true)
+                allowed: allowed, withheldByPhase: all.subtracting(allowed), isPlanningPhase: true,
+                wireIsMidPlanning: !wireCarriesClosedMarker)
         case .crossBoundary, .closeWithoutRebuild, .execution:
             return .unrestricted(tools)
         }
@@ -470,3 +539,19 @@ nonisolated enum PlanningPhasePolicy {
     // wording is now display-only for ALL of them — a property that file makes
     // structural rather than incidental.
 }
+
+#if DEBUG
+/// Work-bound seam: how many wire messages the two phase scans (`briefIndex`,
+/// `wireCarriesClosedMarker`) EXAMINED since the last reset.
+///
+/// Inside the scan closures, not beside a call site (CLAUDE.md #62): the defect this pins —
+/// the phase fact re-derived by a consumer that already received it — is invisible in OUTPUT,
+/// since a rescan answers exactly what the carried `Authorization.wireIsMidPlanning` says. It
+/// only shows as two extra O(conversation) passes per no-tool turn and per `update_scratchpad`.
+nonisolated enum PlanningWireScanProbe {
+    private static let _examined = Atomic<Int>(0)
+    static func noteExamined() { _examined.wrappingAdd(1, ordering: .relaxed) }
+    static func examined() -> Int { _examined.load(ordering: .relaxed) }
+    static func reset() { _examined.store(0, ordering: .relaxed) }
+}
+#endif

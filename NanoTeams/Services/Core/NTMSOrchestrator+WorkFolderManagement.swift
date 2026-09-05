@@ -1232,18 +1232,15 @@ extension NTMSOrchestrator {
             task.clearGeneratedTeam()
             task.setStoredChatMode(team.isChatMode)
 
-            guard let runIndex = task.runs.indices.last else { return }
-            var run = task.runs[runIndex]
-
             let roleIDs = Set(team.roles.map(\.id))
+            RunService.mutateActiveRun(in: &task) { run in
+                // Remove steps belonging to roles not in the new team
+                run.steps = TeamSwitchPlanner.filteredSteps(run.steps, forTeamRoleIDs: roleIDs)
 
-            // Remove steps belonging to roles not in the new team
-            run.steps = TeamSwitchPlanner.filteredSteps(run.steps, forTeamRoleIDs: roleIDs)
-
-            run.roleStatuses = RunService.initialRoleStatuses(for: team.roles)
-            run.teamID = teamID
-            run.updatedAt = MonotonicClock.shared.now()
-            task.runs[runIndex] = run
+                run.roleStatuses = RunService.initialRoleStatuses(for: team.roles)
+                run.teamID = teamID
+                run.updatedAt = MonotonicClock.shared.now()
+            }
         }
 
         // `clearGeneratedTeam()` above de-referenced the transient roster's

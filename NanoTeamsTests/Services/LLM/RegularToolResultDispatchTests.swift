@@ -430,6 +430,7 @@ final class RegularToolResultDispatchTests: XCTestCase {
             stepID: deadStepID,
             taskID: taskID,
             memoryStore: memoryStore,
+            wireIsMidPlanning: false,
             conversationMessages: &conversation,
             outcome: &outcome
         )
@@ -458,6 +459,7 @@ final class RegularToolResultDispatchTests: XCTestCase {
             stepID: deadStepID,
             taskID: taskID,
             memoryStore: memoryStore,
+            wireIsMidPlanning: false,
             conversationMessages: &conversation,
             outcome: &outcome
         )
@@ -628,6 +630,7 @@ final class RegularToolResultDispatchTests: XCTestCase {
             stepID: stepID,
             taskID: taskID,
             memoryStore: memoryStore,
+            wireIsMidPlanning: false,
             conversationMessages: &conversation,
             outcome: &outcome
         )

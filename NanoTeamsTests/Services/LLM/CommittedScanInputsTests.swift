@@ -295,4 +295,80 @@ final class CommittedScanInputsTests: NTMSOrchestratorTestBase, @unchecked Senda
                 + "committed turn for that is Θ(N²) across a chat session on the MainActor")
     }
 
+    // MARK: - The boundary walk, behind the cooldown gate
+
+    /// `ConversationInformationBoundary.lastArrival` is a full walk by design (`.max()`), and
+    /// `commitStreaming` spells it as the watcher's `informationBoundary` argument. The watcher
+    /// takes that argument as an `@autoclosure`, so a CHILD task inside its cooldown window —
+    /// the one case `watchesCommitted` cannot filter, because the cooldown needs the clock
+    /// read the watcher makes itself — never pays for a walk it is about to discard.
+    ///
+    /// `CommittedScanInputProbe` is the anti-vacuum: the tail walk it counts runs only inside
+    /// `commitStreaming`'s `watchesCommitted` branch, so a non-zero count proves the child gate
+    /// passed and the watcher was ENTERED — `InformationBoundaryProbe.examined() == 0` then
+    /// means "returned at the cooldown guard", not "never reached the watcher" (which would
+    /// also read 0: a non-child, a step that never seeded, an early return).
+    ///
+    /// RED: change the watcher's parameter back to `informationBoundary: Date?` (eager) → this
+    /// sees `examined() == 2` — the walk ran for a scan that returned at the cooldown guard.
+    func testCommitStreaming_onAChildInCooldown_neverWalksTheConversationForTheBoundary() async throws {
+        await sut.openWorkFolder(tempDir)
+        guard let parentID = await sut.createTask(title: "Parent", supervisorTask: "x") else {
+            return XCTFail("could not create the parent task")
+        }
+        guard let childID = await sut.createDelegatedTask(
+            parentTaskID: parentID, parentRoleID: "coding_agent", title: "Child",
+            supervisorTask: "y", preferredTeamID: nil, depth: 1) else {
+            return XCTFail("could not create the delegated child")
+        }
+        await seedRunningStep(taskID: childID, stepID: "engineer")
+        // A MonotonicClock stamp, per the seam's doc — a wall-clock `Date()` reads as already
+        // expired once the monotonic clock has drifted ahead of it.
+        sut.delegationLoopWatcher._testForceTrigger(forTaskID: childID, at: MonotonicClock.shared.now())
+
+        InformationBoundaryProbe.reset()
+        CommittedScanInputProbe.reset()
+        await sut.commitStreaming(stepID: "engineer", taskID: childID,
+                                  content: "hello", thinking: nil)
+
+        XCTAssertGreaterThan(
+            CommittedScanInputProbe.examined(), 0,
+            "anti-vacuum: the child gate passed and the watcher was entered — the tuple "
+                + "arguments are built only inside `watchesCommitted`, so the zero below is "
+                + "the cooldown guard's, not a skipped branch's")
+        XCTAssertEqual(
+            InformationBoundaryProbe.examined(), 0,
+            "a child in cooldown must not walk its conversation for a boundary the watcher "
+                + "discards at its cooldown guard — Θ(N) per committed turn for nothing")
+    }
+
+    /// The twin that proves the probe is reached and the boundary is evaluated exactly ONCE
+    /// past the gate: out of cooldown the walk runs, and it touches every message (2 seeded).
+    ///
+    /// RED: evaluate the autoclosure twice inside `considerCommitted` → this sees 4.
+    func testCommitStreaming_onAChildOutOfCooldown_walksTheConversationExactlyOnce() async throws {
+        await sut.openWorkFolder(tempDir)
+        guard let parentID = await sut.createTask(title: "Parent", supervisorTask: "x") else {
+            return XCTFail("could not create the parent task")
+        }
+        guard let childID = await sut.createDelegatedTask(
+            parentTaskID: parentID, parentRoleID: "coding_agent", title: "Child",
+            supervisorTask: "y", preferredTeamID: nil, depth: 1) else {
+            return XCTFail("could not create the delegated child")
+        }
+        await seedRunningStep(taskID: childID, stepID: "engineer")
+        let seeded = sut.loadedTask(childID)?.runs.last?.steps
+            .first { $0.id == "engineer" }?.llmConversation.count ?? 0
+        XCTAssertEqual(seeded, 2, "premise: the seeded conversation holds two messages")
+
+        InformationBoundaryProbe.reset()
+        await sut.commitStreaming(stepID: "engineer", taskID: childID,
+                                  content: "hello", thinking: nil)
+
+        XCTAssertEqual(
+            InformationBoundaryProbe.examined(), seeded,
+            "out of cooldown the boundary is evaluated exactly once, over the whole "
+                + "conversation (`.max()` is order-independent by design)")
+    }
+
 }

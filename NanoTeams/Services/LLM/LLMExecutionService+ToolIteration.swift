@@ -200,6 +200,9 @@ extension LLMExecutionService {
                 // during the planning phase), so a nudge can only name a tool this
                 // iteration would actually accept.
                 allowedToolNames: authorization.allowed,
+                // Computed once by `applyPlanningPhase` from the scans it already paid for;
+                // the two later consumers must not rescan the wire (CLAUDE.md #106).
+                wireIsMidPlanning: authorization.wireIsMidPlanning,
                 runtime: runtime,
                 conversationMessages: &conversationMessages
             )
@@ -311,6 +314,7 @@ extension LLMExecutionService {
             config: config,
             tracker: tracker,
             memoryStore: memoryStore,
+            wireIsMidPlanning: authorization.wireIsMidPlanning,
             conversationMessages: &conversationMessages,
             networkLogger: networkLogger
         )

@@ -1,4 +1,7 @@
 import Foundation
+#if DEBUG
+import Synchronization
+#endif
 
 /// Stateless service for repairing poisoned LLM conversations and cleaning model-specific tokens.
 /// All methods are static — no instances needed.
@@ -103,6 +106,13 @@ nonisolated enum ConversationRepairService {
         return try? NSRegularExpression(pattern: pattern, options: [])
     }()
 
+    /// The detector's window. One home for the literal (CLAUDE.md #91): the default of
+    /// `detectMessageLoop`, the capacity of the `StepExecutionState.recentNoToolAssistantContents`
+    /// ring, and the guard in `classifyMessageLoop` all read it from here.
+    ///
+    /// 3, because 2 is too noisy (models say "I'm sorry" mid-progress) and 3 is a real pattern.
+    static let messageLoopWindow = 3
+
     /// Detects a message-level loop at the conversation tail.
     ///
     /// Two patterns are caught:
@@ -112,31 +122,79 @@ nonisolated enum ConversationRepairService {
     ///    matching the refusal pattern — single-shot nudge.
     ///
     /// Otherwise `.noLoop`. Messages with nil/empty content are skipped.
-    /// Window default is 3: 2 is too noisy (models say "I'm sorry" mid-progress),
-    /// 3 is a real pattern.
+    ///
+    /// The reference composition: the tail walk (`recentNoToolAssistantContents`) followed by
+    /// the pure classifier (`classifyMessageLoop`). The tool loop does NOT call this per
+    /// iteration — it maintains the walk's result as a ring in `StepExecutionState` and hands
+    /// the ring to the classifier — but this function is what that ring must agree with at
+    /// every read (`MessageLoopDetectorTests` pins ring ≡ walk on randomised wires).
     static func detectMessageLoop(
         conversationMessages: [ChatMessage],
-        window: Int = 3
+        window: Int = messageLoopWindow
+    ) -> MessageLoopOutcome {
+        classifyMessageLoop(
+            recentNoToolAssistantContents: recentNoToolAssistantContents(
+                in: conversationMessages, window: window),
+            window: window)
+    }
+
+    /// The membership predicate — the ONE home for "this assistant turn counts toward a
+    /// message loop": `.assistant`, no tool calls (`nil` or `[]`), non-empty content. Used by
+    /// the walk below and by the append site that pushes into the ring.
+    static func qualifiesForMessageLoop(_ message: ChatMessage) -> Bool {
+        message.role == .assistant
+            && (message.toolCalls?.isEmpty ?? true)
+            && !(message.content ?? "").isEmpty
+    }
+
+    /// The last `window` qualifying assistant contents in `messages`, OLDEST-FIRST.
+    ///
+    /// Walks from the tail and stops at `window` matches, so it is Θ(Δ) when qualifying turns
+    /// sit near the tail — and honestly Θ(N) on a wire with fewer than `window` of them, which
+    /// is exactly the tool-heavy shape the tool loop no longer pays per iteration.
+    static func recentNoToolAssistantContents(
+        in messages: [ChatMessage],
+        window: Int = messageLoopWindow
+    ) -> [String] {
+        var tail: [String] = []
+        for message in messages.reversed() {
+            #if DEBUG
+            MessageLoopScanProbe.noteExamined()
+            #endif
+            guard qualifiesForMessageLoop(message), let content = message.content else { continue }
+            tail.append(content)
+            if tail.count >= window { break }
+        }
+        return tail.reversed()
+    }
+
+    /// Appends one qualifying content to a ring kept in the shape
+    /// `recentNoToolAssistantContents(in:)` returns (oldest-first, at most `window` entries).
+    static func pushMessageLoopContent(
+        _ content: String, into ring: inout [String], window: Int = messageLoopWindow
+    ) {
+        ring.append(content)
+        if ring.count > window { ring.removeFirst(ring.count - window) }
+    }
+
+    /// The pure half of `detectMessageLoop`. `recent` MUST be exactly
+    /// `recentNoToolAssistantContents(in: wire)` for the wire the caller is about to send —
+    /// the tool loop maintains it as a ring in `StepExecutionState`, and this file owns the
+    /// predicate that decides membership (`qualifiesForMessageLoop`).
+    ///
+    /// `sample` is the NEWEST entry (the old newest-first walk read `recent[0]`; the array is
+    /// oldest-first now, so it is the last). The all-equal fingerprint test is order-symmetric.
+    static func classifyMessageLoop(
+        recentNoToolAssistantContents recent: [String],
+        window: Int = messageLoopWindow
     ) -> MessageLoopOutcome {
         guard window >= 2 else { return .noLoop }
-
-        // Collect recent text-only assistant messages (no tool calls, non-empty content).
-        var recent: [String] = []
-        for msg in conversationMessages.reversed() {
-            guard msg.role == .assistant,
-                  (msg.toolCalls?.isEmpty ?? true),
-                  let content = msg.content, !content.isEmpty
-            else { continue }
-            recent.append(content)
-            if recent.count >= window { break }
-        }
-
         guard recent.count >= window else { return .noLoop }
 
         // Check refusal-loop first: all last N messages matching the refusal pattern.
         // Byte-identical fingerprints NOT required — refusals paraphrase but stay semantically fixed.
         if recent.allSatisfy({ isRefusalContent($0) }) {
-            return .refusalLoop(count: recent.count, sample: recent[0])
+            return .refusalLoop(count: recent.count, sample: recent[recent.count - 1])
         }
 
         // Non-refusal repetition needs byte-identical fingerprints; a single-shot
@@ -242,3 +300,18 @@ nonisolated enum ConversationRepairService {
         return ModelTokenCleaner.clean(result)
     }
 }
+
+#if DEBUG
+/// Work-bound seam: how many wire messages `recentNoToolAssistantContents` EXAMINED since the
+/// last reset.
+///
+/// Inside the walk, not beside a call site (CLAUDE.md #62): a regression that puts the walk
+/// back into `handleNoToolCalls` is invisible in OUTPUT — the ring and the walk agree by
+/// construction — and shows only as a Θ(N) pass per no-tool turn on an uncapped wire.
+nonisolated enum MessageLoopScanProbe {
+    private static let _examined = Atomic<Int>(0)
+    static func noteExamined() { _examined.wrappingAdd(1, ordering: .relaxed) }
+    static func examined() -> Int { _examined.load(ordering: .relaxed) }
+    static func reset() { _examined.store(0, ordering: .relaxed) }
+}
+#endif

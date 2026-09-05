@@ -6,6 +6,19 @@ import Foundation
 // Model:  qwen3.8:27b-mlx (Ollama). 20 `edit_file` calls, 4 failed, all
 //         ANCHOR_NOT_FOUND / indentation_mismatch, all on ContentView.swift.
 //
+// TIME OF DAY IS REBASED. The four calls were captured on 2026-08-15,
+// 17:28:40.681Z … 17:30:08.696Z; every clock time in this file — the `timestamp`
+// fields AND the times quoted in the comments below — is that wall clock PLUS
+// 5 HOURS, for the test target's 20:00–02:00 band (wave `19988137`). Only the
+// hour field moved, so the run's intervals and its order are the capture's own.
+// The offset differs from task 24's +11 h because the two runs are 7.5 h apart
+// and the usable half-band is 4 h wide; +5 h is the value that also keeps this
+// run AFTER task 24's rebased span (which ends 21:08:30.362Z), as it was on the day.
+//
+// The `timestamp`s are LOOKUP KEYS, prefix-matched from
+// `EditFileInsertionReindentTests`. A one-sided edit traps the test host rather
+// than reddening a test — see `failure(at:)` at the bottom of this file.
+//
 // The anchors are VERBATIM (they are three and five lines). The file and the
 // replacements are reduced: the real ones are 367 and ~28 lines of SwiftUI whose
 // only relevant property is their INDENTATION VOCABULARY, so each is cut to the
@@ -77,7 +90,7 @@ enum EditFileTask28Fixtures {
         """
     }
 
-    /// 17:28:40.681 — the first failure. Five-line anchor.
+    /// 22:28:40.681 — the first failure. Five-line anchor.
     private static let fiveLineAnchor = """
              .frame(maxWidth: .infinity)
              .accessibilityElement(children: .combine)
@@ -86,7 +99,7 @@ enum EditFileTask28Fixtures {
     }
     """
 
-    /// 17:29:12 onward — the model shortened the anchor to three lines and then held
+    /// 22:29:12 onward — the model shortened the anchor to three lines and then held
     /// it byte-identical for three consecutive calls.
     private static let threeLineAnchor = """
              .accessibilityLabel("Library empty. No meditation sessions are available yet.")
@@ -96,32 +109,32 @@ enum EditFileTask28Fixtures {
 
     static let failures: [FailedEdit] = [
         FailedEdit(
-            timestamp: "2026-08-15T17:28:40.681Z",
+            timestamp: "2026-08-15T22:28:40.681Z",
             note: "first attempt, five-line anchor",
             oldText: fiveLineAnchor,
             newText: fiveLineAnchor + appendedBlock(bodyDepth: 17)
         ),
         FailedEdit(
-            timestamp: "2026-08-15T17:29:12.726Z",
+            timestamp: "2026-08-15T22:29:12.726Z",
             note: "shortened the anchor after two read_lines calls",
             oldText: threeLineAnchor,
             newText: threeLineAnchor + appendedBlock(bodyDepth: 18)
         ),
         FailedEdit(
-            timestamp: "2026-08-15T17:29:36.671Z",
+            timestamp: "2026-08-15T22:29:36.671Z",
             note: "identical anchor, body depth 18 → 19",
             oldText: threeLineAnchor,
             newText: threeLineAnchor + appendedBlock(bodyDepth: 19)
         ),
         FailedEdit(
-            timestamp: "2026-08-15T17:30:08.696Z",
+            timestamp: "2026-08-15T22:30:08.696Z",
             note: "identical anchor, body depth 19 → 20, after bash was denied",
             oldText: threeLineAnchor,
             newText: threeLineAnchor + appendedBlock(bodyDepth: 20)
         ),
     ]
 
-    /// The anchor the model finally succeeded with (17:31:11), after re-reading the
+    /// The anchor the model finally succeeded with (22:31:11), after re-reading the
     /// whole file: a single zero-indent line. Nothing about it needs indentation
     /// reproduced, which is the whole reason it worked.
     static let escapeAnchor = "// MARK: - Profile Tab"

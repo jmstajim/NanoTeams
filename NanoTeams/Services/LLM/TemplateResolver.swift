@@ -43,7 +43,7 @@ nonisolated enum TemplateResolver {
     ///
     /// Replaces the prior `\n\n---\n\n` horizontal-rule separator that mixed
     /// markdown-HR with the otherwise-pure `## Header` / `### Header` sectioning
-    /// style (Sclar2024 antipattern §3.6).
+    /// style (playbook §1.5 [Sclar2024]).
     ///
     /// `header` is parametrised so a future caller could route a different
     /// user-set context block under a different label without duplicating the

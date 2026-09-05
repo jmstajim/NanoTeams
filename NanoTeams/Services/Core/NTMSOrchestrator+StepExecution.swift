@@ -119,7 +119,16 @@ extension NTMSOrchestrator {
         // returns `true` for "persisted" even when the closure short-circuits
         // (CLAUDE.md §7), so we relay applied-state via this captured flag.
         var applied = false
+        var answeredBannerKey: WatchtowerDismissKey?
         await mutateTask(taskID: taskID) { task in
+            // Identity FIRST, from the very value the answer is applied to: the call below
+            // appends the `.supervisorAnswer` message that turns `activeSupervisorQuestionID`
+            // nil and clears `needsSupervisorInput`, after which the step no longer knows
+            // which banner it showed. Same lookup `StepMessagingService` uses, so the key is
+            // read from the step that receives the answer.
+            answeredBannerKey = task.locateStepInLatestRun(stepID: stepID)
+                .flatMap(task.step(at:))?
+                .activeSupervisorInputDismissKey(taskID: taskID)
             applied = StepMessagingService.answerSupervisorQuestion(
                 stepID: stepID,
                 answer: answer,
@@ -152,6 +161,13 @@ extension NTMSOrchestrator {
         // observer; this write covers the unmounted window.
         if let workFolderID = snapshot?.projection.id {
             configuration.unmarkTaskSeen(workFolderID: workFolderID, taskID: taskID)
+        }
+
+        // Same event, same reason, for the Watchtower dismissal of THIS question — the
+        // one the sampling GC cannot reach (see `retireSupervisorInputDismissal`). Nil
+        // means the step produced no banner, so there is nothing to retire.
+        if let answeredBannerKey {
+            retireSupervisorInputDismissal(key: answeredBannerKey)
         }
 
         // Same reason, for the Autovisor's deliver-once ledgers: the answer is the durable

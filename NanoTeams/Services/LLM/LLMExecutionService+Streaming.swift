@@ -349,9 +349,13 @@ extension LLMExecutionService {
                         // bubble.
                         delegate.appendStreamingThinking(stepID: stepID, taskID: taskID, content: delta)
                         // Whole-buffer re-extract & dedup only when the growth
-                        // gate says a probe is due — see `harmonyProbeGate` (:279)
-                        // for why the per-close probe was O(segments × buffer)
-                        // and why a cursor cannot replace the whole-buffer parse.
+                        // gate says a probe is due — see the `harmonyProbeGate`
+                        // declaration above (`:279` was `loopScanGate`'s
+                        // neighbourhood; the gate this branch reads is declared
+                        // ~60 lines up, and three baseline `why`s copied the wrong
+                        // number from here — CLAUDE.md #111) for why the per-close
+                        // probe was O(segments × buffer) and why a cursor cannot
+                        // replace the whole-buffer parse.
                         if delta.contains(HarmonyToolCallParser.callMarker) || delta.contains("<|end|>") {
                             harmonyProbeGate.noteUnit()
                             if harmonyProbeGate.probeIsDue() {
@@ -757,6 +761,7 @@ extension LLMExecutionService {
         taskID: Int,
         conversationMessages: inout [ChatMessage]
     ) async {
+        let stepKey = TaskStepKey(taskID: taskID, stepID: stepID)
         let hasContent = !result.assistantContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let hasToolCalls = !result.resolvedToolCalls.isEmpty
 
@@ -776,12 +781,13 @@ extension LLMExecutionService {
                         argumentsJSON: call.argumentsJSON
                     )
                 }
-                conversationMessages.append(
+                appendAssistantTurn(
                     ChatMessage(
                         role: .assistant,
                         content: cleanedContent,
                         toolCalls: toolCallMessages
-                    ))
+                    ),
+                    stepKey: stepKey, to: &conversationMessages)
             } else {
                 // Zero resolved calls. Content truncation at the marker exists so resolved
                 // calls can re-materialize from `toolCalls` — but with none resolved,
@@ -799,8 +805,9 @@ extension LLMExecutionService {
                         .filter { !$0.isEmpty }
                         .joined(separator: "\n\n")
                 }
-                conversationMessages.append(
-                    ChatMessage(role: .assistant, content: content))
+                appendAssistantTurn(
+                    ChatMessage(role: .assistant, content: content),
+                    stepKey: stepKey, to: &conversationMessages)
             }
         } else {
             // The model produced a turn that yields no assistant content and no resolved
@@ -823,10 +830,11 @@ extension LLMExecutionService {
             // `[Assistant]`, and spent a 19-second reasoning block insisting it had sent
             // the arguments — which it had. Capped, because a runaway buffer must not
             // become a permanent prefix.
-            conversationMessages.append(
+            appendAssistantTurn(
                 ChatMessage(
                     role: .assistant,
-                    content: Self.unresolvedEnvelopeAnchor(result.harmonyBuffer)))
+                    content: Self.unresolvedEnvelopeAnchor(result.harmonyBuffer)),
+                stepKey: stepKey, to: &conversationMessages)
         }
 
         if hasToolCalls {
@@ -838,6 +846,30 @@ extension LLMExecutionService {
             }
             await appendToolCalls(stepID: stepID, taskID: taskID, toolCalls: restamped)
         }
+    }
+
+    /// Appends `turn` to the wire and, when it qualifies, pushes its WIRE content onto the
+    /// step's message-loop ring.
+    ///
+    /// This is the only production site that appends a `.assistant` `ChatMessage` to the wire
+    /// (grep-pinned by `ConversationAppendInvariantTests.testTheWireHasOneAssistantAppendSite`),
+    /// which is what makes one push site sufficient (CLAUDE.md #51). Membership is decided by
+    /// `ConversationRepairService.qualifiesForMessageLoop` on the message ACTUALLY appended —
+    /// so the tool-call branch never qualifies, and the anchor-only branch does whenever the
+    /// anchor is non-empty: an anchor turn has content and no tool calls, exactly what the
+    /// detector's walk counted before the ring existed. The pushed string is the wire content
+    /// (`cleanedContent` plus the optional anchor, or the anchor alone), never
+    /// `result.assistantContent`, because the ring must equal the walk over the wire.
+    private func appendAssistantTurn(
+        _ turn: ChatMessage, stepKey: TaskStepKey, to conversationMessages: inout [ChatMessage]
+    ) {
+        conversationMessages.append(turn)
+        guard ConversationRepairService.qualifiesForMessageLoop(turn),
+              let content = turn.content,
+              var ring = executionStates[stepKey]?.recentNoToolAssistantContents
+        else { return }
+        ConversationRepairService.pushMessageLoopContent(content, into: &ring)
+        executionStates[stepKey]?.recentNoToolAssistantContents = ring
     }
 
 }

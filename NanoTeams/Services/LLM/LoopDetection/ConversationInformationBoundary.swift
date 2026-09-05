@@ -1,4 +1,7 @@
 import Foundation
+#if DEBUG
+import Synchronization
+#endif
 
 /// When did information last reach the model that no tool call of its own produced?
 ///
@@ -38,8 +41,29 @@ nonisolated enum ConversationInformationBoundary {
     static func lastArrival(in conversation: [LLMMessage]) -> Date? {
         conversation
             .lazy
-            .filter { $0.sourceContext?.carriesUnsolicitedInformation == true }
+            .filter {
+                #if DEBUG
+                InformationBoundaryProbe.noteExamined()
+                #endif
+                return $0.sourceContext?.carriesUnsolicitedInformation == true
+            }
             .map(\.createdAt)
             .max()
     }
 }
+
+#if DEBUG
+/// Work-bound seam: how many conversation messages `lastArrival` EXAMINED since the last
+/// reset. The lazy chain is fully consumed by `.max()`, so the probe inside the filter counts
+/// every message the walk touches — inside the work, per CLAUDE.md #62.
+///
+/// A regression is invisible in OUTPUT: an eagerly evaluated boundary returns the same date,
+/// it just walks the whole conversation once per committed turn on a child in cooldown
+/// (`DelegationLoopWatcher.considerCommitted` takes it as an `@autoclosure` for exactly that).
+nonisolated enum InformationBoundaryProbe {
+    private static let _examined = Atomic<Int>(0)
+    static func noteExamined() { _examined.wrappingAdd(1, ordering: .relaxed) }
+    static func examined() -> Int { _examined.load(ordering: .relaxed) }
+    static func reset() { _examined.store(0, ordering: .relaxed) }
+}
+#endif

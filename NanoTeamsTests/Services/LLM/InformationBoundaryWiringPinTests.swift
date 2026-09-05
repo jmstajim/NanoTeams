@@ -35,11 +35,17 @@ final class InformationBoundaryWiringPinTests: XCTestCase {
 
     private static let iterationPath = "NanoTeams/Services/LLM/LLMExecutionService+ToolIteration.swift"
     private static let streamingPath = "NanoTeams/Services/Core/NTMSOrchestrator+Streaming.swift"
-    /// The two declarations of the boundary parameter, scanned for a re-added default.
-    private static let declarationPaths = [
-        "NanoTeams/Services/LLM/LoopDetection/LoopScanner.swift",
-        "NanoTeams/Services/LLM/DelegationLoopWatcher.swift",
+    /// The two declarations of the boundary parameter, scanned for a re-added default, each
+    /// with the exact spelling of ITS parameter: the scanner takes a plain `Date?`, the watcher
+    /// takes it lazily so a child in cooldown never pays the walk.
+    private static let declarationNeedles: [String: String] = [
+        "NanoTeams/Services/LLM/LoopDetection/LoopScanner.swift":
+            "informationBoundary: " + "Date?",
+        "NanoTeams/Services/LLM/DelegationLoopWatcher.swift":
+            "informationBoundary: " + "@autoclosure () -> Date?",
     ]
+    private static let declarationPaths = Array(declarationNeedles.keys).sorted()
+    private static let watcherPath = "NanoTeams/Services/LLM/DelegationLoopWatcher.swift"
 
     /// Strips line comments so a scan can only be satisfied by CODE. Without this a pin
     /// passes on a file where the mechanism was deleted and only its explanation remains —
@@ -179,8 +185,7 @@ final class InformationBoundaryWiringPinTests: XCTestCase {
     /// naming the file, and in production the next caller added anywhere can drop the
     /// boundary without a compile error.
     func testCommittedBoundary_hasNoDefault() throws {
-        let declaration = "informationBoundary: " + "Date?"
-        for path in Self.declarationPaths {
+        for (path, declaration) in Self.declarationNeedles.sorted(by: { $0.key < $1.key }) {
             let src = try source(path)
             guard let decl = src.range(of: declaration) else {
                 return XCTFail("\(path) no longer declares the boundary parameter")
@@ -229,5 +234,36 @@ final class InformationBoundaryWiringPinTests: XCTestCase {
                 "`\(narrowing)` narrows the conversation before the boundary is read — the "
                     + "arrival it must find is exactly what a narrowing can drop. Argument: \(value)")
         }
+    }
+
+    /// The watcher must take the boundary LAZILY and read it only past its cooldown gate.
+    /// `watchesCommitted` already keeps a non-child from building the arguments; what remains is
+    /// a child task inside its cooldown window, whose `lastArrival` walk the watcher discards at
+    /// `isInCooldown`. An eager parameter returns the same `Date?` — the regression is invisible
+    /// in output and shows only as a whole-conversation walk per committed turn.
+    ///
+    /// RED: drop `@autoclosure` (parameter back to `Date?`) → fails on the declaration; move
+    /// `let boundary = informationBoundary()` above the cooldown guard → fails on the ordering.
+    func testCommittedBoundary_isTakenLazilyByTheWatcher() throws {
+        let src = try source(Self.watcherPath)
+        let lazyNeedle = "informationBoundary: " + "@autoclosure"
+        XCTAssertTrue(src.contains(lazyNeedle),
+                      "the watcher's `informationBoundary` must be an @autoclosure, or every "
+                          + "committed turn on a cooling-down child walks its conversation again")
+        guard let body = RatchetSourceScan.functionBody(after: "func considerCommitted", in: src) else {
+            return XCTFail("considerCommitted not found — did the method move?")
+        }
+        guard let gate = body.range(of: "isInCooldown(") else {
+            return XCTFail("considerCommitted no longer has a cooldown gate — re-aim this pin")
+        }
+        guard let read = body.range(of: "informationBoundary()") else {
+            return XCTFail("considerCommitted never evaluates the boundary closure — the scan "
+                + "would run with no boundary at all")
+        }
+        XCTAssertLessThan(gate.lowerBound, read.lowerBound,
+                          "the boundary must be evaluated AFTER the cooldown gate — above it, "
+                              + "the laziness buys nothing")
+        XCTAssertEqual(body.components(separatedBy: "informationBoundary()").count - 1, 1,
+                       "evaluated exactly once: a second evaluation is a second full walk")
     }
 }

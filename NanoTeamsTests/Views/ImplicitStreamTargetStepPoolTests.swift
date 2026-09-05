@@ -2,15 +2,21 @@ import XCTest
 
 @testable import NanoTeams
 
-/// Pins the per-ORIGIN-task step pools behind `implicitStreamTargetIDs`.
+/// Pins the cross-task independence of `implicitStreamTargetIDs` in the merged
+/// delegation timeline.
 ///
-/// `StepExecution.id` equals the team role ID, so in the merged delegation
-/// timeline a descendant's step shares its id with the parent's same-role step.
-/// Pre-fix, `messageBubble` resolved EVERY bubble's implicit-stream-target
-/// against `viewModel.cachedAllSteps` (the ACTIVE task's steps only) — a
-/// descendant bubble was matched against the parent's same-named step, so the
-/// descendant's live "latest message of a running step" indicator resolved
-/// from the wrong task's conversation.
+/// `StepExecution.id` equals the team role ID, so a descendant's step shares its
+/// id with the parent's same-role step. Pre-fix, every bubble's implicit-stream
+/// target was resolved against the ACTIVE task's steps only, so a descendant
+/// bubble was matched against the parent's same-named step and its live "latest
+/// message of a running step" indicator came from the wrong task's conversation.
+///
+/// The fix's current home is structural: `ActivityFeedBuilder.buildTimeline`
+/// derives the set inside the per-step message walk of `emitItems`, once for the
+/// active task and once per descendant, indexed by step POSITION — so a
+/// descendant's target can only ever be one of the descendant's own messages,
+/// and `LLMMessage.id`s are globally unique UUIDs. No per-task pool exists to
+/// pick wrongly from; these tests pin the guarantee the fold gives instead.
 @MainActor
 final class ImplicitStreamTargetStepPoolTests: XCTestCase, @unchecked Sendable {
 
@@ -65,10 +71,10 @@ final class ImplicitStreamTargetStepPoolTests: XCTestCase, @unchecked Sendable {
         )
     }
 
-    private func makeDescendant(run: Run) -> ActivityFeedBuilder.DescendantTask {
+    private func makeDescendant(taskID: Int? = nil, run: Run) -> ActivityFeedBuilder.DescendantTask {
         ActivityFeedBuilder.DescendantTask(
             task: NTMSTask(
-                id: childTaskID, title: "Child", supervisorTask: "G", runs: [run],
+                id: taskID ?? childTaskID, title: "Child", supervisorTask: "G", runs: [run],
                 parentTaskID: parentTaskID, parentRoleID: sharedStepID, delegationDepth: 1),
             run: run,
             teamRoles: [makeRole()],
@@ -78,77 +84,90 @@ final class ImplicitStreamTargetStepPoolTests: XCTestCase, @unchecked Sendable {
         )
     }
 
-    // MARK: - Pool construction
-
-    func testRecomputeSteps_buildsPerOriginTaskPools() {
-        let parentRun = Run(id: 0, steps: [makeStep(status: .done)])
-        let childRun = Run(id: 0, steps: [makeStep(status: .running)])
-        let context = makeContext(run: parentRun, descendants: [makeDescendant(run: childRun)])
-
-        viewModel.recomputeSteps(context: context)
-
-        XCTAssertEqual(viewModel.steps(forOriginTaskID: parentTaskID).first?.status, .done)
-        XCTAssertEqual(
-            viewModel.steps(forOriginTaskID: childTaskID).first?.status, .running,
-            "The descendant's pool must come from the descendant's run, not the parent's")
-        XCTAssertTrue(
-            viewModel.steps(forOriginTaskID: 999).isEmpty,
-            "Unknown origin (stale item mid-transition) must yield an empty pool — no cross-task fallback")
+    /// The builder's set for a parent run plus descendants — the production seam.
+    private func targets(
+        parentRun: Run, descendants: [ActivityFeedBuilder.DescendantTask]
+    ) -> Set<UUID> {
+        ActivityFeedBuilder.buildTimeline(
+            steps: parentRun.steps, run: parentRun,
+            activeTaskID: parentTaskID, descendantTasks: descendants,
+            stepArtifactContentCache: [:], debugModeEnabled: false,
+            isStreaming: { _ in false }
+        ).implicitStreamTargetIDs
     }
 
-    func testResetForTaskSwitch_clearsPerTaskPools() {
-        let parentRun = Run(id: 0, steps: [makeStep(status: .running)])
-        viewModel.recomputeSteps(context: makeContext(run: parentRun))
-        XCTAssertFalse(viewModel.steps(forOriginTaskID: parentTaskID).isEmpty)
+    // MARK: - Each walked task contributes from its OWN run
+
+    /// Two descendants with the SAME step id, each `.running` with its own latest
+    /// message: the set holds both, one per descendant — the step-position aux
+    /// cannot conflate them.
+    ///
+    /// RED: in `emitItems` insert the target only for the FIRST step of a given id
+    /// per build (e.g. track seen ids in a `Set<String>` and skip repeats) → the
+    /// second descendant's message is missing.
+    func testEachDescendantContributesItsOwnRunningStepsTarget() {
+        let c2 = LLMMessage(role: .assistant, content: "child 2 working")
+        let c3 = LLMMessage(role: .assistant, content: "child 3 working")
+        let parentRun = Run(id: 0, steps: [makeStep(status: .done)])
+        let d2 = makeDescendant(taskID: 2, run: Run(id: 0, steps: [makeStep(status: .running, conversation: [c2])]))
+        let d3 = makeDescendant(taskID: 3, run: Run(id: 0, steps: [makeStep(status: .running, conversation: [c3])]))
+
+        XCTAssertEqual(targets(parentRun: parentRun, descendants: [d2, d3]), [c2.id, c3.id])
+    }
+
+    /// After a task switch there is no build, so there are no targets — the set is a
+    /// by-product of `cachedTimelineItems` and must be cleared with it.
+    ///
+    /// RED: drop `implicitStreamTargetIDs = []` from `resetForTaskSwitch` → the
+    /// previous task's id survives the switch.
+    func testResetForTaskSwitch_clearsImplicitStreamTargets() {
+        let running = LLMMessage(role: .assistant, content: "working")
+        let parentRun = Run(id: 0, steps: [makeStep(status: .running, conversation: [running])])
+        viewModel.recomputeAndRebuild(context: makeContext(run: parentRun))
+        XCTAssertEqual(viewModel.implicitStreamTargetIDs, [running.id], "anti-vacuum")
 
         viewModel.resetForTaskSwitch()
 
-        XCTAssertTrue(viewModel.steps(forOriginTaskID: parentTaskID).isEmpty)
+        XCTAssertTrue(viewModel.implicitStreamTargetIDs.isEmpty)
     }
 
     // MARK: - The bug: descendant bubble resolved against the parent's step
 
     /// Parent's same-named step is `.done`; the descendant's is `.running` with a
-    /// live latest message. Resolving the descendant's bubble against the
-    /// DESCENDANT pool finds the implicit stream target; resolving against the
-    /// parent pool (the pre-fix behavior) silently answers false — the
-    /// descendant bubble loses its implicit streaming affordance.
-    func testDescendantBubble_resolvesAgainstDescendantPool_notParentsSameNamedStep() {
-        let descendantMessage = LLMMessage(role: .assistant, content: "child is working")
-        let parentRun = Run(id: 0, steps: [makeStep(status: .done)])
-        let childRun = Run(id: 0, steps: [makeStep(status: .running, conversation: [descendantMessage])])
-        let context = makeContext(run: parentRun, descendants: [makeDescendant(run: childRun)])
-        viewModel.recomputeSteps(context: context)
+    /// live latest message. The set names the DESCENDANT's message and nothing of
+    /// the parent's — the pre-fix resolution against the parent pool silently
+    /// answered false and the descendant bubble lost its streaming affordance.
+    ///
+    /// RED: drop the `trackImplicitTarget = step.status == .running` guard in the
+    /// fold → `p1.id` appears in the set.
+    func testDescendantTarget_isTheDescendantsMessage_notTheParentsSameNamedDoneStep() {
+        let p1 = LLMMessage(role: .assistant, content: "parent finished earlier")
+        let c1 = LLMMessage(role: .assistant, content: "child is working")
+        let parentRun = Run(id: 0, steps: [makeStep(status: .done, conversation: [p1])])
+        let childRun = Run(id: 0, steps: [makeStep(status: .running, conversation: [c1])])
 
-        XCTAssertEqual(
-            TeamActivityFeedView.implicitStreamTargetID(
-                in: viewModel.steps(forOriginTaskID: childTaskID)[0]),
-            descendantMessage.id,
-            "The descendant's latest message on its running step IS the implicit stream target")
+        let set = targets(parentRun: parentRun, descendants: [makeDescendant(run: childRun)])
 
-        XCTAssertNil(
-            TeamActivityFeedView.implicitStreamTargetID(
-                in: viewModel.steps(forOriginTaskID: parentTaskID)[0]),
-            "The parent's same-named step is .done and contributes nothing — the two pools "
-                + "must stay separate or the descendant resolves against the parent's step")
-
+        XCTAssertEqual(set, [c1.id],
+                       "The descendant's latest message on its running step IS the implicit stream target, "
+                           + "and the parent's same-named .done step contributes nothing")
     }
 
     /// The inverse cross-talk: the PARENT's latest message must not become an
     /// implicit target through the DESCENDANT's running step.
+    ///
+    /// RED: drop the `trackImplicitTarget = step.status == .running` guard in the
+    /// fold → the parent's `.done` step names `parentMessage` and the set is not empty.
     func testParentBubble_doesNotBorrowDescendantsRunningStep() {
         let parentMessage = LLMMessage(role: .assistant, content: "parent finished earlier")
         let parentRun = Run(id: 0, steps: [makeStep(status: .done, conversation: [parentMessage])])
         let childRun = Run(id: 0, steps: [makeStep(status: .running)])
-        let context = makeContext(run: parentRun, descendants: [makeDescendant(run: childRun)])
-        viewModel.recomputeSteps(context: context)
 
-        let resolved = TeamActivityFeedView.implicitStreamTargetID(
-            in: viewModel.steps(forOriginTaskID: parentTaskID)[0]) == parentMessage.id
+        let set = targets(parentRun: parentRun, descendants: [makeDescendant(run: childRun)])
 
-        XCTAssertFalse(
-            resolved,
-            "Parent's .done step must not look 'running' just because the descendant's same-named step is")
+        XCTAssertFalse(set.contains(parentMessage.id),
+                       "Parent's .done step must not look 'running' just because the descendant's same-named step is")
+        XCTAssertTrue(set.isEmpty, "the child's running step has no visible turn to name")
     }
 }
 

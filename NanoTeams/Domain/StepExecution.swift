@@ -26,6 +26,25 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
     var artifacts: [Artifact]
 
     /// Structured tool calls captured from OpenAI-compatible responses.
+    ///
+    /// CLOSED writer list — `AskCallIndex` validates its cached positions by
+    /// `(count, last id)` alone, which is sound only while every writer either
+    /// APPENDS, changes the COUNT, or replays identical content. Today's writers:
+    /// `TaskMutationService.appendToolCall` (the only appender);
+    /// `StepExecution.reset()` (→ `[]`); `TaskStreamStore` log-desync truncation
+    /// (`prefix(keep)`) and its hydrate replay (`replayByID` — appends an unseen
+    /// id, overwrites a seen id in place with the later record for the SAME id);
+    /// `NTMSRepository+StreamSplit` strip/hydrate (whole-array assignment of
+    /// that replay). Four sites write FIELDS of an existing element —
+    /// `TaskMutationService.updateToolCallResult` (`resultJSON`/`isError`/
+    /// `argumentsJSON`), the delegation and team-generation envelope reflectors
+    /// (`LLMExecutionService+DelegateToTeam`, `NTMSOrchestrator+TeamGeneration`)
+    /// and `StatusRecoveryService`'s abandoned-delegation heal (`resultJSON`/
+    /// `isError`) — none writes `name` or `id`, the two fields the index reads.
+    /// Adding a writer — revisit `AskCallIndex.isPrefix`. Both sets are pinned
+    /// tree-wide by `AskCallIndexTests.testToolCallsWriterSet_isClosed`
+    /// (CLAUDE.md #51): the array/element writers and `&…toolCalls` inout passes
+    /// by recorded line, the field writers by written-field set and file set.
     var toolCalls: [StepToolCall]
 
     /// LLM-managed scratchpad for planning and tracking progress within a step.

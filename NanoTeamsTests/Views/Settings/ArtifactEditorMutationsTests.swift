@@ -148,8 +148,8 @@ final class ArtifactEditorMutationsTests: XCTestCase {
     }
 
     /// Renaming `A` → `B` on a role that already lists `B` must not produce a
-    /// duplicate entry: `TeamValidationService` reports that as a blocking
-    /// `duplicateProducer` error naming the same role twice.
+    /// duplicate entry: `producesArtifacts` feeds `StepExecution.title` and the
+    /// `create_artifact` name enum verbatim, so the artifact would appear twice in both.
     func testApplyEdit_rename_dedupesSelfCollision_preservingOrder() {
         var team = Team(name: "Dedupe")
         team.artifacts = [

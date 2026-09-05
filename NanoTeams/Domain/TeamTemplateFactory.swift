@@ -363,9 +363,11 @@ nonisolated enum TeamTemplateFactory {
     /// Shape (structurally identical to `startup()`): Supervisor produces "Supervisor Task"
     /// and requires "Result"; Teammate requires "Supervisor Task" and produces "Result" —
     /// i.e. `.producing`, so it self-completes on `create_artifact` and the task lands in
-    /// Review. The Supervisor↔Teammate artifact loop is NOT a circular dependency:
-    /// `TeamValidationService.validateNoCircularDependencies` skips Supervisor edges
-    /// ("review requirements, not execution edges").
+    /// Review. The Supervisor↔Teammate artifact loop is a cycle on paper but never a
+    /// scheduling one: `TeamEngine.findReadyRoles` puts every Supervisor id into
+    /// `excludeRoleIDs` before asking `ArtifactDependencyResolver.findReadyRoles`, which only
+    /// checks that a role's `requiredArtifacts` have been produced — the Supervisor's
+    /// requirement is the review gate (`Team.requiresSupervisorFinalReview`), not an edge.
     static func empty(name: String) -> Team {
         typealias TN = ToolNames
 

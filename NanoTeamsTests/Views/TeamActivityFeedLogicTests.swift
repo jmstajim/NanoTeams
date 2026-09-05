@@ -1600,8 +1600,8 @@ final class TeamActivityFeedLogicTests: XCTestCase {
 
     /// `step.status` flipping `.running` → `.paused` / `.done` without any count
     /// change (e.g. `pauseRun`, `finishAdvisoryRole`) must invalidate the hash —
-    /// otherwise `implicitStreamTargetID(in:)` keeps naming a message from a
-    /// stale `cachedAllSteps[i].status`, and a residual
+    /// otherwise the implicit-stream-target fold in `ActivityFeedBuilder.emitItems`
+    /// keeps naming a message from a stale `cachedAllSteps[i].status`, and a residual
     /// `processingStatus` would mis-surface "Processing" on a paused step.
     func testComputeRunDataVersion_changesWhenStepStatusFlips() {
         let stepRunning = makeStep(status: .running)

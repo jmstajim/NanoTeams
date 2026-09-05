@@ -153,6 +153,15 @@ extension LLMExecutionService {
     /// naming" — every nudge then takes its names-nothing arm. A test asserting that a
     /// message mentions a specific tool must pass that tool in, which is the point: the
     /// schema is now an input to the text, so it has to be visible at the call site.
+    ///
+    /// The helper stands in for `applyPlanningPhase` + `processStreamingResult`, which
+    /// production runs first: it derives the phase verdict with the reference spelling
+    /// (`PlanningPhasePolicy.isMidPlanning`) unless `wireIsMidPlanning` is given, and seeds the
+    /// message-loop ring from the wire the test built by hand (`AdvisoryAutoFinishTests`
+    /// appends assistant turns between calls; `StepFlowControlCapFailureCoverageTests` builds
+    /// three refusals up front). Work-bound tests seed explicitly through
+    /// `_testSeedMessageLoopRing` and pass `seedMessageLoopRing: false`, or they measure the
+    /// seed instead of the consumer.
     func _testHandleNoToolCalls(
         stepID: String,
         assistantContent: String,
@@ -163,8 +172,14 @@ extension LLMExecutionService {
         thinkingContent: String = "",
         harmonyBuffer: String = "",
         allowedToolNames: Set<String> = [],
+        wireIsMidPlanning: Bool? = nil,
+        seedMessageLoopRing: Bool = true,
         runtime: ToolRuntime? = nil
     ) async -> LLMStepStop {
+        if seedMessageLoopRing {
+            reseedMessageLoopRing(
+                stepKey: TaskStepKey(taskID: task.id, stepID: stepID), from: conversationMessages)
+        }
         let streamResult = StreamingResult(
             assistantContent: assistantContent,
             thinkingContent: thinkingContent,
@@ -182,9 +197,24 @@ extension LLMExecutionService {
             tracker: ToolCallTracker(),
             roleDefinition: roleDefinition,
             allowedToolNames: allowedToolNames,
+            wireIsMidPlanning: wireIsMidPlanning ?? PlanningPhasePolicy.isMidPlanning(conversationMessages),
             runtime: runtime,
             conversationMessages: &conversationMessages
         )
+    }
+
+    /// Seeds the step's message-loop ring from `wire` exactly as step entry does (registers
+    /// the execution state if absent), so a work-bound test can pay the one honest Θ(N) walk
+    /// up front and then measure the consumer alone.
+    func _testSeedMessageLoopRing(stepID: String, taskID: Int, from wire: [ChatMessage]) {
+        let key = TaskStepKey(taskID: taskID, stepID: stepID)
+        if executionStates[key] == nil { executionStates[key] = StepExecutionState() }
+        reseedMessageLoopRing(stepKey: key, from: wire)
+    }
+
+    /// The step's message-loop ring — `nil` when the step has no execution state.
+    func _testMessageLoopRing(stepID: String, taskID: Int) -> [String]? {
+        executionStates[TaskStepKey(taskID: taskID, stepID: stepID)]?.recentNoToolAssistantContents
     }
 
     /// Drives `handleStreamLoopBreak` (top-level thinking-loop recovery) and returns

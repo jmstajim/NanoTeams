@@ -253,14 +253,14 @@ extension NTMSOrchestrator {
 
         // 2. Mutate: step → .done, role → .done
         await mutateTask(taskID: taskID) { task in
-            guard var run = task.runs.last else { return }
-            if let s = run.steps.firstIndex(where: { $0.effectiveRoleID == roleID }) {
-                run.steps[s].status = .done
-                run.steps[s].completedAt = MonotonicClock.shared.now()
+            RunService.mutateActiveRun(in: &task) { run in
+                if let s = run.steps.firstIndex(where: { $0.effectiveRoleID == roleID }) {
+                    run.steps[s].status = .done
+                    run.steps[s].completedAt = MonotonicClock.shared.now()
+                }
+                run.roleStatuses[roleID] = .done
+                run.updatedAt = MonotonicClock.shared.now()
             }
-            run.roleStatuses[roleID] = .done
-            run.updatedAt = MonotonicClock.shared.now()
-            task.runs[task.runs.count - 1] = run
         }
 
         // 3. Wake engine to check completion / start dependents. Total (creates the engine after
@@ -295,10 +295,10 @@ extension NTMSOrchestrator {
             return false
         }
         let success = await mutateTask(taskID: taskID) { task in
-            guard var run = task.runs.last else { return }
-            run.roleStatuses[roleID] = .accepted
-            run.updatedAt = MonotonicClock.shared.now()
-            task.runs[task.runs.count - 1] = run
+            RunService.mutateActiveRun(in: &task) { run in
+                run.roleStatuses[roleID] = .accepted
+                run.updatedAt = MonotonicClock.shared.now()
+            }
         }
         guard success else { return false }
         retireRoleBannerDismissals(taskID: taskID, roleIDs: [roleID])
@@ -519,7 +519,8 @@ extension NTMSOrchestrator {
     /// restarted, failed run revived), any stored dismissal for that step's banners
     /// has done its job and must not outlive it. The sampling GC
     /// (`WatchtowerInboxBuilder.staleDismissals`) cannot express this rule: it only
-    /// expires a key whose banner is ABSENT while the task is loaded, so a dismissal
+    /// expires a key whose banner is ABSENT while the task is loaded (or whose task is
+    /// gone from the index), so a dismissal
     /// surviving into the NEXT instance of the same banner — the same step failing
     /// again after a restart, a second acceptance round after a revision — would
     /// suppress a banner nobody has read. Retiring both families together is
@@ -535,6 +536,29 @@ extension NTMSOrchestrator {
             keys.insert(.failed(taskID: taskID, stepID: stepID))
         }
         configuration.undismissNotifications(workFolderID: workFolderID, keys: keys)
+    }
+
+    /// The question family's half of the same rule: the answer is the event that
+    /// CONSUMES a `.supervisorInput` banner, so the dismissal of exactly that banner
+    /// retires with it. The sampling GC (`WatchtowerInboxBuilder.staleDismissals`)
+    /// reclaims a key only on positive evidence — its task LOADED and the banner ABSENT
+    /// at a refresh, or the task gone from the index — and it samples from ONE place,
+    /// `WatchtowerView.refreshNotifications`, which exists only while the Watchtower is
+    /// the selected detail view. That rule has two gaps this closes. A flag-only
+    /// escalation is keyed on its TEXT, so a key that outlives its answer is
+    /// born-dismissing the next same-text escalation, which makes the key ACTIVE again
+    /// before any refresh can see it absent. And a chat session lived in the TeamBoard
+    /// never mounts the Watchtower: `MainLayoutView` read-dismisses each UUID-keyed
+    /// question that arrives while the Supervisor is viewing that chat, every answer
+    /// strands that key, and nothing reclaims them until the Watchtower is next shown
+    /// with the task still resident — evicted or relaunched first, they wait until it
+    /// is. `key` is the identity captured BEFORE the answer landed
+    /// (`StepExecution.activeSupervisorInputDismissKey`) — afterwards the step no longer
+    /// knows which banner it showed. It already carries the task scope. Absent key ⇒
+    /// no write (`StoreConfiguration` guards on `contains`).
+    func retireSupervisorInputDismissal(key: WatchtowerDismissKey) {
+        guard let workFolderID = snapshot?.projection.id else { return }
+        configuration.undismissNotification(workFolderID: workFolderID, key: key)
     }
 
 }

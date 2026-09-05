@@ -112,6 +112,7 @@ extension LLMExecutionService {
         config: LLMConfig,
         tracker: ToolCallTracker,
         memoryStore: MemoryTagStore,
+        wireIsMidPlanning: Bool,
         conversationMessages: inout [ChatMessage],
         networkLogger: NetworkLogger? = nil
     ) async -> ToolResultsOutcome {
@@ -216,6 +217,7 @@ extension LLMExecutionService {
                     stepID: stepID,
                     taskID: task.id,
                     memoryStore: memoryStore,
+                    wireIsMidPlanning: wireIsMidPlanning,
                     conversationMessages: &conversationMessages,
                     outcome: &outcome
                 )
@@ -226,6 +228,7 @@ extension LLMExecutionService {
                     stepID: stepID,
                     taskID: task.id,
                     memoryStore: memoryStore,
+                    wireIsMidPlanning: wireIsMidPlanning,
                     conversationMessages: &conversationMessages,
                     outcome: &outcome
                 )

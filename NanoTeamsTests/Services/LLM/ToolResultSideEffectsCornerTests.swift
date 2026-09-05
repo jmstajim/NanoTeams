@@ -55,7 +55,7 @@ final class ToolResultSideEffectsCornerTests: XCTestCase {
 
         await service.processScratchpadResult(
             result: scratchpadResult(content: "Watching task #3; next check at 14:00."),
-            stepID: stepID, taskID: taskID,
+            stepID: stepID, taskID: taskID, wireIsMidPlanning: false,
             conversationMessages: &conversation)
 
         XCTAssertEqual(mockDelegate.persistedAutovisorMemory,
@@ -81,7 +81,7 @@ final class ToolResultSideEffectsCornerTests: XCTestCase {
 
         await service.processScratchpadResult(
             result: scratchpadResult(content: "Watching task #3."),
-            stepID: stepID, taskID: taskID,
+            stepID: stepID, taskID: taskID, wireIsMidPlanning: false,
             conversationMessages: &conversation)
 
         let notes = (step()?.llmConversation ?? []).filter { $0.sourceContext == .toolAcknowledgement }
@@ -106,7 +106,7 @@ final class ToolResultSideEffectsCornerTests: XCTestCase {
 
         await service.processScratchpadResult(
             result: scratchpadResult(content: "Watching task #3."),
-            stepID: stepID, taskID: taskID,
+            stepID: stepID, taskID: taskID, wireIsMidPlanning: false,
             conversationMessages: &conversation)
 
         XCTAssertTrue(conversation.isEmpty,
@@ -124,7 +124,7 @@ final class ToolResultSideEffectsCornerTests: XCTestCase {
 
         await service.processScratchpadResult(
             result: scratchpadResult(content: "remember this"),
-            stepID: stepID, taskID: taskID,
+            stepID: stepID, taskID: taskID, wireIsMidPlanning: false,
             conversationMessages: &conversation)
 
         let warningOnWire = conversation.first { ($0.content ?? "").contains("Memory write to disk failed") }
@@ -150,7 +150,7 @@ final class ToolResultSideEffectsCornerTests: XCTestCase {
 
         await service.processScratchpadResult(
             result: scratchpadResult(content: "remember this"),
-            stepID: stepID, taskID: taskID,
+            stepID: stepID, taskID: taskID, wireIsMidPlanning: false,
             conversationMessages: &conversation)
 
         XCTAssertEqual(conversation.count, 1,
@@ -178,7 +178,7 @@ final class ToolResultSideEffectsCornerTests: XCTestCase {
 
         await service.processScratchpadResult(
             result: scratchpadResult(content: "   \n  "),
-            stepID: stepID, taskID: taskID,
+            stepID: stepID, taskID: taskID, wireIsMidPlanning: false,
             conversationMessages: &conversation)
 
         XCTAssertTrue(mockDelegate.persistedAutovisorMemory.isEmpty,
@@ -206,7 +206,7 @@ final class ToolResultSideEffectsCornerTests: XCTestCase {
 
         await service.processScratchpadResult(
             result: scratchpadResult(content: "   \n  "),
-            stepID: stepID, taskID: taskID,
+            stepID: stepID, taskID: taskID, wireIsMidPlanning: false,
             conversationMessages: &conversation)
 
         XCTAssertTrue(mockDelegate.persistedAutovisorMemory.isEmpty,
@@ -222,7 +222,7 @@ final class ToolResultSideEffectsCornerTests: XCTestCase {
 
         await service.processScratchpadResult(
             result: scratchpadResult(content: "my private plan"),
-            stepID: stepID, taskID: taskID,
+            stepID: stepID, taskID: taskID, wireIsMidPlanning: false,
             conversationMessages: &conversation)
 
         XCTAssertTrue(mockDelegate.persistedAutovisorMemory.isEmpty,
@@ -248,7 +248,7 @@ final class ToolResultSideEffectsCornerTests: XCTestCase {
     /// coverage would not notice either, since the condition is evaluated (false)
     /// on every ordinary write.
     ///
-    /// RED: replace the `isMidPlanning` branch with `writer = .ordinaryRole` → this fails.
+    /// RED: replace the `wireIsMidPlanning` branch with `writer = .ordinaryRole` → this fails.
     func testScratchpad_midPlanningWire_notesTheTransition_andStillSaysNothingToTheModel() async {
         seedOrdinaryStep()
         var conversation: [ChatMessage] = [
@@ -260,7 +260,7 @@ final class ToolResultSideEffectsCornerTests: XCTestCase {
 
         await service.processScratchpadResult(
             result: scratchpadResult(content: "1. Read the sources\n2. Edit the parser"),
-            stepID: stepID, taskID: taskID,
+            stepID: stepID, taskID: taskID, wireIsMidPlanning: true,
             conversationMessages: &conversation)
 
         let notes = (step()?.llmConversation ?? []).filter { $0.sourceContext == .toolAcknowledgement }
@@ -272,6 +272,44 @@ final class ToolResultSideEffectsCornerTests: XCTestCase {
         XCTAssertEqual(conversation.count, 1,
                        "the brief only — the transition note is display-only, and the boundary "
                            + "would discard a wire copy anyway; got: \(conversation.map { $0.content ?? "" })")
+    }
+
+    /// The planning writer is chosen from the CARRIED verdict, never by rescanning the wire.
+    /// `applyPlanningPhase` already walked the conversation twice this iteration; the writer
+    /// classification used to walk it twice more per `update_scratchpad`, on a wire with no
+    /// ceiling. Work-bound: the probe sits inside the two scan closures, so a rescan here
+    /// cannot hide.
+    ///
+    /// RED: revert the classification to `} else if PlanningPhasePolicy.isMidPlanning(conversationMessages) {`
+    /// → `examined()` reads ≥ 600 (one brief scan stopping at the brief plus a full
+    /// closed-marker scan) while the note still says "implementation phase".
+    func testScratchpad_planningWriter_doesNotRescanTheWire() async {
+        seedOrdinaryStep()
+        var conversation: [ChatMessage] = [
+            ChatMessage(role: .system, content: "You are Software Engineer."),
+            ChatMessage(role: .user, content: "Build the thing"),
+            ChatMessage(role: .user, content: PlanningPhasePolicy.planningBrief(
+                exploreToolNames: [ToolNames.readFile], expectedArtifacts: ["Notes"])),
+        ]
+        for i in 0..<300 {
+            conversation.append(ChatMessage(role: .assistant, content: "finding \(i)"))
+            conversation.append(ChatMessage(role: .user, content: "go on"))
+        }
+        XCTAssertGreaterThanOrEqual(conversation.count, 600, "premise: a long mid-planning wire")
+
+        PlanningWireScanProbe.reset()
+        await service.processScratchpadResult(
+            result: scratchpadResult(content: "1. Read the sources\n2. Edit the parser"),
+            stepID: stepID, taskID: taskID, wireIsMidPlanning: true,
+            conversationMessages: &conversation)
+
+        let notes = (step()?.llmConversation ?? []).filter { $0.sourceContext == .toolAcknowledgement }
+        XCTAssertTrue(notes.first?.content.contains("implementation phase") ?? false,
+                      "anti-vacuum: the planning writer must have been chosen; got: "
+                          + "\(notes.map { $0.content })")
+        XCTAssertEqual(PlanningWireScanProbe.examined(), 0,
+                       "the writer classification must read the carried verdict, not rescan "
+                           + "the wire — two O(conversation) passes per update_scratchpad")
     }
 
     // MARK: - Artifact name resolution when the step is not in the latest run

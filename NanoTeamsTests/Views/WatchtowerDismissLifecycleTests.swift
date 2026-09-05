@@ -389,6 +389,54 @@ final class WatchtowerDismissLifecycleTests: XCTestCase {
         }
     }
 
+    /// Companion to the predicate agreement above, one level down: the banner and the
+    /// answer-time retirement must never disagree on WHICH key. `Run.allWatchtowerNotifications`
+    /// builds the key the view dismisses; `StepExecution.activeSupervisorInputDismissKey`
+    /// is what `answerSupervisorQuestion` retires. Every question shape, including the
+    /// one where they are easiest to get wrong — a flag-only escalation on a step whose
+    /// earlier ask was already answered, where the trailing call's id is a stale identity.
+    ///
+    /// RED: in `Run.allWatchtowerNotifications` pass `toolCallID: step.toolCalls.last?.id`
+    /// instead of `step.activeSupervisorQuestionID` → shape 3 diverges (banner keyed on
+    /// the stale call, retirement on the text).
+    func testActiveSupervisorInputDismissKey_agreesWithTheBannerKey_forEveryQuestionShape() {
+        let q1 = makeAskCall(question: "Q1?")
+        let a1 = makeAnswerMessage(text: "A1")
+        let q2 = makeAskCall(question: "Q2?")
+        let shapes: [(label: String, step: StepExecution)] = [
+            ("1 call-keyed",
+             StepExecution(id: "s", role: .softwareEngineer, title: "T", status: .needsSupervisorInput,
+                           toolCalls: [q1], needsSupervisorInput: true, supervisorQuestion: "Q1?")),
+            ("2 flag-only, no calls",
+             makeStep(id: "s", needsSupervisorInput: true, question: "Continue?")),
+            ("3 flag-only on an answered ask",
+             StepExecution(id: "s", role: .softwareEngineer, title: "T", status: .needsSupervisorInput,
+                           toolCalls: [q1, a1.matchingToolCallStub], needsSupervisorInput: true,
+                           supervisorQuestion: "Stalled", llmConversation: [a1.message])),
+            ("4 lag: flag not set, text not copied",
+             StepExecution(id: "s", role: .softwareEngineer, title: "T", status: .running,
+                           toolCalls: [q1, a1.matchingToolCallStub, q2], needsSupervisorInput: false,
+                           supervisorQuestion: nil, llmConversation: [a1.message])),
+        ]
+        for shape in shapes {
+            let run = makeRun(steps: [shape.step])
+            let all = WatchtowerInboxBuilder.build([.init(task: makeTask(runs: [run]), teamRoles: [])])
+            XCTAssertEqual(all.count, 1, "shape \(shape.label): exactly one banner")
+            XCTAssertNotNil(shape.step.activeSupervisorInputDismissKey(taskID: 1),
+                            "anti-vacuum, shape \(shape.label): the retirement side must produce a key")
+            XCTAssertEqual(all.first?.dismissKey, shape.step.activeSupervisorInputDismissKey(taskID: 1),
+                           "shape \(shape.label): banner key and retirement key must agree")
+        }
+        XCTAssertEqual(
+            shapes[2].step.activeSupervisorInputDismissKey(taskID: 1)?.typeID, "s::Stalled",
+            "shape 3 is the text identity — the answered Q1's UUID would be a stale one")
+
+        let quiet = makeStep(id: "s", needsSupervisorInput: false, question: nil, answer: "A")
+        let none = WatchtowerInboxBuilder.build([.init(task: makeTask(runs: [makeRun(steps: [quiet])]), teamRoles: [])])
+        XCTAssertTrue(none.isEmpty, "a step that is not waiting produces no banner")
+        XCTAssertNil(quiet.activeSupervisorInputDismissKey(taskID: 1), "…and no key to retire")
+    }
+
     /// Gap-window invariant: after the user answers via
     /// `StepMessagingService.answerSupervisorQuestion`, the count-based active
     /// predicate must return false immediately — not after the engine resumes

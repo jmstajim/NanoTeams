@@ -189,6 +189,13 @@ extension WatchtowerNotificationBanner {
 
     // MARK: - Helpers
 
+    /// On success the draft is cleared and NOTHING is dismissed: the orchestrator's
+    /// `answerSupervisorQuestion` already retired this banner's dismissal and un-marked
+    /// the task "seen", and `WatchtowerView`'s `onSubmitAnswer` refreshed the inbox
+    /// synchronously after it — so the answered banner is gone before this closure runs.
+    /// Calling `onDismiss()` here re-inserted the key the orchestrator had just retired
+    /// (`WatchtowerView.dismissNotification`) and re-marked the task read, which left a
+    /// text-keyed escalation dismissal standing for the NEXT same-text question.
     func submitAnswer(stepID: String) {
         guard canSubmitAnswer else { return }
 
@@ -201,7 +208,6 @@ extension WatchtowerNotificationBanner {
                     answerText = ""
                     answerAttachments = []
                     answerClippedTexts = []
-                    onDismiss()
                 }
             }
         }

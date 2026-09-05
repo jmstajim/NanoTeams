@@ -272,11 +272,10 @@ final class TaskManagementStateTests: XCTestCase {
     // MARK: - filteredTasks
 
     private func makeTasks() -> [SidebarTaskItem] {
-        let now = Date()
         return [
-            SidebarTaskItem(id: 0, title: "Login Feature", status: .running, updatedAt: now.addingTimeInterval(-300)),
-            SidebarTaskItem(id: 1, title: "Signup Flow", status: .done, updatedAt: now.addingTimeInterval(-100)),
-            SidebarTaskItem(id: 2, title: "Login Bug Fix", status: .paused, updatedAt: now),
+            SidebarTaskItem(id: 0, title: "Login Feature", status: .running),
+            SidebarTaskItem(id: 1, title: "Signup Flow", status: .done),
+            SidebarTaskItem(id: 2, title: "Login Bug Fix", status: .paused),
         ]
     }
 
@@ -366,11 +365,10 @@ final class TaskManagementStateTests: XCTestCase {
     // MARK: - Combined filter + search
 
     func testFilteredTasks_searchIgnoresFilter() {
-        let now = Date()
         let tasks = [
-            SidebarTaskItem(id: 0, title: "Login Feature", status: .running, updatedAt: now),
-            SidebarTaskItem(id: 0, title: "Login Bug", status: .done, updatedAt: now),
-            SidebarTaskItem(id: 0, title: "Signup Flow", status: .paused, updatedAt: now),
+            SidebarTaskItem(id: 0, title: "Login Feature", status: .running),
+            SidebarTaskItem(id: 0, title: "Login Bug", status: .done),
+            SidebarTaskItem(id: 0, title: "Signup Flow", status: .paused),
         ]
 
         sut.taskFilter = .running

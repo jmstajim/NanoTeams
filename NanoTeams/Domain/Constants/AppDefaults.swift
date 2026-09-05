@@ -140,7 +140,11 @@ nonisolated enum AppDefaults {
     /// MUST NOT contain `globalContext` itself (the purge would fight the default),
     /// nor `""` (that would delete the stored key of every user who deliberately
     /// cleared the field, converting a choice into "never touched").
-    /// TODO(2027-Q2): remove once all live installs have migrated.
+    /// Deliberately carries NO `TODO(<year>-Q<n>)`: the roster is the standing input of
+    /// `StoreConfiguration.purgeStaleDefaultGlobalContext`, and every future retirement
+    /// adds a literal here rather than discharging anything — so the only action a date
+    /// could ever prompt is extending it. What discharges this is the roster going empty
+    /// (DEBTS.md D-32, 2026-09-05).
     static let retiredGlobalContextDefaults: [String] = [
         retiredGlobalContextV0,
         retiredGlobalContextV1,

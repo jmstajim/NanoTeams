@@ -100,56 +100,6 @@ final class ExploratorySearchConfigurationTests: XCTestCase {
         XCTAssertEqual(config.effectiveEmbeddingConfig, override)
     }
 
-    // MARK: - Legacy key migration
-
-    /// `StoreConfiguration.init` runs a one-shot migration that copies the
-    /// legacy `expandedSearch*` UserDefaults keys onto the new
-    /// `exploratorySearch*` keys (and removes the originals). Verifies that
-    /// users coming from an older build keep their toggle / thresholds /
-    /// embedding-model override after the rename.
-    func testInit_migratesLegacyExpandedSearchKeysToExploratoryKeys() async throws {
-        let legacy = InMemoryStorage()
-        legacy.set(true, forKey: "NanoTeams.search.expandedSearchEnabled.v1")
-        legacy.set(0.82, forKey: "NanoTeams.search.expandedSearchPerTokenThreshold.v1")
-        legacy.set(0.55, forKey: "NanoTeams.search.expandedSearchPhraseThreshold.v1")
-        let override = EmbeddingConfig(
-            baseURLString: "http://legacy:1234",
-            modelName: "legacy-embed",
-            batchSize: 16,
-            requestTimeout: 9
-        )
-        let overrideData = try JSONCoderFactory.makePersistenceEncoder().encode(override)
-        legacy.set(overrideData, forKey: "NanoTeams.search.expandedSearchEmbeddingConfig.v1")
-
-        let migrated = StoreConfiguration(storage: legacy)
-
-        XCTAssertTrue(migrated.exploratorySearchEnabled)
-        XCTAssertEqual(migrated.exploratorySearchPerTokenThreshold, 0.82, accuracy: 0.001)
-        XCTAssertEqual(migrated.exploratorySearchPhraseThreshold, 0.55, accuracy: 0.001)
-        XCTAssertEqual(migrated.exploratorySearchEmbeddingConfig, override)
-
-        XCTAssertNil(legacy.object(forKey: "NanoTeams.search.expandedSearchEnabled.v1"))
-        XCTAssertNil(legacy.object(forKey: "NanoTeams.search.expandedSearchEmbeddingConfig.v1"))
-        XCTAssertNil(legacy.object(forKey: "NanoTeams.search.expandedSearchPerTokenThreshold.v1"))
-        XCTAssertNil(legacy.object(forKey: "NanoTeams.search.expandedSearchPhraseThreshold.v1"))
-    }
-
-    /// When new keys already exist, migration must NOT overwrite them with
-    /// stale legacy values — protects users who upgraded, ran the new build
-    /// (which wrote new keys), then somehow had legacy keys reappear.
-    func testInit_doesNotOverwriteExistingNewKeys_whenLegacyKeysAlsoPresent() async {
-        let storage = InMemoryStorage()
-        storage.set(false, forKey: UserDefaultsKeys.exploratorySearchEnabled)
-        storage.set(true, forKey: "NanoTeams.search.expandedSearchEnabled.v1")
-
-        let migrated = StoreConfiguration(storage: storage)
-
-        XCTAssertFalse(migrated.exploratorySearchEnabled,
-                       "Existing new key wins; legacy must not clobber it.")
-        XCTAssertNil(storage.object(forKey: "NanoTeams.search.expandedSearchEnabled.v1"),
-                     "Legacy key is removed even when the new key already had a value.")
-    }
-
     // MARK: - Reset
 
     func testResetToDefaults_clearsExploratorySearch() {

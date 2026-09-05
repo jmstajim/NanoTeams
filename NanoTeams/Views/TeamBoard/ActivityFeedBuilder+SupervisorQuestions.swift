@@ -57,15 +57,34 @@ nonisolated extension ActivityFeedBuilder {
     ///    composer chip never appeared, question card never rendered, and the
     ///    user had to switch tasks to force a fresh view rebuild.
     ///    Pinned by `ActivityFeedBuilderTests.testEscalationPath_emptyAskCalls_flagSet_surfacesStoredQuestion`.
-    static func activeSupervisorQuestions(steps: [StepExecution]) -> [ActiveSupervisorQuestion] {
+    ///
+    /// `askIndex` supplies the step's `AskCallIndex`. The default scans
+    /// `step.toolCalls`; `TeamActivityFeedViewModel` passes its `TaskStepKey`-keyed
+    /// cache so the per-tick cost is O(appended calls) instead of a pass over
+    /// the whole array.
+    static func activeSupervisorQuestions(
+        steps: [StepExecution],
+        askIndex: (StepExecution) -> AskCallIndex = { AskCallIndex(toolCalls: $0.toolCalls) }
+    ) -> [ActiveSupervisorQuestion] {
         var result: [ActiveSupervisorQuestion] = []
         for step in steps {
             guard step.hasActiveSupervisorInput else { continue }
-            // `last(where:)`, not `filter{}.last`: this runs from `recomputeSteps`
-            // on every runDataVersion tick, and the materialized filter was an
-            // O(toolCalls) pass per tick that grows without bound in chat-mode
-            // steps — only the LAST ask is ever read here.
-            let lastAskCall = step.toolCalls.last(where: { $0.name == ToolNames.askSupervisor })
+            // `positions.last` IS `lastIndex(where:)`: an earlier ask followed by tool
+            // work and then a cap park still resolves to THAT ask (pinned by
+            // `testActiveSupervisorQuestions_earlierAskThenToolWorkThenCapPark_findsTheEarlierAsk`;
+            // "trailing call only" was proposed and refuted). Cost: this runs from
+            // `recomputeSteps` on every runDataVersion tick, BEFORE the fingerprint
+            // short-circuit, and for a parked step WITHOUT an ask (drift / refusal
+            // cap, Autovisor idle park) the former `last(where:)` was an absence
+            // proof over the whole array on every tick — a gate that cost the work
+            // it gated (CLAUDE.md #106). With the view model's cached index the
+            // per-tick cost is O(delta), and while parked the delta is zero.
+            let lastAskCall = askIndex(step).lastPosition.map { position in
+                let call = step.toolCalls[position]
+                assert(call.name == ToolNames.askSupervisor,
+                       "AskCallIndex describes a different array — a `toolCalls` writer broke the closed set")
+                return call
+            }
 
             let question: String
             let toolCallID: UUID

@@ -18,11 +18,11 @@ import Foundation
 //      → ## Global guidance → ## Tool Calling → ## Final reminder
 //    Conversation mechanics sits in the opening third (attention-sink slot —
 //    Liu2024 / Xiao2023). `## Final reminder` is the LITERAL last block
-//    (Liu2024 §0.3 — critical reminder at end).
+//    (playbook §1.4 [Liu2024] — critical reminder at end).
 //
 // 3. Chat-mode templates (assistant, codingAssistant) fold the output-format
 //    rule directly into `## Final reminder` rather than adding a separate
-//    `## Output format` section — per Liu2024 §0.3 the critical output
+//    `## Output format` section — per playbook §1.4 [Liu2024] the critical output
 //    contract must occupy the tail attention-sink slot, not mid-prompt.
 //    Producing-role templates use `## Deliverables` as their output-format
 //    equivalent and keep a separate FR.

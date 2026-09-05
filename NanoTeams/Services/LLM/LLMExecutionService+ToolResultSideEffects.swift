@@ -6,10 +6,14 @@ extension LLMExecutionService {
 
     // MARK: - Scratchpad Result Processing
 
+    /// - Parameter wireIsMidPlanning: the phase verdict `applyPlanningPhase` derived this
+    ///   iteration (`Authorization.wireIsMidPlanning`); no default, because a default would
+    ///   assert a fact about the caller's wire.
     func processScratchpadResult(
         result: ToolExecutionResult,
         stepID: String,
         taskID: Int,
+        wireIsMidPlanning: Bool,
         conversationMessages: inout [ChatMessage]
     ) async {
         guard result.toolName == ToolNames.updateScratchpad, !result.isError else { return }
@@ -72,10 +76,15 @@ extension LLMExecutionService {
         // `isMidPlanning`, not `wireCarriesBrief`: after `.closeWithoutRebuild` the brief is
         // still on the wire but no boundary will ever fire, so the planning wording would
         // promise a fresh conversation that never arrives.
+        //
+        // The value arrives from `applyPlanningPhase`'s once-per-iteration derivation
+        // (`Authorization.wireIsMidPlanning`) — still derived from the wire, not stored across
+        // entries. Rescanning here cost two O(conversation) substring passes per
+        // `update_scratchpad` on a wire with no ceiling.
         let writer: ScratchpadNotePolicy.Writer
         if let memoryOutcome {
             writer = .autovisorMemory(memoryOutcome)
-        } else if PlanningPhasePolicy.isMidPlanning(conversationMessages) {
+        } else if wireIsMidPlanning {
             writer = .planningPhase
         } else {
             writer = .ordinaryRole

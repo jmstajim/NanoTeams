@@ -148,6 +148,54 @@ final class StepExecutionSupervisorInputTests: XCTestCase {
         XCTAssertNil(step.activeSupervisorQuestionID)
     }
 
+    // MARK: - Question text and dismiss identity
+
+    /// One chain for banner and retirement: the persisted text first, the TRAILING
+    /// ask call's parsed args as the lag fallback (flag set, text not yet copied).
+    ///
+    /// RED: delete the `?? toolCalls.last(where:…)?.parsedSupervisorQuestion` fallback
+    /// → case (b) reads nil.
+    /// RED: `last(where:)` → `first(where:)` → case (b) reads "Old" — round N's question
+    /// shown during round N+1's lag window.
+    func testSupervisorQuestionText_prefersPersistedText_fallsBackToLastAskArgs() {
+        let persisted = makeStep(needsSupervisorInput: true, toolCalls: [askCall("Other")], supervisorQuestion: "Q")
+        XCTAssertEqual(persisted.supervisorQuestionText, "Q", "(a) persisted text wins over the call's args")
+
+        let lagged = makeStep(needsSupervisorInput: false, toolCalls: [askCall("Old"), askCall("Lagged")])
+        XCTAssertEqual(lagged.supervisorQuestionText, "Lagged", "(b) no persisted text → the TRAILING ask's args, not the first")
+
+        XCTAssertNil(makeStep(needsSupervisorInput: false).supervisorQuestionText, "(c) nothing to show")
+    }
+
+    /// The identity the answer-time retirement removes must be the identity the banner
+    /// was shown under. On a step that asked and was ANSWERED before, a flag-only
+    /// escalation keys on its TEXT — the answered call's UUID names a question the user
+    /// already read (and possibly dismissed), so keying on it would retire nothing
+    /// (or, at render, be born-dismissed).
+    ///
+    /// RED: in `activeSupervisorInputDismissKey` pass
+    /// `toolCallID: toolCalls.last(where: { $0.name == ToolNames.askSupervisor })?.id`
+    /// instead of `activeSupervisorQuestionID` → the key carries Q1's UUID, not the text.
+    func testActiveSupervisorInputDismissKey_flagOnlyEscalationOnAnsweredStep_keysOnTextNotTheStaleCall() {
+        let escalated = makeStep(
+            needsSupervisorInput: true,
+            toolCalls: [askCall("Q1")],
+            answerMessages: 1,
+            supervisorQuestion: "Stalled — continue?"
+        )
+        XCTAssertEqual(
+            escalated.activeSupervisorInputDismissKey(taskID: 3),
+            .supervisorInput(taskID: 3, stepID: escalated.id, toolCallID: nil, question: "Stalled — continue?"))
+
+        let quiet = makeStep(
+            needsSupervisorInput: false,
+            toolCalls: [askCall("Q1")],
+            answerMessages: 1,
+            supervisorQuestion: "Stalled — continue?"
+        )
+        XCTAssertNil(quiet.activeSupervisorInputDismissKey(taskID: 3), "no banner ⇒ no key to retire")
+    }
+
     // MARK: - Answer reachability
 
     func testAcceptsSupervisorAnswer_coversParkedAndWaiting() {
@@ -353,7 +401,8 @@ final class StepExecutionSupervisorInputTests: XCTestCase {
         toolCalls: [StepToolCall] = [],
         answerMessages: Int = 0,
         conversation: [LLMMessage]? = nil,
-        supervisorAnswer: String? = nil
+        supervisorAnswer: String? = nil,
+        supervisorQuestion: String? = nil
     ) -> StepExecution {
         let answers = conversation ?? (0..<answerMessages).map { self.answerMessage("A\($0)") }
         return StepExecution(
@@ -363,6 +412,7 @@ final class StepExecutionSupervisorInputTests: XCTestCase {
             status: status,
             toolCalls: toolCalls,
             needsSupervisorInput: needsSupervisorInput,
+            supervisorQuestion: supervisorQuestion,
             supervisorAnswer: supervisorAnswer,
             llmConversation: answers
         )

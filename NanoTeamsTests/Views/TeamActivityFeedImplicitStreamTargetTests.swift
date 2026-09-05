@@ -1,14 +1,40 @@
 import XCTest
 @testable import NanoTeams
 
-/// Pins `TeamActivityFeedView.implicitStreamTargetID(in:)` — the LIVE seam.
+/// The verbatim body of the per-step resolver the fold in
+/// `ActivityFeedBuilder.emitItems` replaced (`TeamActivityFeedView.implicitStreamTargetID(in:)`
+/// until 2026-09-04). Kept here as the INDEPENDENT oracle of the OLD law — the
+/// `ThinkingResolverTests` idiom — so the fold is checked against something it
+/// does not share a part with (CLAUDE.md #158). `max(by: createdAt)` with strict
+/// `>` (the FIRST maximum wins), visible roles only, `.running` steps only.
+private func implicitTargetOracle(_ step: StepExecution) -> UUID? {
+    guard step.status == .running else { return nil }
+    var latest: LLMMessage?
+    for message in step.llmConversation
+        where message.role != .system && message.role != .tool {
+        if latest == nil || message.createdAt > latest!.createdAt { latest = message }
+    }
+    return latest?.id
+}
+
+/// The production seam: the set `buildTimeline` derives for these steps.
+private func implicitTargets(of steps: [StepExecution]) -> Set<UUID> {
+    ActivityFeedBuilder.buildTimeline(
+        steps: steps, run: nil,
+        stepArtifactContentCache: [:], debugModeEnabled: false,
+        isStreaming: { _ in false }
+    ).implicitStreamTargetIDs
+}
+
+/// Pins the implicit-stream-target law at its LIVE seam —
+/// `ActivityFeedBuilder.buildTimeline(...).implicitStreamTargetIDs`, the set the view
+/// reads through `TeamActivityFeedViewModel.implicitStreamTargetIDs`.
 ///
-/// These used to go through `resolveImplicitStreamTarget(stepID:messageID:isPreviewTarget:allSteps:)`,
-/// a wrapper with ZERO production callers: the view reads
-/// `TeamActivityFeedViewModel.implicitStreamTargetIDs` and spells the `isPreviewTarget`
-/// term at the call site. Testing the wrapper proved nothing about either (CLAUDE.md #57),
-/// so the wrapper is gone and these ask the function production actually calls. The two
-/// terms the wrapper used to carry are pinned by `ImplicitStreamTargetCallSiteTests` below.
+/// These used to call a separate per-step function; that function is gone (the law is
+/// folded into the builder's own message walk) and its body survives only as
+/// `implicitTargetOracle` above. Every case asserts BOTH the production set's answer
+/// and its parity with the oracle. The `isPreviewTarget` term is spelled at the call
+/// site and pinned by `testReturnsFalse_whenIsPreviewTarget` below.
 @MainActor
 final class TeamActivityFeedImplicitStreamTargetTests: XCTestCase {
 
@@ -46,14 +72,25 @@ final class TeamActivityFeedImplicitStreamTargetTests: XCTestCase {
         )
     }
 
+    /// The set for ONE step, checked against the oracle for every message of the step
+    /// (including the non-targets) before it is returned.
+    private func targets(
+        of step: StepExecution, file: StaticString = #filePath, line: UInt = #line
+    ) -> Set<UUID> {
+        let set = implicitTargets(of: [step])
+        let expected = implicitTargetOracle(step)
+        XCTAssertEqual(set, Set([expected].compactMap { $0 }),
+                       "the fold disagrees with the verbatim oracle", file: file, line: line)
+        return set
+    }
+
     // MARK: - Happy path
 
     /// Latest message in a running step, not the preview target → true.
     func testReturnsTrue_whenLatestMessageInRunningStepAndNotPreviewTarget() {
         let msg = makeMsg(content: "Создам простой веб-калькулятор…", createdAt: MonotonicClock.shared.now())
         let step = makeRunningStep(messages: [msg])
-        let result = (TeamActivityFeedView.implicitStreamTargetID(in: step) == msg.id)
-        XCTAssertTrue(result)
+        XCTAssertTrue(targets(of: step).contains(msg.id))
     }
 
     /// Multiple committed messages — only the latest by `createdAt` is the
@@ -62,10 +99,9 @@ final class TeamActivityFeedImplicitStreamTargetTests: XCTestCase {
         let older  = makeMsg(content: "first", createdAt: MonotonicClock.shared.now())
         let newer  = makeMsg(content: "second", createdAt: MonotonicClock.shared.now())
         let step   = makeRunningStep(messages: [older, newer])
-        let latest = (TeamActivityFeedView.implicitStreamTargetID(in: step) == newer.id)
-        let stale  = (TeamActivityFeedView.implicitStreamTargetID(in: step) == older.id)
-        XCTAssertTrue(latest, "Latest by createdAt picks up the implicit target")
-        XCTAssertFalse(stale, "Older messages in the same step must not surface the pill")
+        let set = targets(of: step)
+        XCTAssertTrue(set.contains(newer.id), "Latest by createdAt picks up the implicit target")
+        XCTAssertFalse(set.contains(older.id), "Older messages in the same step must not surface the pill")
     }
 
     // MARK: - Negative cases (each guards a single condition)
@@ -77,9 +113,9 @@ final class TeamActivityFeedImplicitStreamTargetTests: XCTestCase {
     /// pill).
     ///
     /// This is a WIRING pin, not a behaviour one: the short-circuit lives at the call
-    /// site, not in `implicitStreamTargetID(in:)`, so a test that calls the function
-    /// could never see it (CLAUDE.md #57). It used to be asserted against a wrapper with
-    /// no production callers, which is the same blindness wearing a green tick.
+    /// site, not in the builder's fold, so a test that calls the builder could never
+    /// see it (CLAUDE.md #57). It used to be asserted against a wrapper with no
+    /// production callers, which is the same blindness wearing a green tick.
     func testReturnsFalse_whenIsPreviewTarget() throws {
         let code = RatchetSourceScan.strippingLineComments(
             try String(contentsOf: RatchetSourceScan.repoRoot.appendingPathComponent(
@@ -108,22 +144,23 @@ final class TeamActivityFeedImplicitStreamTargetTests: XCTestCase {
         let msg = makeMsg(content: "final answer", createdAt: MonotonicClock.shared.now())
         var step = makeRunningStep(messages: [msg])
         step.status = .done
-        let result = (TeamActivityFeedView.implicitStreamTargetID(in: step) == msg.id)
-        XCTAssertFalse(result, "Done steps have no LLM work in flight — pill stays hidden")
+        XCTAssertFalse(targets(of: step).contains(msg.id),
+                       "Done steps have no LLM work in flight — pill stays hidden")
     }
 
     /// A message whose step is gone (removed mid-rebuild, descendant detached) must NOT
-    /// surface a pill. With the hoisted set that is a membership miss rather than a
-    /// lookup failure: only steps present at rebuild contribute ids, so an orphan's id
-    /// is never named by any of them.
+    /// surface a pill. With the set derived from the build's own walk that is a
+    /// membership miss rather than a lookup failure: only steps walked at rebuild
+    /// contribute ids, so an orphan's id is never named by any of them.
     func testReturnsFalse_whenStepNotFound() {
         let orphan = makeMsg(content: "orphan", createdAt: MonotonicClock.shared.now())
         let survivor = makeMsg(content: "still here", createdAt: MonotonicClock.shared.now())
         let step = makeRunningStep(messages: [survivor])
-        XCTAssertNotEqual(TeamActivityFeedView.implicitStreamTargetID(in: step), orphan.id)
-        XCTAssertEqual(TeamActivityFeedView.implicitStreamTargetID(in: step), survivor.id,
-                       "anti-vacuum: the surviving step must still name ITS latest message, "
-                           + "or the assertion above passes because nothing is ever named")
+        let set = targets(of: step)
+        XCTAssertFalse(set.contains(orphan.id))
+        XCTAssertTrue(set.contains(survivor.id),
+                      "anti-vacuum: the surviving step must still name ITS latest message, "
+                          + "or the assertion above passes because nothing is ever named")
     }
 
     /// Even when the step is running and not preview-targeted, a stale
@@ -134,13 +171,12 @@ final class TeamActivityFeedImplicitStreamTargetTests: XCTestCase {
         let msg     = makeMsg(content: "real", createdAt: MonotonicClock.shared.now())
         let stranger = UUID()
         let step = makeRunningStep(messages: [msg])
-        let result = (TeamActivityFeedView.implicitStreamTargetID(in: step) == stranger)
-        XCTAssertFalse(result)
+        XCTAssertFalse(targets(of: step).contains(stranger))
     }
 
     /// `system` and `tool` turns are skipped by the dispatcher — `tool` turns
     /// in particular are persisted at the latest `createdAt` after a tool
-    /// call lands. The resolver mirrors the dispatcher's filter so the user-
+    /// call lands. The fold mirrors the dispatcher's filter so the user-
     /// facing "latest message" matches what's actually rendered.
     func testReturnsTrue_whenLatestVisibleMessage_evenIfToolTurnHasLaterTimestamp() {
         let visible = makeMsg(content: "i'll write the file", createdAt: MonotonicClock.shared.now())
@@ -151,8 +187,8 @@ final class TeamActivityFeedImplicitStreamTargetTests: XCTestCase {
             content: "{\"ok\":true}"
         )
         let step = makeRunningStep(messages: [visible, toolTurn])
-        let result = (TeamActivityFeedView.implicitStreamTargetID(in: step) == visible.id)
-        XCTAssertTrue(result, "Tool-role turns are filtered from the visible set — the latest assistant bubble stays the implicit target")
+        XCTAssertTrue(targets(of: step).contains(visible.id),
+                      "Tool-role turns are filtered from the visible set — the latest assistant bubble stays the implicit target")
     }
 
     /// Step with ONLY tool/system messages (no visible assistant turn). Defends
@@ -164,7 +200,32 @@ final class TeamActivityFeedImplicitStreamTargetTests: XCTestCase {
             role: .tool, content: "{\"ok\":true}"
         )
         let step = makeRunningStep(messages: [toolTurn])
-        XCTAssertFalse((TeamActivityFeedView.implicitStreamTargetID(in: step) != nil))
+        XCTAssertTrue(targets(of: step).isEmpty)
+    }
+
+    /// The conversation is OUT of time order (a re-stamped commit landed a
+    /// later-created turn at an earlier array position) — `max(by: createdAt)`
+    /// and `last` disagree, and the law is the former.
+    ///
+    /// RED: replace the strict-`>` running max in the fold with "the last visible
+    /// message wins" → the set names `early`.
+    func testLatestByCreatedAt_notByArrayPosition() {
+        let late = makeMsg(content: "committed later", createdAt: Date(timeIntervalSinceReferenceDate: 100))
+        let early = makeMsg(content: "created earlier", createdAt: Date(timeIntervalSinceReferenceDate: 50))
+        let step = makeRunningStep(messages: [late, early])
+        XCTAssertEqual(targets(of: step), [late.id])
+    }
+
+    /// Equal timestamps: the FIRST maximum wins (strict `>`), so a two-turn tie
+    /// resolves to the earlier array position.
+    ///
+    /// RED: change `>` to `>=` in the fold → the second turn wins and parity fails.
+    func testEqualTimestamps_firstMaximumWins() {
+        let same = Date(timeIntervalSinceReferenceDate: 100)
+        let first = makeMsg(content: "first", createdAt: same)
+        let second = makeMsg(content: "second", createdAt: same)
+        let step = makeRunningStep(messages: [first, second])
+        XCTAssertEqual(targets(of: step), [first.id])
     }
 }
 
@@ -196,7 +257,10 @@ final class ImplicitStreamTargetHoistTests: XCTestCase, @unchecked Sendable {
         return s
     }
 
-    private func context(run: Run) -> TeamActivityFeedViewModel.BuildContext {
+    private func context(
+        run: Run,
+        descendants: [ActivityFeedBuilder.DescendantTask] = []
+    ) -> TeamActivityFeedViewModel.BuildContext {
         TeamActivityFeedViewModel.BuildContext(
             run: run,
             roleDefinitions: [role()],
@@ -211,12 +275,38 @@ final class ImplicitStreamTargetHoistTests: XCTestCase, @unchecked Sendable {
             workFolderURL: nil,
             debugModeEnabled: true,
             isStreaming: { _ in false },
-            descendantTasks: []
+            descendantTasks: descendants
         )
     }
 
-    /// Parity with `implicitStreamTargetID(in:)` — the set must hold exactly the ids
-    /// that function names, for every message including the non-target ones.
+    /// A delegated child of `taskID` whose run is `run`. Same role id as the parent's
+    /// step on purpose — `StepExecution.id` is the role id and repeats across tasks.
+    private func descendant(run: Run) -> ActivityFeedBuilder.DescendantTask {
+        ActivityFeedBuilder.DescendantTask(
+            task: NTMSTask(
+                id: taskID + 1, title: "Child", supervisorTask: "G", runs: [run],
+                parentTaskID: taskID, parentRoleID: stepID, delegationDepth: 1),
+            run: run,
+            teamRoles: [role()],
+            teamName: "Startup",
+            delegationDepth: 1,
+            delegatedFromRoleName: "Software Engineer"
+        )
+    }
+
+    /// Waits for the debounced structural rebuild scheduled with `delayMilliseconds: 0`
+    /// to land, bounded by a fixed number of yields (no wall-clock assertion — the
+    /// caller asserts on `timelineVersion`, which the rebuild bumps unconditionally).
+    private func awaitStructuralRebuild(
+        of vm: TeamActivityFeedViewModel, past version: Int
+    ) async {
+        for _ in 0..<400 where vm.timelineVersion == version {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
+    /// Parity with the OLD per-step law — the set must hold exactly the ids the
+    /// oracle names, for every message including the non-target ones.
     func testSetAgreesWithThePerBubbleResolver() {
         let s = step(id: stepID, status: .running, visibleTurns: 6)
         let vm = TeamActivityFeedViewModel()
@@ -224,10 +314,10 @@ final class ImplicitStreamTargetHoistTests: XCTestCase, @unchecked Sendable {
 
         XCTAssertFalse(vm.implicitStreamTargetIDs.isEmpty,
                        "anti-vacuum: an always-empty set would satisfy every negative case")
-        let target = TeamActivityFeedView.implicitStreamTargetID(in: s)
+        let target = implicitTargetOracle(s)
         for msg in s.llmConversation {
             XCTAssertEqual(vm.implicitStreamTargetIDs.contains(msg.id), target == msg.id,
-                           "hoisted set disagrees with the per-step resolver for \(msg.content)")
+                           "hoisted set disagrees with the per-step oracle for \(msg.content)")
         }
     }
 
@@ -274,13 +364,16 @@ final class ImplicitStreamTargetHoistTests: XCTestCase, @unchecked Sendable {
 
     /// …and it must examine it exactly ONCE.
     ///
-    /// `recomputeSteps` files `cachedAllSteps` into `cachedStepsByTaskID` under the active
-    /// task id, and `rebuildTimeline` then walked BOTH — so the active task's whole
-    /// conversation was scanned twice on every rebuild, and a turn performs several. The
-    /// anti-vacuum test above cannot see this: `>= 50` is satisfied by 50 and by 100.
+    /// The set is a by-product of the builder's single message walk over the active
+    /// task's steps. Until 2026-09-04 the view model derived it in a SEPARATE pass over
+    /// per-task step pools, and for a while walked the active pool twice — so the
+    /// active task's whole conversation was scanned two or three times per rebuild,
+    /// and a turn performs several. The anti-vacuum test above cannot see this:
+    /// `>= 50` is satisfied by 50 and by 100.
     ///
-    /// RED: restore the unconditional `for step in cachedAllSteps` pass → the count
-    /// doubles and this fails.
+    /// RED: restore a separate view-model pass (calling the oracle law per step of
+    /// `cachedAllSteps` after `buildTimeline`, with the probe inside it) alongside
+    /// the fold → the count doubles and this fails.
     func testRebuildExaminesTheActiveConversationOnlyOnce() {
         let turns = 50
         let s = step(id: stepID, status: .running, visibleTurns: turns)
@@ -289,7 +382,7 @@ final class ImplicitStreamTargetHoistTests: XCTestCase, @unchecked Sendable {
         vm.recomputeAndRebuild(context: context(run: Run(id: 0, steps: [s])))
         let examined = ImplicitStreamTargetProbe._testExamined()
         // VISIBLE messages, not `llmConversation.count`: the probe fires only for turns
-        // the resolver actually inspects (`.system` and `.tool` are skipped). Bounding by
+        // the fold actually inspects (`.system` and `.tool` are skipped). Bounding by
         // the whole conversation was measured NON-discriminating — the fixture carries a
         // tool turn per visible turn, so `2 × visible` still fits under `count` and the
         // "walk twice" mutation stayed green (CLAUDE.md #56, reading 3).
@@ -301,7 +394,55 @@ final class ImplicitStreamTargetHoistTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(
             examined, visible,
             "the rebuild examined \(examined) visible messages for a conversation with "
-                + "\(visible) of them — the active pool is walked once as `cachedAllSteps` "
-                + "and again as `cachedStepsByTaskID[activeTaskID]`")
+                + "\(visible) of them — the active task's conversation is being walked more "
+                + "than once per rebuild")
+    }
+
+    /// THE stale-pill fix. The debounced structural path
+    /// (`scheduleStructuralRebuild` → `rebuildTimeline(context:)`) is handed a FRESH
+    /// context for the DESCENDANTS' items (the active task's items still come from
+    /// `cachedAllSteps`) but never runs `recomputeSteps`, so a set derived from step
+    /// pools filed at the PREVIOUS `recomputeSteps` described the descendants as of
+    /// that earlier tick. A child step that went `.running` with a new turn in
+    /// between showed the new bubble without its stream pill, while the set still
+    /// named the turn before it.
+    ///
+    /// The law that survives: the implicit targets come from the SAME steps whose
+    /// items the rebuild emits — never from a step set cached at another time.
+    ///
+    /// RED: derive the descendants' targets from steps cached at `recomputeSteps`
+    /// (a per-task pool) instead of the rebuild's own `descendantTasks` → the set
+    /// holds `m1`, not `m2`, while `cachedTimelineItems` already renders `m2`.
+    func testStructuralRebuild_targetsComeFromTheStepsThatProducedTheItems() async {
+        let m1 = LLMMessage(role: .assistant, content: "child turn 1")
+        let m2 = LLMMessage(role: .assistant, content: "child turn 2")
+        let parentRun = Run(id: 0, steps: [step(id: stepID, status: .done, visibleTurns: 1)])
+        var childStep = step(id: stepID, status: .running, visibleTurns: 0)
+        childStep.llmConversation = [m1]
+        let vm = TeamActivityFeedViewModel()
+
+        vm.recomputeAndRebuild(context: context(
+            run: parentRun, descendants: [descendant(run: Run(id: 0, steps: [childStep]))]))
+        XCTAssertTrue(vm.implicitStreamTargetIDs.contains(m1.id),
+                      "anti-vacuum: before the new turn lands, m1 IS the descendant's target")
+
+        // The descendant gains a turn; only the debounced structural path sees it.
+        childStep.llmConversation = [m1, m2]
+        let fresh = context(
+            run: parentRun, descendants: [descendant(run: Run(id: 0, steps: [childStep]))])
+        let version = vm.timelineVersion
+        vm.scheduleStructuralRebuild(context: fresh, delayMilliseconds: 0)
+        await awaitStructuralRebuild(of: vm, past: version)
+        XCTAssertGreaterThan(vm.timelineVersion, version, "anti-vacuum: the rebuild must have run")
+
+        let renderedIDs = vm.cachedTimelineItems.compactMap { tagged -> UUID? in
+            if case let .llmMessage(message, _, _, _) = tagged.item { return message.id }
+            return nil
+        }
+        XCTAssertTrue(renderedIDs.contains(m2.id), "the items already show the new turn")
+        XCTAssertTrue(vm.implicitStreamTargetIDs.contains(m2.id),
+                      "the pill must move to the turn the items render")
+        XCTAssertFalse(vm.implicitStreamTargetIDs.contains(m1.id),
+                       "the previous turn is no longer the latest visible one")
     }
 }

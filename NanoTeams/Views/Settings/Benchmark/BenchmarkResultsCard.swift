@@ -136,7 +136,7 @@ struct BenchmarkResultsCard: View {
     /// expression inside `body` the type-checker gave up on it (CLAUDE.md #10).
     private var detailRun: Binding<GenerationBenchmarkRun?> {
         Binding(
-            get: { runs.first { $0.id == detailRunID } },
+            get: { runs.first { $0.id == detailRunID } }, // run-id:allow-linear-scan [GenerationBenchmarkRun], not NTMSTask.runs
             set: { if $0 == nil { detailRunID = nil } })
     }
 

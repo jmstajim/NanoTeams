@@ -98,7 +98,7 @@ final class SystemTemplatesSectionPinTests: XCTestCase {
         XCTAssertFalse(t.hasPrefix("You are"), "autovisorTemplate must not open with 'You are X...'")
     }
 
-    /// §2.2 / §9.5 attention sinks: the "delegate, never implement" rule — the constraint
+    /// playbook §1.4 attention sinks [Liu2024, Xiao2023streamingllm]: the "delegate, never implement" rule — the constraint
     /// a weak local model ignores when it's buried mid-prompt — must sit in BOTH the opening
     /// `## Role` slot and the closing `## Final reminder` slot, not only in `{roleGuidance}`'s
     /// mid-prompt Boundaries. This is the structural fix for the manager self-fixing instead
@@ -237,10 +237,10 @@ final class SystemTemplatesSectionPinTests: XCTestCase {
                       "discussionTemplate's plain-prose contract is load-bearing")
     }
 
-    // MARK: - `## Final reminder` LITERAL-last invariant (Liu2024 §0.3 / G3)
+    // MARK: - `## Final reminder` LITERAL-last invariant (playbook §1.4 [Liu2024] / G3)
 
     /// `## Final reminder` must be the LITERAL last `## ` section in every step
-    /// template's source. Liu2024 §0.3 requires the single most critical
+    /// template's source. playbook §1.4 [Liu2024] requires the single most critical
     /// constraint at the prompt's tail; this test pins position (not just
     /// presence — `testEveryStepTemplate_hasFinalReminder`-style assertions
     /// allow FR to be mid-template, which silently undoes attention-sink benefit).
@@ -268,7 +268,7 @@ final class SystemTemplatesSectionPinTests: XCTestCase {
             }
             XCTAssertEqual(
                 lastH2HeaderText, "## Final reminder",
-                "[\(name)] last `## ` section must be `## Final reminder` (Liu2024 §0.3 attention-sink). "
+                "[\(name)] last `## ` section must be `## Final reminder` (playbook §1.4 [Liu2024] attention-sink). "
                     + "Actual last `## ` header: \(lastH2HeaderText ?? "<none>")"
             )
         }
@@ -364,10 +364,10 @@ final class SystemTemplatesSectionPinTests: XCTestCase {
         }
     }
 
-    // MARK: - Chat-mode FR restates output format (Liu2024 §0.3 / Issue 3)
+    // MARK: - Chat-mode FR restates output format (playbook §1.4 [Liu2024] / Issue 3)
 
     /// Chat-mode templates have an implicit output contract — reply by calling
-    /// `ask_supervisor`. Per Liu2024 §0.3 (house rule; playbook §1 «state the
+    /// `ask_supervisor`. Per playbook §1.4 [Liu2024] (house rule; playbook §1 «state the
     /// exact format» + §5 skeleton) the most critical constraint must occupy
     /// the tail attention-sink slot. The standalone `## Output format` section
     /// sat mid-prompt with FR carrying unrelated content — a buried-in-middle
@@ -393,7 +393,7 @@ final class SystemTemplatesSectionPinTests: XCTestCase {
             XCTAssertTrue(
                 frBody.contains("ask_supervisor`"),
                 "[\(name)] chat-mode FR must restate output contract (reply via `ask_supervisor`). "
-                    + "Liu2024 §0.3 — critical constraint at tail. Got FR body:\n\(frBody)"
+                    + "playbook §1.4 [Liu2024] — critical constraint at tail. Got FR body:\n\(frBody)"
             )
         }
     }

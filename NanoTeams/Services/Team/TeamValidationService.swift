@@ -2,25 +2,19 @@ import Foundation
 
 // MARK: - Team Validation Service
 
-/// Validates team configuration for artifact uniqueness and dependency chains.
+/// Validates the parts of a team configuration that the Team Editor banner surfaces:
+/// per-role delegation policy and attached-skill resolution. Pure functions over the
+/// team value — the banner (`TeamEditorValidation.issues`) is the one production caller.
+///
+/// The artifact-chain validators that used to live here (duplicate producer, missing
+/// producer, circular dependency, orphan artifact) were deleted on 2026-09-04: no production
+/// surface ever called them, and the editor banner deliberately never showed their output.
 nonisolated enum TeamValidationService {
 
     // MARK: - Validation Errors
 
     /// Errors found during team validation
     enum ValidationError: Equatable, Hashable {
-        /// Multiple roles produce the same artifact type
-        case duplicateProducer(artifact: String, roleIDs: [String])
-
-        /// A role requires an artifact that no other role produces
-        case missingProducer(artifact: String, requiredBy: String)
-
-        /// Circular dependency detected in artifact chain
-        case circularDependency(roleIDs: [String])
-
-        /// An artifact is produced but never consumed
-        case orphanArtifact(artifact: String, producedBy: String)
-
         /// A role is configured for delegation (`hasDelegationConfigured == true`)
         /// but is not peer-level with the team's Supervisor — i.e. has an
         /// upstream `reportsTo` entry. Only peer-level roles (autonomous, no
@@ -54,11 +48,9 @@ nonisolated enum TeamValidationService {
 
         var isError: Bool {
             switch self {
-            case .duplicateProducer, .missingProducer, .circularDependency,
-                 .nonTopLevelDelegator, .delegationToSelf:
+            case .nonTopLevelDelegator, .delegationToSelf:
                 return true
-            case .orphanArtifact, .unknownDelegationTeam, .noDelegationTargets,
-                 .unknownAttachedSkill:
+            case .unknownDelegationTeam, .noDelegationTargets, .unknownAttachedSkill:
                 return false  // Warning, not error
             }
         }
@@ -72,16 +64,6 @@ nonisolated enum TeamValidationService {
                 team.roles.first { $0.id == id }?.name ?? id
             }
             switch self {
-            case .duplicateProducer(let artifact, let roleIDs):
-                let names = roleIDs.map(roleName).joined(separator: ", ")
-                return "Multiple roles produce “\(artifact)”: \(names)."
-            case .missingProducer(let artifact, let requiredBy):
-                return "\(roleName(requiredBy)) requires “\(artifact)”, but no role produces it."
-            case .circularDependency(let roleIDs):
-                let chain = roleIDs.map(roleName).joined(separator: " → ")
-                return "Circular dependency between roles: \(chain)."
-            case .orphanArtifact(let artifact, let producedBy):
-                return "“\(artifact)” is produced by \(roleName(producedBy)) but never used by another role."
             case .nonTopLevelDelegator(let roleID):
                 return "\(roleName(roleID)) is set to delegate but reports to another role. Only roles that are peer-level with the Supervisor can delegate — remove its “reports to” link."
             case .unknownDelegationTeam(let roleID, let teamID):
@@ -94,64 +76,6 @@ nonisolated enum TeamValidationService {
                 return "\(roleName(roleID)) has an attached skill that can’t be found (\(skillID)). Its text won’t reach the prompt — detach it in the role’s Skills tab, or open the work folder it lives in."
             }
         }
-    }
-
-    // MARK: - Validation Result
-
-    struct ValidationResult {
-        let errors: [ValidationError]
-        let warnings: [ValidationError]
-
-        var isValid: Bool { errors.isEmpty }
-    }
-
-    // MARK: - Validate Team Configuration
-
-    /// Validates the complete team configuration.
-    /// - Parameters:
-    ///   - roleDefinitions: All role definitions in the project
-    /// - Returns: Validation result with errors and warnings
-    static func validate(
-        roleDefinitions: [TeamRoleDefinition]
-    ) -> ValidationResult {
-        var errors: [ValidationError] = []
-        var warnings: [ValidationError] = []
-
-        // 1. Check artifact uniqueness
-        let uniquenessIssues = validateArtifactUniqueness(roleDefinitions: roleDefinitions)
-        errors.append(contentsOf: uniquenessIssues)
-
-        // 2. Check dependency chain
-        let chainIssues = validateDependencyChain(roleDefinitions: roleDefinitions)
-        errors.append(contentsOf: chainIssues)
-
-        // 3. Check for circular dependencies
-        let circularIssues = validateNoCircularDependencies(roleDefinitions: roleDefinitions)
-        errors.append(contentsOf: circularIssues)
-
-        // 4. Find orphan artifacts (warning only)
-        let orphanIssues = findOrphanArtifacts(roleDefinitions: roleDefinitions)
-        warnings.append(contentsOf: orphanIssues)
-
-        return ValidationResult(errors: errors, warnings: warnings)
-    }
-
-    /// Validates the team configuration including delegation policy.
-    /// Used by the orchestrator's team-save flow to catch role-level delegation
-    /// misconfiguration in addition to artifact dependency issues.
-    /// - Parameters:
-    ///   - team: The team being validated.
-    ///   - allTeams: All teams in the project, used to verify whitelist references resolve.
-    static func validate(team: Team, allTeams: [Team]) -> ValidationResult {
-        let result = validate(roleDefinitions: team.roles)
-        var errors = result.errors
-        var warnings = result.warnings
-
-        let delegationIssues = validateDelegationPolicy(team: team, allTeams: allTeams)
-        for issue in delegationIssues {
-            if issue.isError { errors.append(issue) } else { warnings.append(issue) }
-        }
-        return ValidationResult(errors: errors, warnings: warnings)
     }
 
     // MARK: - Attached Skills
@@ -229,161 +153,5 @@ nonisolated enum TeamValidationService {
             }
         }
         return issues
-    }
-
-    // MARK: - Artifact Uniqueness
-
-    /// Validates that each artifact type is produced by at most one role.
-    static func validateArtifactUniqueness(roleDefinitions: [TeamRoleDefinition]) -> [ValidationError] {
-        var producersByArtifact: [String: [String]] = [:]
-
-        for roleDef in roleDefinitions {
-            let deps = roleDef.dependencies
-
-            for artifact in deps.producesArtifacts {
-                producersByArtifact[artifact, default: []].append(roleDef.id)
-            }
-        }
-
-        var errors: [ValidationError] = []
-        for (artifact, producers) in producersByArtifact {
-            if producers.count > 1 {
-                errors.append(.duplicateProducer(artifact: artifact, roleIDs: producers))
-            }
-        }
-
-        return errors
-    }
-
-    // MARK: - Dependency Chain
-
-    /// Validates that every required artifact has a producer.
-    static func validateDependencyChain(roleDefinitions: [TeamRoleDefinition]) -> [ValidationError] {
-        // Collect all produced artifacts
-        var producedArtifacts = Set<String>()
-        for roleDef in roleDefinitions {
-            let deps = roleDef.dependencies
-            producedArtifacts.formUnion(deps.producesArtifacts)
-        }
-
-        // Check each role's requirements
-        var errors: [ValidationError] = []
-        for roleDef in roleDefinitions {
-            let deps = roleDef.dependencies
-
-            for required in deps.requiredArtifacts {
-                if !producedArtifacts.contains(required) {
-                    errors.append(.missingProducer(artifact: required, requiredBy: roleDef.id))
-                }
-            }
-        }
-
-        return errors
-    }
-
-    // MARK: - Circular Dependencies
-
-    /// Validates that there are no circular dependencies in the artifact chain.
-    static func validateNoCircularDependencies(roleDefinitions: [TeamRoleDefinition]) -> [ValidationError] {
-        // Build dependency graph: roleID → [roleIDs it depends on]
-        var dependsOn: [String: Set<String>] = [:]
-        var producerOf: [String: String] = [:]
-
-        // First pass: map artifacts to producers
-        for roleDef in roleDefinitions {
-            let deps = roleDef.dependencies
-            for artifact in deps.producesArtifacts {
-                producerOf[artifact] = roleDef.id
-            }
-        }
-
-        // Second pass: build dependency edges
-        for roleDef in roleDefinitions {
-            // Supervisor required artifacts are review requirements, not execution edges.
-            if roleDef.isSupervisor {
-                dependsOn[roleDef.id] = []
-                continue
-            }
-
-            let deps = roleDef.dependencies
-            var dependencies = Set<String>()
-
-            for required in deps.requiredArtifacts {
-                if let producer = producerOf[required] {
-                    dependencies.insert(producer)
-                }
-            }
-
-            dependsOn[roleDef.id] = dependencies
-        }
-
-        // Detect cycles using DFS
-        var visited = Set<String>()
-        var inStack = Set<String>()
-        var errors: [ValidationError] = []
-
-        func dfs(_ nodeID: String, path: [String]) -> [String]? {
-            if inStack.contains(nodeID) {
-                // Found cycle - return path from cycle start
-                if let cycleStart = path.firstIndex(of: nodeID) {
-                    return Array(path[cycleStart...]) + [nodeID]
-                }
-                return path + [nodeID]
-            }
-
-            if visited.contains(nodeID) {
-                return nil
-            }
-
-            visited.insert(nodeID)
-            inStack.insert(nodeID)
-
-            for dep in dependsOn[nodeID] ?? [] {
-                if let cycle = dfs(dep, path: path + [nodeID]) {
-                    return cycle
-                }
-            }
-
-            inStack.remove(nodeID)
-            return nil
-        }
-
-        for roleDef in roleDefinitions {
-            if !visited.contains(roleDef.id) {
-                if let cycle = dfs(roleDef.id, path: []) {
-                    errors.append(.circularDependency(roleIDs: cycle))
-                    break  // Report only first cycle
-                }
-            }
-        }
-
-        return errors
-    }
-
-    // MARK: - Orphan Artifacts
-
-    /// Finds artifacts that are produced but never consumed.
-    static func findOrphanArtifacts(roleDefinitions: [TeamRoleDefinition]) -> [ValidationError] {
-        var producedBy: [String: String] = [:]
-        var requiredArtifacts = Set<String>()
-
-        for roleDef in roleDefinitions {
-            let deps = roleDef.dependencies
-
-            for artifact in deps.producesArtifacts {
-                producedBy[artifact] = roleDef.id
-            }
-
-            requiredArtifacts.formUnion(deps.requiredArtifacts)
-        }
-
-        var warnings: [ValidationError] = []
-        for (artifact, producer) in producedBy {
-            if !requiredArtifacts.contains(artifact) {
-                warnings.append(.orphanArtifact(artifact: artifact, producedBy: producer))
-            }
-        }
-
-        return warnings
     }
 }

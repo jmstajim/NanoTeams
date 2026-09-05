@@ -201,10 +201,23 @@ final class ConversationRepairServiceTests: XCTestCase {
     }
 
     /// `tasks/0/runs/48`, 2026-08-11 — the opening sentinel itself is broken (`<|call|` with
-    /// no closing `|>`, no `<|end|>`). Four consecutive turns looked like this and executed
-    /// nothing even under the old reasoning route. The same reasoning trace shows the model
-    /// believed otherwise: "I see I made two calls in sequence using <|call|> tags".
-    func testReasoningNames_brokenOpeningSentinel_returnsEmpty() {
+    /// no closing `|>`, no `<|end|>`). Four consecutive turns looked like this. The same
+    /// reasoning trace shows the model believed it had called tools: "I see I made two calls
+    /// in sequence using <|call|> tags".
+    ///
+    /// **This expectation flipped on 2026-09-05, and the flip is the point.** It used to
+    /// assert `[]`, on the reasoning that a mangled sentinel is a formatting failure rather
+    /// than a mis-channelled call — true while `HarmonySentinelNormalizer` could not read the
+    /// shape, because naming a channel would have described a defect the model did not have.
+    /// The normalizer now repairs the truncated canonical sentinel (`CastleSurvivorsNT` task
+    /// 12, `RealOrnithRunEnvelopeTests`), so these two envelopes ARE dispatchable — and the
+    /// only thing still wrong with them is the channel they were written in. That is now the
+    /// accurate diagnosis, so it is the one the nudge should carry.
+    ///
+    /// Still diagnosis only: `reasoningChannelToolCallNames` feeds nudge TEXT and nothing
+    /// else, and `performStreamingCall` keeps its no-route-out-of-`thinkingCollected` rule
+    /// (2026-08-25). Reading the reasoning channel better is not executing from it.
+    func testReasoningNames_brokenOpeningSentinel_namesTheMisChannelledCalls() {
         let thinking = ##"""
         The system wants me to actually call tools properly. Let me try again.
         
@@ -213,8 +226,22 @@ final class ConversationRepairServiceTests: XCTestCase {
         <|call|{"name":"list_files","arguments":{"path":"MeditationApp"}}
         """##
         XCTAssertEqual(
+            ConversationRepairService.reasoningChannelToolCallNames(in: thinking),
+            ["list_tasks", "list_files"],
+            "a repairable sentinel in the reasoning channel is a mis-channelled call, and the nudge that names the channel is the accurate one"
+        )
+    }
+
+    /// The companion negative the flip above must NOT drag with it: a sentinel this file
+    /// cannot repair still yields nothing. `<|call|` followed by a SPACE is prose by the
+    /// normalizer's abutment rule, so there is no call to be mis-channelled.
+    func testReasoningNames_unrepairableSentinel_stillReturnsEmpty() {
+        let thinking = ##"""
+        I could write <|call| {"name":"list_tasks"} but let me think first.
+        """##
+        XCTAssertEqual(
             ConversationRepairService.reasoningChannelToolCallNames(in: thinking), [],
-            "A mangled opening sentinel is a formatting failure, not a mis-channelled call"
+            "an unrepairable sentinel is a formatting failure, not a mis-channelled call"
         )
     }
 

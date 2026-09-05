@@ -227,7 +227,7 @@ nonisolated extension SystemTemplates {
         // 2026-05 dedup: `### Communication` removed — the rule lives in
         // template's `## Output format` section (chat-mode roles). `### ask_supervisor
         // format` removed for the same reason. `### Safety` content folded into
-        // FR per §0.3 (one critical reminder at end).
+        // FR per playbook §1.4 (one critical reminder at end).
         "assistant": """
         Help the Supervisor with whatever they need — reading and writing documents, analyzing files and images, planning, research, summarization.
         

@@ -1,4 +1,7 @@
 import Foundation
+#if DEBUG
+import Synchronization
+#endif
 
 /// Resolves "the thinking of the LAST assistant turn at or before this anchor"
 /// for one step's conversation — the lookup the Q&A card and the escalation card
@@ -24,10 +27,21 @@ import Foundation
 /// screen, not just an empty state.
 ///
 /// Build is O(k log k); callers build LAZILY (only when a step actually has an
-/// ask call or an escalation card to render) and PER STEP inside `emitItems` —
-/// never cached across rebuilds or keyed to `cachedAllSteps`, because the
-/// second `emitItems` invocation walks descendant-task steps that no view-model
-/// cache ever sees.
+/// ask call or an escalation card to render) and PER STEP inside `emitItems`.
+/// The resolver itself is never cached across rebuilds. What IS memoized is the
+/// ESCALATION CARD's resolved value, by `TeamActivityFeedViewModel` under
+/// `(TaskStepKey, answerMessage.id)` — keyed per task so descendant steps that
+/// share a `step.id` cannot collide. That memo is sound because every candidate
+/// at or before the answer is frozen once the answer exists: appends are
+/// stamped by `MonotonicClock.shared.now()`, which is strictly greater than
+/// every prior stamp; the only in-place `thinking` writer,
+/// `TaskMutationService.commitStreamingContent`, targets the tail turn that
+/// `beginStreaming` pre-created after the resume and re-stamps it FORWARD past
+/// the answer; `applyRetryNotice` removes or re-stamps only the tail turn (and a
+/// `.serverError` turn carries no `thinking`, so it is never a candidate);
+/// `removeLLMMessage` drops the pre-created empty turn. A new answer cycle
+/// changes `answerMessage.id`, hence the key. `ThinkingResolverBuildProbe`
+/// counts builds so the memo can be pinned as work not done.
 nonisolated struct ThinkingResolver {
 
     private struct Candidate {
@@ -43,6 +57,9 @@ nonisolated struct ThinkingResolver {
     private let prefixBest: [Int]
 
     init(conversation: [LLMMessage]) {
+        #if DEBUG
+        ThinkingResolverBuildProbe.noteBuilt()
+        #endif
         var candidates: [Candidate] = []
         for (idx, message) in conversation.enumerated() {
             guard message.role == .assistant, let thinking = message.thinking else { continue }
@@ -81,3 +98,17 @@ nonisolated struct ThinkingResolver {
         return sorted[prefixBest[low - 1]].thinking
     }
 }
+
+#if DEBUG
+/// Counts `ThinkingResolver` builds since the last reset — each one an O(k log k)
+/// sort of the step's assistant turns. Inside the initializer (CLAUDE.md #62):
+/// the escalation-card memo in `TeamActivityFeedViewModel` is a condition AROUND
+/// this build, so a test comparing returned values cannot see whether the work
+/// ran; the counter can.
+nonisolated enum ThinkingResolverBuildProbe {
+    private static let _builds = Atomic<Int>(0)
+    static func noteBuilt() { _builds.wrappingAdd(1, ordering: .relaxed) }
+    static func builds() -> Int { _builds.load(ordering: .relaxed) }
+    static func reset() { _builds.store(0, ordering: .relaxed) }
+}
+#endif

@@ -164,7 +164,7 @@ nonisolated struct NTMSTask: Codable, Identifiable, Hashable {
         self.status = status
         self.createdAt = createdAt
         self.updatedAt = updatedAt
-        self.runs = runs
+        self.runs = runs // run-id:allow-runs-mutation memberwise init — production passes the [] default; fixtures/previews seed runs here
         self.closedAt = closedAt
         self.acceptanceMode = acceptanceMode
         self.acceptanceCheckpoints = acceptanceCheckpoints
@@ -239,8 +239,8 @@ nonisolated struct NTMSTask: Codable, Identifiable, Hashable {
         self.status = try container.decodeIfPresent(TaskStatus.self, forKey: .status) ?? .running
         self.createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? MonotonicClock.shared.now()
         self.updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? MonotonicClock.shared.now()
-        self.runs = try container.decodeIfPresent([Run].self, forKey: .runs) ?? []
-        self.streamsHydrated = !self.runs.contains { run in
+        self.runs = try container.decodeIfPresent([Run].self, forKey: .runs) ?? [] // run-id:allow-runs-mutation decoder — replays the array RunService wrote
+        self.streamsHydrated = !self.runs.contains { run in // run-id:allow-linear-scan a hydration predicate over EVERY run's steps, not an id lookup
             run.steps.contains { step in
                 step.logCommit.map { commit in
                     commit.seq > 0
@@ -427,6 +427,20 @@ nonisolated struct TasksIndex: Codable, Hashable {
 }
 
 nonisolated extension TasksIndex {
+    /// What one `upsert` did to the rows, reported from the only place that knows.
+    ///
+    /// `previous` is the row the call REPLACED — `nil` for an id seen for the first time.
+    /// `moved` is whether the row's index changed: `true` for a first-seen row (it had no
+    /// index before), `false` for a same-stamp converge write (replaced in place), and for
+    /// a re-stamped row `true` iff its new slot differs from its old one. Because a
+    /// remove + insert into the SAME slot restores every neighbour, "this row's index
+    /// changed" is exactly "some row's index changed" — which is the question the
+    /// sidebar's row memo asks (`TaskFactsProjection.rowsRevision`).
+    nonisolated struct UpsertOutcome: Equatable {
+        let previous: TaskSummary?
+        let moved: Bool
+    }
+
     /// Inserts or replaces `summary`, KEEPING `tasks` sorted by `updatedAt` descending.
     ///
     /// The single home for an operation that stood open-coded at five live sites (three
@@ -443,7 +457,8 @@ nonisolated extension TasksIndex {
     ///
     /// Order is established once, at the boundary that loads the index; keeping it is
     /// this method's job. Callers must not re-sort after calling it.
-    /// Returns the row this REPLACED, or `nil` for a row seen for the first time.
+    /// Returns an `UpsertOutcome`: the row this REPLACED (`nil` for a row seen for the
+    /// first time) and whether the row's INDEX changed.
     ///
     /// The index is the thing that holds rows, so it is the thing that can say what one
     /// looked like a moment ago — and it already located the row in order to replace it,
@@ -452,11 +467,35 @@ nonisolated extension TasksIndex {
     /// clears, rather than sampling for the clear on some later wake (CLAUDE.md #92); a
     /// caller that tried to read the old row on either side of this call would find the new
     /// one after, and — for a background task the shell never displayed — nothing before.
+    /// `moved` is free for the same reason: both slots are in hand here, and nobody else
+    /// knows positions — a caller re-deriving it would pay two `firstIndex` scans per
+    /// `mutateTask`.
     @discardableResult
-    mutating func upsert(_ summary: TaskSummary) -> TaskSummary? {
-        guard let existing = tasks.firstIndex(where: { $0.id == summary.id }) else {
+    mutating func upsert(_ summary: TaskSummary) -> UpsertOutcome {
+        #if DEBUG
+        TasksIndexWorkProbe.noteFullScan()
+        #endif
+        return upsert(summary, at: tasks.firstIndex(where: { $0.id == summary.id }))
+    }
+
+    /// `upsert(_:)` with the row slot already in hand — the spelling `updateTaskOnly` feeds
+    /// from `parentLinks(locating:)`, so the hot path pays ONE pass over the rows instead of
+    /// a hop-map build followed by a second search for the same row.
+    ///
+    /// `position` is the FIRST row holding `summary.id` in the CURRENT `tasks`, or `nil` when
+    /// no row does — exactly what `tasks.firstIndex(where: { $0.id == summary.id })` answers,
+    /// which is what the searching spelling above passes. A slot computed against a different
+    /// `tasks` value would replace the wrong row; the only caller computes and consumes it on
+    /// one local value inside one locked scope, and the DEBUG precondition below is O(1).
+    /// Same body as `upsert(_:)` always had: same `insertionSlot` binary search, same tie
+    /// rule (an unchanged stamp replaces in place), same returned `previous`.
+    @discardableResult
+    mutating func upsert(_ summary: TaskSummary, at position: Int?) -> UpsertOutcome {
+        assert(position.map { tasks.indices.contains($0) && tasks[$0].id == summary.id } ?? true,
+               "upsert(_:at:) precondition: position must be the FIRST row holding summary.id in the CURRENT tasks")
+        guard let existing = position else {
             tasks.insert(summary, at: insertionSlot(for: summary.updatedAt))
-            return nil
+            return UpsertOutcome(previous: nil, moved: true)
         }
         let previous = tasks[existing]
         // An unchanged stamp is a CONVERGE write — the recovery sweep re-summarizing a row
@@ -465,11 +504,12 @@ nonisolated extension TasksIndex {
         // no caller asked for.
         if tasks[existing].updatedAt == summary.updatedAt {
             tasks[existing] = summary
-            return previous
+            return UpsertOutcome(previous: previous, moved: false)
         }
         tasks.remove(at: existing)
-        tasks.insert(summary, at: insertionSlot(for: summary.updatedAt))
-        return previous
+        let slot = insertionSlot(for: summary.updatedAt)
+        tasks.insert(summary, at: slot)
+        return UpsertOutcome(previous: previous, moved: slot != existing)
     }
 
     /// First index whose `updatedAt` is strictly older than `date` — i.e. where a row
@@ -507,18 +547,33 @@ nonisolated extension TasksIndex {
     /// `tasks.first(where:)` exactly, so the two spellings of the walk can
     /// never nest one task's storage at two different paths.
     func parentLinks() -> [Int: Int] {
+        parentLinks(locating: nil).links
+    }
+
+    /// `parentLinks()` that ALSO reports where `taskID`'s row sits — the same loop
+    /// answering the two questions `updateTaskOnly` asks about one task (its
+    /// ancestor chain, and the slot `upsert(_:at:)` replaces), so the hot path
+    /// walks the rows once instead of building the hop map and then searching
+    /// them again. `position` is captured under the same `seen.insert(...).inserted`
+    /// guard that makes the first row win, so it equals
+    /// `tasks.firstIndex(where: { $0.id == taskID })` — duplicate-id rows included.
+    /// `nil` for an unknown id, or when no id was asked for.
+    func parentLinks(locating taskID: Int?) -> (links: [Int: Int], position: Int?) {
         #if DEBUG
         TasksIndexWorkProbe.noteParentLinksBuild()
+        TasksIndexWorkProbe.noteFullScan()
         #endif
         var links: [Int: Int] = [:]
         var seen = Set<Int>()
+        var position: Int?
         links.reserveCapacity(tasks.count)
         seen.reserveCapacity(tasks.count)
-        for s in tasks {
+        for (i, s) in tasks.enumerated() {
             guard seen.insert(s.id).inserted else { continue }
+            if let taskID, s.id == taskID { position = i }
             if let pid = s.parentTaskID { links[s.id] = pid }
         }
-        return links
+        return (links, position)
     }
 
     /// `ancestorIDs(of:)` with the hop map precomputed — callers that walk the
@@ -561,6 +616,9 @@ nonisolated extension TasksIndex {
     /// legacy per-frontier scan saw them); the BFS's visited set dedups them
     /// identically in both spellings.
     func childLinks() -> [Int: [Int]] {
+        #if DEBUG
+        TasksIndexWorkProbe.noteFullScan()
+        #endif
         var children: [Int: [Int]] = [:]
         for s in tasks {
             guard let pid = s.parentTaskID else { continue }
@@ -860,7 +918,8 @@ nonisolated extension NTMSTask {
 
 #if DEBUG
 /// Work-bound seam for `TasksIndex.parentLinks()` — how many times the whole-index hop
-/// map has been BUILT since the last reset.
+/// map has been BUILT since the last reset — and, since 2026-09-02, how many FULL PASSES
+/// over `tasks` TasksIndex's own members have made.
 ///
 /// `parentLinks()` allocates a `[Int: Int]` and a `Set<Int>` over every task the work
 /// folder has ever held (the index is append-only — `closeTask` keeps the row and
@@ -868,10 +927,23 @@ nonisolated extension NTMSTask {
 /// same task is the whole cost, twice. It sits INSIDE the builder rather than beside a
 /// caller for the reason CLAUDE.md #62 records: a counter outside would report how many
 /// times someone asked, not how many maps were built.
+///
+/// `_scans` counts every full pass TasksIndex performs itself — the hop-map build, the
+/// child-map build, and the searching `upsert(_:)` (whose `firstIndex(where:)` walks up to
+/// the whole array) — placed inside those loops for the same #62 reason. It does NOT see
+/// stdlib passes a caller spells directly (`contains`, `removeAll`), so a bound asserted
+/// against it is a bound on the index's OWN work. `updateTaskOnly` is pinned to exactly one
+/// (`TasksIndexConcurrencyTests`); nothing asserts `childLinks()` yet.
 nonisolated enum TasksIndexWorkProbe {
     private static let _builds = Atomic<Int>(0)
+    private static let _scans = Atomic<Int>(0)
     static func noteParentLinksBuild() { _builds.wrappingAdd(1, ordering: .relaxed) }
+    static func noteFullScan() { _scans.wrappingAdd(1, ordering: .relaxed) }
     static func parentLinksBuilds() -> Int { _builds.load(ordering: .relaxed) }
-    static func reset() { _builds.store(0, ordering: .relaxed) }
+    static func fullScans() -> Int { _scans.load(ordering: .relaxed) }
+    static func reset() {
+        _builds.store(0, ordering: .relaxed)
+        _scans.store(0, ordering: .relaxed)
+    }
 }
 #endif

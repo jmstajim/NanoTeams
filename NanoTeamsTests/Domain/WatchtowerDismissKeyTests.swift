@@ -70,4 +70,30 @@ final class WatchtowerDismissKeyTests: XCTestCase {
             WatchtowerDismissKey.failed(taskID: 1, stepID: "engineer"))
     }
 
+    // MARK: - Shared type-ID vocabulary (supervisorInput)
+
+    /// The `.supervisorInput` spelling is the ONE family that must NOT take a prefix:
+    /// it is byte-for-byte what `WatchtowerNotificationType.dismissID` always wrote,
+    /// so every dismissal already persisted keeps matching. A prefix here would orphan
+    /// them all — every open question's banner would return once — for no collision
+    /// gain, since `stepID::<uuid|text>` overlaps no other family.
+    ///
+    /// RED: prefix the body with `supervisorInput::` (or swap the `??` operands) →
+    /// both literal-equality assertions fail.
+    func testSupervisorInputTypeID_isTheBareStepAndCallSpelling_soPersistedKeysKeepMatching() {
+        let call = UUID()
+        XCTAssertEqual(
+            WatchtowerDismissKey.supervisorInputTypeID(stepID: "engineer", toolCallID: call, question: "Q?"),
+            "engineer::\(call.uuidString)",
+            "call-keyed: the persisted ask-call UUID, never the text")
+        XCTAssertEqual(
+            WatchtowerDismissKey.supervisorInputTypeID(stepID: "engineer", toolCallID: nil, question: "What next?"),
+            "engineer::What next?",
+            "flag-only escalation: the literal the old `dismissID` wrote — on-disk compatibility")
+        let key = WatchtowerDismissKey.supervisorInput(taskID: 7, stepID: "engineer", toolCallID: nil, question: "a::b")
+        XCTAssertEqual(WatchtowerDismissKey(storageKey: key.storageKey), key,
+                       "question text may itself contain the separator and must still round-trip")
+        XCTAssertEqual(key.taskID, 7)
+    }
+
 }

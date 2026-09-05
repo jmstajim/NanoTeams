@@ -39,6 +39,25 @@ final class BundledContentFingerprintPinTests: XCTestCase {
     //
     // Like 1.9.2 and 1.9.3, this bump DOES deliver: a role prompt reaches an existing folder
     // only through the version-gated reconcile.
+    //
+    // 1.9.5 — bumped WITHOUT moving this value: the first bump of the 1.9.x line that
+    // delivers no bundled content at all. The 1.9.4 note above is kept, not rewritten,
+    // because it describes where the STANDING value came from and is still true; a
+    // mismatch between `project.pbxproj` (1.9.5) and that heading is expected here rather
+    // than drift. `fe76a2df` fixed the opposite failure — a note describing an OLDER value
+    // than the constant carried — so the rule is "the note tracks the constant", not "the
+    // note tracks the version".
+    //
+    // Anchored on the BUMP `1002010f`, because that is the commit where this value was
+    // recorded. (The release RANGE anchors on the ship commit `55f5b418` instead — rule
+    // #155 answers "what shipped since last release", a different question from "what has
+    // moved since this constant was written", and using one anchor for both is the error
+    // that rule exists to prevent.)
+    //   git diff --stat 1002010f..HEAD -- NanoTeams/Domain/SystemTemplates+PromptLibrary.swift \
+    //     NanoTeams/Domain/SystemTemplates+RolePrompts.swift NanoTeams/Domain/TeamTemplateFactory.swift
+    //     → 3 files, +8/-6, EVERY changed line is comment text; no prompt body moved.
+    //   git diff 1002010f..HEAD -- NanoTeams/Domain/ToolDefinitionRecord.swift → empty.
+    //   git diff 1002010f..HEAD -- NanoTeams/Services/Tools/ | grep -c 'static let schema' → 0.
     private static let expectedFingerprint = "811aa7447abd335b"
 
     func testBundledContent_hasNotChangedWithoutAVersionBump() {

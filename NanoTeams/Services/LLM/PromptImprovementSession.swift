@@ -22,6 +22,9 @@ import Foundation
 ///    transitions bump `generation`; reducer calls carrying a stale
 ///    generation are dropped, so events from a cancelled pump can never
 ///    clobber a restored field or interleave with a newer stream.
+///
+/// Per-delta text lives in `PromptImprovementDisplay` (raw / shown text / fence state, one home
+/// each).
 @MainActor
 @Observable
 final class PromptImprovementSession {
@@ -75,7 +78,7 @@ final class PromptImprovementSession {
     /// Final improved text of the last successful run — the Revert button stays
     /// while the field still equals this value.
     @ObservationIgnored private var finalText: String?
-    @ObservationIgnored private var accumulated = ""
+    @ObservationIgnored private var display = PromptImprovementDisplay()
     @ObservationIgnored private(set) var generation = 0
     @ObservationIgnored private(set) var task: Task<Void, Never>?
 
@@ -113,7 +116,7 @@ final class PromptImprovementSession {
         self.read = read
         self.write = write
         streamBaseline = current
-        accumulated = ""
+        display = PromptImprovementDisplay()
         lastWritten = nil
         finalText = nil
         revertText = nil
@@ -201,12 +204,12 @@ final class PromptImprovementSession {
 
     func ingest(delta: String, generation gen: Int) {
         guard gen == generation, isImproving else { return }
-        accumulated += delta
-        let display = Self.displayText(accumulated)
+        display.append(delta)
+        let text = display.text
         // Nothing visible yet (delta was pure model tokens / an opening
         // fence) — keep the original on screen.
-        if lastWritten == nil && display.isEmpty { return }
-        guard casWrite(display) else {
+        if lastWritten == nil && text.isEmpty { return }
+        guard casWrite(text) else {
             cancelPump()
             phase = .idle
             return
@@ -216,7 +219,7 @@ final class PromptImprovementSession {
 
     func finishStream(generation gen: Int) {
         guard gen == generation, isImproving else { return }
-        let final = PromptImprovementService.postProcess(accumulated)
+        let final = PromptImprovementService.postProcess(display.raw)
         if final.isEmpty {
             restoreBaselineIfStillOwned()
             phase = .failed(message: "The model returned an empty prompt. Try again.")
@@ -239,27 +242,6 @@ final class PromptImprovementSession {
         restoreBaselineIfStillOwned()
         phase = .failed(message: message)
         retirePump()
-    }
-
-    // MARK: - Display transform
-
-    /// Per-delta display text: strip `<|…|>` model tokens and hide an opening
-    /// code-fence line so mid-stream output reads clean. The full pipeline
-    /// (trim + closing-fence strip) runs once at end of stream via
-    /// `PromptImprovementService.postProcess`.
-    static func displayText(_ accumulated: String) -> String {
-        let stripped = ModelTokenCleaner.stripTokens(accumulated)
-        var lines = stripped.components(separatedBy: "\n")
-        var index = 0
-        while index < lines.count,
-              lines[index].trimmingCharacters(in: .whitespaces).isEmpty {
-            index += 1
-        }
-        guard index < lines.count,
-              lines[index].trimmingCharacters(in: .whitespaces).hasPrefix("```")
-        else { return stripped }
-        lines.remove(at: index)
-        return lines.joined(separator: "\n")
     }
 
     // MARK: - Private

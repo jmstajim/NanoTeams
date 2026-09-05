@@ -146,6 +146,18 @@ final class NestedTaskStorageTests: XCTestCase {
                        "legacy walk: first(where:) sees the nil-parent row")
         XCTAssertEqual(index.ancestorIDs(of: 5, links: index.parentLinks()), [],
                        "links walk must agree with first-occurrence-wins")
+
+        // The fused builder `updateTaskOnly` feeds from: same map, plus the row slot.
+        // RED: capture `position` OUTSIDE the `seen.insert(...).inserted` guard (last
+        // occurrence wins) → this reads 2, and upsert(_:at:) would replace the wrong row.
+        let located = index.parentLinks(locating: 5)
+        XCTAssertEqual(located.links, index.parentLinks(),
+                       "the fused builder hands back the same hop map")
+        XCTAssertEqual(located.position, 1,
+                       "the slot is the FIRST row with that id — the row upsert(_:) would replace")
+        XCTAssertNil(index.parentLinks(locating: 9_999).position, "an unknown id has no slot")
+        XCTAssertNil(index.parentLinks(locating: nil).position, "and nil asks for none")
+        XCTAssertNil(TasksIndex().parentLinks(locating: 1).position, "empty index, no slot")
     }
 
     func testParentLinks_duplicateID_firstOccurrenceWins_whenFirstHasParent() {
@@ -230,6 +242,9 @@ final class NestedTaskStorageTests: XCTestCase {
                     id: chainBase + k, title: "chain", status: .running,
                     parentTaskID: k == 0 ? nil : chainBase + k - 1))
             }
+            // A planted duplicate-id row (corruption shape): the fused position must
+            // still name the FIRST row, exactly as `firstIndex(where:)` does.
+            index.tasks.append(TaskSummary(id: 0, title: "dup", status: .running, parentTaskID: n - 1))
 
             let links = index.parentLinks()
             let children = index.childLinks()
@@ -238,6 +253,11 @@ final class NestedTaskStorageTests: XCTestCase {
                                "ancestor parity broke for id \(id) in trial \(trial)")
                 XCTAssertEqual(oracleDescendantIDs(index, of: id), index.descendantIDs(of: id, children: children),
                                "descendant parity broke for id \(id) in trial \(trial)")
+                let located = index.parentLinks(locating: id)
+                XCTAssertEqual(located.links, links,
+                               "fused hop map diverged for id \(id) in trial \(trial)")
+                XCTAssertEqual(located.position, index.tasks.firstIndex { $0.id == id },
+                               "fused position is not firstIndex(where:) for id \(id) in trial \(trial)")
             }
         }
     }
