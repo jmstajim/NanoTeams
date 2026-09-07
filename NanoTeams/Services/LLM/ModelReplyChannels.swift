@@ -6,7 +6,7 @@ import Foundation
 /// streams. `contentDelta` is the visible reply; `thinkingDelta` is the reasoning
 /// channel — and a reasoning model routinely puts its ENTIRE answer there and leaves
 /// `content` empty. Nothing merges them on the way in and nothing can: `SSEEventParser`
-/// maps LM Studio's `reasoning.delta` to `.thinkingDelta`, and Ollama's
+/// maps LM Studio's `reasoning.delta` to `.thinkingDelta`, and both parsers'
 /// `ThinkTagSplitter` actively pulls inline `<think>…</think>` OUT of content. So a
 /// caller that accumulates only `contentDelta` does not see a degraded answer — it sees
 /// no answer at all, and reports that as the model's fault.
@@ -23,11 +23,17 @@ import Foundation
 /// | `VisionAnalysisService` | reasoning dropped |
 /// | `TeamGenerationService` | reasoning dropped |
 /// | `DelegatedSupervisorAnswerService` | reasoning dropped |
-/// | `MeetingStreamingService` | reasoning COLLECTED, then ignored by `completeTurn` |
+/// | `MeetingStreamingService` → `TeamMeetingService.completeTurn` | reasoning COLLECTED by the streamer, then ignored at the commit — the seam is called in `completeTurn`, not in the streamer |
+/// | `PromptImprovementService` | reasoning dropped (the whole rewrite, on a reasoning model) — through the seam since 2026-09-07 |
+/// | `BashExplainService` | correct, but as a hand-rolled ternary the census could not see — through the seam since 2026-09-07 |
 ///
-/// The last row is the one that argues for a named seam rather than a fourth copy of
+/// The meeting row is the one that argues for a named seam rather than another copy of
 /// the idiom: that site had the value in hand and still answered with `""`, because
-/// nothing said out loud what the pair is FOR.
+/// nothing said out loud what the pair is FOR. Eleven consumers in ten rows (the two
+/// judges share one); `grep -rn ModelReplyChannels NanoTeams` returns exactly their
+/// call sites plus this declaration — a call site with no row here is a finding
+/// (playbook R2.3.6), and `Ratchet/ReasoningChannelSeamPinTests` holds the other
+/// direction: a one-shot that reads `thinkingDelta` and never reaches this seam.
 nonisolated enum ModelReplyChannels {
 
     /// The usable answer from a one-shot reply: prepared `content` when it carries

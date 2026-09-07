@@ -32,7 +32,7 @@ final class ActivityFeedBuilderSupervisorMessageFilterTests: XCTestCase {
     func testShouldSuppress_supervisorMessage_attributionOnly_isTrue() async {
         let msg = LLMMessage(
             createdAt: date(0), role: .user,
-            content: "Supervisor:\n",
+            content: MessageSourceContext.supervisorMessagePrefix + "",
             sourceRole: .supervisor, sourceContext: .supervisorMessage
         )
         XCTAssertTrue(ActivityFeedBuilder.shouldSuppressEmptySupervisorMessage(msg))
@@ -43,7 +43,7 @@ final class ActivityFeedBuilderSupervisorMessageFilterTests: XCTestCase {
     func testShouldSuppress_supervisorMessage_whitespaceOnlyBody_isTrue() async {
         let msg = LLMMessage(
             createdAt: date(0), role: .user,
-            content: "Supervisor:\n   \n\n",
+            content: MessageSourceContext.supervisorMessagePrefix + "   \n\n",
             sourceRole: .supervisor, sourceContext: .supervisorMessage
         )
         XCTAssertTrue(ActivityFeedBuilder.shouldSuppressEmptySupervisorMessage(msg))
@@ -53,7 +53,7 @@ final class ActivityFeedBuilderSupervisorMessageFilterTests: XCTestCase {
     func testShouldSuppress_supervisorMessage_withBody_isFalse() async {
         let msg = LLMMessage(
             createdAt: date(0), role: .user,
-            content: "Supervisor:\nLook at this please",
+            content: MessageSourceContext.supervisorMessagePrefix + "Look at this please",
             sourceRole: .supervisor, sourceContext: .supervisorMessage
         )
         XCTAssertFalse(ActivityFeedBuilder.shouldSuppressEmptySupervisorMessage(msg))
@@ -64,7 +64,7 @@ final class ActivityFeedBuilderSupervisorMessageFilterTests: XCTestCase {
     func testShouldSuppress_supervisorMessage_skillOnly_isFalse() async {
         let msg = LLMMessage(
             createdAt: date(0), role: .user,
-            content: "Supervisor:\n## Skill: review\nskill body",
+            content: MessageSourceContext.supervisorMessagePrefix + "## Skill: review\nskill body",
             sourceRole: .supervisor, sourceContext: .supervisorMessage
         )
         XCTAssertFalse(ActivityFeedBuilder.shouldSuppressEmptySupervisorMessage(msg))
@@ -109,7 +109,7 @@ final class ActivityFeedBuilderSupervisorMessageFilterTests: XCTestCase {
     func testShouldSuppress_supervisorMessage_thinkingOnly_isFalse() async {
         let msg = LLMMessage(
             createdAt: date(0), role: .user,
-            content: "Supervisor:\n",
+            content: MessageSourceContext.supervisorMessagePrefix + "",
             thinking: "internal monologue",
             sourceRole: .supervisor, sourceContext: .supervisorMessage
         )
@@ -189,7 +189,7 @@ final class ActivityFeedBuilderSupervisorMessageFilterTests: XCTestCase {
     func testBuilder_dropsEmptySupervisorMessageItem() async {
         let emptyMsg = LLMMessage(
             createdAt: date(0), role: .user,
-            content: "Supervisor:\n",
+            content: MessageSourceContext.supervisorMessagePrefix + "",
             sourceRole: .supervisor, sourceContext: .supervisorMessage
         )
         let step = StepExecution(
@@ -221,7 +221,7 @@ final class ActivityFeedBuilderSupervisorMessageFilterTests: XCTestCase {
     func testBuilder_keepsStreamingSupervisorMessage_evenIfRawIsEmpty() async {
         let msg = LLMMessage(
             createdAt: date(0), role: .user,
-            content: "Supervisor:\n",
+            content: MessageSourceContext.supervisorMessagePrefix + "",
             sourceRole: .supervisor, sourceContext: .supervisorMessage
         )
         let step = StepExecution(
@@ -251,7 +251,7 @@ final class ActivityFeedBuilderSupervisorMessageFilterTests: XCTestCase {
     func testBuilder_keepsSupervisorMessageWithBody() async {
         let msg = LLMMessage(
             createdAt: date(0), role: .user,
-            content: "Supervisor:\nReal body text",
+            content: MessageSourceContext.supervisorMessagePrefix + "Real body text",
             sourceRole: .supervisor, sourceContext: .supervisorMessage
         )
         let step = StepExecution(

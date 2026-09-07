@@ -12,7 +12,7 @@ nonisolated struct AskSupervisorTool: ToolHandler {
         description: "Ask the Supervisor a question. The step will pause until the Supervisor answers.",
         parameters: JS.object(
             properties: [
-                "question": JS.string("The question to ask"),
+                "question": JS.string(),
             ],
             required: ["question"]
         )

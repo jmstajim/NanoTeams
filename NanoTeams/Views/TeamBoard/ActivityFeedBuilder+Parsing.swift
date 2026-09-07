@@ -179,7 +179,7 @@ nonisolated extension ActivityFeedBuilder {
     /// Whether a `.supervisorMessage` turn has nothing committed-side to
     /// render — no body, no thinking, no attachments, no clips. The C4
     /// atomicity race (queued chat / `forward_to_team`) can briefly emit
-    /// a turn whose raw `content` is just `"Supervisor:\n"` plus an empty
+    /// a turn whose raw `content` is just `MessageSourceContext.supervisorMessagePrefix` plus an empty
     /// marker section; after `displayContent` strips the prefix and
     /// `stripAttachedFiles` removes the section, every channel resolves
     /// to empty.

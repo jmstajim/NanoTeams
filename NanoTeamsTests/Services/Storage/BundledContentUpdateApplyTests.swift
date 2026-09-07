@@ -132,22 +132,129 @@ final class BundledContentUpdateApplyTests: XCTestCase {
 
     // MARK: - Team settings
 
-    /// Team settings are reset wholesale to the bundled value. Pinned because the
-    /// arm is unconditional-overwrite by design: a user edit to a system team's
-    /// settings is a documented casualty of a version bump, and a test that only
-    /// ever saw the equal case could not tell that apart from the arm being dead.
-    func testStaleTeamSettings_areReplacedByTheBundledDefaults() throws {
+    /// Team settings are the user's after first creation: a bump never rewrites a value
+    /// the editor can change. Pinned on fields the bundle used to own (acceptance mode,
+    /// limits) — and on `touched`, which must stay false when settings are the ONLY
+    /// difference, or `teams.json` would be rewritten on every bump for nothing. Until
+    /// 2026-09-07 step 3 overwrote every setting but three.
+    ///
+    /// RED: restore the step-3 overwrite → `touched` flips and the settings equal the bundle.
+    func testStaleTeamSettings_areLeftAsTheUserSetThem() throws {
         var stored = try bundledFAANG()
         let bundledSettings = stored.settings
-        stored.settings.supervisorMode = (bundledSettings.supervisorMode == .manual)
-            ? .autonomous : .manual
+        stored.settings.defaultAcceptanceMode = (bundledSettings.defaultAcceptanceMode == .finalOnly)
+            ? .afterEachRole : .finalOnly
+        stored.settings.limits = TeamLimits(maxConsultationsPerStep: 9, maxMeetingTurns: 1)
+        let userSettings = stored.settings
+        XCTAssertNotEqual(userSettings, bundledSettings, "premise: the stored values really differ from the bundle")
+        var teams = [stored]
+        var tools = ToolDefinitionRecord.defaultDefinitions()
+
+        let result = reconcile(teams: &teams, tools: &tools)
+
+        XCTAssertFalse(result.touched, "settings alone are not a change the bundle makes")
+        XCTAssertEqual(teams[0].settings, userSettings, "not one setting moved")
+    }
+
+    /// Every user-set field survives a bump that IS rewriting something else (a stale
+    /// prompt template), so the preservation is tested against a firing pass rather than
+    /// an equal-case no-op. Includes a `reportsTo` edge the user removed: step 4 wires only
+    /// a role it re-adds, never an existing one. Until 2026-09-06 a bump reset everything;
+    /// until 2026-09-07 all but `meetingsEnabled`, `supervisorMode` and a live coordinator.
+    func testEveryUserSetting_survivesABumpThatRewritesOtherThings() throws {
+        var stored = try bundledFAANG()
+        let bundledSettings = stored.settings
+        let roleIDs = stored.nonSupervisorRoles.map(\.id)
+        let userCoordinator = try XCTUnwrap(roleIDs.first { $0 != bundledSettings.meetingCoordinatorRoleID })
+        let unwired = try XCTUnwrap(roleIDs.last)
+        stored.settings.meetingsEnabled = false
+        stored.settings.supervisorMode = .off
+        stored.settings.meetingCoordinatorRoleID = userCoordinator
+        stored.settings.defaultAcceptanceMode = .afterEachArtifact
+        stored.settings.acceptanceCheckpoints = [userCoordinator]
+        stored.settings.limits = TeamLimits(maxConsultationsPerStep: 9, maxMeetingTurns: 1)
+        stored.settings.invitableRoles = [userCoordinator]
+        stored.settings.hierarchy.reportsTo.removeValue(forKey: unwired)
+        let userSettings = stored.settings
+        stored.systemPromptTemplate = "STALE SYSTEM"   // bundle-owned, so the pass fires
         var teams = [stored]
         var tools = ToolDefinitionRecord.defaultDefinitions()
 
         let result = reconcile(teams: &teams, tools: &tools)
 
         XCTAssertTrue(result.touched)
-        XCTAssertEqual(teams[0].settings, bundledSettings)
+        XCTAssertNotEqual(teams[0].systemPromptTemplate, "STALE SYSTEM", "premise: the pass rewrote the template")
+        XCTAssertEqual(teams[0].settings, userSettings, "not one setting moved")
+        XCTAssertNil(teams[0].settings.hierarchy.reportsTo[unwired],
+                     "an existing role's removed edge is not re-wired — only a re-added role's is")
+    }
+
+    /// The BUNDLED coordinator itself can be a role the user deleted and tombstoned: nothing
+    /// restores the bundled id (settings are the user's), step 4 does not resurrect the
+    /// tombstoned role, and step 5's heal is the only thing standing between the file and a
+    /// coordinator id that names nobody.
+    func testTombstonedBundledCoordinator_isHealedToALiveRoleByStepFive() throws {
+        let bundled = try bundledFAANG()
+        let bundledCoordinatorID = try XCTUnwrap(bundled.settings.meetingCoordinatorRoleID)
+        let victim = try XCTUnwrap(bundled.roles.first { $0.id == bundledCoordinatorID })
+        let victimSystemID = try XCTUnwrap(victim.systemRoleID)
+        var stored = bundled
+        stored.roles.removeAll { $0.id == victim.id }
+        stored.deletedSystemRoleIDs.append(victimSystemID)
+        // The stored pick names nobody either — the shape after the user deleted both roles.
+        stored.settings.meetingCoordinatorRoleID = "ghost-of-a-custom-role"
+        var teams = [stored]
+        var tools = ToolDefinitionRecord.defaultDefinitions()
+
+        let result = reconcile(teams: &teams, tools: &tools)
+
+        XCTAssertTrue(result.touched)
+        XCTAssertFalse(teams[0].roles.contains { $0.id == victim.id }, "the tombstone holds")
+        let healed = try XCTUnwrap(teams[0].settings.meetingCoordinatorRoleID)
+        XCTAssertNotEqual(healed, bundledCoordinatorID, "the bundled pick names a deleted role")
+        XCTAssertTrue(teams[0].roles.contains { $0.id == healed && !$0.isSupervisor },
+                      "step 5 settles the coordinator on a live non-Supervisor role")
+        XCTAssertEqual(healed, TeamSettings.defaultCoordinatorID(among: teams[0].roles))
+    }
+
+    /// `meetingGuidance` is a bundle-owned scalar like `prompt`: a stale body is overwritten
+    /// on a bump, and a pre-1.9.8 file (no key → `nil`) receives the body — the arm keys on
+    /// inequality, and `nil != body`.
+    func testStaleOrMissingMeetingGuidance_isRestoredFromTheBundledRole() throws {
+        let bundled = try bundledFAANG()
+        let pm = try XCTUnwrap(bundled.roles.firstIndex { $0.systemRoleID == "productManager" })
+        let tl = try XCTUnwrap(bundled.roles.firstIndex { $0.systemRoleID == "techLead" })
+        let pmBody = try XCTUnwrap(bundled.roles[pm].meetingGuidance, "fixture: the PM has a bundled body")
+        var stored = bundled
+        stored.roles[pm].meetingGuidance = "stale body"
+        stored.roles[tl].meetingGuidance = nil
+        var teams = [stored]
+        var tools = ToolDefinitionRecord.defaultDefinitions()
+
+        let result = reconcile(teams: &teams, tools: &tools)
+
+        XCTAssertTrue(result.touched)
+        XCTAssertEqual(teams[0].roles[pm].meetingGuidance, pmBody)
+        XCTAssertEqual(teams[0].roles[tl].meetingGuidance, bundled.roles[tl].meetingGuidance)
+    }
+
+    /// A stored coordinator whose role is gone is healed by step 5 to the default rule —
+    /// never `nil`. Nothing writes the bundled pick back (settings are the user's); on a
+    /// fresh FAANG the rule and the bundled pick coincide, which is why the assertion names
+    /// the RULE. The heal is a real change, so the pass reports it.
+    func testOrphanCoordinator_healsToTheDefaultRule() throws {
+        var stored = try bundledFAANG()
+        stored.settings.meetingCoordinatorRoleID = "ghost-of-deleted-role"
+        var teams = [stored]
+        var tools = ToolDefinitionRecord.defaultDefinitions()
+
+        let result = reconcile(teams: &teams, tools: &tools)
+
+        XCTAssertTrue(result.touched, "the heal is a write")
+        XCTAssertEqual(teams[0].settings.meetingCoordinatorRoleID,
+                       TeamSettings.defaultCoordinatorID(among: teams[0].roles))
+        XCTAssertEqual(teams[0].settings.meetingCoordinatorRoleID, teams[0].meetingCoordinatorID)
+        XCTAssertTrue(teams[0].roles.contains { $0.id == teams[0].settings.meetingCoordinatorRoleID })
     }
 
     // MARK: - Additive structure
@@ -175,6 +282,51 @@ final class BundledContentUpdateApplyTests: XCTestCase {
         if let expected = bundled.settings.hierarchy.reportsTo[victim.id] {
             XCTAssertEqual(teams[0].settings.hierarchy.reportsTo[victim.id], expected)
         }
+    }
+
+    /// The editor's `Team.removeRole` drops the role from `invitableRoles` too, so a system
+    /// role that comes back on a bump must be re-admitted to an EXPLICIT invite list —
+    /// otherwise it returns silently un-invitable. Settings are otherwise the user's; this
+    /// is the one settings write the bundle still makes, and it is additive.
+    ///
+    /// RED: drop the `invitableRoles.insert` in step 4 → the restored role is not invitable.
+    func testReAddedSystemRole_joinsAnExplicitInvitableRolesSet() throws {
+        let bundled = try bundledFAANG()
+        var stored = bundled
+        let victim = try XCTUnwrap(bundled.roles.first { $0.isSystemRole && !$0.isSupervisor })
+        stored.removeRole(victim.id)
+        stored.deletedSystemRoleIDs.removeAll()          // the user re-enabled it: no tombstone
+        XCTAssertFalse(stored.settings.invitableRoles.contains(victim.id), "premise: removeRole dropped it")
+        XCTAssertFalse(stored.settings.invitableRoles.isEmpty, "premise: the list is explicit")
+        var teams = [stored]
+        var tools = ToolDefinitionRecord.defaultDefinitions()
+
+        let result = reconcile(teams: &teams, tools: &tools)
+
+        XCTAssertTrue(result.touched)
+        XCTAssertTrue(teams[0].roles.contains { $0.id == victim.id })
+        XCTAssertTrue(teams[0].settings.invitableRoles.contains(victim.id), "re-added ⇒ re-admitted")
+        XCTAssertEqual(teams[0].settings.hierarchy.reportsTo[victim.id],
+                       bundled.settings.hierarchy.reportsTo[victim.id])
+    }
+
+    /// An EMPTY invite list means "everyone" and must stay empty: inserting the re-added
+    /// role would turn "everyone" into "only this one".
+    ///
+    /// RED: make the step-4 insert unconditional → the list becomes `[victim]`.
+    func testReAddedSystemRole_leavesAnEmptyInvitableRolesSetAlone() throws {
+        var stored = try bundledFAANG()
+        let victim = try XCTUnwrap(stored.roles.first { $0.isSystemRole && !$0.isSupervisor })
+        stored.removeRole(victim.id)
+        stored.deletedSystemRoleIDs.removeAll()
+        stored.settings.invitableRoles = []
+        var teams = [stored]
+        var tools = ToolDefinitionRecord.defaultDefinitions()
+
+        reconcile(teams: &teams, tools: &tools)
+
+        XCTAssertTrue(teams[0].roles.contains { $0.id == victim.id })
+        XCTAssertTrue(teams[0].settings.invitableRoles.isEmpty, "\"everyone\" stays \"everyone\"")
     }
 
     /// The tombstone is the user's explicit "I deleted this" and outranks the

@@ -192,7 +192,7 @@ final class VisionConfigurationTests: XCTestCase {
             settings: TeamSettings(), graphLayout: TeamGraphLayout()
         )
 
-        let schemas = service.toolSchemas(for: .custom(id: "Vision User"), team: team)
+        let schemas = service.toolSchemas(for: .custom(id: "Vision User"), team: team, humanPresent: true)
         XCTAssertFalse(
             schemas.contains(where: { $0.name == ToolNames.analyzeImage }),
             "analyze_image must be filtered out when visionLLMConfig is nil"
@@ -226,7 +226,7 @@ final class VisionConfigurationTests: XCTestCase {
             settings: TeamSettings(), graphLayout: TeamGraphLayout()
         )
 
-        let schemas = service.toolSchemas(for: .custom(id: "Vision User"), team: team)
+        let schemas = service.toolSchemas(for: .custom(id: "Vision User"), team: team, humanPresent: true)
         XCTAssertTrue(
             schemas.contains(where: { $0.name == ToolNames.analyzeImage }),
             "analyze_image must stay in toolset when visionLLMConfig is set "

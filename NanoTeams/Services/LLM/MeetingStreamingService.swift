@@ -39,12 +39,20 @@ enum MeetingStreamingService {
             }
         }
 
-        let resolvedToolCalls = toolAccumulator.finalize()
+        // The same three routes the step path resolves through. Until 2026-09-07 this read
+        // the native deltas ALONE — which no shipping client emits, since both providers
+        // render the schema as text and the model answers with a `<|call|>` envelope in
+        // `content` — so no meeting call ever dispatched: `conclude_meeting` sat in the
+        // transcript as prose and every meeting ran to `maxMeetingTurns`.
+        let resolution = FinishedReplyToolCallResolver.resolve(
+            content: fullContent,
+            nativeCalls: toolAccumulator.finalize(),
+            advertised: tools)
 
         return TeamMeetingService.MeetingStreamResult(
-            content: fullContent.trimmingCharacters(in: .whitespacesAndNewlines),
+            content: resolution.content.trimmingCharacters(in: .whitespacesAndNewlines),
             thinking: thinkingCollected.trimmingCharacters(in: .whitespacesAndNewlines),
-            resolvedToolCalls: resolvedToolCalls
+            resolvedToolCalls: resolution.toolCalls
         )
     }
 
@@ -85,7 +93,7 @@ enum MeetingStreamingService {
         )
         messages.append(ChatMessage(role: .system, content: systemPrompt))
 
-        if let artifactContext = buildArtifactGrounding(context: context) {
+        if let artifactContext = context.artifactGrounding {
             messages.append(ChatMessage(role: .user, content: artifactContext))
         }
 
@@ -94,7 +102,10 @@ enum MeetingStreamingService {
             content: MeetingCoordinator.buildMeetingHeader(meeting: meeting, context: context)))
 
         if !meeting.messages.isEmpty {
-            messages.append(ChatMessage(role: .user, content: "Discussion so far:"))
+            // A `## ` heading, like every block of the meeting template: on a wire that
+            // merges consecutive user turns, a bare `Discussion so far:` line read as the
+            // trailing line of the artifact block above it, not as a boundary (R1.3.2).
+            messages.append(ChatMessage(role: .user, content: "## Discussion so far"))
             for previous in meeting.messages {
                 messages.append(ChatMessage(
                     role: .user,
@@ -110,38 +121,34 @@ enum MeetingStreamingService {
         return messages
     }
 
-    /// Upstream artifact grounding for meeting speakers — same shape and cap as
-    /// the consultation chat's artifact context. `nil` when there is nothing
-    /// to ground on (no empty user turns).
-    private static func buildArtifactGrounding(
-        context: TeamMeetingService.MeetingContext
-    ) -> String? {
-        guard !context.availableArtifacts.isEmpty else { return nil }
-        var artifactContext = "Available team artifacts:\n"
-        for artifact in context.availableArtifacts {
-            artifactContext += "\n[\(artifact.name)]:"
-            if let content = context.artifactReader(artifact) {
-                let cap = ArtifactConstants.maxConsultationChars
-                let truncated = String(content.prefix(cap))
-                artifactContext += "\n```\n\(truncated)\(content.count > cap ? "\n... (truncated)" : "")\n```"
-            }
-        }
-        return artifactContext
-    }
-
     // MARK: - Turn Orchestration
 
+    /// The coordinator opens the meeting, speaks again after every full round of the
+    /// OTHER participants — and ALWAYS takes the last turn under `maxTurns`, because that
+    /// turn is where `conclude_meeting` is expected and only the coordinator holds it.
+    ///
+    /// Contract: the rotation is `participants` minus the coordinator, in list order;
+    /// each member speaks once per round, then the coordinator closes the round. Lists
+    /// with the coordinator inside and outside give the same sequence. The coordinator
+    /// has been a participant by construction since 2026-09-06 (`handleTeamMeeting`
+    /// appends it), and until 2026-09-07 it was counted inside the "who has not spoken
+    /// this round" window as well — with `[A, coord]` the sequence ran
+    /// `coord, A, coord, coord, A, coord, coord…`: a doubled coordinator turn after every
+    /// round, spending a turn of the limit on nothing. The tests held the coordinator
+    /// OUTSIDE the list, which is why the doubling went unpinned.
     static func determineNextSpeaker(
         meeting: TeamMeeting,
         participants: [Role],
-        coordinator: Role
+        coordinator: Role,
+        maxTurns: Int
     ) -> Role {
-        if meeting.messages.isEmpty {
+        if meeting.messages.isEmpty || meeting.turnCount + 1 >= maxTurns {
             return coordinator
         }
 
-        let recentSpeakers = meeting.messages.suffix(participants.count).map { $0.role }
-        let pendingSpeakers = participants.filter { !recentSpeakers.contains($0) }
+        let rotation = participants.filter { $0 != coordinator }
+        let recentSpeakers = Set(meeting.messages.suffix(rotation.count).map { $0.role })
+        let pendingSpeakers = rotation.filter { !recentSpeakers.contains($0) }
 
         if let next = pendingSpeakers.first {
             return next
@@ -158,8 +165,11 @@ enum MeetingStreamingService {
         context: TeamMeetingService.MeetingContext,
         tools: [ToolSchema] = []
     ) -> String {
-        let rolePrompt = context.team?.findRole(byIdentifier: speaker.baseID)?.prompt
-            ?? (SystemTemplates.roles[speaker.baseID]?.prompt ?? "")
+        // The MEETING body when the role has one, else its step prompt — a step prompt
+        // that says "route fixes through request_changes" in a turn whose schema holds no
+        // such tool either provokes the call or teaches the model to ignore instructions.
+        let rolePrompt = context.team?.findRole(byIdentifier: speaker.baseID)?.resolvedMeetingGuidance
+            ?? (SystemTemplates.roles[speaker.baseID]?.resolvedMeetingGuidance ?? "")
 
         let template = context.team?.meetingPromptTemplate ?? SystemTemplates.genericMeetingTemplate
         let placeholders: [String: String] = [

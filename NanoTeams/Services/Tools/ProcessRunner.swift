@@ -200,7 +200,11 @@ nonisolated struct ProcessRunner {
         guard exists, !isDir.boolValue, fm.isExecutableFile(atPath: executable) else {
             return .executableNotFound(executable)
         }
-        return .launchFailed(executable: executable, reason: underlying.localizedDescription)
+        // The OS's spawn reason, classified rather than localized: `Process.run()` throws
+        // Cocoa file errors for a missing or unreadable working directory, and their
+        // `localizedDescription` is the user's system language plus an absolute path —
+        // both of which then ride the model's prompt prefix (playbook R1.8.2).
+        return .launchFailed(executable: executable, reason: ToolErrorHandler.classify(underlying).message)
     }
 
     /// Run git command in specified directory

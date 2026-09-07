@@ -76,7 +76,7 @@ final class ReachabilityProbedTailCoverageTests: XCTestCase {
 
     // MARK: - The parser's mid-chunk tag window
 
-    /// `ThinkTagSplitter` — the `<think>` router `OllamaChatStreamParser` feeds — recognises the
+    /// `ThinkTagSplitter` — the `<think>` router both stream parsers feed — recognises the
     /// opening tag only BEFORE any real content, and re-checks that at the top of every loop pass
     /// rather than once at `feed()` entry. The re-check is what makes the parser's answer
     /// independent of how a server or proxy frames its deltas.

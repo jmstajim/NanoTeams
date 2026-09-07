@@ -8,13 +8,17 @@ nonisolated enum BashExecutionMode: String, Codable, CaseIterable, Hashable {
     /// Pause for human approval on EVERY command that isn't blocked by a deny rule
     /// — read-only no-ops, allow-rule matches, and prior "always" approvals all
     /// require fresh confirmation each time. The strictest interactive posture.
-    /// In a no-human context (autonomous / Autovisor / headless) the call is denied.
+    /// In a no-human context (autonomous / Autovisor / headless) no command could
+    /// ever run, so the tool is withheld from the schema
+    /// (`ApprovalGatedAvailability.forBash` → `.withheld(.noApprover)`).
     case manual = "alwaysConfirm"
     /// "Ask" commands pause for a human decision, but read-only no-ops and
     /// allow-/"always"-approved commands run without asking — the historical
     /// "Manual" behavior. Inherits the legacy `"manual"` raw value so existing
     /// configs decode to it unchanged (no migration). In a no-human context the
-    /// "ask" call is denied — use `.auto` to let the judge decide unattended.
+    /// tool stays in the schema (`.readOnlyUnattended`): read-only commands run,
+    /// and an "ask" command is refused as `APPROVAL_UNAVAILABLE` — not a denial,
+    /// nobody could answer. Use `.auto` to let the judge decide unattended.
     case semiAutomatic = "manual"
     /// "Ask" commands are resolved by the one-shot LLM judge
     /// (`BashJudgeService`) — no human in the loop.

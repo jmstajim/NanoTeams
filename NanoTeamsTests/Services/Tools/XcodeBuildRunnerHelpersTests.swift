@@ -492,10 +492,17 @@ final class XcodeBuildRunnerHelpersTests: XCTestCase {
         XCTAssertNil(resolvedSchemes(resolution), "must not fall through to a detected scheme")
         let error = try XCTUnwrap(resolvedError(resolution))
         XCTAssertTrue(error.isError)
-        XCTAssertTrue(error.outputJSON.contains("INVALID_ARGS"), error.outputJSON)
+        // `COMMAND_FAILED`, not `INVALID_ARGS`: nothing the model passed caused this, so
+        // the "fix the arguments and retry" direction `INVALID_ARGS` earns from
+        // `ToolErrorNotePolicy` pointed at the wrong actor.
+        XCTAssertTrue(error.outputJSON.contains("COMMAND_FAILED"), error.outputJSON)
+        XCTAssertFalse(error.outputJSON.contains("INVALID_ARGS"), error.outputJSON)
         XCTAssertTrue(
             error.outputJSON.contains("Project settings file exists but could not be decoded"),
             error.outputJSON)
+        // …and the underlying error is CLASSIFIED, never `localizedDescription`, which is
+        // localized to the user's system language and can name paths outside the sandbox.
+        XCTAssertTrue(error.outputJSON.contains("Malformed JSON"), error.outputJSON)
         XCTAssertTrue(
             error.outputJSON.contains("re-select the Xcode scheme"),
             "the message must name the user-facing remedy")
@@ -688,7 +695,7 @@ final class XcodeBuildRunnerHelpersTests: XCTestCase {
         XCTAssertFalse(
             buildError.outputJSON.contains("could not be decoded"),
             "an ABSENT settings file is not schema drift")
-        XCTAssertTrue(buildError.outputJSON.contains("INVALID_ARGS"), buildError.outputJSON)
+        XCTAssertTrue(buildError.outputJSON.contains("COMMAND_FAILED"), buildError.outputJSON)
         XCTAssertTrue(
             buildError.outputJSON.contains("No scheme configured in project settings."),
             buildError.outputJSON)

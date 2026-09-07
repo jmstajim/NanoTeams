@@ -19,6 +19,27 @@ enum MeetingCoordinator {
         return tools.filter { !excluded.contains($0.name) }
     }
 
+    /// The tools only the meeting COORDINATOR holds, and only inside a meeting turn:
+    /// `conclude_meeting`, the call that ends the meeting with the group's decision. Not
+    /// reachable from `toolIDs` or a step schema (`availableToRoles == false`), so this is
+    /// the single place that grants it — the role editor's badge reads the same list.
+    nonisolated static let coordinatorOnlyTools: [ToolSchema] = [ConcludeMeetingTool.schema]
+
+    nonisolated static var coordinatorOnlyToolNames: [String] {
+        coordinatorOnlyTools.map(\.name)
+    }
+
+    /// A speaker's tool schemas for one meeting turn: the step set minus everything
+    /// meetings exclude, plus `coordinatorOnlyTools` when the speaker is the coordinator.
+    /// The wire preview resolves through here too, so what the editor shows for a
+    /// meeting turn is what the runtime sends.
+    nonisolated static func speakerTools(base: [ToolSchema], isCoordinator: Bool) -> [ToolSchema] {
+        let filtered = filterMeetingTools(base)
+        guard isCoordinator else { return filtered }
+        let present = Set(filtered.map(\.name))
+        return filtered + coordinatorOnlyTools.filter { !present.contains($0.name) }
+    }
+
     /// Builds a meeting turn message to inject into a speaker's consultation chat.
     /// Every name in a meeting prompt resolves through the team (custom teams rename roles) — a
     /// mixed displayName/team-name rendering shows the same role under two names in one prompt.
@@ -43,8 +64,13 @@ enum MeetingCoordinator {
         msg += "Initiated by: \(displayName(of: context.initiatedBy, context: context))\n"
         let names = context.participants.map { displayName(of: $0, context: context) }
         msg += "Participants: \(names.joined(separator: ", "))\n"
-        if let additionalContext = meeting.context {
-            msg += "Context: \(additionalContext)\n"
+        if let additionalContext = meeting.context?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !additionalContext.isEmpty {
+            // A nested heading, not a `Context:` label: the body can be several lines (the
+            // change-request context is), and a label followed by a paragraph merges the
+            // paragraph into the line above on a wire that decodes `## `/`### ` as its one
+            // boundary family (R1.3.2).
+            msg += "\n### Context\n\(additionalContext)\n"
         }
         return msg
     }
@@ -69,7 +95,8 @@ enum MeetingCoordinator {
             turnNumber: meeting.turnCount + 1,
             maxTurns: context.limits.maxMeetingTurns,
             isCoordinator: speaker == context.coordinatorRole,
-            isDiscussionClub: context.team?.templateID == "discussionClub"
+            isDiscussionClub: context.team?.templateID == "discussionClub",
+            votes: meeting.kind == .changeRequestVote
         )
     }
 
@@ -85,7 +112,24 @@ enum MeetingCoordinator {
     /// meeting each time, growing worse as the discussion went on. Exactly the reason `{stepInfo}`
     /// was retired from the step templates. Nothing is lost: this string rides last, in the
     /// recency slot, which is the better place for an instruction anyway [Liu2024].
+    ///
+    /// `votes`: a change-request meeting appends `ChangeRequestService.voteInstruction` to
+    /// every directive, so the line `tallyVotes` counts is the last thing each speaker reads.
     nonisolated static func turnDirective(
+        speakerName: String,
+        turnNumber: Int,
+        maxTurns: Int,
+        isCoordinator: Bool,
+        isDiscussionClub: Bool,
+        votes: Bool = false
+    ) -> String {
+        let base = baseTurnDirective(
+            speakerName: speakerName, turnNumber: turnNumber, maxTurns: maxTurns,
+            isCoordinator: isCoordinator, isDiscussionClub: isDiscussionClub)
+        return votes ? base + " " + ChangeRequestService.voteInstruction : base
+    }
+
+    private nonisolated static func baseTurnDirective(
         speakerName: String,
         turnNumber: Int,
         maxTurns: Int,
@@ -93,6 +137,13 @@ enum MeetingCoordinator {
         isDiscussionClub: Bool
     ) -> String {
         let counter = "Turn \(turnNumber) of \(maxTurns)."
+        // The coordinator's LAST turn is the meeting's end by construction
+        // (`MeetingStreamingService.determineNextSpeaker` hands it to the coordinator),
+        // and the only instruction that turn needs is the call the runtime detects.
+        if isCoordinator && turnNumber >= maxTurns {
+            return "\(counter) The last one. Call `conclude_meeting` with the decision, its "
+                + "rationale and the next steps, drawn from the whole discussion."
+        }
         if isDiscussionClub {
             let conciseness: String
             if turnNumber >= maxTurns - 1 {
@@ -102,18 +153,23 @@ enum MeetingCoordinator {
             } else {
                 conciseness = "3-5 sentences."
             }
+            let closing = isCoordinator && turnNumber >= maxTurns - 1
+                ? " Then call `conclude_meeting` with what the group settled on, in its own words."
+                : ""
             return "\(counter) Your turn, \(speakerName). \(conciseness) "
-                + "Build on what was said — don't repeat your earlier points."
+                + "Build on what was said — don't repeat your earlier points." + closing
         }
         if isCoordinator && turnNumber >= maxTurns - 2 {
-            return "\(counter) Final turns: summarize the key points and state the group's conclusion."
+            return "\(counter) Final turns: summarize the key points, then call "
+                + "`conclude_meeting` with the group's decision."
         }
         if isCoordinator && turnNumber >= maxTurns / 2 {
-            return "\(counter) As coordinator, start steering toward a conclusion. "
-                + "Summarize agreements and remaining disagreements."
+            return "\(counter) As coordinator, steer toward a decision: summarize agreements "
+                + "and remaining disagreements. When the group has converged, call `conclude_meeting`."
         }
         if isCoordinator {
-            return "\(counter) As the coordinator, help guide the discussion toward a decision. "
+            return "\(counter) As the coordinator, help guide the discussion toward a decision — "
+                + "you end the meeting with `conclude_meeting` once it is reached. "
                 + "Provide your input as \(speakerName)."
         }
         return "\(counter) Provide your input as \(speakerName). "

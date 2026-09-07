@@ -46,9 +46,13 @@ final class CollaborationDispatchMeetingAttributionTests: XCTestCase {
         try await super.tearDown()
     }
 
-    // MARK: - Auto mode: attribution lands on the initiator
+    // MARK: - No stored coordinator: attribution lands on the default rule's pick
 
-    func testDispatcher_autoMode_meetingResult_attributedToInitiator() async {
+    /// A stored `nil` used to mean "Auto" (attribute to the initiator). There is no Auto:
+    /// the team's coordinator is resolved by `Team.meetingCoordinatorID` — here the PM,
+    /// the first role that can start a meeting — and the result is attributed to it even
+    /// though the SWE initiated.
+    func testDispatcher_noStoredCoordinator_meetingResult_attributedToTheDefaultCoordinator() async {
         let team = makeTeam(coordID: nil)
         let task = makeTaskWithStep(team: team)
         mockDelegate.taskToMutate = task
@@ -61,8 +65,8 @@ final class CollaborationDispatchMeetingAttributionTests: XCTestCase {
             .runs[0].steps[0].llmConversation
             .last(where: { $0.sourceContext == .meeting })
         XCTAssertNotNil(appended, "Meeting result must be appended to llmConversation")
-        XCTAssertEqual(appended?.sourceRole, initiatorRole,
-                       "Auto mode: meeting result must be attributed to the initiator (roleForMessage)")
+        XCTAssertEqual(appended?.sourceRole, designatedCoordRole,
+                       "no stored coordinator: the default rule's pick (PM) coordinates and is attributed")
     }
 
     // MARK: - Coordinator mode: attribution lands on the designated coordinator
@@ -133,11 +137,11 @@ final class CollaborationDispatchMeetingAttributionTests: XCTestCase {
                        "Change-request attribution must land on the requesting role")
     }
 
-    // MARK: - Orphan mode: attribution falls back to the initiator
+    // MARK: - Orphan coordinator: attribution heals to the default rule's pick
 
-    func testDispatcher_orphanCoordinator_meetingResult_attributedToInitiator() async {
+    func testDispatcher_orphanCoordinator_meetingResult_attributedToTheHealedCoordinator() async {
         // Stored coord references a role that doesn't exist on the team —
-        // `effectiveCoordinator` self-heals to the initiator.
+        // `Team.meetingCoordinatorID` heals to the default rule (the PM here).
         let team = makeTeam(coordID: "ghost-of-deleted-coord")
         let task = makeTaskWithStep(team: team)
         mockDelegate.taskToMutate = task
@@ -150,8 +154,8 @@ final class CollaborationDispatchMeetingAttributionTests: XCTestCase {
             .runs[0].steps[0].llmConversation
             .last(where: { $0.sourceContext == .meeting })
         XCTAssertNotNil(appended)
-        XCTAssertEqual(appended?.sourceRole, initiatorRole,
-                       "Orphan coord: meeting result must self-heal to initiator attribution")
+        XCTAssertEqual(appended?.sourceRole, designatedCoordRole,
+                       "orphan coord: attribution follows the healed coordinator, never the initiator")
     }
 
     // MARK: - Helpers

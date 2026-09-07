@@ -155,4 +155,22 @@ final class IdenticalWriteLoopGuardTests: XCTestCase {
         XCTAssertTrue(result.outputJSON.contains(#""path":"script.js""#))
         XCTAssertEqual(result.providerID, "tool-call-1")
     }
+
+    /// A model-authored `path` containing a quote used to emit MALFORMED JSON as the
+    /// answer to the call the model has to correct — the envelope was concatenated, not
+    /// serialized, and this arm escaped nothing at all.
+    func testIdenticalWriteLoop_pathWithQuotesAndBackslashes_staysValidJSON() throws {
+        let nasty = #"dir/"od\d".txt"#
+        let call = StepToolCall(
+            name: ToolNames.writeFile,
+            argumentsJSON: #"{"path":"\#(nasty.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))","content":"x"}"#)
+        let result = LLMExecutionService.makeIdenticalWriteLoopResult(call: call)
+
+        let json = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(result.outputJSON.utf8)) as? [String: Any],
+            "envelope must be parseable JSON, got: \(result.outputJSON)")
+        XCTAssertEqual(json["error"] as? String, "identical_write_loop")
+        XCTAssertEqual(json["path"] as? String, nasty)
+        XCTAssertTrue((json["message"] as? String)?.contains(nasty) == true)
+    }
 }

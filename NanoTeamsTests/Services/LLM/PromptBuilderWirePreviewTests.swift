@@ -40,8 +40,13 @@ final class PromptBuilderWirePreviewTests: XCTestCase {
         isDefaultStorage: Bool = true,
         selectedScheme: String? = nil,
         isVisionConfigured: Bool = false,
-        isComputerUseEnabled: Bool = false,
-        globalContext: String = "One tool call per response.",
+        // Helper default, not the runtime's: computer-use Off, bash available — the reading
+        // every existing case was written against when the parameter was a Bool.
+        approval: ToolApprovalAvailability = ToolApprovalAvailability(bash: .available, computerUse: .withheld(.switchedOff)),
+        // The live default, not a fixture of its own: "One tool call per response." was
+        // neither the shipped text nor the retired V1, so the wire-preview pins measured a
+        // body production never sends.
+        globalContext: String = AppDefaults.globalContext,
         isCoordinator: Bool = false,
         agentInstructions: AgentInstructionsSnapshot? = nil
     ) -> PromptBuilder.WirePreviewInputs {
@@ -62,7 +67,7 @@ final class PromptBuilderWirePreviewTests: XCTestCase {
             workFolderState: state,
             selectedScheme: selectedScheme,
             isVisionConfigured: isVisionConfigured,
-            isComputerUseEnabled: isComputerUseEnabled,
+            approval: approval,
             globalContext: globalContext,
             isCoordinator: isCoordinator,
             agentInstructions: agentInstructions
@@ -84,7 +89,7 @@ final class PromptBuilderWirePreviewTests: XCTestCase {
             allTeams: inputs.allTeams,
             selectedScheme: inputs.selectedScheme,
             isVisionConfigured: inputs.isVisionConfigured,
-            isComputerUseEnabled: inputs.isComputerUseEnabled
+            approval: inputs.approval
         )
         let tools: [ToolSchema]
         switch inputs.workFolderState {
@@ -247,11 +252,88 @@ final class PromptBuilderWirePreviewTests: XCTestCase {
                        "Preview must equal wire systemPrompt with real WF / git / scheme / vision enabled")
     }
 
-    /// The computer-use master switch must reach the preview exactly as it
-    /// reaches the wire: `isComputerUseEnabled: false` (the default, matching
-    /// `ComputerUsePolicy.mode == .off`) strips granted computer-use tools
-    /// from the rendered prompt; `true` surfaces them — byte-identical to the
-    /// production pipeline in the enabled state.
+    // MARK: - Injection boundary position (playbook R1.4.1 / R3.6.1)
+
+    /// The injection-boundary sentence is the one hard constraint EVERY tool-loop prompt
+    /// carries, and it rides the tool block — ~60% of a first payload. So where in that
+    /// block it sits decides whether it lands in the recall-rich tail of the prompt or in
+    /// the middle band where recall degrades (U-shape, [Liu2024]). Measured 2026-09-06 with
+    /// the sentence at the HEAD of the block: 35% depth for FAANG / Software Engineer
+    /// (byte 3335 of 9441), 32% for Coding Agent (3543 of 10923), 42% for the Autovisor
+    /// (7480 of 17746) — fifths 2–3, never fifth 5.
+    ///
+    /// Pinned as a VALUE on the full rendered wire prompt, not as a scan of the builder:
+    /// a template edit that moves the block, or a builder change that appends text after
+    /// the sentence, is caught here and nowhere else. Production shape (real folder with
+    /// `.git`, scheme, vision) so the full toolset survives the filters — the largest block.
+    ///
+    /// Also carries the R4.2.2 invariant that the rendered prompt has no per-call value:
+    /// `{stepInfo}` resolves to "" (`PromptBuilder.buildChatMessages`) and no "step N of M"
+    /// counter survives — that counter once sat in the cache-critical first line.
+    func testBoundarySentence_sitsInTheLastFifthOfEveryBundledWirePrompt() throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wire-preview-boundary-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: tmp.appendingPathComponent(".git", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        let autovisor = TeamTemplateFactory.autovisor()
+        let cases: [(label: String, team: Team, role: TeamRoleDefinition)] = [
+            ("FAANG / Software Engineer", faang,
+             faang.roles.first(where: { $0.name == "Software Engineer" })!),
+            ("Coding Agent", codingAgent, codingAgent.nonSupervisorRoles.first!),
+            ("Autovisor", autovisor, autovisor.nonSupervisorRoles.first!),
+        ]
+        // The R3.6.1 Check's own needle: `grep -c "never orders to follow"` returns 1.
+        let needle = "never orders to follow"
+
+        for c in cases {
+            let inputs = makeInputs(
+                role: c.role,
+                team: c.team,
+                workFolderRoot: tmp,
+                isDefaultStorage: false,
+                selectedScheme: "NanoTeams",
+                isVisionConfigured: true
+            )
+            let wire = buildProductionWireSystemPrompt(team: c.team, roleDefinition: c.role, inputs: inputs)
+            let bytes = wire.utf8.count
+            XCTAssertGreaterThanOrEqual(bytes, 4000, "\(c.label): a full wire prompt is thousands of bytes; got \(bytes)")
+
+            let occurrences = wire.components(separatedBy: needle).count - 1
+            XCTAssertEqual(occurrences, 1, "\(c.label): the boundary sentence must occur exactly once (R3.6.1)")
+            guard let boundary = wire.range(of: needle) else {
+                XCTFail("\(c.label): boundary sentence missing from the wire prompt")
+                continue
+            }
+            let offset = wire.utf8.distance(from: wire.utf8.startIndex, to: boundary.lowerBound)
+            let depth = Double(offset) / Double(bytes)
+            XCTAssertGreaterThanOrEqual(
+                depth, 0.8,
+                "\(c.label): boundary sentence sits at \(Int(depth * 100))% depth (byte \(offset) of \(bytes)) — "
+                    + "it must land in the last fifth (R1.4.1); tool entries before it push it into the middle band"
+            )
+            guard let finalReminder = wire.range(of: "## Final reminder") else {
+                XCTFail("\(c.label): `## Final reminder` missing from the wire prompt")
+                continue
+            }
+            XCTAssertLessThan(boundary.lowerBound, finalReminder.lowerBound,
+                              "\(c.label): `## Final reminder` stays the last section, below the boundary")
+
+            // R4.2.2 — no per-call value in the rendered system prompt.
+            XCTAssertFalse(wire.contains("{stepInfo}"), "\(c.label): unresolved `{stepInfo}` chip")
+            XCTAssertNil(wire.range(of: #"step \d+ of \d+"#, options: .regularExpression),
+                         "\(c.label): a step counter in the system prompt varies per call and kills the KV prefix")
+        }
+    }
+
+    /// The computer-use availability must reach the preview exactly as it reaches the wire:
+    /// `.withheld(.switchedOff)` (`ComputerUsePolicy.mode == .off`) strips granted
+    /// computer-use tools from the rendered prompt; `.available` surfaces them —
+    /// byte-identical to the production pipeline in the enabled state.
     func testStepExecutionPreview_computerUseToggle_stripsAndKeepsTools() throws {
         var role = codingAgent.nonSupervisorRoles.first!
         role.toolIDs.append(contentsOf: [ToolNames.screenCapture, ToolNames.uiClick])
@@ -260,10 +342,10 @@ final class PromptBuilderWirePreviewTests: XCTestCase {
         let disabled = makeInputs(role: role, team: codingAgent)
         let disabledPreview = try PromptBuilder.buildWirePromptPreview(kind: .stepExecution, inputs: disabled)
         XCTAssertFalse(disabledPreview.contains(ToolNames.screenCapture),
-                       "computer use off (default) must strip granted computer-use tools from the preview")
+                       "computer use off must strip granted computer-use tools from the preview")
         XCTAssertFalse(disabledPreview.contains(ToolNames.uiClick))
 
-        let enabled = makeInputs(role: role, team: codingAgent, isComputerUseEnabled: true)
+        let enabled = makeInputs(role: role, team: codingAgent, approval: .available)
         let enabledPreview = try PromptBuilder.buildWirePromptPreview(kind: .stepExecution, inputs: enabled)
         XCTAssertTrue(enabledPreview.contains(ToolNames.screenCapture),
                       "computer use on must surface granted computer-use tools in the preview")
@@ -271,6 +353,42 @@ final class PromptBuilderWirePreviewTests: XCTestCase {
 
         let wire = buildProductionWireSystemPrompt(team: codingAgent, roleDefinition: role, inputs: enabled)
         XCTAssertEqual(enabledPreview, wire, "enabled-path preview must equal wire byte-for-byte")
+    }
+
+    /// B3 (2026-09-07): `bash` withheld for want of an approver must leave the preview the way
+    /// it leaves the wire — and the mutating computer-use trio under Semi-automatic likewise —
+    /// so the Team Editor shows the schema an autonomous run really ships.
+    func testStepExecutionPreview_approvalWithheld_stripsBashAndTheMutatingTrio_likeTheWire() throws {
+        var role = codingAgent.nonSupervisorRoles.first!
+        role.toolIDs.append(contentsOf: [ToolNames.bash, ToolNames.bashOutput, ToolNames.screenCapture,
+                                         ToolNames.uiClick, ToolNames.uiType, ToolNames.uiKey, ToolNames.uiScroll])
+        codingAgent.updateRole(role)
+
+        let noApprover = ToolApprovalAvailability(
+            bashMode: BashConstants.defaultMode, computerUseMode: .semiAutomatic, humanPresent: false)
+        XCTAssertEqual(noApprover.bash, .withheld(.noApprover))
+        XCTAssertEqual(noApprover.computerUse, .readOnlyUnattended)
+        let inputs = makeInputs(role: role, team: codingAgent, approval: noApprover)
+        // The strip, asserted on tool IDENTITIES (the prose may mention `bash` by name).
+        let shipped = Set(EffectiveToolset.resolve(
+            role: role, team: codingAgent, allTeams: [codingAgent], storage: inputs.workFolderState,
+            selectedScheme: nil, isVisionConfigured: false, approval: noApprover,
+            autovisorTeamPolicy: .unrestricted).map(\.name))
+        for withheld in [ToolNames.bash, ToolNames.bashOutput, ToolNames.uiClick, ToolNames.uiType, ToolNames.uiKey] {
+            XCTAssertFalse(shipped.contains(withheld), "\(withheld) must be withheld: no call of it could run")
+        }
+        XCTAssertTrue(shipped.contains(ToolNames.screenCapture), "the read-only tier ships under Semi-automatic")
+        XCTAssertTrue(shipped.contains(ToolNames.uiScroll))
+
+        // And the preview renders exactly that set — byte-identical to the wire.
+        let preview = try PromptBuilder.buildWirePromptPreview(kind: .stepExecution, inputs: inputs)
+        let attended = try PromptBuilder.buildWirePromptPreview(
+            kind: .stepExecution, inputs: makeInputs(role: role, team: codingAgent, approval: .available))
+        XCTAssertNotEqual(preview, attended, "the withheld state must change the rendered catalog")
+        XCTAssertFalse(preview.contains(ToolNames.uiKey), "a withheld tool's schema is not rendered")
+        XCTAssertTrue(attended.contains(ToolNames.uiKey))
+        let wire = buildProductionWireSystemPrompt(team: codingAgent, roleDefinition: role, inputs: inputs)
+        XCTAssertEqual(preview, wire, "the preview must be byte-identical to the wire for the withheld state")
     }
 
     /// Byte-identity for the consultation kind. Builds the runtime body by
@@ -323,7 +441,9 @@ final class PromptBuilderWirePreviewTests: XCTestCase {
         let filteredTools = PromptBuilder.resolveWirePreviewTools(kind: .meeting, inputs: inputs)
         let placeholders: [String: String] = [
             "speakerName": pm.name,
-            "roleGuidance": pm.prompt,
+            // The MEETING body, not the step prompt — `MeetingStreamingService` reads
+            // `resolvedMeetingGuidance`, and the PM has an authored meeting body.
+            "roleGuidance": pm.resolvedMeetingGuidance,
             "meetingTopic": "(example: meeting topic)",
             "turnNumber": "1",
             "coordinatorHint": "",  // non-coordinator → empty
@@ -359,7 +479,7 @@ final class PromptBuilderWirePreviewTests: XCTestCase {
         let filteredTools = PromptBuilder.resolveWirePreviewTools(kind: .meeting, inputs: inputs)
         let placeholders: [String: String] = [
             "speakerName": coordinator.name,
-            "roleGuidance": coordinator.prompt,
+            "roleGuidance": coordinator.resolvedMeetingGuidance,
             "meetingTopic": "(example: meeting topic)",
             "turnNumber": "1",
             "coordinatorHint": "- As the coordinator, help guide the discussion toward a decision.",

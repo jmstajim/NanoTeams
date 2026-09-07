@@ -21,10 +21,49 @@ extension LLMExecutionService {
 
     // MARK: - Tool Execution
 
+    /// A call an approval gate refused BEFORE the runtime saw it, paired with the synthetic
+    /// result the gate built for it. Carried into `executeToolCalls` for one purpose: to reach
+    /// the per-run logs through the same seam as every other non-executed call.
+    nonisolated struct GateRefusal: Sendable {
+        let call: StepToolCall
+        let result: ToolExecutionResult
+    }
+
+    /// The one `errorMessage` category every gate refusal is logged under. The envelope in
+    /// `resultJSON` says WHICH refusal (`BASH_DENIED`, `COMPUTER_USE_DENIED`, …); this says
+    /// only that it never reached a handler — which is what `jq 'select(.errorMessage == …)'`
+    /// needs to count them against the executed calls.
+    nonisolated static let gateRefusedLogMessage = "approval gate refused"
+
+    /// The refusals the iteration hands to `executeToolCalls`, in emit order. A gate result
+    /// that is the unified `cancelled` envelope (a held approval abandoned by Pause / teardown)
+    /// is NOT a refusal and is left out — parity with `ToolRuntime.executeAll`, which never
+    /// logs a cancellation envelope either. An index with no call behind it is dropped.
+    nonisolated static func gateRefusalsToLog(
+        resolvedToolCalls: [StepToolCall],
+        gateResults: [Int: ToolExecutionResult]
+    ) -> [GateRefusal] {
+        gateResults.keys.sorted().compactMap { idx in
+            guard resolvedToolCalls.indices.contains(idx), let result = gateResults[idx],
+                  !result.isCancellationEnvelope
+            else { return nil }
+            return GateRefusal(call: resolvedToolCalls[idx], result: result)
+        }
+    }
+
     /// Executes resolved tool calls (with authorization and identical-write rejection) and
     /// returns results in order matching the input. Tool calls not in `allowedToolNames` are
     /// rejected with a classified unavailability envelope; a second `write_file` with identical
     /// `(path, content)` in the same step is rejected with `identical_write_loop`.
+    ///
+    /// `gateRefusals` are the calls the approval gates (`gateBashCalls`, `gateComputerUseCalls`)
+    /// already refused upstream. They are NOT executed and NOT returned — the iteration merges
+    /// their synthetic results back by index — but they ARE mirrored into both per-run logs
+    /// here, ahead of the executed batch, with `durationMS == nil`. Until 2026-09-07 they were
+    /// simply dropped from `callsToExecute`, and since `ToolRuntime` is the only writer of
+    /// `tool_calls.jsonl` and of the network log's `.toolCall` records, a refused `bash` was
+    /// invisible to every audit reading either — the validator's pass rate was a ceiling
+    /// (KNOWN_ISSUES C2). No default: a caller that has no gate must say so with `[]`.
     ///
     /// The per-batch `runtime.executeAll` dispatch hops onto a detached
     /// cooperative-pool task; pre-flight (authorization / dup-write check)
@@ -32,6 +71,7 @@ extension LLMExecutionService {
     /// they only touch in-memory state.
     func executeToolCalls(
         resolvedToolCalls: [StepToolCall],
+        gateRefusals: [GateRefusal],
         allowedToolNames: Set<String>,
         phaseWithheldToolNames: Set<String> = [],
         isPlanningPhase: Bool = false,
@@ -41,6 +81,9 @@ extension LLMExecutionService {
         runIndex: Int,
         roleID: String
     ) async -> [ToolExecutionResult] {
+        // Everything below — the gate refusals included — is logged only past this guard:
+        // with no delegate there is no run to log into, and a refusal is not more real
+        // than an executed call. Pinned by `ToolIterationGateLoggingTests`.
         guard let delegate else { return [] }
 
         let expectedArtifacts = task.runs[runIndex].steps
@@ -57,10 +100,19 @@ extension LLMExecutionService {
         var results: [ToolExecutionResult] = []
         var toolsToExecute: [StepToolCall] = []
         var rejectedResults: [Int: ToolExecutionResult] = [:]
+        // The same reading the resolver stripped the schema with, so a call the model makes
+        // against a withheld family is answered with the reason it was withheld — not with
+        // "not available for this role", which is false for a tool the role holds.
+        let approval = ToolApprovalAvailability(
+            bashMode: delegate.bashPolicy.mode,
+            computerUseMode: delegate.computerUsePolicy.mode,
+            humanPresent: approvalHumanPresent(
+                task: task, supervisorMode: resolveTeam(task: task)?.settings.supervisorMode ?? .manual))
         // Pre-runtime rejections to mirror into BOTH per-run logs (tool_calls.jsonl +
         // network_log.json): these never reach ToolRuntime, so they'd otherwise be
         // invisible in both audits. (call, result, concise reason for `errorMessage`.)
-        var rejectedToLog: [(call: StepToolCall, result: ToolExecutionResult, message: String)] = []
+        var rejectedToLog: [(call: StepToolCall, result: ToolExecutionResult, message: String)] =
+            gateRefusals.map { ($0.call, $0.result, Self.gateRefusedLogMessage) }
 
         for (idx, call) in resolvedToolCalls.enumerated() {
             // Normalize before authorization; call.name stays as-emitted for display / history.
@@ -97,8 +149,7 @@ extension LLMExecutionService {
                     isVisionConfigured: delegate.visionLLMConfig != nil,
                     selectedScheme: scheme,
                     xcodeSchemeKnown: snapshot != nil,
-                    isComputerUseEnabled: delegate.computerUsePolicy.isEnabled,
-                    isBashEnabled: delegate.bashPolicy.mode != .off,
+                    approval: approval,
                     phaseWithheldToolNames: phaseWithheldToolNames
                 )
                 let rejected = Self.makeUnavailableToolResult(
@@ -201,6 +252,13 @@ extension LLMExecutionService {
         case xcodeSchemeNotSelected // run_xcodebuild/run_xcodetests without a scheme
         case computerUseDisabled    // screen_capture/ui_* with ComputerUsePolicy.mode == .off
         case bashDisabled           // bash/bash_output with BashPolicy.mode == .off
+        /// The tool is on and the role holds it, but every call would wait for a human's
+        /// approval and this run has none (`ApprovalGatedAvailability` — Manual with no
+        /// human, or the computer-use mutating trio under Semi-automatic with no human).
+        /// The resolver withheld it from the schema; the model called it anyway. Own
+        /// executor code, `approval_unavailable`, because `precondition_failed`'s direction
+        /// blames the work folder and offers the escalation channel — both wrong here.
+        case approverUnavailable
         /// The role HAS this tool and every work-folder precondition is met —
         /// this ITERATION withheld it because the step is still in its planning
         /// phase. The only reason with a "retry later" contract: every other one
@@ -228,8 +286,7 @@ extension LLMExecutionService {
         isVisionConfigured: Bool,
         selectedScheme: String?,
         xcodeSchemeKnown: Bool = true,
-        isComputerUseEnabled: Bool = true,
-        isBashEnabled: Bool = true,
+        approval: ToolApprovalAvailability,
         phaseWithheldToolNames: Set<String> = [],
         fileManager: FileManager = .default
     ) -> ToolUnavailabilityReason {
@@ -240,7 +297,25 @@ extension LLMExecutionService {
         // mode of `.off` is not such a condition: recording a plan does not re-enable a disabled
         // tool, so the retry it invites is doomed and ends in `bash_denied` one turn later.
         // Name the durable blocker instead.
-        if registry.shellTools.contains(toolName) && !isBashEnabled { return .bashDisabled }
+        if registry.shellTools.contains(toolName) {
+            switch approval.bash {
+            case .withheld(.switchedOff): return .bashDisabled
+            case .withheld(.noApprover): return .approverUnavailable
+            case .readOnlyUnattended, .available: break
+            }
+        }
+        // The same durable-blocker precedence for the other approval-gated family: Off and
+        // "nobody to approve" both outrank the phase, and under Semi-automatic with no human
+        // the mutating trio is withheld while the read-only two are not.
+        if registry.computerUseTools.contains(toolName) {
+            switch approval.computerUse {
+            case .withheld(.switchedOff): return .computerUseDisabled
+            case .withheld(.noApprover): return .approverUnavailable
+            case .readOnlyUnattended:
+                if registry.computerUseMutatingTools.contains(toolName) { return .approverUnavailable }
+            case .available: break
+            }
+        }
         // Checked FIRST among the rest, and without an ordering hazard: this set is derived
         // from the already-precondition-filtered tool array, so membership
         // proves every other reason is inapplicable.
@@ -255,9 +330,6 @@ extension LLMExecutionService {
         }
         if registry.visionTools.contains(toolName) && !isVisionConfigured {
             return .visionNotConfigured
-        }
-        if registry.computerUseTools.contains(toolName) && !isComputerUseEnabled {
-            return .computerUseDisabled
         }
         let tn = ToolNames.self
         if (toolName == tn.runXcodebuild || toolName == tn.runXcodetests)
@@ -293,21 +365,35 @@ extension LLMExecutionService {
             msg = "Tool '\(call.name)' requires an opened work folder. The current session uses default storage — file writes, git, and xcode tools are unavailable until the user opens a project folder."
         case .gitRepoMissing:
             errorCode = "precondition_failed"
-            msg = "Tool '\(call.name)' requires a git repository. The work folder has no .git directory — skip git operations or ask the supervisor whether to initialize one."
+            // The envelope states the FACT and the alternative; the escalation channel, if
+            // the role holds one, is `ToolErrorNotePolicy.direction`'s to add — it knows the
+            // schema, this builder does not, and "ask the supervisor" to a role without
+            // `ask_supervisor` is prose nobody reads (R3.8.6).
+            msg = "Tool '\(call.name)' requires a git repository. The work folder has no .git directory — skip git operations."
         case .visionNotConfigured:
             errorCode = "precondition_failed"
-            msg = "Tool '\(call.name)' requires a configured vision model. None is configured for this work folder — ask the supervisor to configure one, or proceed without image analysis."
+            msg = "Tool '\(call.name)' requires a configured vision model. None is configured for this work folder — proceed without image analysis."
         case .xcodeSchemeNotSelected:
             errorCode = "precondition_failed"
             msg = "Tool '\(call.name)' requires a selected Xcode scheme. No scheme is configured for this work folder."
         case .computerUseDisabled:
             errorCode = "precondition_failed"
-            msg = "Tool '\(call.name)' requires Computer Use, which is turned off for this session. Continue without screen control, or ask the supervisor to enable Computer Use."
+            msg = "Tool '\(call.name)' requires Computer Use, which is turned off for this session. Continue without screen control."
         case .bashDisabled:
             errorCode = "precondition_failed"
             // Names the POLICY, not the Settings pane: the model cannot open one. Mirrors the
             // wording rule `BashPermissionService`'s own mode-off denial follows.
-            msg = "Tool '\(call.name)' requires the bash tool, which is disabled by policy (execution mode: Off). No command can run in this session — continue without a shell, or ask the supervisor to enable it."
+            msg = "Tool '\(call.name)' requires the bash tool, which is disabled by policy (execution mode: Off). No command can run in this session — continue without a shell."
+        case .approverUnavailable:
+            // Own code — the lowercase executor spelling of `ToolErrorCode.approvalUnavailable`,
+            // so `ToolErrorNotePolicy.direction` reaches its channel-free arm from both shapes.
+            // `precondition_failed` would blame "the work folder" (false: the blocker is the
+            // run's lack of a human) and offer `ask_supervisor` (the answerer that cannot
+            // approve) — the exact ring KNOWN_ISSUES A15 describes, one envelope to the left.
+            errorCode = "approval_unavailable"
+            msg = ToolHandlerRegistry.shellTools.contains(canonicalName)
+                ? "Tool '\(call.name)' is withheld in this run: every command would need a human's approval, and this run has none. Continue without a shell."
+                : "Tool '\(call.name)' is withheld in this run: this action would need a human's approval, and this run has none. Continue without it."
         case .withheldUntilPlanRecorded:
             // Distinct code so `ToolErrorNotePolicy.direction` can steer toward the
             // retry. `precondition_failed` would tell the model the blocker is
@@ -315,8 +401,6 @@ extension LLMExecutionService {
             errorCode = "plan_required"
             msg = "Tool '\(call.name)' becomes available once your plan is recorded. Call update_scratchpad with your findings and your numbered plan, then call '\(call.name)' again."
         }
-        let escapedMsg = msg.replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
         // Omit the structured `tool` field for the genuine-hallucination case:
         // the rejected name is frequently an artifact name (or other non-tool
         // string the model invented, e.g. "Engineering Notes"), and echoing it
@@ -325,17 +409,15 @@ extension LLMExecutionService {
         // tool (the canonical, namespace-stripped name) that downstream tooling
         // relies on (retention pinned by `ToolUnavailabilityClassifierTests`'s
         // `testEnvelope_gitRepoMissing…` `"tool":"git_add"` assertion).
-        let outputJSON: String
-        if case .notInRoleConfig = reason {
-            outputJSON = #"{"error":""# + errorCode + #"","message":""# + escapedMsg + #""}"#
-        } else {
-            outputJSON = #"{"error":""# + errorCode + #"","tool":""# + canonicalName + #"","message":""# + escapedMsg + #""}"#
-        }
-        return ToolExecutionResult(
-            providerID: call.providerID ?? UUID().uuidString,
-            toolName: call.name,
-            argumentsJSON: call.argumentsJSON,
-            outputJSON: outputJSON,
+        // Serialized, not concatenated: the hand-rolled version escaped `msg` and not
+        // `canonicalName`, and its sibling `makeIdenticalWriteLoopResult` escaped neither.
+        // `makeExecutorErrorEnvelope` keeps this shape (the top-level `error` literal the
+        // policy's bespoke arms switch on) and makes the escaping total.
+        var extra: [String: String] = [:]
+        if case .notInRoleConfig = reason {} else { extra["tool"] = canonicalName }
+        return ToolExecutionResult.synthetic(
+            for: call,
+            outputJSON: makeExecutorErrorEnvelope(error: errorCode, message: msg, extra: extra),
             isError: true
         )
     }
@@ -372,11 +454,12 @@ extension LLMExecutionService {
         let path = parsed ?? "?"
         let target = parsed.map { "'\($0)'" } ?? "the file"
         let msg = "Identical write to \(target) already executed in this step."
-        return ToolExecutionResult(
-            providerID: call.providerID ?? UUID().uuidString,
-            toolName: call.name,
-            argumentsJSON: call.argumentsJSON,
-            outputJSON: #"{"error":"identical_write_loop","path":""# + path + #"","message":""# + msg + #""}"#,
+        // `path` is model-authored: a `"` or `\` in it used to emit malformed JSON as the
+        // answer to the very call the model has to correct.
+        return ToolExecutionResult.synthetic(
+            for: call,
+            outputJSON: makeExecutorErrorEnvelope(
+                error: "identical_write_loop", message: msg, extra: ["path": path]),
             isError: true
         )
     }

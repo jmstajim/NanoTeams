@@ -68,7 +68,14 @@ nonisolated enum ToolErrorNotePolicy {
     /// Reaches the model only. It is persisted with the rest of the conversation so a
     /// replay is not missing it, but carries no `sourceContext` and so never renders —
     /// see the type doc.
-    static func direction(for result: ToolExecutionResult) -> String? {
+    ///
+    /// `allowedToolNames` is the set the batch was authorized against: the two arms whose
+    /// remedy is an escalation name the channel the role actually holds
+    /// (`LoopRecoveryPolicy.escalationChannel`) or none. Until 2026-09-06 they said "ask
+    /// the Supervisor" — to the Autovisor, which holds no `ask_supervisor`, and to a bash
+    /// role that may not either — which is an instruction to write prose nobody reads.
+    static func direction(for result: ToolExecutionResult, allowedToolNames: Set<String>) -> String? {
+        let escalation = LoopRecoveryPolicy.escalationChannel(in: allowedToolNames)
         let dict = JSONUtilities.parseJSONDictionary(result.outputJSON)
 
         // Two envelope shapes carry the error code in different places:
@@ -109,24 +116,37 @@ nonisolated enum ToolErrorNotePolicy {
             // opened folder), and the envelope names which one. What it does not
             // say is that retrying cannot help, which is the whole recovery.
             let toolName = (dict?["tool"] as? String) ?? result.toolName
+            let channel = escalation.map { " If the step cannot proceed without it, call \($0)." } ?? ""
             return "Do not retry '\(toolName)' — the precondition is set by the work folder, "
-                + "not by your arguments. Pick a different tool or proceed without this step."
+                + "not by your arguments. Pick a different tool or proceed without this step.\(channel)"
 
         case "bash_denied":
-            // The command was blocked by the bash-permission policy (deny rule,
-            // judge rejection, or human approval unavailable). The envelope carries
-            // the reason; the block being POLICY rather than arguments — and so
-            // immune to a reworded retry — is what it does not.
+            // The command was blocked by the bash-permission policy because a DECISION
+            // was made against it (deny rule, judge rejection, the Supervisor's Deny).
+            // The envelope carries the reason; the block being POLICY rather than
+            // arguments — and so immune to a reworded retry — is what it does not.
             //
-            // The alternatives stay here rather than moving into the envelopes,
-            // because only ONE of the five names any: the no-human arm points at a
-            // supervisor-side setting. Deny-rule, Supervisor-denied, judge and mode-Off
-            // all stop at the reason, so a model told merely "denied" would have nowhere
-            // to go. (That one arm used to spell its own generic alternative on top
-            // of this one — the duplication is gone from the envelope, not here.)
+            // The alternatives stay here rather than moving into the envelopes, because
+            // none of the four decision arms names any: deny-rule, Supervisor-denied,
+            // judge and mode-Off all stop at the reason, so a model told merely "denied"
+            // would have nowhere to go. The escalation channel IS offered: a decision
+            // can be revisited by whoever holds the channel.
+            let channel = escalation.map { ", or call \($0)" } ?? ""
             return "Do NOT retry this command — the block is set by policy, not by your "
-                + "arguments. Choose a different approach, use a read-only or "
-                + "already-approved command, or ask the Supervisor."
+                + "arguments. Choose a different approach or use a read-only or "
+                + "already-approved command\(channel)."
+
+        case "approval_unavailable":
+            // Nobody decided: the action needed a human's approval and the run has no
+            // human (`ToolErrorCode.approvalUnavailable`; the executor spells the same
+            // code in lowercase for a call the resolver had already withheld). Reached
+            // from the gate under Semi-automatic bash and from the executor after a strip.
+            // Deliberately NO escalation channel — the one this role holds reaches the
+            // answerer that cannot approve, and pointing at it is how the 2026-09-07
+            // audit's role spent three turns asking for a permission nobody could grant
+            // (KNOWN_ISSUES A15). The envelope already says what runs without approval.
+            return "Do NOT retry — no one in this run can approve it, and nothing you send "
+                + "changes that. Take a different step."
 
         case "cancelled":
             // Nothing to add, and nothing that WOULD be true. The run stopped — the
@@ -166,22 +186,23 @@ nonisolated enum ToolErrorNotePolicy {
             // "character for character, including whitespace" is actively wrong for
             // an anchor naming code that does not exist, the majority case in the
             // field — so the envelope stands alone and this adds nothing.
+            //
+            // As of 2026-09-06 EVERY `NotFoundDiagnosis` state carries a key, so no
+            // envelope this app emits reaches the guidance below. Two shapes still do,
+            // and both want it: a persisted envelope from an OLDER run replayed through
+            // `ConversationReplay` (the two shape states had no key then), and a
+            // malformed one with no message at all.
             let typed = (details?["diagnosis"] as? String).flatMap { $0.isEmpty ? nil : $0 }
             if typed != nil, envelopeMessage != nil { return nil }
 
-            // The two legacy diagnoses keep the generic sentence, which is NOT a
-            // restatement: the envelope's legacy message stops at "matches exactly
-            // including whitespace and indentation", while slash direction and the
-            // re-read remedy appear only here.
             let argsDict = JSONUtilities.parseJSONDictionary(result.argumentsJSON)
             let path = (argsDict?["path"] as? String)
                 .flatMap { $0.isEmpty ? nil : $0 }
             let target = path.map { "'\($0)'" } ?? "the file"
             var guidance = "old_text not found in \(target). It must match the file's current content exactly, character for character — including whitespace, indentation, and slash direction (`/` vs `\\`). If you edited this file after reading it, your copy is stale — re-read the region first. Otherwise compare your old_text against the content you read and fix the transcription."
-            // `hint` is appended ONLY when no envelope message carried it. The legacy
-            // shape composes its message as `anchorNotFoundMessage + " " + hint`
-            // (`FileWriteHandlers`), so restating it here put the same sentence on the
-            // wire twice — the defect this type exists to remove, in miniature.
+            // `hint` is appended ONLY when no envelope message carried it — a legacy
+            // replayed envelope composes its message as `<generic> + " " + hint`, so
+            // restating it here put the same sentence on the wire twice.
             if envelopeMessage == nil,
                let hint = (details?["hint"] as? String).flatMap({ $0.isEmpty ? nil : $0 }) {
                 guidance += " " + hint

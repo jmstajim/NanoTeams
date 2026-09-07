@@ -15,19 +15,23 @@ nonisolated enum GitErrorClassifier {
         if stderr.contains("already exists") {
             return makeErrorResult(
                 toolName: toolName, args: args,
-                code: .conflict, message: "\(subject) already exists"
+                code: .conflict,
+                message: "\(subject) already exists — choose a different name, or use the existing one."
             )
         }
         if stderr.contains("not found") || stderr.contains("did not match") {
             return makeErrorResult(
                 toolName: toolName, args: args,
-                code: .fileNotFound, message: "\(subject) not found"
+                code: .fileNotFound,
+                message: "\(subject) not found — check the name against the existing branches."
             )
         }
         if stderr.contains("CONFLICT") || stderr.contains("Merge conflict") {
             return makeErrorResult(
                 toolName: toolName, args: args,
-                code: .conflict, message: "Merge conflicts detected"
+                // No path list here: this classifier only ever sees stderr, and the
+                // callers that CAN parse paths pass them (see the two `git_merge` arms).
+                code: .conflict, message: GitConflictParser.conflictMessage(paths: [])
             )
         }
         return nil
@@ -161,9 +165,9 @@ nonisolated struct GitMergeTool: ToolHandler {
         description: "Merge a branch.",
         parameters: JS.object(
             properties: [
-                "branch": JS.string("Branch to merge"),
-                "no_ff": JS.boolean("No fast-forward"),
-                "squash": JS.boolean("Squash merge"),
+                "branch": JS.string(),
+                "no_ff": JS.boolean(),
+                "squash": JS.boolean(),
             ],
             required: ["branch"]
         )
@@ -216,7 +220,8 @@ nonisolated struct GitMergeTool: ToolHandler {
                     let conflictFiles = GitConflictParser.conflictedPaths(in: output)
                     return makeErrorResult(
                         toolName: Self.name, args: args,
-                        code: .conflict, message: "Merge conflicts detected",
+                        code: .conflict,
+                        message: GitConflictParser.conflictMessage(paths: conflictFiles),
                         details: conflictFiles.isEmpty
                             ? [:] : ["conflicts": conflictFiles.joined(separator: ", ")]
                     )
@@ -254,7 +259,8 @@ nonisolated struct GitMergeTool: ToolHandler {
             if !unmerged.isEmpty {
                 return makeErrorResult(
                     toolName: Self.name, args: args,
-                    code: .conflict, message: "Merge conflicts detected",
+                    code: .conflict,
+                    message: GitConflictParser.conflictMessage(paths: unmerged),
                     details: ["conflicts": unmerged.joined(separator: ", ")]
                 )
             }
@@ -278,17 +284,23 @@ nonisolated struct GitBranchTool: ToolHandler {
             properties: [
                 "action": JS.string(
                     "Branch operation to perform.",
-                    enumValues: ["create", "delete", "rename"]),
-                "name": JS.string("Branch name"),
-                "from": JS.string("Start point"),
+                    enumValues: BranchAction.allCases.map(\.rawValue)),
+                "name": JS.string(),
+                "from": JS.string("Start point for action=create."),
                 "new_name": JS.string("New name for rename"),
-                "force": JS.boolean("Force action"),
+                "force": JS.boolean(),
             ],
             required: ["action", "name"]
         )
     )
     static let category: ToolCategory = .gitWrite
     static let blockedInDefaultStorage = true
+
+    /// The verbs, in the order the schema advertises them — one source for the `enum:` the
+    /// model reads, the `requiredEnum` guard and the exhaustive dispatch below.
+    enum BranchAction: String, CaseIterable {
+        case create, delete, rename
+    }
 
     let workFolderRoot: URL
 
@@ -299,7 +311,7 @@ nonisolated struct GitBranchTool: ToolHandler {
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
         await ToolErrorHandler.execute(toolName: Self.name, args: args) {
-            let action = try requiredString(args, "action")
+            let action = try requiredEnum(args, "action", as: BranchAction.self)
             let name = try requiredString(args, "name")
             let from = optionalString(args, "from")
             let newName = optionalString(args, "new_name")
@@ -323,11 +335,11 @@ nonisolated struct GitBranchTool: ToolHandler {
             // silently discarded by the other two. That is the defect `git_checkout`
             // above already refuses to ship, in the same file, in the same words: an
             // argument accepted and ignored is the mirror of advertise-then-reject.
-            // Rejections live inside each arm so the invalid-action guard below still
-            // wins for a verb that is not a verb at all.
+            // Rejections live inside each arm; a verb outside the enum never reaches the
+            // switch — `requiredEnum` refuses it first, naming the three that exist.
             switch action {
-            case "create":
-                if let rejection = rejectInapplicable("new_name", newName, appliesTo: "rename", args: args) {
+            case .create:
+                if let rejection = rejectInapplicable("new_name", supplied: newName != nil, appliesTo: ["rename"], toolName: Self.name, args: args) {
                     return rejection
                 }
                 if force {
@@ -338,36 +350,29 @@ nonisolated struct GitBranchTool: ToolHandler {
                     gitArgs.append(from)
                 }
 
-            case "delete":
-                if let rejection = rejectInapplicable("from", from, appliesTo: "create", args: args) {
+            case .delete:
+                if let rejection = rejectInapplicable("from", supplied: from != nil, appliesTo: ["create"], toolName: Self.name, args: args) {
                     return rejection
                 }
-                if let rejection = rejectInapplicable("new_name", newName, appliesTo: "rename", args: args) {
+                if let rejection = rejectInapplicable("new_name", supplied: newName != nil, appliesTo: ["rename"], toolName: Self.name, args: args) {
                     return rejection
                 }
                 gitArgs.append(force ? "-D" : "-d")
                 gitArgs.append(name)
 
-            case "rename":
-                if let rejection = rejectInapplicable("from", from, appliesTo: "create", args: args) {
+            case .rename:
+                if let rejection = rejectInapplicable("from", supplied: from != nil, appliesTo: ["create"], toolName: Self.name, args: args) {
                     return rejection
                 }
                 guard let newName = newName else {
                     return makeErrorResult(
                         toolName: Self.name, args: args,
-                        code: .invalidArgs, message: "new_name is required for rename action"
+                        code: .invalidArgs, message: "Set new_name for the rename action."
                     )
                 }
                 gitArgs.append(force ? "-M" : "-m")
                 gitArgs.append(name)
                 gitArgs.append(newName)
-
-            default:
-                return makeErrorResult(
-                    toolName: Self.name, args: args,
-                    code: .invalidArgs,
-                    message: "Invalid action: \(action). Use: create, delete, rename"
-                )
             }
 
             let result = try ProcessRunner.runGit(gitArgs, in: workFolderRoot)
@@ -393,23 +398,8 @@ nonisolated struct GitBranchTool: ToolHandler {
 
             return makeSuccessResult(
                 toolName: Self.name, args: args,
-                data: BranchData(action: action, name: name, new_name: newName)
+                data: BranchData(action: action.rawValue, name: name, new_name: newName)
             )
         }
-    }
-
-    /// `nil` when the argument was not supplied; an `invalidArgs` envelope naming the one
-    /// action it belongs to otherwise. Says which verb to use rather than only which one
-    /// not to, so the correction is a single edit — the shape `git_checkout`'s own
-    /// `from`-rejection settled on.
-    private func rejectInapplicable(
-        _ argument: String, _ value: String?, appliesTo action: String, args: [String: Any]
-    ) -> ToolExecutionResult? {
-        guard value != nil else { return nil }
-        return makeErrorResult(
-            toolName: Self.name, args: args, code: .invalidArgs,
-            message: "`\(argument)` applies only with `action: \"\(action)\"`. "
-                + "It was ignored here, so this call would not have done what it asked for."
-        )
     }
 }

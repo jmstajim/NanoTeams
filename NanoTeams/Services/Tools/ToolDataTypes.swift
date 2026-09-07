@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - Error Codes (from JSON Schema)
 
-enum ToolErrorCode: String, Codable {
+enum ToolErrorCode: String, Codable, CaseIterable {
     case invalidArgs = "INVALID_ARGS"
     case fileNotFound = "FILE_NOT_FOUND"
     case notAFile = "NOT_A_FILE"
@@ -20,6 +20,14 @@ enum ToolErrorCode: String, Codable {
     case patchApplyFailed = "PATCH_APPLY_FAILED"
     case conflict = "CONFLICT"
     case commandFailed = "COMMAND_FAILED"
+    /// A subprocess passed its deadline and was SIGTERMed — `ProcessRunnerError.timeout`.
+    /// Split out of `COMMAND_FAILED` because the recovery is the opposite one: a
+    /// command that ran and exited non-zero needs different ARGUMENTS, a command
+    /// that never finished may just need a narrower scope or one more attempt.
+    /// The `_TIMED_OUT` suffix is load-bearing — `ToolErrorNotePolicy.direction`
+    /// routes on it (alongside `DELEGATION_TIMED_OUT`) to "may be transient — retry
+    /// once", so naming this `TIMED_OUT` would silently fall to the generic arm.
+    case commandTimedOut = "COMMAND_TIMED_OUT"
     /// `delegate_to_team` rejected the call due to delegation policy:
     /// not top-level, target not in whitelist, generated-team disabled, depth-cap reached,
     /// chat-mode target, etc. Distinct from `INVALID_ARGS` (malformed args) and
@@ -50,24 +58,37 @@ enum ToolErrorCode: String, Codable {
     /// left the model permanently told the Supervisor had refused a command they
     /// were never asked about, under a don't-retry direction (2026-08-30).
     case cancelled = "CANCELLED"
-    /// `bash` command blocked by the command-permission layer: a deny rule
-    /// matched, the Auto judge rejected it, the Supervisor answered Deny on a held
-    /// command, or human approval was required but unavailable (Manual mode in an
-    /// autonomous / Autovisor / headless context — Auto mode runs unattended).
-    /// Distinct from `COMMAND_FAILED` (the command ran and exited non-zero) — a
-    /// denied command never executed — and from `CANCELLED`, which is the same
-    /// held command with NO answer. Routed to a don't-retry guidance via
-    /// `ToolErrorNotePolicy.direction`'s `bash_denied` case.
+    /// `bash` command blocked by the command-permission layer because a DECISION was
+    /// made against it: a deny rule matched, the Auto judge rejected it, or the
+    /// Supervisor answered Deny on a held command. Distinct from `COMMAND_FAILED` (the
+    /// command ran and exited non-zero) — a denied command never executed — from
+    /// `CANCELLED`, which is the same held command with NO answer, and from
+    /// `APPROVAL_UNAVAILABLE`, where nobody COULD answer. Routed to a don't-retry
+    /// guidance via `ToolErrorNotePolicy.direction`'s `bash_denied` case.
     /// (A foreground timeout is surfaced as a success envelope with
     /// `timed_out: true`, not an error code.)
     case bashDenied = "BASH_DENIED"
     /// A computer-use action (`ui_click` / `ui_type` / `ui_key` / `ui_scroll` /
-    /// `screen_capture`) was blocked by the computer-use permission layer: mode Off,
-    /// a self-guard / allowlist / blocked-pattern deny, out-of-bounds coordinates,
-    /// the Auto judge rejected it, the Supervisor answered Deny, or human approval
-    /// was required but unavailable. Distinct from `COMMAND_FAILED` (the OS action
-    /// ran and failed) and from `CANCELLED` (an abandoned hold — see there).
+    /// `screen_capture`) was blocked by the computer-use permission layer because a
+    /// decision was made against it: mode Off, a self-guard / allowlist /
+    /// blocked-pattern deny, out-of-bounds coordinates, the Auto judge rejected it, or
+    /// the Supervisor answered Deny. Distinct from `COMMAND_FAILED` (the OS action ran
+    /// and failed), from `CANCELLED` (an abandoned hold — see there) and from
+    /// `APPROVAL_UNAVAILABLE` (nobody could answer).
     case computerUseDenied = "COMPUTER_USE_DENIED"
+    /// An action that needs a human's approval — a non-read-only `bash` command, a
+    /// computer-use click / type / key — in a run that HAS no human to give it
+    /// (`ApprovalPresence`: autonomous team, Autovisor supervision, headless). Not a
+    /// decision: nobody said no, nobody could say yes, and nothing inside the run
+    /// changes that — so, unlike the two `*_DENIED` codes, the direction the model gets
+    /// (`ToolErrorNotePolicy`) and the loop nudges name NO escalation channel: the
+    /// channel a role holds (`ask_supervisor`) reaches the same answerer that cannot
+    /// approve. Until 2026-09-07 this shipped as `BASH_DENIED` with a text asking the
+    /// supervisor to "allow unattended command approval" — a setting that never existed.
+    /// The families' MODE, not this code, is what a resolver reads: a family every action
+    /// of which would land here is withheld from the schema before the model can call it
+    /// (`ApprovalGatedAvailability`).
+    case approvalUnavailable = "APPROVAL_UNAVAILABLE"
 }
 
 // MARK: - Response Envelope Types
@@ -76,12 +97,6 @@ nonisolated struct ToolError: Codable {
     var code: String
     var message: String
     var details: [String: String]?
-}
-
-nonisolated struct NextHint: Codable {
-    var suggested_cmd: String?
-    var suggested_args: [String: String]?
-    var reason: String?
 }
 
 nonisolated struct ToolResultMeta: Codable {
@@ -236,6 +251,15 @@ nonisolated struct AskSupervisorData: Codable {
 
 // MARK: - Argument Error
 
+/// The two ways an argument can be unusable, and the ONE wording for each.
+///
+/// Both cases state a FACT and stop there. The repair imperative ("fix the
+/// arguments and retry", plus the tool's whole required list) is appended once,
+/// centrally, by `ToolErrorNotePolicy.direction`'s `INVALID_ARGS` arm — putting
+/// it here too would print the same instruction twice on the wire, which is the
+/// duplication that type exists to remove. What the policy CANNOT supply is
+/// per-argument: which key, what shape it must have, and what shape actually
+/// arrived. That is this type's whole job.
 enum ToolArgumentError: LocalizedError {
     case missingRequired(String)
     /// The key was present but its value could not be interpreted. Distinct
@@ -250,6 +274,32 @@ enum ToolArgumentError: LocalizedError {
             "Missing required argument: \(key)"
         case .invalidValue(let key, let detail):
             "Argument '\(key)' \(detail)"
+        }
+    }
+
+    /// Names the JSON type a value actually arrived as, for an `invalidValue`
+    /// detail: "must be an integer; received a string" beats "must be an
+    /// integer" because the model can see its own mistake instead of re-reading
+    /// a constraint it believed it had met.
+    ///
+    /// The `NSNumber` arm must run before any `Bool`/`Int` cast: JSON `true`
+    /// bridges to an `NSNumber` that satisfies `as? Bool` AND `as? Int`, so only
+    /// the CoreFoundation type id separates "a boolean" from "a number"
+    /// (the same bridging `optionalInt` relies on to read `true` as 1).
+    static func jsonTypeName(of value: Any) -> String {
+        switch value {
+        case is NSNull:
+            return "null"
+        case let number as NSNumber:
+            return CFGetTypeID(number) == CFBooleanGetTypeID() ? "a boolean" : "a number"
+        case is String:
+            return "a string"
+        case is [Any]:
+            return "an array"
+        case is [String: Any]:
+            return "an object"
+        default:
+            return "an unsupported value"
         }
     }
 }

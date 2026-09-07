@@ -10,6 +10,10 @@ struct RoleEditorToolsTab: View {
     /// `canDelegate` / `injectsAskSupervisor`) — each was a local restatement of a
     /// rule that lives in `LLMExecutionService+ToolResolution`, free to drift from it.
     let autoInjectedTools: [String]
+    /// What the run could do with `bash` and the computer-use family, resolved by
+    /// `RoleEditorSheet` for the team being edited (`ToolApprovalAvailability.forTeam`) —
+    /// this tab holds no team, and the hint must say what the wire will do.
+    let approval: ToolApprovalAvailability
     /// Mandatory tools shown as locked/Required (Autovisor manager). Default empty.
     var lockedTools: [String] = []
     /// When non-nil, only these tools are offered as toggles (Autovisor manager).
@@ -37,7 +41,7 @@ struct RoleEditorToolsTab: View {
             selectedTools: $editorState.selectedTools,
             producedArtifacts: editorState.producedArtifacts,
             isVisionConfigured: config.isVisionConfigured,
-            isComputerUseEnabled: config.isComputerUseEnabled,
+            approval: approval,
             autoInjectedTools: autoInjectedTools,
             delegationHint: delegationHint,
             lockedTools: lockedTools,
@@ -59,7 +63,8 @@ struct RoleEditorToolsTab: View {
         return s
     }()
 
-    RoleEditorToolsTab(editorState: $editorState, autoInjectedTools: [ToolNames.createArtifact])
+    RoleEditorToolsTab(
+        editorState: $editorState, autoInjectedTools: [ToolNames.createArtifact], approval: .available)
         .environment(StoreConfiguration())
         .frame(width: 500, height: 500)
         .background(Colors.surfacePrimary)

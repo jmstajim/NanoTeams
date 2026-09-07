@@ -9,6 +9,20 @@ enum NetworkDirection: String, Codable {
     /// / duplicate-write) that never become an HTTP request. `.request`/`.response`
     /// consumers (e.g. `FirstPromptFromLogsExtractor`) skip these by direction.
     case toolCall
+    /// What this step RAN ON — NOT wire traffic, and not a tool call either. A discrete
+    /// audit record naming the model, the server and the app/prompt build behind the
+    /// requests that follow it.
+    ///
+    /// The log's 17 fields carry nothing about version or server, and the sampler settings
+    /// deliberately never reach the wire (LM Studio's per-model config is the single source
+    /// of truth for them), so a request BODY cannot be traced back to what produced it even
+    /// in principle. That is the root of every "re-test on a build change" gate that has
+    /// never fired: nothing in a run says which build it was.
+    ///
+    /// `.request`/`.response` consumers skip these by direction, exactly as they already
+    /// skip `.toolCall` — `train_first_prompt.sh` and `FirstPromptFromLogsExtractor` both
+    /// filter on `.direction == "request"`.
+    case provenance
 }
 
 nonisolated struct NetworkLogRecord: Codable, Hashable {
@@ -62,6 +76,16 @@ nonisolated final class NetworkLogger: @unchecked Sendable {
         self.encoder = JSONCoderFactory.makeJSONLEncoder()
     }
 
+    /// The one constructor the APP uses for a run's log. On the main actor because it
+    /// primes `RuntimePromptFingerprint` — whose composers are main-actor code — before any
+    /// client can write the first provenance record from its stream task. Tests may build
+    /// a logger directly; `RuntimePromptFingerprintPinTests` pins that the app does not.
+    @MainActor
+    static func forRun(logURL: URL) -> NetworkLogger {
+        RuntimePromptFingerprint.prime()
+        return NetworkLogger(logURL: logURL)
+    }
+
     /// One line per record, O(1) in the log's size, serialized PER FILE by
     /// `JSONLFileLog` — not per instance, because instances do not map 1:1 onto
     /// files (a step's logger and team generation's logger share one run file,
@@ -81,6 +105,49 @@ nonisolated final class NetworkLogger: @unchecked Sendable {
             record, to: logURL, encoder: encoder, fileManager: fileManager,
             directoryAttributes: NTMSRepository.internalDirAttributes)
     }
+
+    // MARK: - Provenance
+
+    /// The `(log file, server, model)` triples a provenance record has been written for,
+    /// process-wide. Keyed by the log's PATH, not the logger instance: a step builds a new
+    /// logger on every entry (pause/resume, revision, a delivered supervisor answer), and a
+    /// per-instance set would repeat the constant on each. Process-wide is also why one
+    /// registry serves every caller — the step, a vision call, a judge, a meeting turn, the
+    /// Supervisor auto-answer — so the record appears at the FIRST sight of a triple no
+    /// matter who saw it. Until 2026-09-07 `startStepExecution` alone wrote it, keyed on
+    /// the execution service: a judge override or the vision config in the same run log
+    /// had no line naming its model, and the auto-answer's request had no log at all.
+    nonisolated(unsafe) private static var notedProvenance: Set<String> = []
+    private static let provenanceLock = NSLock()
+
+    /// Writes one `.provenance` record per `(log file, server, model)`. Called by both
+    /// provider clients right before their first request record — the one seam every wire
+    /// request passes through, so a caller is covered without knowing about it.
+    func noteProvenanceIfNeeded(config: LLMConfig, stepID: String?, roleName: String?) {
+        let key = "\(logURL.path)|\(config.baseURLString)|\(config.modelName)"
+        Self.provenanceLock.lock()
+        let inserted = Self.notedProvenance.insert(key).inserted
+        Self.provenanceLock.unlock()
+        guard inserted else { return }
+        append(NetworkLogger.createProvenanceRecord(
+            provider: config.provider.rawValue,
+            baseURL: config.baseURLString,
+            model: config.modelName,
+            appVersion: AppVersion.current,
+            promptVersion: BundledContentFingerprint.current,
+            runtimePromptVersion: RuntimePromptFingerprint.primed ?? RuntimePromptFingerprint.unprimedMarker,
+            stepID: stepID,
+            roleName: roleName))
+    }
+
+    #if DEBUG
+    /// Test isolation: forget every triple, so a fresh log path behaves as at process start.
+    static func _testResetProvenanceRegistry() {
+        provenanceLock.lock()
+        notedProvenance = []
+        provenanceLock.unlock()
+    }
+    #endif
 
     /// Creates a request record and returns it for later response pairing
     static func createRequestRecord(
@@ -158,6 +225,68 @@ nonisolated final class NetworkLogger: @unchecked Sendable {
             body: body,
             durationMs: nil,
             errorMessage: errorMessage,
+            correlationID: UUID(),
+            stepID: stepID,
+            roleName: roleName
+        )
+    }
+
+    /// One record per (server, model) a STEP runs on.
+    ///
+    /// Per step, not per run, and that is the whole reason it is useful: `llmOverride` is
+    /// resolved per step (`+StepLifecycle`), and `LLMOverride` carries both a base URL and
+    /// a model name — so one FAANG run with overrides goes through several models and
+    /// possibly several servers. A single per-run record would name one of them and be
+    /// wrong about the rest, which is precisely the failure provenance exists to prevent.
+    /// `NetworkLogRecord` already carries `stepID` and `roleName`, so the attribution
+    /// needs no new field. `promptVersion` is the bundled content, `runtimePromptVersion`
+    /// the composed texts (`RuntimePromptFingerprint`, 2026-09-07) — the two halves of
+    /// "which prompt bytes produced this request".
+    ///
+    /// Shape copied from `createToolCallRecord` above, which established the convention:
+    /// empty `httpMethod`/`url` (nothing is invented), a fresh unpaired `correlationID`,
+    /// and the whole payload as an escaped JSON *string* in `body`. That means ZERO new
+    /// named properties on `NetworkLogRecord` — which is what keeps
+    /// `LLMTokenLeakGuardTests` (reflection over property names) and
+    /// `NetworkLoggerHeadersGuardTests` (JSON keys) green by construction rather than by
+    /// promise, and leaves `NetworkLogTestReading.strictRecords` decoding unchanged.
+    ///
+    /// REST-only by design. `version` / `build` / `installedEngines` are answered by LM
+    /// Studio over a WebSocket RPC, and `Services/Net/` is documented as "the app's only
+    /// websocket, benchmark-only" — moving it into the run loop would change a recorded
+    /// invariant and add latency to every step start, and Ollama has no such channel at
+    /// all. Quantization is the same trade one step smaller: it needs a model-catalogue
+    /// fetch, i.e. a network round-trip per step start, which is the cost class CLAUDE.md
+    /// #49 exists about. Both are recorded in DEBTS rather than quietly not done.
+    static func createProvenanceRecord(
+        provider: String,
+        baseURL: String,
+        model: String,
+        appVersion: String,
+        promptVersion: String,
+        runtimePromptVersion: String,
+        stepID: String?,
+        roleName: String? = nil
+    ) -> NetworkLogRecord {
+        let body = JSONUtilities.jsonStringForToolArgs([
+            "event": "provenance",
+            "provider": provider,
+            "baseURL": baseURL,
+            "model": model,
+            "appVersion": appVersion,
+            "promptVersion": promptVersion,
+            "runtimePromptVersion": runtimePromptVersion,
+        ])
+        return NetworkLogRecord(
+            id: UUID(),
+            createdAt: MonotonicClock.shared.now(),
+            direction: .provenance,
+            httpMethod: "",
+            url: "",
+            statusCode: nil,
+            body: body,
+            durationMs: nil,
+            errorMessage: nil,
             correlationID: UUID(),
             stepID: stepID,
             roleName: roleName

@@ -127,13 +127,14 @@ final class VisionAndComputerUseApprovalFlowTests: XCTestCase {
     }
 
     /// Drives the real finalizer and hands back the conversation it built.
-    private func runVision(_ result: ToolExecutionResult) async -> [ChatMessage] {
+    private func runVision(_ result: ToolExecutionResult,
+                           allowedToolNames: Set<String> = []) async -> [ChatMessage] {
         var conversation: [ChatMessage] = []
         await service.appendVisionResult(
             result: result,
             toolCallID: toolCallID,
             stepID: stepID,
-            taskID: taskID,
+            taskID: taskID, allowedToolNames: allowedToolNames,
             client: client,
             config: LLMConfig(),
             networkLogger: nil,
@@ -234,11 +235,49 @@ final class VisionAndComputerUseApprovalFlowTests: XCTestCase {
                       "every vision failure is wrapped, got: \(message)")
         XCTAssertTrue(message.contains("No vision model is configured"),
                       "the model must be told WHICH precondition is missing, got: \(message)")
-        XCTAssertTrue(message.contains("supervisor"),
-                      "the message must name a model-reachable remedy, got: \(message)")
+        XCTAssertTrue(message.hasSuffix("continue without image analysis."),
+                      "a role with no escalation channel is told the alternative and nothing about a "
+                          + "Supervisor it cannot reach, got: \(message)")
+        XCTAssertFalse(message.lowercased().contains("supervisor"), message)
         XCTAssertFalse(message.contains("Settings"),
                        "the model cannot open a Settings pane, got: \(message)")
         XCTAssertEqual(client.streamChatCallCount, 0, "no config → nothing to call")
+    }
+
+    /// A transport failure of the vision model is classified before it becomes the tool
+    /// result: `localizedDescription` arrives in the system language and would ride the
+    /// prefix of every later request (R1.8.2).
+    func testVisionModelThrowsAForeignError_classifiesItInsteadOfLocalizing() async {
+        delegate.visionLLMConfig = LLMConfig()
+        writeImage("shot.png")
+        client.failure = NSError(
+            domain: NSURLErrorDomain, code: NSURLErrorTimedOut,
+            userInfo: [NSLocalizedDescriptionKey: "Превышено время ожидания запроса."])
+
+        let conversation = await runVision(visionResult(path: "shot.png"))
+
+        XCTAssertEqual(errorCode(conversation.first?.content), ToolErrorCode.commandFailed.rawValue)
+        XCTAssertEqual(errorMessage(conversation.first?.content),
+                       "Vision analysis failed: The request timed out.")
+    }
+
+    /// R3.8.6: the remedy is a human's, so the envelope names the channel the role HOLDS —
+    /// "ask the supervisor" in prose went to every role until 2026-09-06, including ones with
+    /// no `ask_supervisor`.
+    func testVisionNotConfigured_namesTheEscalationChannelTheRoleHolds() async {
+        delegate.visionLLMConfig = nil
+        writeImage("shot.png")
+
+        let held = await runVision(visionResult(path: "shot.png"),
+                                   allowedToolNames: [ToolNames.analyzeImage, ToolNames.askSupervisor])
+        let heldMessage = errorMessage(held.first?.content)
+        XCTAssertTrue(heldMessage.hasSuffix(", or call ask_supervisor to have a vision model configured."),
+                      heldMessage)
+
+        let manager = await runVision(visionResult(path: "shot.png"),
+                                      allowedToolNames: [ToolNames.analyzeImage, ToolNames.waitForEvents])
+        XCTAssertTrue(errorMessage(manager.first?.content).contains("call wait_for_events"),
+                      errorMessage(manager.first?.content))
     }
 
     func testNoWorkFolder_reportsTheMissingProjectRatherThanAMissingFile() async {

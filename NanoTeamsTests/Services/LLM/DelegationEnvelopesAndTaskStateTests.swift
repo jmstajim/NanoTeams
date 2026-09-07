@@ -205,6 +205,8 @@ final class DelegationSuccessEnvelopeTests: XCTestCase {
             "The required artifact must be keyed by its NAME — that is the identifier the parent role reasons about")
         XCTAssertEqual(payload["content"] as? String, "## Release Notes\nShipped the thing.",
                        "Artifact bodies ride the envelope in full; a dropped body silently hands the parent role an empty deliverable")
+        XCTAssertNil(payload["unreadable"], "a readable body carries no flag — the key is omitted, not false")
+        XCTAssertNil(payload["path"])
         XCTAssertEqual(payload["role_id"] as? String, deChildStepID,
                        "role_id must be the PRODUCING step's role id so the parent can attribute the work")
 
@@ -318,6 +320,10 @@ final class DelegationSuccessEnvelopeTests: XCTestCase {
         let payload = try XCTUnwrap(artifacts["Release Notes"] as? [String: Any],
                                     "An unreadable payload must not demote a produced artifact to absent")
         XCTAssertEqual(payload["content"] as? String, "")
+        // R1.8.7: an empty body is silence the model reads as success. The typed flag says
+        // WHY it is empty, and the path lets the parent read the file itself.
+        XCTAssertEqual(payload["unreadable"] as? Bool, true)
+        XCTAssertEqual(payload["path"] as? String, ".nanoteams/tasks/77/runs/0/roles/child_engineer/gone.md")
         let missing = try XCTUnwrap(data["missing_artifacts"] as? [String])
         XCTAssertTrue(missing.isEmpty,
                       "It was produced — `missing_artifacts` means 'never submitted', not 'body unreadable'")
@@ -341,6 +347,9 @@ final class DelegationSuccessEnvelopeTests: XCTestCase {
         let artifacts = try XCTUnwrap(data["artifacts"] as? [String: Any])
         let payload = try XCTUnwrap(artifacts["Release Notes"] as? [String: Any])
         XCTAssertEqual(payload["content"] as? String, "")
+        XCTAssertEqual(payload["unreadable"] as? Bool, true)
+        XCTAssertEqual(payload["path"] as? String, ".nanoteams/" + rel,
+                       "the path is still a valid reference once a folder is open")
     }
 
     /// An artifact record with no persisted path at all (`relativePath == nil`) —
@@ -358,6 +367,8 @@ final class DelegationSuccessEnvelopeTests: XCTestCase {
         let artifacts = try XCTUnwrap(data["artifacts"] as? [String: Any])
         let payload = try XCTUnwrap(artifacts["Release Notes"] as? [String: Any])
         XCTAssertEqual(payload["content"] as? String, "")
+        XCTAssertEqual(payload["unreadable"] as? Bool, true)
+        XCTAssertNil(payload["path"], "no persisted file — nothing the parent could read")
     }
 
     // MARK: Flags / warnings

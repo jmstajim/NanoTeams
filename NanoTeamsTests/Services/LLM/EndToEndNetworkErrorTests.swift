@@ -24,7 +24,7 @@ final class EndToEndNetworkErrorTests: XCTestCase {
 
         // Valid event
         _ = parser.parse(line: "event: message.delta")
-        let valid = parser.parse(line: #"data: {"content": "Hello"}"#)
+        let valid = parser.parse(line: #"data: {"content": "Hello"}"#).first
         if case .contentDelta(let text) = valid {
             XCTAssertEqual(text, "Hello")
         } else {
@@ -33,7 +33,7 @@ final class EndToEndNetworkErrorTests: XCTestCase {
 
         // Malformed JSON — should not crash
         _ = parser.parse(line: "event: message.delta")
-        let malformed = parser.parse(line: "data: {invalid json")
+        let malformed = parser.parse(line: "data: {invalid json").first
         // Should return .ignored for malformed data (not crash)
         XCTAssertNotNil(malformed, "Should return something for malformed data")
         if case .contentDelta = malformed {
@@ -61,7 +61,7 @@ final class EndToEndNetworkErrorTests: XCTestCase {
         var gotChatEnd = false
 
         for line in lines {
-            if let event = parser.parse(line: line) {
+            for event in parser.parse(line: line) {
                 switch event {
                 case .contentDelta(let text):
                     collectedContent += text
@@ -84,7 +84,7 @@ final class EndToEndNetworkErrorTests: XCTestCase {
         var parser = SSEEventParser()
 
         _ = parser.parse(line: "event: prompt_processing.start")
-        let start = parser.parse(line: "data: {}")
+        let start = parser.parse(line: "data: {}").first
         if case .processingProgress(let progress) = start {
             XCTAssertEqual(progress, 0.0, "Start should be 0%")
         } else {
@@ -92,7 +92,7 @@ final class EndToEndNetworkErrorTests: XCTestCase {
         }
 
         _ = parser.parse(line: "event: prompt_processing.end")
-        let end = parser.parse(line: "data: {}")
+        let end = parser.parse(line: "data: {}").first
         if case .processingProgress(let progress) = end {
             XCTAssertEqual(progress, 1.0, "End should be 100%")
         } else {
@@ -106,8 +106,7 @@ final class EndToEndNetworkErrorTests: XCTestCase {
         var parser = SSEEventParser()
 
         _ = parser.parse(line: "event: reasoning.delta")
-        let event = parser.parse(line: #"data: {"content": "Let me think..."}"#)
-
+        let event = parser.parse(line: #"data: {"content": "Let me think..."}"#).first
         if case .thinkingDelta(let text) = event {
             XCTAssertEqual(text, "Let me think...")
         } else {
@@ -121,8 +120,7 @@ final class EndToEndNetworkErrorTests: XCTestCase {
         var parser = SSEEventParser()
 
         _ = parser.parse(line: "event: error")
-        let event = parser.parse(line: #"data: {"message": "Model overloaded"}"#)
-
+        let event = parser.parse(line: #"data: {"message": "Model overloaded"}"#).first
         if case .error(let msg) = event {
             XCTAssertEqual(msg, "Model overloaded")
         } else {
@@ -136,15 +134,15 @@ final class EndToEndNetworkErrorTests: XCTestCase {
         var parser = SSEEventParser()
 
         // Comment line
-        let comment = parser.parse(line: ": keepalive")
+        let comment = parser.parse(line: ": keepalive").first
         XCTAssertNil(comment, "Comment lines should return nil")
 
         // Empty line
-        let empty = parser.parse(line: "")
+        let empty = parser.parse(line: "").first
         XCTAssertNil(empty, "Empty lines should return nil")
 
         // Random text
-        let random = parser.parse(line: "some random text")
+        let random = parser.parse(line: "some random text").first
         XCTAssertNil(random, "Non-SSE lines should return nil")
     }
 
@@ -154,8 +152,7 @@ final class EndToEndNetworkErrorTests: XCTestCase {
         var parser = SSEEventParser()
 
         _ = parser.parse(line: "event: chat.end")
-        let event = parser.parse(line: #"data: {"response_id": "resp-123", "stats": {"input_tokens": 500, "total_output_tokens": 200}}"#)
-
+        let event = parser.parse(line: #"data: {"response_id": "resp-123", "stats": {"input_tokens": 500, "total_output_tokens": 200}}"#).first
         // `response_id` is deliberately ignored — no chain resumes it.
         if case .chatEnd(let usage, _, _, _) = event {
             XCTAssertEqual(usage?.inputTokens, 500)

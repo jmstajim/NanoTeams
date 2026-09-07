@@ -50,7 +50,9 @@ extension LLMExecutionService {
             let persisted = await delegate?.persistAutovisorMemory(content) ?? false
             memoryOutcome = persisted ? .persisted : .writeFailed
             if !persisted {
-                let warning = "Memory write to disk failed — it may not survive the next run. Retry update_scratchpad, or report this if it keeps failing."
+                // No "report this": the reader is the Autovisor, which holds no `ask_supervisor`
+                // — the human is told through `.runtimeWarning` below, not through the model.
+                let warning = "Memory write to disk failed — it may not survive the next run. Retry update_scratchpad."
                 conversationMessages.append(ChatMessage(role: .user, content: warning))
                 // Persist with the wire role (.user) — a `.system` copy corrupts
                 // stateless rebuilds with a mid-conversation system message.

@@ -550,10 +550,9 @@ final class DLLMOllamaStreamTailTests: XCTestCase {
 
         let records = try NetworkLogTestReading.strictRecords(at: logURL)
         XCTAssertEqual(
-            records.count, 1,
-            "Only the request record belongs in the log; a cancel is not a failed response")
-        let only = try XCTUnwrap(records.first)
-        XCTAssertEqual(only.direction, .request)
+            records.count, 2,
+            "The provenance line and the request record belong in the log; a cancel is not a failed response")
+        XCTAssertEqual(records.map(\.direction), [.provenance, .request])
     }
 }
 
@@ -1223,7 +1222,7 @@ final class DLLMWirePreviewTrailingHeaderTests: XCTestCase {
             workFolderState: .defaultStorage,
             selectedScheme: nil,
             isVisionConfigured: false,
-            isComputerUseEnabled: false,
+            approval: ToolApprovalAvailability(bash: .available, computerUse: .withheld(.switchedOff)),
             globalContext: ""
         )
 
@@ -1257,7 +1256,7 @@ final class DLLMWirePreviewTrailingHeaderTests: XCTestCase {
             workFolderState: .defaultStorage,
             selectedScheme: nil,
             isVisionConfigured: false,
-            isComputerUseEnabled: false,
+            approval: ToolApprovalAvailability(bash: .available, computerUse: .withheld(.switchedOff)),
             globalContext: ""
         )
 

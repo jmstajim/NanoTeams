@@ -97,8 +97,11 @@ extension LLMExecutionService {
         // real one keeps "the deny/ask/allow tiering is identical during planning" true by
         // construction rather than by inspection.
         let judgePolicy = isPlanningPhase ? policy.withWritesDisabled() : policy
-        let underAutovisor = isUnderAutovisor(task: task)
-        let humanPresent = (supervisorMode == .manual) && !underAutovisor
+        // The one predicate the schema resolver reads too (`ApprovalPresence`): under `.manual`
+        // with no human the resolver has already withheld `bash`, so the no-human arm below is
+        // reachable in production only under `.semiAutomatic` — for the commands that are not
+        // read-only.
+        let humanPresent = approvalHumanPresent(task: task, supervisorMode: supervisorMode)
 
         var synthetic: [Int: ToolExecutionResult] = [:]
 
@@ -174,21 +177,22 @@ extension LLMExecutionService {
                         synthetic[idx] = makeCancelledResult(for: call)
                     }
                 } else {
-                    // Manual mode with no human (autonomous team / Autovisor / headless)
-                    // → deny. The recourse named here must be one the MODEL can act on:
-                    // it cannot open a Settings pane, so name what the supervisor would
-                    // change, never where they would click. `ToolErrorNotePolicy.direction`'s
-                    // `bash_denied` arm appends the don't-retry half, so this stays terse —
-                    // and names only the recourse that arm CANNOT: a supervisor-side setting.
-                    // Its generic "use a read-only or already-approved command" used to be
-                    // spelled here too, so the model was handed the same alternative twice in
-                    // consecutive turns. That arm keeps the generic half for the four sibling
-                    // envelopes (deny rule, declined, judge, mode Off) that name no
-                    // alternative at all; this is the one envelope that over-explained.
-                    synthetic[idx] = makeBashDeniedResult(
+                    // No human (autonomous team / Autovisor / headless) and a command the
+                    // read-only bypass did not admit. Not a denial — nobody decided — so its
+                    // own code: `ToolErrorNotePolicy`'s `approval_unavailable` arm adds the
+                    // don't-retry half WITHOUT an escalation channel, because the channel a
+                    // role holds (`ask_supervisor`) reaches the same answerer that cannot
+                    // approve. Until 2026-09-07 this envelope asked the supervisor to "allow
+                    // unattended command approval" — a setting that never existed — and the
+                    // autonomous Supervisor duly "approved" (KNOWN_ISSUES A15). Third person:
+                    // the reader is the model. Truthful for the one mode that reaches here
+                    // (Semi-automatic — Manual is withheld from the schema): read-only
+                    // commands DO run without approval.
+                    synthetic[idx] = makeApprovalUnavailableResult(
                         call: call,
-                        reason: "This command needs human approval (\(reason)), but no human is available to review it. "
-                            + "Ask the supervisor to allow unattended command approval.")
+                        reason: "This command needs human approval (\(reason)), and this run has no human to give it. "
+                            + "Read-only commands run without approval; nothing inside the run can approve the rest — "
+                            + "take a different step.")
                 }
             }
         }
@@ -208,6 +212,14 @@ extension LLMExecutionService {
         ToolExecutionResult.synthetic(
             for: call,
             outputJSON: makeErrorEnvelope(code: .bashDenied, message: reason),
+            isError: true)
+    }
+
+    /// The no-human refusal of BOTH gates — see `ToolErrorCode.approvalUnavailable`.
+    func makeApprovalUnavailableResult(call: StepToolCall, reason: String) -> ToolExecutionResult {
+        ToolExecutionResult.synthetic(
+            for: call,
+            outputJSON: makeErrorEnvelope(code: .approvalUnavailable, message: reason),
             isError: true)
     }
 

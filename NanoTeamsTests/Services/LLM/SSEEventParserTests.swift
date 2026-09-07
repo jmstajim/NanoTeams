@@ -19,7 +19,7 @@ final class SSEEventParserTests: XCTestCase {
 
     func testContentDelta_returnsContent() {
         _ = parser.parse(line: "event: message.delta")
-        let result = parser.parse(line: "data: {\"content\": \"Hello\"}")
+        let result = parser.parse(line: "data: {\"content\": \"Hello\"}").first
         if case .contentDelta(let text) = result {
             XCTAssertEqual(text, "Hello")
         } else {
@@ -31,7 +31,7 @@ final class SSEEventParserTests: XCTestCase {
 
     func testThinkingDelta_returnsThinking() {
         _ = parser.parse(line: "event: reasoning.delta")
-        let result = parser.parse(line: "data: {\"content\": \"Let me think...\"}")
+        let result = parser.parse(line: "data: {\"content\": \"Let me think...\"}").first
         if case .thinkingDelta(let text) = result {
             XCTAssertEqual(text, "Let me think...")
         } else {
@@ -44,7 +44,7 @@ final class SSEEventParserTests: XCTestCase {
     func testChatEnd_returnsUsage() {
         _ = parser.parse(line: "event: chat.end")
         let json = "{\"response_id\": \"resp-123\", \"stats\": {\"input_tokens\": 100, \"total_output_tokens\": 50}}"
-        let result = parser.parse(line: "data: \(json)")
+        let result = parser.parse(line: "data: \(json)").first
         // `response_id` is deliberately dropped — nothing resumes a chain.
         if case .chatEnd(let usage, _, _, _) = result {
             XCTAssertEqual(usage?.inputTokens, 100)
@@ -58,7 +58,7 @@ final class SSEEventParserTests: XCTestCase {
 
     func testError_returnsMessage() {
         _ = parser.parse(line: "event: error")
-        let result = parser.parse(line: "data: {\"message\": \"Model not loaded\"}")
+        let result = parser.parse(line: "data: {\"message\": \"Model not loaded\"}").first
         if case .error(let msg) = result {
             XCTAssertEqual(msg, "Model not loaded")
         } else {
@@ -68,7 +68,7 @@ final class SSEEventParserTests: XCTestCase {
 
     func testError_noMessage_defaultsToStreamError() {
         _ = parser.parse(line: "event: error")
-        let result = parser.parse(line: "data: {}")
+        let result = parser.parse(line: "data: {}").first
         if case .error(let msg) = result {
             XCTAssertEqual(msg, "Stream error")
         } else {
@@ -80,7 +80,7 @@ final class SSEEventParserTests: XCTestCase {
 
     func testProcessingStart_returnsZero() {
         _ = parser.parse(line: "event: prompt_processing.start")
-        let result = parser.parse(line: "data: {}")
+        let result = parser.parse(line: "data: {}").first
         if case .processingProgress(let p) = result {
             XCTAssertEqual(p, 0.0, accuracy: 0.001)
         } else {
@@ -90,7 +90,7 @@ final class SSEEventParserTests: XCTestCase {
 
     func testProcessingProgress_returnsProgress() {
         _ = parser.parse(line: "event: prompt_processing.progress")
-        let result = parser.parse(line: "data: {\"progress\": 0.5}")
+        let result = parser.parse(line: "data: {\"progress\": 0.5}").first
         if case .processingProgress(let p) = result {
             XCTAssertEqual(p, 0.5, accuracy: 0.001)
         } else {
@@ -100,7 +100,7 @@ final class SSEEventParserTests: XCTestCase {
 
     func testProcessingEnd_returnsOne() {
         _ = parser.parse(line: "event: prompt_processing.end")
-        let result = parser.parse(line: "data: {}")
+        let result = parser.parse(line: "data: {}").first
         if case .processingProgress(let p) = result {
             XCTAssertEqual(p, 1.0, accuracy: 0.001)
         } else {
@@ -112,7 +112,7 @@ final class SSEEventParserTests: XCTestCase {
 
     func testUnknownEventType_returnsIgnored() {
         _ = parser.parse(line: "event: chat.start")
-        let result = parser.parse(line: "data: {}")
+        let result = parser.parse(line: "data: {}").first
         if case .ignored = result {
             // OK
         } else {
@@ -123,21 +123,21 @@ final class SSEEventParserTests: XCTestCase {
     // MARK: - Non-data/event lines
 
     func testNonDataLine_returnsNil() {
-        XCTAssertNil(parser.parse(line: "some random text"))
+        XCTAssertTrue(parser.parse(line: "some random text").isEmpty)
     }
 
     func testEmptyLine_returnsNil() {
-        XCTAssertNil(parser.parse(line: ""))
+        XCTAssertTrue(parser.parse(line: "").isEmpty)
     }
 
     func testEventLine_returnsNil() {
         // event: lines don't produce results, only set state
-        XCTAssertNil(parser.parse(line: "event: message.delta"))
+        XCTAssertTrue(parser.parse(line: "event: message.delta").isEmpty)
     }
 
     func testEmptyData_returnsNil() {
         _ = parser.parse(line: "event: message.delta")
-        XCTAssertNil(parser.parse(line: "data: "))
+        XCTAssertTrue(parser.parse(line: "data: ").isEmpty)
     }
 
     // MARK: - Stateful event type tracking
@@ -147,25 +147,25 @@ final class SSEEventParserTests: XCTestCase {
         _ = parser.parse(line: "event: message.delta")
 
         // First data with this type
-        let r1 = parser.parse(line: "data: {\"content\": \"A\"}")
+        let r1 = parser.parse(line: "data: {\"content\": \"A\"}").first
         if case .contentDelta(let t) = r1 { XCTAssertEqual(t, "A") }
         else { XCTFail("Expected contentDelta") }
 
         // Second data without new event: line — uses same type
-        let r2 = parser.parse(line: "data: {\"content\": \"B\"}")
+        let r2 = parser.parse(line: "data: {\"content\": \"B\"}").first
         if case .contentDelta(let t) = r2 { XCTAssertEqual(t, "B") }
         else { XCTFail("Expected contentDelta") }
     }
 
     func testEventType_changesOnNewEventLine() {
         _ = parser.parse(line: "event: message.delta")
-        let r1 = parser.parse(line: "data: {\"content\": \"Hello\"}")
+        let r1 = parser.parse(line: "data: {\"content\": \"Hello\"}").first
         if case .contentDelta = r1 { /* OK */ }
         else { XCTFail("Expected contentDelta") }
 
         // Switch to reasoning
         _ = parser.parse(line: "event: reasoning.delta")
-        let r2 = parser.parse(line: "data: {\"content\": \"Thinking\"}")
+        let r2 = parser.parse(line: "data: {\"content\": \"Thinking\"}").first
         if case .thinkingDelta(let t) = r2 { XCTAssertEqual(t, "Thinking") }
         else { XCTFail("Expected thinkingDelta") }
     }
@@ -174,14 +174,14 @@ final class SSEEventParserTests: XCTestCase {
 
     func testContentDelta_emptyContent_returnsIgnored() {
         _ = parser.parse(line: "event: message.delta")
-        let result = parser.parse(line: "data: {\"content\": \"\"}")
+        let result = parser.parse(line: "data: {\"content\": \"\"}").first
         if case .ignored = result { /* OK */ }
         else { XCTFail("Expected ignored for empty content, got \(String(describing: result))") }
     }
 
     func testContentDelta_nilContent_returnsIgnored() {
         _ = parser.parse(line: "event: message.delta")
-        let result = parser.parse(line: "data: {}")
+        let result = parser.parse(line: "data: {}").first
         if case .ignored = result { /* OK */ }
         else { XCTFail("Expected ignored for nil content, got \(String(describing: result))") }
     }
@@ -194,7 +194,7 @@ final class SSEEventParserTests: XCTestCase {
 
     private func chatEndPrefill(_ statsJSON: String) -> ServerPrefillReport? {
         _ = parser.parse(line: "event: chat.end")
-        let result = parser.parse(line: "data: {\"stats\": \(statsJSON)}")
+        let result = parser.parse(line: "data: {\"stats\": \(statsJSON)}").first
         guard case .chatEnd(_, let prefill, _, _) = result else {
             XCTFail("Expected chatEnd, got \(String(describing: result))")
             return nil
@@ -246,7 +246,7 @@ final class SSEEventParserTests: XCTestCase {
 
     func testChatEnd_missingStats_yieldsNoUsageAndNoPrefill() {
         _ = parser.parse(line: "event: chat.end")
-        let result = parser.parse(line: "data: {\"response_id\": \"r\"}")
+        let result = parser.parse(line: "data: {\"response_id\": \"r\"}").first
         guard case .chatEnd(let usage, let prefill, _, _) = result else {
             return XCTFail("Expected chatEnd, got \(String(describing: result))")
         }
@@ -264,7 +264,7 @@ final class SSEEventParserTests: XCTestCase {
         _ = parser.parse(line: "event: chat.end")
         let result = parser.parse(
             line: "data: {\"stats\": {\"input_tokens\": 900, \"total_output_tokens\": 8, "
-                + "\"model_load_time_seconds\": \"fast\"}}")
+                + "\"model_load_time_seconds\": \"fast\"}}").first
         guard case .chatEnd(let usage, _, _, _) = result else {
             return XCTFail(
                 "one mistyped telemetry field discarded the whole frame, got "
@@ -284,7 +284,7 @@ final class SSEEventParserTests: XCTestCase {
     /// guards this (`promptEvalCount != nil || evalCount != nil`); this one did not.
     func testChatEnd_statsWithNoTokenKeys_reportsNoUsageRatherThanZeros() {
         _ = parser.parse(line: "event: chat.end")
-        let result = parser.parse(line: "data: {\"stats\": {\"model_load_time_seconds\": 0}}")
+        let result = parser.parse(line: "data: {\"stats\": {\"model_load_time_seconds\": 0}}").first
         guard case .chatEnd(let usage, let prefill, _, _) = result else {
             return XCTFail("Expected chatEnd, got \(String(describing: result))")
         }
@@ -298,7 +298,7 @@ final class SSEEventParserTests: XCTestCase {
         _ = parser.parse(line: "event: chat.end")
         let result = parser.parse(
             line: "data: {\"stats\": {\"input_tokens\": 900, \"total_output_tokens\": 8, "
-                + "\"tokens_per_second\": \"fast\"}}")
+                + "\"tokens_per_second\": \"fast\"}}").first
         guard case .chatEnd(let usage, _, let rate, _) = result else {
             return XCTFail("a mistyped rate discarded the frame, got \(String(describing: result))")
         }
@@ -315,7 +315,7 @@ final class SSEEventParserTests: XCTestCase {
         _ = parser.parse(line: "event: chat.end")
         let result = parser.parse(
             line: "data: {\"stats\": {\"input_tokens\": 12, \"total_output_tokens\": 232, "
-                + "\"tokens_per_second\": 70.88376163013098, \"reasoning_output_tokens\": 214}}")
+                + "\"tokens_per_second\": 70.88376163013098, \"reasoning_output_tokens\": 214}}").first
         guard case .chatEnd(_, _, let rate, let reasoning) = result else {
             return XCTFail("Expected chatEnd, got \(String(describing: result))")
         }
@@ -331,7 +331,7 @@ final class SSEEventParserTests: XCTestCase {
         _ = parser.parse(line: "event: chat.end")
         let result = parser.parse(
             line: "data: {\"stats\": {\"input_tokens\": 900, \"total_output_tokens\": 8, "
-                + "\"model_load_time_seconds\": 0, \"tokens_per_second\": 70.9}}")
+                + "\"model_load_time_seconds\": 0, \"tokens_per_second\": 70.9}}").first
         guard case .chatEnd(_, let prefill, let rate, _) = result else {
             return XCTFail("Expected chatEnd, got \(String(describing: result))")
         }
@@ -346,7 +346,7 @@ final class SSEEventParserTests: XCTestCase {
         _ = parser.parse(line: "event: chat.end")
         let result = parser.parse(
             line: "data: {\"stats\": {\"input_tokens\": 9, \"total_output_tokens\": 1, "
-                + "\"tokens_per_second\": 0}}")
+                + "\"tokens_per_second\": 0}}").first
         guard case .chatEnd(_, _, let rate, _) = result else {
             return XCTFail("Expected chatEnd, got \(String(describing: result))")
         }
@@ -357,7 +357,7 @@ final class SSEEventParserTests: XCTestCase {
     func testChatEnd_withoutTokensPerSecond_leavesTheRateAbsent() {
         _ = parser.parse(line: "event: chat.end")
         let result = parser.parse(
-            line: "data: {\"stats\": {\"input_tokens\": 9, \"total_output_tokens\": 4}}")
+            line: "data: {\"stats\": {\"input_tokens\": 9, \"total_output_tokens\": 4}}").first
         guard case .chatEnd(let usage, _, let rate, let reasoning) = result else {
             return XCTFail("Expected chatEnd, got \(String(describing: result))")
         }
@@ -371,10 +371,76 @@ final class SSEEventParserTests: XCTestCase {
     /// where there is no usage at all.
     func testChatEnd_withOnlyOneTokenCount_stillReportsUsage() {
         _ = parser.parse(line: "event: chat.end")
-        let result = parser.parse(line: "data: {\"stats\": {\"total_output_tokens\": 7}}")
+        let result = parser.parse(line: "data: {\"stats\": {\"total_output_tokens\": 7}}").first
         guard case .chatEnd(let usage, _, _, _) = result else {
             return XCTFail("Expected chatEnd, got \(String(describing: result))")
         }
         XCTAssertEqual(usage, TokenUsage(inputTokens: 0, outputTokens: 7))
+    }
+}
+
+// MARK: - Inline `<think>` on the content channel
+
+/// `message.delta` runs `ThinkTagSplitter` (2026-09-07). Every case here is the LM Studio
+/// framing of a case `ThinkTagSplitterTests` / `OllamaChatStreamParserTests` already pin
+/// on the other provider; `ThinkTagRoutingParityTests` holds the two side by side.
+final class SSEEventParserThinkTagTests: XCTestCase {
+
+    private var parser: SSEEventParser!
+
+    override func setUp() {
+        super.setUp()
+        parser = SSEEventParser()
+    }
+
+    override func tearDown() {
+        parser = nil
+        super.tearDown()
+    }
+
+    private func delta(_ content: String) -> [SSEEventParser.ParsedEvent] {
+        _ = parser.parse(line: "event: message.delta")
+        let payload = try! JSONSerialization.data(withJSONObject: ["content": content])
+        return parser.parse(line: "data: " + String(decoding: payload, as: UTF8.self))
+    }
+
+    func testLeadingThinkSpan_isRoutedToThinking_andTheAnswerStaysContent() {
+        XCTAssertEqual(delta("<think>r</think>a"), [.thinkingDelta("r"), .contentDelta("a")])
+    }
+
+    func testTagSplitAcrossFrames_isHeldBackThenRouted() {
+        XCTAssertEqual(delta("<th"), [.ignored], "a viable tag prefix is held, not passed through as content")
+        XCTAssertEqual(delta("ink>r</th"), [.thinkingDelta("r")])
+        XCTAssertEqual(delta("ink>a"), [.contentDelta("a")])
+    }
+
+    func testThinkAfterContent_staysContent() {
+        XCTAssertEqual(delta("Hello "), [.contentDelta("Hello ")])
+        XCTAssertEqual(delta("<think>x</think>"), [.contentDelta("<think>x</think>")],
+                       "once real content has flowed a literal tag is prose, never a channel switch")
+    }
+
+    func testChatEnd_flushesAHeldBackPrefix_beforeTheEndEvent() {
+        XCTAssertEqual(delta("<think>r"), [.thinkingDelta("r")])
+        XCTAssertEqual(delta("</thi"), [.ignored])
+        _ = parser.parse(line: "event: chat.end")
+        let events = parser.parse(line: "data: {\"stats\": {\"input_tokens\": 1, \"total_output_tokens\": 2}}")
+        XCTAssertEqual(events.count, 2)
+        XCTAssertEqual(events.first, .thinkingDelta("</thi"), "the held-back bytes surface on the open channel, not silently dropped")
+        guard case .chatEnd = events[1] else { return XCTFail("chat.end must follow the drained prefix; got \(events)") }
+    }
+
+    func testFinalize_flushesAHeldBackPrefix_onTransportDrop() {
+        XCTAssertEqual(delta("<think>r"), [.thinkingDelta("r")])
+        XCTAssertEqual(delta("</thi"), [.ignored])
+        XCTAssertEqual(parser.finalize(), [.thinkingDelta("</thi")])
+        XCTAssertEqual(parser.finalize(), [], "a second drain has nothing left")
+    }
+
+    func testReasoningDelta_isNeverSplit() {
+        _ = parser.parse(line: "event: reasoning.delta")
+        XCTAssertEqual(parser.parse(line: "data: {\"content\": \"<think>already routed</think>\"}"),
+                       [.thinkingDelta("<think>already routed</think>")],
+                       "the server's own reasoning frame is taken verbatim — the splitter reads content only")
     }
 }

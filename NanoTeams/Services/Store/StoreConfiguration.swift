@@ -718,10 +718,6 @@ final class StoreConfiguration {
         }
     }
 
-    /// Mirrors `ComputerUsePolicy.isEnabled` for view-layer callers that hold the
-    /// config, not the assembled policy (same convention as `isVisionConfigured`).
-    var isComputerUseEnabled: Bool { computerUseMode != .off }
-
     /// Assembled `ComputerUsePolicy` surfaced to the LLM execution layer.
     var computerUsePolicy: ComputerUsePolicy {
         ComputerUsePolicy(

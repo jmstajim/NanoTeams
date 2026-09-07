@@ -885,7 +885,9 @@ final class FDomainRepositoryTailTests: XCTestCase, @unchecked Sendable {
             name: "Already Normalised Team",
             roles: [delegator],
             artifacts: [],
-            settings: TeamSettings(),
+            // "Already normalised" includes the coordinator: a stored `nil` is healed on
+            // open (bootstrap step 2d) and WOULD write the file — pinned separately below.
+            settings: TeamSettings(meetingCoordinatorRoleID: "coding-agent-role"),
             graphLayout: TeamGraphLayout()
         )
 

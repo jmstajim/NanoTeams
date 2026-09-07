@@ -85,6 +85,52 @@ nonisolated func makeErrorResult(
     )
 }
 
+// MARK: - Executor-shape error envelope
+
+/// The EXECUTOR's error envelope: the code as a TOP-LEVEL string beside a top-level
+/// message, plus whatever extra string fields the case carries.
+///
+/// A second shape next to `makeErrorEnvelope`'s nested one, and deliberately so —
+/// `ToolErrorNotePolicy.direction` switches on this literal to reach the four bespoke
+/// arms (`tool_not_authorized`, `precondition_failed`, `plan_required`,
+/// `identical_write_loop`), each of which says something the generic "fix the arguments
+/// and retry" would contradict. What was NOT deliberate is that four sites built it four
+/// ways: two through `JSONSerialization`, two by concatenating strings.
+///
+/// The concatenated pair is why this exists. `makeUnavailableToolResult` escaped its
+/// message but not its tool name; `makeIdenticalWriteLoopResult` escaped NOTHING while
+/// interpolating a `path` that comes straight from the model's arguments — so
+/// `write_file` with a `"` in the path handed the model malformed JSON as the answer to
+/// a call it needed to correct.
+///
+/// Encoded through `JSONCoderFactory.makeWireEncoder()` — the same encoder
+/// `makeErrorEnvelope` uses, and NOT `JSONSerialization`, which the two
+/// already-serialized siblings reached for. `JSONSerialization` escapes forward
+/// slashes, and that is a measured defect rather than a cosmetic one: the wire
+/// encoder's own doc records small models transcribing `\/` out of a tool result into
+/// their `edit_file` anchors, which then never match — an unbreakable edit→re-read
+/// loop. `identical_write_loop` puts a PATH in this envelope, so it is exactly the
+/// shape that incident describes.
+///
+/// Total by contract, like `encodeArgsToJSON` next door and for the same reason: this is
+/// an ERROR path, so the values are least trustworthy exactly here.
+nonisolated func makeExecutorErrorEnvelope(
+    error: String,
+    message: String,
+    extra: [String: String] = [:]
+) -> String {
+    var payload = extra
+    payload["error"] = error
+    payload["message"] = message
+    guard let data = try? JSONCoderFactory.makeWireEncoder().encode(payload),
+          let str = String(data: data, encoding: .utf8)
+    else {
+        // Every field dropped but the discriminator, which is the one the policy reads.
+        return #"{"error":"\#(error)"}"#
+    }
+    return str
+}
+
 // MARK: - Tool-not-authorized (config flavour)
 
 /// Emits the executor-compatible `tool_not_authorized` envelope from a handler.
@@ -102,22 +148,11 @@ nonisolated func makeToolNotAuthorizedConfigResult(
     args: [String: Any],
     message: String
 ) -> ToolExecutionResult {
-    let payload: [String: String] = [
-        "error": "tool_not_authorized",
-        "tool": toolName,
-        "message": message,
-    ]
-    let outputJSON: String = {
-        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
-              let str = String(data: data, encoding: .utf8) else {
-            return #"{"error":"tool_not_authorized","tool":"\#(toolName)","message":"\#(message)"}"#
-        }
-        return str
-    }()
     return ToolExecutionResult(
         toolName: toolName,
         argumentsJSON: encodeArgsToJSON(args),
-        outputJSON: outputJSON,
+        outputJSON: makeExecutorErrorEnvelope(
+            error: "tool_not_authorized", message: message, extra: ["tool": toolName]),
         isError: true
     )
 }
@@ -147,22 +182,11 @@ nonisolated func makePlanRequiredResult(
     args: [String: Any],
     message: String
 ) -> ToolExecutionResult {
-    let payload: [String: String] = [
-        "error": "plan_required",
-        "tool": toolName,
-        "message": message,
-    ]
-    let outputJSON: String = {
-        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
-              let str = String(data: data, encoding: .utf8) else {
-            return #"{"error":"plan_required","tool":"\#(toolName)","message":"\#(message)"}"#
-        }
-        return str
-    }()
     return ToolExecutionResult(
         toolName: toolName,
         argumentsJSON: encodeArgsToJSON(args),
-        outputJSON: outputJSON,
+        outputJSON: makeExecutorErrorEnvelope(
+            error: "plan_required", message: message, extra: ["tool": toolName]),
         isError: true
     )
 }
@@ -257,6 +281,21 @@ nonisolated extension ToolExecutionResult {
             isError: isError,
             signal: signal
         )
+    }
+
+    /// The reader-side twin of `makeCancelledResult`: true when this result IS the unified
+    /// `cancelled` envelope (nested `error.code == "cancelled"`), whichever of its three
+    /// callers built it. Consumers that must treat a cancellation differently from a refusal
+    /// — the approval-gate logging seam, which mirrors refusals into both per-run logs but,
+    /// like `ToolRuntime`, never logs a cancellation — read this instead of re-parsing the
+    /// envelope themselves. The executor's top-level-string shape (`"error":"…"`) is never a
+    /// cancellation; non-envelope output is never one either.
+    var isCancellationEnvelope: Bool {
+        guard let dict = JSONUtilities.parseJSONDictionary(outputJSON),
+              let error = dict["error"] as? [String: Any],
+              let code = error["code"] as? String
+        else { return false }
+        return code == ToolErrorCode.cancelled.rawValue
     }
 }
 

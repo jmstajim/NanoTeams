@@ -85,6 +85,17 @@ final class TeamGenerationServicePromptOverrideTests: XCTestCase {
     /// The default model is a reasoning model (gpt-oss-20b) — instructing prose
     /// planning before the tool call degrades it AND feeds the jsonExtract
     /// fallback parser. The `## Output` contract is a direct single tool call.
+    /// The tool-selection table names every capability a generated role can be given for
+    /// running things. Until 2026-09-06 it named Xcode alone: a generated Node/Python/Go team
+    /// shipped with no way to run a test — the fabricated-build-claim shape
+    /// `GeneratedTeamBuilder` already warns about, reproduced by omission.
+    func testDefaultSystemPrompt_toolTableOffersBashForNonXcodeVerification() {
+        let p = TeamGenerationService.defaultSystemPrompt
+        XCTAssertTrue(p.contains("| Runs or verifies anything outside Xcode"), p)
+        XCTAssertTrue(p.contains("also add bash + bash_output on at least one role"), p)
+        XCTAssertTrue(p.contains("`bash` and `bash_output` come as a set"), p)
+    }
+
     func testDefaultSystemPrompt_noExplicitCoTInstruction() {
         let p = TeamGenerationService.defaultSystemPrompt
         XCTAssertFalse(p.contains("First plan"), "no prose-planning instruction before the tool call")

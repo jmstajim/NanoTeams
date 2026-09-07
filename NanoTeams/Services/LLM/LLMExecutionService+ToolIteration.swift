@@ -176,6 +176,7 @@ extension LLMExecutionService {
             return await handleStreamLoopBreak(
                 stepID: stepID, signal: loopSignal, task: task,
                 roleForMessage: roleForMessage, supervisorMode: supervisorMode,
+                allowedToolNames: authorization.allowed,
                 conversationMessages: &conversationMessages)
         }
         resetThinkingLoopBreakCount(stepID: stepID, taskID: task.id)
@@ -273,8 +274,14 @@ extension LLMExecutionService {
         let callsToExecute = streamResult.resolvedToolCalls.enumerated()
             .filter { gateResults[$0.offset] == nil }
             .map(\.element)
+        // The gated calls never reach the runtime, so they never reached either per-run log
+        // — the refusal was visible only as a `tool` turn in step_log.jsonl (KNOWN_ISSUES C2).
+        // Hand them to the logging seam `executeToolCalls` already owns; cancellations excluded.
+        let gateRefusals = Self.gateRefusalsToLog(
+            resolvedToolCalls: streamResult.resolvedToolCalls, gateResults: gateResults)
         let executedResults = await executeToolCalls(
             resolvedToolCalls: callsToExecute,
+            gateRefusals: gateRefusals,
             allowedToolNames: allowedToolNames,
             phaseWithheldToolNames: authorization.withheldByPhase,
             isPlanningPhase: authorization.isPlanningPhase,
@@ -315,6 +322,7 @@ extension LLMExecutionService {
             tracker: tracker,
             memoryStore: memoryStore,
             wireIsMidPlanning: authorization.wireIsMidPlanning,
+            allowedToolNames: allowedToolNames,
             conversationMessages: &conversationMessages,
             networkLogger: networkLogger
         )
@@ -359,6 +367,7 @@ extension LLMExecutionService {
             stepIndex: stepIndex,
             client: client,
             config: config,
+            networkLogger: networkLogger,
             conversationMessages: &conversationMessages
         ) {
             return autoAnswerStop

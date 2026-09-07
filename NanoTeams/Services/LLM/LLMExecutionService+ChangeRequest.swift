@@ -28,6 +28,18 @@ extension LLMExecutionService {
         let team = resolveTeam(task: task)
         let teamSettings = team?.settings ?? .default
 
+        // A change request is decided by a voting MEETING, so a team that cannot meet
+        // cannot hold one. The schema resolver already withholds `request_changes` there;
+        // this is the dispatcher's refusal for a call that arrives anyway.
+        switch team?.meetingAvailability ?? .available {
+        case .switchedOff:
+            return .failed("Change requests are decided in a team meeting, and meetings are off for this team. Continue without one.")
+        case .noPartner:
+            return .failed("Change requests are decided in a team meeting, and this team has no teammate to meet with. Continue without one.")
+        case .available:
+            break
+        }
+
         // Re-read fresh task to get current run state (the `task` parameter
         // is a snapshot captured at step start and doesn't reflect mutations from prior iterations).
         let run: Run
@@ -101,7 +113,9 @@ extension LLMExecutionService {
             topic: voting.topic,
             participantIDs: participantIDs,
             context: voting.context,
+            kind: .changeRequestVote,
             initiatingRole: requestingRole,
+            initiatorSeat: .presentsOnly,
             task: task,
             runIndex: runIndex,
             stepIndex: stepIndex,

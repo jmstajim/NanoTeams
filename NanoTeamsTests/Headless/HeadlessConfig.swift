@@ -55,6 +55,15 @@ struct HeadlessConfig: Codable {
     /// Xcode scheme name. Used for both run_xcodebuild and run_xcodetests tools.
     var selectedScheme: String?
 
+    /// The bash execution mode for the run, by RAW value: `off`, `alwaysConfirm` (Manual),
+    /// `manual` (Semi-automatic — the legacy spelling), `auto`. Omitted ⇒ the fresh-install
+    /// default (`BashConstants.defaultMode`, Manual) BY CONSTRUCTION: the runner builds its
+    /// configuration on an in-memory storage, never on the app's `UserDefaults`, so the
+    /// developer's own setting cannot leak in (the 2026-09-07 audit ran under the
+    /// developer's Semi-automatic and recorded it as the default). Typed like `provider`:
+    /// a typo fails at config load, not 15 minutes into the run.
+    var bashMode: BashExecutionMode?
+
     // MARK: - Resolved Helpers
 
     var resolvedProvider: LLMProvider {
@@ -81,6 +90,7 @@ struct HeadlessConfig: Codable {
         case teamTemplate, timeoutSeconds, maxLLMRetries
         case workFolderContext
         case visionModel, visionBaseURL, selectedScheme
+        case bashMode
         // Legacy: pre-rename configs used `projectDescription` for the same payload.
         case legacyProjectDescription = "projectDescription"
     }
@@ -113,6 +123,17 @@ struct HeadlessConfig: Codable {
         self.visionModel = try c.decodeIfPresent(String.self, forKey: .visionModel)
         self.visionBaseURL = try c.decodeIfPresent(String.self, forKey: .visionBaseURL)
         self.selectedScheme = try c.decodeIfPresent(String.self, forKey: .selectedScheme)
+        if let raw = try c.decodeIfPresent(String.self, forKey: .bashMode) {
+            guard let parsed = BashExecutionMode(rawValue: raw) else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .bashMode, in: c,
+                    debugDescription: "Unknown bashMode \"\(raw)\". Valid values: "
+                        + BashExecutionMode.allCases.map(\.rawValue).joined(separator: ", "))
+            }
+            self.bashMode = parsed
+        } else {
+            self.bashMode = nil
+        }
     }
 
     func encode(to encoder: Encoder) throws {
@@ -130,6 +151,7 @@ struct HeadlessConfig: Codable {
         try c.encodeIfPresent(visionModel, forKey: .visionModel)
         try c.encodeIfPresent(visionBaseURL, forKey: .visionBaseURL)
         try c.encodeIfPresent(selectedScheme, forKey: .selectedScheme)
+        try c.encodeIfPresent(bashMode, forKey: .bashMode)
         // Intentionally NOT writing `legacyProjectDescription` — re-encoding a
         // legacy file completes the migration in-place.
     }

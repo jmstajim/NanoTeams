@@ -79,6 +79,7 @@ final class ExpectedArtifactsPlumbingTests: XCTestCase {
 
         let batch = await service.executeToolCalls(
             resolvedToolCalls: toolCalls,
+            gateRefusals: [],
             allowedToolNames: ["create_artifact"],
             runtime: runtime,
             tracker: ToolCallTracker(),
@@ -125,6 +126,7 @@ final class ExpectedArtifactsPlumbingTests: XCTestCase {
 
         let batch = await service.executeToolCalls(
             resolvedToolCalls: toolCalls,
+            gateRefusals: [],
             allowedToolNames: ["create_artifact"],
             runtime: runtime,
             tracker: ToolCallTracker(),

@@ -258,36 +258,25 @@ final class ToolArgumentCoercionHandlerTests: XCTestCase {
                        "the surviving element must still scope the walk")
     }
 
-    // MARK: - write_file: create_dirs
+    // MARK: - write_file: parents are always created
 
-    /// `create_dirs` defaults to TRUE, so a rejected `"false"` does the exact
-    /// opposite of the instruction: it builds the tree the model refused. The
-    /// on-disk assertion is the load-bearing one — an error envelope alone
-    /// would not prove the directory was left alone.
-    func testWriteFile_createDirsAsStringFalse_refusesToCreateParent() async throws {
-        let r = await run("write_file",
-                          "{\"path\": \"nodir/f.txt\", \"content\": \"body\", \"create_dirs\": \"false\"}")
-
-        XCTAssertTrue(r.isError, "create_dirs:\"false\" with a missing parent must fail; got: \(r.outputJSON)")
-        XCTAssertEqual(errorCode(r.outputJSON), ToolErrorCode.notADirectory.rawValue,
-                       "got: \(r.outputJSON)")
-        XCTAssertFalse(fm.fileExists(atPath: tempDir.appendingPathComponent("nodir").path),
-                       "the parent directory must NOT have been created")
-    }
-
-    /// The other half of the bool contract: only unambiguous spellings are
-    /// honored, and anything else keeps the CALLER's default rather than
-    /// collapsing to `false`. A coercer that mapped unknown strings to false
-    /// would break every write into a not-yet-existing directory.
-    func testWriteFile_createDirsUncoercible_keepsCallerDefault() async throws {
-        let r = await run("write_file",
-                          "{\"path\": \"yesdir/f.txt\", \"content\": \"body\", \"create_dirs\": \"maybe\"}")
-
-        XCTAssertFalse(r.isError,
-                       "an uncoercible bool must fall back to the default (true), not to false; "
-                           + "got: \(r.outputJSON)")
-        XCTAssertTrue(fm.fileExists(atPath: tempDir.appendingPathComponent("yesdir/f.txt").path),
-                      "the file must have been written through a created parent directory")
+    /// `create_dirs` is gone: it was read by the handler and declared by no schema, so the
+    /// only model that could ever send `"false"` was one guessing at a parameter it had
+    /// never been shown — and the branch it opened rejected the write with a hint to send
+    /// the same undeclared name back. The description's promise ("creates parent
+    /// directories if needed") is now unconditional, and a stray `create_dirs` of any
+    /// spelling changes nothing.
+    func testWriteFile_missingParent_isCreated_andAStrayCreateDirsChangesNothing() async throws {
+        for stray in ["\"false\"", "false", "\"maybe\""] {
+            let dir = "nodir_\(stray.filter(\.isLetter))"
+            let r = await run("write_file",
+                              "{\"path\": \"\(dir)/f.txt\", \"content\": \"body\", \"create_dirs\": \(stray)}")
+            XCTAssertFalse(r.isError, "got: \(r.outputJSON)")
+            XCTAssertTrue(fm.fileExists(atPath: tempDir.appendingPathComponent("\(dir)/f.txt").path),
+                          "the parent must have been created regardless of `create_dirs`")
+        }
+        XCTAssertNil(WriteFileTool.schema.parameters.properties?["create_dirs"],
+                     "the parameter is not on the wire — nothing the model was never shown may steer a write")
     }
 
     // MARK: - edit_file: replace_all

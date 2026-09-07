@@ -3,15 +3,26 @@ import Foundation
 // MARK: - Bundled Content Reconcile
 //
 // Version-bump-triggered pass that brings a work folder's stored teams / roles /
-// prompt templates / settings / tools back in line with the bundled definitions
+// prompt templates / tools back in line with the bundled definitions (team settings
+// only additively — see the invariants below)
 // shipped in the current app binary. Called from `migrateIfNeeded` whenever
 // `AppVersion.current > state.lastAppliedAppVersion`.
 //
 // Design invariants:
-//  * Scalar fields of system roles (`prompt`, `toolIDs`, `dependencies`,
-//    `icon`, `iconColor`, `iconBackground`) are overwritten unconditionally.
-//    User customizations to system-role fields are a known trade-off, documented
-//    in the plan — inline apply without preview.
+//  * Scalar fields of system roles (`prompt`, `meetingGuidance`, `toolIDs`, `dependencies`,
+//    `icon`, `iconColor`, `iconBackground`, `usePlanningPhase`) are overwritten
+//    unconditionally. User customizations to system-role fields are a known
+//    trade-off, documented in the plan — inline apply without preview.
+//  * Team settings are the user's after first creation: a bump never rewrites a value
+//    the Team Settings editor can change (limits, acceptance mode and checkpoints, Ask
+//    Supervisor mode, the meetings switch, the coordinator, invitable roles, the
+//    hierarchy). The bundle contributes STRUCTURE only — a re-added system role's
+//    `reportsTo` edge and its `invitableRoles` membership when the stored set is
+//    explicit (empty means "everyone" and is left alone) — and step 5 heals a
+//    coordinator that names nobody. A changed bundled default (a new limit, another
+//    acceptance mode) therefore reaches only a team created afresh from the template.
+//    Until 2026-09-06 a bump reset every setting; until 2026-09-07 all but three, so a
+//    user's limits and acceptance choices were lost on every update.
 //  * Structural changes are **additive only**: missing system roles and missing
 //    system artifacts are added; existing entries (including roles no longer
 //    present in the bundled template) are never removed.
@@ -50,8 +61,9 @@ nonisolated extension NTMSRepository {
     /// Apply all bundled-content updates to teams and tools.
     ///
     /// - Parameters:
-    ///   - teams: inout — scalar fields, prompt templates, settings, and
-    ///     additive structure are updated in place.
+    ///   - teams: inout — scalar fields, prompt templates and additive structure
+    ///     (roles, artifacts, a re-added role's settings entries) are updated in
+    ///     place; stored team settings are never rewritten.
     ///   - tools: inout — merged with `ToolDefinitionRecord.defaultDefinitions()`.
     ///   - paths: used for the running-role scan (`internalTasksDir`).
     /// Which teams a pass is allowed to touch.
@@ -227,6 +239,7 @@ nonisolated extension NTMSRepository {
 
                 let role = teams[i].roles[r]
                 let nextPrompt = bundled.prompt
+                let nextMeetingGuidance = bundled.meetingGuidance
                 // The Autovisor manager's tool policy is owned by
                 // `syncAutovisorTeamToTemplate` (runs on every open): it union-enforces the
                 // mandatory tools, preserves the user's choices among the allowed-optional
@@ -266,6 +279,7 @@ nonisolated extension NTMSRepository {
                 let nextUsesPlanning = bundled.usePlanningPhase
 
                 let changed = role.prompt != nextPrompt
+                    || role.meetingGuidance != nextMeetingGuidance
                     || role.toolIDs != nextToolIDs
                     || role.dependencies != nextDeps
                     || role.icon != nextIcon
@@ -275,6 +289,7 @@ nonisolated extension NTMSRepository {
 
                 if changed {
                     teams[i].roles[r].prompt = nextPrompt
+                    teams[i].roles[r].meetingGuidance = nextMeetingGuidance
                     teams[i].roles[r].toolIDs = nextToolIDs
                     teams[i].roles[r].dependencies = nextDeps
                     teams[i].roles[r].icon = nextIcon
@@ -302,14 +317,8 @@ nonisolated extension NTMSRepository {
                 }
             }
 
-            // 3. Team settings defaults.
-            if let bundledTeam = bundledByTemplateID[tid] {
-                let bundledSettings = bundledTeam.settings
-                if teams[i].settings != bundledSettings {
-                    teams[i].settings = bundledSettings
-                    teamChanged = true
-                }
-            }
+            // 3. Team settings are NOT rewritten — they are the user's (see the header).
+            //    The only settings writes below are additive, for a role step 4 re-adds.
 
             // 4. Team structure — additive: add missing system roles/artifacts,
             //    never remove stored entries the user may be using. Respects
@@ -325,6 +334,14 @@ nonisolated extension NTMSRepository {
                     teams[i].roles.append(bundledRole)
                     if let supervisorID = bundledTeam.settings.hierarchy.reportsTo[bundledRole.id] {
                         teams[i].settings.hierarchy.reportsTo[bundledRole.id] = supervisorID
+                    }
+                    // `Team.removeRole` drops a role from `invitableRoles`, so a role that
+                    // comes back must be re-admitted to an EXPLICIT list — otherwise it
+                    // returns silently un-invitable. An empty list means "everyone" and
+                    // must stay empty. The Supervisor is never in the list (it is not a
+                    // meeting participant), even if a hand-edited file lost its row.
+                    if !bundledRole.isSupervisor, !teams[i].settings.invitableRoles.isEmpty {
+                        teams[i].settings.invitableRoles.insert(bundledRole.id)
                     }
                     teamChanged = true
                 }
@@ -356,6 +373,13 @@ nonisolated extension NTMSRepository {
                     teams[i].graphLayout = nextLayout
                     teamChanged = true
                 }
+            }
+
+            // 5. The coordinator must name a live role after step 4 moved the roster
+            //    (a coordinator the user deleted heals to the default rule; there is
+            //    no "Auto"). The one settings field a bump may still change.
+            if teams[i].healMeetingCoordinator() {
+                teamChanged = true
             }
 
             if teamChanged {

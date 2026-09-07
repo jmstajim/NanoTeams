@@ -105,6 +105,30 @@ nonisolated enum GeneratedTeamBuilder {
             roles.append(role)
         }
 
+        // A chat-mode team where NO role has inputs or outputs is a team of observers:
+        // `TeamEngine.findReadyRoles` skips every one of them and the run ends on "No roles
+        // ready to execute" before anyone has spoken. Seen live 2026-09-07d (`vague-short`,
+        // qwen3.8: one role, `requires_artifacts: []`). Every such role becomes a chat
+        // participant — `Supervisor Task` as its input is exactly what the prompt asks for
+        // and what the model omitted. A team with at least one executing role keeps its
+        // observers (the Discussion Club shape), and a production team is never touched:
+        // there the missing edge is a design decision.
+        //
+        // The test is `filteredSupervisorRequires`, NOT `config.supervisorRequires`: the A5
+        // filter above drops requirements no role produces, so a config that asks for a
+        // deliverable nobody makes IS a chat team by the time the engine sees it — and that
+        // is precisely the shape the two defects arrive in together.
+        let workerRoles = roles.filter { !$0.isSupervisor }
+        if filteredSupervisorRequires.isEmpty, !workerRoles.isEmpty, workerRoles.allSatisfy(\.isObserver) {
+            for index in roles.indices where !roles[index].isSupervisor {
+                roles[index].dependencies.requiredArtifacts = [SystemTemplates.supervisorTaskArtifactName]
+            }
+            warnings.append(
+                "Chat-mode team where no role could execute: every role had neither inputs nor outputs, "
+                    + "so the engine would have skipped them all. Each now requires the Supervisor Task and "
+                    + "takes part in the chat."
+            )
+        }
         var artifacts: [TeamArtifact] = []
         let supervisorTaskArtifactName = SystemTemplates.supervisorTaskArtifactName
         if let stTemplate = SystemTemplates.artifacts[supervisorTaskArtifactName] {
@@ -134,16 +158,14 @@ nonisolated enum GeneratedTeamBuilder {
         }
         let invitableRoles = Set(nonSupervisorRoles.map(\.id))
 
-        // Auto mode by default: nil means the role that initiates each
-        // meeting becomes its effective coordinator (see `TeamSettings`).
-        // LLM-generated teams have no basis to pick a "good" designated
-        // coordinator; Auto is the first-class user-facing option that
-        // works without committing to a specific role.
+        // Every team names a coordinator (there is no "Auto" — see `TeamSettings`).
+        // The generator is not asked to pick one: the same deterministic rule the
+        // bootstrap heal uses — the first role that can start a meeting, else the first
+        // role — chooses, and the user can change it in Team Settings.
         let settings = TeamSettings(
             hierarchy: TeamHierarchy(reportsTo: reportsTo),
-            meetingCoordinatorRoleID: nil,
+            meetingCoordinatorRoleID: TeamSettings.defaultCoordinatorID(among: roles),
             invitableRoles: invitableRoles,
-            supervisorCanBeInvited: false,
             limits: .default,
             defaultAcceptanceMode: config.acceptanceMode ?? .finalOnly,
             supervisorMode: config.supervisorMode ?? .manual
@@ -207,13 +229,23 @@ nonisolated enum GeneratedTeamBuilder {
 
     // MARK: - Private
 
-    /// Validates tool names against the registry. Returns `(validNames, droppedNames)`.
+    /// Validates tool names against the set a TEAM ROLE may hold — not the whole registry.
+    /// Returns `(validNames, droppedNames)`. Excluded: tools no role may hold
+    /// (`create_team`), the delegation pack (auto-injected from settings, never stored) and
+    /// the ten Autovisor management tools, which define the manager and whose signals only
+    /// its step loop interprets. Until 2026-09-06 the whole registry was valid, so a
+    /// generated role could be handed `control_task` or `set_work_folder_context` — the
+    /// latter rewrites the context every role of every task in the folder reads.
+    static let roleEligibleToolNames: Set<String> = Set(
+        ToolHandlerRegistry.allTypes.filter { $0.availableToRoles }.map { $0.name })
+        .subtracting(ToolHandlerRegistry.delegationToolsExcludedFromToolIDs)
+        .subtracting(AutovisorConstants.managerMandatoryToolIDs)
+
     private static func validateToolNames(_ names: [String]) -> (valid: [String], dropped: [String]) {
-        let validNames = Set(ToolHandlerRegistry.allTypes.map { $0.name })
         var valid: [String] = []
         var dropped: [String] = []
         for name in names {
-            if validNames.contains(name) { valid.append(name) } else { dropped.append(name) }
+            if roleEligibleToolNames.contains(name) { valid.append(name) } else { dropped.append(name) }
         }
         return (valid, dropped)
     }

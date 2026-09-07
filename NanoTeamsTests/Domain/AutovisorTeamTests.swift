@@ -340,6 +340,28 @@ final class AutovisorTeamTests: XCTestCase {
         }
     }
 
+    /// Every tool name in the manager's prompt is either in its toolset or a `manage_role`
+    /// verb spelled as `manage_role <verb>`. `request_changes` is BOTH a step tool the manager
+    /// does not hold and a `manage_role` action; the prompt said the bare name twice, so a
+    /// model reading it as a tool call got `tool_not_authorized` (2026-09-06).
+    func testManagerPrompt_namesOnlyHeldToolsOrVerbForms() throws {
+        let prompt = SystemTemplates.rolePrompts["autovisor"] ?? ""
+        let manager = try XCTUnwrap(TeamTemplateFactory.autovisor().nonSupervisorRoles.first)
+        let held = Set(manager.toolIDs)
+        let all = ToolHandlerRegistry.allSchemas.map(\.name)
+        XCTAssertGreaterThan(all.count, 40, "anti-vacuum: the registry held 50 tools on 2026-09-06")
+        var offenders: [String] = []
+        for name in all where !held.contains(name) {
+            let verbForm = prompt.replacingOccurrences(of: "manage_role \(name)", with: "")
+            if verbForm.range(of: "\\b\(name)\\b", options: .regularExpression) != nil {
+                offenders.append(name)
+            }
+        }
+        XCTAssertTrue(offenders.isEmpty,
+                      "manager prompt names tools it does not hold as bare tool names: \(offenders) — "
+                          + "spell a manage_role verb as `manage_role <verb>` or drop the mention")
+    }
+
     func testManagerTeam_excludedFromBundledTemplates() {
         XCTAssertFalse(
             TeamTemplateFactory.allTemplates.contains { $0.templateID == AutovisorConstants.teamTemplateID },

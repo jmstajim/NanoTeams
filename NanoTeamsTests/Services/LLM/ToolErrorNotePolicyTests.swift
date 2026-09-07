@@ -35,7 +35,7 @@ final class ToolErrorNotePolicyTests: XCTestCase {
             envelope.outputJSON.contains("for this role"),
             "the scope is the ENVELOPE's job: \(envelope.outputJSON)")
 
-        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope))
+        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope, allowedToolNames: []))
 
         XCTAssertTrue(
             direction.contains("do not retry 'list_files'"),
@@ -70,8 +70,8 @@ final class ToolErrorNotePolicyTests: XCTestCase {
         XCTAssertTrue(meeting.outputJSON.contains("in this meeting"), meeting.outputJSON)
         XCTAssertFalse(meeting.outputJSON.contains("for this role"), meeting.outputJSON)
 
-        let meetingDirection = try XCTUnwrap(ToolErrorNotePolicy.direction(for: meeting))
-        let roleDirection = try XCTUnwrap(ToolErrorNotePolicy.direction(for: role))
+        let meetingDirection = try XCTUnwrap(ToolErrorNotePolicy.direction(for: meeting, allowedToolNames: []))
+        let roleDirection = try XCTUnwrap(ToolErrorNotePolicy.direction(for: role, allowedToolNames: []))
 
         XCTAssertTrue(
             meetingDirection.contains("do not retry 'write_file'"),
@@ -91,7 +91,7 @@ final class ToolErrorNotePolicyTests: XCTestCase {
             outputJSON: #"{"error":"tool_not_authorized","tool":"delete_file"}"#,
             isError: true)
 
-        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope))
+        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope, allowedToolNames: []))
 
         XCTAssertTrue(direction.contains("do not retry 'delete_file'"), "got: \(direction)")
     }
@@ -114,7 +114,7 @@ final class ToolErrorNotePolicyTests: XCTestCase {
         XCTAssertTrue(envelope.outputJSON.contains("again"), envelope.outputJSON)
 
         XCTAssertNil(
-            ToolErrorNotePolicy.direction(for: envelope),
+            ToolErrorNotePolicy.direction(for: envelope, allowedToolNames: []),
             "the envelope names the tool, the remedy and the retry — there is nothing left to add")
     }
 
@@ -131,7 +131,7 @@ final class ToolErrorNotePolicyTests: XCTestCase {
             envelope.outputJSON.contains(".git"),
             "the blocker is named by the ENVELOPE: \(envelope.outputJSON)")
 
-        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope))
+        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope, allowedToolNames: []))
 
         XCTAssertTrue(direction.contains("Do not retry 'git_add'"), "got: \(direction)")
         XCTAssertTrue(
@@ -157,7 +157,7 @@ final class ToolErrorNotePolicyTests: XCTestCase {
         XCTAssertTrue(envelope.outputJSON.contains("Identical write"), envelope.outputJSON)
         XCTAssertTrue(envelope.outputJSON.contains("src/foo.swift"), envelope.outputJSON)
 
-        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope))
+        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope, allowedToolNames: []))
 
         XCTAssertTrue(direction.contains("do not re-issue"), "got: \(direction)")
         XCTAssertTrue(direction.contains("Read the file's current state"), "got: \(direction)")
@@ -205,7 +205,7 @@ final class ToolErrorNotePolicyTests: XCTestCase {
             outputJSON: #"{"ok":false,"error":{"code":"ANCHOR_NOT_FOUND","message":"old_text not found in file."}}"#,
             isError: true)
 
-        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope))
+        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope, allowedToolNames: []))
 
         XCTAssertTrue(direction.contains("src/foo.swift"), "got: \(direction)")
         XCTAssertTrue(direction.lowercased().contains("exactly"), "got: \(direction)")
@@ -226,7 +226,7 @@ final class ToolErrorNotePolicyTests: XCTestCase {
             outputJSON: #"{"ok":false,"error":{"code":"ANCHOR_NOT_FOUND","message":"old_text not found"}}"#,
             isError: true)
 
-        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope))
+        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope, allowedToolNames: []))
 
         XCTAssertTrue(direction.contains("the file"), "got: \(direction)")
         XCTAssertFalse(direction.contains("''"), "got: \(direction)")
@@ -250,7 +250,7 @@ final class ToolErrorNotePolicyTests: XCTestCase {
         XCTAssertTrue(result.outputJSON.contains("none of its lines appear"), result.outputJSON)
 
         XCTAssertNil(
-            ToolErrorNotePolicy.direction(for: result),
+            ToolErrorNotePolicy.direction(for: result, allowedToolNames: []),
             "a typed diagnosis is the whole answer — restating it was the defect")
     }
 
@@ -270,33 +270,50 @@ final class ToolErrorNotePolicyTests: XCTestCase {
         XCTAssertTrue(result.outputJSON.contains("interior_whitespace_mismatch"), result.outputJSON)
 
         XCTAssertNil(
-            ToolErrorNotePolicy.direction(for: result),
+            ToolErrorNotePolicy.direction(for: result, allowedToolNames: []),
             "the typed interior diagnosis is the whole answer, like its three siblings")
     }
 
-    /// The legacy diagnoses compose their message as `anchorNotFoundMessage + " " + hint`
-    /// (`FileWriteHandlers`), so the hint is ALREADY on the wire. Restating it put the same
-    /// sentence there twice.
+    /// Inverted 2026-09-06, with the state it pins. An anchor with more lines than the
+    /// file used to compose its message as `anchorNotFoundMessage + " " + hint`, and the
+    /// generic half told the model to "make sure it matches exactly including whitespace
+    /// and indentation" — advice that cannot help when the anchor simply does not fit, and
+    /// which this file's sibling calls "actively WRONG" for the states it does not apply
+    /// to. Both former legacy states now write their own complete message, so the whole
+    /// six-state family is answered by the envelope alone.
     ///
-    /// Driven through the real handler: a fixture that separates message from hint is not a
-    /// shape production emits, and pinning against it is how the duplication stayed invisible.
+    /// Driven through the real handler on purpose: a hand-built fixture that separates
+    /// message from hint is not a shape production emits.
     ///
-    /// RED: append `details.hint` unconditionally → the last assertion fails.
-    func testAnchorNotFound_legacyHint_isNotRestated_becauseTheEnvelopeCarriesIt() async throws {
+    /// RED: restore the composed `anchorNotFoundMessage + hint` message → the envelope
+    /// carries the contradictory sentence again and the second assertion fails.
+    func testAnchorNotFound_shapeDiagnosis_isTheWholeAnswer() async throws {
         let result = try await runEdit(fileContents: "a\nb\n", oldText: "a\nb\nc\nd")
 
         XCTAssertTrue(
-            result.outputJSON.contains("more lines (4) than the file (2)"),
-            "precondition: the ENVELOPE carries the hint: \(result.outputJSON)")
-
-        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(for: result))
-
-        XCTAssertTrue(
-            direction.contains("re-read the region"),
-            "the direction still carries what the envelope lacks, got: \(direction)")
+            result.outputJSON.contains("cannot match anywhere"),
+            "the envelope states the shape problem: \(result.outputJSON)")
         XCTAssertFalse(
-            direction.contains("more lines (4) than the file (2)"),
-            "the hint is already on the wire one turn earlier, got: \(direction)")
+            result.outputJSON.contains("whitespace and indentation"),
+            "…and must not also advise a whitespace fix that cannot help: \(result.outputJSON)")
+
+        XCTAssertNil(
+            ToolErrorNotePolicy.direction(for: result, allowedToolNames: []),
+            "like its four siblings, the typed diagnosis leaves nothing to add")
+    }
+
+    /// The other former legacy state, and the one whose composed message CONTRADICTED
+    /// itself: "matches exactly including whitespace" immediately followed by "old_text is
+    /// whitespace-only — anchor on adjacent non-blank lines instead".
+    func testAnchorNotFound_whitespaceOnlyAnchor_doesNotAdviseMatchingWhitespace() async throws {
+        let result = try await runEdit(fileContents: "a\n\nb\n", oldText: "   ")
+
+        XCTAssertTrue(result.isError, result.outputJSON)
+        XCTAssertTrue(result.outputJSON.contains("whitespace-only"), result.outputJSON)
+        XCTAssertFalse(
+            result.outputJSON.contains("matches exactly including whitespace"),
+            "the advice that produced the failure must not be the advice given: \(result.outputJSON)")
+        XCTAssertNil(ToolErrorNotePolicy.direction(for: result, allowedToolNames: []))
     }
 
     /// The hint IS appended when no envelope message carried it — a malformed envelope is the
@@ -308,7 +325,7 @@ final class ToolErrorNotePolicyTests: XCTestCase {
             outputJSON: #"{"ok":false,"error":{"code":"ANCHOR_NOT_FOUND","details":{"hint":"Lines match ignoring indentation near line 3 — check leading whitespace (tabs vs spaces)."}}}"#,
             isError: true)
 
-        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope))
+        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope, allowedToolNames: []))
 
         XCTAssertTrue(direction.contains("near line 3"), "got: \(direction)")
         XCTAssertTrue(
@@ -325,7 +342,7 @@ final class ToolErrorNotePolicyTests: XCTestCase {
             outputJSON: #"{"ok":false,"error":{"code":"ANCHOR_NOT_FOUND","details":{"hint":""}}}"#,
             isError: true)
 
-        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope))
+        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope, allowedToolNames: []))
 
         XCTAssertFalse(direction.hasSuffix(" "), "got: '\(direction)'")
     }
@@ -344,7 +361,7 @@ final class ToolErrorNotePolicyTests: XCTestCase {
         XCTAssertTrue(result.outputJSON.contains("matches 2 "), result.outputJSON)
 
         XCTAssertNil(
-            ToolErrorNotePolicy.direction(for: result),
+            ToolErrorNotePolicy.direction(for: result, allowedToolNames: []),
             "the envelope names the count AND the remedy — restating it was the defect")
     }
 
@@ -356,7 +373,7 @@ final class ToolErrorNotePolicyTests: XCTestCase {
             outputJSON: #"{"ok":false,"error":{"code":"ANCHOR_AMBIGUOUS"}}"#,
             isError: true)
 
-        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope))
+        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope, allowedToolNames: []))
 
         XCTAssertTrue(direction.contains("more surrounding lines"), "got: \(direction)")
         XCTAssertFalse(
@@ -375,7 +392,7 @@ final class ToolErrorNotePolicyTests: XCTestCase {
             outputJSON: #"{"error":{"code":"INVALID_ARGS","message":"missing required field 'path'"}}"#,
             isError: true)
 
-        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope))
+        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope, allowedToolNames: []))
 
         XCTAssertTrue(direction.contains("[INVALID_ARGS]"), "got: \(direction)")
         XCTAssertTrue(direction.contains("Fix the arguments and retry"), "got: \(direction)")
@@ -387,6 +404,19 @@ final class ToolErrorNotePolicyTests: XCTestCase {
             "the handler's message is the envelope's, got: \(direction)")
     }
 
+    /// A path shape the sandbox refuses reaches the model as `INVALID_ARGS` since 2026-09-07,
+    /// so the direction is the fix-and-retry one. As `PERMISSION_DENIED` it fell into the
+    /// `_DENIED` arm and told the model NOT to retry a call whose own message said how to.
+    func testSandboxPathRejection_directsToFixTheArguments_neverDoNotRetry() async throws {
+        let result = await ToolErrorHandler.execute(toolName: ToolNames.readFile, args: ["path": "../x"]) {
+            throw SandboxPathError.parentTraversalNotAllowed("../x")
+        }
+        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(for: result, allowedToolNames: [ToolNames.readFile]))
+
+        XCTAssertTrue(direction.contains("Fix the arguments and retry"), "got: \(direction)")
+        XCTAssertFalse(direction.contains("Do not retry"), "got: \(direction)")
+    }
+
     /// The typed code is a DISCRIMINATOR the direction is chosen by, not a restatement — it
     /// stays, so the model can tell don't-retry from maybe-retry-later from fix-args.
     func testDefault_keepsTheTypedCode_asTheRecoveryDiscriminator() throws {
@@ -396,7 +426,7 @@ final class ToolErrorNotePolicyTests: XCTestCase {
             outputJSON: #"{"error":{"code":"DELEGATION_DENIED","message":"role is not a top-level delegator"}}"#,
             isError: true)
 
-        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope))
+        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope, allowedToolNames: []))
 
         XCTAssertTrue(direction.contains("DELEGATION_DENIED"), "got: \(direction)")
         XCTAssertTrue(direction.contains("Do not retry"), "got: \(direction)")
@@ -414,7 +444,7 @@ final class ToolErrorNotePolicyTests: XCTestCase {
             outputJSON: #"{"error":{"message":"legacy shape, no code"}}"#,
             isError: true)
 
-        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope))
+        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope, allowedToolNames: []))
 
         XCTAssertFalse(direction.contains("[]"), "got: \(direction)")
         XCTAssertFalse(direction.contains("legacy shape, no code"), "got: \(direction)")
@@ -426,7 +456,7 @@ final class ToolErrorNotePolicyTests: XCTestCase {
         let envelope = ToolExecutionResult(
             toolName: "write_file", argumentsJSON: "{}", outputJSON: "{}", isError: true)
 
-        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope))
+        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope, allowedToolNames: []))
 
         XCTAssertTrue(direction.contains("'write_file'"), "got: \(direction)")
         XCTAssertTrue(direction.contains("otherwise choose a different approach"), "got: \(direction)")
@@ -441,7 +471,7 @@ final class ToolErrorNotePolicyTests: XCTestCase {
             outputJSON: #"{"error":{"code":"DELEGATION_TIMED_OUT","message":"timed out after 30 minutes"}}"#,
             isError: true)
 
-        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope))
+        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope, allowedToolNames: []))
 
         XCTAssertTrue(direction.contains("transient"), "got: \(direction)")
         XCTAssertFalse(direction.contains("correct arguments"), "got: \(direction)")
@@ -456,13 +486,103 @@ final class ToolErrorNotePolicyTests: XCTestCase {
             outputJSON: #"{"ok":false,"error":{"code":"bash_denied","message":"Denied by rule 'rm'."}}"#,
             isError: true)
 
-        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope))
+        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope, allowedToolNames: []))
 
         XCTAssertTrue(direction.contains("Do NOT retry this command"), "got: \(direction)")
         XCTAssertTrue(
             direction.contains("the block is set by policy, not by your arguments"),
             "got: \(direction)")
         XCTAssertFalse(direction.contains("Denied by rule 'rm'."), "got: \(direction)")
+    }
+
+    // MARK: - R3.8.6: the escalation names the channel the role holds, or nothing
+
+    private static let bashDenied = ToolExecutionResult(
+        toolName: "bash", argumentsJSON: #"{"command":"rm -rf /"}"#,
+        outputJSON: #"{"ok":false,"error":{"code":"bash_denied","message":"Denied by rule 'rm'."}}"#,
+        isError: true)
+
+    private static let gitMissing = LLMExecutionService.makeUnavailableToolResult(
+        call: StepToolCall(name: "git_add", argumentsJSON: #"{"paths":["a"]}"#),
+        canonicalName: "git_add", scope: "for this role", reason: .gitRepoMissing)
+
+    /// "…or ask the Supervisor" went to every role, including the Autovisor — which holds no
+    /// `ask_supervisor` — and a bash role that may not either: an instruction to write prose
+    /// the runtime does not detect. The clause now names the tool the role holds
+    /// (`wait_for_events` identifies the manager, then `ask_supervisor`) or is dropped.
+    func testBashDenied_namesTheEscalationChannelTheRoleHolds_orNone() throws {
+        let held = try XCTUnwrap(ToolErrorNotePolicy.direction(
+            for: Self.bashDenied, allowedToolNames: [ToolNames.bash, ToolNames.askSupervisor]))
+        XCTAssertTrue(held.hasSuffix("already-approved command, or call ask_supervisor."), held)
+
+        let manager = try XCTUnwrap(ToolErrorNotePolicy.direction(
+            for: Self.bashDenied,
+            allowedToolNames: [ToolNames.bash, ToolNames.waitForEvents, ToolNames.askSupervisor]))
+        XCTAssertTrue(manager.hasSuffix(", or call wait_for_events."),
+                      "wait_for_events identifies the manager and wins: \(manager)")
+
+        let neither = try XCTUnwrap(ToolErrorNotePolicy.direction(
+            for: Self.bashDenied, allowedToolNames: [ToolNames.bash]))
+        XCTAssertTrue(neither.hasSuffix("already-approved command."), neither)
+        XCTAssertFalse(neither.lowercased().contains("supervisor"),
+                       "a role with no channel is told nothing about escalating: \(neither)")
+    }
+
+    // MARK: - approval_unavailable (A15, 2026-09-07): no channel, from either envelope shape
+
+    private static let gateApprovalUnavailable = ToolExecutionResult(
+        toolName: "bash", argumentsJSON: #"{"command":"python3 test.py"}"#,
+        outputJSON: makeErrorEnvelope(
+            code: .approvalUnavailable,
+            message: "This command needs human approval (Command is not pre-approved and is not read-only — requires review.), and this run has no human to give it. Read-only commands run without approval; nothing inside the run can approve the rest — take a different step."),
+        isError: true)
+
+    private static let executorApprovalUnavailable = LLMExecutionService.makeUnavailableToolResult(
+        call: StepToolCall(name: "bash", argumentsJSON: #"{"command":"python3 test.py"}"#),
+        canonicalName: "bash", scope: "for this role", reason: .approverUnavailable)
+
+    /// The 2026-09-07 audit's ring: the gate refused for want of a human, the note said "or call
+    /// ask_supervisor", the autonomous Supervisor "approved", the gate refused again. The arm
+    /// for this code names NO channel, whichever tool the role holds — the channel reaches the
+    /// answerer that cannot approve — and says the block is not the arguments.
+    func testApprovalUnavailable_namesNoChannel_whateverTheRoleHolds() throws {
+        for envelope in [Self.gateApprovalUnavailable, Self.executorApprovalUnavailable] {
+            for held: Set<String> in [[ToolNames.bash], [ToolNames.bash, ToolNames.askSupervisor],
+                                      [ToolNames.bash, ToolNames.waitForEvents, ToolNames.askSupervisor]] {
+                let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope, allowedToolNames: held))
+                XCTAssertTrue(direction.contains("Do NOT retry"), direction)
+                XCTAssertFalse(direction.contains("ask_supervisor"), "no channel: \(direction)")
+                XCTAssertFalse(direction.contains("wait_for_events"), "no channel: \(direction)")
+                XCTAssertFalse(direction.lowercased().contains("supervisor"), direction)
+                XCTAssertTrue(direction.contains("no one in this run can approve"), direction)
+            }
+        }
+    }
+
+    /// The gate's UPPERCASE `ToolErrorCode` and the executor's lowercase literal are one arm.
+    func testApprovalUnavailable_bothSpellingsReachTheSameArm() throws {
+        let fromGate = try XCTUnwrap(ToolErrorNotePolicy.direction(
+            for: Self.gateApprovalUnavailable, allowedToolNames: [ToolNames.askSupervisor]))
+        let fromExecutor = try XCTUnwrap(ToolErrorNotePolicy.direction(
+            for: Self.executorApprovalUnavailable, allowedToolNames: [ToolNames.askSupervisor]))
+        XCTAssertEqual(fromGate, fromExecutor)
+    }
+
+    /// The precondition envelopes used to carry their own "ask the supervisor whether to
+    /// initialize one" — a builder that cannot know the schema. The fact stays in the
+    /// envelope; the channel is this policy's to add, and only when held.
+    func testPreconditionFailed_namesTheEscalationChannelTheRoleHolds_orNone() throws {
+        XCTAssertFalse(Self.gitMissing.outputJSON.lowercased().contains("supervisor"),
+                       "the envelope states the fact, never the channel: \(Self.gitMissing.outputJSON)")
+
+        let held = try XCTUnwrap(ToolErrorNotePolicy.direction(
+            for: Self.gitMissing, allowedToolNames: [ToolNames.askSupervisor]))
+        XCTAssertTrue(held.hasSuffix("If the step cannot proceed without it, call ask_supervisor."), held)
+
+        let neither = try XCTUnwrap(ToolErrorNotePolicy.direction(
+            for: Self.gitMissing, allowedToolNames: [ToolNames.readFile]))
+        XCTAssertTrue(neither.hasSuffix("proceed without this step."), neither)
+        XCTAssertFalse(neither.lowercased().contains("supervisor"), neither)
     }
 
     // MARK: - The structural pin
@@ -500,6 +620,7 @@ final class ToolErrorNotePolicyTests: XCTestCase {
             ("ANCHOR_AMBIGUOUS",
              try runEdit(fileContents: "m  \nn\nz\nm\t\nn\n", oldText: "m\nn", fileName: "amb.txt")),
         ]
+        rows.append(("APPROVAL_UNAVAILABLE (gate)", Self.gateApprovalUnavailable))
         // Every executor rejection, through the real emitter rather than a literal.
         for reason in LLMExecutionService.ToolUnavailabilityReason.allCases {
             let call = StepToolCall(name: "git_add", argumentsJSON: #"{"paths":["a"]}"#)
@@ -542,7 +663,7 @@ final class ToolErrorNotePolicyTests: XCTestCase {
                 message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                 "anti-vacuity: \(row.label)'s message is blank")
 
-            guard let direction = ToolErrorNotePolicy.direction(for: row.envelope) else { continue }
+            guard let direction = ToolErrorNotePolicy.direction(for: row.envelope, allowedToolNames: []) else { continue }
             directionsEmitted += 1
             XCTAssertFalse(
                 direction.contains(message),
@@ -581,10 +702,10 @@ final class ToolErrorNotePolicyTests: XCTestCase {
 
         let cancelled = makeCancelledResult(toolName: ToolNames.bash, argumentsJSON: "{}")
 
-        XCTAssertNil(ToolErrorNotePolicy.direction(for: planRequired), "plan_required")
-        XCTAssertNil(ToolErrorNotePolicy.direction(for: anchorNotFound), "ANCHOR_NOT_FOUND (typed)")
-        XCTAssertNil(ToolErrorNotePolicy.direction(for: anchorAmbiguous), "ANCHOR_AMBIGUOUS")
-        XCTAssertNil(ToolErrorNotePolicy.direction(for: cancelled), "CANCELLED")
+        XCTAssertNil(ToolErrorNotePolicy.direction(for: planRequired, allowedToolNames: []), "plan_required")
+        XCTAssertNil(ToolErrorNotePolicy.direction(for: anchorNotFound, allowedToolNames: []), "ANCHOR_NOT_FOUND (typed)")
+        XCTAssertNil(ToolErrorNotePolicy.direction(for: anchorAmbiguous, allowedToolNames: []), "ANCHOR_AMBIGUOUS")
+        XCTAssertNil(ToolErrorNotePolicy.direction(for: cancelled, allowedToolNames: []), "CANCELLED")
     }
 
     /// Both producers of a `CANCELLED` envelope reach the same silent arm: `ToolRuntime` /
@@ -598,7 +719,7 @@ final class ToolErrorNotePolicyTests: XCTestCase {
 
         XCTAssertEqual(fromRuntime.outputJSON, fromGate.outputJSON,
                        "one condition must have one wire shape")
-        XCTAssertNil(ToolErrorNotePolicy.direction(for: fromGate))
+        XCTAssertNil(ToolErrorNotePolicy.direction(for: fromGate, allowedToolNames: []))
         XCTAssertEqual(fromGate.providerID, "tc_0",
                        "the gate's synthetic must carry the call's providerID or the wire orphans")
     }

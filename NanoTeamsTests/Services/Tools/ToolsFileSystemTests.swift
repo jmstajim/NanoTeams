@@ -324,15 +324,16 @@ final class ToolsFileSystemTests: XCTestCase {
         XCTAssertTrue(fileManager.fileExists(atPath: filePath.path))
     }
 
-    func testWriteFile_failsWithoutCreateDirs() async throws {
+    func testWriteFile_createsMissingParents() async throws {
         let call = StepToolCall(
             name: "write_file",
-            argumentsJSON: "{\"path\": \"missing_parent/file.txt\", \"content\": \"Content\", \"create_dirs\": false}"
+            argumentsJSON: "{\"path\": \"missing_parent/file.txt\", \"content\": \"Content\"}"
         )
         let results = await runtime.executeAll(context: context, toolCalls: [call])
 
-        XCTAssertTrue(results[0].isError)
-        XCTAssertTrue(results[0].outputJSON.contains("NOT_A_DIRECTORY"))
+        XCTAssertFalse(results[0].isError, results[0].outputJSON)
+        XCTAssertEqual(try String(contentsOf: tempDir.appendingPathComponent("missing_parent/file.txt"), encoding: .utf8),
+                       "Content")
     }
 
     // MARK: - delete_file Tests
@@ -488,6 +489,30 @@ final class ToolsFileSystemTests: XCTestCase {
 
         XCTAssertTrue(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("NOT_A_DIRECTORY"))
+        XCTAssertTrue(results[0].outputJSON.contains("is a file, not a directory"),
+                      results[0].outputJSON)
+        XCTAssertTrue(results[0].outputJSON.contains("read_file"),
+                      "name the tool that WILL work: \(results[0].outputJSON)")
+    }
+
+    /// The other half of a guard that used to be one. A path that does not exist at all
+    /// was answered `NOT_A_DIRECTORY: Not a directory: x` — a claim the code had never
+    /// checked — so the model concluded the path was a FILE and reached for `read_file`,
+    /// paying a second failure for the same typo.
+    func testListDirectory_nonexistentPath_isFileNotFoundNotNotADirectory() async throws {
+        let call = StepToolCall(
+            name: "list_files",
+            argumentsJSON: "{\"path\": \"no/such/place\"}"
+        )
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertTrue(results[0].isError)
+        XCTAssertTrue(results[0].outputJSON.contains("FILE_NOT_FOUND"), results[0].outputJSON)
+        XCTAssertFalse(results[0].outputJSON.contains("NOT_A_DIRECTORY"),
+                       "nothing checked whether it was a file: \(results[0].outputJSON)")
+        XCTAssertTrue(results[0].outputJSON.contains("Nothing exists at"), results[0].outputJSON)
+        XCTAssertTrue(results[0].outputJSON.contains("list_files"),
+                      "teach the recovery: \(results[0].outputJSON)")
     }
 
     /// The exact call from the reported bug: `list_files {"path": "/", "depth": 1}` —

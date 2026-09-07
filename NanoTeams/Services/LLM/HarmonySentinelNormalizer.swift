@@ -1,4 +1,7 @@
 import Foundation
+#if DEBUG
+import Synchronization
+#endif
 
 /// Canonicalises a mangled OPENING Harmony sentinel so the rest of the pipeline can
 /// see the call the model actually made.
@@ -38,12 +41,70 @@ import Foundation
 /// dispatches, and the assistant turn is committed from the RESOLVED call
 /// (`HarmonyToolCallEnvelope`), so the canonical form is what returns to the wire.
 ///
-/// **This family tolerates NO debris.** `<|call|` must abut its `{`. The prefix is a
-/// prefix of the canonical `<|call|>` itself, so any tolerance here would also rewrite
-/// shapes that parse today — `<|call|>tool_name{…}` is a `CallMarkerStrategy` branch,
-/// and a debris run would strip a `tool_name` that `ToolNames.allNames` does not list,
-/// leaving a nameless payload. Requiring `{` immediately after `<|call|` cannot reach
-/// either shape: both have `>` in that position.
+/// **This family tolerates WHITESPACE and nothing else.** The rule was "`<|call|` must
+/// abut its `{`" until 2026-09-07, on the argument that the prefix is a prefix of the
+/// canonical `<|call|>` itself, so any tolerance would rewrite shapes that parse today —
+/// `<|call|>tool_name{…}` is a `CallMarkerStrategy` branch, and a debris run would strip
+/// a `tool_name` that `ToolNames.allNames` does not list, leaving a nameless payload.
+/// That argument is sound for a DEBRIS run and does not reach whitespace: `prefixTable`
+/// is sorted longest-first, so `<|call|>` matches as `.canonical` before `<|call|` is
+/// offered, and at a `.truncatedCanonical` hit the next character is therefore provably
+/// not `>`. No shape that parses can carry whitespace in that position.
+///
+/// The same model that dropped the `>` also put a space after it — `MeditationApp` task
+/// 39 run 8 (Ollama, 2026-09-06), 17 responses in the shape
+///
+///     <|call| {"name":"read_file", "arguments": {"path": "…"}}<|end|>
+///
+/// none of which resolved. The negative pin written on 2026-09-05 to state the abutment
+/// rule carried the fixture `<|call| {"name":"search"}`; the model produced that string
+/// verbatim the next day. A non-whitespace run stays refused — `<|call|read_file{` is
+/// still untouched, because a run that can CARRY the call's identity is the 2026-08-14
+/// identity-loss defect (`MangledSentinelIdentityTests`) one step on.
+///
+/// **What the gap costs, stated rather than discovered.** Prose that WRITES `<|call| {` with a
+/// complete payload is now read as a call — pinned as an accepted false positive by
+/// `ConversationRepairServiceTests.testReasoningNames_proseWritingTheGapShape_isReadAsACall_acceptedCost`.
+/// The discriminator that would remove it is "the sentinel begins its line", and it is
+/// rejected for a structural reason, not taste: `hasNormalizableOccurrence` is ALSO the
+/// per-delta stream gate and receives a bounded WINDOW it cannot tell from a whole buffer, so
+/// a window opening mid-line would report normalizable, `normalize` would then repair nothing
+/// on the full buffer, and `sawHarmonyMarker` would close with `earliestLower == nil` — the
+/// truncation rewind skipped and visible prose frozen mid-turn. That is the failure the
+/// wrapper family's first draft produced, and it is strictly worse. The exposure is also
+/// bounded by what reaching it takes: a model quoting the taught format writes `<|call|>{…}`
+/// WITH its `>`, which has always dispatched, so the gap widens an opening that already
+/// existed rather than opening a new one.
+///
+/// A THIRD family does not corrupt the sentinel at all — it WRAPS it. `ornith-1.5:35b`
+/// again (Ollama, `MeditationApp` task 39 run 1, 2026-09-07), now emitting its native
+/// ChatML tool-call tag AROUND the canonical envelope the prompt teaches:
+///
+///     …and ContentView.swift.<tool_call>
+///     <|call|>{"name":"read_file","arguments":{"path":"MeditationApp/ContentView.swift"}}
+///     <|end|>
+///     </tool_call>
+///
+/// Unlike the two families above, this one raises nothing: the envelope parses and the
+/// call dispatches. What it costs is the OPENING tag. It sits before the earliest marker,
+/// so the streamer's truncation rewind keeps it as assistant prose; `ModelTokenCleaner`
+/// cannot see it (that contract is `<|…|>` spans, and this form has no pipes);
+/// `displayContent` is the identity for assistant turns and the bubble is a plain
+/// `NSTextView`. So it rendered verbatim to the user AND rode the append-only wire, which
+/// makes it self-reinforcing exactly like the truncated sentinel: measured over the run's
+/// 28 assistant turns, phase 1 (17 turns) was clean, phase 2 slipped on its FIRST turn,
+/// and 10 of 10 non-empty turns after that carried the tag — 64 occurrences replayed back
+/// to the model.
+///
+/// **Adjacency is the entire gate.** The tag is dropped ONLY when at most `maxWrapperGap`
+/// whitespace characters separate it from an envelope opening — measured, that gap was a
+/// single `\n` every time. Standing alone the tag is honest prose: the Qwen
+/// `<tool_call><function=NAME>` DSL is named in this repo's own playbook (R3.8.7 Check),
+/// so promoting it would corrupt the documents that describe it. The marker-less
+/// `<tool_call>{…}</tool_call>` form is deliberately NOT recognised for the same reason
+/// one level up: identifying it needs a paired closer, and over those 28 turns the model
+/// wrote `</tool_call>` exactly ONCE. Promoting text to a call on evidence that thin is
+/// the inference `BareToolCallSalvage` refuses.
 ///
 /// **Scope: opening sentinels only.** Closing-marker defects (a stray `|` before
 /// `<|end|>`, `</|end|>`, a missing `<|end|>` entirely) already cost nothing — the
@@ -54,7 +115,7 @@ import Foundation
 /// reach the parser; whether it resolves is still the parser's call. Record [39] carries
 /// an invented batch schema (`{"contributions":[{"toolName":…}]}`) with no top-level
 /// `name` AND mismatched closers, so it resolves to nothing — correctly, since a batch
-/// envelope contradicts the one-tool-per-response rule `AppDefaults.globalContext` calls
+/// envelope contradicts the one-tool-per-response rule `NativeLMStudioClient.oneToolPerResponseRule` calls
 /// load-bearing. What it gains is a NAMED failure (`.malformedJSON` for that record):
 /// `classifyHarmonyCallIssue` sits behind `sawHarmonyMarker`, so before this it could not
 /// run at all, and the model's only feedback was an artifact nudge for an attempt the
@@ -71,19 +132,69 @@ nonisolated enum HarmonySentinelNormalizer {
     /// on its way to an unrelated brace.
     private static let maxDebrisRun = 20
 
-    /// The canonical sentinel minus its closing `>`. Matched ONLY when a `{` abuts it
-    /// (see the type comment) — this string is a prefix of `<|call|>`, so the abutment
-    /// requirement is the entire thing keeping the repair off shapes that already parse.
+    /// The canonical sentinel minus its closing `>`. Matched only when a `{` follows it
+    /// across at most `maxTruncatedGap` whitespace characters (see the type comment for
+    /// why whitespace is safe here and a debris run is not).
     private static let truncatedCanonicalPrefix = "<|call|"
 
-    /// Longest normalizable needle, in characters: the worst case over both families —
-    /// `alienPrefix` + debris run + `{`, and `truncatedCanonicalPrefix` + `{`.
+    /// Longest run of WHITESPACE tolerated between `truncatedCanonicalPrefix` and its
+    /// payload. The observed run is 1 — a single space in every one of the 17 occurrences
+    /// of task 39 run 8, and a `\n` in the sibling shape. 4 is headroom for `\r\n`, a
+    /// blank line or an indent, the same cap and the same reasoning as `maxWrapperGap`:
+    /// past it the run is prose spacing, not a mangled token.
+    private static let maxTruncatedGap = 4
+
+    /// The ChatML tool-call tag the third family wraps the envelope in. An EXACT literal,
+    /// never case-folded and never trimmed: `<TOOL_CALL>` or `< tool_call >` would be
+    /// inference, the same rule `trailingToolName` states for tool names.
+    private static let chatMLOpenTag = "<tool_call>"
+
+    /// Every literal droppable as a WRAPPER — debris standing immediately to the left of
+    /// an envelope opening, which the truncation rewind would otherwise keep as prose.
+    ///
+    /// The second entry is the scan's own needle: a bare `<|` with no `|>` anywhere after
+    /// it is an unmatched opener by construction, and `ModelTokenCleaner` cannot remove it
+    /// (its contract is closed `<|…|>` spans, so it breaks at the unmatched opener and
+    /// returns the remainder verbatim). Record 115 of task 39 run 8 is exactly this: the
+    /// turn that finally escaped the loop opened with `<|` on its own line, and those two
+    /// characters reached the user as their own chat bubble.
+    ///
+    /// Longest first, stating the tie-break once as `prefixTable` does. No two entries can
+    /// match at one position — they end in different characters — so the order is a
+    /// convention here rather than a correctness requirement, and saying so keeps a future
+    /// entry from having to rediscover which it is.
+    private static let wrapperTags: [(tag: String, length: Int)] = [
+        (chatMLOpenTag, chatMLOpenTag.count),
+        (sentinelOpen, sentinelOpen.count),
+    ].sorted { $0.length > $1.length }
+
+    /// Longest run of whitespace tolerated between the wrapper tag and the envelope
+    /// opening it wraps. The observed gap is 1 (`\n`, in all 10 occurrences); 4 is headroom
+    /// for `\r\n`, a blank line or an indent — a cap, not an observation. It is what keeps
+    /// this an adjacency test rather than a backward scan that could reach across prose.
+    private static let maxWrapperGap = 4
+
+    /// Longest normalizable needle, in characters: the worst case over both REPAIRABLE
+    /// families —
+    /// `alienPrefix` + debris run + `{`, and `truncatedCanonicalPrefix` + whitespace gap
+    /// + `{`. The second is 12 against the first's 32, so the gap added in 2026-09-07 does
+    /// not widen the per-delta window — pinned by
+    /// `StreamMarkerWindowTests.testNeedleSpanIsUnchangedByTheTruncatedGap`.
     /// One input to `StreamMarkerWindow.harmonyNeedleSpan` — the per-delta
     /// detection window must be able to hold a whole sentinel that arrived split
     /// across deltas.
+    ///
+    /// The ChatML wrapper family does NOT enter this maximum, and the reason is that its
+    /// branch cannot decide the window's answer: every wrapper positive CONTAINS an opening
+    /// that fires on its own — a verbatim marker (caught by `harmonyNeedleArrived`'s marker
+    /// test before this function is reached) or one of the two repairable sentinels above.
+    /// The latch therefore closes without it, and `normalize` then runs on the FULL buffer,
+    /// where the wrapper is visible whole. Growing the span for it would widen every
+    /// per-delta window to buy nothing. Pinned by
+    /// `StreamMarkerWindowTests.testNeedleSpanIsUnchangedByTheWrapperBranch`.
     static let maxNeedleSpan = max(
         alienPrefix.count + maxDebrisRun + 1,
-        truncatedCanonicalPrefix.count + 1)
+        truncatedCanonicalPrefix.count + maxTruncatedGap + 1)
 
     /// Rewrites every mangled opening sentinel to `<|call|>`, leaving everything else
     /// byte-identical.
@@ -102,6 +213,12 @@ nonisolated enum HarmonySentinelNormalizer {
     /// admits NO debris run at all — condition (2) is not merely tightened here but
     /// removed, for the reason the type comment gives: the prefix is a prefix of the
     /// canonical marker, so a tolerated run would reach shapes that already parse.
+    ///
+    /// Independently of all three, a `<tool_call>` WRAPPER is dropped when it sits within
+    /// `maxWrapperGap` whitespace characters to the LEFT of an envelope opening — a
+    /// verbatim marker, or a sentinel this pass repairs into one. Nothing else about the
+    /// buffer changes: exactly the tag's characters are removed, the gap is re-emitted, and
+    /// the closing `</tool_call>` is left alone (see the type comment for why).
     static func normalize(_ text: String) -> String {
         // Two read-only fast paths before anything is allocated. Since 2026-08-21 the
         // per-delta caller no longer reaches this with the whole accumulated buffer:
@@ -129,10 +246,29 @@ nonisolated enum HarmonySentinelNormalizer {
         var cursor = text.startIndex
 
         while let hit = nextSentinel(in: text[...], from: cursor) {
-            result.append(contentsOf: text[cursor..<hit.range.lowerBound])
+            let payload = payloadStart(in: text[...], after: hit.range.upperBound,
+                                       family: hit.family)
+            // The wrapper is dropped only in front of something that IS an envelope opening
+            // once this pass is done: a verbatim marker, or a sentinel this same iteration
+            // repairs into one. Anything looser would leave the tag standing in front of a
+            // repaired `<|call|>` — the same leak, one family to the left.
+            let wrapper = (hit.family == .canonical || payload != nil)
+                ? wrapperRange(in: text[...], endingAt: hit.range.lowerBound, notBefore: cursor)
+                : nil
 
-            if let payload = payloadStart(in: text[...], after: hit.range.upperBound,
-                                          family: hit.family) {
+            // Decided BEFORE the prose prefix is appended: the wrapper sits to the LEFT of
+            // the match, so appending the prefix first would already have committed the tag
+            // to `result`, and nothing downstream re-reads what has been emitted.
+            result.append(
+                contentsOf: text[cursor..<(wrapper?.lowerBound ?? hit.range.lowerBound)])
+            if let wrapper {
+                // The whitespace gap is re-emitted verbatim — exactly the tag's characters
+                // are removed and nothing else, so the rewind's own
+                // `stripSurroundingWhitespace` still decides the model's spacing.
+                result.append(contentsOf: text[wrapper.upperBound..<hit.range.lowerBound])
+            }
+
+            if let payload {
                 result.append(HarmonyToolCallParser.callMarker)
                 // The debris run can CARRY the call's identity: `gemma-4-26b-a4b-qat`
                 // writes `<|tool_call>call:edit_file{…}` (network_log.json, 2026-08-13),
@@ -169,7 +305,78 @@ nonisolated enum HarmonySentinelNormalizer {
             if payloadStart(in: text, after: hit.range.upperBound, family: hit.family) != nil {
                 return true
             }
+            // A verbatim marker counts as normalizable ONLY when a wrapper precedes it.
+            // Without that condition this returns `true` for every ordinary `<|call|>{…}` —
+            // and it is the guard on `normalize`'s early return, so every envelope-bearing
+            // turn would rebuild the whole buffer. That regression is invisible in output
+            // and shows up only as slowness, which is why it is pinned by
+            // `testHasNormalizableOccurrence_ordinaryEnvelope_staysOffTheRebuildPath`.
+            if hit.family == .canonical,
+               wrapperRange(in: text, endingAt: hit.range.lowerBound, notBefore: cursor) != nil {
+                return true
+            }
             cursor = hit.range.upperBound
+        }
+        return false
+    }
+
+    /// Longest run inspected when NAMING a near-miss rather than repairing one.
+    ///
+    /// Deliberately wider than `maxDebrisRun`: the two budgets answer different questions.
+    /// A wrong repair dispatches a call the model did not make, so the repair stays
+    /// conservative; a wrong diagnosis costs one nudge, and the shape too mangled to repair
+    /// is exactly the one the model most needs named. Sharing one cap would have made the
+    /// diagnosis silent precisely where it is most useful.
+    private static let maxDiagnosticRun = 2 * maxDebrisRun
+
+    /// The prefix of a repairable-family sentinel this pass did NOT repair but which
+    /// carries a payload anyway — the evidence that the turn was a call ATTEMPT rather
+    /// than prose about the format.
+    ///
+    /// This exists because repair and diagnosis fail differently. Every widening of the
+    /// repair is one more shape rescued and the NEXT unknown shape is still silent:
+    /// `sawHarmonyMarker` stays open, so `classifyHarmonyCallIssue` — which sits behind
+    /// that latch — never runs, and `handleNoToolCalls` falls through to whichever branch
+    /// happens to match, which for a producing role is the artifact nudge. That is how
+    /// `MeditationApp` task 39 run 8 spent 16 consecutive turns being told it had not
+    /// submitted its deliverables while the feed plainly showed a tool call (CLAUDE.md
+    /// #165's second half, unpaid until now).
+    ///
+    /// Returns the matched literal from `prefixTable`, never a slice of the model's own
+    /// bytes: the caller puts this in a nudge, a nudge is never retired (R3.8.4), and
+    /// quoting the looping output back into the prefix of every later request is the
+    /// defect R3.8.3 forbids — measured at 80 characters re-seeding a loop, 2026-08-24.
+    ///
+    /// The run between prefix and `{` must contain NO whitespace. That is the same intent
+    /// signal `payloadStart` demands of the alien family, and it is what keeps prose ABOUT
+    /// the sentinel out: `Use <|call| when you want {…}` has a space in the run and is not
+    /// a near-miss, while `<|call|read_file{` has none and is.
+    static func unrepairedSentinel(in text: String) -> String? {
+        guard text.contains(sentinelOpen) else { return nil }
+        let body = text[...]
+        var cursor = body.startIndex
+        while let hit = nextSentinel(in: body, from: cursor) {
+            if hit.family != .canonical,
+               payloadStart(in: body, after: hit.range.upperBound, family: hit.family) == nil,
+               carriesPayload(in: body, after: hit.range.upperBound) {
+                return String(body[hit.range])
+            }
+            cursor = hit.range.upperBound
+        }
+        return nil
+    }
+
+    /// Whether a `{` follows within `maxDiagnosticRun` characters with no whitespace in
+    /// between — "a payload abuts this token, but the family's own rule refused the run".
+    private static func carriesPayload(in text: Substring, after start: String.Index) -> Bool {
+        var index = start
+        var scanned = 0
+        while index < text.endIndex, scanned < maxDiagnosticRun {
+            let character = text[index]
+            if character == "{" { return true }
+            if character.isWhitespace { return false }
+            index = text.index(after: index)
+            scanned += 1
         }
         return false
     }
@@ -182,7 +389,34 @@ nonisolated enum HarmonySentinelNormalizer {
         case alien
         /// `<|call|` + `{`, no debris.
         case truncatedCanonical
+        /// A verbatim `HarmonyToolCallParser` marker. Never repaired — matched so the scan
+        /// STOPS on it and can inspect what sits immediately to its left.
+        case canonical
     }
+
+    /// Every prefix the scan recognises, longest first.
+    ///
+    /// Order is load-bearing in exactly one place and it is not cosmetic: `<|call|>`
+    /// (`.canonical`) EXTENDS `<|call|` (`.truncatedCanonical`), so a shortest-first walk
+    /// would read every healthy marker as a broken one and hand it to `payloadStart` under
+    /// the wrong rule. Sorting by descending length states that tie-break once, instead of
+    /// leaving it to where a case happens to sit in a literal.
+    ///
+    /// The `.canonical` set is `HarmonyToolCallParser.harmonyMarkers` rather than a
+    /// `<|call|>` literal, and that is a single-source-of-truth choice, not convenience: it
+    /// is the same set `sawHarmonyMarker` latches on and the earliest-marker rewind
+    /// searches, so the wrapper is dropped in front of exactly what the streamer treats as
+    /// an envelope opening — and a fourth marker would need no edit here.
+    private static let prefixTable: [(prefix: String, length: Int, family: Family)] = {
+        var entries: [(String, Family)] = [
+            (alienPrefix, .alien),
+            (truncatedCanonicalPrefix, .truncatedCanonical),
+        ]
+        entries.append(contentsOf: HarmonyToolCallParser.harmonyMarkers.map { ($0, .canonical) })
+        return entries
+            .map { (prefix: $0.0, length: $0.0.count, family: $0.1) }
+            .sorted { $0.length > $1.length }
+    }()
 
     /// Every sentinel of both families opens with this, so ONE forward search per
     /// iteration finds the next candidate of either. Searching for each prefix
@@ -200,43 +434,71 @@ nonisolated enum HarmonySentinelNormalizer {
     /// the buffer and their lengths sum to its length. The per-candidate test is
     /// `hasPrefix` against a bounded literal — no scan of its own.
     ///
-    /// The two prefixes diverge at their third character (`t` vs `c`), so at most one
-    /// family can match a given `<|` and there is no tie to break.
+    /// Candidate prefixes are tried longest first (`prefixTable`), which is the only tie
+    /// that exists: `<|call|>` extends `<|call|`.
     private static func nextSentinel(
         in text: Substring, from cursor: String.Index
     ) -> (range: Range<String.Index>, family: Family)? {
         var searchFrom = cursor
         while let open = text.range(of: sentinelOpen, range: searchFrom..<text.endIndex) {
+            #if DEBUG
+            _scanWork.wrappingAdd(1, ordering: .relaxed)
+            #endif
             let rest = text[open.lowerBound...]
-            if let family = family(openedBy: rest) {
-                let end = text.index(open.lowerBound, offsetBy: prefixLength(family),
+            if let match = family(openedBy: rest) {
+                let end = text.index(open.lowerBound, offsetBy: match.length,
                                      limitedBy: text.endIndex) ?? text.endIndex
-                return (open.lowerBound..<end, family)
+                return (open.lowerBound..<end, match.family)
             }
             searchFrom = open.upperBound
         }
         return nil
     }
 
-    /// Which family, if any, the text starting at a `<|` belongs to.
-    private static func family(openedBy rest: Substring) -> Family? {
-        if rest.hasPrefix(alienPrefix) { return .alien }
-        if rest.hasPrefix(truncatedCanonicalPrefix) { return .truncatedCanonical }
+    /// Which family, if any, the text starting at a `<|` belongs to, and how long its
+    /// prefix is. The length travels with the match so the scan never re-derives it —
+    /// `String.count` walks graphemes, and `prefixTable` pays that walk once at type
+    /// initialisation for literals whose length cannot change at runtime.
+    private static func family(openedBy rest: Substring) -> (family: Family, length: Int)? {
+        for entry in prefixTable where rest.hasPrefix(entry.prefix) {
+            return (entry.family, entry.length)
+        }
         return nil
     }
 
-    /// Prefix lengths, counted ONCE at type initialisation. `String.count` walks
-    /// graphemes, so reading `alienPrefix.count` inside the scan would pay that walk per
-    /// candidate — small per call and pointless, since both prefixes are compile-time
-    /// ASCII literals whose length can never change at runtime.
-    private static let alienPrefixLength = alienPrefix.count
-    private static let truncatedCanonicalPrefixLength = truncatedCanonicalPrefix.count
-
-    private static func prefixLength(_ family: Family) -> Int {
-        switch family {
-        case .alien: return alienPrefixLength
-        case .truncatedCanonical: return truncatedCanonicalPrefixLength
+    /// The wrapper immediately preceding an envelope opening, if one is there: a
+    /// `<tool_call>` tag or a bare unmatched `<|` (see `wrapperTags`).
+    ///
+    /// BACKWARD and bounded, and that is what makes this family free: the tag is only ever
+    /// significant when it abuts an opening, and openings are already found by the single
+    /// forward scan `nextSentinel` makes. So recognising it adds no forward search —
+    /// `sentinelOpen`, the early-return gate in `normalize`, and the disjointness of
+    /// `nextSentinel`'s scans are all untouched.
+    ///
+    /// `floor` is the rebuild cursor: a wrapper may not reach back into text already
+    /// emitted. The comparison is INCLUSIVE — `index(_:offsetBy:limitedBy:)` returns the
+    /// limit itself rather than `nil` — because a tag opening the buffer is a real shape
+    /// (records 68 and 80 of the run are exactly that), and an exclusive floor would leave
+    /// precisely those turns uncleaned.
+    private static func wrapperRange(
+        in text: Substring, endingAt envelopeStart: String.Index, notBefore floor: String.Index
+    ) -> Range<String.Index>? {
+        var gapStart = envelopeStart
+        var gap = 0
+        while gap < maxWrapperGap, gapStart > floor {
+            let previous = text.index(before: gapStart)
+            guard text[previous].isWhitespace else { break }
+            gapStart = previous
+            gap += 1
         }
+        for entry in wrapperTags {
+            guard let tagStart = text.index(gapStart, offsetBy: -entry.length,
+                                            limitedBy: floor),
+                text[tagStart...].hasPrefix(entry.tag)
+            else { continue }
+            return tagStart..<gapStart
+        }
+        return nil
     }
 
     /// The debris run's trailing identifier, but ONLY when it names a real tool.
@@ -263,10 +525,11 @@ nonisolated enum HarmonySentinelNormalizer {
     /// Index of the payload's opening `{`, or `nil` when what follows the prefix
     /// disqualifies the match.
     ///
-    /// For `.truncatedCanonical` the only accepted run is the empty one, so this is a
-    /// single-character test: a `>` there is the canonical marker (leave it alone), and
-    /// anything else is prose. For `.alien` the debris run may be up to `maxDebrisRun`
-    /// characters and must contain no whitespace.
+    /// `.canonical` never yields a payload: it is not repaired. For `.truncatedCanonical`
+    /// the accepted run is up to `maxTruncatedGap` WHITESPACE characters and nothing else —
+    /// anything non-whitespace there is prose or a name-bearing debris run, both refused.
+    /// For `.alien` the debris run may be up to `maxDebrisRun` characters and, inversely,
+    /// must contain no whitespace at all.
     ///
     /// Both families share the mid-stream contract: running out of buffer yields `nil`,
     /// and the caller re-normalises the whole accumulated buffer on the next delta, so
@@ -274,10 +537,28 @@ nonisolated enum HarmonySentinelNormalizer {
     private static func payloadStart(
         in text: Substring, after start: String.Index, family: Family
     ) -> String.Index? {
+        // A verbatim marker is not a repair candidate — it is already the shape the parser
+        // wants, and rewriting it is what the `isByteIdentical` pins forbid. It is matched
+        // only so the scan stops on it; whether anything happens is decided by its wrapper.
+        if case .canonical = family { return nil }
+
         guard start < text.endIndex else { return nil }
 
         if case .truncatedCanonical = family {
-            return text[start] == "{" ? start : nil
+            // Whitespace only, and bounded. A `>` here is the canonical marker (which
+            // `prefixTable` has already claimed as `.canonical`, so this is unreachable
+            // rather than merely refused); any other non-whitespace character is either
+            // prose or a debris run that could carry the call's identity, and both stay
+            // refused. Running out of buffer mid-gap yields `nil` and is retried on the
+            // next delta, the same mid-stream contract as the alien family.
+            var index = start
+            var gap = 0
+            while index < text.endIndex, gap < maxTruncatedGap, text[index].isWhitespace {
+                index = text.index(after: index)
+                gap += 1
+            }
+            guard index < text.endIndex else { return nil }
+            return text[index] == "{" ? index : nil
         }
 
         var index = start
@@ -292,4 +573,26 @@ nonisolated enum HarmonySentinelNormalizer {
         // Ran out of buffer or blew the cap.
         return nil
     }
+
+    #if DEBUG
+    /// Work-bound seam for `HarmonySentinelNormalizerTests`: `<|` candidates `nextSentinel`
+    /// has INSPECTED since the last reset.
+    ///
+    /// The linearity of this file rests on one property — `searchFrom` only ever moves
+    /// forward past an inspected opener, so the scans are disjoint spans whose lengths sum
+    /// to the buffer's. That claim used to be guarded by the complexity ratchet, which
+    /// ranked the rebuild loop while it lived in `normalize`; since it moved here, where
+    /// `text` is a parameter rather than an accumulator, axis a2 no longer ranks it and the
+    /// argument went unguarded (DEBTS.md D-B6).
+    ///
+    /// Counted INSIDE the loop, not beside a call site: the property under test is how many
+    /// times a candidate is inspected, and a counter at the call site would report one per
+    /// `normalize` no matter how many times the scan doubled back (CLAUDE.md #62).
+    ///
+    /// A regression here is invisible in OUTPUT — a non-disjoint scan returns exactly the
+    /// same answers, just quadratically slower — which is why the bound is asserted at all.
+    private static let _scanWork = Atomic<Int>(0)
+    static func _testScanWork() -> Int { _scanWork.load(ordering: .relaxed) }
+    static func _testResetScanWork() { _scanWork.store(0, ordering: .relaxed) }
+    #endif
 }

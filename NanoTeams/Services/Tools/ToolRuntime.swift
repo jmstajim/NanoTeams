@@ -200,13 +200,33 @@ nonisolated final class ToolRuntime: @unchecked Sendable {
         do {
             let rawParsedArgs = try parseAndNormalizeArguments(rawArgs)
             let args = unwrapReentrantEnvelope(rawParsedArgs, expectedToolName: name)
+            // A provided argument the shared coercion cannot honour is answered here, as the
+            // argument fault it is, instead of reaching the handler as "absent" and running the
+            // wrong branch under a success envelope (`search {"paths": 5}` walked the whole
+            // tree, 2026-09-07; playbook REC.5).
+            if let schema = ToolHandlerRegistry.schema(named: name) {
+                let violations = argumentTypeViolations(args: args, schema: schema.parameters)
+                if !violations.isEmpty {
+                    var result = makeErrorResult(
+                        toolName: call.name, args: args, code: .invalidArgs,
+                        message: violations.joined(separator: " ") + " Fix the value, or omit the argument.")
+                    result.providerID = providerID
+                    let note = "argument type refused: " + violations.joined(separator: " ")
+                    logger?.append(baseRecord.withResult(result: result, errorMessage: note, durationMS: elapsedMS()))
+                    appendNetworkRecord(context: context, call: call, result: result, errorMessage: note)
+                    return result
+                }
+            }
             var result = try await handler(context, args)
             result.providerID = providerID
             logger?.append(baseRecord.withResult(result: result, durationMS: elapsedMS()))
             appendNetworkRecord(context: context, call: call, result: result, errorMessage: nil)
             return result
         } catch {
-            let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            // One classifier for every foreign error that becomes text the model reads: an
+            // app-authored `LocalizedError` passes verbatim, anything else becomes a typed
+            // English sentence instead of Foundation's localized one (playbook R1.8.2).
+            let message = ToolErrorHandler.classify(error).message
             let result = ToolExecutionResult(
                 providerID: providerID,
                 toolName: call.name,

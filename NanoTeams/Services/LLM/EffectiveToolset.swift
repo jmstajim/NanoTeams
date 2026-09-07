@@ -55,7 +55,7 @@ nonisolated enum EffectiveToolset {
         storage: Storage,
         selectedScheme: String?,
         isVisionConfigured: Bool,
-        isComputerUseEnabled: Bool,
+        approval: ToolApprovalAvailability,
         autovisorTeamPolicy: AutovisorTeamPolicy,
         fileManager: FileManager = .default
     ) -> [ToolSchema] {
@@ -65,7 +65,7 @@ nonisolated enum EffectiveToolset {
             allTeams: allTeams,
             selectedScheme: selectedScheme,
             isVisionConfigured: isVisionConfigured,
-            isComputerUseEnabled: isComputerUseEnabled,
+            approval: approval,
             autovisorTeamPolicy: autovisorTeamPolicy
         )
         return applyStorageFilters(stage1, storage: storage, fileManager: fileManager)

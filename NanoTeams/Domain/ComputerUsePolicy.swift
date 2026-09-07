@@ -17,13 +17,19 @@ nonisolated enum ComputerUseConstants {
 nonisolated enum ComputerUseMode: String, Codable, CaseIterable, Hashable, Sendable {
     /// Computer-use is disabled — every action is denied.
     case off
-    /// Every click / type / key pauses for human Allow/Deny. In a no-human
-    /// context (autonomous / Autovisor / headless) the action is denied.
+    /// Every click / type / key pauses for human Allow/Deny, and so does the FIRST
+    /// screen capture of a run. In a no-human context (autonomous / Autovisor /
+    /// headless) that first capture can never be confirmed, so nothing in the family
+    /// could run: all five tools are withheld from the schema
+    /// (`ApprovalGatedAvailability.forComputerUse` → `.withheld(.noApprover)`).
     case manual
     /// Read-only actions (screen capture, scroll) run automatically; every
     /// click / type / key still pauses for human Allow/Deny. The middle ground
     /// between Manual and Auto — like the bash Semi-automatic mode, only reading
-    /// is auto-allowed. No-human context denies the mutating actions.
+    /// is auto-allowed. In a no-human context the mutating trio
+    /// (`ToolHandlerRegistry.computerUseMutatingTools`) is withheld from the schema
+    /// (`.readOnlyUnattended`) and a call to one of them anyway is refused as
+    /// `APPROVAL_UNAVAILABLE`; capture and scroll still run.
     case semiAutomatic
     /// Actions are resolved by the one-shot LLM judge (`ComputerUseJudgeService`) —
     /// no human in the loop.

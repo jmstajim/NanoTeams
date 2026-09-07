@@ -49,7 +49,14 @@ enum AnswerTextBuilder {
         } else {
             return .failed(fileName: fileName)
         }
-        return .embedded(section: "## Attached File: \(fileName)\n\(content)")
+        // FENCED, not re-levelled: this is arbitrary file bytes, and `nestedBody` would
+        // rewrite a `# comment` at column 0 in a shell or Python file into `### comment`,
+        // corrupting the very content the user attached. `artifactFence` outgrows any
+        // backtick run inside, so nothing in the file can close the wrapper early and spill
+        // into prompt structure.
+        let fence = PromptBuilder.artifactFence(for: content)
+        return .embedded(
+            section: "## Attached File: \(fileName)\n\(fence)\n\(content)\n\(fence)")
     }
 
     /// Renders staged clip strings into prompt sections. Skill clips (see
@@ -83,7 +90,12 @@ enum AnswerTextBuilder {
             if let skill = SkillClip.parse(raw) {
                 let body = skill.body.trimmingCharacters(in: .whitespacesAndNewlines)
                 if body.isEmpty { continue }
-                skillSections.append("\(SkillConstants.promptHeader(name: skill.name))\n\(body)")
+                // Re-levelled like the system path already does (`formatRoleSkills`): a
+                // third-party `SKILL.md` opening with `## Rules` otherwise emits a section
+                // of the same rank as `## Supervisor Task`.
+                skillSections.append(
+                    SkillConstants.promptHeader(name: skill.name) + "\n"
+                        + SkillConstants.nestedBody(body, under: SkillConstants.promptHeaderLevel))
                 continue
             }
             if let parsed = SourceContext.parse(raw) {
@@ -109,7 +121,10 @@ enum AnswerTextBuilder {
                     ? "## Clipped Text"
                     : "## Clipped Text — \(index + 1) of \(textClips.count)"
             }
-            return "\(header)\n\(clip.body)"
+            // Same re-levelling: a clip taken from a markdown document carries its
+            // headings with it.
+            return header + "\n"
+                + SkillConstants.nestedBody(clip.body, under: SkillConstants.promptHeaderLevel)
         }
 
         return skillSections + clipTextSections

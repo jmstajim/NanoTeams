@@ -46,7 +46,9 @@ nonisolated enum TeamConfigParser {
     /// occasionally truncating the stream mid-envelope — e.g. 1013 chars ending
     /// at `…]}"}` with final depth 1 (missing the outer `}`). Depth cap mirrors
     /// the policy in `ToolCallParsingHelpers.extractJSONBracedValue`.
-    private static let maxSalvageDepth = 3
+    /// Internal so `PlaybookConstantParityPinTests` can pin its parity with
+    /// `HarmonyToolCallParsingHelpers.maxSalvageDepth` (REC.5).
+    static let maxSalvageDepth = 3
     private static func scanBalancedObject(in text: String) -> String? {
         var depth = 0
         var startIndex: String.Index?

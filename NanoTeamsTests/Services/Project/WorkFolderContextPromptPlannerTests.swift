@@ -62,7 +62,7 @@ final class WorkFolderContextPromptPlannerTests: XCTestCase {
 
     // MARK: - compose: fits path is byte-identical to legacy
 
-    func testCompose_everythingFits_byteIdenticalToLegacyFormat() {
+    func testCompose_everythingFits_fullShape() {
         let input = WorkFolderContextInput(
             rootName: "Proj",
             fileList: ["README.md", "Sources/A.swift"],
@@ -73,15 +73,19 @@ final class WorkFolderContextPromptPlannerTests: XCTestCase {
         let expected = [
             "Work folder name: Proj",
             "File types: swift: 2, md: 1",
-            "File snapshot:",
+            "## File snapshot",
             "- README.md",
             "- Sources/A.swift",
             "",
-            "Excerpts:",
-            "File: README.md",
-            "```",
+            "## Excerpts",
+            "### README.md",
+            // Four backticks, not three: the fence is computed by
+            // `PromptBuilder.artifactFence` so a file body carrying its own ``` cannot
+            // close the wrapper and spill the rest of itself — and every later excerpt —
+            // into prompt structure.
+            "````",
             "Hello\nWorld",
-            "```",
+            "````",
         ].joined(separator: "\n")
 
         let composition = Planner.compose(input: input, tokenBudget: 10_000_000)
@@ -419,7 +423,7 @@ final class WorkFolderContextPromptPlannerTests: XCTestCase {
             excerpts: []
         )
         let composition = Planner.compose(input: input, tokenBudget: 10_000_000)
-        XCTAssertEqual(composition.userMessage, "Work folder name: P\nFile snapshot:\n- a")
+        XCTAssertEqual(composition.userMessage, "Work folder name: P\n## File snapshot\n- a")
         XCTAssertFalse(composition.userMessage.contains("File types:"))
     }
 
@@ -443,7 +447,7 @@ final class WorkFolderContextPromptPlannerTests: XCTestCase {
         let expected = [
             "Work folder name: P",
             "File types: swift: 2",
-            "File snapshot:",
+            "## File snapshot",
             "- src/a.swift",
             "- src/b.swift",
         ].joined(separator: "\n")
@@ -460,11 +464,11 @@ final class WorkFolderContextPromptPlannerTests: XCTestCase {
         let expected = [
             "Work folder name: P",
             "",
-            "Excerpts:",
-            "File: a.txt",
-            "```",
+            "## Excerpts",
+            "### a.txt",
+            "````",
             "one\ntwo",
-            "```",
+            "````",
         ].joined(separator: "\n")
         XCTAssertEqual(Planner.compose(input: input, tokenBudget: 10_000_000).userMessage, expected)
     }
@@ -618,7 +622,7 @@ final class WorkFolderContextPromptPlannerTests: XCTestCase {
             excerpts: [Excerpt(path: "empty.txt", content: "")]
         )
         let composition = Planner.compose(input: input, tokenBudget: 10_000_000)
-        XCTAssertTrue(composition.userMessage.contains("File: empty.txt"))
+        XCTAssertTrue(composition.userMessage.contains("### empty.txt"))
     }
 
     func testCompose_zeroBudget_headerOnly_atFloor() {
@@ -628,7 +632,7 @@ final class WorkFolderContextPromptPlannerTests: XCTestCase {
         )
         let composition = Planner.compose(input: input, tokenBudget: 0)
         XCTAssertTrue(composition.atFloor)
-        XCTAssertFalse(composition.userMessage.contains("Excerpts:"))
+        XCTAssertFalse(composition.userMessage.contains("## Excerpts"))
         XCTAssertTrue(composition.userMessage.hasPrefix("Work folder name: P"))
     }
 
@@ -651,14 +655,20 @@ final class WorkFolderContextPromptPlannerTests: XCTestCase {
         emittedExcerptLines(in: message, path: path).count
     }
 
-    /// The content lines (between the ``` fences) emitted for `path`, excluding
-    /// the "… [truncated …]" marker line.
+    /// The content lines (between the fences) emitted for `path`, excluding the
+    /// "… [truncated …]" marker line.
+    ///
+    /// The closing fence is read off the OPENING one rather than assumed to be ```:
+    /// the wrapper is sized to the body by `PromptBuilder.artifactFence`, so its length
+    /// varies with what the excerpt contains.
     private func emittedExcerptLines(in message: String, path: String) -> [String] {
         let lines = message.components(separatedBy: "\n")
-        guard let start = lines.firstIndex(of: "File: \(path)") else { return [] }
+        guard let start = lines.firstIndex(of: "### \(path)"), start + 1 < lines.count
+        else { return [] }
+        let fence = lines[start + 1]
         var result: [String] = []
-        var i = start + 2 // skip "File: …" and opening ```
-        while i < lines.count, lines[i] != "```" {
+        var i = start + 2 // skip "### …" and the opening fence
+        while i < lines.count, lines[i] != fence {
             if !lines[i].hasPrefix("… [truncated") { result.append(lines[i]) }
             i += 1
         }

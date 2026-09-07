@@ -73,7 +73,9 @@ extension LLMExecutionService {
         runIndex: Int,
         stepIndex: Int,
         client: any LLMClient,
-        config: LLMConfig
+        config: LLMConfig,
+        networkLogger: NetworkLogger? = nil,
+        stepID: String? = nil
     ) async -> String? {
         guard delegate != nil else { return "Approved." }
         await noteInterleavingCall(label: "supervisor auto-answer", config: config)
@@ -87,7 +89,9 @@ extension LLMExecutionService {
             artifactReader: { [weak self] artifact in
                 guard let workFolderRoot = self?.delegate?.workFolderURL else { return nil }
                 return ArtifactService.readContent(artifact: artifact, workFolderRoot: workFolderRoot)
-            }
+            },
+            logger: networkLogger,
+            stepID: stepID
         )
     }
 

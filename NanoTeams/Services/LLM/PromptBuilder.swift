@@ -159,6 +159,12 @@ nonisolated struct PromptBuilder {
             "toolList": toolList,
             "expectedArtifacts": expectedArtifactsLine,
             "artifactInstructions": artifactInstructionsBlock,
+            // `## Final reminder`'s ending sentence, per role: a producing role ends on
+            // `create_artifact`, an advisory one on its `ask_supervisor` reply, and an
+            // advisory role whose team runs Ask Supervisor = Off has no tool to end on.
+            "stepEnding": SystemTemplates.stepEnding(
+                producing: context.roleDefinition?.producesArtifacts ?? !step.expectedArtifacts.isEmpty,
+                canAskSupervisor: toolNameSet.contains(ToolNames.askSupervisor)),
             "globalContext": formatGlobalContext(context.globalContext),
             "roleSkills": formatRoleSkills(context.attachedSkills),
             // Merged tool block: when role has tools → Harmony format spec + per-tool

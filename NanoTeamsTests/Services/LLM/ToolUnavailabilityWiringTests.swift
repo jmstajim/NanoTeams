@@ -65,6 +65,7 @@ final class ToolUnavailabilityWiringTests: XCTestCase {
         let task = makeStep()
         let batch = await service.executeToolCalls(
             resolvedToolCalls: [StepToolCall(name: toolName, argumentsJSON: argumentsJSON)],
+            gateRefusals: [],
             // Empty allowedToolNames forces every call into the rejection path.
             allowedToolNames: [],
             phaseWithheldToolNames: phaseWithheldToolNames,
@@ -101,7 +102,7 @@ final class ToolUnavailabilityWiringTests: XCTestCase {
     /// This is also why `mode == .off` is deliberately NOT part of the phase's admission test —
     /// only a condition the boundary itself resolves may produce `plan_required`.
     ///
-    /// RED: delete the `shellTools && !isBashEnabled` arm (or move it below the phase check) →
+    /// RED: delete the `shellTools` / `.withheld(.switchedOff)` arm (or move it below the phase check) →
     /// the answer becomes `plan_required`.
     func testWiring_bashDisabledByPolicy_outranksThePhaseAndDoesNotPromiseARetry() async {
         mockDelegate.bashPolicy = BashPolicy(mode: .off)

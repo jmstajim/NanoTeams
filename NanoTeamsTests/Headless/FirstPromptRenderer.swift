@@ -77,8 +77,20 @@ enum FirstPromptRenderer {
         let repository = NTMSRepository(fileManager: fileManager)
         let snapshot = try repository.openOrCreateWorkFolder(at: workfolderURL)
 
-        // 2. Resolve team
-        let team = try resolveTeam(in: snapshot.projection.teams, target: config.target.team)
+        // 2. Resolve team. The Autovisor is a hidden singleton the app materialises lazily
+        //    (`NTMSOrchestrator.ensureAutovisorTeam`, on first enable), so a folder that never
+        //    enabled it has no such team in `teams.json` and the Manager's first prompt could
+        //    not be rendered offline — the 2026-06-15 audit copied another folder's persisted
+        //    teams to get one. Materialise it IN MEMORY exactly as the app does (factory +
+        //    template sync) and never on disk: the renderer reads the real folder and must not
+        //    change it. Harmless for every other target — the team is chat-mode, so the
+        //    `delegate_to_team` catalog filters it out as it does in production.
+        var teams = snapshot.projection.teams
+        if !teams.contains(where: { $0.templateID == AutovisorConstants.teamTemplateID }) {
+            teams.append(TeamTemplateFactory.autovisor())
+            _ = TeamManagementService.syncAutovisorTeamToTemplate(teams: &teams)
+        }
+        let team = try resolveTeam(in: teams, target: config.target.team)
         // 2a. Generated Team placeholder cannot be rendered offline — the real
         //     team is materialised by `runTeamGeneration` at start-of-run.
         //     Rendering the placeholder would silently fabricate a wire payload
@@ -103,33 +115,22 @@ enum FirstPromptRenderer {
         )
 
         // 5. Resolve tool schemas via the pure static subset — same logic
-        //    `LLMExecutionService.toolSchemas` runs in production.
-        let rawToolSchemas = LLMExecutionService.resolveToolSchemas(
-            for: role,
-            team: team,
-            allTeams: snapshot.projection.teams,
-            selectedScheme: config.selectedScheme,
-            isVisionConfigured: config.resolvedVisionConfigured,
-            isComputerUseEnabled: config.resolvedComputerUseEnabled,
-            // Read from the on-disk folder settings (the renderer scans the real
-            // folder) so a create_managed_task render for the Autovisor Manager
-            // reflects whether generation is enabled for this folder.
-            autovisorTeamPolicy: AutovisorTeamPolicy(settings: snapshot.projection.settings)
-        )
-
+        //    `LLMExecutionService.toolSchemas` runs in production. Whether a human is there
+        //    to approve is read from the team ON DISK, exactly as the wire reads it — so a
+        //    folder a headless run left in `.autonomous` renders WITHOUT `bash` under the
+        //    default Manual mode, and `render_meta` says so (`human_present`), because a
+        //    render that silently differed from the last one is the defect this field exists
+        //    to name. A fresh folder is not Autovisor-supervised.
+        let humanPresent = ApprovalPresence.humanPresent(
+            supervisorMode: team.settings.supervisorMode, underAutovisor: false)
+        let approval = ToolApprovalAvailability(
+            bashMode: config.resolvedBashMode,
+            computerUseMode: config.resolvedComputerUseMode,
+            humanPresent: humanPresent)
         // 5a. `URL ==` is the exact comparison `startStepExecution` uses;
         //     anything fancier here (path standardisation, case folding) would
         //     silently diverge from production's runtime classification.
         let isDefaultStorage = workfolderURL == NTMSOrchestrator.defaultStorageURL
-        let toolSchemas = LLMExecutionService.filterForGitAvailability(
-            LLMExecutionService.filterForDefaultStorage(
-                rawToolSchemas,
-                isDefaultStorage: isDefaultStorage
-            ),
-            workFolderRoot: workfolderURL,
-            fileManager: fileManager
-        )
-
         // 5b. Discover agent instruction files the same way production does at
         //     run start (`NTMSOrchestrator.refreshAgentInstructions`). Skipped
         //     for default storage — mirrors the runtime gate on `hasRealWorkFolder`.
@@ -146,22 +147,72 @@ enum FirstPromptRenderer {
             role: roleDefinition,
             projectRoot: isDefaultStorage ? nil : workfolderURL)
 
-        // 6. Build chat messages via the production PromptBuilder. No artifacts
-        //    exist on first call, so artifactReader returns nil for everything.
-        let promptContext = PromptBuilder.Context(
-            task: task,
-            step: step,
-            stepIndex: 0,
-            run: run,
-            workFolder: snapshot.projection,
-            artifactReader: { _ in nil },
-            activeTeam: team,
-            roleDefinition: roleDefinition,
-            globalContext: config.resolvedGlobalContext,
-            agentInstructions: agentInstructions,
-            attachedSkills: attachedSkills
-        )
-        let messages = PromptBuilder.buildChatMessages(context: promptContext, tools: toolSchemas)
+
+        // 6. The kind's messages and toolset. `.step` runs the production `PromptBuilder`
+        //    and tool pipeline; `.consultation` / `.meeting` render the side call's system
+        //    prompt and toolset through the wire-preview seam, whose runtime parity is
+        //    pinned elsewhere — their user turns are runtime-dynamic and not rendered.
+        let messages: [ChatMessage]
+        let toolSchemas: [ToolSchema]
+        switch config.resolvedKind {
+        case .step:
+            let rawToolSchemas = LLMExecutionService.resolveToolSchemas(
+                for: role,
+                team: team,
+                allTeams: teams,
+                selectedScheme: config.selectedScheme,
+                isVisionConfigured: config.resolvedVisionConfigured,
+                approval: approval,
+                // Read from the on-disk folder settings (the renderer scans the real
+                // folder) so a create_managed_task render for the Autovisor Manager
+                // reflects whether generation is enabled for this folder.
+                autovisorTeamPolicy: AutovisorTeamPolicy(settings: snapshot.projection.settings)
+            )
+
+            toolSchemas = LLMExecutionService.filterForGitAvailability(
+                LLMExecutionService.filterForDefaultStorage(
+                    rawToolSchemas,
+                    isDefaultStorage: isDefaultStorage
+                ),
+                workFolderRoot: workfolderURL,
+                fileManager: fileManager
+            )
+
+            // 6. Build chat messages via the production PromptBuilder. No artifacts
+            //    exist on first call, so artifactReader returns nil for everything.
+            let promptContext = PromptBuilder.Context(
+                task: task,
+                step: step,
+                stepIndex: 0,
+                run: run,
+                workFolder: snapshot.projection,
+                artifactReader: { _ in nil },
+                activeTeam: team,
+                roleDefinition: roleDefinition,
+                globalContext: config.resolvedGlobalContext,
+                agentInstructions: agentInstructions,
+                attachedSkills: attachedSkills
+            )
+            messages = PromptBuilder.buildChatMessages(context: promptContext, tools: toolSchemas)
+        case .consultation, .meeting:
+            let kind = config.resolvedKind.wireKind
+            let inputs = PromptBuilder.WirePreviewInputs(
+                role: roleDefinition,
+                team: team,
+                allTeams: teams,
+                workFolder: snapshot.projection,
+                workFolderState: .from(orchestratorURL: workfolderURL),
+                selectedScheme: config.selectedScheme,
+                isVisionConfigured: config.resolvedVisionConfigured,
+                approval: approval,
+                globalContext: config.resolvedGlobalContext,
+                isCoordinator: team.meetingCoordinatorID == roleDefinition.id,
+                agentInstructions: agentInstructions,
+                attachedSkills: attachedSkills)
+            let systemPrompt = try PromptBuilder.buildWirePromptPreview(kind: kind, inputs: inputs)
+            toolSchemas = PromptBuilder.resolveWirePreviewTools(kind: kind, inputs: inputs)
+            messages = [ChatMessage(role: .system, content: systemPrompt)]
+        }
 
         // 7. Fuse into the actual NativeChatRequest via the production builder.
         //    Every call is stateless → system_prompt is NOT
@@ -189,10 +240,14 @@ enum FirstPromptRenderer {
             )
         }
         let renderMeta = try makeRenderMeta(
+            kind: config.resolvedKind,
             team: team,
             roleDefinition: roleDefinition,
             toolSchemas: toolSchemas,
-            wireDict: wireDict
+            wireDict: wireDict,
+            bashMode: config.resolvedBashMode,
+            computerUseMode: config.resolvedComputerUseMode,
+            humanPresent: humanPresent
         )
         let renderMetaData = try JSONCoderFactory.makeWireEncoder().encode(renderMeta)
         guard let renderMetaJSON = try JSONSerialization.jsonObject(with: renderMetaData) as? [String: Any] else {
@@ -268,6 +323,8 @@ enum FirstPromptRenderer {
             let tools_count: Int
             let tools_total_chars: Int
         }
+        /// Which call site was rendered — `step`, `consultation` or `meeting`.
+        let kind: String
         let team_id: String
         let team_name: String
         let role_id: String
@@ -276,13 +333,24 @@ enum FirstPromptRenderer {
         let tools: [ToolAudit]
         let tool_schemas: [ToolSchema]
         let sizes: Sizes
+        /// The inputs behind the approval-gated tool families, so a diff between two renders
+        /// of one role explains itself: the team's Supervisor mode as read off disk, the two
+        /// execution modes the config resolved, and the presence answer they were read against.
+        let supervisor_mode: String
+        let bash_mode: String
+        let computer_use_mode: String
+        let human_present: Bool
     }
 
     private static func makeRenderMeta(
+        kind: RenderKind,
         team: Team,
         roleDefinition: TeamRoleDefinition,
         toolSchemas: [ToolSchema],
-        wireDict: [String: Any]
+        wireDict: [String: Any],
+        bashMode: BashExecutionMode,
+        computerUseMode: ComputerUseMode,
+        humanPresent: Bool
     ) throws -> RenderMeta {
         let encoder = JSONCoderFactory.makeWireEncoder()
         // Per-tool char sizes for the audit's token-economy dimension. Each
@@ -310,6 +378,7 @@ enum FirstPromptRenderer {
             inputChars = 0
         }
         return RenderMeta(
+            kind: kind.rawValue,
             team_id: team.id,
             team_name: team.name,
             role_id: roleDefinition.id,
@@ -322,7 +391,11 @@ enum FirstPromptRenderer {
                 input_chars: inputChars,
                 tools_count: toolSchemas.count,
                 tools_total_chars: toolsAudit.reduce(0) { $0 + $1.chars }
-            )
+            ),
+            supervisor_mode: team.settings.supervisorMode.rawValue,
+            bash_mode: bashMode.rawValue,
+            computer_use_mode: computerUseMode.rawValue,
+            human_present: humanPresent
         )
     }
 

@@ -133,14 +133,14 @@ final class ConsumeQueuedSupervisorMessageTests: NTMSOrchestratorTestBase, @unch
 
         // LLM sees the "Supervisor:\n" header so it can attribute the user turn
         // in a stream mixed with tool results / memory blocks.
-        XCTAssertEqual(prompt, "Supervisor:\nдоложи статус")
+        XCTAssertEqual(prompt, MessageSourceContext.supervisorMessagePrefix + "доложи статус")
         let convo = sut.activeTask?.runs.last?.steps.first?.llmConversation ?? []
         XCTAssertEqual(convo.count, 2, "Prior turn + new supervisor turn")
         XCTAssertEqual(convo.last?.role, .user)
         XCTAssertEqual(convo.last?.sourceRole, .supervisor)
         XCTAssertEqual(convo.last?.sourceContext, .supervisorMessage,
                        ".supervisorAnswer would be FILTERED OUT of the timeline; must be .supervisorMessage")
-        XCTAssertEqual(convo.last?.content, "Supervisor:\nдоложи статус",
+        XCTAssertEqual(convo.last?.content, MessageSourceContext.supervisorMessagePrefix + "доложи статус",
                        "Persisted content includes the prefix; UI strips via displayContent")
         XCTAssertEqual(convo.last?.displayContent, "доложи статус",
                        "Activity feed must render the bubble without the attribution header")
@@ -191,7 +191,7 @@ final class ConsumeQueuedSupervisorMessageTests: NTMSOrchestratorTestBase, @unch
 
         // Expected: targeted FIFO tier first (pm 1, pm 2), then untargeted FIFO
         // tier (team A, team B). TL-targeted stays queued.
-        XCTAssertEqual(prompt, "Supervisor:\npm 1\npm 2\nteam A\nteam B")
+        XCTAssertEqual(prompt, MessageSourceContext.supervisorMessagePrefix + "pm 1\npm 2\nteam A\nteam B")
         let remaining = formState.queuedMessages(for: taskID)
         XCTAssertEqual(remaining.count, 1, "Only TL-targeted remains")
         XCTAssertEqual(remaining.first?.text, "for TL")
@@ -205,7 +205,7 @@ final class ConsumeQueuedSupervisorMessageTests: NTMSOrchestratorTestBase, @unch
             taskID: taskID, roleID: "pm", stepID: stepID
         )
 
-        XCTAssertEqual(prompt, "Supervisor:\nsingle",
+        XCTAssertEqual(prompt, MessageSourceContext.supervisorMessagePrefix + "single",
                        "Single-message batch still uses the `Supervisor:\\n<body>` shape — consistent with multi-message batches")
     }
 
@@ -501,7 +501,7 @@ final class ConsumeQueuedSupervisorMessageTests: NTMSOrchestratorTestBase, @unch
         let delivered = [pm, tl].compactMap { $0 }
         XCTAssertEqual(delivered.count, 1,
                        "Atomic reserve must deliver an untargeted message to exactly ONE role, not both")
-        XCTAssertEqual(delivered.first, "Supervisor:\nteam-wide")
+        XCTAssertEqual(delivered.first, MessageSourceContext.supervisorMessagePrefix + "team-wide")
         XCTAssertFalse(formState.hasQueuedMessage(for: taskID),
                        "Queue drained exactly once across both consumers")
 
@@ -528,7 +528,7 @@ final class ConsumeQueuedSupervisorMessageTests: NTMSOrchestratorTestBase, @unch
             taskID: taskA, roleID: "pm", stepID: stepA
         )
 
-        XCTAssertEqual(prompt, "Supervisor:\nfor task A")
+        XCTAssertEqual(prompt, MessageSourceContext.supervisorMessagePrefix + "for task A")
         XCTAssertTrue(formState.hasQueuedMessage(for: 999),
                       "Task B's queue must be untouched by Task A consumption")
     }
@@ -558,7 +558,7 @@ final class ConsumeQueuedSupervisorMessageTests: NTMSOrchestratorTestBase, @unch
         let prompt = await sut.consumeQueuedSupervisorMessage(
             taskID: taskID, roleID: stepID, stepID: stepID)
 
-        XCTAssertEqual(prompt, "Supervisor:\nlook at the parser")
+        XCTAssertEqual(prompt, MessageSourceContext.supervisorMessagePrefix + "look at the parser")
     }
 
     func testRedelivery_addsNoSecondBubbleToTheFeed() async {
@@ -584,14 +584,14 @@ final class ConsumeQueuedSupervisorMessageTests: NTMSOrchestratorTestBase, @unch
             taskID: taskID, roleID: stepID, stepID: stepID)
 
         XCTAssertEqual(
-            prompt, "Supervisor:\nlook at the parser\nand fix the lexer",
+            prompt, MessageSourceContext.supervisorMessagePrefix + "look at the parser\nand fix the lexer",
             "the model sees both — it has not read either in THIS phase")
 
         let bubbles = conversation(taskID: taskID, stepID: stepID)
             .filter { $0.sourceContext == .supervisorMessage }
         XCTAssertEqual(bubbles.count, 1)
         XCTAssertEqual(
-            bubbles.first?.content, "Supervisor:\nand fix the lexer",
+            bubbles.first?.content, MessageSourceContext.supervisorMessagePrefix + "and fix the lexer",
             "only the message the user has not yet seen is rendered")
     }
 
@@ -605,7 +605,7 @@ final class ConsumeQueuedSupervisorMessageTests: NTMSOrchestratorTestBase, @unch
         let bubbles = conversation(taskID: taskID, stepID: stepID)
             .filter { $0.sourceContext == .supervisorMessage }
         XCTAssertEqual(bubbles.count, 1)
-        XCTAssertEqual(bubbles.first?.content, "Supervisor:\nfresh input")
+        XCTAssertEqual(bubbles.first?.content, MessageSourceContext.supervisorMessagePrefix + "fresh input")
     }
 
     func testRedelivery_isRemovedFromTheQueueLikeAnyOtherMessage() async {

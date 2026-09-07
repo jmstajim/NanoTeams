@@ -65,7 +65,7 @@ nonisolated extension SearchExecutor {
         do {
             handle = try FileHandle(forReadingFrom: url)
         } catch {
-            return .ioError(reason: "could not open: \(error.localizedDescription)")
+            return .ioError(reason: "could not open: \(ToolErrorHandler.classify(error).message)")
         }
         defer { try? handle.close() }
 
@@ -90,7 +90,7 @@ nonisolated extension SearchExecutor {
                 guard let read = try handle.read(upToCount: chunkSize) else { break }
                 chunk = read
             } catch {
-                return .ioError(reason: "read failed: \(error.localizedDescription)")
+                return .ioError(reason: "read failed: \(ToolErrorHandler.classify(error).message)")
             }
             if chunk.isEmpty { break }
 

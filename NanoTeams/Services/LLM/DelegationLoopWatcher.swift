@@ -67,8 +67,7 @@ final class DelegationLoopWatcher {
         if isInCooldown(taskID: taskID, now: now) { return true }
         return fireInterrupt(
             childTaskID: taskID,
-            scope: signal.scope,
-            diagnostic: signal.diagnostic,
+            signal: signal,
             now: now,
             orchestrator: orchestrator
         )
@@ -159,8 +158,7 @@ final class DelegationLoopWatcher {
         ) else { return }
         fireInterrupt(
             childTaskID: taskID,
-            scope: signal.scope,
-            diagnostic: signal.diagnostic,
+            signal: signal,
             now: now,
             orchestrator: orchestrator
         )
@@ -197,15 +195,18 @@ final class DelegationLoopWatcher {
     @discardableResult
     private func fireInterrupt(
         childTaskID: Int,
-        scope: String,
-        diagnostic: String,
+        signal: LoopSignal,
         now: Date,
         orchestrator: NTMSOrchestrator
     ) -> Bool {
         guard let parent = resolveImmediateParent(childTaskID: childTaskID, orchestrator: orchestrator)
         else { return false }
         let teamName = orchestrator.loadedTask(childTaskID).map { orchestrator.resolvedTeam(for: $0).name } ?? "child team"
-        let message = "[Auto-detected loop in \(teamName) (\(scope))]: \(diagnostic). The team appears stuck — decide whether to cancel, resume, or forward guidance."
+        // This text lands in the PARENT ROLE's `delegate_to_team` result as
+        // `supervisor_message` — a model reads it, on an append-only wire. Until 2026-09-07
+        // it carried `signal.diagnostic` (up to 80 characters of the child's output, tool
+        // names, file paths) and the internal `scope` label; the clause names the shape only.
+        let message = "[Auto-detected loop in \(teamName)]: the team is repeating itself\(signal.modelFacingClause) It appears stuck — decide whether to cancel, resume, or forward guidance."
         let woken = orchestrator.notifyDelegationInterrupt(
             parentTaskID: parent.parentTaskID,
             parentRoleID: parent.parentRoleID,

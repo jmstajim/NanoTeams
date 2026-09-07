@@ -9,7 +9,7 @@ nonisolated struct PPTXDocumentExtractor: DocumentFormatExtractor {
         do {
             entryNames = try ZIPReader.listEntries(at: url).map(\.name)
         } catch {
-            return .failure(reason: String(describing: error))
+            return .failure(reason: ToolErrorHandler.classify(error).message)
         }
         let slideEntries = entryNames
             .filter { $0.hasPrefix("ppt/slides/slide") && $0.hasSuffix(".xml") }
@@ -26,7 +26,7 @@ nonisolated struct PPTXDocumentExtractor: DocumentFormatExtractor {
             do {
                 data = try ZIPReader.readEntry(named: entry, from: url)
             } catch {
-                capturedError = String(describing: error)
+                capturedError = ToolErrorHandler.classify(error).message
                 continue
             }
             guard let slideData = data else { continue }

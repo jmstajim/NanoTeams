@@ -68,7 +68,9 @@ final class ToolErrorHandlerTests: XCTestCase {
         }
 
         XCTAssertTrue(result.outputJSON.contains("error"))
-        XCTAssertTrue(result.outputJSON.contains("permissionDenied") || result.outputJSON.contains("PERMISSION_DENIED"))
+        XCTAssertTrue(result.outputJSON.contains("INVALID_ARGS"),
+                      "a path shape the sandbox refuses is an argument fault the model can repair, "
+                          + "never a `_DENIED` decision that tells it not to retry: \(result.outputJSON)")
     }
 
     // MARK: - Generic Error Tests
@@ -123,14 +125,17 @@ final class ToolErrorHandlerTests: XCTestCase {
         }
     }
 
-    func testSandboxPathErrorMapsToPermissionDeniedCode() async {
+    func testSandboxPathErrorMapsToInvalidArgsCode() async {
         let args: [String: Any] = ["path": "/etc/passwd"]
 
         let result = await ToolErrorHandler.execute(toolName: "test", args: args) {
             throw SandboxPathError.outsideSandbox("/etc/passwd")
         }
 
-        XCTAssertTrue(result.outputJSON.contains("PERMISSION_DENIED") || result.outputJSON.contains("permissionDenied"))
+        XCTAssertTrue(result.outputJSON.contains("INVALID_ARGS"), result.outputJSON)
+        XCTAssertFalse(result.outputJSON.contains("PERMISSION_DENIED"),
+                       "PERMISSION_DENIED ends in `_DENIED`, which the note policy reads as a decision "
+                           + "and answers with \"Do not retry\" — the opposite of this message's own repair")
     }
 
     // MARK: - Multiple Tool Names Tests

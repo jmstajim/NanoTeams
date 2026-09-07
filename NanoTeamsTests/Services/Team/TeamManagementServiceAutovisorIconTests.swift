@@ -243,25 +243,35 @@ final class TeamManagementServiceAutovisorIconTests: XCTestCase {
         XCTAssertTrue(ids.isSubset(of: allowed), "no out-of-set tool may be present after sync")
     }
 
-    func testFactory_coordinatorIsAuto() {
+    func testFactory_coordinatorIsTheManager() {
         let team = TeamTemplateFactory.autovisor()
-        XCTAssertNil(team.settings.meetingCoordinatorRoleID,
-                     "the Autovisor team defaults to Auto (nil) coordinator")
+        let managerID = team.roles.first { $0.systemRoleID == AutovisorConstants.managerRoleSystemID }?.id
+        XCTAssertEqual(team.settings.meetingCoordinatorRoleID, managerID,
+                       "the lone Manager is the Autovisor team's coordinator — there is no Auto")
     }
 
-    func testSync_normalizesNonAutoCoordinatorToNil() {
+    /// A team persisted by a build where `nil` meant "Auto" heals to the Manager on sync;
+    /// the change is reported so the persist fires.
+    func testSync_healsANilCoordinatorToTheManager() {
         var team = TeamTemplateFactory.autovisor()
-        // Simulate a team persisted by an older build that pinned the Manager role.
-        team.settings.meetingCoordinatorRoleID = team.roles.first {
-            $0.systemRoleID == AutovisorConstants.managerRoleSystemID
-        }?.id
-        XCTAssertNotNil(team.settings.meetingCoordinatorRoleID, "fixture precondition")
+        team.settings.meetingCoordinatorRoleID = nil
         var teams = [team]
 
         let changed = TeamManagementService.syncAutovisorTeamToTemplate(teams: &teams)
 
-        XCTAssertTrue(changed, "a non-Auto coordinator must report a change so the persist fires")
-        XCTAssertNil(teams[0].settings.meetingCoordinatorRoleID, "coordinator normalized to Auto")
+        XCTAssertTrue(changed, "a healed coordinator must report a change so the persist fires")
+        let managerID = teams[0].roles.first { $0.systemRoleID == AutovisorConstants.managerRoleSystemID }?.id
+        XCTAssertEqual(teams[0].settings.meetingCoordinatorRoleID, managerID)
+    }
+
+    func testSync_leavesAResolvedCoordinatorAlone() {
+        let team = TeamTemplateFactory.autovisor()
+        var teams = [team]
+
+        let changed = TeamManagementService.syncAutovisorTeamToTemplate(teams: &teams)
+
+        XCTAssertFalse(changed, "nothing to heal on a freshly built team")
+        XCTAssertEqual(teams[0].settings.meetingCoordinatorRoleID, team.settings.meetingCoordinatorRoleID)
     }
 
     func testSync_isNoopWithoutAutovisorTeam() {

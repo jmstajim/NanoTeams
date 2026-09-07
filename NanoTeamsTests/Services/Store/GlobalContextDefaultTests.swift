@@ -44,25 +44,33 @@ final class GlobalContextDefaultTests: XCTestCase {
 
     // MARK: - What the app ships
 
-    /// The rule must actually ship. Without it local models batch tool calls
-    /// (observed on `qwen3.6`), so an empty default is a silent behaviour
-    /// regression, not a tidy-up.
-    func testGlobalContextDefault_shipsTheOneToolRule() {
-        let text = AppDefaults.globalContext
+    /// The rule must actually ship — without it local models batch tool calls (observed on
+    /// `qwen3.6`) — and it ships in the `## Tool Calling` body, never in the user slot:
+    /// the slot reaches consultations (`tools: []`) and tool-less meeting speakers, where
+    /// "Call one tool per response." sat beside "None available — respond directly without
+    /// tool calls." until 2026-09-07 (playbook R4.1.1).
+    func testOneToolRule_shipsInTheToolCallingBody_andTheUserSlotIsEmpty() {
+        XCTAssertEqual(AppDefaults.globalContext, "", "the slot belongs to the user")
 
-        XCTAssertFalse(
-            text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-            "emptying this ships no tool-call discipline at all — read the constant's doc first")
-        XCTAssertTrue(
-            text.lowercased().contains("one tool"),
-            "the rule the whole constant exists for must survive any rewrite")
+        let rule = NativeLMStudioClient.oneToolPerResponseRule
+        XCTAssertTrue(rule.lowercased().contains("one tool"), rule)
+        XCTAssertFalse(rule.lowercased().contains("exception") || rule.lowercased().contains("because"),
+                       "a bare rule — no exception clause, no rationale: \(rule)")
+
+        let schema = ToolSchema(name: "read_file", description: "Read a file",
+                                parameters: JSONSchema(type: "object", properties: [:], required: []))
+        let withTools = NativeLMStudioClient.buildToolSchemaBody(tools: [schema])
+        XCTAssertEqual(withTools.components(separatedBy: rule).count - 1, 1,
+                       "exactly once, for every call that carries a tool schema")
+        XCTAssertFalse(PromptBuilder.formatToolCallingBlock(tools: []).contains(rule),
+                       "a call with no tools cannot obey it — it must not be told to")
     }
 
     /// One rule, nothing to adjudicate. Both an explicit exception and a stated
     /// reason reopen the argument, so both are banned. This is the pin that keeps
     /// a compression pass from re-introducing `Exception: 2–3 …`.
     func testGlobalContextDefault_statesOneRuleWithNoEscapeClause() {
-        let text = AppDefaults.globalContext
+        let text = NativeLMStudioClient.oneToolPerResponseRule
 
         for banned in ["exception", "independent", "at most", "unless", "except"] {
             XCTAssertFalse(
@@ -77,23 +85,22 @@ final class GlobalContextDefaultTests: XCTestCase {
             "a second line is where the revocation historically lived")
     }
 
-    /// Ties the default's VALUE to its rendered CONSEQUENCE across the real
-    /// templates, so neither half can regress alone: the shipped rule must reach
-    /// the prompt under an intact `## Global guidance` header.
-    func testShippedDefault_rendersUnderTheGlobalGuidanceHeader() {
+    /// Ties a folder's VALUE to its rendered CONSEQUENCE across the real templates, so
+    /// neither half can regress alone: text the user typed reaches the prompt under exactly
+    /// one intact `## Global guidance` header. (The shipped default is empty and renders no
+    /// section — `testClearedGlobalContext_rendersNoGlobalGuidanceSection` below.)
+    func testFolderValue_rendersUnderTheGlobalGuidanceHeader() {
+        let folderValue = "Answer in Russian."
         for (name, template) in [
             ("software", SystemTemplates.softwareTemplate),
             ("generic", SystemTemplates.genericTemplate),
             ("autovisor", SystemTemplates.autovisorTemplate),
         ] {
-            let resolved = render(template, globalContext: AppDefaults.globalContext)
+            let resolved = render(template, globalContext: folderValue)
 
             XCTAssertTrue(
-                resolved.contains("## Global guidance"),
-                "[\(name)] the shipped rule must not be stripped as an empty section")
-            XCTAssertTrue(
-                resolved.contains(AppDefaults.globalContext),
-                "[\(name)] the rule text itself must reach the prompt")
+                resolved.contains("## Global guidance\n\(folderValue)"),
+                "[\(name)] the folder's text must reach the prompt under the header")
             XCTAssertEqual(
                 resolved.components(separatedBy: "## Global guidance").count - 1, 1,
                 "[\(name)] exactly one section — the chip must suppress the legacy auto-append")
@@ -133,9 +140,9 @@ final class GlobalContextDefaultTests: XCTestCase {
         XCTAssertTrue(
             resolved.contains("## Current Memory"),
             "the manager's memory must reach the prompt")
-        XCTAssertTrue(
-            resolved.contains(AppDefaults.globalContext),
-            "the shipped rule must survive being concatenated with the memory block")
+        XCTAssertFalse(
+            resolved.contains("## Global guidance\n\n## Current Memory"),
+            "an empty user slot leaves no bodyless header above the memory block")
     }
 
     /// Shared render helper — exercises the same two-argument shape production
@@ -175,11 +182,15 @@ final class GlobalContextDefaultTests: XCTestCase {
     /// carry the escape clause. If a retired literal ever passed the
     /// no-escape-clause pin, it would not have needed retiring.
     func testRetiredDefaults_areTheOnesCarryingTheEscapeClause() {
-        for retired in AppDefaults.retiredGlobalContextDefaults {
+        for retired in [AppDefaults.retiredGlobalContextV0, AppDefaults.retiredGlobalContextV1] {
             XCTAssertTrue(
                 retired.lowercased().contains("exception"),
                 "a retired default without the escape clause is a retirement with no reason")
         }
+        // V2 is the bare rule itself, retired from the SLOT rather than for its wording: it
+        // ships unchanged inside the tool-calling body, and an install pinned to it by an
+        // old "Reset to Default" would otherwise send it twice.
+        XCTAssertEqual(AppDefaults.retiredGlobalContextV2, NativeLMStudioClient.oneToolPerResponseRule)
     }
 
     /// The roster is the purge's entire input — a literal missing from it is an
@@ -191,6 +202,7 @@ final class GlobalContextDefaultTests: XCTestCase {
             [
                 AppDefaults.retiredGlobalContextV0,
                 AppDefaults.retiredGlobalContextV1,
+                AppDefaults.retiredGlobalContextV2,
             ],
             "retiring a default means adding its literal here in the SAME commit")
     }

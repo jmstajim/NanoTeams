@@ -157,6 +157,15 @@ nonisolated enum AutovisorPolicy {
             && autovisorTaskID != taskID
     }
 
+    /// The folder-level half of `supervisesTask`, for surfaces that hold no task: does the
+    /// manager supervise this folder's ordinary top-level tasks at all? True exactly when
+    /// `supervisesTask` would be true for a top-level task that is not the manager's own —
+    /// the case the role editor, the wire preview and the badge describe when they ask whether
+    /// a human would be there to approve a `bash` command (`ApprovalPresence`).
+    static func supervisesTopLevelTasks(autovisorEnabled: Bool, activation: AutovisorActivation) -> Bool {
+        autovisorEnabled && activation.onTaskNeedsSupervisor
+    }
+
     /// Whether the Autovisor can be ENABLED in the current work folder.
     ///
     /// The manager only does anything when there is a real, user-chosen work

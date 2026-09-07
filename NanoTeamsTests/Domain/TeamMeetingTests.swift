@@ -71,6 +71,12 @@ final class TeamMeetingTests: XCTestCase {
         XCTAssertEqual(decoded.participants, original.participants)
         XCTAssertEqual(decoded.context, original.context)
         XCTAssertEqual(decoded.status, original.status)
+        XCTAssertEqual(decoded.kind, .discussion)
+
+        let vote = TeamMeeting(topic: "Vote", initiatedBy: .codeReviewer, participants: [.softwareEngineer],
+                               kind: .changeRequestVote)
+        let voteDecoded = try decoder.decode(TeamMeeting.self, from: try encoder.encode(vote))
+        XCTAssertEqual(voteDecoded.kind, .changeRequestVote, "the kind must round-trip — the directive reads it")
     }
 
     func testTeamMeeting_codable_backwardsCompatibility() throws {
@@ -87,6 +93,7 @@ final class TeamMeetingTests: XCTestCase {
         let decoded = try JSONDecoder().decode(TeamMeeting.self, from: data)
 
         XCTAssertEqual(decoded.status, .pending)  // Default
+        XCTAssertEqual(decoded.kind, .discussion, "records written before 2026-09-07 carry no `kind`")
         XCTAssertNil(decoded.context)
         XCTAssertTrue(decoded.messages.isEmpty)
         XCTAssertTrue(decoded.decisions.isEmpty)

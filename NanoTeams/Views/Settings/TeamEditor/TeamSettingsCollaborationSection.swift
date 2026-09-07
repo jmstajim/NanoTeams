@@ -1,35 +1,61 @@
 import SwiftUI
 
-/// Pure-logic backing for the Meeting Coordinator Picker — orphan tolerance
-/// + set-side sanitization. Kept on a nonisolated namespace so it can be
-/// unit-tested without a SwiftUI host. Get-binding delegates to
-/// `DesignatedCoordinatorResolver` so the picker shares the orphan-self-heal
-/// contract with the runtime schema-build path (single source of truth).
-enum MeetingCoordinatorPickerLogic {
+/// Pure-logic backing for the Meeting Coordinator Picker. Kept on a nonisolated
+/// namespace so it can be unit-tested without a SwiftUI host. The `get` side reads
+/// `Team.meetingCoordinatorID` — the same rule the meeting runtime, the tool badge and
+/// validation read, so the picker cannot show a different role than the one that will
+/// actually coordinate. There is no "Auto" option: every team with a role has a
+/// coordinator.
+nonisolated enum MeetingCoordinatorPickerLogic {
 
-    /// Normalizes the stored `meetingCoordinatorRoleID` for the picker's
-    /// `get` binding: returns `nil` (= visually "Auto") when stored is nil,
-    /// empty, or references a role that no longer exists in `availableIDs`.
-    static func normalizedSelection(
-        stored: String?,
-        availableIDs: [String]
-    ) -> String? {
-        DesignatedCoordinatorResolver.normalize(storedID: stored, availableIDs: availableIDs)
+    /// The picker's `get`: the team's resolved coordinator. `nil` only for a team with
+    /// no non-Supervisor role — which has no options to pick from either.
+    static func selection(for team: Team) -> String? {
+        team.meetingCoordinatorID
     }
 
-    /// Sanitizes the picker's `set` action: collapses empty strings to `nil`
-    /// so the model never persists `""` as a coordinator id.
-    static func sanitizedSelection(_ inbound: String?) -> String? {
-        guard let id = inbound, !id.isEmpty else { return nil }
+    /// The picker's `set`: an empty inbound value is a control glitch, never a user pick,
+    /// and leaves the stored id as it was — `nil` would have meant Auto, which no longer
+    /// exists.
+    static func sanitizedSelection(_ inbound: String?, current: String?) -> String? {
+        guard let id = inbound, !id.isEmpty else { return current }
         return id
     }
 }
 
+/// The Collaboration card's read of `Team.meetingAvailability`: what the footer says,
+/// what the master switch shows and whether it can be flipped. Pure so the three answers
+/// are testable without a SwiftUI host and cannot drift from the enum they read.
+nonisolated enum MeetingsSwitchPresentation {
+    static func footer(for availability: MeetingAvailability) -> String {
+        switch availability {
+        case .available:
+            return "Configure how team members interact during meetings. The coordinator opens every meeting and ends it with the group's decision."
+        case .switchedOff:
+            return "Meetings are off: no role can start one, and request_changes votes are unavailable."
+        case .noPartner:
+            return "Meetings need a second role in this team. Until one is added no role can start a meeting, request_changes votes are unavailable, and ask_teammate has nobody to reach."
+        }
+    }
+
+    /// What the master switch SHOWS — a meeting the team cannot hold reads as Off even
+    /// while the stored flag is on, so the card never claims a meeting nobody can start.
+    static func isOn(for availability: MeetingAvailability) -> Bool {
+        availability == .available
+    }
+
+    /// Whether the master switch can be flipped: with nobody to invite the flag has nothing
+    /// to govern — the way to enable meetings is a second role, added in the Roles tab.
+    static func isSwitchEnabled(for availability: MeetingAvailability) -> Bool {
+        availability != .noPartner
+    }
+}
+
 /// Collaboration settings section extracted from TeamSettingsDetailView (SRP).
-/// Configures Supervisor meeting access, coordinator role, and invitable roles.
+/// Configures the meetings switch, the coordinator role and the invitable roles. There is
+/// no Supervisor seat: the Supervisor is the human and never a meeting participant.
 struct TeamSettingsCollaborationSection: View {
     @Binding var team: Team
-    @Binding var supervisorCanBeInvited: Bool
     let nonSupervisorRoles: [TeamRoleDefinition]
     let onSave: () -> Void
 
@@ -40,41 +66,44 @@ struct TeamSettingsCollaborationSection: View {
         SettingsCard(
             header: "Collaboration",
             systemImage: "person.2",
-            footer: "Configure how team members interact during meetings."
+            footer: MeetingsSwitchPresentation.footer(for: availability)
         ) {
             VStack(alignment: .leading, spacing: Spacing.m) {
-                Toggle("Supervisor can join meetings", isOn: $supervisorCanBeInvited)
-                    .toggleStyle(.terminal)
+                // The master switch. Off withholds `request_team_meeting` and
+                // `request_changes` from every role's step schema (see
+                // `TeamSettings.meetingsEnabled`); the rows below stay visible but
+                // inert so the configuration is still readable.
+                Toggle("Team meetings", isOn: Binding(
+                    get: { MeetingsSwitchPresentation.isOn(for: availability) },
+                    set: { isOn in
+                        team.settings.meetingsEnabled = isOn
+                        onSave()
+                    }
+                ))
+                .toggleStyle(.terminal)
+                .disabled(!MeetingsSwitchPresentation.isSwitchEnabled(for: availability))
 
-                // Auto (= `meetingCoordinatorRoleID == nil`) means: no designated
-                // coordinator — the initiator of each meeting becomes its
-                // effective coordinator. See `TeamSettings`.
-                //
-                // `normalizedSelection` collapses orphan stored IDs (referenced
-                // role removed) to nil so the picker shows "Auto" instead of a
-                // blank selection, matching the runtime's silent self-heal in
-                // `LLMExecutionService.resolveCoordinatorRole`.
+                // Every team with a role has a coordinator — there is no "Auto"
+                // (see `TeamSettings.meetingCoordinatorRoleID`). The `get` reads the
+                // resolved id, so a stored orphan shows the role that will actually
+                // coordinate rather than a blank selection.
                 HStack {
                     Text("Meeting Coordinator")
                     Spacer()
                     TerminalPicker(
                         selection: Binding<String?>(
-                            get: {
-                                MeetingCoordinatorPickerLogic.normalizedSelection(
-                                    stored: team.settings.meetingCoordinatorRoleID,
-                                    availableIDs: nonSupervisorRoles.map(\.id)
-                                )
-                            },
+                            get: { MeetingCoordinatorPickerLogic.selection(for: team) },
                             set: { newRoleID in
                                 team.settings.meetingCoordinatorRoleID =
-                                    MeetingCoordinatorPickerLogic.sanitizedSelection(newRoleID)
+                                    MeetingCoordinatorPickerLogic.sanitizedSelection(
+                                        newRoleID, current: team.settings.meetingCoordinatorRoleID)
                                 onSave()
                             }
                         ),
-                        options: [(value: String?.none, label: "Auto")]
-                            + nonSupervisorRoles.map { (value: String?.some($0.id), label: $0.name) }
+                        options: nonSupervisorRoles.map { (value: String?.some($0.id), label: $0.name) }
                     )
                 }
+                .disabled(!meetingsEnabled)
 
                 DisclosureGroup(isExpanded: $invitableRolesExpanded) {
                     VStack(alignment: .leading) {
@@ -103,9 +132,13 @@ struct TeamSettingsCollaborationSection: View {
                     }
                     .buttonStyle(.plain)
                 }
+                .disabled(!meetingsEnabled)
             }
         }
     }
+
+    private var availability: MeetingAvailability { team.meetingAvailability }
+    private var meetingsEnabled: Bool { availability == .available }
 }
 
 #Preview("Collaboration Settings") {
@@ -119,7 +152,6 @@ struct TeamSettingsCollaborationSection: View {
         t.settings.invitableRoles = Set(["pm", "swe", "cr"])
         return t
     }()
-    @Previewable @State var supervisorCanBeInvited = true
 
     let nonSupervisorRoles = team.roles
 
@@ -127,7 +159,6 @@ struct TeamSettingsCollaborationSection: View {
         VStack {
             TeamSettingsCollaborationSection(
                 team: $team,
-                supervisorCanBeInvited: $supervisorCanBeInvited,
                 nonSupervisorRoles: nonSupervisorRoles,
                 onSave: {}
             )

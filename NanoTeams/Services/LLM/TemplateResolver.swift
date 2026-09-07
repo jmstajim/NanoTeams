@@ -88,6 +88,23 @@ nonisolated enum TemplateResolver {
         guard !blocks.isEmpty else { return text }
         let joined = blocks.joined(separator: "\n\n")
 
+        return splicingBeforeFinalReminder(joined, into: text)
+    }
+
+    /// The runtime-rendered `## Tool Calling` section for a system prompt that carries no
+    /// `{toolCalling}` chip (a user-edited or imported template, a direct service prompt).
+    /// Spliced BEFORE a trailing `## Final reminder`, like the chip-less `## Skills` /
+    /// `## Global guidance` fallbacks — appended after it until 2026-09-07, which put the
+    /// tool catalog, the largest block of the prompt, after the output contract the tail
+    /// slot exists for (R1.4.2 / R5.1.3).
+    static func appendingToolCallingSection(_ section: String, to text: String) -> String {
+        guard !text.isEmpty else { return section }
+        return splicingBeforeFinalReminder(section, into: text)
+    }
+
+    /// `block` inserted before a trailing `## Final reminder` heading when `text` has one
+    /// at a line start, else appended.
+    private static func splicingBeforeFinalReminder(_ block: String, into text: String) -> String {
         let frHeader = "## Final reminder"
         if let range = text.range(of: frHeader, options: .backwards),
            range.lowerBound == text.startIndex
@@ -95,9 +112,9 @@ nonisolated enum TemplateResolver {
             let head = String(text[..<range.lowerBound])
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let tail = String(text[range.lowerBound...])
-            return head + "\n\n" + joined + "\n\n" + tail
+            return head + "\n\n" + block + "\n\n" + tail
         }
-        return text + "\n\n" + joined
+        return text + "\n\n" + block
     }
 
     /// One-call system-prompt assembly: resolve `{placeholder}` substitutions

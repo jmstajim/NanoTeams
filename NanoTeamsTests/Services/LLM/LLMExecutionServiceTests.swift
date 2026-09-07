@@ -111,6 +111,11 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
     var eventLog: [String] = []
     // Task to mutate (for testing)
     var taskToMutate: NTMSTask?
+    /// When true every `mutateTask` is refused (`false`, nothing written) — the persistence
+    /// failure the cap escalations guard against (`Reasoning-channel cap exceeded but
+    /// Supervisor escalation failed to persist`). Distinct from a missing task: the task is
+    /// still loadable, so `isExecutionLive` holds and the refusal is the mutation's alone.
+    var refuseMutations = false
 
     func loadedTask(_ taskID: Int) -> NTMSTask? {
         if taskToMutate?.id == taskID { return taskToMutate }
@@ -118,6 +123,10 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
     }
 
     func mutateTask(taskID: Int, _ mutate: (inout NTMSTask) -> Void) async -> Bool {
+        if refuseMutations {
+            eventLog.append("mutate-refused:\(taskID)")
+            return false
+        }
         if var task = taskToMutate, task.id == taskID {
             eventLog.append("mutate-begin:\(taskID)")
             mutate(&task)
@@ -733,7 +742,7 @@ final class LLMExecutionServiceToolDefinitionsTests: XCTestCase {
             settings: TeamSettings(), graphLayout: TeamGraphLayout()
         )
 
-        let schemas = service.toolSchemas(for: .custom(id: "rogue_role"), team: team)
+        let schemas = service.toolSchemas(for: .custom(id: "rogue_role"), team: team, humanPresent: true)
         let names = Set(schemas.map(\.name))
 
         XCTAssertTrue(names.contains("read_file"), "Other listed tools should pass through")
@@ -777,7 +786,7 @@ final class LLMExecutionServiceToolDefinitionsTests: XCTestCase {
         )
 
         // `.custom(id: name)` matches the production shape from `Role.fromDefinition`.
-        let schemas = service.toolSchemas(for: .custom(id: "Контент-менеджер"), team: team)
+        let schemas = service.toolSchemas(for: .custom(id: "Контент-менеджер"), team: team, humanPresent: true)
         let names = Set(schemas.map(\.name))
 
         // Configured tools pass through — proves roleDefinition was resolved (not fallback).
@@ -802,16 +811,16 @@ final class LLMExecutionServiceToolDefinitionsTests: XCTestCase {
         XCTAssertTrue(ToolHandlerRegistry.unavailableToRoles.contains(ToolNames.createTeam))
     }
 
-    // MARK: - conclude_meeting auto-inject for Meeting Coordinator
+    // MARK: - conclude_meeting is meeting-only; orphan coordinators are healed and reported
     //
-    // Regression: `conclude_meeting` was previously granted only via the `pmOnlyToolIDs`
-    // fallback group, which meant it was effectively hardcoded to PM (and `theAgreeable`)
-    // and only applied when a role had NO team config. In FAANG where the coordinator is
-    // TPM, nobody could actually call `conclude_meeting` because the role templates
-    // carried their own toolIDs (bypassing fallback). Fix: auto-inject at dispatch time
-    // for whichever role `team.settings.meetingCoordinatorRoleID` points to.
+    // Until 2026-09-06 step 6 of the resolver injected `conclude_meeting` into the STEP
+    // schema of the coordinator (or, under "Auto", of every meeting starter). No step ever
+    // has an active meeting, so the tool was dead there; it now reaches only the
+    // coordinator's meeting turns (`MeetingCoordinator.speakerTools`), and "Auto" no
+    // longer exists — a stored coordinator that does not resolve heals to
+    // `TeamSettings.defaultCoordinatorID`.
 
-    func testToolSchemas_autoInjectsConcludeMeetingForCoordinator() {
+    func testToolSchemas_stepSchemaNeverCarriesConcludeMeeting() {
         let service = LLMExecutionService(repository: NTMSRepository())
         let delegate = MockLLMExecutionDelegate()
         service.attach(delegate: delegate)
@@ -828,7 +837,7 @@ final class LLMExecutionServiceToolDefinitionsTests: XCTestCase {
             id: "other_role",
             name: "Other",
             prompt: "p",
-            toolIDs: [ToolNames.askTeammate, ToolNames.requestTeamMeeting],
+            toolIDs: [ToolNames.concludeMeeting, ToolNames.requestTeamMeeting],
             usePlanningPhase: false,
             dependencies: RoleDependencies()
         )
@@ -840,197 +849,25 @@ final class LLMExecutionServiceToolDefinitionsTests: XCTestCase {
             graphLayout: TeamGraphLayout()
         )
 
-        let coordSchemas = service.toolSchemas(for: .custom(id: "coord_role"), team: team)
-        let otherSchemas = service.toolSchemas(for: .custom(id: "other_role"), team: team)
+        let coordSchemas = service.toolSchemas(for: .custom(id: "coord_role"), team: team, humanPresent: true)
+        let otherSchemas = service.toolSchemas(for: .custom(id: "other_role"), team: team, humanPresent: true)
 
-        XCTAssertTrue(
+        XCTAssertFalse(
             coordSchemas.contains(where: { $0.name == ToolNames.concludeMeeting }),
-            "conclude_meeting MUST be auto-injected for the meeting coordinator role"
+            "the coordinator's STEP schema must not carry conclude_meeting — no meeting is active in a step"
         )
         XCTAssertFalse(
             otherSchemas.contains(where: { $0.name == ToolNames.concludeMeeting }),
-            "conclude_meeting must NOT leak to non-coordinator roles"
+            "a legacy toolIDs entry cannot grant it either (`unavailableToRoles`)"
         )
-    }
-
-    // Dedup guard: if coordinator role ALREADY has conclude_meeting in toolIDs
-    // (legitimate config that could come from team templates or LLM-generated
-    // teams), the auto-inject must NOT add a second copy. Duplicate tool schemas
-    // would either be rejected by the LM Studio API or silently confuse the model.
-    // Coordinator must also have requestTeamMeeting so the auto-inject branch is
-    // actually exercised under the gating rule (otherwise the auto-inject is
-    // skipped entirely and the dedup guard isn't really tested).
-    func testToolSchemas_concludeMeetingInCoordinatorToolIDs_notDuplicated() {
-        let service = LLMExecutionService(repository: NTMSRepository())
-        let delegate = MockLLMExecutionDelegate()
-        service.attach(delegate: delegate)
-
-        let coordinator = TeamRoleDefinition(
-            id: "coord_role",
-            name: "Coordinator",
-            prompt: "p",
-            toolIDs: [ToolNames.concludeMeeting, ToolNames.requestTeamMeeting, ToolNames.askTeammate],
-            usePlanningPhase: false,
-            dependencies: RoleDependencies()
-        )
-        let team = Team(
-            name: "T",
-            roles: [coordinator],
-            artifacts: [],
-            settings: TeamSettings(meetingCoordinatorRoleID: "coord_role"),
-            graphLayout: TeamGraphLayout()
-        )
-
-        let schemas = service.toolSchemas(for: .custom(id: "coord_role"), team: team)
-        let concludeCount = schemas.filter { $0.name == ToolNames.concludeMeeting }.count
-        XCTAssertEqual(
-            concludeCount, 1,
-            "conclude_meeting must appear exactly once even when both explicit toolIDs and auto-inject would grant it. Got \(concludeCount) copies."
-        )
-    }
-
-    // Regression: previously `conclude_meeting` was auto-injected for any role flagged
-    // as the meeting coordinator, regardless of whether they could actually start
-    // meetings. In single-role chat-mode templates (Coding Assistant), this surfaced
-    // `conclude_meeting` in the role's tool list as "Auto" even though `request_team_meeting`
-    // was unchecked — dead weight the LLM could never use. Fix: gate auto-inject on
-    // the coordinator having `request_team_meeting` in their own toolIDs.
-    func testToolSchemas_noConcludeMeetingWhenCoordinatorLacksRequestTeamMeeting() {
-        let service = LLMExecutionService(repository: NTMSRepository())
-        let delegate = MockLLMExecutionDelegate()
-        service.attach(delegate: delegate)
-
-        let coordinator = TeamRoleDefinition(
-            id: "coord_role",
-            name: "Coordinator",
-            prompt: "p",
-            toolIDs: [ToolNames.askTeammate, ToolNames.readFile],
-            usePlanningPhase: false,
-            dependencies: RoleDependencies()
-        )
-        let team = Team(
-            name: "T",
-            roles: [coordinator],
-            artifacts: [],
-            settings: TeamSettings(meetingCoordinatorRoleID: "coord_role"),
-            graphLayout: TeamGraphLayout()
-        )
-
-        let schemas = service.toolSchemas(for: .custom(id: "coord_role"), team: team)
-        XCTAssertFalse(
-            schemas.contains(where: { $0.name == ToolNames.concludeMeeting }),
-            "conclude_meeting must NOT be auto-injected when the coordinator can't start meetings (no request_team_meeting in toolIDs)"
-        )
-    }
-
-    // Template-level regression: Coding Assistant is single-role chat-mode and does not
-    // grant request_team_meeting to its only role. Even though the role is the team's
-    // meeting coordinator (coordinatorIndex: 1 in the factory), it must NOT see
-    // conclude_meeting in its schemas.
-    func testToolSchemas_codingAssistantTemplate_doesNotGetConcludeMeeting() {
-        let service = LLMExecutionService(repository: NTMSRepository())
-        let delegate = MockLLMExecutionDelegate()
-        service.attach(delegate: delegate)
-
-        let team = TeamTemplateFactory.codingAssistant()
-        guard let coordinatorID = team.settings.meetingCoordinatorRoleID,
-              let coordinatorRole = team.roles.first(where: { $0.id == coordinatorID }) else {
-            XCTFail("Coding Assistant must have a meeting coordinator configured")
-            return
-        }
-
-        XCTAssertFalse(
-            coordinatorRole.toolIDs.contains(ToolNames.requestTeamMeeting),
-            "Precondition: Coding Assistant coordinator must not have request_team_meeting (single-role chat team)"
-        )
-
-        let schemas = service.toolSchemas(for: .custom(id: coordinatorID), team: team)
-        XCTAssertFalse(
-            schemas.contains(where: { $0.name == ToolNames.concludeMeeting }),
-            "conclude_meeting must not appear in Coding Assistant coordinator's schemas — there are no meetings to conclude"
-        )
-    }
-
-    // Auto mode (no designated coordinator): any role that can start a meeting
-    // (`request_team_meeting` in toolIDs) needs to be able to close it, so
-    // `conclude_meeting` is auto-injected for them. This is the inverse of the
-    // pre-Auto behavior where conclude_meeting was gated to a single named
-    // coordinator role.
-    func testToolSchemas_concludeMeetingAvailable_inAutoMode_forAnyMeetingRequester() {
-        let service = LLMExecutionService(repository: NTMSRepository())
-        let delegate = MockLLMExecutionDelegate()
-        service.attach(delegate: delegate)
-
-        let role = TeamRoleDefinition(
-            id: "r1",
-            name: "R1",
-            prompt: "p",
-            toolIDs: [ToolNames.askTeammate, ToolNames.requestTeamMeeting],
-            usePlanningPhase: false,
-            dependencies: RoleDependencies()
-        )
-        let team = Team(
-            name: "T",
-            roles: [role],
-            artifacts: [],
-            settings: TeamSettings(meetingCoordinatorRoleID: nil),
-            graphLayout: TeamGraphLayout()
-        )
-
-        let schemas = service.toolSchemas(for: .custom(id: "r1"), team: team)
-        XCTAssertTrue(
-            schemas.contains(where: { $0.name == ToolNames.concludeMeeting }),
-            "Auto mode → any role with request_team_meeting must get conclude_meeting"
-        )
-    }
-
-    // Coordinator mode: conclude_meeting is gated to the designated coordinator;
-    // other roles with `request_team_meeting` do NOT get it.
-    func testToolSchemas_concludeMeetingStillGatedToCoordinator_whenCoordinatorSet() {
-        let service = LLMExecutionService(repository: NTMSRepository())
-        let delegate = MockLLMExecutionDelegate()
-        service.attach(delegate: delegate)
-
-        let roleA = TeamRoleDefinition(
-            id: "a",
-            name: "A (coordinator)",
-            prompt: "p",
-            toolIDs: [ToolNames.requestTeamMeeting],
-            usePlanningPhase: false,
-            dependencies: RoleDependencies()
-        )
-        let roleB = TeamRoleDefinition(
-            id: "b",
-            name: "B (also can request meetings)",
-            prompt: "p",
-            toolIDs: [ToolNames.requestTeamMeeting],
-            usePlanningPhase: false,
-            dependencies: RoleDependencies()
-        )
-        let team = Team(
-            name: "T",
-            roles: [roleA, roleB],
-            artifacts: [],
-            settings: TeamSettings(meetingCoordinatorRoleID: "a"),
-            graphLayout: TeamGraphLayout()
-        )
-
-        let schemasA = service.toolSchemas(for: .custom(id: "a"), team: team)
-        let schemasB = service.toolSchemas(for: .custom(id: "b"), team: team)
-        XCTAssertTrue(
-            schemasA.contains(where: { $0.name == ToolNames.concludeMeeting }),
-            "Designated coordinator must get conclude_meeting"
-        )
-        XCTAssertFalse(
-            schemasB.contains(where: { $0.name == ToolNames.concludeMeeting }),
-            "Non-coordinator roles must NOT get conclude_meeting when a coordinator is set"
-        )
+        XCTAssertTrue(otherSchemas.contains(where: { $0.name == ToolNames.requestTeamMeeting }))
     }
 
     // Regression pin for round-3 review CR.4 (silent-failure F2): the
     // schema-build path is the earliest universal detection point for an
     // orphan-coordinator team. Calling `toolSchemas` must surface the
-    // one-shot info banner before the LLM ever decides to start a meeting.
+    // one-shot info banner before the LLM ever decides to start a meeting,
+    // and the banner names the role that coordinates NOW.
     func testToolSchemas_orphanCoordinator_firesOrphanInfoBanner() {
         let service = LLMExecutionService(repository: NTMSRepository())
         let delegate = MockLLMExecutionDelegate()
@@ -1046,52 +883,40 @@ final class LLMExecutionServiceToolDefinitionsTests: XCTestCase {
             graphLayout: TeamGraphLayout()
         )
 
-        _ = service.toolSchemas(for: .custom(id: "live"), team: team)
+        _ = service.toolSchemas(for: .custom(id: "live"), team: team, humanPresent: true)
 
         XCTAssertEqual(delegate.lastInfoMessages.count, 1,
                        "Orphan must be surfaced via schema-build, not gated on meeting actually starting")
         XCTAssertTrue(delegate.lastInfoMessages[0].contains("MyTeam"))
+        XCTAssertTrue(delegate.lastInfoMessages[0].contains("Live now coordinates"),
+                      "the banner names the healed coordinator; got: \(delegate.lastInfoMessages[0])")
     }
 
-    // Regression pin for round-2 review finding C2.1: an orphaned stored
-    // coordinator ID must NOT trap `conclude_meeting` auto-inject in a
-    // coord-mode-no-match state where no role gets the tool. Both the runtime
-    // (`effectiveCoordinator`) and the picker self-heal to Auto for orphan
-    // IDs; the schema-build path must agree. Otherwise the LLM can start
-    // meetings (via `request_team_meeting`) but cannot close them
-    // (`conclude_meeting` absent from the schema).
-    func testToolSchemas_orphanCoordinator_treatedAsAutoMode_injectsConcludeMeeting() {
+    /// A stored id that resolves fires no banner — and re-arms the throttle for a later
+    /// orphan.
+    func testToolSchemas_liveCoordinator_firesNoBanner() {
         let service = LLMExecutionService(repository: NTMSRepository())
         let delegate = MockLLMExecutionDelegate()
         service.attach(delegate: delegate)
-
         let role = TeamRoleDefinition(
-            id: "live",
-            name: "Live",
-            prompt: "p",
+            id: "live", name: "Live", prompt: "p",
             toolIDs: [ToolNames.requestTeamMeeting],
-            usePlanningPhase: false,
-            dependencies: RoleDependencies()
+            usePlanningPhase: false, dependencies: RoleDependencies()
         )
         let team = Team(
-            name: "T",
-            roles: [role],
-            artifacts: [],
-            // Stored coordinator references a role that no longer exists.
-            settings: TeamSettings(meetingCoordinatorRoleID: "ghost-of-deleted-role"),
+            name: "MyTeam", roles: [role], artifacts: [],
+            settings: TeamSettings(meetingCoordinatorRoleID: "live"),
             graphLayout: TeamGraphLayout()
         )
 
-        let schemas = service.toolSchemas(for: .custom(id: "live"), team: team)
-        XCTAssertTrue(
-            schemas.contains(where: { $0.name == ToolNames.concludeMeeting }),
-            "Orphan stored coordinator ID must behave like Auto: any role with request_team_meeting gets conclude_meeting"
-        )
+        _ = service.toolSchemas(for: .custom(id: "live"), team: team, humanPresent: true)
+
+        XCTAssertTrue(delegate.lastInfoMessages.isEmpty)
     }
 
-    // Orphan self-heal: an ID that references a deleted role must resolve to
-    // nil (Auto mode), not silently fabricate a `.custom(id: "deleted-id")`.
-    func testResolveCoordinatorRole_orphanedID_returnsNil() {
+    // A stored id that names a deleted role heals to the default rule — here the only
+    // live role — rather than resolving to nil or fabricating `.custom(id: "deleted-id")`.
+    func testResolveCoordinatorRole_orphanedID_healsToTheDefaultRule() {
         let service = LLMExecutionService(repository: NTMSRepository())
         let role = TeamRoleDefinition(
             id: "alive",
@@ -1108,18 +933,15 @@ final class LLMExecutionServiceToolDefinitionsTests: XCTestCase {
             settings: TeamSettings(meetingCoordinatorRoleID: "ghost-of-deleted-role"),
             graphLayout: TeamGraphLayout()
         )
-        XCTAssertNil(
-            service.resolveCoordinatorRole(team: team),
-            "Orphaned coordinator ID must resolve to nil, not .custom(id:)"
+        XCTAssertEqual(
+            service.resolveCoordinatorRole(team: team), .custom(id: "alive"),
+            "an orphan heals to the default rule's pick, never nil"
         )
     }
 
-    // Supervisor cannot be a meeting coordinator (Supervisor is the user, not
-    // an LLM). If `teams.json` somehow stores Supervisor's id as the
-    // coordinator (hand edit / corruption), runtime must reject it and
-    // self-heal to Auto — symmetric with the picker which never offers
-    // Supervisor as an option. Regression pin for round-3 review MD.2.
-    func testResolveCoordinatorRole_storedSupervisorID_rejected() {
+    // The Supervisor is the user, not an LLM — never a coordinator. A stored Supervisor
+    // id (hand edit / corruption) is treated like an orphan and heals to a real role.
+    func testResolveCoordinatorRole_storedSupervisorID_healsToARealRole() {
         let service = LLMExecutionService(repository: NTMSRepository())
         let supervisor = TeamRoleDefinition(
             id: "sup", name: "Supervisor", prompt: "", toolIDs: [],
@@ -1135,16 +957,11 @@ final class LLMExecutionServiceToolDefinitionsTests: XCTestCase {
             settings: TeamSettings(meetingCoordinatorRoleID: "sup"),
             graphLayout: TeamGraphLayout()
         )
-        XCTAssertNil(
-            service.resolveCoordinatorRole(team: team),
-            "Stored Supervisor ID must be rejected (Supervisor can never be coordinator)"
-        )
+        XCTAssertEqual(service.resolveCoordinatorRole(team: team), .custom(id: "r"))
     }
 
-    // Defensive: stored empty string resolves to nil. Parity with
-    // `DesignatedCoordinatorResolver.normalize` since runtime now funnels
-    // through it (CR.1 fix).
-    func testResolveCoordinatorRole_emptyStoredID_returnsNil() {
+    // Defensive: a stored empty string is an orphan too.
+    func testResolveCoordinatorRole_emptyStoredID_healsToTheDefaultRule() {
         let service = LLMExecutionService(repository: NTMSRepository())
         let role = TeamRoleDefinition(
             id: "r", name: "R", prompt: "p", toolIDs: [],
@@ -1155,11 +972,11 @@ final class LLMExecutionServiceToolDefinitionsTests: XCTestCase {
             settings: TeamSettings(meetingCoordinatorRoleID: ""),
             graphLayout: TeamGraphLayout()
         )
-        XCTAssertNil(service.resolveCoordinatorRole(team: team))
+        XCTAssertEqual(service.resolveCoordinatorRole(team: team), .custom(id: "r"))
     }
 
-    // Auto mode: nil coordinator ID resolves to nil — meeting runs leaderless.
-    func testResolveCoordinatorRole_autoMode_returnsNil() {
+    // A stored nil is not "Auto" (there is no Auto): the default rule picks.
+    func testResolveCoordinatorRole_nilStoredID_healsToTheDefaultRule() {
         let service = LLMExecutionService(repository: NTMSRepository())
         let role = TeamRoleDefinition(
             id: "r1", name: "R", prompt: "p", toolIDs: [],
@@ -1170,14 +987,27 @@ final class LLMExecutionServiceToolDefinitionsTests: XCTestCase {
             settings: TeamSettings(meetingCoordinatorRoleID: nil),
             graphLayout: TeamGraphLayout()
         )
+        XCTAssertEqual(service.resolveCoordinatorRole(team: team), .custom(id: "r1"))
+    }
+
+    // Nobody to coordinate ⇒ nil; the meeting runtime then falls back to the initiator
+    // (a fixture shape — every bundled team has a role).
+    func testResolveCoordinatorRole_rolelessTeam_returnsNil() {
+        let service = LLMExecutionService(repository: NTMSRepository())
+        let team = Team(
+            name: "T", roles: [], artifacts: [],
+            settings: TeamSettings(meetingCoordinatorRoleID: nil),
+            graphLayout: TeamGraphLayout()
+        )
         XCTAssertNil(service.resolveCoordinatorRole(team: team))
+        XCTAssertEqual(service.effectiveCoordinator(team: team, initiator: .productManager), .productManager)
     }
 
     // MARK: - effectiveCoordinator (designated ?? initiator)
 
-    // Auto mode: when no coordinator is designated, the meeting's initiator
-    // becomes the effective coordinator for that meeting.
-    func testEffectiveCoordinator_autoMode_returnsInitiator() {
+    // No stored coordinator is not "Auto": the default rule picks the team's role, and
+    // the initiator is NOT promoted (it stands in only for a roleless team, tested below).
+    func testEffectiveCoordinator_nilStoredID_isTheDefaultRulesPick_notTheInitiator() {
         let service = LLMExecutionService(repository: NTMSRepository())
         let role = TeamRoleDefinition(
             id: "r", name: "R", prompt: "p", toolIDs: [],
@@ -1188,11 +1018,10 @@ final class LLMExecutionServiceToolDefinitionsTests: XCTestCase {
             settings: TeamSettings(meetingCoordinatorRoleID: nil),
             graphLayout: TeamGraphLayout()
         )
-        let initiator: Role = .productManager
         XCTAssertEqual(
-            service.effectiveCoordinator(team: team, initiator: initiator),
-            initiator,
-            "Auto mode (designated == nil): effective coordinator falls back to initiator"
+            service.effectiveCoordinator(team: team, initiator: .productManager),
+            .custom(id: "r"),
+            "no stored coordinator: the default rule's pick coordinates, not the initiator"
         )
     }
 
@@ -1222,7 +1051,7 @@ final class LLMExecutionServiceToolDefinitionsTests: XCTestCase {
 
     // Orphan ID falls through `resolveCoordinatorRole`'s self-heal to nil and
     // then `effectiveCoordinator` falls back to the initiator.
-    func testEffectiveCoordinator_orphanedID_returnsInitiator() {
+    func testEffectiveCoordinator_orphanedID_healsToTheDefaultRule_notTheInitiator() {
         let service = LLMExecutionService(repository: NTMSRepository())
         let role = TeamRoleDefinition(
             id: "alive", name: "Alive", prompt: "p", toolIDs: [],
@@ -1233,11 +1062,10 @@ final class LLMExecutionServiceToolDefinitionsTests: XCTestCase {
             settings: TeamSettings(meetingCoordinatorRoleID: "ghost"),
             graphLayout: TeamGraphLayout()
         )
-        let initiator: Role = .softwareEngineer
         XCTAssertEqual(
-            service.effectiveCoordinator(team: team, initiator: initiator),
-            initiator,
-            "Orphaned designation self-heals; effective coordinator is the initiator"
+            service.effectiveCoordinator(team: team, initiator: .softwareEngineer),
+            .custom(id: "alive"),
+            "an orphan heals to the default rule's pick; the initiator is never promoted"
         )
     }
 
@@ -1269,8 +1097,9 @@ final class LLMExecutionServiceToolDefinitionsTests: XCTestCase {
                       "Info message must name the affected team")
     }
 
-    // Nil designation (genuine Auto) is not an orphan — nothing surfaced.
-    func testReportOrphanCoordinator_autoMode_noEmit() {
+    // A stored nil is not an orphan — nobody's pick was dropped; the default rule applies
+    // silently and the next write records it.
+    func testReportOrphanCoordinator_nilStoredID_noEmit() {
         let service = LLMExecutionService(repository: NTMSRepository())
         let delegate = MockLLMExecutionDelegate()
         service.attach(delegate: delegate)
@@ -1808,8 +1637,7 @@ final class LLMExecutionServiceStepCompletionTests: XCTestCase {
 
     func testConsultationValidationRejectsNonTeamMemberWithAvailableList() {
         let settings = TeamSettings(
-            invitableRoles: [Role.builtInID(.softwareEngineer), Role.builtInID(.uxDesigner)],
-            supervisorCanBeInvited: false
+            invitableRoles: [Role.builtInID(.softwareEngineer), Role.builtInID(.uxDesigner)]
         )
         let team = makeTestTeam(
             name: "Validation Team",
@@ -1831,10 +1659,13 @@ final class LLMExecutionServiceStepCompletionTests: XCTestCase {
         XCTAssertTrue(error?.contains("uxDesigner") == true)
     }
 
-    func testConsultationValidationRejectsSupervisorWhenNotInvitable() {
+    /// Consulting the Supervisor is refused unconditionally — even when the whitelist
+    /// names it — and, while the team's mode still offers `ask_supervisor`, the refusal
+    /// points there. The roster is SWE + Supervisor, so the teammate list is "none".
+    /// Until 2026-09-07 a `supervisorCanBeInvited` seat let this consultation through.
+    func testConsultationValidationRejectsTheSupervisor_namingAskSupervisor() {
         let settings = TeamSettings(
-            invitableRoles: [Role.builtInID(.softwareEngineer), Role.builtInID(.supervisor)],
-            supervisorCanBeInvited: false
+            invitableRoles: [Role.builtInID(.softwareEngineer), Role.builtInID(.supervisor)]
         )
         let team = makeTestTeam(
             name: "Validation Team",
@@ -1850,14 +1681,68 @@ final class LLMExecutionServiceStepCompletionTests: XCTestCase {
         )
 
         XCTAssertNotNil(error)
-        XCTAssertTrue(error?.contains("Supervisor cannot be consulted") == true)
-        XCTAssertTrue(error?.contains("Available teammates: none") == true)
+        XCTAssertTrue(error?.contains("The Supervisor is not a teammate") == true, error ?? "nil")
+        XCTAssertTrue(error?.contains("ask_supervisor") == true, error ?? "nil")
+        XCTAssertTrue(error?.contains("Available teammates: none") == true, error ?? "nil")
+        XCTAssertEqual(
+            MeetingParticipantResolver.availableTeammatesList(
+                team: team, teamSettings: settings, excludeRoleID: Role.builtInID(.softwareEngineer)
+            ),
+            "none"
+        )
+    }
+
+    /// Under `SupervisorMode.off` the role has no `ask_supervisor`, so the refusal must not
+    /// send it to a tool it does not hold — the Supervisor is still not a teammate.
+    func testConsultationValidationRejectsTheSupervisor_withoutAskSupervisorWhenModeOff() {
+        let settings = TeamSettings(
+            invitableRoles: [Role.builtInID(.softwareEngineer), Role.builtInID(.supervisor)],
+            supervisorMode: .off
+        )
+        let team = makeTestTeam(
+            name: "Validation Team",
+            roleIDs: [Role.builtInID(.softwareEngineer), Role.builtInID(.supervisor)],
+            settings: settings
+        )
+
+        let error = service._testConsultationValidationError(
+            consultedRoleID: Role.builtInID(.supervisor),
+            requestingRoleID: Role.builtInID(.softwareEngineer),
+            team: team,
+            teamSettings: settings
+        )
+
+        XCTAssertNotNil(error)
+        XCTAssertTrue(error?.contains("The Supervisor is not a teammate") == true, error ?? "nil")
+        XCTAssertFalse(error?.contains("ask_supervisor") == true, error ?? "nil")
+        XCTAssertTrue(error?.contains("Available teammates: none") == true, error ?? "nil")
+    }
+
+    /// The Supervisor rule does not depend on a team: with `team == nil` the built-in
+    /// `.supervisor` identity alone refuses the consultation, and the built-in roster
+    /// offered instead never lists the Supervisor.
+    func testConsultationValidationRejectsTheSupervisor_withoutTeam() {
+        let error = service._testConsultationValidationError(
+            consultedRoleID: Role.builtInID(.supervisor),
+            requestingRoleID: Role.builtInID(.softwareEngineer),
+            team: nil,
+            teamSettings: TeamSettings()
+        )
+
+        XCTAssertNotNil(error)
+        XCTAssertTrue(error?.contains("The Supervisor is not a teammate") == true, error ?? "nil")
+        XCTAssertTrue(error?.contains("ask_supervisor") == true, error ?? "nil")
+        let roster = (error?.components(separatedBy: "Available teammates: ").last ?? "")
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        XCTAssertFalse(roster.contains(Role.builtInID(.supervisor)), "\(roster)")
+        XCTAssertFalse(roster.contains(Role.builtInID(.softwareEngineer)), "\(roster)")
+        XCTAssertTrue(roster.contains(Role.builtInID(.techLead)), "\(roster)")
     }
 
     func testConsultationValidationRejectsSelfConsultation() {
         let settings = TeamSettings(
-            invitableRoles: [],
-            supervisorCanBeInvited: false
+            invitableRoles: []
         )
         let team = makeTestTeam(
             name: "Validation Team",
@@ -1878,8 +1763,7 @@ final class LLMExecutionServiceStepCompletionTests: XCTestCase {
 
     func testConsultationValidationRejectsRoleOutsideInvitableRoles() {
         let settings = TeamSettings(
-            invitableRoles: [Role.builtInID(.softwareEngineer)],
-            supervisorCanBeInvited: false
+            invitableRoles: [Role.builtInID(.softwareEngineer)]
         )
         let team = makeTestTeam(
             name: "Validation Team",
@@ -1900,8 +1784,7 @@ final class LLMExecutionServiceStepCompletionTests: XCTestCase {
 
     func testMeetingFilteringFiltersInvalidParticipants() {
         let settings = TeamSettings(
-            invitableRoles: [Role.builtInID(.uxDesigner)],
-            supervisorCanBeInvited: false
+            invitableRoles: [Role.builtInID(.uxDesigner)]
         )
         let team = makeTestTeam(
             name: "Validation Team",
@@ -1919,7 +1802,7 @@ final class LLMExecutionServiceStepCompletionTests: XCTestCase {
                 Role.builtInID(.softwareEngineer),  // self
                 Role.builtInID(.uxDesigner),        // valid
                 Role.builtInID(.sre),               // not a team member
-                Role.builtInID(.supervisor),               // Supervisor blocked
+                Role.builtInID(.supervisor),        // the Supervisor — never a participant
                 Role.builtInID(.tpm),               // not in invitable roles
             ],
             initiatingRole: .softwareEngineer,
@@ -1928,16 +1811,15 @@ final class LLMExecutionServiceStepCompletionTests: XCTestCase {
         )
 
         XCTAssertEqual(filtered.participants.map(\.baseID), [Role.builtInID(.uxDesigner)])
-        XCTAssertTrue(filtered.rejectedReasons.contains(where: { $0.contains("you — the initiator") }))
+        XCTAssertTrue(filtered.rejectedReasons.contains(where: { $0.contains("you — already a participant") }))
         XCTAssertTrue(filtered.rejectedReasons.contains(where: { $0.contains("not a team member") }))
-        XCTAssertTrue(filtered.rejectedReasons.contains(where: { $0.contains("Supervisor not invitable") }))
+        XCTAssertTrue(filtered.rejectedReasons.contains(where: { $0.contains("not a meeting participant") }))
         XCTAssertTrue(filtered.rejectedReasons.contains(where: { $0.contains("not in invitable roles") }))
     }
 
     func testMeetingFilteringAllInvalidParticipantsLeavesEmptyList() {
         let settings = TeamSettings(
-            invitableRoles: [Role.builtInID(.uxDesigner)],
-            supervisorCanBeInvited: false
+            invitableRoles: [Role.builtInID(.uxDesigner)]
         )
         let team = makeTestTeam(
             name: "Validation Team",
@@ -1970,8 +1852,7 @@ final class LLMExecutionServiceStepCompletionTests: XCTestCase {
 
     func testMeetingFilteringEmptyInvitableRolesMeansNoRestriction() {
         let settings = TeamSettings(
-            invitableRoles: [],
-            supervisorCanBeInvited: false
+            invitableRoles: []
         )
         let team = makeTestTeam(
             name: "Validation Team",
@@ -2083,6 +1964,7 @@ final class ToolAuthorizationTests: XCTestCase {
 
         let batch = await service.executeToolCalls(
             resolvedToolCalls: [unauthorizedCall],
+            gateRefusals: [],
             allowedToolNames: ["read_file", "write_file"],
             runtime: toolRuntime,
             tracker: toolTracker,
@@ -2107,6 +1989,7 @@ final class ToolAuthorizationTests: XCTestCase {
 
         let batch = await service.executeToolCalls(
             resolvedToolCalls: [authorizedCall],
+            gateRefusals: [],
             allowedToolNames: ["update_scratchpad"],
             runtime: toolRuntime,
             tracker: toolTracker,
@@ -2134,6 +2017,7 @@ final class ToolAuthorizationTests: XCTestCase {
 
         let batch = await service.executeToolCalls(
             resolvedToolCalls: [authorizedCall, unauthorizedCall],
+            gateRefusals: [],
             allowedToolNames: ["update_scratchpad"],
             runtime: toolRuntime,
             tracker: toolTracker,

@@ -10,7 +10,10 @@ final class TeamEditorValidationTests: XCTestCase {
 
     private static let editorPath = "NanoTeams/Views/Settings/TeamEditor/TeamEditorView.swift"
     private static let servicePath = "NanoTeams/Services/Team/TeamValidationService.swift"
-    private static let liveValidators = ["validateDelegationPolicy", "validateAttachedSkills"]
+    private static let liveValidators = [
+        "validateDelegationPolicy", "validateAttachedSkills",
+        "validateMeetingCoordinator", "validateSupervisorMode",
+    ]
 
     /// Comment-stripped source (CLAUDE.md #89): `issues`' own doc comment names both members.
     private func strippedSource(_ path: String) throws -> String {
@@ -116,13 +119,13 @@ final class TeamEditorValidationTests: XCTestCase {
     /// member list gains an entry and the equality fails naming it. Both sides are sorted: the
     /// law is "exactly these two members, each once" — the order of the two `issues +=` lines
     /// is not part of it, so swapping them stays green.
-    func testBannerCallsExactlyTheTwoLiveValidators() throws {
+    func testBannerCallsExactlyTheLiveValidators() throws {
         let code = try strippedSource(Self.editorPath)
         guard let body = RatchetSourceScan.functionBody(after: "static func issues(", in: code)
         else { return XCTFail("`TeamEditorValidation.issues` not found — re-aim this pin") }
 
         XCTAssertEqual(Self.serviceMembers(in: body).sorted(), Self.liveValidators.sorted(),
-                       "the banner's `TeamValidationService` surface is exactly the two live validators")
+                       "the banner's `TeamValidationService` surface is exactly the live validators")
     }
 
     /// Anti-vacuum for the pin above (CLAUDE.md #104): both needles are still DECLARED on the

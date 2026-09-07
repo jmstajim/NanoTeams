@@ -46,13 +46,15 @@ nonisolated enum AutovisorStuckEvaluator {
 
         /// `(kind, detail)` for the `task_status` JSON row, or nil when not stuck.
         /// A single accessor so the consumer never re-correlates two independent
-        /// optionals (the exact smell the sum-type refactor removed). The wire
-        /// string is unchanged by the `LoopSignal` migration — `signal.diagnostic`
-        /// is the same one-liner the old `loop(diagnostic:)` carried.
+        /// optionals (the exact smell the sum-type refactor removed). The row is read by
+        /// the MANAGER model, so a loop's detail is the shape clause, never
+        /// `signal.diagnostic` — that quotes the looping role's output, tool names and
+        /// paths, which is exactly what a model must not be handed (R3.8.3; shipped here
+        /// until 2026-09-07). A hang's detail names timings, not output, and stays.
         var wireRow: (kind: String, detail: String)? {
             switch self {
             case .notStuck: return nil
-            case .loop(let s): return ("loop", s.diagnostic)
+            case .loop(let s): return ("loop", "the role is repeating itself" + s.modelFacingClause)
             case .hang(_, let d): return ("hang", d)
             }
         }

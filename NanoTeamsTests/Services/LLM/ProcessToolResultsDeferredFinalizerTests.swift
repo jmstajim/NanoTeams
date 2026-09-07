@@ -244,7 +244,7 @@ final class ProcessToolResultsDeferredFinalizerTests: XCTestCase {
             stepID: stepID, roleForMessage: .softwareEngineer, task: task,
             runIndex: 0, stepIndex: 0, assistantContent: "",
             client: InertVisionClient(), config: LLMConfig(), tracker: tracker,
-            memoryStore: memoryStore, wireIsMidPlanning: false,
+            memoryStore: memoryStore, wireIsMidPlanning: false, allowedToolNames: [],
             conversationMessages: &conversation, networkLogger: nil)
 
         let toolTurns = conversation.filter { $0.role == .tool }
@@ -285,7 +285,7 @@ final class ProcessToolResultsDeferredFinalizerTests: XCTestCase {
             stepID: stepID, roleForMessage: .softwareEngineer, task: task,
             runIndex: 0, stepIndex: 0, assistantContent: "",
             client: InertVisionClient(), config: LLMConfig(), tracker: tracker,
-            memoryStore: memoryStore, wireIsMidPlanning: false,
+            memoryStore: memoryStore, wireIsMidPlanning: false, allowedToolNames: [],
             conversationMessages: &conversation, networkLogger: nil)
     }
 

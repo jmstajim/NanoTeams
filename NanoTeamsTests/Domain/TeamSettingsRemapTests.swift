@@ -105,7 +105,6 @@ final class TeamSettingsRemapTests: XCTestCase {
             hierarchy: TeamHierarchy(reportsTo: ["eng": "lead"]),
             meetingCoordinatorRoleID: "lead",
             invitableRoles: ["eng"],
-            supervisorCanBeInvited: true,
             limits: TeamLimits(maxConsultationsPerStep: 7),
             defaultAcceptanceMode: .finalOnly,
             acceptanceCheckpoints: ["eng"],
@@ -113,7 +112,6 @@ final class TeamSettingsRemapTests: XCTestCase {
 
         let result = original.remappingRoleIDs(["eng": "eng2", "lead": "lead2"])
 
-        XCTAssertTrue(result.supervisorCanBeInvited)
         XCTAssertEqual(result.limits.maxConsultationsPerStep, 7)
         XCTAssertEqual(result.defaultAcceptanceMode, .finalOnly)
         XCTAssertEqual(result.supervisorMode, .autonomous)

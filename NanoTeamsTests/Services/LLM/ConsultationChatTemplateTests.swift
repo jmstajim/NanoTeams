@@ -66,6 +66,21 @@ final class ConsultationChatTemplateTests: XCTestCase {
                        "the legacy hand-built prose prompt must be gone")
     }
 
+    /// A consultation streams with `tools: []` (`+TeammateConsultation`), so its system
+    /// prompt must never carry the one-tool rule. Until 2026-09-07 it did, through the
+    /// `## Global guidance` chip's production default (playbook R4.1.1).
+    func testConsultationChat_systemPromptCarriesNoToolCallRule() {
+        guard let pm = faang.roles.first(where: { $0.name == "Product Manager" }) else {
+            return XCTFail("FAANG team must have a PM")
+        }
+        let chat = service.getOrCreateConsultationChat(
+            roleID: pm.id, task: makeTask(), runIndex: 0, team: faang
+        )
+        let system = chat.messages.first?.content ?? ""
+        XCTAssertFalse(system.contains(NativeLMStudioClient.oneToolPerResponseRule), system)
+        XCTAssertFalse(system.contains("## Tool Calling"), "a consultation renders no tool catalog: \(system)")
+    }
+
     /// Task title/brief are variant data — they belong in the first user turn,
     /// not the system prompt (stable invariant prefix).
     func testConsultationChat_taskContextIsFirstUserTurn_notInSystemPrompt() {

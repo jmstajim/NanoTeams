@@ -10,7 +10,9 @@ extension LLMExecutionService {
         topic: String,
         participantIDs: [String],
         context: String?,
+        kind: TeamMeetingKind = .discussion,
         initiatingRole: Role,
+        initiatorSeat: TeamMeetingService.InitiatorSeat,
         task: NTMSTask,
         runIndex: Int,
         stepIndex: Int,
@@ -29,6 +31,19 @@ extension LLMExecutionService {
         let team = resolveTeam(task: task)
         let teamSettings = team?.settings ?? .default
 
+        // The schema resolver already withholds `request_team_meeting` from a team that
+        // cannot meet (`Team.meetingAvailability`); this is the dispatcher's own refusal
+        // for a call that arrives anyway — a stale schema, an alias. Says what to do
+        // instead and names no settings pane (the model is the reader).
+        switch team?.meetingAvailability ?? .available {
+        case .switchedOff:
+            return .failed("Team meetings are off for this team. Continue without one.")
+        case .noPartner:
+            return .failed("This team has no teammate to meet with. Continue without a meeting.")
+        case .available:
+            break
+        }
+
         // Convert participant IDs to Roles, filtering against team constraints
         let filteredParticipants = MeetingParticipantResolver.filterParticipants(
             participantIDs: participantIDs,
@@ -36,13 +51,42 @@ extension LLMExecutionService {
             team: team,
             teamSettings: teamSettings
         )
-        let participants = filteredParticipants.participants
+        var participants = filteredParticipants.participants
         let rejectedReasons = filteredParticipants.rejectedReasons
 
         if participants.isEmpty {
             let available = MeetingParticipantResolver.availableTeammatesList(team: team, teamSettings: teamSettings, excludeRoleID: initiatingRole.baseID)
             let rejected = rejectedReasons.isEmpty ? "" : " Rejected: \(rejectedReasons.joined(separator: ", "))."
             return .failed("No valid participants for this meeting.\(rejected) Available teammates: \(available)")
+        }
+
+        // The team's coordinator runs THIS meeting: opens it, speaks after every round,
+        // takes the last turn and is the only role holding `conclude_meeting`. Resolved
+        // through `Team.meetingCoordinatorID` — never nil for a team with roles; the
+        // initiator stands in only for a fixture with no team.
+        let coordinator: Role = effectiveCoordinator(team: team, initiator: initiatingRole)
+        // A stored coordinator id that no longer resolves is healed on open; if one
+        // slipped in since, surface a one-shot info message naming who coordinates now.
+        reportOrphanCoordinatorIfNeeded(team: team)
+        // Two structural seats, both bypassing `invitableRoles` on purpose — convening and
+        // coordinating are not invitations. "No valid participants" above judged the
+        // INVITED list alone: a role that invited only itself still gets the roster back.
+        //
+        // The initiator, when its seat SPEAKS (`request_team_meeting`), goes to index 0: the
+        // meeting is its topic, so it takes the first turn after the coordinator's opening.
+        // A `request_changes` vote passes `.presentsOnly` — the requester must not vote on
+        // its own request. Until 2026-09-07 the initiator was filtered OUT ("you — the
+        // initiator") and never spoke in a meeting it convened.
+        if case .speaks = initiatorSeat,
+           !participants.contains(where: { $0.baseID == initiatingRole.baseID }) {
+            participants.insert(initiatingRole, at: 0)
+        }
+        // The coordinator — the rotation gives it the opening turn and the last one whether
+        // or not the initiator thought to invite it, so the record, the header and
+        // `agreedBy` must list it too. Appended last: `determineNextSpeaker` rotates over
+        // the participants MINUS the coordinator, so its position only affects the header.
+        if !participants.contains(where: { $0.baseID == coordinator.baseID }) {
+            participants.append(coordinator)
         }
 
         // Re-read fresh task to get current meeting count (the `task` parameter
@@ -63,7 +107,8 @@ extension LLMExecutionService {
 
         // Create meeting
         var meeting = TeamMeetingService.createMeeting(
-            topic: topic, initiatedBy: initiatingRole, participants: participants, context: context
+            topic: topic, initiatedBy: initiatingRole, participants: participants, context: context,
+            kind: kind
         )
 
         // Signal UI
@@ -87,17 +132,6 @@ extension LLMExecutionService {
             availableArtifacts.append(contentsOf: run.steps[i].artifacts)
         }
         availableArtifacts.append(contentsOf: step.artifacts)
-
-        // Resolve the effective coordinator for THIS meeting. In Auto mode
-        // (no designated coordinator) or when the designated ID is orphaned
-        // (deleted role), the initiator becomes the coordinator of meetings
-        // they start — so wrap-up / steering / conclusion attribution all
-        // land on the initiating role. Never nil.
-        let coordinator: Role = effectiveCoordinator(team: team, initiator: initiatingRole)
-        // Orphan path is silent runtime self-heal; surface a one-shot info
-        // message so the Supervisor learns their explicit coordinator pick
-        // was dropped (and where to fix it).
-        reportOrphanCoordinatorIfNeeded(team: team)
 
         // Per-role LLM config resolver
         let meetingConfigResolver: (Role) -> LLMConfig = { speakerRole in
@@ -147,6 +181,12 @@ extension LLMExecutionService {
         // Run meeting turns via consultation chats
         let maxTurns = teamSettings.limits.maxMeetingTurns
         var shouldContinue = true
+        // One tool resolution per speaker for the whole meeting — the meeting analogue of
+        // the step's one-resolution-per-entry rule (`SystemPromptStabilityTests`). Resolved
+        // per TURN until 2026-09-07: `filterForGitAvailability` read the filesystem each
+        // time, so a `git init` by a parallel role mid-meeting changed segment 0 (the tool
+        // catalog) and re-prefilled the whole discussion (R4.2.1).
+        var toolsBySpeaker: [Role: [ToolSchema]] = [:]
 
         do {
             while shouldContinue {
@@ -155,27 +195,44 @@ extension LLMExecutionService {
                 // Start meeting if pending
                 if meeting.status == .pending { meeting.start() }
 
-                // Check turn limit
+                // A limit already reached at entry — `maxMeetingTurns == 0` — means no turn
+                // is allowed; leave the loop and let the turn-limit fallback below record
+                // how the meeting ended. Until 2026-09-06 this arm `complete()`d the meeting
+                // with no decision and no `conclusionKind`, the one ending the card could not
+                // name. After a turn, `completeTurn` stops the loop before this check.
                 if TeamMeetingService.hasReachedTurnLimit(meeting: meeting, limits: teamSettings.limits) {
-                    meeting.complete()
-                    await recordMeeting(stepID: stepID, taskID: tid, meeting: meeting)
                     break
                 }
 
-                // Determine next speaker
+                // Determine next speaker — the last turn under the limit is always the
+                // coordinator's, so the `conclude_meeting` directive lands on a holder.
                 let speaker = MeetingStreamingService.determineNextSpeaker(
-                    meeting: meeting, participants: participants, coordinator: coordinator
+                    meeting: meeting, participants: participants, coordinator: coordinator,
+                    maxTurns: maxTurns
                 )
                 let speakerConfig = meetingConfigResolver(speaker)
-                let speakerTools = MeetingCoordinator.filterMeetingTools(
-                    Self.filterForGitAvailability(
-                        Self.filterForDefaultStorage(
-                            toolSchemas(for: speaker, team: team),
-                            isDefaultStorage: isDefaultStorage
+                let speakerTools: [ToolSchema]
+                if let resolved = toolsBySpeaker[speaker] {
+                    speakerTools = resolved
+                } else {
+                    speakerTools = MeetingCoordinator.speakerTools(
+                        base: Self.filterForGitAvailability(
+                            Self.filterForDefaultStorage(
+                                // `bash` and the computer-use tools are `excludedInMeetings`, so
+                                // the presence answer never changes a meeting schema; it is
+                                // threaded anyway because the resolver has no default for it.
+                                toolSchemas(
+                                    for: speaker, team: team,
+                                    humanPresent: approvalHumanPresent(
+                                        task: task, supervisorMode: teamSettings.supervisorMode)),
+                                isDefaultStorage: isDefaultStorage
+                            ),
+                            workFolderRoot: workFolderRoot
                         ),
-                        workFolderRoot: workFolderRoot
+                        isCoordinator: speaker == coordinator
                     )
-                )
+                    toolsBySpeaker[speaker] = speakerTools
+                }
 
                 // Build the speaker's meeting conversation: the team's MEETING
                 // template as system prompt + artifact grounding + one
@@ -234,7 +291,7 @@ extension LLMExecutionService {
                 // including its system prompt and artifact context) — never a
                 // rebuilt stack with a different system prompt.
                 let meetingStepKey = TaskStepKey(taskID: tid, stepID: stepID)
-                let (finalContent, allThinking, toolSummaries) =
+                let (finalContent, allThinking, toolSummaries, conclusion) =
                     try await MeetingToolExecutor.executeTurnToolLoop(
                         initialResult: streamResult,
                         conversationSoFar: turnMessages,
@@ -268,37 +325,68 @@ extension LLMExecutionService {
                 // Complete the turn
                 let thinkingValue = allThinking.isEmpty ? nil : allThinking
                 let toolsValue = toolSummaries.isEmpty ? nil : toolSummaries
-                shouldContinue = TeamMeetingService.completeTurn(
-                    meeting: &meeting,
-                    speaker: speaker,
-                    content: finalContent,
-                    thinking: thinkingValue,
-                    toolSummaries: toolsValue,
-                    context: meetingContext
-                ) && meeting.turnCount < maxTurns
+                if let conclusion {
+                    // The coordinator ended the meeting. Its spoken turn is whatever it
+                    // said around the call, else the decision itself — never a blank line
+                    // under "Discussion so far" in the record.
+                    let spoken = ModelTokenCleaner.clean(finalContent).trimmingCharacters(in: .whitespacesAndNewlines)
+                    _ = TeamMeetingService.completeTurn(
+                        meeting: &meeting,
+                        speaker: speaker,
+                        content: spoken.isEmpty ? conclusion.decision : finalContent,
+                        thinking: thinkingValue,
+                        toolSummaries: toolsValue,
+                        context: meetingContext,
+                        messageType: .conclusion
+                    )
+                    TeamMeetingService.concludeMeeting(
+                        meeting: &meeting,
+                        decision: conclusion.decision,
+                        rationale: conclusion.rationale,
+                        nextSteps: conclusion.nextSteps,
+                        concludedBy: coordinator
+                    )
+                    meeting.conclusionKind = .coordinatorCall
+                    shouldContinue = false
+                } else {
+                    shouldContinue = TeamMeetingService.completeTurn(
+                        meeting: &meeting,
+                        speaker: speaker,
+                        content: finalContent,
+                        thinking: thinkingValue,
+                        toolSummaries: toolsValue,
+                        context: meetingContext
+                    )
+                }
 
                 // Persist after each turn for real-time UI
                 await recordMeeting(stepID: stepID, taskID: tid, meeting: meeting)
             }
 
-            // Auto-conclude if needed. The local `coordinator` is the
-            // effective coordinator computed above (designated coordinator,
-            // or initiator in Auto/orphan mode), so `TeamDecision.proposedBy`
-            // is always populated correctly without an extra fallback here.
+            // Turn-limit fallback. The coordinator held the last turn and the
+            // `conclude_meeting` directive and still did not call it; the meeting must
+            // terminate (the initiator is blocked on it), so its last contribution is
+            // recorded as the decision and the record says how it ended —
+            // `conclusionKind` for the card, the "Concluded at the turn limit" line for
+            // the initiator's tool result.
             if meeting.status == .inProgress {
-                let summary = meeting.messages.last?.content
-                    ?? "Meeting concluded after \(meeting.turnCount) turns."
+                let lastCoordinatorLine = meeting.messages.last(where: { $0.role == coordinator })?.content
+                let summary = lastCoordinatorLine
+                    ?? meeting.messages.last?.content
+                    ?? "Meeting ended after \(meeting.turnCount) turns without a decision."
                 TeamMeetingService.concludeMeeting(
                     meeting: &meeting,
                     decision: summary,
-                    rationale: "All participants heard.",
+                    rationale: "Turn limit reached without a conclude_meeting call.",
                     nextSteps: nil,
                     concludedBy: coordinator
                 )
+                meeting.conclusionKind = .turnLimitFallback
             }
 
             await recordMeeting(stepID: stepID, taskID: tid, meeting: meeting)
-            return .ok(TeamMeetingService.generateMeetingResultForConversation(meeting: meeting))
+            return .ok(TeamMeetingService.generateMeetingResultForConversation(
+                meeting: meeting, context: meetingContext))
 
         } catch is CancellationError {
             meeting.cancel()
@@ -307,7 +395,8 @@ extension LLMExecutionService {
         } catch {
             meeting.cancel()
             await recordMeeting(stepID: stepID, taskID: tid, meeting: meeting)
-            return .failed("Meeting failed: \(error.localizedDescription)")
+            // The initiator reads this as its tool result — classified, never localized (R1.8.2).
+            return .failed("Meeting failed: \(ToolErrorHandler.classify(error).message)")
         }
     }
 

@@ -79,11 +79,13 @@ nonisolated enum SearchMode: String {
     case substring
     case regex
 
-    /// Parse the string that comes out of `SearchTool` arguments. Anything
-    /// other than `"regex"` — including `nil`, `"substring"`, typos, or
-    /// unknown modes — resolves to `.substring` (the safe default).
+    /// Parse the string that comes out of `SearchTool` arguments, trimmed and lowercased
+    /// like every other enum argument (`requiredEnum`): `"Regex"` and `" REGEX "` are the
+    /// regex mode, not a silent downgrade to substring under a success envelope. Anything
+    /// else — `nil`, `"substring"`, typos, unknown modes — resolves to `.substring`.
     init(raw: String?) {
-        self = (raw == "regex") ? .regex : .substring
+        let normalized = raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        self = (normalized == "regex") ? .regex : .substring
     }
 }
 
@@ -94,7 +96,8 @@ nonisolated enum SearchMode: String {
 nonisolated enum SearchExecutorError: Error, Equatable, LocalizedError {
     /// `mode == .regex` and the supplied pattern failed to compile via
     /// `NSRegularExpression(pattern:options:)`. `query` is the offending
-    /// pattern; `message` carries the platform-specific failure detail.
+    /// pattern; `message` carries the platform-specific failure detail — kept on
+    /// the case for diagnostics and never rendered (see `errorDescription`).
     case regexCompileFailed(query: String, message: String)
 
     /// The supplied `file_glob` failed to compile after escaping. Without
@@ -107,8 +110,13 @@ nonisolated enum SearchExecutorError: Error, Equatable, LocalizedError {
     /// reaches the envelope's `search_error` field, so it must be readable.
     var errorDescription: String? {
         switch self {
-        case .regexCompileFailed(let query, let message):
-            return "regex compile failed for pattern '\(query)': \(message)"
+        case .regexCompileFailed(let query, _):
+            // The argument's own vocabulary, not `NSRegularExpression`'s localized
+            // compile detail: the model cannot map "ICU error 66" to an argument, and
+            // a token it cannot map is copied into the next call, not repaired
+            // (playbook R1.8.2). `invalidFileGlob` below made the same choice first.
+            return "regex '\(query)' does not compile — check for an unclosed bracket or parenthesis, "
+                + "or send mode: \(SearchMode.substring.rawValue) for a literal search."
         case .invalidFileGlob(let pattern, _):
             // Corrective glob vocabulary, matching `list_files`'s name_glob
             // message — NOT the raw NSRegularExpression detail. Surfacing the

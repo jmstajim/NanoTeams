@@ -25,20 +25,18 @@ nonisolated extension SystemTemplates {
     /// keeping the shared fragment lean.
     /// Used by: codingAssistant, codingAgent.
     static let codingAttachmentsFragment = """
-    A `## Attached Files` section lists paths. Open each before doing anything else; filenames are opaque, only content matters.
+    The Supervisor's message may include a `## Attached Files` section listing paths. Open each before doing anything else — never search for the filename, ask what an attachment means, or skip one as "unrelated"; filenames are opaque, only content matters.
     - Text / source / PDF / DOCX / XLSX → `read_file` (auto-detected).
-    - Image (.png/.jpg/.gif/.webp/.bmp) → `analyze_image` if it's in your tool list; otherwise note the path and ask the Supervisor.
-    Do NOT search for the filename, ask what an attachment means, or skip one as "unrelated".
+    - Image (.png/.jpg/.gif/.webp/.bmp) → `analyze_image` if it's in your tool list; otherwise note the path and continue.
     """
 
     /// Generic attachment processing rule for non-coding assistants
     /// (documents/notes-flavoured, no source-code references).
     /// Used by: assistant.
     static let assistantAttachmentsFragment = """
-    The Supervisor's message may include a `## Attached Files` section. Open each attachment before anything else; the filename is opaque, only content matters.
+    The Supervisor's message may include a `## Attached Files` section. Open each attachment before anything else — never search for the filename, ask what an attachment means, or skip one as "unrelated"; the filename is opaque, only content matters.
     - Text / PDF / DOCX / XLSX → `read_file` (auto-detected).
-    - Image (.png/.jpg/.jpeg/.gif/.webp/.bmp) → `analyze_image` if it's in your tool list; otherwise note the path and ask the Supervisor.
-    Don't search for the filename, ask what an attachment means, or skip one as "unrelated".
+    - Image (.png/.jpg/.jpeg/.gif/.webp/.bmp) → `analyze_image` if it's in your tool list; otherwise note the path and continue.
     """
 
     /// "For code or file content, ground in files" rule. Does NOT contradict
@@ -73,7 +71,7 @@ nonisolated extension SystemTemplates {
     /// Used by: codingAssistant, codingAgent.
     static let codingResponseStyleFragment = """
     - Concise and practical. Show paths, line numbers, diffs when reporting changes.
-    - Never send "What next?" without context.
+    - Ask "What next?" only with the context it needs.
     """
 
     /// Engineering standards block (readability / minimal changes /

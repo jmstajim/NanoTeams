@@ -113,6 +113,7 @@ extension LLMExecutionService {
         tracker: ToolCallTracker,
         memoryStore: MemoryTagStore,
         wireIsMidPlanning: Bool,
+        allowedToolNames: Set<String>,
         conversationMessages: inout [ChatMessage],
         networkLogger: NetworkLogger? = nil
     ) async -> ToolResultsOutcome {
@@ -175,6 +176,7 @@ extension LLMExecutionService {
                     toolCallID: toolCallID,
                     stepID: stepID,
                     taskID: task.id,
+                    allowedToolNames: allowedToolNames,
                     client: client,
                     config: config,
                     networkLogger: networkLogger,
@@ -198,6 +200,7 @@ extension LLMExecutionService {
                     toolCallID: toolCallID,
                     stepID: stepID,
                     taskID: task.id,
+                    allowedToolNames: allowedToolNames,
                     client: client,
                     config: config,
                     networkLogger: networkLogger,
@@ -218,6 +221,7 @@ extension LLMExecutionService {
                     taskID: task.id,
                     memoryStore: memoryStore,
                     wireIsMidPlanning: wireIsMidPlanning,
+                    allowedToolNames: allowedToolNames,
                     conversationMessages: &conversationMessages,
                     outcome: &outcome
                 )
@@ -229,6 +233,7 @@ extension LLMExecutionService {
                     taskID: task.id,
                     memoryStore: memoryStore,
                     wireIsMidPlanning: wireIsMidPlanning,
+                    allowedToolNames: allowedToolNames,
                     conversationMessages: &conversationMessages,
                     outcome: &outcome
                 )

@@ -72,6 +72,13 @@ nonisolated enum LoopRecoveryPolicy {
     ///                 no team identity leaks into a pure policy type. No default:
     ///                 it selects between two different terminal behaviours, so a new
     ///                 caller must decide rather than inherit one silently.
+    ///   - allowedToolNames: The tool ids this request's schema authorizes
+    ///                 (`PlanningPhasePolicy.Authorization.allowed`). The nudge's
+    ///                 "if you are blocked" clause names the escalation channel the
+    ///                 runtime can DETECT — `wait_for_events` for the manager,
+    ///                 `ask_supervisor` for a role that holds it — and is dropped
+    ///                 for a role holding neither. No default, for the same reason as
+    ///                 `canParkForSupervisor`: the set selects between three texts.
     static func decide(
         signal: LoopSignal,
         breakCount: Int,
@@ -79,13 +86,17 @@ nonisolated enum LoopRecoveryPolicy {
         supervisorMode: SupervisorMode,
         isChatMode: Bool,
         canParkForSupervisor: Bool,
-        roleName: String
+        roleName: String,
+        allowedToolNames: Set<String>
     ) -> Decision {
         if breakCount < maxRetries {
-            return .retryWithNudge(nudge: nudgeText(signal: signal, attempt: breakCount))
+            return .retryWithNudge(nudge: nudgeText(
+                signal: signal, attempt: breakCount, allowedToolNames: allowedToolNames))
         }
         switch supervisorMode {
-        case .manual:
+        case .manual, .off:
+            // Off removes `ask_supervisor` from the ROLE; this escalation is the app's
+            // own and still waits for the human (see the `SupervisorMode` contract).
             return .terminal(.escalateSupervisor(question: stuckQuestion(signal: signal, roleName: roleName)))
         case .autonomous:
             if isChatMode {
@@ -103,11 +114,12 @@ nonisolated enum LoopRecoveryPolicy {
     /// style instructions. Both providers are stateless and the conversation is never
     /// pruned, so this turn rides the prefix of every remaining request of the step
     /// and is written into `wireTranscript` — an unbounded "be brief" here would bias
-    /// a step that may still run for dozens of iterations. Names no tool: per-role
-    /// toolsets differ, and steering toward one the role does not have earns a
-    /// `tool_not_authorized` ping-pong. That is a property of the whole string, not just of
-    /// this template — which is why nothing interpolated here may carry model-authored text;
-    /// see `shapeClause` for the interpolation that used to, and what it cost.
+    /// a step that may still run for dozens of iterations. Names only a tool in
+    /// `allowedToolNames` (see `blockedClause`): per-role toolsets differ, and steering
+    /// toward one the role does not have earns a `tool_not_authorized` ping-pong. That is a
+    /// property of the whole string, not just of this template — which is why nothing
+    /// interpolated here may carry model-authored text; see `shapeClause` for the
+    /// interpolation that used to, and what it cost.
     ///
     /// Every sentence is anchored to this note's own position rather than to the reader's
     /// present, because a step can accumulate one per loop episode (see `nudgePrefix`) and each
@@ -122,20 +134,62 @@ nonisolated enum LoopRecoveryPolicy {
     ///   it is not a retry at all. Nudges accumulate rather than being retired (see
     ///   the note above about the KV prefix), so a later attempt already carries more
     ///   text than the first — the escalation makes that difference say something.
-    private static func nudgeText(signal: LoopSignal, attempt: Int) -> String {
+    private static func nudgeText(
+        signal: LoopSignal, attempt: Int, allowedToolNames: Set<String>
+    ) -> String {
         let escalation = attempt >= 2
             ? " This has now happened \(attempt) times in a row. Do not restate the plan or "
-            + "re-read anything: make the single smallest tool call that moves the work forward, "
-            + "or say in one sentence what is blocking you."
+            + "re-read anything: make the single smallest tool call that moves the work forward."
             : " Do not re-derive the reasoning it was part-way through — decide from what is "
-            + "already in this conversation and continue with a tool call. If you genuinely "
-            + "cannot decide, say in one sentence what is blocking you."
+            + "already in this conversation and continue with a tool call."
         return """
         \(MessageSourceContext.loopCorrectionBlockOpen)
         \(nudgePrefix)\(shapeClause(signal)) You were not shown it.\
-        \(escalation)
+        \(escalation)\(blockedClause(attempt: attempt, allowedToolNames: allowedToolNames))
         \(MessageSourceContext.loopCorrectionBlockClose)
         """
+    }
+
+    /// What a role that genuinely cannot move should DO — named as a tool call the runtime
+    /// detects, or not named at all.
+    ///
+    /// Until 2026-09-06 both attempts ended by asking for one sentence of prose about the blocker.
+    /// Nothing reads that sentence: a prose reply lands in `handleNoToolCalls`, which counts
+    /// it as a non-productive turn and answers with the generic no-tool nudge — so the model
+    /// that obeyed the correction was penalised for obeying it, and the sentence itself
+    /// reached no one (playbook R3.8.6: name the channel the code detects). The clause is
+    /// keyed on the SCHEMA rather than on team identity, exactly like `noToolCallNudge`:
+    /// `wait_for_events` first because it identifies the Autovisor manager, whose Supervisor
+    /// reads the chat and for whom "call ask_supervisor" would be the wrong channel; then
+    /// `ask_supervisor`; and for a role holding neither the clause is dropped — an instruction
+    /// to write prose is an instruction to make a non-productive turn.
+    private static func blockedClause(attempt: Int, allowedToolNames: Set<String>) -> String {
+        let channel = escalationChannel(in: allowedToolNames)
+        if channel == ToolNames.waitForEvents {
+            return " If nothing in this pass can move, call wait_for_events."
+        }
+        if channel == ToolNames.askSupervisor {
+            return attempt >= 2
+                ? " If nothing can move, call ask_supervisor with one sentence naming what is blocking you."
+                : " If you genuinely cannot decide, call ask_supervisor with one sentence naming what is blocking you."
+        }
+        return ""
+    }
+
+    /// The tool a blocked role can escalate through, or `nil` when it holds none — the ONE
+    /// answer every correction text composes its escalation clause from (R3.8.6).
+    ///
+    /// `wait_for_events` first: it identifies the Autovisor manager, which parks and is
+    /// re-driven by events and never holds `ask_supervisor` (resolution step 8 strips it).
+    /// Then `ask_supervisor` for any role that holds it. A role with neither has no
+    /// escalation the runtime detects, so a text that tells it to "ask the Supervisor" or
+    /// "report this" is an instruction to write prose nobody reads — the clause is dropped
+    /// instead. Keyed on the schema, not on team identity, so a role gets the right channel
+    /// however it acquired the tool.
+    static func escalationChannel(in allowedToolNames: Set<String>) -> String? {
+        if allowedToolNames.contains(ToolNames.waitForEvents) { return ToolNames.waitForEvents }
+        if allowedToolNames.contains(ToolNames.askSupervisor) { return ToolNames.askSupervisor }
+        return nil
     }
 
     /// How the discarded turn repeated itself, derived from the signal's CASE.
@@ -168,20 +222,30 @@ nonisolated enum LoopRecoveryPolicy {
     /// Exhaustive on purpose: a fourth detection shape must be given words here rather than
     /// silently inheriting another's.
     private static func shapeClause(_ signal: LoopSignal) -> String {
-        switch signal {
-        case .withinMessage:
-            return " — the same block of text, several times in a row."
-        case .acrossMessages:
-            return " — restating content from its earlier turns almost verbatim."
-        case .identicalToolCallSequence:
-            return " — the same tool call with identical arguments, several times in a row."
-        }
+        signal.modelFacingClause
     }
 
+    /// The escalation question, on `shapeClause` rather than `diagnostic` + `scope`.
+    ///
+    /// The 2026-08-24 fix carved this out as a human-audience reader and left it
+    /// interpolating both. The carve-out was wrong in two directions, and both are
+    /// machine readers:
+    ///
+    ///  - `NTMSOrchestrator+AutovisorWake` matches on `stuckQuestionMarker` and wakes the
+    ///    Autovisor on these questions — an LLM reads them.
+    ///  - a question persisted as `step.supervisorQuestion` is replayed into the role's OWN
+    ///    next request by `PromptBuilder` step 5, wrapped as its own `ask_supervisor` call;
+    ///    under `SupervisorMode.autonomous` (which FAANG and Engineering ship with) the
+    ///    ANSWER is written by an LLM that read it too.
+    ///
+    /// So all three harms `shapeClause` documents applied here as well — chief among them
+    /// that `makeDiagnostic` quotes up to 80 characters of the repeated block verbatim, i.e.
+    /// the loop is handed back to the looping model. The human audience is unaffected: the
+    /// repeated turns are cards in the step's own feed.
     private static func stuckQuestion(signal: LoopSignal, roleName: String) -> String {
         """
-        Role \(roleName) \(stuckQuestionMarker) (\(signal.scope)): \(signal.diagnostic). \
-        Please advise how to proceed — clarify the task, give a concrete next step, or mark the step failed.
+        Role \(roleName) \(stuckQuestionMarker)\(shapeClause(signal)) \
+        Advise how to proceed — clarify the task, give a concrete next step, or mark the step failed.
         """
     }
 }

@@ -247,6 +247,22 @@ final class ToolRegistryTests: XCTestCase {
         XCTAssertEqual(resolved, ToolNames.createArtifact)
     }
 
+    /// `exec` means "run a command", and since `bash` shipped that is `bash` — it mapped to
+    /// `run_xcodebuild` until 2026-09-06, which takes no arguments, so a Software Engineer's
+    /// `exec` with a `command` ran a full Xcode build under a success envelope and dropped
+    /// the command on the floor. The shell-flavoured cousins land on the same tool.
+    func testResolveAlias_execAndShellSpellings_landOnBash() {
+        // `run_shell` / `run_shell_command`: what qwen3.8 invented on 2026-09-07 (Engineering,
+        // Manual bash, autonomous) when the schema carried no shell — as a non-alias each
+        // got a bare `tool_not_authorized`; as `bash` the withheld reason names WHY.
+        for alias in ["exec", "shell", "run_command", "execute_command", "terminal",
+                      "run_shell", "run_shell_command", "shell_command", "run_bash"] {
+            XCTAssertEqual(ToolRegistry.defaultAliases[alias], ToolNames.bash, alias)
+        }
+        XCTAssertEqual(ToolRegistry.defaultAliases["build"], ToolNames.runXcodebuild,
+                       "`build` still means the Xcode build — it names no command")
+    }
+
     func testResolveAlias_registeredAliasResolvesHandler() {
         registry.register(name: "create_artifact") { _, _ in
             ToolExecutionResult(toolName: "create_artifact", argumentsJSON: "{}", outputJSON: "{}", isError: false)

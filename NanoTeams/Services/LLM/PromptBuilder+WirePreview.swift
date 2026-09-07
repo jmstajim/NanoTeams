@@ -36,9 +36,12 @@ nonisolated extension PromptBuilder {
         let workFolderState: WireWorkFolder
         let selectedScheme: String?
         let isVisionConfigured: Bool
-        /// `ComputerUsePolicy.isEnabled` — mirrors `isVisionConfigured` threading
-        /// (strip semantics live at `resolveToolSchemas` step 3.2-bis).
-        let isComputerUseEnabled: Bool
+        /// What the run could do with `bash` and the computer-use family — the two
+        /// execution modes read against whether a human is there to approve
+        /// (`ToolApprovalAvailability.forTeam` for a team-holding surface). Strip semantics
+        /// live at `resolveToolSchemas` steps 3.2-bis / 3.2-ter; threading it here is what
+        /// keeps the preview byte-identical to the wire.
+        let approval: ToolApprovalAvailability
         let globalContext: String
         /// `.meeting` kind only: preview the prompt the **coordinator** would
         /// see at turn 1 (mid- and late-meeting branches are runtime-dynamic
@@ -65,7 +68,7 @@ nonisolated extension PromptBuilder {
             workFolderState: WireWorkFolder,
             selectedScheme: String?,
             isVisionConfigured: Bool,
-            isComputerUseEnabled: Bool,
+            approval: ToolApprovalAvailability,
             globalContext: String,
             isCoordinator: Bool = false,
             agentInstructions: AgentInstructionsSnapshot? = nil,
@@ -78,7 +81,7 @@ nonisolated extension PromptBuilder {
             self.workFolderState = workFolderState
             self.selectedScheme = selectedScheme
             self.isVisionConfigured = isVisionConfigured
-            self.isComputerUseEnabled = isComputerUseEnabled
+            self.approval = approval
             self.globalContext = globalContext
             self.isCoordinator = isCoordinator
             self.agentInstructions = agentInstructions
@@ -262,7 +265,9 @@ nonisolated extension PromptBuilder {
         case .stepExecution:
             return runtimeToolPipeline(inputs: inputs)
         case .meeting:
-            return MeetingCoordinator.filterMeetingTools(runtimeToolPipeline(inputs: inputs))
+            return MeetingCoordinator.speakerTools(
+                base: runtimeToolPipeline(inputs: inputs),
+                isCoordinator: inputs.team?.meetingCoordinatorID == inputs.role.id)
         }
     }
 
@@ -364,6 +369,9 @@ nonisolated extension PromptBuilder {
             "toolList": toolList,
             "expectedArtifacts": expectedArtifactsLine,
             "artifactInstructions": artifactInstructionsBlock,
+            "stepEnding": SystemTemplates.stepEnding(
+                producing: roleDef.producesArtifacts,
+                canAskSupervisor: toolNames.contains(ToolNames.askSupervisor)),
             "globalContext": PromptBuilder.formatGlobalContext(inputs.globalContext),
             "roleSkills": PromptBuilder.formatRoleSkills(inputs.attachedSkills),
             "toolCalling": PromptBuilder.formatToolCallingBlock(tools: tools),
@@ -408,7 +416,7 @@ nonisolated extension PromptBuilder {
         let tools = resolveWirePreviewTools(kind: .meeting, inputs: inputs)
         return [
             "speakerName": role.name,
-            "roleGuidance": wirePreviewCollaborationRoleGuidance(role: role, team: team),
+            "roleGuidance": wirePreviewMeetingRoleGuidance(role: role, team: team),
             "meetingTopic": "(example: meeting topic)",
             "turnNumber": "1",
             "coordinatorHint": inputs.isCoordinator
@@ -437,7 +445,21 @@ nonisolated extension PromptBuilder {
         return SystemTemplates.roles[builtIn.baseID]?.prompt ?? ""
     }
 
-    /// Consultation / meeting role guidance — fall back to `SystemTemplates`
+    /// Meeting role guidance — mirrors `MeetingStreamingService.buildSpeakerSystemPrompt`:
+    /// the role's MEETING body when authored, else its step prompt; the same
+    /// team-membership rule as the consultation guidance below.
+    private static func wirePreviewMeetingRoleGuidance(
+        role: TeamRoleDefinition,
+        team: Team?
+    ) -> String {
+        if team?.findRole(byIdentifier: role.id) != nil {
+            return role.resolvedMeetingGuidance
+        }
+        let builtIn = Role.fromDefinition(role)
+        return SystemTemplates.roles[builtIn.baseID]?.resolvedMeetingGuidance ?? ""
+    }
+
+    /// Consultation role guidance — fall back to `SystemTemplates`
     /// ONLY when the role isn't in the team. Empty `role.prompt` returns "".
     /// Different from step execution's aggressive trim+fallback — both runtime
     /// builders match this contract.
@@ -464,7 +486,7 @@ nonisolated extension PromptBuilder {
             storage: inputs.workFolderState,
             selectedScheme: inputs.selectedScheme,
             isVisionConfigured: inputs.isVisionConfigured,
-            isComputerUseEnabled: inputs.isComputerUseEnabled,
+            approval: inputs.approval,
             // Sourced from the real projection (single source of truth) so the
             // Autovisor Manager role's create_managed_task preview stays
             // byte-identical to the wire when generation is disabled for the folder.

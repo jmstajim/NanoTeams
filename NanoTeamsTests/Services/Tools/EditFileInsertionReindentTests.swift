@@ -113,9 +113,22 @@ final class EditFileInsertionReindentTests: XCTestCase {
     /// clean map. `new_text` reproduces those three lines and appends a 25-line
     /// `LibraryCategoryEmptyState` at depths 4/8/12/18.
     ///
+    /// The recorded failure these three replays are about — the SECOND attempt of task 28
+    /// (22:29:12.726), the one that shortened its anchor after two `read_lines` calls.
+    /// Asserted on `note`, not only found: `failure(at:)` resolves ANY recorded timestamp, and
+    /// the four fixtures differ only in `appendedBlock(bodyDepth:)`, which no assertion reads —
+    /// so a selector retargeted to a sibling key left every test here green (DEBTS D-B4, the
+    /// open tail measured on 2026-09-05). "Resolves" is not "resolves to this one".
+    private func selectedFailure(file: StaticString = #filePath, line: UInt = #line) throws -> EditFileTask28Fixtures.FailedEdit {
+        let failure = EditFileTask28Fixtures.failure(at: "2026-08-15T22:29:12.726")
+        XCTAssertEqual(failure.note, "shortened the anchor after two read_lines calls",
+                       "the selector must resolve to the attempt these replays describe", file: file, line: line)
+        return failure
+    }
+
     /// RED (before the fix): ANCHOR_NOT_FOUND, file untouched.
     func testReal_libraryEmptyStateInsertion_applies() async throws {
-        let failure = EditFileTask28Fixtures.failure(at: "2026-08-15T22:29:12.726")
+        let failure = try selectedFailure()
         let result = try await replay(failure)
 
         XCTAssertFalse(result.isError, result.outputJSON)
@@ -145,7 +158,7 @@ final class EditFileInsertionReindentTests: XCTestCase {
     ///
     /// RED: emit no warning → empty.
     func testReal_insertion_disclosesThePassedThroughLines() async throws {
-        let failure = EditFileTask28Fixtures.failure(at: "2026-08-15T22:29:12.726")
+        let failure = try selectedFailure()
         let result = try await replay(failure)
 
         let texts = warnings(result)
@@ -165,7 +178,7 @@ final class EditFileInsertionReindentTests: XCTestCase {
     ///
     /// RED: remove either forwarding branch in `processEdit` → the matching assertion fails.
     func testReal_insertion_disclosuresSurviveTheTagStore() async throws {
-        let failure = EditFileTask28Fixtures.failure(at: "2026-08-15T22:29:12.726")
+        let failure = try selectedFailure()
         let result = try await replay(failure)
         XCTAssertFalse(result.isError, result.outputJSON)
 

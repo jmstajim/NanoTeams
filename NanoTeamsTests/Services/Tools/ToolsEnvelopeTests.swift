@@ -529,7 +529,7 @@ final class ToolsEnvelopeTests: XCTestCase {
     }
 
     func testResolveContentString_onlyNonContentKeysReturnsNil() {
-        let args: [String: Any] = ["path": "test.txt", "create_dirs": true]
+        let args: [String: Any] = ["path": "test.txt", "encoding": "utf8"]
         XCTAssertNil(resolveContentString(args))
     }
 
@@ -610,7 +610,60 @@ final class ToolsEnvelopeTests: XCTestCase {
     func testRequiredStringWrongType() {
         let args: [String: Any] = ["path": 123]
 
-        XCTAssertThrowsError(try requiredString(args, "path"))
+        XCTAssertThrowsError(try requiredString(args, "path")) { error in
+            // Present-but-mistyped must NOT report an omission: "Missing required
+            // argument: path" sent the model hunting for a key it had just sent.
+            XCTAssertEqual(
+                (error as? ToolArgumentError)?.localizedDescription,
+                "Argument 'path' must be a string; received a number")
+        }
+    }
+
+    func testRequiredStringWrongType_namesEachJSONShape() {
+        let cases: [(Any, String)] = [
+            (123, "a number"),
+            (1.5, "a number"),
+            (["a"], "an array"),
+            (["k": "v"], "an object"),
+        ]
+        for (value, expected) in cases {
+            XCTAssertThrowsError(try requiredString(["x": value], "x")) { error in
+                XCTAssertEqual(
+                    (error as? ToolArgumentError)?.localizedDescription,
+                    "Argument 'x' must be a string; received \(expected)",
+                    "value: \(value)")
+            }
+        }
+    }
+
+    func testRequiredStringWrongType_jsonBooleanIsNamedBooleanNotNumber() throws {
+        // JSON `true` bridges to an NSNumber that satisfies both `as? Bool` and
+        // `as? Int`, so only the CoreFoundation type id separates the two.
+        let parsed = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(#"{"x": true}"#.utf8)) as? [String: Any])
+        XCTAssertThrowsError(try requiredString(parsed, "x")) { error in
+            XCTAssertEqual(
+                (error as? ToolArgumentError)?.localizedDescription,
+                "Argument 'x' must be a string; received a boolean")
+        }
+    }
+
+    /// The two arms of `jsonTypeName` no call site reaches: `NSNull` (which `requiredString`
+    /// routes to `missingRequired` before ever naming a type) and a value JSON has no name
+    /// for at all.
+    func testJSONTypeName_coversNullAndTheUnnameable() {
+        XCTAssertEqual(ToolArgumentError.jsonTypeName(of: NSNull()), "null")
+        XCTAssertEqual(ToolArgumentError.jsonTypeName(of: Date()), "an unsupported value")
+    }
+
+    func testRequiredStringJSONNull_reportsMissingNotBadType() {
+        // Symmetric with `requiredInt`: a nulled argument is an omission, not a
+        // malformed value.
+        XCTAssertThrowsError(try requiredString(["x": NSNull()], "x")) { error in
+            XCTAssertEqual(
+                (error as? ToolArgumentError)?.localizedDescription,
+                "Missing required argument: x")
+        }
     }
 
     func testOptionalStringPresent() {

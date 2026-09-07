@@ -15,9 +15,21 @@ nonisolated struct SystemRoleTemplate {
     var name: String  // Display name
     var icon: String  // SF Symbol name
     var prompt: String  // System prompt for LLM
+    /// What the role reads as `{roleGuidance}` inside a MEETING turn. `nil` ⇒ `prompt`.
+    /// Authored only for roles whose step guidance names a tool meetings strip
+    /// (`create_artifact`, `ask_supervisor`, `request_changes`, `request_team_meeting`…):
+    /// a speaker told "route fixes through request_changes" in a turn whose schema has no
+    /// such tool either hallucinates the call or ignores a standing instruction.
+    var meetingGuidance: String?
     var toolIDs: [String]  // Available tools
     var usePlanningPhase: Bool  // Two-phase execution
     var dependencies: RoleDependencies  // Required/produced artifacts
+
+    /// The meeting guidance a turn renders — the meeting body when one is authored and
+    /// not blank, else the step prompt. Same rule as `TeamRoleDefinition.resolvedMeetingGuidance`.
+    var resolvedMeetingGuidance: String {
+        SystemTemplates.resolveMeetingGuidance(meetingGuidance, fallback: prompt)
+    }
 }
 
 // MARK: - Artifact Template
@@ -37,6 +49,81 @@ nonisolated enum SystemTemplates {
 
     /// The artifact name that only Supervisor can produce.
     static let supervisorTaskArtifactName = "Supervisor Task"
+
+    /// One rule for both carriers of a meeting body (`SystemRoleTemplate`,
+    /// `TeamRoleDefinition`): blank means "not authored", so an editor that saved an
+    /// empty field or an imported JSON carrying `""` falls back exactly like `nil`.
+    static func resolveMeetingGuidance(_ meetingGuidance: String?, fallback prompt: String) -> String {
+        guard let body = meetingGuidance,
+              !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return meetingStance(derivedFrom: prompt) }
+        return body
+    }
+
+    /// The meeting body of a role that has none authored — every LLM-generated role, and
+    /// a custom role until its editor's Prompt tab is filled in.
+    ///
+    /// The opening of the step prompt — its first paragraph, at most two sentences, stopped
+    /// at the first `#` heading — plus one sentence that names what a meeting turn is. Until
+    /// 2026-09-07 the fallback was the WHOLE step prompt: a FAANG Software Engineer spoke in
+    /// a meeting under "Implement the change end-to-end… stage and commit… submit
+    /// Engineering Notes" — eleven imperatives about work no meeting turn can do
+    /// (playbook R3.1.1 / R4.1.1, audit 2026-09-07).
+    static func meetingStance(derivedFrom prompt: String) -> String {
+        let closing = "In this meeting, speak from that responsibility in your own words; "
+            + "the meeting's outcome is the group's decision, not a deliverable of yours."
+        let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Up to the first blank line, or the whole text when it has none.
+        let firstParagraph = trimmed.range(of: "\n\n").map { String(trimmed[..<$0.lowerBound]) } ?? trimmed
+        let paragraph = firstParagraph
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .prefix { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("#") }
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .joined(separator: " ")
+        let stance = firstSentences(of: paragraph, count: 2)
+        return stance.isEmpty ? closing : stance + " " + closing
+    }
+
+    /// The first `count` sentences of `text`, sentence-final punctuation kept.
+    private static func firstSentences(of text: String, count: Int) -> String {
+        var sentences: [String] = []
+        var current = ""
+        var previous: Character?
+        for character in text {
+            current.append(character)
+            if character == " ", let previous, ".!?".contains(previous) {
+                let sentence = current.trimmingCharacters(in: .whitespaces)
+                if !sentence.isEmpty { sentences.append(sentence) }
+                current = ""
+                if sentences.count == count { return sentences.joined(separator: " ") }
+            }
+            previous = character
+        }
+        let tail = current.trimmingCharacters(in: .whitespaces)
+        if !tail.isEmpty { sentences.append(tail) }
+        return sentences.prefix(count).joined(separator: " ")
+    }
+
+    // MARK: - Step ending
+
+    /// The `{stepEnding}` chip: the ONE sentence of `## Final reminder` that names how the
+    /// step ends, resolved per role at prompt-build time. A template serving both
+    /// completion types (`questPartyTemplate`, `genericTemplate`) used to carry a literal
+    /// or an `if`-clause the model re-judged every turn (R4.4.1); a producing role ends
+    /// on `create_artifact`, an advisory role on its `ask_supervisor` reply, and an
+    /// advisory role in a team whose Ask Supervisor mode is Off has no tool to end on
+    /// at all — three sentences, one chip.
+    static let producingStepEnding =
+        "Submit each deliverable exactly once — that is how the step ends."
+    static let advisoryStepEnding =
+        "Reply by calling `ask_supervisor` with your full response in its `question` field — plain text outside tool calls is invisible."
+    static let plainReplyStepEnding =
+        "Reply in plain text — the Supervisor reads your replies in the feed and ends the step."
+
+    static func stepEnding(producing: Bool, canAskSupervisor: Bool) -> String {
+        if producing { return producingStepEnding }
+        return canAskSupervisor ? advisoryStepEnding : plainReplyStepEnding
+    }
 
     /// Get available system role templates for a team template (roles not yet in the team)
     static func availableRoles(
@@ -74,6 +161,7 @@ nonisolated enum SystemTemplates {
         ("toolList", "Tool List", "tools"),
         ("expectedArtifacts", "Expected Artifacts", "artifacts"),
         ("artifactInstructions", "Artifact Instructions", "artifacts"),
+        ("stepEnding", "Step Ending", "artifacts"),
         ("conversationMechanics", "Conversation Mechanics", "context"),
         ("globalContext", "Global Context", "context"),
         ("roleSkills", "Role Skills", "context"),
@@ -159,6 +247,7 @@ nonisolated enum SystemTemplates {
             name: template.name,
             icon: template.icon,
             prompt: template.prompt,
+            meetingGuidance: template.meetingGuidance,
             toolIDs: template.toolIDs,
             usePlanningPhase: template.usePlanningPhase,
             dependencies: template.dependencies,

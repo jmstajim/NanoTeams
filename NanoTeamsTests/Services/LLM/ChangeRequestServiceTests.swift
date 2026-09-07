@@ -245,8 +245,23 @@ final class ChangeRequestServiceTests: XCTestCase {
         XCTAssertTrue(topic.contains(engineerRole.name))
         XCTAssertTrue(context.contains("Fix null check"))
         XCTAssertTrue(context.contains("Missing edge case"))
-        XCTAssertTrue(context.contains("VOTE: APPROVE"))
-        XCTAssertTrue(context.contains("VOTE: REJECT"))
+        // The vote contract rides every turn's directive (recency slot), not the context —
+        // a standing rule in a mid-conversation user turn sinks behind the transcript
+        // (playbook R1.1.3); the context itself is lowercase prose with no bare colon label
+        // (R1.3.2 / R4.3.2 — it opened with `CHANGE REQUEST DETAILS:` until 2026-09-07).
+        XCTAssertFalse(context.contains("VOTE:"), context)
+        XCTAssertFalse(context.contains("MUST"), context)
+        let bareLabel = try! NSRegularExpression(pattern: #"^[A-Z][A-Za-z ]+:\s*$"#, options: [.anchorsMatchLines])
+        XCTAssertNil(bareLabel.firstMatch(in: context, range: NSRange(context.startIndex..., in: context)),
+                     "a bare `Label:` line is a second marker family in a `## ` wire: \(context)")
+        let directive = MeetingCoordinator.turnDirective(
+            speakerName: "SWE", turnNumber: 2, maxTurns: 6, isCoordinator: false,
+            isDiscussionClub: false, votes: true)
+        XCTAssertTrue(directive.contains("VOTE: APPROVE") && directive.contains("VOTE: REJECT"), directive)
+        let plain = MeetingCoordinator.turnDirective(
+            speakerName: "SWE", turnNumber: 2, maxTurns: 6, isCoordinator: false,
+            isDiscussionClub: false)
+        XCTAssertFalse(plain.contains("VOTE:"), "a discussion meeting carries no vote contract: \(plain)")
     }
 
     // MARK: - Helpers

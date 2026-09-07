@@ -53,8 +53,10 @@ final class ConversationRepairServiceTests: XCTestCase {
         let recovery = messages.last?.content ?? ""
         XCTAssertTrue(recovery.contains("edit_file"), "must name the failed tool. Got: \(recovery)")
         XCTAssertTrue(recovery.contains("/x"), "must quote the failing arguments")
-        XCTAssertFalse(recovery.contains("Your previous tool call"),
+        XCTAssertFalse(recovery.contains("The tool call before this note"),
                        "generic phrasing only when the tool list is unavailable")
+        XCTAssertTrue(recovery.hasPrefix("The edit_file("),
+                      "the note names the call relative to itself, never as 'your previous' (playbook §3.8). Got: \(recovery)")
     }
 
     /// Oversized arguments are truncated in the recovery message — the repair
@@ -233,15 +235,48 @@ final class ConversationRepairServiceTests: XCTestCase {
     }
 
     /// The companion negative the flip above must NOT drag with it: a sentinel this file
-    /// cannot repair still yields nothing. `<|call|` followed by a SPACE is prose by the
-    /// normalizer's abutment rule, so there is no call to be mis-channelled.
+    /// cannot repair still yields nothing. A run that CAN carry a tool name
+    /// (`<|call|read_file{`) is refused by the normalizer for the reason
+    /// `MangledSentinelIdentityTests` records — a repair that rewrites the run would take
+    /// `read_file` with it — so there is no call to be mis-channelled.
+    ///
+    /// This test read `<|call| {"name":"list_tasks"}` until 2026-09-07, when the whitespace
+    /// gap became repairable and the fixture stopped being unrepairable. The negative it
+    /// guards is unchanged; only the shape that demonstrates it moved.
     func testReasoningNames_unrepairableSentinel_stillReturnsEmpty() {
         let thinking = ##"""
-        I could write <|call| {"name":"list_tasks"} but let me think first.
+        I could write <|call|list_tasks{"limit":5} but let me think first.
         """##
         XCTAssertEqual(
             ConversationRepairService.reasoningChannelToolCallNames(in: thinking), [],
             "an unrepairable sentinel is a formatting failure, not a mis-channelled call"
+        )
+    }
+
+    /// **The price of the 2026-09-07 whitespace gap, stated rather than discovered.**
+    /// `<|call| {` is repairable now, so prose that WRITES that shape mid-sentence is read
+    /// as a call — here, as a call mis-channelled into reasoning.
+    ///
+    /// The discriminator that would remove it is "the sentinel begins its line", and it was
+    /// rejected on a measurement, not on taste: `hasNormalizableOccurrence` is also the
+    /// per-delta stream gate and receives a bounded WINDOW, which it cannot tell from a whole
+    /// buffer, so a window opening mid-line would report normalizable, `normalize` on the full
+    /// buffer would repair nothing, and `sawHarmonyMarker` would close with `earliestLower ==
+    /// nil` — the truncation rewind skipped, visible prose frozen mid-turn, and a nudge about
+    /// an envelope that was never there. That is the failure `c3959d4c` recorded when the same
+    /// shortcut was tried for the ChatML wrapper, and it is strictly worse than this nudge.
+    ///
+    /// The exposure is bounded by what it takes to reach it: a COMPLETE, valid call payload
+    /// written inside prose. A model quoting the taught format writes `<|call|>{…}` with its
+    /// `>`, which has always dispatched, so the gap widens an opening that already existed
+    /// rather than opening a new one.
+    func testReasoningNames_proseWritingTheGapShape_isReadAsACall_acceptedCost() {
+        let thinking = ##"""
+        I could write <|call| {"name":"list_tasks"} but let me think first.
+        """##
+        XCTAssertEqual(
+            ConversationRepairService.reasoningChannelToolCallNames(in: thinking), ["list_tasks"],
+            "characterises an accepted false positive — if this flips, the gap rule changed"
         )
     }
 

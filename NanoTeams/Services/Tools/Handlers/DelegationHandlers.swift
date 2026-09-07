@@ -88,14 +88,12 @@ nonisolated struct DelegateToTeamTool: ToolHandler {
             // when the role isn't allowed to use generated teams.
             let teamID = extractString(args, "team_id") ?? DelegationConstants.generatedTeamSentinel
 
-            let taskBrief = try requiredString(args, "task_brief").trimmingCharacters(in: .whitespacesAndNewlines)
+            let taskBrief = try requiredString(args, "task_brief")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             guard !taskBrief.isEmpty else {
-                return makeErrorResult(
-                    toolName: Self.name,
-                    args: args,
-                    code: .invalidArgs,
-                    message: "task_brief is empty — describe what the team should produce, including file paths and constraints from your investigation."
-                )
+                throw ToolArgumentError.invalidValue(
+                    key: "task_brief",
+                    detail: "is empty — describe what the team should produce, including file paths and constraints from your investigation.")
             }
 
             struct DelegateInitData: Codable {
@@ -168,13 +166,7 @@ nonisolated struct CancelDelegationTool: ToolHandler {
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
         await ToolErrorHandler.execute(toolName: Self.name, args: args) {
-            guard let childID = optionalInt(args, "child_task_id") else {
-                return makeErrorResult(
-                    toolName: Self.name, args: args,
-                    code: .invalidArgs,
-                    message: "child_task_id is required (integer from the paused delegation envelope)."
-                )
-            }
+            let childID = try requiredInt(args, "child_task_id")
             let reason = optionalString(args, "reason")
             return ToolExecutionResult(
                 toolName: Self.name,
@@ -214,13 +206,7 @@ nonisolated struct ResumeDelegationTool: ToolHandler {
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
         await ToolErrorHandler.execute(toolName: Self.name, args: args) {
-            guard let childID = optionalInt(args, "child_task_id") else {
-                return makeErrorResult(
-                    toolName: Self.name, args: args,
-                    code: .invalidArgs,
-                    message: "child_task_id is required (integer from the paused delegation envelope)."
-                )
-            }
+            let childID = try requiredInt(args, "child_task_id")
             return ToolExecutionResult(
                 toolName: Self.name,
                 argumentsJSON: encodeArgsToJSON(args),
@@ -259,22 +245,9 @@ nonisolated struct ForwardToTeamTool: ToolHandler {
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
         await ToolErrorHandler.execute(toolName: Self.name, args: args) {
-            guard let childID = optionalInt(args, "child_task_id") else {
-                return makeErrorResult(
-                    toolName: Self.name, args: args,
-                    code: .invalidArgs,
-                    message: "child_task_id is required (integer from the paused delegation envelope)."
-                )
-            }
-            let message = try requiredString(args, "message")
+            let childID = try requiredInt(args, "child_task_id")
+            let message = try requiredNonEmptyString(args, "message")
             let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else {
-                return makeErrorResult(
-                    toolName: Self.name, args: args,
-                    code: .invalidArgs,
-                    message: "message must not be empty after trimming."
-                )
-            }
             return ToolExecutionResult(
                 toolName: Self.name,
                 argumentsJSON: encodeArgsToJSON(args),

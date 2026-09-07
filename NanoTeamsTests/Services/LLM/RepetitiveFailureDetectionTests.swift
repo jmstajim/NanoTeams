@@ -200,6 +200,33 @@ final class RepetitiveFailureDetectionTests: XCTestCase {
         XCTAssertFalse(message.contains("ask_supervisor"), "role does not hold it: \(message)")
     }
 
+    /// A15 (2026-09-07): both failure arms end on "If you are blocked, call ask_supervisor" —
+    /// for a refusal that exists because the run has no human, that channel reaches the
+    /// answerer that cannot approve, and the 2026-09-07 audit's role went round that ring for
+    /// three turns. For `APPROVAL_UNAVAILABLE` (either spelling) neither arm names a channel;
+    /// every other code still does. `.persistentToolError` is the arm that fires when the
+    /// model REWORDS the refused command, so it is pinned as well as `.repetitiveFailure`.
+    func testAdvice_forApprovalUnavailable_namesNoChannel_inEitherArm() {
+        let held: Set<String> = ["bash", "ask_supervisor"]
+        for code in [ToolErrorCode.approvalUnavailable.rawValue, "approval_unavailable"] {
+            let same = LLMExecutionService.loopWarningMessage(
+                loopDetection: .repetitiveFailure(tool: "bash", count: 3, errorCode: code), allowedToolNames: held)
+            XCTAssertFalse(same.contains("ask_supervisor"), "\(code): \(same)")
+            XCTAssertFalse(same.contains("If you are blocked"), "\(code): \(same)")
+            let reworded = LLMExecutionService.loopWarningMessage(
+                loopDetection: .persistentToolError(tool: "bash", count: 3, errorCode: code), allowedToolNames: held)
+            XCTAssertFalse(reworded.contains("ask_supervisor"), "\(code): \(reworded)")
+            XCTAssertTrue(reworded.contains("take a different step"), reworded)
+        }
+        let other = LLMExecutionService.loopWarningMessage(
+            loopDetection: .persistentToolError(tool: "bash", count: 3, errorCode: "BASH_DENIED"), allowedToolNames: held)
+        XCTAssertTrue(other.hasSuffix("If you are blocked, call ask_supervisor."), "a decision may be revisited: \(other)")
+        XCTAssertEqual(LLMExecutionService.escalationClause(code: nil, allowedToolNames: held),
+                       " If you are blocked, call ask_supervisor.")
+        XCTAssertEqual(LLMExecutionService.escalationClause(code: "APPROVAL_UNAVAILABLE", allowedToolNames: held), "")
+        XCTAssertEqual(LLMExecutionService.escalationClause(code: "BASH_DENIED", allowedToolNames: []), "")
+    }
+
     /// A change of error code is a change of CONDITION and may be said once more; a
     /// growing count is not.
     func testSignature_keysOnTheCodeButNotTheCount() {

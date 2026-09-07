@@ -89,7 +89,8 @@ nonisolated struct CreateTeamTool: ToolHandler {
                         outputJSON: makeErrorEnvelope(
                             code: .invalidArgs,
                             message: "team_config contains a value JSON cannot represent "
-                                + "(NaN/infinity, a non-string key, or a non-JSON type)."
+                                + "(NaN/infinity, a non-string key, or a non-JSON type). "
+                                + "Send plain JSON strings, numbers, booleans, arrays and objects only."
                         ),
                         isError: true
                     )
@@ -99,12 +100,10 @@ nonisolated struct CreateTeamTool: ToolHandler {
                       let data = configString.data(using: .utf8) {
                 jsonData = data
             } else {
-                return ToolExecutionResult(
-                    toolName: Self.name,
-                    argumentsJSON: encodeArgsToJSON(args),
-                    outputJSON: makeErrorEnvelope(code: .invalidArgs, message: "Missing required 'team_config' parameter"),
-                    isError: true
-                )
+                // Through the shared argument error, so this reads exactly like every
+                // other missing argument — and so the policy's `INVALID_ARGS` arm can
+                // append this tool's required list.
+                throw ToolArgumentError.missingRequired("team_config")
             }
 
             let config: GeneratedTeamConfig
@@ -143,7 +142,11 @@ nonisolated struct CreateTeamTool: ToolHandler {
 /// `debugDescription` so the LLM sees the actual validation failure ("Team must
 /// have at least one role.").
 nonisolated private func decodingMessage(_ error: Error) -> String {
-    guard let decoding = error as? DecodingError else { return error.localizedDescription }
+    guard let decoding = error as? DecodingError else {
+        // Not a decode failure at all — classify rather than leak a localized system
+        // sentence into a message the model reads.
+        return ToolErrorHandler.classify(error).message
+    }
 
     // `dataCorrupted` is OUR text: every `GeneratedTeamConfig` validation message
     // already names its own field ("Unknown supervisor_mode 'x'. Allowed: …"), and
@@ -171,7 +174,7 @@ nonisolated private func decodingMessage(_ error: Error) -> String {
          .valueNotFound(_, let c):
         ctx = c
     @unknown default:
-        return error.localizedDescription
+        return ToolErrorHandler.classify(error).message
     }
 
     // The coding path is the half that says WHERE. `debugDescription` carries the

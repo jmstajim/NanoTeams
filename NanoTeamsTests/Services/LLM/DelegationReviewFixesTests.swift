@@ -164,7 +164,7 @@ final class DelegationReviewFixesTests: XCTestCase {
         let injectedStep = delegate.taskToMutate?.runs.last?.steps.first(where: { $0.id == "late" })
         XCTAssertEqual(injectedStep?.llmConversation.count, 1)
         XCTAssertEqual(injectedStep?.llmConversation.first?.sourceContext, .supervisorMessage)
-        XCTAssertTrue(injectedStep?.llmConversation.first?.content.hasPrefix("Supervisor:") ?? false)
+        XCTAssertTrue(injectedStep?.llmConversation.first?.content.hasPrefix(MessageSourceContext.supervisorMessagePrefix) ?? false)
     }
 
     // MARK: - I9: TasksIndex cycle-cap derives from maxDelegationDepth

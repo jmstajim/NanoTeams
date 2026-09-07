@@ -362,7 +362,7 @@ final class DelegationLoopWatcherTests: XCTestCase {
         guard case .parentMessageQueued(let text) = outcome else {
             return XCTFail("Expected .parentMessageQueued from across-messages hook")
         }
-        XCTAssertTrue(text.contains("across messages"),
+        XCTAssertTrue(text.contains("restating content from its earlier turns"),
                       "Diagnostic must mention scope so the role's LLM understands which detector fired; got: \(text)")
     }
 
@@ -460,10 +460,11 @@ final class DelegationLoopWatcherTests: XCTestCase {
         guard case .parentMessageQueued(let text) = outcome else {
             return XCTFail("Expected .parentMessageQueued, got \(outcome)")
         }
-        XCTAssertTrue(text.contains("tool-call repetition"),
+        XCTAssertTrue(text.contains("same tool call with identical arguments"),
                       "Diagnostic must mark scope so the parent role's LLM understands which detector fired; got: \(text)")
-        XCTAssertTrue(text.contains("read_file"),
-                      "Diagnostic must surface the spammed tool name; got: \(text)")
+        XCTAssertFalse(text.contains("read_file"),
+                       "The model-facing clause names the SHAPE, never the spammed tool — a name in the "
+                           + "nudge is the string the model echoes back (R5.2.6); got: \(text)")
         XCTAssertNotNil(store.delegationLoopWatcher._testLastTrigger(forTaskID: childID),
                         "Successful fire must record cooldown timestamp")
     }
@@ -712,7 +713,7 @@ final class DelegationLoopWatcherTests: XCTestCase {
         guard case .parentMessageQueued(let text)? = outcomeBox.value else {
             return XCTFail("A fresh within-message loop must fire via considerCommitted")
         }
-        XCTAssertTrue(text.contains("within-message"), "scope must be within-message; got: \(text)")
+        XCTAssertTrue(text.contains("same block of text"), "scope must be within-message; got: \(text)")
     }
 
     // MARK: - Across-messages with thinking (caller-side join contract)
@@ -762,7 +763,7 @@ final class DelegationLoopWatcherTests: XCTestCase {
         guard case .parentMessageQueued(let text) = outcome else {
             return XCTFail("Expected .parentMessageQueued, got \(outcome)")
         }
-        XCTAssertTrue(text.contains("across messages"),
+        XCTAssertTrue(text.contains("restating content from its earlier turns"),
                       "Diagnostic must mark scope; got: \(text)")
     }
 

@@ -52,6 +52,7 @@ nonisolated enum RoleEditorMutations {
                 producesArtifacts: [SystemTemplates.supervisorTaskArtifactName]
             )
             updated.prompt = ""
+            updated.meetingGuidance = nil
             updated.toolIDs = []
             updated.usePlanningPhase = false
             updated.llmOverride = nil
@@ -63,6 +64,7 @@ nonisolated enum RoleEditorMutations {
         } else {
             updated.dependencies = dependencies
             updated.prompt = editorState.rolePrompt
+            updated.meetingGuidance = RoleEditorState.normalizedMeetingGuidance(editorState.meetingGuidance)
             updated.toolIDs = finalToolIDs
             updated.usePlanningPhase = editorState.usePlanningPhase
             updated.llmOverride = llmOverride
@@ -120,6 +122,7 @@ nonisolated enum RoleEditorMutations {
             name: editorState.roleName,
             icon: editorState.roleIcon,
             prompt: editorState.rolePrompt,
+            meetingGuidance: RoleEditorState.normalizedMeetingGuidance(editorState.meetingGuidance),
             toolIDs: finalToolIDs,
             usePlanningPhase: editorState.usePlanningPhase,
             dependencies: dependencies,

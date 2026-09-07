@@ -67,10 +67,7 @@ nonisolated struct TaskStatusTool: ToolHandler {
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
         await ToolErrorHandler.execute(toolName: Self.name, args: args) {
-            guard let taskID = optionalInt(args, "task_id") else {
-                return makeErrorResult(toolName: Self.name, args: args, code: .invalidArgs,
-                                       message: "task_id is required (integer).")
-            }
+            let taskID = try requiredInt(args, "task_id")
             return ToolExecutionResult(
                 toolName: Self.name,
                 argumentsJSON: encodeArgsToJSON(args),
@@ -96,8 +93,7 @@ nonisolated struct CreateManagedTaskTool: ToolHandler {
 
     private static let baseDescription = """
     Create and start a new top-level task in this folder. It runs independently \
-    — you do NOT block waiting for it; check back on its status later. The team \
-    has no other context, so put everything they need into `brief`.
+    — you do NOT block waiting for it; check back on its status later.
     """
 
     private static let parameterSchema = parameters(allowGeneration: true, omitIsViable: true)
@@ -113,7 +109,7 @@ nonisolated struct CreateManagedTaskTool: ToolHandler {
         return JS.object(
             properties: [
                 "title": JS.string("Short task title."),
-                "brief": JS.string("Self-contained description of what the team should produce, including paths/constraints."),
+                "brief": JS.string("Self-contained description of what the team should produce, including paths and constraints — the team has no other context, so everything it needs goes here."),
                 "team_id": JS.string(teamIDDescription),
             ],
             required: ["title", "brief"]
@@ -183,11 +179,8 @@ nonisolated struct CreateManagedTaskTool: ToolHandler {
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
         await ToolErrorHandler.execute(toolName: Self.name, args: args) {
-            let brief = try requiredString(args, "brief").trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !brief.isEmpty else {
-                return makeErrorResult(toolName: Self.name, args: args, code: .invalidArgs,
-                                       message: "brief is required and must be non-empty.")
-            }
+            let brief = try requiredNonEmptyString(args, "brief")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             // Missing/empty/non-string title is a known small-model emission quirk —
             // recover by deriving one from the brief instead of failing the whole
             // creation. Strict String read: `extractString`'s String(describing:)
@@ -218,21 +211,25 @@ nonisolated struct ControlTaskTool: ToolHandler {
     static let verbs = ControlVerb.actionNames
     static let schema = ToolSchema(
         name: TN.controlTask,
+        // Verb lines are `action=<verb> —`, never `- <verb> —`. The renderer emits the
+        // description immediately above its own `Args:` bullet list, so a description
+        // written with `- ` prefixes gave the model nine consecutive dash lines of which
+        // some were verb semantics and some were arguments, separated only by the word
+        // `Args:`. The prefix now says which half a line belongs to.
         description: """
-        Control a task's lifecycle. `action`:
-        - start / pause / resume — run control
-        - stop — hard-stop the engine (cascades to any delegated subtasks)
-        - close — accept all the task's roles and close it
-        - delete — permanently remove it (irreversible; prefer stop/close)
-        - rename — set a new title (pass it in `arg`)
-        - set_timeout — set per-run timeout in seconds (pass seconds in `arg`; 0 clears)
-        You cannot control your own manager task.
+        Control a task's lifecycle. You cannot control your own manager task.
+        action=start / pause / resume — run control
+        action=stop — hard-stop the engine (cascades to any delegated subtasks)
+        action=close — accept all the task's roles and close it
+        action=delete — permanently remove it (irreversible; prefer stop/close)
+        action=rename — set a new title
+        action=set_timeout — set the per-run timeout
         """,
         parameters: JS.object(
             properties: [
                 "task_id": JS.integer("The task's id."),
                 "action": JS.string("The lifecycle action.", enumValues: verbs),
-                "arg": JS.string("New title (rename) or seconds (set_timeout). Ignored otherwise."),
+                "arg": JS.string("The new title for rename; the timeout in seconds for set_timeout, 0 to clear it."),
             ],
             required: ["task_id", "action"]
         )
@@ -244,10 +241,7 @@ nonisolated struct ControlTaskTool: ToolHandler {
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
         await ToolErrorHandler.execute(toolName: Self.name, args: args) {
-            guard let taskID = optionalInt(args, "task_id") else {
-                return makeErrorResult(toolName: Self.name, args: args, code: .invalidArgs,
-                                       message: "task_id is required (integer).")
-            }
+            let taskID = try requiredInt(args, "task_id")
             // Single decode boundary: string `action` (+ `arg`) → typed `ControlVerb`.
             switch ControlVerb.parse(action: extractString(args, "action") ?? "", arg: extractString(args, "arg")) {
             case .failure(let error):
@@ -271,19 +265,20 @@ nonisolated struct ManageRoleTool: ToolHandler {
     static let verbs = RoleVerb.actionNames
     static let schema = ToolSchema(
         name: TN.manageRole,
+        // Same `action=<verb>` form as `control_task` — see the note there.
         description: """
-        Act on a specific role within a task. `action`:
-        - restart — re-runs the role and its downstream dependents from zero, discarding their messages, tool calls and artifacts; `comment` is the only text that survives into the re-run
-        - accept — accept a role awaiting acceptance; on a chat-mode task's advisory role this finishes the role and closes the task once no other role is active
-        - request_changes — send a role that finished its work back for revision; `comment` = what to change
-        - correct — feed mid-run correction to a paused role; `comment` = the correction
-        - finish_advisory — finish an advisory (chat) role
+        Act on a specific role within a task.
+        action=restart — re-runs the role and its downstream dependents from zero, discarding their messages, tool calls and artifacts; `comment` is the only text that survives into the re-run
+        action=accept — accept a role awaiting acceptance; on a chat-mode task's advisory role this finishes the role and closes the task once no other role is active
+        action=request_changes — send a role that finished its work back for revision; `comment` = what to change
+        action=correct — feed mid-run correction to a paused role; `comment` = the correction
+        action=finish_advisory — finish an advisory (chat) role
         """,
         parameters: JS.object(
             properties: [
                 "task_id": JS.integer("The task's id."),
                 "role_id": JS.string("The role's id."),
-                "action": JS.string("The role action.", enumValues: verbs),
+                "action": JS.string(enumValues: verbs),
                 "comment": JS.string("Guidance / feedback for restart, request_changes, or correct. Draw it from the task's existing brief."),
             ],
             required: ["task_id", "role_id", "action"]
@@ -296,15 +291,9 @@ nonisolated struct ManageRoleTool: ToolHandler {
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
         await ToolErrorHandler.execute(toolName: Self.name, args: args) {
-            guard let taskID = optionalInt(args, "task_id") else {
-                return makeErrorResult(toolName: Self.name, args: args, code: .invalidArgs,
-                                       message: "task_id is required (integer).")
-            }
-            let roleID = try requiredString(args, "role_id").trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !roleID.isEmpty else {
-                return makeErrorResult(toolName: Self.name, args: args, code: .invalidArgs,
-                                       message: "role_id is required.")
-            }
+            let taskID = try requiredInt(args, "task_id")
+            let roleID = try requiredNonEmptyString(args, "role_id")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             // Single decode boundary: string `action` (+ `comment`) → typed `RoleVerb`.
             switch RoleVerb.parse(action: extractString(args, "action") ?? "", comment: extractString(args, "comment")) {
             case .failure(let error):
@@ -343,15 +332,9 @@ nonisolated struct AnswerTaskQuestionTool: ToolHandler {
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
         await ToolErrorHandler.execute(toolName: Self.name, args: args) {
-            guard let taskID = optionalInt(args, "task_id") else {
-                return makeErrorResult(toolName: Self.name, args: args, code: .invalidArgs,
-                                       message: "task_id is required (integer).")
-            }
-            let answer = try requiredString(args, "answer").trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !answer.isEmpty else {
-                return makeErrorResult(toolName: Self.name, args: args, code: .invalidArgs,
-                                       message: "answer must not be empty.")
-            }
+            let taskID = try requiredInt(args, "task_id")
+            let answer = try requiredNonEmptyString(args, "answer")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             return ToolExecutionResult(
                 toolName: Self.name,
                 argumentsJSON: encodeArgsToJSON(args),
@@ -385,15 +368,9 @@ nonisolated struct MessageTaskTool: ToolHandler {
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
         await ToolErrorHandler.execute(toolName: Self.name, args: args) {
-            guard let taskID = optionalInt(args, "task_id") else {
-                return makeErrorResult(toolName: Self.name, args: args, code: .invalidArgs,
-                                       message: "task_id is required (integer).")
-            }
-            let message = try requiredString(args, "message").trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !message.isEmpty else {
-                return makeErrorResult(toolName: Self.name, args: args, code: .invalidArgs,
-                                       message: "message must not be empty.")
-            }
+            let taskID = try requiredInt(args, "task_id")
+            let message = try requiredNonEmptyString(args, "message")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             return ToolExecutionResult(
                 toolName: Self.name,
                 argumentsJSON: encodeArgsToJSON(args),
@@ -426,13 +403,12 @@ nonisolated struct ScheduleTaskTool: ToolHandler {
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
         await ToolErrorHandler.execute(toolName: Self.name, args: args) {
-            guard let taskID = optionalInt(args, "task_id") else {
-                return makeErrorResult(toolName: Self.name, args: args, code: .invalidArgs,
-                                       message: "task_id is required (integer).")
-            }
-            guard let minutes = optionalInt(args, "interval_minutes"), minutes >= 0 else {
-                return makeErrorResult(toolName: Self.name, args: args, code: .invalidArgs,
-                                       message: "interval_minutes is required (>= 0; 0 clears).")
+            let taskID = try requiredInt(args, "task_id")
+            let minutes = try requiredInt(args, "interval_minutes")
+            guard minutes >= 0 else {
+                throw ToolArgumentError.invalidValue(
+                    key: "interval_minutes",
+                    detail: "must be >= 0 minutes; pass 0 to clear the interval.")
             }
             return ToolExecutionResult(
                 toolName: Self.name,
@@ -450,9 +426,9 @@ nonisolated struct SetWorkFolderContextTool: ToolHandler {
     static let name = TN.setWorkFolderContext
     static let schema = ToolSchema(
         name: TN.setWorkFolderContext,
-        description: "Replace the shared Work Folder Context — a project description (purpose, conventions, architecture, current state) injected into EVERY role's prompt on EVERY task. Write only durable facts about the project so all future work is better grounded. Worker roles read this and do NOT share your tools or Supervisor role — never include your own review-pass steps, role guidance, or tool names here.",
+        description: "Replace the shared Work Folder Context — the project description injected into every role's prompt on every task.",
         parameters: JS.object(
-            properties: ["content": JS.string("The full replacement text.")],
+            properties: ["content": JS.string("The full replacement text: durable facts about the project — purpose, conventions, architecture, current state — that ground all future work. Worker roles read it and do not share your tools or Supervisor role, so it carries none of your review-pass steps, role guidance or tool names.")],
             required: ["content"]
         )
     )
@@ -471,8 +447,12 @@ nonisolated struct SetWorkFolderContextTool: ToolHandler {
             // prose whose leading and trailing structure is the author's.
             let content = try requiredString(args, "content")
             guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                return makeErrorResult(toolName: Self.name, args: args, code: .invalidArgs,
-                                       message: "content must not be empty — it replaces the work-folder context for every role.")
+                // Routed through the shared argument error so the wording matches every
+                // other empty-argument rejection; the tail is the part no shared helper
+                // can know — what this particular emptiness would DO.
+                throw ToolArgumentError.invalidValue(
+                    key: "content",
+                    detail: "must not be empty — it replaces the work-folder context for every role.")
             }
             return ToolExecutionResult(
                 toolName: Self.name,

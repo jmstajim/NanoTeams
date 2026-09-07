@@ -4,9 +4,19 @@ import Foundation
 
 /// Stateful parser for Server-Sent Events from the LM Studio `/api/v1/chat` endpoint.
 /// Tracks `event:` lines across SSE frames and decodes `data:` payloads into typed events.
+///
+/// Reasoning routing: LM Studio separates reasoning into `reasoning.delta` frames for a
+/// model whose build ships a reasoning parser. For one that does not — a third-party
+/// fine-tune the server has no parser for — reasoning arrives inline in `message.delta`
+/// wrapped in `<think>…</think>`; `ThinkTagSplitter` re-routes those spans to the
+/// thinking channel, the same splitter `OllamaChatStreamParser` runs on Ollama's
+/// `message.content`. Until 2026-09-07 this parser passed `message.delta` through
+/// untouched, so on such a build the reasoning reached the feed, the loop detector and
+/// `HarmonyToolCallParser` as content, and the append-only wire replayed it as the
+/// model's answer (playbook R2.3.1 / R2.3.3).
 nonisolated struct SSEEventParser {
 
-    enum ParsedEvent {
+    enum ParsedEvent: Equatable {
         case contentDelta(String)
         case thinkingDelta(String)
         /// `generationTokensPerSecond` is LM Studio's `tokens_per_second` — server-measured
@@ -26,10 +36,14 @@ nonisolated struct SSEEventParser {
 
     private var currentEventType: String?
     private let decoder = JSONCoderFactory.makeWireDecoder()
+    private var splitter = ThinkTagSplitter()
 
-    /// Parse a single SSE line. Returns `nil` for non-data lines (e.g. `event:` type headers).
-    /// Returns `.ignored` for unhandled event types.
-    mutating func parse(line: String) -> ParsedEvent? {
+    /// Parse a single SSE line. Empty for a line that is not a `data:` payload (`event:`
+    /// type headers, blanks); `[.ignored]` for a frame that yields nothing — an unhandled
+    /// event type, an empty delta, or a delta held back whole because it ends in a viable
+    /// `<think>` tag prefix. One `message.delta` can yield several events: a chunk that
+    /// closes the leading think span is a thinking delta AND a content delta.
+    mutating func parse(line: String) -> [ParsedEvent] {
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
 
         // Track SSE event type from `event: X` lines
@@ -37,32 +51,33 @@ nonisolated struct SSEEventParser {
             currentEventType = trimmed
                 .dropFirst(6)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            return nil
+            return []
         }
 
-        guard trimmed.hasPrefix("data:") else { return nil }
+        guard trimmed.hasPrefix("data:") else { return [] }
 
         let dataString = trimmed
             .dropFirst(5)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !dataString.isEmpty else { return nil }
+        guard !dataString.isEmpty else { return [] }
 
         let data = Data(dataString.utf8)
 
         switch currentEventType ?? "" {
         case "message.delta":
-            if let event = try? decoder.decode(NativeLMStudioClient.MessageDeltaEvent.self, from: data) {
-                let content = event.content ?? ""
-                if !content.isEmpty { return .contentDelta(content) }
+            if let event = try? decoder.decode(NativeLMStudioClient.MessageDeltaEvent.self, from: data),
+               let content = event.content, !content.isEmpty {
+                let routed = route(splitter.feed(content))
+                if !routed.isEmpty { return routed }
             }
-            return .ignored
+            return [.ignored]
 
         case "reasoning.delta":
             if let event = try? decoder.decode(NativeLMStudioClient.MessageDeltaEvent.self, from: data) {
                 let content = event.content ?? ""
-                if !content.isEmpty { return .thinkingDelta(content) }
+                if !content.isEmpty { return [.thinkingDelta(content)] }
             }
-            return .ignored
+            return [.ignored]
 
         case "chat.end":
             if let event = try? decoder.decode(NativeLMStudioClient.ChatEndEvent.self, from: data) {
@@ -88,37 +103,52 @@ nonisolated struct SSEEventParser {
                         modelLoadMs: $0.modelLoadTimeSeconds.map { $0 * 1000 },
                         promptTokens: $0.inputTokens)
                 }
-                return .chatEnd(
+                // Drain a held-back tag prefix BEFORE the end event so no trailing text
+                // is lost on the final frame.
+                return route(splitter.flush()) + [.chatEnd(
                     usage: usage,
                     prefill: prefill.flatMap { $0.isEmpty ? nil : $0 },
                     generationTokensPerSecond: stats?.tokensPerSecond,
-                    reasoningOutputTokens: stats?.reasoningOutputTokens)
+                    reasoningOutputTokens: stats?.reasoningOutputTokens)]
             }
-            return .ignored
+            return [.ignored]
 
         case "error":
             if let event = try? decoder.decode(NativeLMStudioClient.ErrorEvent.self, from: data) {
-                return .error(event.message ?? "Stream error")
+                return [.error(event.message ?? "Stream error")]
             }
-            return .error("Stream error")
+            return [.error("Stream error")]
 
         case "prompt_processing.start":
-            return .processingProgress(0.0)
+            return [.processingProgress(0.0)]
 
         case "prompt_processing.progress":
             if let event = try? decoder.decode(NativeLMStudioClient.PromptProcessingProgressEvent.self, from: data) {
-                return .processingProgress(event.progress)
+                return [.processingProgress(event.progress)]
             }
-            return .ignored
+            return [.ignored]
 
         case "prompt_processing.end":
-            return .processingProgress(1.0)
+            return [.processingProgress(1.0)]
 
         default:
             // Skip: chat.start, model_load.*,
             //       reasoning.start/end, message.start/end,
             //       tool_call.* (MCP server-side events, not client tools)
-            return .ignored
+            return [.ignored]
         }
+    }
+
+    /// Drain at transport end — a stream that dies without `chat.end` (connection drop)
+    /// must not lose the splitter's held-back tag prefix.
+    mutating func finalize() -> [ParsedEvent] {
+        route(splitter.flush())
+    }
+
+    private func route(_ split: ThinkTagSplitter.Output) -> [ParsedEvent] {
+        var events: [ParsedEvent] = []
+        if !split.thinking.isEmpty { events.append(.thinkingDelta(split.thinking)) }
+        if !split.content.isEmpty { events.append(.contentDelta(split.content)) }
+        return events
     }
 }

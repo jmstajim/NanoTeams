@@ -50,8 +50,13 @@ extension LLMExecutionService {
         // `systemRoleID`, so a role duplicated in the team editor would silently
         // run with its twin's toolset. Falls back to the `Role` path only when no
         // definition exists, which is exactly where the fallback IDs belong.
-        let stage1 = roleDefinition.map { toolSchemas(forDefinition: $0, team: resolvedTeam) }
-            ?? toolSchemas(for: roleForMessage, team: resolvedTeam)
+        // Whether a human is there to approve a held `bash` / computer-use action decides
+        // which of those tools ship at all (`ApprovalGatedAvailability`) — the same answer the
+        // two gates read for this task, so the schema and the gate cannot disagree.
+        let humanPresent = approvalHumanPresent(task: task, supervisorMode: supervisorMode)
+        let stage1 = roleDefinition.map {
+            toolSchemas(forDefinition: $0, team: resolvedTeam, humanPresent: humanPresent)
+        } ?? toolSchemas(for: roleForMessage, team: resolvedTeam, humanPresent: humanPresent)
         let tools = EffectiveToolset.applyStorageFilters(
             stage1,
             storage: isDefaultStorage ? .defaultStorage : .realFolder(root: workFolderRoot)
@@ -62,11 +67,15 @@ extension LLMExecutionService {
         // For delegated child tasks, log paths nest under the parent's directory tree.
         let ancestors = delegate.snapshot?.tasksIndex.ancestorIDs(of: task.id) ?? []
         let networkLogger: NetworkLogger? = delegate.loggingEnabled
-            ? NetworkLogger(logURL: paths.networkLogJSONL(taskID: task.id, runID: runID, ancestors: ancestors))
+            ? NetworkLogger.forRun(logURL: paths.networkLogJSONL(taskID: task.id, runID: runID, ancestors: ancestors))
             : nil
         let toolCallsLogURL: URL? = delegate.loggingEnabled
             ? paths.toolCallsJSONL(taskID: task.id, runID: runID, ancestors: ancestors)
             : nil
+        // What this step runs on is recorded by the provider client at its first request
+        // (`NetworkLogger.noteProvenanceIfNeeded`) — per (log, server, model), which is
+        // what makes a `roleOverride` pointing one run at several models visible.
+
         let bashPolicy = delegate.bashPolicy
         let (_, runtime) = ToolRegistry.defaultRegistry(
             workFolderRoot: workFolderRoot, toolCallsLogURL: toolCallsLogURL,
@@ -413,8 +422,16 @@ extension LLMExecutionService {
                 // `ConversationReplay`'s lossy display-record rebuild for no reason.
                 await self.persistWireTranscript(stepID: stepID, taskID: taskID, messages: conversation)
                 await self.persistTokenUsage(stepID: stepID, taskID: taskID, usage: cumulativeUsage)
-                let message =
+                let serverMessage =
                     (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                // The one permanent error whose cause the user can act on: name the
+                // provider's remedy beside the server's sentence (R2.7.4).
+                let message = ContextOverflowClassifier.isContextOverflow(error)
+                    ? ContextBudgetPolicy.overflowFailureMessage(
+                        modelName: effectiveConfig.modelName,
+                        serverMessage: serverMessage,
+                        provider: effectiveConfig.provider)
+                    : serverMessage
                 await self.completeStepFailure(stepID: stepID, taskID: taskID, errorMessage: message)
             }
         }

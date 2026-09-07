@@ -240,7 +240,11 @@ final class ToolsTeammateTests: XCTestCase {
         XCTAssertEqual(results.count, 1)
         XCTAssertTrue(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("INVALID_ARGS"))
-        XCTAssertTrue(results[0].outputJSON.contains("At least one participant"))
+        // On the shared argument seam since 2026-09-06: "At least one participant is
+        // required" named no argument, so it read as a policy refusal rather than a
+        // fixable value — and it was one of many hand-written spellings of one idea.
+        XCTAssertTrue(results[0].outputJSON.contains("'participants' is empty"),
+                      results[0].outputJSON)
     }
 
     func testRequestTeamMeeting_anyParticipant_passesToServiceLayer() async {
@@ -285,7 +289,10 @@ final class ToolsTeammateTests: XCTestCase {
 
     // MARK: - conclude_meeting Tests
 
-    func testConcludeMeeting_validRequest() async {
+    /// The handler's payload is a bare `{status: "concluded"}` — the decision does not
+    /// come back to the caller (the turn ends on it); it rides the `ToolSignal` that
+    /// `MeetingToolExecutor` reads.
+    func testConcludeMeeting_validRequest_signalsTheDecision() async {
         let call = StepToolCall(
             name: "conclude_meeting",
             argumentsJSON: """
@@ -298,11 +305,13 @@ final class ToolsTeammateTests: XCTestCase {
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
-        XCTAssertTrue(results[0].outputJSON.contains("We will use microservices architecture"))
         XCTAssertTrue(results[0].outputJSON.contains("concluded"))
+        XCTAssertEqual(
+            results[0].signal,
+            .concludeMeeting(decision: "We will use microservices architecture", rationale: nil, nextSteps: nil))
     }
 
-    func testConcludeMeeting_withRationale() async {
+    func testConcludeMeeting_withRationale_signalCarriesIt() async {
         let call = StepToolCall(
             name: "conclude_meeting",
             argumentsJSON: """
@@ -314,12 +323,13 @@ final class ToolsTeammateTests: XCTestCase {
         )
         let results = await runtime.executeAll(context: context, toolCalls: [call])
 
-        XCTAssertEqual(results.count, 1)
-        XCTAssertFalse(results[0].isError)
-        XCTAssertTrue(results[0].outputJSON.contains("Better tooling support"))
+        XCTAssertEqual(
+            results[0].signal,
+            .concludeMeeting(decision: "Use REST API",
+                             rationale: "Better tooling support and team familiarity", nextSteps: nil))
     }
 
-    func testConcludeMeeting_withNextSteps() async {
+    func testConcludeMeeting_withNextSteps_signalCarriesTheRawText() async {
         let call = StepToolCall(
             name: "conclude_meeting",
             argumentsJSON: """
@@ -331,9 +341,11 @@ final class ToolsTeammateTests: XCTestCase {
         )
         let results = await runtime.executeAll(context: context, toolCalls: [call])
 
-        XCTAssertEqual(results.count, 1)
-        XCTAssertFalse(results[0].isError)
-        XCTAssertTrue(results[0].outputJSON.contains("Design cache layer"))
+        guard case .concludeMeeting(_, _, let nextSteps)? = results[0].signal else {
+            return XCTFail("expected a concludeMeeting signal, got \(String(describing: results[0].signal))")
+        }
+        XCTAssertEqual(nextSteps, "1. Design cache layer\n2. Implement Redis integration",
+                       "split into steps by `TeamMeetingService.concludeMeeting`, not here")
     }
 
     func testConcludeMeeting_fullDetails() async {
@@ -351,9 +363,11 @@ final class ToolsTeammateTests: XCTestCase {
 
         XCTAssertEqual(results.count, 1)
         XCTAssertFalse(results[0].isError)
-        XCTAssertTrue(results[0].outputJSON.contains("SwiftUI"))
-        XCTAssertTrue(results[0].outputJSON.contains("declarative syntax"))
-        XCTAssertTrue(results[0].outputJSON.contains("Update project templates"))
+        XCTAssertEqual(
+            results[0].signal,
+            .concludeMeeting(decision: "Adopt SwiftUI for new features",
+                             rationale: "Better declarative syntax and future iOS compatibility",
+                             nextSteps: "Update project templates and documentation"))
     }
 
     func testConcludeMeeting_missingDecision() async {
@@ -366,6 +380,29 @@ final class ToolsTeammateTests: XCTestCase {
         XCTAssertEqual(results.count, 1)
         XCTAssertTrue(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("INVALID_ARGS"))
+        XCTAssertNil(results[0].signal)
+    }
+
+    /// An empty decision would end the meeting with nothing recorded — refused, naming the
+    /// argument, with no signal (so the meeting goes on).
+    func testConcludeMeeting_emptyDecision_isRefusedWithoutASignal() async {
+        let call = StepToolCall(
+            name: "conclude_meeting",
+            argumentsJSON: "{\"decision\": \"   \"}"
+        )
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertTrue(results[0].isError)
+        XCTAssertTrue(results[0].outputJSON.contains("decision"))
+        XCTAssertTrue(results[0].outputJSON.contains("must not be empty"))
+        XCTAssertNil(results[0].signal)
+    }
+
+    /// Meeting-only by construction: the registry never offers it to a role's step
+    /// schema, and no meeting turn strips it.
+    func testConcludeMeeting_isMeetingOnlyInTheRegistry() {
+        XCTAssertTrue(ToolHandlerRegistry.unavailableToRoles.contains(ToolNames.concludeMeeting))
+        XCTAssertFalse(ToolHandlerRegistry.meetingExcluded.contains(ToolNames.concludeMeeting))
     }
 
     // MARK: - Data Structure Tests

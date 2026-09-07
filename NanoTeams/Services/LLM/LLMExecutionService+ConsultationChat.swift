@@ -20,8 +20,7 @@ extension LLMExecutionService {
             let newArtifacts = collectNewArtifacts(
                 run: run, alreadyInjected: chat.injectedArtifactIDs
             )
-            if !newArtifacts.isEmpty {
-                let updateMsg = buildArtifactUpdateMessage(newArtifacts)
+            if let updateMsg = buildArtifactUpdateMessage(newArtifacts) {
                 chat.messages.append(LLMMessage(role: .user, content: updateMsg))
                 chat.injectedArtifactIDs.formUnion(newArtifacts.map(\.id))
             }
@@ -35,27 +34,26 @@ extension LLMExecutionService {
         messages.append(LLMMessage(role: .system, content: systemPrompt))
 
         // Task context as the first user turn — variant data stays out of the
-        // system prompt (stable prefix; the template is the invariant block).
+        // system prompt (stable prefix; the template is the invariant block). A `## `
+        // heading, like every block the consultation template itself uses: a `Label:` line
+        // here was a second marker family in one wire (R1.3.2).
         messages.append(LLMMessage(
             role: .user,
             content: """
-            Current Task:
-            Title: \(task.title)
-            Supervisor Task: \(task.effectiveSupervisorBrief)
+            ## Task: \(task.title)
+            \(task.effectiveSupervisorBrief)
             """
         ))
 
         // Inject the role's own artifacts
         let roleStep = run.steps.first(where: { $0.effectiveRoleID == roleID })
-        if let step = roleStep, !step.artifacts.isEmpty {
-            let artifactContext = buildOwnArtifactsContext(step.artifacts)
+        if let artifactContext = buildOwnArtifactsContext(roleStep?.artifacts ?? []) {
             messages.append(LLMMessage(role: .user, content: artifactContext))
         }
 
         // Inject upstream artifacts
         let upstreamArtifacts = collectUpstreamArtifacts(run: run, excludeRoleID: roleID)
-        if !upstreamArtifacts.isEmpty {
-            let context = buildUpstreamArtifactsContext(upstreamArtifacts)
+        if let context = buildUpstreamArtifactsContext(upstreamArtifacts) {
             messages.append(LLMMessage(role: .user, content: context))
         }
 
@@ -152,52 +150,27 @@ extension LLMExecutionService {
         return artifacts
     }
 
-    private func buildOwnArtifactsContext(_ artifacts: [Artifact]) -> String {
-        var context = "Your produced artifacts:\n"
-        for artifact in artifacts {
-            context += "\n[\(artifact.name)]:"
-            if let content = readArtifactContent(artifact) {
-                let truncated = String(content.prefix(2000))
-                context += "\n```\n\(truncated)\(content.count > 2000 ? "\n... (truncated)" : "")\n```"
-            } else {
-                context += " (content not available)"
-            }
-        }
-        return context
+    // The three artifact turns share `PromptBuilder.buildArtifactSection` with the step's
+    // required-artifacts block: one `## `/`### ` shape and one "(content not available)"
+    // for an unreadable body, on every path a model reads artifacts (R1.3.2). Each returns
+    // `nil` for no artifacts, so no caller appends a heading over nothing.
+
+    private func buildOwnArtifactsContext(_ artifacts: [Artifact]) -> String? {
+        PromptBuilder.buildArtifactSection(
+            heading: "Your artifacts", artifacts: artifacts, cap: 2000,
+            artifactReader: readArtifactContent)
     }
 
-    private func buildUpstreamArtifactsContext(_ artifacts: [Artifact]) -> String {
-        var context = "Available team artifacts:\n"
-        for artifact in artifacts {
-            context += "\n[\(artifact.name)]:"
-            if let content = readArtifactContent(artifact) {
-                let truncated = String(content.prefix(1500))
-                context += "\n```\n\(truncated)\(content.count > 1500 ? "\n... (truncated)" : "")\n```"
-            } else {
-                // Without this the artifact renders as a bare `[Name]:` followed
-                // immediately by the next one, which the model cannot tell apart
-                // from an artifact that was genuinely submitted empty — so it
-                // reasons about content that does exist but could not be read.
-                // `buildOwnArtifactsContext` has always said so; these two
-                // siblings silently did not.
-                context += " (content not available)"
-            }
-        }
-        return context
+    private func buildUpstreamArtifactsContext(_ artifacts: [Artifact]) -> String? {
+        PromptBuilder.buildArtifactSection(
+            heading: "Available team artifacts", artifacts: artifacts, cap: 1500,
+            artifactReader: readArtifactContent)
     }
 
-    private func buildArtifactUpdateMessage(_ artifacts: [Artifact]) -> String {
-        var msg = "New artifacts available:\n"
-        for artifact in artifacts {
-            msg += "\n[\(artifact.name)]:"
-            if let content = readArtifactContent(artifact) {
-                let truncated = String(content.prefix(1500))
-                msg += "\n```\n\(truncated)\(content.count > 1500 ? "\n... (truncated)" : "")\n```"
-            } else {
-                msg += " (content not available)"
-            }
-        }
-        return msg
+    private func buildArtifactUpdateMessage(_ artifacts: [Artifact]) -> String? {
+        PromptBuilder.buildArtifactSection(
+            heading: "New artifacts", artifacts: artifacts, cap: 1500,
+            artifactReader: readArtifactContent)
     }
 
     func readArtifactContent(_ artifact: Artifact) -> String? {

@@ -22,6 +22,12 @@ nonisolated struct TeamRoleDefinition: Codable, Identifiable {
     /// System prompt for the LLM when executing this role
     var prompt: String
 
+    /// What the role reads as `{roleGuidance}` inside a MEETING turn. `nil` (or blank)
+    /// ⇒ `prompt`. Authored for bundled roles whose step guidance names a tool meetings
+    /// strip; editable per role in the Prompt tab. Template-owned like `prompt`: a
+    /// version bump overwrites it on system roles.
+    var meetingGuidance: String?
+
     /// Array of tool IDs available to this role
     var toolIDs: [String]
 
@@ -97,6 +103,7 @@ nonisolated struct TeamRoleDefinition: Codable, Identifiable {
         name: String,
         icon: String = "person",
         prompt: String,
+        meetingGuidance: String? = nil,
         toolIDs: [String],
         usePlanningPhase: Bool,
         dependencies: RoleDependencies,
@@ -115,6 +122,7 @@ nonisolated struct TeamRoleDefinition: Codable, Identifiable {
         self.name = name
         self.icon = icon
         self.prompt = prompt
+        self.meetingGuidance = meetingGuidance
         self.toolIDs = toolIDs
         self.usePlanningPhase = usePlanningPhase
         self.dependencies = dependencies
@@ -144,6 +152,7 @@ nonisolated struct TeamRoleDefinition: Codable, Identifiable {
         case name
         case icon
         case prompt
+        case meetingGuidance
         case toolIDs
         case usePlanningPhase
         case dependencies
@@ -169,6 +178,7 @@ nonisolated struct TeamRoleDefinition: Codable, Identifiable {
             try container.decodeIfPresent(String.self, forKey: .icon)
                 ?? SystemTemplates.roles[systemRoleIDForIcon ?? ""]?.icon ?? "person"
         self.prompt = try container.decode(String.self, forKey: .prompt)
+        self.meetingGuidance = try container.decodeIfPresent(String.self, forKey: .meetingGuidance)
         self.toolIDs = try container.decodeIfPresent([String].self, forKey: .toolIDs) ?? []
         // Default FALSE. The phase used to be a single `update_scratchpad` call
         // and was on for everyone; it is now a multi-turn read-and-plan stretch,
@@ -262,6 +272,12 @@ nonisolated extension TeamRoleDefinition {
     /// Returns true if this role produces any artifacts
     var producesArtifacts: Bool {
         return !dependencies.producesArtifacts.isEmpty
+    }
+
+    /// What a MEETING turn renders as `{roleGuidance}`: `meetingGuidance` when authored
+    /// and not blank, else `prompt` — the one rule shared with `SystemRoleTemplate`.
+    var resolvedMeetingGuidance: String {
+        SystemTemplates.resolveMeetingGuidance(meetingGuidance, fallback: prompt)
     }
 
     /// Completion type derived from artifact dependencies.

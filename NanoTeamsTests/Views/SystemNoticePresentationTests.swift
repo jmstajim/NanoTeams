@@ -196,11 +196,11 @@ final class SystemNoticePresentationTests: XCTestCase {
 
     func testPreviewLine_multiline_takesTheFirstNonEmptyLine() {
         let content = """
-        That looked like a tool call, but it did not parse as one.
+        The turn immediately before this note looked like a tool call but did not parse as one.
         <|call|>{"name":"read_file","arguments":{"path":"a.swift"}}<|end|>
         """
         XCTAssertEqual(SystemNoticePresentation.previewLine(from: content),
-                       "That looked like a tool call, but it did not parse as one.")
+                       "The turn immediately before this note looked like a tool call but did not parse as one.")
     }
 
     func testPreviewLine_leadingBlankLines_areSkipped() {
@@ -311,7 +311,7 @@ final class SystemNoticePresentationTests: XCTestCase {
             signal: .withinMessage(diagnostic: diagnostic),
             breakCount: 1, maxRetries: 2,
             supervisorMode: .autonomous, isChatMode: true,
-            canParkForSupervisor: false, roleName: "R")
+            canParkForSupervisor: false, roleName: "R", allowedToolNames: [])
         else {
             XCTFail("the within-budget branch must produce a nudge")
             return ""
@@ -338,7 +338,7 @@ final class SystemNoticePresentationTests: XCTestCase {
         guard case .retryWithNudge(let nudge) = LoopRecoveryPolicy.decide(
             signal: .withinMessage(diagnostic: "d"), breakCount: 1, maxRetries: 2,
             supervisorMode: .autonomous, isChatMode: true,
-            canParkForSupervisor: false, roleName: "R")
+            canParkForSupervisor: false, roleName: "R", allowedToolNames: [])
         else { return XCTFail("expected a nudge") }
         XCTAssertTrue(nudge.hasPrefix(MessageSourceContext.loopCorrectionBlockOpen))
         XCTAssertTrue(nudge.hasSuffix(MessageSourceContext.loopCorrectionBlockClose))

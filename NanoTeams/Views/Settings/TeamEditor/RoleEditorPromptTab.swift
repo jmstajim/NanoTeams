@@ -54,6 +54,21 @@ struct RoleEditorPromptTab: View {
                 .inputSurface(.editor) { PromptMarker() }
                 .padding(.horizontal, Spacing.standard)
                 .padding(.bottom, Spacing.s)
+
+            VStack(alignment: .leading, spacing: 2) {
+                MonoLabel(text: "Meeting Guidance", marker: true)
+                Text("In team meetings this replaces the Role Guidance above as **{roleGuidance}** of the meeting template. Leave it empty to reuse the Role Guidance. Meeting turns hold no artifact, Supervisor or teammate tools, so name none here.")
+                    .font(Typography.caption)
+                    .foregroundStyle(Colors.textSecondary)
+            }
+            .padding(.horizontal, Spacing.standard)
+
+            TextEditor(text: $editorState.meetingGuidance)
+                .font(Typography.termBase)
+                .frame(minHeight: 60, maxHeight: 140)
+                .inputSurface(.editor) { PromptMarker() }
+                .padding(.horizontal, Spacing.standard)
+                .padding(.bottom, Spacing.s)
         }
         .sheet(isPresented: $editorState.showingPromptPreview) {
             PromptPreviewSheet(

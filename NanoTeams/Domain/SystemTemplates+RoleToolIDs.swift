@@ -6,99 +6,39 @@ nonisolated extension SystemTemplates {
 
     private typealias TN = ToolNames
 
-    private static let readOnlyTools: Set<String> = [
+    /// Tool IDs for a role the team lookup could not resolve (`findRole` miss, or no team
+    /// at all — `LLMExecutionService+ToolResolution` logs a WARNING on that path), keyed by
+    /// the built-in role's system id.
+    ///
+    /// DERIVED from `SystemTemplates.roles[id].toolIDs` — the same table the bundled teams
+    /// are built from — so the fallback can never disagree with the template about what a
+    /// role holds. Until 2026-09-06 this was a third hand-written table (after the role
+    /// templates and the `TeamTemplateFactory` closures), and it had drifted: its Software
+    /// Engineer had no `edit_file`, its Code Reviewer no `git_diff` to "inspect the diff
+    /// first" with, its UX Researcher the read tools the template denies.
+    ///
+    /// Plus `ask_supervisor` for every team role: on this path the resolver runs with no
+    /// role definition, so its step-4 auto-injection (which hands the tool to every
+    /// non-producing role) never fires — the fallback has to carry the escalation channel
+    /// itself or a lookup-miss run of an advisory role is stranded with no way to reply
+    /// (pinned by `ChatModeTests`). Two keys are not templates: the Supervisor (a human —
+    /// no tools) and the Autovisor manager, whose real default toolset holds NO
+    /// `ask_supervisor` (the manager IS the top Supervisor; without this key a lookup miss
+    /// fell through to `fallbackCustomRoleToolIDs`, which grants it, with the resolver's
+    /// autovisor gate skipped because the role definition was not found).
+    static let fallbackToolIDs: [String: Set<String>] = {
+        var map = roles.mapValues { Set($0.toolIDs).union([TN.askSupervisor]) }
+        map["supervisor"] = []
+        map[AutovisorConstants.managerRoleSystemID] = Set(AutovisorConstants.managerDefaultToolIDs)
+        return map
+    }()
+
+    /// Default fallback tool IDs for roles not in the map (custom roles): read-only file
+    /// tools, memory, teammate collaboration and escalation.
+    static let fallbackCustomRoleToolIDs: Set<String> = [
         TN.listFiles, TN.readFile, TN.readLines, TN.search,
-    ]
-    private static let memoryToolIDs: Set<String> = [
         TN.updateScratchpad,
-    ]
-    private static let fileWriteTools: Set<String> = [
-        TN.writeFile, TN.editFile, TN.deleteFile,
-    ]
-    private static let engineerOnlyTools: Set<String> = [
-        TN.writeFile, TN.deleteFile,
-        TN.runXcodebuild, TN.runXcodetests,
-        TN.gitStatus, TN.gitDiff, TN.gitLog, TN.gitBranchList,
-        TN.gitCheckout, TN.gitBranch, TN.gitAdd, TN.gitCommit,
-        TN.gitMerge, TN.gitPull, TN.gitStash,
-    ]
-    private static let teammateToolIDs: Set<String> = [
         TN.askTeammate, TN.requestTeamMeeting,
-    ]
-    // conclude_meeting is auto-injected at runtime for the team's Meeting Coordinator
-    // (see `LLMExecutionService+ToolResolution.toolSchemas`). No static grant needed.
-    private static let changeRequestToolIDs: Set<String> = [
-        TN.requestChanges,
-    ]
-    private static let visionToolIDs: Set<String> = [
-        TN.analyzeImage,
-    ]
-    private static let supervisorToolIDs: Set<String> = [
         TN.askSupervisor,
     ]
-    // NOTE: delegation tools (delegate_to_team, cancel/resume/forward) are NEVER
-    // part of any role's stored toolIDs — they auto-inject when the role's
-    // delegation settings (`allowedDelegationTeamIDs` / `allowDelegationToGeneratedTeams`)
-    // are populated. See `LLMExecutionService+ToolResolution`.
-    /// Read-only inspector tools — git status/diff/log/branch listing. Used by roles
-    /// that need git visibility without mutating git state (no add/commit/branch).
-    /// Coding Agent uses this set alongside `fileWriteTools` — it can edit working-tree
-    /// files but cannot commit/branch (those stay with the Supervisor or a delegated team).
-    private static let gitReadOnlyTools: Set<String> = [
-        TN.gitStatus, TN.gitDiff, TN.gitLog, TN.gitBranchList,
-    ]
-    /// Shell access — `bash` + its `bash_output` companion (background-process
-    /// output reader). Granted by default ONLY to the code-writing roles
-    /// (Software Engineer, Coding Assistant, Coding Agent). Always paired: a
-    /// `run_in_background` process is unreadable without `bash_output`. The
-    /// bash-permission layer (mode/sandbox/judge) gates execution at call time.
-    private static let shellTools: Set<String> = [
-        TN.bash, TN.bashOutput,
-    ]
-    /// Computer-use (screen control) tools — granted by default to the dialog-first
-    /// assistant roles (Assistant, Coding Assistant) and the Autovisor manager.
-    /// Execution stays gated by the computer-use permission layer at call time
-    /// (Approval mode / judge / human prompt); Approval = Off strips these from
-    /// every role's LLM schema entirely.
-    private static let computerUseToolIDs: Set<String> = [
-        TN.screenCapture, TN.uiClick, TN.uiType, TN.uiKey, TN.uiScroll,
-    ]
-
-    /// Fallback tool IDs for roles without a team configuration.
-    /// Custom roles default to readOnlyTools + memoryToolIDs + teammateToolIDs.
-    static let fallbackToolIDs: [String: Set<String>] = [
-        "supervisor": [],
-        "softwareEngineer": readOnlyTools.union(engineerOnlyTools).union(shellTools).union(memoryToolIDs).union(teammateToolIDs).union(supervisorToolIDs).union(visionToolIDs),
-        "productManager": readOnlyTools.union(memoryToolIDs).union(teammateToolIDs).union(supervisorToolIDs),
-        "theAgreeable": readOnlyTools.union(memoryToolIDs).union(teammateToolIDs).union(supervisorToolIDs),
-        "tpm": teammateToolIDs.union(changeRequestToolIDs).union(supervisorToolIDs),
-        "techLead": readOnlyTools.union(memoryToolIDs).union(teammateToolIDs).union(supervisorToolIDs),
-        "codeReviewer": readOnlyTools.union(memoryToolIDs).union(teammateToolIDs).union(changeRequestToolIDs).union(visionToolIDs).union(supervisorToolIDs),
-        "sre": readOnlyTools.union(memoryToolIDs).union(teammateToolIDs).union(changeRequestToolIDs).union(supervisorToolIDs),
-        "questMaster": readOnlyTools.union(teammateToolIDs).union(supervisorToolIDs),
-        "uxDesigner": readOnlyTools.union(memoryToolIDs).union(teammateToolIDs).union(visionToolIDs).union(supervisorToolIDs),
-        "uxResearcher": readOnlyTools.union(memoryToolIDs).union(teammateToolIDs).union(visionToolIDs).union(supervisorToolIDs),
-        "loreMaster": readOnlyTools.union(memoryToolIDs).union(teammateToolIDs).union(supervisorToolIDs),
-        "npcCreator": readOnlyTools.union(memoryToolIDs).union(teammateToolIDs).union(supervisorToolIDs),
-        "encounterArchitect": readOnlyTools.union(memoryToolIDs).union(teammateToolIDs).union(supervisorToolIDs),
-        "rulesArbiter": readOnlyTools.union(memoryToolIDs).union(teammateToolIDs).union(supervisorToolIDs),
-        "theOpen": readOnlyTools.union(memoryToolIDs).union(teammateToolIDs).union(supervisorToolIDs),
-        "theConscientious": readOnlyTools.union(memoryToolIDs).union(teammateToolIDs).union(supervisorToolIDs),
-        "theExtrovert": readOnlyTools.union(memoryToolIDs).union(teammateToolIDs).union(supervisorToolIDs),
-        "theNeurotic": readOnlyTools.union(memoryToolIDs).union(teammateToolIDs).union(supervisorToolIDs),
-        "assistant": readOnlyTools.union(fileWriteTools).union(memoryToolIDs).union(supervisorToolIDs).union(visionToolIDs).union(computerUseToolIDs),
-        "codingAssistant": readOnlyTools.union(fileWriteTools).union(memoryToolIDs).union(engineerOnlyTools).union(shellTools).union(supervisorToolIDs).union(visionToolIDs).union(computerUseToolIDs),
-        "codingAgent": readOnlyTools.union(fileWriteTools).union(memoryToolIDs).union(gitReadOnlyTools).union(shellTools).union(supervisorToolIDs).union(visionToolIDs),
-        // The Autovisor manager: its real default toolset, which contains NO
-        // ask_supervisor (the manager IS the top Supervisor — no one to escalate
-        // to). Without this key a role-lookup miss fell through to
-        // `fallbackCustomRoleToolIDs`, which GRANTS ask_supervisor — with the
-        // resolver's autovisor auto-inject gate skipped entirely (it only runs
-        // when the role definition was found). Using the real defaults so a
-        // lookup-miss run degrades to a working manager, not a toolless one.
-        AutovisorConstants.managerRoleSystemID: Set(AutovisorConstants.managerDefaultToolIDs),
-    ]
-
-    /// Default fallback tool IDs for roles not in the map (custom roles).
-    static let fallbackCustomRoleToolIDs: Set<String> = readOnlyTools.union(memoryToolIDs).union(teammateToolIDs).union(supervisorToolIDs)
 }

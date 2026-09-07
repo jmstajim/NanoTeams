@@ -40,7 +40,8 @@ enum DelegatedSupervisorAnswerService {
         targetTeamName: String,
         client: any LLMClient,
         globalConfig: LLMConfig,
-        delegate: any LLMStateDelegate
+        delegate: any LLMStateDelegate,
+        logger: NetworkLogger? = nil
     ) async -> Bool {
         // 1. Read pending question from child's last step.
         // The child's `ask_supervisor` flow set this via `setNeedsSupervisorInput`.
@@ -67,7 +68,8 @@ enum DelegatedSupervisorAnswerService {
             targetTeamName: targetTeamName,
             client: client,
             globalConfig: globalConfig,
-            delegate: delegate
+            delegate: delegate,
+            logger: logger
         ) else { return false }
 
         // 3. Deliver the answer back to the child step. answerSupervisorQuestion
@@ -92,7 +94,8 @@ enum DelegatedSupervisorAnswerService {
         targetTeamName: String,
         client: any LLMClient,
         globalConfig: LLMConfig,
-        delegate: any LLMStateDelegate
+        delegate: any LLMStateDelegate,
+        logger: NetworkLogger? = nil
     ) async -> String? {
         // Locate the role's step and resolve its effective LLM config.
         guard let task = delegate.loadedTask(taskID),
@@ -157,12 +160,17 @@ enum DelegatedSupervisorAnswerService {
             messages: messagesToSend)
 
         do {
+            // Logged into the delegating step's run log under the answering role's name:
+            // the answer becomes the child's Supervisor turn, and a request that shapes a
+            // wire must be readable from a wire log (until 2026-09-07 it had none). The
+            // escalation recursion keeps the same log — it is one delegation's audit trail.
             let stream = client.streamChat(
                 config: effectiveConfig,
                 messages: messagesToSend,
                 tools: [AskSupervisorTool.schema],
-                logger: nil,
-                stepID: nil
+                logger: logger,
+                stepID: roleID,
+                roleName: roleDef?.name ?? step.role.displayName
             )
             var reasoning = ""
             for try await event in stream {
@@ -241,7 +249,8 @@ enum DelegatedSupervisorAnswerService {
                     targetTeamName: roleTeam.name,
                     client: client,
                     globalConfig: globalConfig,
-                    delegate: delegate
+                    delegate: delegate,
+                    logger: logger
                 )
             } else {
                 // V1: bottom-of-chain escalation has no UI surface yet — the activity

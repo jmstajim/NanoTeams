@@ -87,7 +87,7 @@ final class AutovisorStuckEvaluatorTests: XCTestCase {
         let notice = LLMMessage(
             createdAt: first.addingTimeInterval(1),
             role: .user,
-            content: "Supervisor:\nTask 7 now needs input.",
+            content: MessageSourceContext.supervisorMessagePrefix + "Task 7 now needs input.",
             sourceContext: .supervisorMessage
         )
         let s = step(createdAt: now.addingTimeInterval(-60), toolCalls: calls, llm: [notice])
@@ -142,7 +142,7 @@ final class AutovisorStuckEvaluatorTests: XCTestCase {
         let notice = LLMMessage(
             createdAt: now.addingTimeInterval(-30),
             role: .user,
-            content: "Supervisor:\nTask 7 now needs input.",
+            content: MessageSourceContext.supervisorMessagePrefix + "Task 7 now needs input.",
             sourceContext: .supervisorMessage
         )
         let first = now.addingTimeInterval(-9)

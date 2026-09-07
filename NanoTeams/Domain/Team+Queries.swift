@@ -61,6 +61,61 @@ nonisolated extension Team {
         roles.filter { !$0.isSupervisor }
     }
 
+    // MARK: - Meetings
+
+    /// Whether a role of this team has a teammate at all: two non-Supervisor roles. The
+    /// ONE partner rule for both collaboration channels — `ask_teammate` (resolver step
+    /// 3.0c withholds it, the consultation dispatcher refuses it) and meetings (through
+    /// `meetingAvailability`). The Supervisor is the human: never a meeting participant,
+    /// never an `ask_teammate` target, so it does not count as a partner. Until 2026-09-07
+    /// a `supervisorCanBeInvited` seat let an LLM speak AS the Supervisor in both channels
+    /// on every single-role bundled team (Coding Assistant, Coding Agent, Personal
+    /// Assistant, Startup, the Autovisor) — the seat is gone, and with it those roles'
+    /// only "partner".
+    var hasTeammatePartner: Bool { nonSupervisorRoles.count >= 2 }
+
+    /// Whether this team can hold a meeting, and if not, why. A meeting needs an initiator
+    /// AND a teammate to invite (`hasTeammatePartner`), so a single-role team holds none
+    /// whatever its switch says — until 2026-09-07 such a role still carried
+    /// `request_team_meeting` and the only reply it could ever get was "No valid
+    /// participants". The switch is reported first: it is the user's explicit choice, and
+    /// the Collaboration card shows that reason over the roster's.
+    var meetingAvailability: MeetingAvailability {
+        if !settings.meetingsEnabled { return .switchedOff }
+        return hasTeammatePartner ? .available : .noPartner
+    }
+
+    /// `meetingAvailability == .available` — the form the resolver and the badge branch on.
+    var canHoldMeetings: Bool { meetingAvailability == .available }
+
+    // MARK: - Meeting Coordinator
+
+    /// The role that coordinates this team's meetings: the stored pick when it names a
+    /// live non-Supervisor role, otherwise `TeamSettings.defaultCoordinatorID(among:)`.
+    /// Never "Auto" — a team with any non-Supervisor role always has a coordinator, and
+    /// `nil` means there is nobody to coordinate. Every reader (meeting runtime, the
+    /// picker, the tool badge, validation) resolves through here; the stored id is not
+    /// read raw anywhere else, so the runtime and the UI cannot name two different roles.
+    var meetingCoordinatorID: String? {
+        if let stored = settings.meetingCoordinatorRoleID,
+           roles.contains(where: { $0.id == stored && !$0.isSupervisor }) {
+            return stored
+        }
+        return TeamSettings.defaultCoordinatorID(among: roles)
+    }
+
+    /// `meetingCoordinatorID` resolved to its definition.
+    var meetingCoordinator: TeamRoleDefinition? {
+        meetingCoordinatorID.flatMap { id in roles.first { $0.id == id } }
+    }
+
+    /// True when the stored coordinator id is not what `meetingCoordinatorID` answers —
+    /// `nil` on a team with roles, or an id whose role is gone or is the Supervisor.
+    /// `Team.healMeetingCoordinator()` writes the resolved value back.
+    var meetingCoordinatorNeedsHealing: Bool {
+        settings.meetingCoordinatorRoleID != meetingCoordinatorID
+    }
+
     // MARK: - Tolerant Role Resolution
 
     /// Find a role by any identifier: TeamRoleDefinition.id (UUID), systemRoleID

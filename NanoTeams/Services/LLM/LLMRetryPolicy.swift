@@ -20,6 +20,15 @@ nonisolated enum LLMRetryPolicy {
     /// rate limit, 5xx, poisoned-chain 400). Non-`LLMClientError` errors
     /// (URLError, transport) default to retryable.
     static func isRetryable(_ error: Error) -> Bool {
+        // Checked before every other rule: the prompt that did not fit is resent
+        // byte-identical on every attempt — the wire is append-only and cannot shrink
+        // between them — so the answer cannot change. Ollama's MLX runner reports it as
+        // an HTTP 400 body and LM Studio as a mid-stream `providerError`, both of which
+        // the rules below would call transient; with `maxLLMRetries = 0` that was an
+        // unbounded retry loop of the one error that is honest about its cause
+        // (playbook R2.7.4; `ContextOverflowClassifier` was wired only into the
+        // work-folder-context generation until 2026-09-07).
+        if ContextOverflowClassifier.isContextOverflow(error) { return false }
         guard let clientError = error as? LLMClientError else {
             return true // network / transport / unknown → transient, retry
         }

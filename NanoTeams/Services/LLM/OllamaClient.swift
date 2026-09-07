@@ -74,6 +74,9 @@ nonisolated struct OllamaClient: LLMClient {
                     request.httpBody = bodyData
 
                     if let logger {
+                        // What this request runs on, once per (log, server, model) — the
+                        // seam every caller's wire traffic passes through.
+                        logger.noteProvenanceIfNeeded(config: config, stepID: stepID, roleName: roleName)
                         requestRecord = NetworkLogger.createRequestRecord(
                             url: url, method: "POST", body: bodyData,
                             stepID: stepID, roleName: roleName)
@@ -224,8 +227,8 @@ nonisolated struct OllamaClient: LLMClient {
         let systemMessages = messages.filter { $0.role == .system }
         var systemPrompt = systemMessages.compactMap(\.content).joined(separator: "\n\n")
         if !tools.isEmpty && !systemPrompt.contains(NativeLMStudioClient.harmonyBodyMarker) {
-            if !systemPrompt.isEmpty { systemPrompt += "\n\n" }
-            systemPrompt += NativeLMStudioClient.buildToolSchemaSection(tools: tools)
+            systemPrompt = TemplateResolver.appendingToolCallingSection(
+                NativeLMStudioClient.buildToolSchemaSection(tools: tools), to: systemPrompt)
         }
 
         var out: [ChatRequestMessage] = []

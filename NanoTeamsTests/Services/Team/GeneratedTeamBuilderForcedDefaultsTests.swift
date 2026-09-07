@@ -108,6 +108,42 @@ final class GeneratedTeamBuilderForcedDefaultsTests: XCTestCase {
         XCTAssertEqual(result.team.settings.defaultAcceptanceMode, .afterEachRole)
     }
 
+    // MARK: - Role-eligible tools
+
+    /// A generated role may hold only what a TEAM ROLE may hold. The ten Autovisor management
+    /// tools define the manager — their signals are interpreted by its step loop alone, and
+    /// `set_work_folder_context` rewrites what every role of every task reads — so a config
+    /// naming one is corrected with a warning, exactly like an unknown name. Until
+    /// 2026-09-06 the whole registry was valid here.
+    func testBuild_dropsManagerOnlyAndDelegationTools_withAWarning() {
+        let config = GeneratedTeamConfig(
+            name: "Reach Team",
+            description: "d",
+            roles: [
+                GeneratedTeamConfig.RoleConfig(
+                    name: "Engineer",
+                    prompt: "p",
+                    producesArtifacts: ["Code"],
+                    requiresArtifacts: ["Supervisor Task"],
+                    tools: [ToolNames.readFile, ToolNames.controlTask, ToolNames.setWorkFolderContext,
+                            ToolNames.delegateToTeam]
+                )
+            ],
+            artifacts: [GeneratedTeamConfig.ArtifactConfig(name: "Code", description: "x", icon: nil)],
+            supervisorRequires: ["Code"]
+        )
+        let result = GeneratedTeamBuilder.build(from: config)
+
+        let engineer = result.team.roles.first { $0.name == "Engineer" }
+        XCTAssertEqual(engineer?.toolIDs, [ToolNames.readFile])
+        let warning = result.warnings.first { $0.contains("dropped unknown tool") } ?? ""
+        for tool in [ToolNames.controlTask, ToolNames.setWorkFolderContext, ToolNames.delegateToTeam] {
+            XCTAssertTrue(warning.contains(tool), "the warning names \(tool): \(result.warnings)")
+        }
+        XCTAssertFalse(GeneratedTeamBuilder.roleEligibleToolNames.contains(ToolNames.createTeam))
+        XCTAssertTrue(GeneratedTeamBuilder.roleEligibleToolNames.contains(ToolNames.bash))
+    }
+
     // MARK: - Warnings preserved
 
     func testApplyForcedDefaults_preservesWarnings() {

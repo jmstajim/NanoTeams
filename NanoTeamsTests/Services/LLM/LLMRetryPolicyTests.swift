@@ -9,6 +9,25 @@ final class LLMRetryPolicyTests: XCTestCase {
 
     // MARK: - Non-retryable (permanent → fail the step now)
 
+    /// An overflow is permanent for THIS request: the wire is append-only, so the resend is
+    /// byte-identical and the answer cannot change. Both wire shapes — the Ollama MLX
+    /// runner's HTTP 400 body and LM Studio's mid-stream `providerError` — must short-circuit,
+    /// because the 400 and `providerError` rules below would otherwise call them transient.
+    func testContextOverflow_asProviderError_isNotRetryable() {
+        XCTAssertFalse(LLMRetryPolicy.isRetryable(LLMClientError.providerError(
+            "input length (200000 tokens) exceeds the model's maximum context length (32768 tokens)")))
+    }
+
+    func testContextOverflow_asHTTP400Body_isNotRetryable() {
+        XCTAssertFalse(LLMRetryPolicy.isRetryable(LLMClientError.badHTTPStatus(
+            400, "The number of tokens to keep from the initial prompt is greater than the context length.")))
+    }
+
+    func testHTTP400_withoutAnOverflowSignature_staysRetryable() {
+        // The poisoned-chain recovery the 400 rule exists for must survive the overflow check.
+        XCTAssertTrue(LLMRetryPolicy.isRetryable(LLMClientError.badHTTPStatus(400, "invalid request")))
+    }
+
     func testBadHTTPStatus404_modelNotFound_isNotRetryable() {
         // The reported bug: an invalid model identifier looped 26+ times.
         XCTAssertFalse(LLMRetryPolicy.isRetryable(
@@ -77,7 +96,8 @@ final class LLMRetryPolicyTests: XCTestCase {
     }
 
     func testProviderError_isRetryable() {
-        XCTAssertTrue(LLMRetryPolicy.isRetryable(LLMClientError.providerError("context length exceeded")))
+        // Not an overflow sentence: those are permanent (see the overflow cases above).
+        XCTAssertTrue(LLMRetryPolicy.isRetryable(LLMClientError.providerError("internal server error")))
     }
 
     func testURLError_networkTransport_isRetryable() {

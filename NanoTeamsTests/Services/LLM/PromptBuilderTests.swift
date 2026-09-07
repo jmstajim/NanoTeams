@@ -213,7 +213,7 @@ final class PromptBuilderTests: XCTestCase {
                                     listed: ["docs/AGENTS.md", "z/GEMINI.md"]))
 
         XCTAssertEqual(result, """
-        **MyApp**
+        ### MyApp
         
         Ctx line
         
@@ -237,7 +237,7 @@ final class PromptBuilderTests: XCTestCase {
                                     manualTexts: [("docs/style.md", "Use tabs.")]))
 
         XCTAssertEqual(result, """
-        **MyApp**
+        ### MyApp
         
         ### Agent instructions (CLAUDE.md)
         
@@ -260,7 +260,7 @@ final class PromptBuilderTests: XCTestCase {
             agentInstructions: snap(main: ("CLAUDE.md", "Main body")))
 
         XCTAssertEqual(result, """
-        **MyApp**
+        ### MyApp
         
         ### Agent instructions (CLAUDE.md)
         
@@ -274,7 +274,7 @@ final class PromptBuilderTests: XCTestCase {
             agentInstructions: snap(listed: ["CLAUDE.md"]))
 
         XCTAssertEqual(result, """
-        **MyApp**
+        ### MyApp
         
         ### Other agent instruction files
         
@@ -303,7 +303,7 @@ final class PromptBuilderTests: XCTestCase {
         let withEmpty = PromptBuilder.buildWorkFolderContextMessage(
             workFolder: wf(context: "Hello"), agentInstructions: .empty)
 
-        XCTAssertEqual(withNil, "**MyApp**\n\nHello")
+        XCTAssertEqual(withNil, "### MyApp\n\nHello")
         XCTAssertEqual(withEmpty, withNil, "empty snapshot == nil snapshot")
     }
 
@@ -323,7 +323,7 @@ final class PromptBuilderTests: XCTestCase {
             workFolder: wf(context: "Ctx"),
             agentInstructions: AgentInstructionsSnapshot(items: items))
         XCTAssertEqual(result, """
-        **MyApp**
+        ### MyApp
         
         Ctx
         
@@ -345,7 +345,7 @@ final class PromptBuilderTests: XCTestCase {
         let result = PromptBuilder.buildWorkFolderContextMessage(
             workFolder: wf(context: "Ctx"),
             agentInstructions: AgentInstructionsSnapshot(items: items))
-        XCTAssertEqual(result, "**MyApp**\n\nCtx")
+        XCTAssertEqual(result, "### MyApp\n\nCtx")
     }
 
     // MARK: - buildPipelineContext

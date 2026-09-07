@@ -93,6 +93,75 @@ final class HeadlessConfigTests: XCTestCase {
     /// `.gitignore` excludes `.nanoteams/` at every depth, so the only viable
     /// home for a committed example is `Fixtures/`. It must stay decodable —
     /// a sample that no longer parses is worse than none.
+    // MARK: - bashMode (typed, like provider) and the in-memory configuration
+
+    @MainActor func testBashMode_omitted_isNil_andTheRunnerResolvesTheFreshDefault() async throws {
+        let c = try decode(minimal)
+        XCTAssertNil(c.bashMode)
+        XCTAssertEqual(HeadlessRunner.makeConfiguration(config: c).bashMode, BashConstants.defaultMode,
+                       "absent ⇒ the fresh-install default the in-memory storage holds, never the app's setting")
+    }
+
+    /// `manual` is Semi-automatic (the legacy raw value); Manual is `alwaysConfirm`.
+    @MainActor func testBashMode_decodesByRawValue_andReachesTheConfiguration() async throws {
+        let semi = try decode("""
+        {"projectPath":"/p","taskTitle":"T","supervisorTask":"S","bashMode":"manual"}
+        """)
+        XCTAssertEqual(semi.bashMode, .semiAutomatic)
+        XCTAssertEqual(HeadlessRunner.makeConfiguration(config: semi).bashMode, .semiAutomatic)
+        let manual = try decode("""
+        {"projectPath":"/p","taskTitle":"T","supervisorTask":"S","bashMode":"alwaysConfirm"}
+        """)
+        XCTAssertEqual(manual.bashMode, .manual)
+    }
+
+    func testBashMode_unknownValue_failsLoudlyNamingTheLegalValues() {
+        XCTAssertThrowsError(try decode("""
+        {"projectPath":"/p","taskTitle":"T","supervisorTask":"S","bashMode":"semi-automatic"}
+        """)) { error in
+            let text = "\(error)"
+            XCTAssertTrue(text.contains("semi-automatic"), "must quote the offending value: \(text)")
+            for mode in BashExecutionMode.allCases {
+                XCTAssertTrue(text.contains(mode.rawValue), "must list \(mode.rawValue): \(text)")
+            }
+        }
+    }
+
+    func testBashMode_roundTripsThroughEncode() throws {
+        let c = try decode("""
+        {"projectPath":"/p","taskTitle":"T","supervisorTask":"S","bashMode":"auto"}
+        """)
+        let data = try JSONCoderFactory.makeWireEncoder().encode(c)
+        let back = try JSONCoderFactory.makeWireDecoder().decode(HeadlessConfig.self, from: data)
+        XCTAssertEqual(back.bashMode, .auto)
+        XCTAssertNil(try JSONCoderFactory.makeWireDecoder().decode(HeadlessConfig.self,
+                                                                   from: try JSONCoderFactory.makeWireEncoder().encode(try decode(minimal))).bashMode,
+                     "an absent mode is not written back as a default")
+    }
+
+    /// The whole point of the in-memory configuration: the test host is `NanoTeams.app`, so
+    /// `UserDefaults.standard` is the developer's live preferences. The runner's
+    /// configuration must neither read them nor write them. Read-only on the real domain —
+    /// the assertion is that a write to the RUNNER's configuration changes nothing there.
+    @MainActor func testMakeConfiguration_isIsolatedFromTheAppsUserDefaults_inBothDirections() async throws {
+        let key = UserDefaultsKeys.bashMode
+        let before = UserDefaults.standard.string(forKey: key)
+
+        let c = try decode(minimal)
+        let configuration = HeadlessRunner.makeConfiguration(config: c)
+        XCTAssertEqual(configuration.bashMode, BashConstants.defaultMode,
+                       "must not read the developer's setting (which may well differ)")
+        configuration.bashMode = .auto
+        XCTAssertEqual(UserDefaults.standard.string(forKey: key), before,
+                       "a write to the runner's configuration must not reach the app's preferences")
+
+        XCTAssertEqual(configuration.computerUseMode, .manual, "the fresh-install computer-use mode")
+        XCTAssertTrue(configuration.loggingEnabled, "the two per-run logs are what the audit reads")
+        XCTAssertEqual(configuration.llmProvider, c.resolvedProvider)
+        XCTAssertEqual(configuration.llmBaseURLString, c.resolvedBaseURL)
+        XCTAssertEqual(configuration.llmModelName, c.resolvedModel)
+    }
+
     func testTrackedSampleConfig_decodes() throws {
         let url = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()            // Headless/
@@ -102,6 +171,8 @@ final class HeadlessConfigTests: XCTestCase {
         let c = try JSONCoderFactory.makeWireDecoder().decode(HeadlessConfig.self, from: data)
         XCTAssertFalse(c.taskTitle.isEmpty)
         XCTAssertFalse(c.supervisorTask.isEmpty)
-        XCTAssertEqual(c.resolvedProvider, .lmStudio)
+        XCTAssertEqual(c.resolvedProvider, .ollama, "the sample names the served tuple of record: `ornith-1.5:35b` on Ollama (2026-09-07)")
+        XCTAssertEqual(c.resolvedModel, "ornith-1.5:35b")
+        XCTAssertEqual(c.bashMode, .manual, "the sample spells the Manual raw value out so a reader sees it")
     }
 }

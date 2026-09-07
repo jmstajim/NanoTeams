@@ -469,7 +469,7 @@ final class SystemTemplatesTests: XCTestCase {
             "toolList",
             "expectedArtifacts", "artifactInstructions",
             "conversationMechanics",
-            "globalContext", "roleSkills", "toolCalling",
+            "globalContext", "roleSkills", "toolCalling", "stepEnding",
         ]
         XCTAssertEqual(keys, expectedKeys)
     }

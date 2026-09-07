@@ -178,9 +178,11 @@ extension LLMExecutionService {
                 // LLM's tool-call card). Mirrors the activeDelegationChildID
                 // guard's banner at the top of the next step.
                 delegate.setLastErrorMessageForUI("Team generation for delegated task failed: \(error.localizedDescription)")
+                // The card above and the banner keep the human's text; the envelope the
+                // parent role reads is classified (R1.8.2).
                 return makeErrorEnvelope(
                     code: .commandFailed,
-                    message: "Failed to generate a delegated team: \(error.localizedDescription)"
+                    message: "Failed to generate a delegated team: \(ToolErrorHandler.classify(error).message)"
                 )
             }
         } else {
@@ -195,7 +197,7 @@ extension LLMExecutionService {
             guard let resolved = delegate.snapshot?.workFolder.team(withID: trimmedID) else {
                 return makeErrorEnvelope(
                     code: .invalidArgs,
-                    message: "Team \(trimmedID) does not exist in this project."
+                    message: "Team \(trimmedID) does not exist in this project. Choose one of the teams named in delegate_to_team's description."
                 )
             }
             targetTeam = resolved
@@ -319,7 +321,8 @@ extension LLMExecutionService {
             generationWarnings: generationWarnings,
             client: client,
             config: config,
-            delegate: delegate
+            delegate: delegate,
+            networkLogger: networkLogger
         )
     }
 
@@ -347,7 +350,8 @@ extension LLMExecutionService {
         generationWarnings: [String],
         client: any LLMClient,
         config: LLMConfig,
-        delegate: any LLMStateDelegate
+        delegate: any LLMStateDelegate,
+        networkLogger: NetworkLogger? = nil
     ) async -> String {
         let deadlineDate = Date().addingTimeInterval(delegationTimeoutSeconds)
         // Snapshot the global `lastErrorMessage` BEFORE the awaiter starts.
@@ -388,7 +392,8 @@ extension LLMExecutionService {
                     targetTeamName: targetTeam.name,
                     client: client,
                     globalConfig: config,
-                    delegate: delegate
+                    delegate: delegate,
+                    logger: networkLogger
                 )
                 if !answered {
                     // Tear the child down BEFORE dropping the marker, like both sibling

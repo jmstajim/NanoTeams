@@ -248,7 +248,7 @@ final class ProcessToolResultsTests: XCTestCase {
     /// The two assertions above are about a field; this is about the screen, and it
     /// is the one that states the defect. The reported shape was a red card reading
     /// "This command needs human approval …, but no human is available to review it.
-    /// Ask the supervisor to allow unattended command approval." with a dim
+    /// Ask the supervisor to allow unattended command approval." (the 1.9.8 text) with a dim
     /// `system: retry` row beneath it reading "Do NOT retry this command — the block
     /// is set by policy…" — the same sentence twice, for one event.
     ///
@@ -264,8 +264,9 @@ final class ProcessToolResultsTests: XCTestCase {
         let task = makeTask(toolCalls: [call])
         installTask(task)
 
-        // The reported envelope, verbatim from `+BashGate`'s no-human arm.
-        let denied = #"{"ok":false,"error":{"code":"BASH_DENIED","message":"This command needs human approval (Manual mode — every command is reviewed individually.), but no human is available to review it. Ask the supervisor to allow unattended command approval."}}"#
+        // The reported envelope, in the shape `+BashGate`'s no-human arm emits since 2026-09-07
+        // (its own code; the 1.9.8 wording is quoted in the doc comment above).
+        let denied = #"{"ok":false,"error":{"code":"APPROVAL_UNAVAILABLE","message":"This command needs human approval (Command is not pre-approved and is not read-only — requires review.), and this run has no human to give it. Read-only commands run without approval; nothing inside the run can approve the rest — take a different step."}}"#
         let result = makeResult(
             providerID: "tc_0", toolName: ToolNames.bash,
             argumentsJSON: #"{"command":"xcodebuild test"}"#, outputJSON: denied, isError: true
@@ -306,8 +307,10 @@ final class ProcessToolResultsTests: XCTestCase {
         // still be steered, or a later "the row is noise" cleanup deletes the steering
         // with it and nothing turns red.
         XCTAssertEqual(conversation.count, 2, "tool turn + direction")
-        XCTAssertTrue((conversation.last?.content ?? "").contains("Do NOT retry this command"),
+        XCTAssertTrue((conversation.last?.content ?? "").contains("Do NOT retry"),
                       "Got: \(conversation.last?.content ?? "")")
+        XCTAssertFalse((conversation.last?.content ?? "").contains("ask_supervisor"),
+                       "APPROVAL_UNAVAILABLE names no channel — the answerer cannot approve. Got: \(conversation.last?.content ?? "")")
     }
 
     /// The executor-emitted envelope shape stores the code as a TOP-LEVEL string
@@ -877,7 +880,7 @@ final class ProcessToolResultsTests: XCTestCase {
             config: LLMConfig(),
             tracker: tracker,
             memoryStore: MemoryTagStore(),
-            wireIsMidPlanning: false,
+            wireIsMidPlanning: false, allowedToolNames: [],
             conversationMessages: &conversation,
             networkLogger: nil
         )

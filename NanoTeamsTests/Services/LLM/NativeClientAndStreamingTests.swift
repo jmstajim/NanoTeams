@@ -233,6 +233,25 @@ final class NativeClientStreamChatTests: XCTestCase {
         XCTAssertNil(out.prefill)
     }
 
+    /// The splitter holds back a viable tag prefix until the next chunk decides it; when
+    /// the transport ends first and no `chat.end` frame flushes it, the client drains the
+    /// parser and the held bytes still reach the caller on the channel they were on.
+    func testStream_heldBackTagPrefixAtTransportEnd_isDrainedToTheOpenChannel() async {
+        let session = LMStudioRoutingSession()
+        session.chatPayload = """
+        event: message.delta
+        data: {"content":"<think>r"}
+        
+        event: message.delta
+        data: {"content":"</thi"}
+        """
+        let out = await drain(makeClient(session), config: makeConfig())
+        XCTAssertNil(out.error)
+        XCTAssertEqual(out.thinking, "r</thi", "the held-back prefix is surfaced verbatim, not dropped")
+        XCTAssertEqual(out.content, "")
+        XCTAssertNil(out.usage, "no chat.end frame ⇒ still no fabricated usage")
+    }
+
     func testStream_emptyBody200_finishesCleanWithNoEvents() async {
         let session = LMStudioRoutingSession()
         session.chatPayload = ""
@@ -626,7 +645,8 @@ final class NativeClientStreamChatTests: XCTestCase {
         XCTAssertNil(out.error)
 
         let records = try readLog(logURL)
-        XCTAssertEqual(records.count, 2, "one request record, one response record")
+        XCTAssertEqual(records.count, 3, "one provenance record (the client seam, 2026-09-07), one request, one response")
+        XCTAssertEqual(records.first?.direction, .provenance, "what the request ran on precedes it")
 
         let request = try XCTUnwrap(records.first { $0.direction == .request })
         XCTAssertEqual(request.httpMethod, "POST")
@@ -688,7 +708,7 @@ final class NativeClientStreamChatTests: XCTestCase {
             makeClient(session), config: makeConfig(), logger: NetworkLogger(logURL: logURL))
 
         let records = try readLog(logURL)
-        XCTAssertEqual(records.count, 2)
+        XCTAssertEqual(records.count, 3, "provenance, request, error response")
         let response = try XCTUnwrap(records.first { $0.direction == .response })
         XCTAssertEqual(response.statusCode, 0, "0 marks a record that never got an HTTP answer")
         XCTAssertNotNil(response.errorMessage)

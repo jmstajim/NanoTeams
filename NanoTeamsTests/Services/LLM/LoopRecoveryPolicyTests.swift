@@ -11,13 +11,15 @@ final class LoopRecoveryPolicyTests: XCTestCase {
         breakCount: Int,
         mode: SupervisorMode = .autonomous,
         isChatMode: Bool = true,
-        canPark: Bool = false
+        canPark: Bool = false,
+        allowedToolNames: Set<String> = []
     ) -> LoopRecoveryPolicy.Decision {
         LoopRecoveryPolicy.decide(
             signal: signal, breakCount: breakCount,
             maxRetries: LLMConstants.maxThinkingLoopBreaks,
             supervisorMode: mode, isChatMode: isChatMode,
-            canParkForSupervisor: canPark, roleName: "Autovisor")
+            canParkForSupervisor: canPark, roleName: "Autovisor",
+            allowedToolNames: allowedToolNames)
     }
 
     func testWithinBudget_retriesWithNudge() {
@@ -46,15 +48,18 @@ final class LoopRecoveryPolicyTests: XCTestCase {
     }
 
     /// The Autovisor shape: an autonomous chat role WITH a waker parks carrying the
-    /// diagnostic instead of finishing silently. A silent finish there is a false
+    /// stuck marker instead of finishing silently. A silent finish there is a false
     /// success — it ends the pass having done nothing and the schedule repeats it.
-    func testAtBudget_autonomousChat_withWaker_parksWithDiagnostic() {
+    func testAtBudget_autonomousChat_withWaker_parksWithTheStuckMarker() {
         let d = decide(breakCount: LLMConstants.maxThinkingLoopBreaks,
                        mode: .autonomous, isChatMode: true, canPark: true)
         guard case .terminal(.parkForSupervisor(let q)) = d else {
             return XCTFail("a park-capable autonomous chat role must park, got \(d)")
         }
-        XCTAssertTrue(q.contains("looped"), "the park question carries the diagnostic")
+        XCTAssertTrue(q.contains(LoopRecoveryPolicy.stuckQuestionMarker),
+                      "the park question carries the marker `+AutovisorWake` matches on: \(q)")
+        XCTAssertFalse(q.contains("looped"),
+                       "…and NOT the diagnostic, which quotes the model's own looping text: \(q)")
     }
 
     /// `canParkForSupervisor` must not leak into any other branch: a NON-chat
@@ -93,24 +98,56 @@ final class LoopRecoveryPolicyTests: XCTestCase {
         let d = LoopRecoveryPolicy.decide(
             signal: signal, breakCount: 1, maxRetries: 1,
             supervisorMode: .autonomous, isChatMode: false,
-            canParkForSupervisor: false, roleName: "R")
+            canParkForSupervisor: false, roleName: "R", allowedToolNames: [])
         guard case .terminal(.failStep) = d else {
             return XCTFail("maxRetries==1 → breakCount 1 is terminal, got \(d)")
         }
     }
 
-    /// The terminal message/question carries the signal's scope + diagnostic so the
-    /// human/role sees WHAT looped.
-    func testTerminalText_carriesSignalDiagnostic() {
+    /// The escalation question names the role and the SHAPE, and carries neither the
+    /// diagnostic nor the scope.
+    ///
+    /// Inverted 2026-09-06, and this is the second half of the 2026-08-24 fix rather than
+    /// a reversal of it. That pass moved `nudgeText` off `diagnostic` + `scope` and carved
+    /// `stuckQuestion` out as a human-audience reader. It is not one: the question is
+    /// persisted as `step.supervisorQuestion`, and `PromptBuilder` step 5 replays it into
+    /// the role's OWN next request as its own `ask_supervisor` call — so `makeDiagnostic`'s
+    /// verbatim 80-character slice of the repeated block was handed back to the looping
+    /// model, in a few-shot slot, permanently (nudges are never retired). The Autovisor
+    /// reads these too, via `stuckQuestionMarker`.
+    ///
+    /// Both facts are still pinned where the reader really is human or is a DIFFERENT
+    /// role: the `.failStep` message below, and through it `task_status`'s `last_error`,
+    /// which is how a manager learns what to put in a restart comment.
+    func testTerminalQuestion_namesShapeNotDiagnostic() {
         let s = LoopSignal.identicalToolCallSequence(diagnostic: "called read_file 3x")
         let d = LoopRecoveryPolicy.decide(
             signal: s, breakCount: 9, maxRetries: 2,
             supervisorMode: .manual, isChatMode: false,
-            canParkForSupervisor: false, roleName: "Autovisor")
+            canParkForSupervisor: false, roleName: "Autovisor", allowedToolNames: [])
         guard case .terminal(.escalateSupervisor(let q)) = d else { return XCTFail() }
         XCTAssertTrue(q.contains("Autovisor"), "question names the role")
-        XCTAssertTrue(q.contains("called read_file 3x"), "question carries the diagnostic")
-        XCTAssertTrue(q.contains(s.scope), "question carries the scope")
+        XCTAssertTrue(q.contains(LoopRecoveryPolicy.stuckQuestionMarker), "…and the marker")
+        XCTAssertTrue(q.contains("the same tool call with identical arguments"),
+                      "…and the shape, derived from the signal's CASE: \(q)")
+        XCTAssertFalse(q.contains("called read_file 3x"),
+                       "the model's own looped output must not ride back into its prompt: \(q)")
+        XCTAssertFalse(q.contains(s.scope),
+                       "`(tool-call repetition)` is an internal classification label: \(q)")
+    }
+
+    /// The one terminal arm that still carries both, because its readers are a human and
+    /// the MANAGER (via `AutovisorStatus.lastError` → `task_status.last_error`) — never the
+    /// looping role itself.
+    func testTerminalFailStep_stillCarriesScopeAndDiagnostic() {
+        let s = LoopSignal.identicalToolCallSequence(diagnostic: "called read_file 3x")
+        let d = LoopRecoveryPolicy.decide(
+            signal: s, breakCount: 9, maxRetries: 2,
+            supervisorMode: .autonomous, isChatMode: false,
+            canParkForSupervisor: false, roleName: "Autovisor", allowedToolNames: [])
+        guard case .terminal(.failStep(let m)) = d else { return XCTFail("got \(d)") }
+        XCTAssertTrue(m.contains("called read_file 3x"))
+        XCTAssertTrue(m.contains(s.scope))
     }
 
     // MARK: - Nudge content
@@ -130,7 +167,7 @@ final class LoopRecoveryPolicyTests: XCTestCase {
         guard case .retryWithNudge(let nudge) = LoopRecoveryPolicy.decide(
             signal: s, breakCount: 1, maxRetries: 2,
             supervisorMode: .autonomous, isChatMode: true,
-            canParkForSupervisor: false, roleName: "Autovisor")
+            canParkForSupervisor: false, roleName: "Autovisor", allowedToolNames: [])
         else { return XCTFail("expected a nudge") }
         // `contains`, not `hasPrefix`: the marker sits INSIDE a delimited block so
         // it survives the providers' merge of consecutive user turns.
@@ -155,7 +192,7 @@ final class LoopRecoveryPolicyTests: XCTestCase {
         guard case .retryWithNudge(let nudge) = LoopRecoveryPolicy.decide(
             signal: s, breakCount: 1, maxRetries: 2,
             supervisorMode: .autonomous, isChatMode: true,
-            canParkForSupervisor: false, roleName: "R")
+            canParkForSupervisor: false, roleName: "R", allowedToolNames: [])
         else { return XCTFail("expected a nudge") }
         XCTAssertFalse(nudge.contains(looped),
                        "the model's own looping text must not return to its prompt")
@@ -176,7 +213,7 @@ final class LoopRecoveryPolicyTests: XCTestCase {
             guard case .retryWithNudge(let n) = LoopRecoveryPolicy.decide(
                 signal: s, breakCount: 1, maxRetries: 2,
                 supervisorMode: .autonomous, isChatMode: true,
-                canParkForSupervisor: false, roleName: "R")
+                canParkForSupervisor: false, roleName: "R", allowedToolNames: [])
             else { return XCTFail("expected a nudge for \(s)") }
             XCTAssertTrue(n.contains(LoopRecoveryPolicy.nudgePrefix), "\(s) lost the marker")
             texts.insert(n)
@@ -192,7 +229,7 @@ final class LoopRecoveryPolicyTests: XCTestCase {
         guard case .retryWithNudge(let nudge) = LoopRecoveryPolicy.decide(
             signal: .withinMessage(diagnostic: "d"), breakCount: 1, maxRetries: 3,
             supervisorMode: .autonomous, isChatMode: true,
-            canParkForSupervisor: false, roleName: "R")
+            canParkForSupervisor: false, roleName: "R", allowedToolNames: [])
         else { return XCTFail("expected a nudge") }
 
         XCTAssertTrue(nudge.hasPrefix(MessageSourceContext.loopCorrectionBlockOpen + "\n"),
@@ -209,7 +246,7 @@ final class LoopRecoveryPolicyTests: XCTestCase {
             guard case .retryWithNudge(let n) = LoopRecoveryPolicy.decide(
                 signal: .withinMessage(diagnostic: "d"), breakCount: attempt, maxRetries: 3,
                 supervisorMode: .autonomous, isChatMode: true,
-                canParkForSupervisor: false, roleName: "R")
+                canParkForSupervisor: false, roleName: "R", allowedToolNames: [])
             else { XCTFail("expected a nudge"); return "" }
             return n
         }
@@ -258,7 +295,7 @@ final class LoopRecoveryPolicyTests: XCTestCase {
         guard case .retryWithNudge(let nudge) = LoopRecoveryPolicy.decide(
             signal: s, breakCount: 1, maxRetries: 2,
             supervisorMode: .autonomous, isChatMode: true,
-            canParkForSupervisor: false, roleName: "R")
+            canParkForSupervisor: false, roleName: "R", allowedToolNames: [])
         else { return XCTFail("expected a nudge") }
         for tool in ToolNames.allNames {
             XCTAssertFalse(nudge.contains(tool), "nudge must not name the tool '\(tool)'")
@@ -279,11 +316,70 @@ final class LoopRecoveryPolicyTests: XCTestCase {
             guard case .retryWithNudge(let nudge) = LoopRecoveryPolicy.decide(
                 signal: s, breakCount: 1, maxRetries: 2,
                 supervisorMode: .autonomous, isChatMode: true,
-                canParkForSupervisor: false, roleName: "R")
+                canParkForSupervisor: false, roleName: "R", allowedToolNames: [])
             else { return XCTFail("expected a nudge for \(s)") }
             for tool in ToolNames.allNames {
                 XCTAssertFalse(nudge.contains(tool), "\(s.scope): nudge names the tool '\(tool)'")
             }
+        }
+    }
+
+    // MARK: - The blocked clause names a channel the runtime detects (playbook §3.8)
+
+    /// The nudge for a given attempt and schema. `maxRetries: 3` so attempt 2 is still a retry.
+    private func nudge(attempt: Int, allowedToolNames: Set<String>) -> String {
+        guard case .retryWithNudge(let n) = LoopRecoveryPolicy.decide(
+            signal: .withinMessage(diagnostic: "d"), breakCount: attempt, maxRetries: 3,
+            supervisorMode: .autonomous, isChatMode: true,
+            canParkForSupervisor: false, roleName: "R", allowedToolNames: allowedToolNames)
+        else { XCTFail("expected a nudge for attempt \(attempt)"); return "" }
+        return n
+    }
+
+    /// Until 2026-09-06 both attempts ended with "say in one sentence what is blocking you".
+    /// Nothing reads that sentence: a prose reply lands in `handleNoToolCalls`, is counted as a
+    /// non-productive turn and answered with the generic no-tool nudge — the model that obeyed
+    /// was penalised for obeying. The only escalation the runtime DETECTS is an `ask_supervisor`
+    /// call, so a role that holds the tool is told to make it.
+    func testNudge_namesAskSupervisorWhenTheRoleHoldsIt() {
+        for attempt in [1, 2] {
+            let n = nudge(attempt: attempt,
+                          allowedToolNames: [ToolNames.askSupervisor, ToolNames.readFile])
+            XCTAssertTrue(n.contains("call ask_supervisor with one sentence"),
+                          "attempt \(attempt): the blocked clause must name the detectable channel. Got:\n\(n)")
+            XCTAssertFalse(n.contains(ToolNames.waitForEvents),
+                           "attempt \(attempt): `wait_for_events` is the manager's channel, not this role's")
+            XCTAssertFalse(n.contains("say in one sentence"),
+                           "attempt \(attempt): an instruction to write prose is an instruction to make a non-productive turn")
+        }
+    }
+
+    /// The Autovisor manager holds BOTH tools, and for it `ask_supervisor` is the wrong channel:
+    /// its Supervisor reads the chat, and a pass that cannot move ends with `wait_for_events`.
+    /// Same discrimination as `noToolCallNudge` — `wait_for_events` identifies the manager.
+    func testNudge_namesWaitForEventsForTheManager() {
+        for attempt in [1, 2] {
+            let n = nudge(attempt: attempt,
+                          allowedToolNames: [ToolNames.waitForEvents, ToolNames.askSupervisor])
+            XCTAssertTrue(n.contains("call wait_for_events"), "attempt \(attempt). Got:\n\(n)")
+            XCTAssertFalse(n.contains(ToolNames.askSupervisor),
+                           "attempt \(attempt): the manager must not be steered at ask_supervisor")
+        }
+    }
+
+    /// A role holding neither channel gets no clause at all — not a prose fallback. The nudge
+    /// then names no tool, which `testNudge_namesNoSiblingTool` pins for the empty set.
+    func testNudge_dropsTheBlockedClauseWhenNeitherChannelIsHeld() {
+        for attempt in [1, 2] {
+            let n = nudge(attempt: attempt,
+                          allowedToolNames: [ToolNames.readFile, ToolNames.writeFile])
+            XCTAssertFalse(n.contains("blocking you"),
+                           "attempt \(attempt): no channel, no clause. Got:\n\(n)")
+            XCTAssertFalse(n.contains("say in one sentence"), "attempt \(attempt)")
+            for tool in ToolNames.allNames {
+                XCTAssertFalse(n.contains(tool), "attempt \(attempt): nudge names '\(tool)' the role may not hold")
+            }
+            XCTAssertTrue(n.contains(LoopRecoveryPolicy.nudgePrefix), "attempt \(attempt): marker lost")
         }
     }
 }

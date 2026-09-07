@@ -239,22 +239,52 @@ final class BashGateTests: XCTestCase {
         _ = await task.value
     }
 
+    /// Ask Supervisor mode Off removes `ask_supervisor` from the ROLES, not the approval
+    /// card from the human: a manual-bash command is HELD for the human exactly as under
+    /// `.manual`, never denied as "no human" the way `.autonomous` is.
+    func testOffTeam_isHeldForTheHuman_likeManual() async {
+        let (task, key) = await gateHolding(
+            [bashCall("make install")], policy: BashPolicy(mode: .manual), supervisorMode: .off)
+        XCTAssertEqual(delegate.bashApprovalBeganRequests.first?.command, "make install",
+                       "Off must hold the command for the human, not deny it unattended")
+        service.resolveBashApproval(taskID: 1, stepID: "step1", commandKey: key, decision: .allow)
+        let results = await task.value
+        XCTAssertTrue(results.isEmpty, "allow → the call passes through and runs for real")
+    }
+
     // MARK: - No-human reconciliation (R4-A)
 
-    func testManual_noHuman_denies() async {
-        // Manual bash mode but autonomous team (no human) → deny, and crucially NO
-        // supervisorQuestion (so the autonomous auto-answer can't hijack). To run a
-        // command unattended the user must set the bash mode to Auto.
+    func testManual_noHuman_isApprovalUnavailable() async {
+        // Manual bash mode but autonomous team (no human) → refused with ITS OWN code — nobody
+        // decided, so not `BASH_DENIED` — and crucially NO supervisorQuestion (so the
+        // autonomous auto-answer can't hijack). In production the resolver has already
+        // withheld `bash` for this cell (`ApprovalGatedAvailability`); the gate is reached
+        // here directly, and under `.semiAutomatic` for real.
         let results = await gate(
             [bashCall("make install")],
             policy: BashPolicy(mode: .manual),
             supervisorMode: .autonomous)
         XCTAssertEqual(results[0]?.isError, true)
-        XCTAssertEqual(errorCode(results[0]?.outputJSON ?? ""), ToolErrorCode.bashDenied.rawValue)
+        XCTAssertEqual(errorCode(results[0]?.outputJSON ?? ""), ToolErrorCode.approvalUnavailable.rawValue)
         if case .supervisorQuestion = results[0]?.signal {
             XCTFail("must NOT emit a supervisorQuestion in an autonomous (no-human) context")
         }
         XCTAssertNil(service.pendingBashApproval(stepID: "step1", taskID: 1))
+    }
+
+    /// The production cell: Semi-automatic keeps `bash` in the schema with no human, its
+    /// read-only commands run, and a command the bypass did not admit is refused as
+    /// approval-unavailable — never as a decision, never with a channel to ask.
+    func testSemiAutomatic_noHuman_readOnlyRuns_andTheRestIsApprovalUnavailable() async {
+        let results = await gate(
+            [bashCall("ls -la"), bashCall("make install")],
+            policy: BashPolicy(mode: .semiAutomatic),
+            supervisorMode: .autonomous)
+        XCTAssertNil(results[0], "a read-only command passes through to execution unattended")
+        XCTAssertEqual(errorCode(results[1]?.outputJSON ?? ""), ToolErrorCode.approvalUnavailable.rawValue)
+        let message = errorMessage(results[1]?.outputJSON ?? "")
+        XCTAssertFalse(message.lowercased().contains("supervisor"), "no recourse that cannot help: \(message)")
+        XCTAssertFalse(message.contains("unattended command approval"), "that setting never existed: \(message)")
     }
 
     /// The no-human arm INTERPOLATES `BashPermissionDecision.ask(reason:)` into a sentence the
@@ -273,8 +303,8 @@ final class BashGateTests: XCTestCase {
         XCTAssertEqual(
             message,
             "This command needs human approval (Manual mode — every command is reviewed "
-                + "individually.), but no human is available to review it. "
-                + "Ask the supervisor to allow unattended command approval.")
+                + "individually.), and this run has no human to give it. Read-only commands run "
+                + "without approval; nothing inside the run can approve the rest — take a different step.")
         XCTAssertFalse(
             message.lowercased().contains("your"),
             "the reason is model-read; second person addresses the wrong party, got: \(message)")
@@ -328,7 +358,7 @@ final class BashGateTests: XCTestCase {
         // so restating it there bought nothing (`ToolErrorNotePolicy`).
         XCTAssertTrue(result.outputJSON.contains("Blocked by deny rule"), result.outputJSON)
 
-        let guidance = try XCTUnwrap(ToolErrorNotePolicy.direction(for: result))
+        let guidance = try XCTUnwrap(ToolErrorNotePolicy.direction(for: result, allowedToolNames: []))
         XCTAssertFalse(
             guidance.lowercased().contains("retry the tool call with the correct arguments"),
             "bash_denied must NOT get the default retry guidance")

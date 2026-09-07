@@ -112,8 +112,7 @@ nonisolated enum TeamTemplateFactory {
             roleIDs: ["softwareEngineer"],
             artifactNames: [SystemTemplates.supervisorTaskArtifactName, "Engineering Notes"],
             coordinatorIndex: 1,
-            supervisorRequires: ["Engineering Notes"],
-            supervisorCanBeInvited: true
+            supervisorRequires: ["Engineering Notes"]
         ) { roles in
             typealias TN = ToolNames
             // SWE depends on Supervisor Task directly and has no teammate tools
@@ -138,8 +137,7 @@ nonisolated enum TeamTemplateFactory {
             artifactNames: [SystemTemplates.supervisorTaskArtifactName, "World Compendium", "NPC Compendium",
                             "Encounter Guide", "Balance Review"],
             coordinatorIndex: 5,
-            supervisorRequires: [],
-            supervisorCanBeInvited: true
+            supervisorRequires: []
         )
     }
 
@@ -152,7 +150,6 @@ nonisolated enum TeamTemplateFactory {
             artifactNames: [SystemTemplates.supervisorTaskArtifactName, "Discussion Summary"],
             coordinatorIndex: 1,
             supervisorRequires: ["Discussion Summary"],
-            supervisorCanBeInvited: true,
             limits: .discussionClub,
             supervisorMode: .autonomous
         )
@@ -166,8 +163,7 @@ nonisolated enum TeamTemplateFactory {
             roleIDs: ["assistant"],
             artifactNames: [SystemTemplates.supervisorTaskArtifactName],
             coordinatorIndex: 1,
-            supervisorRequires: [],
-            supervisorCanBeInvited: true
+            supervisorRequires: []
         ) { roles in
             typealias TN = ToolNames
             // Document-focused: files (read + write) + scratchpad + supervisor + vision
@@ -203,7 +199,6 @@ nonisolated enum TeamTemplateFactory {
             artifactNames: [SystemTemplates.supervisorTaskArtifactName],
             coordinatorIndex: 1,
             supervisorRequires: [],
-            supervisorCanBeInvited: true,
             supervisorMode: .manual
         ) { roles in
             roles[1].dependencies.requiredArtifacts = [SystemTemplates.supervisorTaskArtifactName]
@@ -229,7 +224,6 @@ nonisolated enum TeamTemplateFactory {
             artifactNames: [SystemTemplates.supervisorTaskArtifactName],
             coordinatorIndex: 1,
             supervisorRequires: [],
-            supervisorCanBeInvited: true,
             supervisorMode: .manual
         ) { roles in
             typealias TN = ToolNames
@@ -311,11 +305,9 @@ nonisolated enum TeamTemplateFactory {
             templateID: AutovisorConstants.teamTemplateID,
             roleIDs: ["autovisor"],
             artifactNames: [SystemTemplates.supervisorTaskArtifactName],
-            // Auto coordinator (nil): the lone Manager role would be the only
-            // possible coordinator anyway, and Auto reads correctly in the UI.
-            coordinatorIndex: nil,
+            // The lone Manager role is the only possible coordinator.
+            coordinatorIndex: 1,
             supervisorRequires: [],
-            supervisorCanBeInvited: true,
             supervisorMode: .autonomous
         ) { roles in
             // Advisory (not observer) so the engine executes the step; this is the
@@ -433,6 +425,7 @@ nonisolated enum TeamTemplateFactory {
             name: teammateRoleName,
             icon: "person.fill",
             prompt: SystemTemplates.rolePrompts[teammateRolePromptID] ?? "",
+            meetingGuidance: SystemTemplates.roleMeetingGuidance[teammateRolePromptID],
             // Ordered literal, never a `Set` union: tool order feeds `{toolList}` and the
             // tool-schema section, i.e. segment-0 prompt bytes, and Swift reshuffles a
             // `Set` per process launch — which would re-prefill the prompt cache on every
@@ -465,8 +458,8 @@ nonisolated enum TeamTemplateFactory {
             artifacts: [supervisorTask, result],
             // Reuse the shared builder rather than `TeamSettings.default` so settings stay
             // DERIVED from the roster: the Teammate reports to the Supervisor, is invitable
-            // to meetings, and the coordinator stays Auto (the meeting initiator).
-            settings: buildSettings(roles: roles, coordinatorIndex: nil),
+            // to meetings, and coordinates them (the only role that could).
+            settings: buildSettings(roles: roles, coordinatorIndex: 1),
             graphLayout: TeamGraphLayout.autoLayout(for: roles)
         )
     }
@@ -490,9 +483,8 @@ nonisolated enum TeamTemplateFactory {
         templateID: String,
         roleIDs: [String],
         artifactNames: [String],
-        coordinatorIndex: Int?,
+        coordinatorIndex: Int,
         supervisorRequires: [String],
-        supervisorCanBeInvited: Bool = false,
         limits: TeamLimits = .default,
         acceptanceMode: AcceptanceMode = .finalOnly,
         supervisorMode: SupervisorMode = .manual,
@@ -526,7 +518,6 @@ nonisolated enum TeamTemplateFactory {
             settings: buildSettings(
                 roles: roles,
                 coordinatorIndex: coordinatorIndex,
-                supervisorCanBeInvited: supervisorCanBeInvited,
                 limits: limits,
                 acceptanceMode: acceptanceMode,
                 supervisorMode: supervisorMode
@@ -535,11 +526,12 @@ nonisolated enum TeamTemplateFactory {
         )
     }
 
-    /// Builds TeamSettings from a role array, wiring up hierarchy and invitable roles.
+    /// Builds TeamSettings from a role array, wiring up hierarchy, invitable roles and the
+    /// meeting coordinator. `coordinatorIndex` indexes `roles` and is never the Supervisor
+    /// (index 0): every bundled team names a coordinator — there is no "Auto".
     private static func buildSettings(
         roles: [TeamRoleDefinition],
-        coordinatorIndex: Int?,
-        supervisorCanBeInvited: Bool = false,
+        coordinatorIndex: Int,
         limits: TeamLimits = .default,
         acceptanceMode: AcceptanceMode = .finalOnly,
         supervisorMode: SupervisorMode = .manual
@@ -562,10 +554,8 @@ nonisolated enum TeamTemplateFactory {
 
         return TeamSettings(
             hierarchy: TeamHierarchy(reportsTo: reportsTo),
-            // nil coordinatorIndex → Auto mode (the meeting initiator coordinates).
-            meetingCoordinatorRoleID: coordinatorIndex.map { roles[$0].id },
+            meetingCoordinatorRoleID: roles[coordinatorIndex].id,
             invitableRoles: invitableRoles,
-            supervisorCanBeInvited: supervisorCanBeInvited,
             limits: limits,
             defaultAcceptanceMode: acceptanceMode,
             supervisorMode: supervisorMode

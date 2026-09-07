@@ -45,7 +45,7 @@ final class WirePreviewFallbackCoverageTests: XCTestCase {
             workFolderState: .defaultStorage,
             selectedScheme: nil,
             isVisionConfigured: false,
-            isComputerUseEnabled: false,
+            approval: ToolApprovalAvailability(bash: .available, computerUse: .withheld(.switchedOff)),
             globalContext: "",
             isCoordinator: false,
             agentInstructions: nil

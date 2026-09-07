@@ -225,7 +225,7 @@ final class AutovisorLoopParkRedeliveryTests: NTMSOrchestratorTestBase, @uncheck
             signal: .withinMessage(diagnostic: "substring \"x\" repeated 4 times consecutively"),
             breakCount: 99, maxRetries: 2,
             supervisorMode: .autonomous, isChatMode: true,
-            canParkForSupervisor: true, roleName: "Autovisor")
+            canParkForSupervisor: true, roleName: "Autovisor", allowedToolNames: [])
 
         guard case .terminal(.parkForSupervisor(let question)) = decision else {
             return XCTFail("an exhausted autonomous chat manager must park, got \(decision)")

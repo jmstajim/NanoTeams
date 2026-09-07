@@ -33,6 +33,10 @@ nonisolated enum ToolSignal: Hashable {
     case teammateConsultation(id: String, question: String, context: String?)
     case teamMeeting(topic: String, participants: [String], context: String?)
     case changeRequest(targetRole: String, changes: String, reasoning: String)
+    /// `conclude_meeting` — the coordinator's own end of a meeting. Raised only inside a
+    /// meeting tool loop (`MeetingToolExecutor`), where it stops the turn and the meeting;
+    /// the tool is `availableToRoles == false`, so a step loop never sees it.
+    case concludeMeeting(decision: String, rationale: String?, nextSteps: String?)
     case artifact(name: String, content: String, format: String?)
     case visionAnalysis(imagePath: String, prompt: String)
     case teamCreation(config: GeneratedTeamConfig)
@@ -224,7 +228,22 @@ nonisolated final class ToolRegistry: @unchecked Sendable {
             "touch": TN.writeFile,
             "rm": TN.deleteFile,
             "remove": TN.deleteFile,
-            "exec": TN.runXcodebuild,
+            // `exec` and its shell-flavoured cousins land on `bash`, the tool that runs a
+            // command. Until 2026-09-06 `exec` mapped to `run_xcodebuild` (from before `bash`
+            // existed): a role holding both got a full Xcode build under a success envelope,
+            // its `command` argument silently discarded (`run_xcodebuild` takes none).
+            "exec": TN.bash,
+            "shell": TN.bash,
+            "run_command": TN.bash,
+            "execute_command": TN.bash,
+            "terminal": TN.bash,
+            // Seen live 2026-09-07 (qwen3.8, Engineering under Manual bash with no human):
+            // a schema without a shell made the model invent one. As non-aliases these got a
+            // bare `tool_not_authorized`; as `bash` the withheld reason says nobody can approve.
+            "run_shell": TN.bash,
+            "run_shell_command": TN.bash,
+            "shell_command": TN.bash,
+            "run_bash": TN.bash,
             "build": TN.runXcodebuild,
             "test": TN.runXcodetests,
             "submit_artifact": TN.createArtifact,

@@ -7,7 +7,7 @@ import XCTest
 ///
 /// A reasoning model routes its entire reply through `reasoning_content` and leaves
 /// `content` empty, and nothing merges the two on the way in — `SSEEventParser` maps
-/// `reasoning.delta` to `.thinkingDelta`, and Ollama's `ThinkTagSplitter` actively pulls
+/// `reasoning.delta` to `.thinkingDelta`, and both parsers' `ThinkTagSplitter` actively pull
 /// inline `<think>` OUT of content. So each of these services did not see a degraded
 /// answer; it saw no answer, and reported that as the model's fault:
 ///
@@ -26,12 +26,19 @@ final class OneShotReasoningChannelCoverageTests: XCTestCase {
     private final class ScriptedClient: LLMClient, @unchecked Sendable {
         var content = ""
         var thinking = ""
+        /// What the SECOND call answers on the content channel — the judges' retry turn.
+        var contentOnSecondCall: String?
+        private(set) var calls = 0
+        private(set) var lastMessages: [ChatMessage] = []
 
         func streamChat(
             config: LLMConfig, messages: [ChatMessage], tools: [ToolSchema],
             logger: NetworkLogger?, stepID: String?, roleName: String?
         ) -> AsyncThrowingStream<StreamEvent, Error> {
-            let (content, thinking) = (self.content, self.thinking)
+            calls += 1
+            lastMessages = messages
+            let content = calls >= 2 ? (contentOnSecondCall ?? self.content) : self.content
+            let thinking = self.thinking
             return AsyncThrowingStream { continuation in
                 if !thinking.isEmpty { continuation.yield(StreamEvent(thinkingDelta: thinking)) }
                 if !content.isEmpty { continuation.yield(StreamEvent(contentDelta: content)) }
@@ -229,18 +236,47 @@ final class OneShotReasoningChannelCoverageTests: XCTestCase {
         XCTAssertEqual(build.team.name, "RIGHT")
     }
 
+    // MARK: - Prompt improvement and the bash advisory
+
+    /// The tenth consumer of the shape: `improve` accumulated `contentDelta` alone and
+    /// returned `""` for a reasoning model's whole rewrite (2026-09-07).
+    func testPromptImprovement_rewriteOnlyInTheReasoningChannel_isHonoured() async throws {
+        client.thinking = "Rewrite: build a calculator with a history view."
+
+        let improved = try await PromptImprovementService.improve(
+            prompt: "calc app", config: config, client: client)
+
+        XCTAssertEqual(improved, "Rewrite: build a calculator with a history view.")
+    }
+
+    func testPromptImprovement_contentWins_overTheReasoningChannel() async throws {
+        client.content = "Visible rewrite."
+        client.thinking = "Discarded deliberation."
+
+        let improved = try await PromptImprovementService.improve(
+            prompt: "calc app", config: config, client: client)
+
+        XCTAssertEqual(improved, "Visible rewrite.")
+    }
+
+    func testBashExplain_descriptionOnlyInTheReasoningChannel_isHonoured() async {
+        client.thinking = "Lists the files. It looks safe."
+
+        let text = await BashExplainService.explain(
+            command: "ls", workingDirectory: nil, policy: BashPolicy(), config: config, client: client)
+
+        XCTAssertEqual(text, "Lists the files. It looks safe.")
+    }
+
     // MARK: - The two judges
 
-    /// Both judges already recovered the reasoning channel before this wave, and neither
-    /// had a test for it: routing them through `ModelReplyChannels` made that visible,
-    /// because dropping the seam's fallback reddened five suites and left the judges green.
-    ///
-    /// It matters here more than anywhere else. `parse("")` denies, and the judge is
-    /// fail-closed by design — so losing the fallback does not open a hole, it silently
-    /// denies EVERY command for anyone running a reasoning model as their judge.
-    ///
-    /// RED: drop the fallback in `ModelReplyChannels.answer` → `parse("")` → denied.
-    func testBashJudge_verdictOnlyInTheReasoningChannel_isHonoured() async {
+    /// The reasoning channel is asymmetric for a GATE (playbook R2.3.6, decided 2026-09-07):
+    /// a `DENY` found only there is honoured, an `OK` found only there is not a verdict —
+    /// the judge asks once more for the object in its visible reply and denies when that
+    /// reply is empty again. Until then both judges promoted the channel symmetrically, and
+    /// a reasoning model could mint an allow from the channel the prompt tells it to keep
+    /// private.
+    func testBashJudge_allowOnlyInTheReasoningChannel_isNotAVerdict_andIsDeniedAfterOneRetry() async {
         client.thinking = #"{"decision":"OK","reason":"read only"}"#
 
         let decision = await BashJudgeService.judge(
@@ -248,7 +284,37 @@ final class OneShotReasoningChannelCoverageTests: XCTestCase {
             policy: BashPolicy(mode: .auto, restrictionLevel: .standard),
             config: config, client: client)
 
+        XCTAssertFalse(decision.allowed, "got: \(decision.reason)")
+        XCTAssertEqual(decision.reason, JudgeReplyChannelPolicy.reasoningOnlyAllowReason)
+        XCTAssertEqual(client.calls, 2, "one retry asking for the visible object, then deny")
+    }
+
+    func testBashJudge_denyOnlyInTheReasoningChannel_isHonoured_withoutARetry() async {
+        client.thinking = #"{"decision":"DENY","reason":"deletes files"}"#
+
+        let decision = await BashJudgeService.judge(
+            command: "rm -rf x", workingDirectory: nil,
+            policy: BashPolicy(mode: .auto, restrictionLevel: .standard),
+            config: config, client: client)
+
+        XCTAssertFalse(decision.allowed)
+        XCTAssertEqual(decision.reason, "deletes files")
+        XCTAssertEqual(client.calls, 1, "a fail-closed answer needs no second attempt")
+    }
+
+    func testBashJudge_retryThatMovesTheAllowIntoContent_isHonoured() async {
+        client.thinking = #"{"decision":"OK","reason":"read only"}"#
+        client.contentOnSecondCall = #"{"decision":"OK","reason":"read only"}"#
+
+        let decision = await BashJudgeService.judge(
+            command: "ls", workingDirectory: nil,
+            policy: BashPolicy(mode: .auto, restrictionLevel: .standard),
+            config: config, client: client)
+
         XCTAssertTrue(decision.allowed, "got: \(decision.reason)")
+        XCTAssertEqual(client.calls, 2)
+        XCTAssertEqual(client.lastMessages.last?.content, JudgeReplyChannelPolicy.retryInstruction,
+                       "the retry turn carries exactly the one instruction")
     }
 
     /// RED: swap `content:` and `reasoning:` at the `BashJudgeService` call site → the
@@ -269,8 +335,7 @@ final class OneShotReasoningChannelCoverageTests: XCTestCase {
         XCTAssertFalse(decision.allowed, "the visible verdict is the verdict")
     }
 
-    /// RED: drop the fallback in `ModelReplyChannels.answer` → denied.
-    func testComputerUseJudge_verdictOnlyInTheReasoningChannel_isHonoured() async {
+    func testComputerUseJudge_allowOnlyInTheReasoningChannel_isNotAVerdict() async {
         client.thinking = #"{"decision":"OK","reason":"harmless scroll"}"#
 
         let decision = await ComputerUseJudgeService.judge(
@@ -278,7 +343,21 @@ final class OneShotReasoningChannelCoverageTests: XCTestCase {
             policy: ComputerUsePolicy(mode: .auto, restrictionLevel: .standard),
             config: config, client: client)
 
-        XCTAssertTrue(decision.allowed, "got: \(decision.reason)")
+        XCTAssertFalse(decision.allowed, "got: \(decision.reason)")
+        XCTAssertEqual(decision.reason, JudgeReplyChannelPolicy.reasoningOnlyAllowReason)
+        XCTAssertEqual(client.calls, 2)
+    }
+
+    func testComputerUseJudge_denyOnlyInTheReasoningChannel_isHonoured() async {
+        client.thinking = #"{"decision":"DENY","reason":"types into a password field"}"#
+
+        let decision = await ComputerUseJudgeService.judge(
+            action: .click(x: 10, y: 20, button: "left", double: false, target: "Safari"),
+            policy: ComputerUsePolicy(mode: .auto, restrictionLevel: .standard),
+            config: config, client: client)
+
+        XCTAssertFalse(decision.allowed)
+        XCTAssertEqual(client.calls, 1)
     }
 
     /// RED: swap `content:` and `reasoning:` at the `ComputerUseJudgeService` call site →

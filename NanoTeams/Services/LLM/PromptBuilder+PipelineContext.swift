@@ -30,8 +30,15 @@ nonisolated extension PromptBuilder {
         // `##`/`###` markdown headers — the same sectioning system every sibling
         // user message uses (`## Supervisor Task`, `## Required Artifacts`).
         // This block was the one flat-colon-label holdout [Sclar2024].
+        //
+        // The header is PREPENDED at the end, never seeded here: the loop below can
+        // filter every step out (the Run 14 in-flight filter, reachable exactly when the
+        // engine runs ready roles in parallel — CLAUDE.md #45), and a seeded header then
+        // survived `trimmingCharacters` as the literal string "## Prior Steps". The
+        // caller's `!isEmpty` gate let that through as a user turn consisting of one
+        // header and nothing else. `stripOrphanHeaders` cannot help — it only ever runs
+        // over the SYSTEM prompt.
         var lines: [String] = []
-        lines.append("## Prior Steps")
 
         // Statuses that mean "still in flight" — only these are noise candidates when
         // the step isn't a dependency. Failure / blocked states (`.failed`,
@@ -117,7 +124,10 @@ nonisolated extension PromptBuilder {
             }
         }
 
-        return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        // Every step filtered out ⇒ no section at all, not an empty one.
+        let body = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !body.isEmpty else { return "" }
+        return "## Prior Steps\n\n" + body
     }
 
     /// Plain-words status for the model — `step.status.rawValue` leaked internal
@@ -154,6 +164,12 @@ nonisolated extension PromptBuilder {
     /// exist (`agentInstructions == nil`/`.empty`), the output is byte-identical
     /// to the legacy `**{name}**\n\n{context}` form so existing folders see zero
     /// prompt diff.
+    /// Heading level of the `## Work folder` section this message fills — every
+    /// template that carries `{workFolderContext}` puts it at h2. Injected bodies nest
+    /// below it, which is what keeps a `##` inside third-party text from reading as a
+    /// section of the prompt itself.
+    static let workFolderHeadingLevel = 2
+
     static func buildWorkFolderContextMessage(
         workFolder: WorkFolderProjection?,
         agentInstructions: AgentInstructionsSnapshot? = nil
@@ -167,7 +183,21 @@ nonisolated extension PromptBuilder {
             context =
                 String(context.prefix(ArtifactConstants.maxDescriptionChars)) + "..."
         }
-        if !context.isEmpty { sections.append(context) }
+        // Re-levelled AFTER the cap, never before: the cap cuts by character, so a body
+        // truncated mid-`##` would otherwise keep an un-demoted fragment.
+        //
+        // This value is written by a HUMAN in Settings and by a MODEL through
+        // `set_work_folder_context` (Autovisor), it persists for the folder, and it lands
+        // in `## Work folder` — the section immediately before `## Guidance`, which for the
+        // default Coding Assistant team carries "A `## Attached Files` section lists paths.
+        // Open each before doing anything else … do NOT skip one as unrelated". An
+        // unre-levelled `## Attached Files` here therefore FABRICATED a section that the
+        // next section instructs the role to obey. Same class as the agent-instructions
+        // hole recorded in the playbook's CAV.6.2, with the difference that a tool call
+        // can write this one.
+        if !context.isEmpty {
+            sections.append(SkillConstants.nestedBody(context, under: workFolderHeadingLevel))
+        }
 
         if let snapshot = agentInstructions {
             for file in snapshot.injectedFiles {
@@ -176,7 +206,11 @@ nonisolated extension PromptBuilder {
                 // no re-trim of a possibly-100KB string per render.
                 guard let content = file.injectedContent,
                       content.contains(where: { !$0.isWhitespace }) else { continue }
-                sections.append("### Agent instructions (\(file.relativePath))\n\n\(content)")
+                // The CAV.6.2 hole itself: a `CLAUDE.md` in the work folder is
+                // third-party prose that rides every role's system prompt.
+                sections.append(
+                    "### Agent instructions (\(file.relativePath))\n\n"
+                        + SkillConstants.nestedBody(content, under: workFolderHeadingLevel + 1))
             }
             let listed = snapshot.listedPaths
             if !listed.isEmpty {
@@ -189,8 +223,10 @@ nonisolated extension PromptBuilder {
             return nil  // No useful work folder context to send
         }
 
-        // Bold name + blank line + body. Avoids flat-colon `Name:` /
-        // `Description:` labels that would re-introduce mixed label style.
-        return "**\(wf.name)**\n\n\(sections.joined(separator: "\n\n"))"
+        // The name as a heading one level under the `## Work folder` carrier — the same
+        // level as `### Agent instructions (…)` beside it. Bold was chosen over a `Name:`
+        // label to avoid mixed label style, and was itself a second emphasis system in a
+        // repo-authored layer (R4.3.2) until 2026-09-07.
+        return "### \(wf.name)\n\n\(sections.joined(separator: "\n\n"))"
     }
 }

@@ -556,10 +556,10 @@ final class AutovisorOrchestratorTests: NTMSOrchestratorTestBase, @unchecked Sen
     /// team is first appended. Regression for the early-return that skipped the sync.
     func testEnsureAutovisorTeam_reconcilesExistingTeam_whenDisabled() async {
         await sut.openWorkFolder(tempDir)
-        // Corrupt the persisted singleton: a non-Auto coordinator + a missing mandatory tool.
+        // Corrupt the persisted singleton: an orphan coordinator + a missing mandatory tool.
         await sut.mutateWorkFolder { proj in
             guard let i = proj.teams.firstIndex(where: { $0.templateID == AutovisorConstants.teamTemplateID }) else { return }
-            proj.teams[i].settings.meetingCoordinatorRoleID = proj.teams[i].roles.first { !$0.isSupervisor }?.id
+            proj.teams[i].settings.meetingCoordinatorRoleID = "ghost-of-deleted-role"
             if let r = proj.teams[i].roles.firstIndex(where: { $0.systemRoleID == AutovisorConstants.managerRoleSystemID }) {
                 proj.teams[i].roles[r].toolIDs.removeAll { $0 == ToolNames.listTasks }
             }
@@ -568,7 +568,9 @@ final class AutovisorOrchestratorTests: NTMSOrchestratorTestBase, @unchecked Sen
         await sut.ensureAutovisorTeam()
 
         let team = sut.snapshot?.workFolder.teams.first { $0.templateID == AutovisorConstants.teamTemplateID }
-        XCTAssertNil(team?.settings.meetingCoordinatorRoleID, "coordinator re-normalized to Auto on open")
+        let managerID = team?.roles.first { $0.systemRoleID == AutovisorConstants.managerRoleSystemID }?.id
+        XCTAssertEqual(team?.settings.meetingCoordinatorRoleID, managerID,
+                       "the orphan coordinator heals to the lone Manager on open — never to nil")
         let mgr = team?.roles.first { $0.systemRoleID == AutovisorConstants.managerRoleSystemID }
         XCTAssertTrue(mgr?.toolIDs.contains(ToolNames.listTasks) ?? false, "mandatory tool re-enforced on open")
     }

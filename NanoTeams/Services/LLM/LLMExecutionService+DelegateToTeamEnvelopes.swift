@@ -89,6 +89,13 @@ extension LLMExecutionService {
         struct ArtifactPayload: Codable {
             let content: String
             let role_id: String
+            /// `true` when the record exists but its body could not be read; `nil` (omitted)
+            /// otherwise. This envelope is the only channel by which the child's work reaches
+            /// the parent, and `missing_artifacts` means "never submitted" — so an unreadable
+            /// body used to arrive as a produced-and-empty artifact, silence the model reads
+            /// as success (R1.8.7). `path` is the file the parent can read itself.
+            let unreadable: Bool?
+            let path: String?
         }
         struct DelegationSuccessData: Codable {
             let child_task_id: Int
@@ -117,15 +124,16 @@ extension LLMExecutionService {
                     if setRequired.contains(name) { missing.append(name) }
                     continue
                 }
-                let content: String
                 if let root = workFolderRoot,
                    let body = ArtifactService.readContent(artifact: record.artifact, workFolderRoot: root)
                 {
-                    content = body
+                    artifacts[name] = ArtifactPayload(
+                        content: body, role_id: record.roleID, unreadable: nil, path: nil)
                 } else {
-                    content = ""
+                    artifacts[name] = ArtifactPayload(
+                        content: "", role_id: record.roleID, unreadable: true,
+                        path: record.artifact.llmReadablePath)
                 }
-                artifacts[name] = ArtifactPayload(content: content, role_id: record.roleID)
             }
         }
         let data = DelegationSuccessData(

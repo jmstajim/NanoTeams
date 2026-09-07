@@ -272,6 +272,34 @@ final class ConsultationChatArtifactContextTests: XCTestCase {
         XCTAssertTrue(service.collectUpstreamArtifacts(run: run, excludeRoleID: ownRoleID).isEmpty)
     }
 
+    /// R1.3.2: the consultation template is `## `-headed, so every user turn of the chat uses
+    /// the same family — until 2026-09-06 the task turn opened with a bare `Current Task:`
+    /// line and the artifact turns with `Your produced artifacts:` / `Available team
+    /// artifacts:` plus `[Name]:` brackets, a second rendering of data the step prompt renders
+    /// as `## `/`### `.
+    func testNewChat_noUserTurnIsABareColonLabel() throws {
+        let own = try writeArtifact(
+            name: "Product Requirements",
+            relativePath: "tasks/1/runs/0/roles/team_pm/artifact_product_requirements.md",
+            text: "Calculator must add and subtract.")
+        let upstream = try writeArtifact(
+            name: "Engineering Notes",
+            relativePath: "tasks/1/runs/0/roles/team_swe/artifact_engineering_notes.md",
+            text: "Used a state machine.")
+        let chat = makeChat(ownArtifacts: [own], upstreamArtifacts: [upstream])
+
+        let label = try NSRegularExpression(pattern: #"^[A-Z][A-Za-z ]+:$"#, options: .anchorsMatchLines)
+        let userTurns = chat.messages.filter { $0.role == .user }.map(\.content)
+        XCTAssertEqual(userTurns.count, 3, "task, own artifacts, upstream artifacts")
+        for turn in userTurns {
+            let range = NSRange(turn.startIndex..., in: turn)
+            XCTAssertNil(label.firstMatch(in: turn, range: range), "bare colon label in a user turn:\n\(turn)")
+        }
+        XCTAssertTrue(userTurns[0].hasPrefix("## Task: "), userTurns[0])
+        XCTAssertTrue(userTurns[1].hasPrefix("## Your artifacts\n\n### Product Requirements\n"), userTurns[1])
+        XCTAssertTrue(userTurns[2].hasPrefix("## Available team artifacts\n\n### Engineering Notes\n"), userTurns[2])
+    }
+
     // MARK: - buildOwnArtifactsContext (new-chat branch)
 
     func testNewChat_ownArtifact_injectsHeaderAndFencedContentAfterTheTaskTurn() async throws {
@@ -287,8 +315,12 @@ final class ConsultationChatArtifactContextTests: XCTestCase {
         XCTAssertEqual(chat.messages[2].role, .user,
                        "Artifact context rides the user channel (it is data, not instruction).")
         let msg = chat.messages[2].content
-        XCTAssertTrue(msg.hasPrefix("Your produced artifacts:"), "got: \(msg.prefix(60))")
-        XCTAssertTrue(msg.contains("[Product Requirements]:\n```\nCalculator must add and subtract.\n```"),
+        XCTAssertTrue(msg.hasPrefix("## Your artifacts"), "got: \(msg.prefix(60))")
+        // Four backticks, not three: the fence is computed by `PromptBuilder.artifactFence`
+        // over the body that actually ships, so an artifact carrying its own ``` cannot
+        // close the wrapper and spill the rest of itself into prompt structure. Artifacts
+        // here are documents written by roles, so a nested fence is the ordinary case.
+        XCTAssertTrue(msg.contains("### Product Requirements\n````\nCalculator must add and subtract.\n````"),
                       "Content must be fenced under its bracketed name. got: \(msg)")
     }
 
@@ -296,7 +328,7 @@ final class ConsultationChatArtifactContextTests: XCTestCase {
         let chat = makeChat(ownArtifacts: [Artifact(name: "Never Persisted")])
 
         let msg = chat.messages[2].content
-        XCTAssertTrue(msg.contains("[Never Persisted]: (content not available)"),
+        XCTAssertTrue(msg.contains("### Never Persisted\n(content not available)"),
                       "An unreadable OWN artifact must say so — the role produced it and needs to know. got: \(msg)")
         XCTAssertFalse(msg.contains("```"),
                        "No fence may be opened for content that does not exist.")
@@ -344,8 +376,8 @@ final class ConsultationChatArtifactContextTests: XCTestCase {
         XCTAssertEqual(chat.messages.count, 3,
                        "system + task context + upstream artifacts (the own block is skipped).")
         let msg = chat.messages[2].content
-        XCTAssertTrue(msg.hasPrefix("Available team artifacts:"), "got: \(msg.prefix(60))")
-        XCTAssertTrue(msg.contains("[Engineering Notes]:\n```\nUsed a state machine.\n```"),
+        XCTAssertTrue(msg.hasPrefix("## Available team artifacts"), "got: \(msg.prefix(60))")
+        XCTAssertTrue(msg.contains("### Engineering Notes\n````\nUsed a state machine.\n````"),
                       "got: \(msg)")
     }
 
@@ -363,9 +395,9 @@ final class ConsultationChatArtifactContextTests: XCTestCase {
         let chat = makeChat(ownArtifacts: [own], upstreamArtifacts: [upstream])
 
         XCTAssertEqual(chat.messages.count, 4)
-        XCTAssertTrue(chat.messages[2].content.hasPrefix("Your produced artifacts:"),
+        XCTAssertTrue(chat.messages[2].content.hasPrefix("## Your artifacts"),
                       "Own output comes first — it is the role's own memory.")
-        XCTAssertTrue(chat.messages[3].content.hasPrefix("Available team artifacts:"))
+        XCTAssertTrue(chat.messages[3].content.hasPrefix("## Available team artifacts"))
         XCTAssertFalse(chat.messages[2].content.contains("upstream body"),
                        "The two blocks must not bleed into each other.")
         XCTAssertFalse(chat.messages[3].content.contains("own body"))
@@ -392,7 +424,7 @@ final class ConsultationChatArtifactContextTests: XCTestCase {
         )
 
         let msg = chat.messages[2].content
-        XCTAssertTrue(msg.contains("[Ghost Notes]:"),
+        XCTAssertTrue(msg.contains("### Ghost Notes"),
                       "An upstream artifact with no readable payload is still worth naming — "
                           + "the role can ask for it. got: \(msg)")
         XCTAssertFalse(msg.contains("```"),
@@ -407,9 +439,9 @@ final class ConsultationChatArtifactContextTests: XCTestCase {
         XCTAssertEqual(chat.messages.count, 2)
         XCTAssertEqual(chat.messages[0].role, .system)
         XCTAssertEqual(chat.messages[1].role, .user)
-        XCTAssertFalse(chat.messages[1].content.contains("Your produced artifacts:"),
+        XCTAssertFalse(chat.messages[1].content.contains("## Your artifacts"),
                        "An empty artifact block must not be emitted at all.")
-        XCTAssertFalse(chat.messages[1].content.contains("Available team artifacts:"))
+        XCTAssertFalse(chat.messages[1].content.contains("## Available team artifacts"))
         XCTAssertTrue(chat.injectedArtifactIDs.isEmpty)
     }
 
@@ -440,7 +472,7 @@ final class ConsultationChatArtifactContextTests: XCTestCase {
             ownArtifacts: [], upstreamArtifacts: [Artifact(name: "Never Persisted")])
 
         let msg = chat.messages[2].content
-        XCTAssertTrue(msg.contains("[Never Persisted]: (content not available)"),
+        XCTAssertTrue(msg.contains("### Never Persisted\n(content not available)"),
                       "an unreadable UPSTREAM artifact must say so too. got: \(msg)")
         XCTAssertFalse(msg.contains("```"),
                        "no fence may be opened for content that does not exist")
@@ -459,8 +491,8 @@ final class ConsultationChatArtifactContextTests: XCTestCase {
             roleID: ownRoleID, task: task, runIndex: 0, team: makeTeam())
 
         let update = chat.messages[1].content
-        XCTAssertTrue(update.hasPrefix("New artifacts available:"), "got: \(update)")
-        XCTAssertTrue(update.contains("[Never Persisted]: (content not available)"),
+        XCTAssertTrue(update.hasPrefix("## New artifacts"), "got: \(update)")
+        XCTAssertTrue(update.contains("### Never Persisted\n(content not available)"),
                       "got: \(update)")
         XCTAssertFalse(update.contains("```"))
     }
@@ -487,8 +519,8 @@ final class ConsultationChatArtifactContextTests: XCTestCase {
                        "The existing branch must NOT rebuild the system prompt or task turn.")
         let update = chat.messages[1]
         XCTAssertEqual(update.role, .user)
-        XCTAssertTrue(update.content.hasPrefix("New artifacts available:"), "got: \(update.content)")
-        XCTAssertTrue(update.content.contains("[Engineering Notes]:\n```\nShipped behind a flag.\n```"),
+        XCTAssertTrue(update.content.hasPrefix("## New artifacts"), "got: \(update.content)")
+        XCTAssertTrue(update.content.contains("### Engineering Notes\n````\nShipped behind a flag.\n````"),
                       "got: \(update.content)")
         XCTAssertTrue(chat.injectedArtifactIDs.contains("engineering_notes"),
                       "The id must be recorded or the same artifact re-injects every round.")
@@ -539,7 +571,7 @@ final class ConsultationChatArtifactContextTests: XCTestCase {
         XCTAssertTrue(update.contains("FRESH-BODY"), "got: \(update)")
         XCTAssertFalse(update.contains("KNOWN-BODY"),
                        "Re-sending an already-injected body burns context for nothing.")
-        XCTAssertFalse(update.contains("[Product Requirements]:"),
+        XCTAssertFalse(update.contains("### Product Requirements"),
                        "The already-injected artifact must not even be named again.")
         XCTAssertEqual(chat.injectedArtifactIDs, ["product_requirements", "engineering_notes"])
     }
@@ -576,7 +608,7 @@ final class ConsultationChatArtifactContextTests: XCTestCase {
             roleID: ownRoleID, task: task, runIndex: 0, team: makeTeam())
 
         let update = chat.messages[1].content
-        XCTAssertTrue(update.contains("[Ghost Notes]:"), "got: \(update)")
+        XCTAssertTrue(update.contains("### Ghost Notes"), "got: \(update)")
         XCTAssertFalse(update.contains("```"))
         XCTAssertTrue(chat.injectedArtifactIDs.contains("ghost_notes"),
                       "Even an unreadable artifact must be marked injected, or it re-announces forever.")

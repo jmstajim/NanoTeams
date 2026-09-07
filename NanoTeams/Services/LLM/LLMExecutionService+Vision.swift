@@ -12,6 +12,7 @@ extension LLMExecutionService {
         toolCallID: UUID,
         stepID: String,
         taskID: Int,
+        allowedToolNames: Set<String>,
         client: any LLMClient,
         config: LLMConfig,
         networkLogger: NetworkLogger?,
@@ -73,19 +74,27 @@ extension LLMExecutionService {
             // other tool since wave 19: the envelope reports the outcome, not the attempt.
             if analysisText.isEmpty {
                 analysisText = "Vision analysis failed: the vision model returned an empty response. "
-                    + "Try a more specific question; if it keeps coming back empty, ask the "
-                    + "supervisor to check the vision model."
+                    + "Try a more specific question; if it keeps coming back empty, continue "
+                    + "without image analysis\(Self.visionEscalationClause(allowedToolNames: allowedToolNames))."
                 isError = true
             }
         } catch is CancellationError {
             // Task was paused/cancelled — propagate without recording an error
             return
         } catch let visionError as VisionError {
-            analysisText = "Vision analysis failed: \(visionError.localizedDescription)"
+            // These results bypass `ToolErrorNotePolicy` (no direction turn follows), so the
+            // one state with a human remedy carries its escalation channel here — the tool
+            // the role holds, or nothing (R3.8.6).
+            analysisText = "Vision analysis failed: \(ToolErrorHandler.classify(visionError).message)"
+            if case .notConfigured = visionError {
+                analysisText += Self.visionEscalationClause(allowedToolNames: allowedToolNames) + "."
+            }
             isError = true
         } catch {
             print("[Vision] Analysis failed for \(imagePath): \(error)")
-            analysisText = "Vision analysis failed: \(error.localizedDescription)"
+            // `classify`, never `localizedDescription`: a transport error arrives in the
+            // system language and would ride the prefix of every later request (R1.8.2).
+            analysisText = "Vision analysis failed: \(ToolErrorHandler.classify(error).message)"
             isError = true
         }
 
@@ -126,6 +135,18 @@ extension LLMExecutionService {
 
 // MARK: - VisionError
 
+extension LLMExecutionService {
+    /// The escalation clause for a vision-side envelope. These results are finalized by
+    /// their own appenders and never receive a `ToolErrorNotePolicy` direction turn, so
+    /// the one remedy that is a human's — configuring a vision model — names the channel
+    /// the role holds here, or nothing (R3.8.6). Shared by `analyze_image` and the
+    /// `screen_capture` no-vision envelope so the two cannot phrase it differently.
+    nonisolated static func visionEscalationClause(allowedToolNames: Set<String>) -> String {
+        LoopRecoveryPolicy.escalationChannel(in: allowedToolNames)
+            .map { ", or call \($0) to have a vision model configured" } ?? ""
+    }
+}
+
 enum VisionError: LocalizedError {
     case notConfigured
     case noProject
@@ -136,8 +157,10 @@ enum VisionError: LocalizedError {
         switch self {
         // Model-read: rendered into `"Vision analysis failed: \(…)"` → `commandFailed`
         // envelope. Name a recourse the model can act on, not a Settings pane.
+        // No trailing period: `appendVisionResult` closes the sentence after the escalation
+        // clause the role's schema earns it.
         case .notConfigured:
-            "No vision model is configured for this work folder. Do not retry analyze_image — ask the supervisor to configure one, or continue without image analysis."
+            "No vision model is configured for this work folder. Do not retry analyze_image — continue without image analysis"
         case .noProject:
             "No work folder available."
         case .fileNotFound(let path):

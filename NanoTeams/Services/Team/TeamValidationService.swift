@@ -46,11 +46,25 @@ nonisolated enum TeamValidationService {
         /// be there.
         case unknownAttachedSkill(roleID: String, skillID: String)
 
+        /// The stored `meetingCoordinatorRoleID` is `nil` or names a role that is gone
+        /// (or the Supervisor), so `Team.meetingCoordinatorID` answers with the default
+        /// rule instead. A warning: the team runs, with `to` in the chair; saving the
+        /// team writes that id back (`Team.healMeetingCoordinator`).
+        case meetingCoordinatorHealed(from: String?, to: String)
+
+        /// `supervisorMode == .off` on a chat-mode team. Such a team's only reply channel
+        /// IS `ask_supervisor` (its Final reminder says so), so Off leaves the role with
+        /// no way to answer. An error; the picker never offers Off there, so this is
+        /// reachable only through import or hand-edited JSON — and deliberately NOT
+        /// normalised at runtime, which would hide the defect the banner names.
+        case askSupervisorOffInChatMode
+
         var isError: Bool {
             switch self {
-            case .nonTopLevelDelegator, .delegationToSelf:
+            case .nonTopLevelDelegator, .delegationToSelf, .askSupervisorOffInChatMode:
                 return true
-            case .unknownDelegationTeam, .noDelegationTargets, .unknownAttachedSkill:
+            case .unknownDelegationTeam, .noDelegationTargets, .unknownAttachedSkill,
+                 .meetingCoordinatorHealed:
                 return false  // Warning, not error
             }
         }
@@ -74,8 +88,32 @@ nonisolated enum TeamValidationService {
                 return "\(roleName(roleID)) is set to delegate but has no valid target team. Pick an existing team or allow generating new teams."
             case .unknownAttachedSkill(let roleID, let skillID):
                 return "\(roleName(roleID)) has an attached skill that can’t be found (\(skillID)). Its text won’t reach the prompt — detach it in the role’s Skills tab, or open the work folder it lives in."
+            case .meetingCoordinatorHealed(let from, let to):
+                let was = from.map { " (was \($0))" } ?? ""
+                return "\(roleName(to)) coordinates this team’s meetings — the stored coordinator\(was) no longer names a role. Pick another one in Settings → Collaboration if that isn’t the right choice."
+            case .askSupervisorOffInChatMode:
+                return "Ask Supervisor is Off, but this chat-mode team replies through ask_supervisor — its role would have no way to answer. Switch the mode to Manual or Autonomous."
             }
         }
+    }
+
+    // MARK: - Meeting Coordinator
+
+    /// Flags a stored coordinator id that the default rule will replace — see
+    /// `Team.meetingCoordinatorNeedsHealing`. Nothing to flag for a team with no
+    /// non-Supervisor role (`TeamManagementService.validate` already reports `.noRoles`).
+    static func validateMeetingCoordinator(team: Team) -> [ValidationError] {
+        guard team.meetingCoordinatorNeedsHealing, let healed = team.meetingCoordinatorID else { return [] }
+        return [.meetingCoordinatorHealed(from: team.settings.meetingCoordinatorRoleID, to: healed)]
+    }
+
+    // MARK: - Supervisor Mode
+
+    /// Flags `.off` on a chat-mode team — the one combination that leaves a role
+    /// without a reply channel (see `SupervisorMode`).
+    static func validateSupervisorMode(team: Team) -> [ValidationError] {
+        guard team.settings.supervisorMode == .off, team.isChatMode else { return [] }
+        return [.askSupervisorOffInChatMode]
     }
 
     // MARK: - Attached Skills

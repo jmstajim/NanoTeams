@@ -45,11 +45,7 @@ nonisolated struct ReadFileTool: ToolHandler {
             switch try FileReadSupport.resolveReadableFile(
                 toolName: Self.name, args: args, path: path,
                 resolver: resolver, fileManager: fileManager,
-                notFoundNext: NextHint(
-                    suggested_cmd: TN.listFiles,
-                    suggested_args: ["path": (path as NSString).deletingLastPathComponent],
-                    reason: "Check available files"
-                )
+                notFoundNext: NextHint.listingParent(of: path)
             ) {
             case .file(let url): fileURL = url
             case .rejected(let err): return err
@@ -162,10 +158,8 @@ nonisolated struct ReadLinesTool: ToolHandler {
             }
 
             guard startLine >= 1 else {
-                return makeErrorResult(
-                    toolName: Self.name, args: args,
-                    code: .invalidArgs, message: "start_line must be >= 1"
-                )
+                throw ToolArgumentError.invalidValue(
+                    key: "start_line", detail: "must be >= 1 (lines are numbered from 1).")
             }
 
             // Resolve + validate. read_lines omits the not-found hint.
@@ -189,10 +183,19 @@ nonisolated struct ReadLinesTool: ToolHandler {
             let totalLines = allLines.count
 
             guard startLine <= totalLines else {
+                // The fault AND the repair in one sentence (playbook R1.8.1): the value form
+                // to send next, plus the machine-copyable call in `next` — the same shape
+                // `read_file`'s over-cap rejection hands back.
+                let firstPageEnd = lineLimit > 0 ? min(totalLines, lineLimit) : totalLines
                 return makeErrorResult(
                     toolName: Self.name, args: args,
                     code: .rangeOutOfBounds,
-                    message: "start_line \(startLine) exceeds file length \(totalLines)"
+                    message: "start_line \(startLine) exceeds file length \(totalLines) — send start_line between 1 and \(totalLines).",
+                    next: NextHint(
+                        suggested_cmd: ToolNames.readLines,
+                        suggested_args: ["path": path, "start_line": "1", "end_line": "\(firstPageEnd)"],
+                        reason: "Read from the top of the file"
+                    )
                 )
             }
 
@@ -321,20 +324,31 @@ nonisolated struct ListFilesTool: ToolHandler {
                     try CompiledGlob(glob: $0, caseInsensitive: false)
                 }
             } catch {
-                return makeErrorResult(
-                    toolName: Self.name, args: args,
-                    code: .invalidArgs,
-                    message: "name_glob '\(nameGlob ?? "")' is not a valid glob (only * is a wildcard)."
-                )
+                throw ToolArgumentError.invalidValue(
+                    key: "name_glob",
+                    detail: "'\(nameGlob ?? "")' is not a valid glob (only * is a wildcard).")
             }
 
             let dirURL = try resolver.resolveFileURL(relativePath: path)
 
+            // Two states, two codes. One guard used to cover both and the message
+            // asserted the SECOND: a path that does not exist at all was answered
+            // "Not a directory: x", so the model concluded the path was a file and
+            // reached for `read_file` — a second failure for the same typo.
             var isDir: ObjCBool = false
-            guard fileManager.fileExists(atPath: dirURL.path, isDirectory: &isDir), isDir.boolValue else {
+            guard fileManager.fileExists(atPath: dirURL.path, isDirectory: &isDir) else {
                 return makeErrorResult(
                     toolName: Self.name, args: args,
-                    code: .notADirectory, message: "Not a directory: \(path)"
+                    code: .fileNotFound,
+                    message: "Nothing exists at \(path). Check the path — "
+                        + "list_files on the parent directory shows what is there."
+                )
+            }
+            guard isDir.boolValue else {
+                return makeErrorResult(
+                    toolName: Self.name, args: args,
+                    code: .notADirectory,
+                    message: "\(path) is a file, not a directory. Use read_file to read it."
                 )
             }
 
@@ -462,11 +476,14 @@ nonisolated struct SearchTool: ToolHandler {
     static let name = TN.search
     static let schema = ToolSchema(
         name: TN.search,
-        description: "Search the work folder for text, or list files when `query` is omitted. Auto-extracts PDF/DOCX/RTF/RTFD/ODT/XLSX/PPTX. Returns `matches` (the matching line) and `filename_matches` (basename hits first). Results are paged: when `has_more` is true, repeat the same call with `offset` set to `next_offset`.",
+        description: "Search the work folder for text. Auto-extracts PDF/DOCX/RTF/RTFD/ODT/XLSX/PPTX. Returns `matches` (the matching line) and `filename_matches` (basename hits first). Results are paged: when `has_more` is true, repeat the same call with `offset` set to `next_offset`.",
         parameters: JS.object(
             properties: [
                 "query": JS.string("Case-insensitive literal substring; one keyword per call for distinct concepts. Omit to list all files matching file_glob or paths."),
-                "paths": JS.array(items: JS.string("Relative path under the work folder"), description: "Restrict scope. Folders walked recursively; files scanned in place."),
+                "mode": JS.string("Set regex to treat query as an NSRegularExpression pattern.", enumValues: ["substring", "regex"]),
+                // ONE description, on the array: the renderer prints `prop.description ??
+                // items.description`, so an item text beside an array text never ships.
+                "paths": JS.array(items: JS.string(), description: "Relative paths under the work folder that narrow the scope; folders are walked recursively, files scanned in place."),
                 "file_glob": JS.string("Basename glob (e.g. *.swift, test_*.md)."),
                 "max_results": JS.integer("Page size, max \(AppDefaults.searchMaxResultsMax)."),
                 "offset": JS.integer("Matches to skip."),

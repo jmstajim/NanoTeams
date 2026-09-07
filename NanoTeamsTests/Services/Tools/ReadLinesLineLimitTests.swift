@@ -462,7 +462,7 @@ final class ReadLinesLineLimitTests: XCTestCase {
         let r = await runReadLines(args: "{\"path\": \"neg.txt\", \"start_line\": -3, \"end_line\": 10}")
 
         XCTAssertTrue(r.isError, "negative start_line must error even when end_line is valid. Got: \(r.outputJSON)")
-        XCTAssertTrue(r.outputJSON.contains("start_line must be >= 1"))
+        XCTAssertTrue(r.outputJSON.contains(#"'start_line' must be >= 1"#))
     }
 
     func testTransposedRange_zeroStartLineWithPositiveEndLine_stillErrors() async throws {
@@ -473,7 +473,7 @@ final class ReadLinesLineLimitTests: XCTestCase {
         let r = await runReadLines(args: "{\"path\": \"zero.txt\", \"start_line\": 0, \"end_line\": 5}")
 
         XCTAssertTrue(r.isError)
-        XCTAssertTrue(r.outputJSON.contains("start_line must be >= 1"))
+        XCTAssertTrue(r.outputJSON.contains(#"'start_line' must be >= 1"#))
     }
 
     func testEndLineEqualsStartLine_singleLineRead() async throws {
@@ -576,17 +576,19 @@ final class ReadLinesLineLimitTests: XCTestCase {
         XCTAssertTrue(r.outputJSON.contains("start_line"), "Got: \(r.outputJSON)")
     }
 
-    func testEndLineNonNumericValue_treatedAsAbsent() async throws {
-        // `optionalInt` returns nil for non-numeric values; the handler then
-        // collapses to readToEOF. Per CORE_PRINCIPLES, sloppy LLM types map
-        // to the most charitable interpretation (here: the same shape as
-        // omitting the field) rather than an error envelope.
+    func testEndLineNonNumericValue_isRefusedAsInvalidArgs() async throws {
+        // A value the schema's type cannot hold and no coercion recovers ("fifty" is not
+        // a number) is refused as INVALID_ARGS naming the argument and the shape wanted
+        // (R1.8.4 / REC.5, 2026-09-07). Until then `optionalInt` returned nil and the
+        // handler read to EOF under `ok: true` — the model's bound was silently dropped
+        // with no trace in the envelope. Numeric strings ("50") still coerce: see
+        // `ArgumentTypeGuardTests`.
         _ = try writeFile(name: "junk.txt", lineCount: 20)
 
         let r = await runReadLines(args: "{\"path\": \"junk.txt\", \"start_line\": 1, \"end_line\": \"fifty\"}")
 
-        XCTAssertFalse(r.isError, "non-numeric end_line must collapse to read-to-EOF, not error. Got: \(r.outputJSON)")
-        assertEndLine(r.outputJSON, 20)
-        assertTotalLines(r.outputJSON, 20)
+        XCTAssertTrue(r.isError, "an uncoercible end_line is a refusal, not a silent read-to-EOF. Got: \(r.outputJSON)")
+        XCTAssertTrue(r.outputJSON.contains("INVALID_ARGS"), "Got: \(r.outputJSON)")
+        XCTAssertTrue(r.outputJSON.contains("`end_line` must be an integer"), "the refusal names the argument. Got: \(r.outputJSON)")
     }
 }

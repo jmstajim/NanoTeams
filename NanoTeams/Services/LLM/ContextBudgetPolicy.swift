@@ -167,6 +167,30 @@ nonisolated enum ContextBudgetPolicy {
             + "shorten the work-folder context."
     }
 
+    /// The step-failure text for an overflow the SERVER refused (Ollama's MLX runner and
+    /// LM Studio both answer with an error rather than a silent head-drop). Carries the
+    /// server's own sentence — it names both numbers when the runner has them — and the
+    /// provider's remedy, because the bubble is the only place the user learns why the
+    /// step stopped.
+    static func overflowFailureMessage(
+        modelName: String,
+        serverMessage: String,
+        provider: LLMProvider
+    ) -> String {
+        "\(modelName): the prompt does not fit the model's context window, and an append-only "
+            + "conversation cannot shrink on retry. Server: \(serverMessage.trimmingCharacters(in: .whitespacesAndNewlines)) "
+            + "\(remedy(for: provider)), or shorten the work-folder context and restart the role."
+    }
+
+    private static func remedy(for provider: LLMProvider) -> String {
+        switch provider {
+        case .ollama:
+            "Raise it with OLLAMA_CONTEXT_LENGTH or a modelfile num_ctx"
+        case .lmStudio:
+            "Raise the loaded context length in LM Studio (My Models → gear)"
+        }
+    }
+
     static func warningMessage(
         modelName: String,
         promptTokens: Int,

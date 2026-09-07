@@ -207,6 +207,25 @@ final class GeneratedTeamConfigTests: XCTestCase {
         }
     }
 
+    /// `off` is a valid `SupervisorMode` for a human to pick per team, but not one the
+    /// generator may emit (`SupervisorMode.generationModes`): a generated chat-mode team with
+    /// it would have no reply channel.
+    func testDecode_offSupervisorMode_isRejectedForGeneration() {
+        let json = """
+        {
+            "name": "Bad",
+            "description": "d",
+            "supervisor_mode": "off",
+            "roles": [{"name": "R", "prompt": "p", "produces_artifacts": ["X"], "requires_artifacts": ["Supervisor Task"], "tools": []}],
+            "artifacts": [{"name": "X", "description": "d"}],
+            "supervisor_requires": ["X"]
+        }
+        """.data(using: .utf8)!
+        XCTAssertThrowsError(try JSONDecoder().decode(GeneratedTeamConfig.self, from: json)) { error in
+            XCTAssertTrue("\(error)".contains("supervisor_mode"))
+        }
+    }
+
     func testDecode_unknownAcceptanceMode_throws() {
         let json = """
         {

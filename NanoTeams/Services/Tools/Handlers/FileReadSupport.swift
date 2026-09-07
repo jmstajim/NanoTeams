@@ -67,11 +67,7 @@ nonisolated enum FileReadSupport {
             return .rejected(makeErrorResult(
                 toolName: toolName, args: args,
                 code: .notAFile, message: "Path is a directory: \(path)",
-                next: NextHint(
-                    suggested_cmd: ToolNames.listFiles,
-                    suggested_args: ["path": path],
-                    reason: "List directory contents"
-                )
+                next: NextHint.listing(path)
             ))
         }
 
@@ -96,7 +92,7 @@ nonisolated enum FileReadSupport {
                 return .failure(makeErrorResult(
                     toolName: toolName, args: args,
                     code: .commandFailed,
-                    message: outcome.message(for: fileURL) ?? "no extractable text"
+                    message: outcome.message(for: fileURL) ?? "no extractable text — choose a text file instead"
                 ))
             }
             return .text(content: extracted, encoding: "extracted_text")
@@ -105,7 +101,7 @@ nonisolated enum FileReadSupport {
             return .failure(makeErrorResult(
                 toolName: toolName, args: args,
                 code: .commandFailed,
-                message: "File is not valid UTF-8 — appears to be binary or in another encoding: \(path)"
+                message: "File is not valid UTF-8 — appears to be binary or in another encoding: \(path). Choose a text file instead."
             ))
         }
         return .text(content: utf8, encoding: "utf-8")

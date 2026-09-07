@@ -316,9 +316,11 @@ extension LLMExecutionService {
             delegate?.setLastInfoMessageForUI(
                 "Search failed: \(error.localizedDescription) — falling back to limited results."
             )
+            // The banner above is the human's and may stay localized; `searchError` lands in
+            // the `search` envelope the model reads — classified (R1.8.2).
             return PlainExecutorResult(
                 output: .empty,
-                searchError: "search_failed: \(error.localizedDescription)"
+                searchError: "search_failed: \(ToolErrorHandler.classify(error).message)"
             )
         }
     }

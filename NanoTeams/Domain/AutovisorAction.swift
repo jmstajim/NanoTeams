@@ -23,13 +23,27 @@ nonisolated enum ControlVerb: Hashable {
     /// Decode a tool `action` + optional `arg` into a verb. `.failure` carries a
     /// human-readable reason (unknown action, or `rename` with an empty title).
     static func parse(action: String, arg: String?) -> Result<ControlVerb, AutovisorVerbError> {
+        // An argument accepted and ignored is the mirror of advertise-then-reject: the
+        // call reports ok:true for something other than what it asked (R3.5.2) — the
+        // same rule `git_stash` and `git_branch` apply through `rejectInapplicable`.
+        // Until 2026-09-06 the schema said "Ignored otherwise." and meant it.
+        let stray = (arg ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        func withoutArg(_ verb: ControlVerb, _ name: String) -> Result<ControlVerb, AutovisorVerbError> {
+            guard stray.isEmpty else {
+                return .failure(.init(
+                    message: "`arg` applies only with `action: \"rename\"` or `action: \"set_timeout\"`. "
+                        + "It was ignored here, so `\(name)` would not have done what this call asked for — "
+                        + "drop `arg` or pick the verb it belongs to."))
+            }
+            return .success(verb)
+        }
         switch action.lowercased() {
-        case "start": return .success(.start)
-        case "pause": return .success(.pause)
-        case "resume": return .success(.resume)
-        case "stop": return .success(.stop)
-        case "close": return .success(.close)
-        case "delete": return .success(.delete)
+        case "start": return withoutArg(.start, "start")
+        case "pause": return withoutArg(.pause, "pause")
+        case "resume": return withoutArg(.resume, "resume")
+        case "stop": return withoutArg(.stop, "stop")
+        case "close": return withoutArg(.close, "close")
+        case "delete": return withoutArg(.delete, "delete")
         case "rename":
             let title = (arg ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             guard !title.isEmpty else {
@@ -165,19 +179,25 @@ nonisolated struct AutovisorActionResult: Hashable {
     var message: String
     /// Set by `createManagedTask` so the manager can reference the new task.
     var createdTaskID: Int?
+    /// The call to make next, arguments already filled in. Rides the envelope's `next`
+    /// slot, which the collaboration path left permanently empty until `NextHint` moved
+    /// into `Domain/` — see that type's doc comment for the incident.
+    var next: NextHint?
 
-    init(ok: Bool, message: String, createdTaskID: Int? = nil) {
+    init(ok: Bool, message: String, createdTaskID: Int? = nil, next: NextHint? = nil) {
         self.ok = ok
         self.message = message
         self.createdTaskID = createdTaskID
+        self.next = next
     }
 
-    static func success(_ message: String, createdTaskID: Int? = nil) -> AutovisorActionResult {
-        .init(ok: true, message: message, createdTaskID: createdTaskID)
+    static func success(_ message: String, createdTaskID: Int? = nil, next: NextHint? = nil)
+        -> AutovisorActionResult {
+        .init(ok: true, message: message, createdTaskID: createdTaskID, next: next)
     }
 
-    static func failure(_ message: String) -> AutovisorActionResult {
-        .init(ok: false, message: message)
+    static func failure(_ message: String, next: NextHint? = nil) -> AutovisorActionResult {
+        .init(ok: false, message: message, next: next)
     }
 }
 
@@ -325,6 +345,29 @@ nonisolated enum AutovisorStatus {
     /// hand-authored copy lives in the manager prompt's §Review line, which is pinned).
     static let closeAcceptsEverything = "close accepts every role's output"
 
+    /// The `control_task close` call, arguments filled in — the machine-copyable twin of
+    /// `closeAcceptsEverything`.
+    ///
+    /// ONE factory for both surfaces a manager can meet this state on: `task_status`'s
+    /// success envelope (pull) and an `accept` rejection (push). They were built
+    /// independently and the doc comments on both already warned that they must not
+    /// drift; a shared factory is the only version of that guarantee that cannot rot.
+    static func closeTaskHint(taskID: Int, reason: String) -> NextHint {
+        NextHint(
+            suggested_cmd: ToolNames.controlTask,
+            suggested_args: ["task_id": String(taskID), "action": "close"],
+            reason: reason
+        )
+    }
+
+    /// What a rejected `manage_role accept` hands back: the prose remedy and the call to
+    /// make instead. Two halves of one answer, so no arm of the table can supply one and
+    /// forget the other.
+    nonisolated struct AcceptRejectionAdvice: Hashable {
+        var prose: String
+        var next: NextHint
+    }
+
     /// Manager-facing remedy appended (never substituted) to a `manage_role accept`
     /// rejection in `applyAcceptRole`'s `.reject` arm. The raw `acceptanceErrors`
     /// string names the fact ("Role already completed") but not the way out, and the
@@ -355,10 +398,36 @@ nonisolated enum AutovisorStatus {
     static func acceptRejectionAdvice(
         roleStatus: RoleExecutionStatus?,
         isChatModeTask: Bool,
-        taskReadyToClose: Bool
-    ) -> String? {
+        taskReadyToClose: Bool,
+        taskID: Int,
+        roleID: String
+    ) -> AcceptRejectionAdvice? {
+        /// `task_status` for this task — the fallback next call for every arm whose
+        /// remedy is "go look", and the one call that is always safe to suggest.
+        func statusHint(_ reason: String) -> NextHint {
+            NextHint(
+                suggested_cmd: ToolNames.taskStatus,
+                suggested_args: ["task_id": String(taskID)],
+                reason: reason
+            )
+        }
+        /// `manage_role restart` for this role. `comment` is deliberately absent — the
+        /// guidance is the manager's to write, and a filled-in placeholder would be
+        /// copied verbatim by exactly the models this hint exists for.
+        func restartHint(_ reason: String) -> NextHint {
+            NextHint(
+                suggested_cmd: ToolNames.manageRole,
+                suggested_args: [
+                    "task_id": String(taskID), "role_id": roleID, "action": "restart",
+                ],
+                reason: reason
+            )
+        }
+
         guard let roleStatus else {
-            return "call task_status for each role's current status"
+            return .init(
+                prose: "call task_status for each role's current status",
+                next: statusHint("No status entry for this role — read the per-role view first."))
         }
         switch roleStatus {
         case .needsAcceptance:
@@ -369,27 +438,47 @@ nonisolated enum AutovisorStatus {
             // the duplicate substring let the replace-not-append mutation slip past the
             // existing `failsWithSpecificReason` pin (its needle matched the advice alone).
             if taskReadyToClose {
-                return "nothing further awaits per-role acceptance; finalize with control_task close (\(closeAcceptsEverything))"
+                return .init(
+                    prose: "nothing further awaits per-role acceptance; finalize with control_task close (\(closeAcceptsEverything))",
+                    next: closeTaskHint(
+                        taskID: taskID,
+                        reason: "Nothing further awaits per-role acceptance; \(closeAcceptsEverything)."))
             }
             if isChatModeTask {
-                return "nothing awaits acceptance on it; a chat task runs until control_task close ends it"
+                return .init(
+                    prose: "nothing awaits acceptance on it; a chat task runs until control_task close ends it",
+                    next: closeTaskHint(
+                        taskID: taskID,
+                        reason: "A chat task never finishes on its own; \(closeAcceptsEverything)."))
             }
-            return "no acceptance is pending for it; other roles may still be active — check task_status"
+            return .init(
+                prose: "no acceptance is pending for it; other roles may still be active — check task_status",
+                next: statusHint("Other roles may still be active — see what remains."))
         case .working:
-            return "wait for it to finish, or steer it with message_task"
+            return .init(
+                prose: "wait for it to finish, or steer it with message_task",
+                next: statusHint("The role is still working — check its progress before steering it."))
         case .failed:
             // Names the RECOVERABLE verbs only — `delete` is an irreversible cascade
             // (removes delegated children too) and must not ride an error string a
             // small model may obey verbatim; the prompt's Failed triage owns that call.
-            return "restart it with manage_role restart plus guidance, or control_task stop if the task no longer serves the goal"
+            return .init(
+                prose: "restart it with manage_role restart plus guidance, or control_task stop if the task no longer serves the goal",
+                next: restartHint("The role failed — restart it with a comment saying what to do differently."))
         case .revisionRequested:
-            return "a revision is already in flight; check task_status for its progress"
+            return .init(
+                prose: "a revision is already in flight; check task_status for its progress",
+                next: statusHint("A revision is already in flight — check its progress."))
         case .idle, .ready:
-            return "it has not produced work to accept yet; task_status shows its progress"
+            return .init(
+                prose: "it has not produced work to accept yet; task_status shows its progress",
+                next: statusHint("The role has produced nothing to accept yet."))
         case .skipped:
             // Restart is not free: it cascades. Say so, so the manager weighs it against
             // downstream roles whose accepted work the reset would discard.
-            return "it was skipped; manage_role restart re-runs it and resets its downstream roles"
+            return .init(
+                prose: "it was skipped; manage_role restart re-runs it and resets its downstream roles",
+                next: restartHint("The role was skipped — restarting it also resets its downstream roles."))
         }
     }
 }

@@ -9,7 +9,12 @@ import XCTest
 ///   - `allTeams: []`            → delegation pack stripped (no catalog)
 ///   - `selectedScheme: nil`     → xcode tools stripped
 ///   - `isVisionConfigured: false` → analyze_image stripped
-///   - `isComputerUseEnabled: false` → the 5 computer-use tools stripped
+///
+/// `approval` (`ToolApprovalAvailability`) has NO default, deliberately: its Bool
+/// predecessor `isComputerUseEnabled` defaulted to `false`, which was not what a
+/// fresh install ships (Manual), and the offline renderer inherited that default
+/// for months without anything saying so. The two tests under "approval" pin the
+/// withheld and available readings explicitly.
 ///
 /// A future caller that forgets to pass any of these would silently ship a
 /// stripped tool set into a real run. These tests fail-loudly if the defaults
@@ -48,8 +53,9 @@ final class ResolveToolSchemasDefaultsTests: XCTestCase {
         let schemas = LLMExecutionService.resolveToolSchemas(
             for: Role.fromDefinition(agent),
             team: team,
-            allTeams: [team]
+            allTeams: [team],
             // selectedScheme + isVisionConfigured intentionally omitted — defaults
+            approval: .available
         )
         let names = Set(schemas.map(\.name))
         XCTAssertFalse(names.contains(ToolNames.runXcodebuild),
@@ -67,7 +73,8 @@ final class ResolveToolSchemasDefaultsTests: XCTestCase {
             for: Role.fromDefinition(agent),
             team: team,
             allTeams: [team],
-            selectedScheme: "NanoTeams"
+            selectedScheme: "NanoTeams",
+            approval: .available
         )
         let names = Set(schemas.map(\.name))
         XCTAssertTrue(names.contains(ToolNames.runXcodebuild),
@@ -83,8 +90,9 @@ final class ResolveToolSchemasDefaultsTests: XCTestCase {
         let schemas = LLMExecutionService.resolveToolSchemas(
             for: Role.fromDefinition(agent),
             team: team,
-            allTeams: [team]
+            allTeams: [team],
             // isVisionConfigured intentionally omitted — defaults to false
+            approval: .available
         )
         let names = Set(schemas.map(\.name))
         XCTAssertFalse(names.contains(ToolNames.analyzeImage),
@@ -99,16 +107,17 @@ final class ResolveToolSchemasDefaultsTests: XCTestCase {
             for: Role.fromDefinition(agent),
             team: team,
             allTeams: [team],
-            isVisionConfigured: true
+            isVisionConfigured: true,
+            approval: .available
         )
         let names = Set(schemas.map(\.name))
         XCTAssertTrue(names.contains(ToolNames.analyzeImage),
                       "isVisionConfigured=true must keep analyze_image")
     }
 
-    // MARK: - isComputerUseEnabled default
+    // MARK: - approval (no default — explicit readings)
 
-    func testDefaultIsComputerUseEnabled_stripsComputerUseTools() {
+    func testComputerUseWithheld_stripsComputerUseTools() {
         let tn = ToolNames.self
         let agent = makeAgent(toolIDs: [
             tn.screenCapture, tn.uiClick, tn.uiType, tn.uiKey, tn.uiScroll, tn.readFile,
@@ -117,20 +126,18 @@ final class ResolveToolSchemasDefaultsTests: XCTestCase {
         let schemas = LLMExecutionService.resolveToolSchemas(
             for: Role.fromDefinition(agent),
             team: team,
-            allTeams: [team]
-            // isComputerUseEnabled intentionally omitted — defaults to false
-            // (the safe orchestrator-free default)
+            allTeams: [team],
+            approval: ToolApprovalAvailability(bash: .available, computerUse: .withheld(.switchedOff))
         )
         let names = Set(schemas.map(\.name))
         for tool in ToolHandlerRegistry.computerUseTools {
-            XCTAssertFalse(names.contains(tool),
-                           "default isComputerUseEnabled=false must strip \(tool)")
+            XCTAssertFalse(names.contains(tool), "computer use Off must strip \(tool)")
         }
         XCTAssertTrue(names.contains(tn.readFile),
                       "non-computer-use tools are unaffected")
     }
 
-    func testExplicitIsComputerUseEnabled_keepsComputerUseTools() {
+    func testComputerUseAvailable_keepsComputerUseTools() {
         let tn = ToolNames.self
         let agent = makeAgent(toolIDs: [
             tn.screenCapture, tn.uiClick, tn.uiType, tn.uiKey, tn.uiScroll,
@@ -140,13 +147,26 @@ final class ResolveToolSchemasDefaultsTests: XCTestCase {
             for: Role.fromDefinition(agent),
             team: team,
             allTeams: [team],
-            isComputerUseEnabled: true
+            approval: .available
         )
         let names = Set(schemas.map(\.name))
         for tool in ToolHandlerRegistry.computerUseTools {
-            XCTAssertTrue(names.contains(tool),
-                          "isComputerUseEnabled=true must keep \(tool)")
+            XCTAssertTrue(names.contains(tool), "an available family must keep \(tool)")
         }
+    }
+
+    /// The parameter carries no default: the file's own header says why. Pinned at the
+    /// source, because the compiler is the only thing that can prove a default's absence.
+    func testApprovalParameterHasNoDefault() throws {
+        let path = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("NanoTeams/Services/LLM/LLMExecutionService+ToolResolution.swift")
+        let source = try String(contentsOf: path, encoding: .utf8)
+        XCTAssertTrue(source.contains("approval: ToolApprovalAvailability,"),
+                      "resolveToolSchemas must take `approval` without a default")
+        XCTAssertFalse(source.contains("approval: ToolApprovalAvailability ="),
+                       "a default on `approval` re-creates the silent-strip the header describes")
     }
 
     func testComputerUseTools_surviveDefaultStorageFilter() {
@@ -163,7 +183,7 @@ final class ResolveToolSchemasDefaultsTests: XCTestCase {
             for: Role.fromDefinition(agent),
             team: team,
             allTeams: [team],
-            isComputerUseEnabled: true
+            approval: .available
         )
         let filtered = LLMExecutionService.filterForDefaultStorage(resolved, isDefaultStorage: true)
         let names = Set(filtered.map(\.name))
@@ -186,8 +206,9 @@ final class ResolveToolSchemasDefaultsTests: XCTestCase {
         let team = makeTeam([agent])
         let schemas = LLMExecutionService.resolveToolSchemas(
             for: Role.fromDefinition(agent),
-            team: team
+            team: team,
             // allTeams intentionally omitted — defaults to []
+            approval: .available
         )
         let names = Set(schemas.map(\.name))
         XCTAssertTrue(names.contains(ToolNames.delegateToTeam),

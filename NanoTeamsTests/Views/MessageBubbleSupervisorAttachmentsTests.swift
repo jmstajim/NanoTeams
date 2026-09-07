@@ -179,7 +179,7 @@ final class MessageBubbleSupervisorAttachmentsTests: XCTestCase {
     /// Pin-test: confirms narrowing the strip to `sourceContext == .supervisorMessage`
     /// doesn't break the forward-to-team path.
     func testForwardToTeam_textOnly_noStripping() {
-        let content = "Supervisor:\nuse the standard library Sort, not custom"
+        let content = MessageSourceContext.supervisorMessagePrefix + "use the standard library Sort, not custom"
 
         let result = bubbleInputs(forContent: content)
 
@@ -213,7 +213,7 @@ final class MessageBubbleSupervisorAttachmentsTests: XCTestCase {
     /// attachments/clips. This is the common case for `forward_to_team`
     /// and for queued messages without attachments.
     func testQueuedChat_plainText_noExtractionNoChange() {
-        let content = "Supervisor:\njust a regular message"
+        let content = MessageSourceContext.supervisorMessagePrefix + "just a regular message"
 
         let result = bubbleInputs(forContent: content)
 

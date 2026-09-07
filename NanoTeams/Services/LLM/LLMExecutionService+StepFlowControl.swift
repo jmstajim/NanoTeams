@@ -3,6 +3,18 @@ import Foundation
 /// Extension for step flow control: no-tool-call handling and escalation caps.
 extension LLMExecutionService {
 
+    /// The no-tool-call nudge for a producing role with deliverables outstanding. Dated to
+    /// the note's own position: the sentence stays true after "B" is submitted, because it
+    /// reports the state AS OF the turn before the note (R3.8.4 — "You haven't submitted
+    /// all expected artifacts yet" was a claim about the reader's now, re-read on every
+    /// later request). Names are quoted verbatim: extensions, prefixes and rewordings cause
+    /// name-resolution misses. Registered in `RuntimePromptRegistry`.
+    nonisolated static func missingArtifactsNudge(missing: [String]) -> String {
+        let quoted = missing.map { "\"\($0)\"" }.joined(separator: ", ")
+        return "The turn immediately before this note called no tool. Missing deliverables as of that turn: \(quoted). Submit each via create_artifact, copying the quoted name exactly as shown."
+    }
+
+
     /// True when the step has a pending supervisor-feedback revision. Reads the
     /// freshest task from the delegate so mid-iteration mutations are observed.
     func isStepInRevision(stepID: String, taskID: Int) -> Bool {
@@ -17,7 +29,16 @@ extension LLMExecutionService {
     // MARK: - No-Tool-Call Handling
 
     /// Handles the case where the LLM produced no tool calls.
-    /// Always returns `.continueLoop` — roles never self-terminate here.
+    ///
+    /// Contract: ten nudge paths append one correction and return `.continueLoop`. Terminal
+    /// values leave here only by DELEGATION, never as a self-declared completion —
+    /// `.completed` from `checkArtifactCompleteness` (every deliverable submitted, the
+    /// `artifactStop` below) or from `noteNonProductiveTurn`'s chat-mode advisory backstop at
+    /// `maxNonProductiveTurns`; `.needsSupervisorInput` from the five cap escalations
+    /// (reasoning-channel ×2, thinking drift ×2, refusal loop, malformed JSON ×3, and the
+    /// non-productive cap for every other role); `.toolFailure` when an escalation cannot
+    /// persist its question. Until 2026-09-06 this comment said "always returns
+    /// `.continueLoop`", and the playbook's R3.1.4 / REC.6 Checks repeated it.
     /// Producing roles get artifact-missing reminders; other roles get tool-use nudges.
     ///
     /// - Parameter allowedToolNames: the set `executeToolCalls` authorizes against this
@@ -106,8 +127,8 @@ extension LLMExecutionService {
                     let question = """
                     Role \(roleForMessage.displayName) wrote its tool call inside its reasoning \
                     on two consecutive turns. Nothing dispatches from there, so both turns did \
-                    nothing — the model is not moving the call into its reply on its own. Please \
-                    advise how to proceed (give an explicit next step, restart the role with a \
+                    nothing — the model is not moving the call into its reply on its own. Advise \
+                    how to proceed (give an explicit next step, restart the role with a \
                     different model, or mark the step failed).
                     """
                     let escalated = await setNeedsSupervisorInput(
@@ -126,10 +147,14 @@ extension LLMExecutionService {
                 ? ""
                 : " You wrote a call to \(named.map { "`\($0)`" }.joined(separator: ", ")) there."
             let example = Self.toolNameExample(allowedToolNames: allowedToolNames) ?? "TOOL_NAME"
+            // Anchored on the STATE, not on "your previous turn": the reasoning channel is
+            // stripped from the history the model is resent, so a nudge that opens by naming
+            // what the model wrote there points at a turn it cannot see. What it CAN verify is
+            // that nothing ran.
             let nudge = """
-            Your previous turn wrote a tool call inside your reasoning, where nothing can run \
-            it — this step received no callable output, so nothing happened.\(wrote) Write the \
-            call in your reply instead of your reasoning, as a single envelope on its own line:
+            This step received no callable output — the tool call was written inside your \
+            reasoning, where nothing can run it.\(wrote) Write the call in your reply instead \
+            of your reasoning, as a single envelope on its own line:
             `<|call|>{"name":"\(example)","arguments":{"param":"value"}}<|end|>`
             """
             conversationMessages.append(ChatMessage(role: .user, content: nudge))
@@ -161,7 +186,7 @@ extension LLMExecutionService {
                 Role \(roleForMessage.displayName) produced two consecutive long reasoning \
                 responses (~\(thinkingTrimmedLen / 1000)k characters of internal thinking \
                 last turn) without calling any tool. The model is reasoning instead of acting \
-                — please advise how to proceed (clarify the task, give an explicit next step, \
+                — advise how to proceed (clarify the task, give an explicit next step, \
                 or mark the step failed).
                 """
                 let escalated = await setNeedsSupervisorInput(
@@ -174,11 +199,12 @@ extension LLMExecutionService {
                 }
                 return .needsSupervisorInput(question: question)
             }
+            // Same re-anchor as the reasoning-channel nudge above: the reasoning it measures
+            // is not in the history the model is resent.
             let nudge = """
-            Your previous response had ~\(thinkingTrimmedLen / 1000)k characters of internal \
-            reasoning but no tool call — reasoning alone cannot read files, write files, or \
-            submit artifacts. Take one concrete action now: call the tool that advances your \
-            next step.
+            This step received ~\(thinkingTrimmedLen / 1000)k characters of internal reasoning \
+            and no tool call — reasoning alone cannot read files, write files, or submit \
+            artifacts. Take one concrete action now: call the tool that advances your next step.
             """
             conversationMessages.append(ChatMessage(role: .user, content: nudge))
             await appendLLMMessage(
@@ -210,15 +236,23 @@ extension LLMExecutionService {
                 recentNoToolAssistantContents: executionStates[stepKey]?.recentNoToolAssistantContents
                     ?? ConversationRepairService.recentNoToolAssistantContents(in: conversationMessages))
             {
-            case .refusalLoop(let count, let sample):
-                let snippet = String(sample.prefix(300))
+            case .refusalLoop(let count, _):
+                // No excerpt. This question is not a private note to the Supervisor: it is
+                // persisted as `step.supervisorQuestion`, and `PromptBuilder` step 5 replays
+                // it into the role's OWN next request wrapped in `replayedAskSupervisorEnvelope`
+                // — i.e. attributed to the model, in the few-shot slot whose own comment says
+                // small models imitate the most recent shape. Quoting 300 characters of the
+                // refusal there hands the loop back to the looping model as its own words, and
+                // nudges are never retired, so it then rides the prefix of every remaining
+                // request of the step (the harm `LoopRecoveryPolicy.shapeClause` was fixed for
+                // on 2026-08-24).
+                //
+                // The human loses nothing: every refusal is already a card in the step's feed,
+                // which is where the Supervisor reads it.
                 let question = """
                 Role \(roleForMessage.displayName) emitted \(count) consecutive refusal messages without \
-                calling any tools. The model appears stuck — please advise how to proceed (answer the \
+                calling any tools. The model appears stuck — advise how to proceed (answer the \
                 underlying need, provide explicit instructions, or mark the step failed).
-                
-                Last message excerpt:
-                \(snippet)
                 """
                 let escalated = await setNeedsSupervisorInput(
                     stepID: stepID, taskID: task.id, question: question)
@@ -322,9 +356,9 @@ extension LLMExecutionService {
                         Role \(roleForMessage.displayName) produced 3 consecutive malformed \
                         tool-call JSON envelopes (often an unescaped `"` inside a string literal — \
                         a common defect when models emit HTML/JS content inside `create_artifact`). \
-                        The model cannot self-correct from generic retry hints. Please advise: \
-                        restart the role with a different model, simplify the brief to avoid \
-                        embedded markup, or mark the step failed and re-plan.
+                        The model cannot self-correct from generic retry hints. Restart the role \
+                        with a different model, simplify the brief to avoid embedded markup, or \
+                        mark the step failed and re-plan.
                         """
                         let escalated = await setNeedsSupervisorInput(
                             stepID: stepID, taskID: task.id, question: question)
@@ -351,7 +385,10 @@ extension LLMExecutionService {
                 // carries the raw buffer, without being shown its own attempt either.
                 let example = Self.toolNameExample(allowedToolNames: allowedToolNames)
                     ?? "TOOL_NAME"
-                retryMessage = "Your previous tool call had malformed JSON and could not be parsed (\(defect)). Your attempt is quoted verbatim in your previous turn — compare it against this shape: `<|call|>{\"name\":\"\(example)\",\"arguments\":{\"param\":\"value\"}}<|end|>` — note the two closing braces before `<|end|>`."
+                // Anchored to this note's own position, never to the reader's present: the
+                // note is never retired, and "your previous turn" is false the moment one more
+                // turn follows it (playbook R3.8.4; same rule as `LoopRecoveryPolicy.nudgePrefix`).
+                retryMessage = "The tool call in the turn immediately before this note had malformed JSON and could not be parsed (\(defect)). That attempt is quoted verbatim in that turn — compare it against this shape: `<|call|>{\"name\":\"\(example)\",\"arguments\":{\"param\":\"value\"}}<|end|>` — note the two closing braces before `<|end|>`."
             case .noCallEnvelope:
                 // Framing without a call: a `<|channel|>` / `<|start|>` envelope whose
                 // recipient is missing or reserved, or whose body is prose. Deliberately
@@ -363,7 +400,7 @@ extension LLMExecutionService {
                 let example = Self.toolNameExample(allowedToolNames: allowedToolNames)
                     ?? "TOOL_NAME"
                 retryMessage = """
-                Your previous response opened a Harmony channel but never made a tool call — \
+                The turn immediately before this note opened a Harmony channel but never made a tool call — \
                 there was no recipient and no JSON body to dispatch. Name the tool and give it \
                 arguments, either as \
                 `<|channel|>commentary to=\(example)<|message|>{"param":"value"}` or as \
@@ -391,10 +428,22 @@ extension LLMExecutionService {
         // Check if content contains only model tokens (Issue #24, #32)
         let originalContent = result.assistantContent
         let cleanedContent = ModelTokenCleaner.clean(originalContent)
+        // A call sentinel the normalizer refused to repair. Derived ONCE here because two
+        // branches below need the same verdict — the planning-phase plan guard and the
+        // near-miss nudge — and re-deriving it would let them disagree about what counts
+        // as an attempt. Content first, then the Harmony buffer: the buffer is populated
+        // only once the latch closed, and a near-miss is precisely the turn where it did
+        // not, so content is the usual home and the buffer covers the `.noEnvelopeAttempt`
+        // fall-through (a role marker latched, an unrecognised sentinel beside it).
+        let nearMissSentinel = HarmonySentinelNormalizer.unrepairedSentinel(in: originalContent)
+            ?? HarmonySentinelNormalizer.unrepairedSentinel(in: result.harmonyBuffer)
 
         if !originalContent.isEmpty && cleanedContent.isEmpty {
             // Content was entirely garbled tokens with no substantive text
-            let retryMessage = "Your previous response contained only model-internal tokens (<|...|>) with no actual content. Emit a tool call or a completion message."
+            // The turn this describes reaches the model EMPTY — that is the branch condition
+            // (`cleanedContent.isEmpty`) — so "your previous response" names nothing it can
+            // look at. The state is the anchor.
+            let retryMessage = "This step received no usable content: the last reply was only model-internal tokens (<|...|>). Emit a tool call or a completion message."
             conversationMessages.append(
                 ChatMessage(role: .user, content: retryMessage)
             )
@@ -430,11 +479,25 @@ extension LLMExecutionService {
             // boundary, making it the sole memory of the exploration phase. Nudge with
             // the defect instead and let the model retry the call it meant to make;
             // leaving `scratchpad` nil keeps the phase open for a real plan.
-            if BareToolCallSalvage.looksLikeToolCallAttempt(cleanedContent) {
+            // Two predicates, one question: "was this an attempt?". `looksLikeToolCallAttempt`
+            // answers it for an UNFRAMED reply — it requires the whole reply to be one JSON
+            // object (`BareToolCallSalvage.jsonEnvelopeCall`'s `hasPrefix("{")`), so a reply
+            // that is prose followed by a broken sentinel is invisible to it. That is the
+            // shape task 39 run 8 recorded as its plan: the marker crossed the phase boundary
+            // inside the seed turn and rode every later request as the freshest example in
+            // the fresh conversation's first USER turn.
+            if nearMissSentinel != nil || BareToolCallSalvage.looksLikeToolCallAttempt(cleanedContent) {
+                // Anchored to the note, not to "That" — re-read on every later request, a
+                // demonstrative points at whatever turn is nearest (R3.8.4). And a real id
+                // from the phase's narrowed schema, as the `.malformedJSON` arm resolves —
+                // this arm shipped the literal `TOOL_NAME` until 2026-09-06, in the one
+                // phase where the model most needs to be shown which ids survive.
+                let example = Self.toolNameExample(allowedToolNames: allowedToolNames) ?? "TOOL_NAME"
                 let nudge = """
-                That looked like a tool call, but it did not parse as one, so nothing ran \
-                and nothing was recorded. Emit it as a single envelope on its own line:
-                `<|call|>{"name":"TOOL_NAME","arguments":{"param":"value"}}<|end|>`
+                The turn immediately before this note looked like a tool call but did not \
+                parse as one, so nothing ran and nothing was recorded. Emit it as a single \
+                envelope on its own line:
+                `<|call|>{"name":"\(example)","arguments":{"param":"value"}}<|end|>`
                 Nothing before the `<|call|>` and nothing after the `<|end|>`.
                 """
                 conversationMessages.append(ChatMessage(role: .user, content: nudge))
@@ -462,6 +525,94 @@ extension LLMExecutionService {
             return .continueLoop
         }
 
+        // A sentinel the normalizer refuses to repair, with a payload abutting it: the
+        // model's attempt is plain to the eye and invisible to every latch. `sawHarmonyMarker`
+        // is decided by exact substring against the three markers, so `classifyHarmonyCallIssue`
+        // — which sits behind it — cannot run, and without this branch the turn falls through
+        // to whichever arm happens to match. For a producing role that is the artifact nudge,
+        // which answers a different question entirely: R3.8.2 ("a new failure shape gets its
+        // own branch, not a neighbour's wording"), violated 16 times in one step of task 39
+        // run 8 before this existed.
+        //
+        // ABOVE the producing-role branch for the same reason the planning branch is: that one
+        // steers toward `create_artifact`, and a model whose sentinel is broken cannot call it
+        // either. Below the planning branch because a plan is the more specific claim on the
+        // same turn, and it has already returned by here.
+        //
+        // Shares `consecutiveHarmonyParseFailureCount` with the `.malformedJSON` arm rather
+        // than adding a counter: both mean "the model emitted a call the parser could not
+        // take", so three in any mixture is the same evidence that nudging has stopped
+        // working. Repairing one more shape (which 2026-09-05 and 2026-09-07 both did) never
+        // removes the need for this — the NEXT unrecognised shape is silent again, and the
+        // only bound left is `maxNonProductiveTurns`, twenty turns away. Run 8 reached
+        // sixteen consecutive nudges without tripping anything.
+        //
+        // The completeness check is repeated here rather than left to the branch below,
+        // and it is not defensive noise: a step whose deliverables are all in is DONE
+        // however its last turn was framed, and this branch stands ABOVE the arm that
+        // would have said so. Without it a near-miss on a turn after the final
+        // `create_artifact` nudges a step with nothing left to do, and the only thing that
+        // ends it is the twenty-turn cap — the exact shape this branch exists to remove.
+        // Cheap by construction: `checkArtifactCompleteness` is a read of
+        // `step.isArtifactComplete`, and it answers `nil` for a role with no deliverables,
+        // so an advisory role reaches the nudge unchanged.
+        if let nearMissSentinel, checkArtifactCompleteness(stepID: stepID, taskID: task.id) == nil {
+            let runID = task.runs.indices.contains(runIndex)
+                ? task.runs[runIndex].id : (task.runs.last?.id ?? 0)
+            await recordNonDispatchedAttempt(
+                stepID: stepID, taskID: task.id, runID: runID,
+                name: "unparsed_tool_call", code: "UNPARSED_SENTINEL",
+                message: "Tool-call sentinel `\(nearMissSentinel)` was not recognised; not dispatched.",
+                envelope: originalContent, runtime: runtime)
+
+            // Same revision handling as the malformed-JSON cap: the Supervisor is already
+            // driving, and a counter carried in from before the revision must not pre-trigger
+            // an escalation on the first new turn after it.
+            if isStepInRevision(stepID: stepID, taskID: task.id) {
+                executionStates[stepKey]?.consecutiveHarmonyParseFailureCount = 0
+            } else {
+                let newCount = (executionStates[stepKey]?.consecutiveHarmonyParseFailureCount ?? 0) + 1
+                executionStates[stepKey]?.consecutiveHarmonyParseFailureCount = newCount
+                if newCount >= 3 {
+                    executionStates[stepKey]?.consecutiveHarmonyParseFailureCount = 0
+                    let question = """
+                    Role \(roleForMessage.displayName) produced 3 consecutive tool calls whose \
+                    opening sentinel the parser could not recognise — the model writes \
+                    `\(nearMissSentinel)` where the format is `<|call|>`. On an append-only wire \
+                    it is copying its own broken form back from the conversation, so a nudge \
+                    cannot reach it. Restart the role with a different model, or mark the step \
+                    failed and re-plan.
+                    """
+                    let escalated = await setNeedsSupervisorInput(
+                        stepID: stepID, taskID: task.id, question: question)
+                    // Same critical fallback as every other cap: a transition to "needs
+                    // Supervisor input" with no question rendered is worse than the loop.
+                    guard escalated else {
+                        return .toolFailure(message: "Sentinel-failure cap exceeded but Supervisor escalation failed to persist; aborting step. Question would have been: \(question)")
+                    }
+                    return .needsSupervisorInput(question: question)
+                }
+            }
+
+            let example = Self.toolNameExample(allowedToolNames: allowedToolNames) ?? "TOOL_NAME"
+            // Anchored to the note's own position, and it names the form by OUR literal
+            // rather than quoting the model's bytes: a nudge is never retired, so a quoted
+            // attempt rides the prefix of every later request and re-seeds the loop it was
+            // meant to break (R3.8.3, R3.8.4).
+            let nudge = """
+            The turn immediately before this note opened a tool call with `\(nearMissSentinel)`, \
+            which is not the call sentinel — so nothing ran and nothing was recorded. The \
+            sentinel is `<|call|>`, closing `>` included, with the payload's `{` next:
+            `<|call|>{"name":"\(example)","arguments":{"param":"value"}}<|end|>`
+            Nothing before the `<|call|>` and nothing after the `<|end|>`.
+            """
+            conversationMessages.append(ChatMessage(role: .user, content: nudge))
+            await appendLLMMessage(
+                stepID: stepID, taskID: task.id, role: .user, content: nudge,
+                sourceContext: .retryNudge)
+            return .continueLoop
+        }
+
         // Producing role — retry if artifacts missing, complete if all present
         if let roleDef = roleDefinition {
             let expected = roleDef.dependencies.producesArtifacts.filter { $0 != ArtifactConstants.buildDiagnosticsName }
@@ -481,9 +632,15 @@ extension LLMExecutionService {
                 }
 
                 // Missing artifacts — retry. Names must be quoted and verbatim;
-                // extensions / prefixes / rewordings cause name-resolution misses.
-                let quoted = expected.map { "\"\($0)\"" }.joined(separator: ", ")
-                let retryMessage = "You haven't submitted all expected artifacts yet. Missing deliverables: \(quoted). Submit each via create_artifact, copying the quoted name exactly as shown."
+                // extensions / prefixes / rewordings cause name-resolution misses. The set
+                // is the STEP's `missingArtifactNames` — the predicate
+                // `checkArtifactCompleteness` just answered `nil` with — so a role that has
+                // submitted "A" and lacks "B" is told about "B" alone. Until 2026-09-06 this
+                // quoted the role definition's whole `producesArtifacts`, i.e. reported the
+                // already-submitted deliverable as missing on every no-tool turn until the
+                // step ended (R3.8.2).
+                let missing = outstandingArtifactNames(stepID: stepID, task: task, fallback: expected)
+                let retryMessage = Self.missingArtifactsNudge(missing: missing)
                 conversationMessages.append(ChatMessage(role: .user, content: retryMessage))
                 await appendLLMMessage(
                     stepID: stepID, taskID: task.id, role: .user, content: retryMessage,
@@ -505,6 +662,19 @@ extension LLMExecutionService {
             stepID: stepID, taskID: task.id, role: .user, content: retryMessage,
             sourceContext: .retryNudge)
         return .continueLoop
+    }
+
+    /// The deliverables `stepID` still owes, read from the same record
+    /// `checkArtifactCompleteness` reads (`delegate.loadedTask`, falling back to the
+    /// iteration's `task`) so the nudge and the completion terminal agree. `fallback` is the
+    /// role definition's list, used only when the step carries no `expectedArtifacts` of
+    /// its own — the shape test fixtures build; a production step is created with the
+    /// role's list, and reaching this branch means at least one of them is outstanding.
+    private func outstandingArtifactNames(stepID: String, task: NTMSTask, fallback: [String]) -> [String] {
+        let current = delegate?.loadedTask(task.id) ?? task
+        guard let step = current.runs.last?.steps.first(where: { $0.id == stepID }) else { return fallback }
+        let missing = step.missingArtifactNames
+        return missing.isEmpty ? fallback : missing
     }
 
     // MARK: - Failed Tool-Call Surfacing
@@ -545,6 +715,30 @@ extension LLMExecutionService {
             // by the guard above — same outcome, now stated rather than incidental.)
             return
         }
+        await recordNonDispatchedAttempt(
+            stepID: stepID, taskID: taskID, runID: runID,
+            name: name, code: code, message: message, envelope: envelope, runtime: runtime)
+    }
+
+    /// Writes one errored `StepToolCall` card and mirrors it into both per-run logs.
+    ///
+    /// Extracted from `recordFailedToolCallAttemptIfNeeded` when the near-miss branch
+    /// needed the same surfacing: the CLASSIFICATION of a non-dispatched attempt differs
+    /// per branch (a `HarmonyCallIssue` behind the marker latch, an unrecognised sentinel
+    /// in front of it), but what happens to it afterwards is one behaviour and belongs in
+    /// one place. Deliberately NOT reached by adding a `HarmonyCallIssue` case: that enum
+    /// classifies a buffer in which a marker was already found, and a near-miss is by
+    /// definition a buffer where none was.
+    private func recordNonDispatchedAttempt(
+        stepID: String,
+        taskID: Int,
+        runID: Int,
+        name: String,
+        code: String,
+        message: String,
+        envelope: String,
+        runtime: ToolRuntime?
+    ) async {
         let rawEnvelope = Self.extractCallEnvelope(from: envelope) ?? envelope
         let resultJSON = JSONUtilities.jsonStringForToolArgs([
             "ok": false,
@@ -556,9 +750,7 @@ extension LLMExecutionService {
 
         // Mirror into BOTH per-run logs (tool_calls.jsonl + network_log.json) with the
         // SAME name/envelope as the card, so both audits match the feed. Off the main
-        // actor (the loggers do synchronous file I/O). Gated to the same cases that
-        // produced a card — channel-only / `.noEnvelopeAttempt` returned above, so no
-        // record here either.
+        // actor (the loggers do synchronous file I/O).
         if let runtime {
             Task.detached { [runtime] in
                 runtime.logNonExecutedCall(
@@ -619,6 +811,7 @@ extension LLMExecutionService {
         task: NTMSTask,
         roleForMessage: Role,
         supervisorMode: SupervisorMode,
+        allowedToolNames: Set<String>,
         conversationMessages: inout [ChatMessage]
     ) async -> LLMStepStop {
         let stepKey = TaskStepKey(taskID: task.id, stepID: stepID)
@@ -635,7 +828,8 @@ extension LLMExecutionService {
             // wakes). Resolved here rather than inside the pure policy so no team
             // identity leaks into it.
             canParkForSupervisor: team?.templateID == AutovisorConstants.teamTemplateID,
-            roleName: roleForMessage.displayName
+            roleName: roleForMessage.displayName,
+            allowedToolNames: allowedToolNames
         )
         switch decision {
         case .retryWithNudge(let nudge):
@@ -766,7 +960,7 @@ extension LLMExecutionService {
     nonisolated static func nonProductiveEscalationQuestion(roleName: String, turns: Int) -> String {
         """
         Role \(roleName) produced \(turns) consecutive turns without completing a single tool \
-        call, so this step cannot advance on its own. Please advise how to proceed (clarify \
+        call, so this step cannot advance on its own. Advise how to proceed (clarify \
         the task, give an explicit next step, or mark the step failed).
         """
     }

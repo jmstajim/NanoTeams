@@ -111,7 +111,7 @@ extension NTMSOrchestrator {
                     lastErrorMessage = "Team generation log skipped — no run available for task \(taskID)"
                     return nil
                 }
-                return NetworkLogger(logURL: url)
+                return NetworkLogger.forRun(logURL: url)
             }()
             // Runs on the global model unless a team-gen override is set, so it interleaves
             // with any role step streaming on that model and can evict its prefix cache.

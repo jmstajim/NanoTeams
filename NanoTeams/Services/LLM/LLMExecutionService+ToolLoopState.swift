@@ -141,14 +141,17 @@ extension LLMExecutionService {
         loopDetection: LoopDetection,
         allowedToolNames: Set<String>
     ) -> String {
-        let escalation = allowedToolNames.contains(ToolNames.askSupervisor)
-            ? " If you are blocked, call ask_supervisor."
-            : ""
+        let escalation = Self.escalationClause(code: nil, allowedToolNames: allowedToolNames)
 
         switch loopDetection {
         case .repetitivePlanning(let count):
-            return "Plan already recorded (\(count) scratchpad updates) — do not call "
-                + "update_scratchpad again except to mark a completed step. "
+            // No prohibition and no exception clause. "Do not call update_scratchpad again
+            // except to mark a completed step" made the model re-judge the predicate on
+            // every later request — and the implementation seed tells the same role to mark
+            // every step complete via update_scratchpad, so the exception was the normal
+            // case (R4.4.1). The spin is detected by `ToolCallLoopDetector`, which is where
+            // the guard lives; the note only says what to do instead.
+            return "Plan already recorded (\(count) scratchpad updates). "
                 + "\(executeNowDirective(allowedToolNames: allowedToolNames))\(escalation)"
 
         case .repetitiveTool(let tool, let count):
@@ -183,7 +186,8 @@ extension LLMExecutionService {
                     + "the arguments, or take a different step."
             }
             return "Loop detected: '\(tool)' has failed \(count) times in a row with "
-                + "identical arguments\(codeClause). \(directive)\(escalation)"
+                + "identical arguments\(codeClause). \(directive)"
+                + Self.escalationClause(code: code, allowedToolNames: allowedToolNames)
 
         case .persistentToolError(let tool, let count, let code):
             // The inverse of every other arm's advice. "Change the arguments" is what
@@ -203,8 +207,26 @@ extension LLMExecutionService {
                     + "message and take a different step."
             }
             return "Loop detected: '\(tool)' has failed \(count) times in a row with the "
-                + "same error (\(code)) despite different arguments. \(directive)\(escalation)"
+                + "same error (\(code)) despite different arguments. \(directive)"
+                + Self.escalationClause(code: code, allowedToolNames: allowedToolNames)
         }
+    }
+
+    /// The "If you are blocked, call X." tail every loop warning ends on — or nothing, when
+    /// the role holds no channel OR when the channel cannot help. The second case is
+    /// `APPROVAL_UNAVAILABLE`: the block is the absence of a human, and the channel a role
+    /// holds (`ask_supervisor`) reaches the same answerer that cannot approve — offering it
+    /// sent the 2026-09-07 audit's role in a ring (KNOWN_ISSUES A15). Computed per arm, not
+    /// once: `.persistentToolError` is the arm that fires when the model rewords a refused
+    /// command, and it appended the clause too. Case-insensitive because the executor spells
+    /// the same code in lowercase for a call the resolver had already withheld.
+    /// Internal (not private) for test pinning.
+    nonisolated static func escalationClause(code: String?, allowedToolNames: Set<String>) -> String {
+        if let code, code.lowercased() == ToolErrorCode.approvalUnavailable.rawValue.lowercased() {
+            return ""
+        }
+        return LoopRecoveryPolicy.escalationChannel(in: allowedToolNames)
+            .map { " If you are blocked, call \($0)." } ?? ""
     }
 
     /// The "stop planning, act" rung, shared by the scratchpad ladder.
@@ -240,18 +262,21 @@ extension LLMExecutionService {
     /// nothing. Keyed on the schema rather than on team identity so a role that holds
     /// the tool gets the right text however it acquired it.
     nonisolated static func noToolCallNudge(allowedToolNames: Set<String>) -> String {
+        // Anchored to the note, never to the reader's present ("You replied…" until
+        // 2026-09-07): a nudge is never retired, and after the next tool call the sentence
+        // must still name the turn it was about (R3.8.4).
         if allowedToolNames.contains(ToolNames.waitForEvents) {
-            return "You replied with text but did not call a tool. Your reply is recorded. "
-                + "If you have nothing left to do this pass, call wait_for_events to go idle; "
-                + "otherwise call the next tool you need to continue."
+            return "The turn immediately before this note was text and did not call any tools; "
+                + "the text is recorded. If nothing is left to do this pass, call wait_for_events "
+                + "to go idle; otherwise call the next tool you need to continue."
         }
         if allowedToolNames.contains(ToolNames.askSupervisor) {
-            return "You responded with text but did not call any tools — plain text "
-                + "does not reach the Supervisor. If your reply is complete, send it via "
+            return "The turn immediately before this note was text and did not call any tools — "
+                + "plain text does not reach the Supervisor. If the reply is complete, send it via "
                 + "ask_supervisor; otherwise call the next tool you need to continue."
         }
-        return "You responded with text but did not call any tools — plain text does not "
-            + "reach the Supervisor. Call the next tool you need to continue."
+        return "The turn immediately before this note was text and did not call any tools — plain "
+            + "text does not reach the Supervisor. Call the next tool you need to continue."
     }
 
     /// The nudge for N near-identical no-tool responses (`.repetitiveNonTool`).
@@ -276,8 +301,10 @@ extension LLMExecutionService {
         } else {
             action = "Call the tool that advances your next step."
         }
-        return "Your last \(count) responses were near-identical and "
-            + "contained no tool calls. \(action) Do not repeat this response."
+        // Anchored to this note's own position (playbook R3.8.4): the note is never retired,
+        // and "your last N responses" stops being true one turn later.
+        return "The \(count) turns immediately before this note were near-identical and "
+            + "contained no tool calls. \(action) Do not repeat that response."
     }
 
     /// Illustrative tool ids for the "missing top-level `name`" explainer, filtered to
@@ -318,6 +345,7 @@ extension LLMExecutionService {
         stepIndex: Int,
         client: any LLMClient,
         config: LLMConfig,
+        networkLogger: NetworkLogger? = nil,
         conversationMessages: inout [ChatMessage]
     ) async -> LLMStepStop? {
         // Autovisor as the folder's Supervisor: suppress the generic auto-answer
@@ -346,7 +374,9 @@ extension LLMExecutionService {
             runIndex: runIndex,
             stepIndex: stepIndex,
             client: client,
-            config: config
+            config: config,
+            networkLogger: networkLogger,
+            stepID: stepID
         ) else { return nil }
         await recordAutoSupervisorAnswer(stepID: stepID, taskID: task.id, question: q, answer: answer)
 

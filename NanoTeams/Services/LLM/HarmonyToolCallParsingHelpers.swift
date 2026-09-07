@@ -1057,8 +1057,12 @@ nonisolated enum ToolCallParsingHelpers {
             return nil
         } catch let error as NSError {
             if parseAfterRepair(sanitized) != nil { return nil }
-            let detail = ((error.userInfo[NSDebugDescriptionErrorKey] as? String)
-                ?? error.localizedDescription)
+            // `NSDebugDescriptionErrorKey` alone: it is JSONSerialization's English diagnostic
+            // ("Unexpected character … around line 1, column 12"). The former
+            // `localizedDescription` fallback was the system-language "The data couldn't be
+            // read…", which the malformed-JSON nudge would then quote to the model (R1.8.2);
+            // with no debug description the nudge falls back to its own guess list.
+            let detail = (error.userInfo[NSDebugDescriptionErrorKey] as? String)?
                 .components(separatedBy: .newlines).first?
                 .trimmingCharacters(in: .whitespaces) ?? ""
             return detail.isEmpty ? nil : detail

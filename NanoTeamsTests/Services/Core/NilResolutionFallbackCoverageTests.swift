@@ -125,7 +125,7 @@ final class NilFallbackToolErrorGuidanceTests: XCTestCase {
         )
         // Everything above is in the envelope, which the model reads one turn earlier — so
         // the policy adds nothing. A paraphrase here reads as a SECOND instruction.
-        XCTAssertNil(ToolErrorNotePolicy.direction(for: envelope))
+        XCTAssertNil(ToolErrorNotePolicy.direction(for: envelope, allowedToolNames: []))
     }
 
     /// The tool-name resolution, on the arm that still uses it. A degraded envelope carries
@@ -143,7 +143,7 @@ final class NilFallbackToolErrorGuidanceTests: XCTestCase {
             isError: true
         )
 
-        let guidance = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope))
+        let guidance = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope, allowedToolNames: []))
 
         XCTAssertTrue(
             guidance.contains("do not retry 'read_lines'"),
@@ -179,7 +179,7 @@ final class NilFallbackToolErrorGuidanceTests: XCTestCase {
             "the ENVELOPE names the actual blocker, got: \(envelope.outputJSON)"
         )
 
-        let guidance = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope))
+        let guidance = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope, allowedToolNames: []))
 
         XCTAssertTrue(
             guidance.contains("Do not retry 'git_add'"),
@@ -214,7 +214,7 @@ final class NilFallbackToolErrorGuidanceTests: XCTestCase {
             isError: true
         )
 
-        let guidance = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope))
+        let guidance = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope, allowedToolNames: []))
 
         XCTAssertTrue(
             guidance.contains("Do not retry 'run_xcodebuild'"),
@@ -251,15 +251,16 @@ final class NilFallbackToolErrorGuidanceTests: XCTestCase {
             "the policy's own reason is the ENVELOPE's, got: \(envelope.outputJSON)"
         )
 
-        let guidance = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope))
+        let guidance = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope, allowedToolNames: [ToolNames.askSupervisor]))
 
         XCTAssertTrue(
             guidance.contains("Do NOT retry this command"),
             "a denied command never executed — retrying re-hits the same policy, got: \(guidance)"
         )
         XCTAssertTrue(
-            guidance.contains("ask the Supervisor"),
-            "the escalation route is what makes this branch better than the default arm, got: \(guidance)"
+            guidance.contains("call ask_supervisor"),
+            "the escalation route — named as the tool the role holds, never as prose — is what makes "
+                + "this branch better than the default arm, got: \(guidance)"
         )
         XCTAssertFalse(
             guidance.contains("[BASH_DENIED]"),
@@ -293,7 +294,7 @@ final class NilFallbackToolErrorGuidanceTests: XCTestCase {
                 toolName: "bash", argumentsJSON: #"{"command":"ls"}"#,
                 outputJSON: json, isError: true)
             let guidance = try XCTUnwrap(
-                ToolErrorNotePolicy.direction(for: envelope), "\(label) produced no direction")
+                ToolErrorNotePolicy.direction(for: envelope, allowedToolNames: []), "\(label) produced no direction")
             XCTAssertFalse(
                 guidance.hasPrefix(" "),
                 "\(label): a missing reason must never render as a leading space, got: '\(guidance)'")
@@ -571,7 +572,7 @@ final class NilFallbackCollaborationNoTeamTests: XCTestCase {
         let reply = await service.handleTeamMeeting(
             stepID: NilFallbackFixtures.stepID, topic: "topic",
             participantIDs: ["techLead"], context: nil,
-            initiatingRole: NilFallbackFixtures.requester, task: task,
+            initiatingRole: NilFallbackFixtures.requester, initiatorSeat: .speaks, task: task,
             runIndex: 0, stepIndex: 0,
             client: client, config: NilFallbackFixtures.stubConfig())
 
@@ -654,7 +655,7 @@ final class NilFallbackCollaborationNoTeamTests: XCTestCase {
         let reply = await service.handleTeamMeeting(
             stepID: NilFallbackFixtures.stepID, topic: "one more",
             participantIDs: ["techLead"], context: nil,
-            initiatingRole: NilFallbackFixtures.requester, task: task,
+            initiatingRole: NilFallbackFixtures.requester, initiatorSeat: .speaks, task: task,
             runIndex: 0, stepIndex: 0,
             client: client, config: NilFallbackFixtures.stubConfig())
 
@@ -685,7 +686,7 @@ final class NilFallbackCollaborationNoTeamTests: XCTestCase {
         let reply = await service.handleTeamMeeting(
             stepID: NilFallbackFixtures.stepID, topic: "one more",
             participantIDs: ["techLead"], context: nil,
-            initiatingRole: NilFallbackFixtures.requester, task: task,
+            initiatingRole: NilFallbackFixtures.requester, initiatorSeat: .speaks, task: task,
             runIndex: 0, stepIndex: 0,
             client: client, config: NilFallbackFixtures.stubConfig())
 

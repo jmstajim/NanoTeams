@@ -142,7 +142,7 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
             var toolCalls: [(name: String, argumentsJSON: String)] = []
         }
         var script: [ScriptedTurn] = []
-        var captures: [(messages: [ChatMessage], tools: [ToolSchema])] = []
+        var captures: [(messages: [ChatMessage], tools: [ToolSchema], roleName: String?)] = []
         /// Thrown instead of streaming. Lets a test distinguish a user Pause from a
         /// transport failure, which the service must NOT conflate.
         var shouldThrow: Error?
@@ -153,9 +153,9 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
             tools: [ToolSchema],
             logger _: NetworkLogger?,
             stepID _: String?,
-            roleName _: String?
+            roleName: String?
         ) -> AsyncThrowingStream<StreamEvent, Error> {
-            captures.append((messages, tools))
+            captures.append((messages, tools, roleName))
             if let shouldThrow {
                 return AsyncThrowingStream { $0.finish(throwing: shouldThrow) }
             }
@@ -253,6 +253,35 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
             parentRoleID: parentRoleID,
             delegationDepth: 1
         )
+    }
+
+    // MARK: - The answering role's name on the wire log
+
+    /// The answer is logged under the parent role's TEAM name; a step whose role the team no
+    /// longer defines (renamed, removed after the run began) falls back to the step role's
+    /// display name rather than to no name — `--from-logs` lists a call only by its name.
+    func testAnswer_isLoggedUnderTheTeamRoleName_orTheStepRoleWhenTheTeamLacksIt() async {
+        for teamHasRole in [true, false] {
+            let delegate = MultiTaskDelegateStub()
+            var parentTeam = makeParentTeam()
+            if !teamHasRole { parentTeam.roles.removeAll { $0.id == "pm" } }
+            delegate.workFolderProjection = makeProjection(teams: [parentTeam])
+            delegate.tasks[1] = makeParentTask(seedConversation: [LLMMessage(role: .system, content: "You are PM.")])
+            delegate.tasks[2] = makeChildTask(question: "Which colour?")
+            let client = ScriptedLLMClient()
+            client.script = [.init(content: "Blue.", toolCalls: [])]
+
+            let success = await DelegatedSupervisorAnswerService.handleChildQuestion(
+                childTID: 2, parentTaskID: 1, parentRoleID: "pm", parentTeam: parentTeam,
+                targetTeamName: "Engineering", client: client,
+                globalConfig: delegate.globalLLMConfig, delegate: delegate)
+
+            XCTAssertTrue(success, "teamHasRole=\(teamHasRole)")
+            XCTAssertEqual(client.captures.count, 1, "teamHasRole=\(teamHasRole)")
+            XCTAssertEqual(client.captures.first?.roleName,
+                           teamHasRole ? "PM" : Role.productManager.displayName,
+                           "teamHasRole=\(teamHasRole)")
+        }
     }
 
     // MARK: - First Question: Seeded Chain

@@ -4,10 +4,11 @@ import SwiftUI
 /// tool loop (step execution, consultation, meeting, planning). Lives in
 /// `StoreConfiguration.globalContext`.
 ///
-/// The shipped default is one bare rule (`AppDefaults.globalContext`) — local
-/// models batch tool calls without it. Clearing the field is allowed and emits no
-/// `## Global guidance` section at all (the header is stripped, not left
-/// dangling), so a blank field costs zero tokens.
+/// The shipped default is empty (`AppDefaults.globalContext`): the slot belongs to
+/// the user, and the one-tool rule that used to live here rides the `## Tool Calling`
+/// body instead (`NativeLMStudioClient.oneToolPerResponseRule`), so it reaches only
+/// calls that carry tools. A blank field emits no `## Global guidance` section at
+/// all (the header is stripped, not left dangling) and costs zero tokens.
 ///
 /// Reset goes through `StoreConfiguration.resetGlobalContextToDefault()`, never a
 /// direct assignment: assigning the default persists a COPY of it and pins the
@@ -22,7 +23,7 @@ struct GlobalContextCard: View {
         SettingsCard(
             header: "Global Context",
             systemImage: "text.book.closed",
-            footer: "Clearing the field is allowed — it emits no Global guidance section at all. The default asks for one tool call per response; local models batch calls without it."
+            footer: "Empty by default — a blank field emits no Global guidance section at all. The one-tool-per-response rule ships inside the Tool Calling section of every call that has tools."
         ) {
             VStack(alignment: .leading, spacing: Spacing.m) {
                 Text("Added to every LLM system prompt that has a tool loop (step execution, teammate consultation, team meetings). Use this for cross-cutting instructions you want every role to follow. Edits apply to new sessions — running steps keep the value cached at start.")

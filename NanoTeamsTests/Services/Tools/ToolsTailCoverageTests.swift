@@ -16,6 +16,7 @@ private struct ToolsTailEnvelope {
     let errorCode: String?
     let errorMessage: String?
     let data: [String: Any]?
+    let next: [String: Any]?
 
     init?(_ json: String) {
         guard let bytes = json.data(using: .utf8),
@@ -26,6 +27,7 @@ private struct ToolsTailEnvelope {
         self.errorCode = err?["code"] as? String
         self.errorMessage = err?["message"] as? String
         self.data = obj["data"] as? [String: Any]
+        self.next = obj["next"] as? [String: Any]
     }
 }
 
@@ -178,6 +180,10 @@ final class ToolsTailZIPReaderRejectionTests: XCTestCase {
             }
             XCTAssertTrue(reason.contains("cannot stat ZIP file"),
                           "a stat failure must not be silently treated as an empty archive: \(reason)")
+            // R1.8.2: the classifier's sentence, not Foundation's localized one — which names
+            // the file in the user's system language and would ride the model's prompt.
+            XCTAssertTrue(reason.hasSuffix("File not found."), "got: \(reason)")
+            XCTAssertFalse(reason.contains("does-not-exist"), "no path in the reason: \(reason)")
         }
     }
 
@@ -190,6 +196,9 @@ final class ToolsTailZIPReaderRejectionTests: XCTestCase {
             }
             XCTAssertTrue(reason.contains("cannot read ZIP file"),
                           "expected the read-failure branch, got: \(reason)")
+            XCTAssertFalse(reason.contains(tempDir.lastPathComponent),
+                           "no path in the reason (R1.8.2): \(reason)")
+            XCTAssertFalse(reason.contains("\u{201C}"), "no localized Cocoa prose (it quotes the name in “ ”): \(reason)")
         }
     }
 
@@ -770,7 +779,11 @@ final class ToolsTailToolErrorHandlerTests: XCTestCase {
                           "the restrictedPath arm must win over the generic SandboxPathError arm")
     }
 
-    func testOtherSandboxPathErrors_mapToPermissionDenied() async {
+    /// A path SHAPE the resolver refuses is an argument fault with a one-token repair, so
+    /// it carries the code whose note says "Fix the arguments and retry". Until
+    /// 2026-09-07 these were `PERMISSION_DENIED` — a `_DENIED` code, which the note policy
+    /// answers with "Do not retry this call" on top of a message that says how to retry it.
+    func testOtherSandboxPathErrors_mapToInvalidArgs_andEveryMessageNamesItsRepair() async {
         let cases: [SandboxPathError] = [
             .absolutePathNotAllowed("/etc/passwd"),
             .parentTraversalNotAllowed("../../secrets"),
@@ -780,9 +793,11 @@ final class ToolsTailToolErrorHandlerTests: XCTestCase {
             let result = await run(["path": "x"]) { throw sandboxError }
             let env = toolsTailEnvelope(result)
             XCTAssertTrue(result.isError, "\(sandboxError)")
-            XCTAssertEqual(env.errorCode, ToolErrorCode.permissionDenied.rawValue, "\(sandboxError)")
+            XCTAssertEqual(env.errorCode, ToolErrorCode.invalidArgs.rawValue, "\(sandboxError)")
             XCTAssertEqual(env.errorMessage, sandboxError.errorDescription,
                            "the actionable path guidance must reach the model verbatim")
+            XCTAssertTrue(env.errorMessage?.contains("relative to the work-folder root") == true,
+                          "\(sandboxError): the message must name the repair, not only the fault")
         }
     }
 
@@ -836,16 +851,35 @@ final class ToolsTailToolErrorHandlerTests: XCTestCase {
         XCTAssertNil(result.signal)
     }
 
-    func testProcessRunnerTimeout_doesNotGetTheCancelEnvelope() async {
-        // Only `.cancelled` is special-cased; a timeout falls through to the
-        // generic arm, which is what lets `bash` reinterpret it as a success.
+    /// A timeout is neither a cancel nor a plain command failure: a command that RAN and
+    /// exited non-zero needs different arguments, one that never finished may just need a
+    /// narrower scope or one more attempt. The `_TIMED_OUT` suffix is what routes it to
+    /// "may be transient — retry once" in `ToolErrorNotePolicy` instead of the
+    /// blame-the-arguments default.
+    func testProcessRunnerTimeout_getsItsOwnCodeNotCancelledNorCommandFailed() async {
         let result = await run([:]) {
             throw ProcessRunnerError.timeout(30, stdout: "partial", stderr: "")
         }
         let env = toolsTailEnvelope(result)
-        XCTAssertEqual(env.errorCode, ToolErrorCode.commandFailed.rawValue)
+        XCTAssertEqual(env.errorCode, ToolErrorCode.commandTimedOut.rawValue)
         XCTAssertNotEqual(env.errorCode, ToolErrorCode.cancelled.rawValue)
+        XCTAssertNotEqual(env.errorCode, ToolErrorCode.commandFailed.rawValue)
+        XCTAssertTrue(env.errorCode?.hasSuffix("_TIMED_OUT") == true,
+                      "the suffix is what the policy routes on: \(env.errorCode ?? "nil")")
         XCTAssertEqual(env.errorMessage, "Process timed out after 30 seconds")
+    }
+
+    /// `.launchFailed` is the one `ProcessRunnerError` whose cause usually IS an argument —
+    /// a `working_directory` that does not exist or cannot be searched (see the case's own
+    /// doc) — so it is the one that earns the required-arguments direction.
+    func testProcessRunnerLaunchFailed_isInvalidArgsNotCommandFailed() async {
+        let result = await run([:]) {
+            throw ProcessRunnerError.launchFailed(executable: "/bin/zsh", reason: "No such file")
+        }
+        let env = toolsTailEnvelope(result)
+        XCTAssertEqual(env.errorCode, ToolErrorCode.invalidArgs.rawValue)
+        XCTAssertTrue(env.errorMessage?.contains("working directory") == true,
+                      "got: \(env.errorMessage ?? "nil")")
     }
 
     func testProcessRunnerExecutableNotFound_fallsToCommandFailed() async {
@@ -959,7 +993,8 @@ final class ToolsTailFileWriteHandlerTests: XCTestCase {
         let env = toolsTailEnvelope(result)
         XCTAssertTrue(result.isError)
         XCTAssertEqual(env.errorCode, ToolErrorCode.notADirectory.rawValue)
-        XCTAssertEqual(env.errorMessage, "Parent path is not a directory")
+        XCTAssertEqual(env.errorMessage,
+                       "Parent path is not a directory: a.txt is a file — name a directory path.")
         XCTAssertEqual(try String(contentsOf: blocker, encoding: .utf8), "i am a file",
                        "the blocking file must be untouched")
     }
@@ -978,19 +1013,10 @@ final class ToolsTailFileWriteHandlerTests: XCTestCase {
                        "a rejected write must not create the file")
     }
 
-    func testWriteFile_stringEncodedCreateDirsFalse_isHonored() async {
-        // Models quote booleans; `"false"` must still suppress directory creation
-        // (silently creating them would be the destructive direction).
-        let result = await write(["path": "no/parent/x.txt", "content": "c", "create_dirs": "false"])
-        XCTAssertTrue(result.isError)
-        XCTAssertEqual(toolsTailEnvelope(result).errorCode, ToolErrorCode.notADirectory.rawValue)
-        XCTAssertFalse(fm.fileExists(atPath: workDir.appendingPathComponent("no").path))
-    }
-
-    func testWriteFile_ambiguousCreateDirsValue_keepsTheCreatingDefault() async {
-        // Unrecognized spellings fall back to the default (true) rather than
-        // silently flipping behavior on garbage.
-        let result = await write(["path": "made/up/x.txt", "content": "c", "create_dirs": "maybe"])
+    func testWriteFile_missingParents_areAlwaysCreated() async {
+        // No `create_dirs` any more — the parameter was undeclared, so only a guessing model
+        // could reach the branch that refused to create the tree. Parents are created, full stop.
+        let result = await write(["path": "made/up/x.txt", "content": "c", "create_dirs": "false"])
         XCTAssertFalse(result.isError, "got \(result.outputJSON)")
         XCTAssertTrue(fm.fileExists(atPath: workDir.appendingPathComponent("made/up/x.txt").path))
     }
@@ -1032,6 +1058,10 @@ final class ToolsTailFileWriteHandlerTests: XCTestCase {
             edit(["path": "ghost.swift", "old_text": "a", "new_text": "b"]))
         XCTAssertEqual(env.errorCode, ToolErrorCode.fileNotFound.rawValue)
         XCTAssertEqual(env.errorMessage, "File not found: ghost.swift")
+        // R1.8.1: the repair rides `next` — the same `list_files`-on-the-parent hint
+        // `read_file` hands back, so a top-level path lists the work folder root.
+        XCTAssertTrue(env.next?["suggested_cmd"] as? String == ToolNames.listFiles, "got: \(String(describing: env.next))")
+        XCTAssertEqual((env.next?["suggested_args"] as? [String: String])?["path"], ".")
     }
 
     func testEditFile_nonUTF8File_failsLoudlyInsteadOfEditingGarbage() async throws {
@@ -1173,7 +1203,8 @@ final class ToolsTailBashHandlerTests: XCTestCase {
         let env = toolsTailEnvelope(result)
         XCTAssertTrue(result.isError)
         XCTAssertEqual(env.errorCode, ToolErrorCode.notADirectory.rawValue)
-        XCTAssertEqual(env.errorMessage, "working_directory does not exist or is not a directory.")
+        XCTAssertEqual(env.errorMessage,
+                       "working_directory does not exist or is not a directory — send a directory relative to the work folder, or omit working_directory to run at its root.")
     }
 
     // MARK: - timeout resolution
@@ -1304,14 +1335,16 @@ final class ToolsTailBashHandlerTests: XCTestCase {
         let env = toolsTailEnvelope(result)
         XCTAssertTrue(result.isError)
         XCTAssertEqual(env.errorCode, ToolErrorCode.invalidArgs.rawValue)
-        XCTAssertEqual(env.errorMessage, "Unknown command_id 'bg_nope'.")
+        XCTAssertEqual(env.errorMessage,
+                       "Unknown command_id 'bg_nope' — send the command_id returned by bash with run_in_background: true.")
     }
 
     func testBashOutput_readUnknownID_isInvalidArgsNamingTheID() async {
         let result = await BashOutputTool().handle(context: context(), args: ["command_id": "bg_nope"])
         let env = toolsTailEnvelope(result)
         XCTAssertTrue(result.isError)
-        XCTAssertEqual(env.errorMessage, "Unknown command_id 'bg_nope'.")
+        XCTAssertEqual(env.errorMessage,
+                       "Unknown command_id 'bg_nope' — send the command_id returned by bash with run_in_background: true.")
     }
 
     func testBackground_startResultCarriesTheNextHintPointingAtBashOutput() async throws {
@@ -1750,21 +1783,21 @@ final class ToolsTailCreateTeamHandlerTests: XCTestCase {
         // Neither a dict nor a string → the else branch. Reported as missing
         // rather than "invalid", because the model supplied no config at all.
         await assertRejected(run(["team_config": 42]),
-                             contains: "Missing required 'team_config' parameter")
+                             contains: "Missing required argument: team_config")
     }
 
     func testTeamConfig_arrayValue_isReportedAsMissing() async {
         await assertRejected(run(["team_config": [1, 2, 3]]),
-                             contains: "Missing required 'team_config' parameter")
+                             contains: "Missing required argument: team_config")
     }
 
     func testTeamConfig_booleanValue_isReportedAsMissing() async {
         await assertRejected(run(["team_config": true]),
-                             contains: "Missing required 'team_config' parameter")
+                             contains: "Missing required argument: team_config")
     }
 
     func testTeamConfig_absent_isReportedAsMissing() async {
-        await assertRejected(run([:]), contains: "Missing required 'team_config' parameter")
+        await assertRejected(run([:]), contains: "Missing required argument: team_config")
     }
 
     func testTeamConfig_stringWithMalformedJSON_isInvalidArgs() async {

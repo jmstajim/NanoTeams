@@ -934,7 +934,7 @@ final class StepFlowControlCapFailureCoverageTests: XCTestCase {
 
     // MARK: - Refusal loop (the whole branch was unexercised through handleNoToolCalls)
 
-    func testRefusalLoop_escalatesWithExcerpt_andPersistsTheQuestion() async {
+    func testRefusalLoop_escalatesWithoutQuotingTheRefusal_andPersistsTheQuestion() async {
         var messages = refusalConversation()
 
         let stop = await service._testHandleNoToolCalls(
@@ -947,9 +947,14 @@ final class StepFlowControlCapFailureCoverageTests: XCTestCase {
         }
         XCTAssertTrue(question.contains("consecutive refusal messages"),
                       "The question must name the observed pattern, got: \(question)")
-        XCTAssertTrue(question.contains("Last message excerpt:"),
-                      "…and carry the excerpt the human needs, got: \(question)")
-        XCTAssertTrue(question.contains("I'm sorry"), "…which is the model's own text")
+        // Inverted on purpose. This question is replayed into the role's own next request
+        // as its own `ask_supervisor` call (`PromptBuilder` step 5), so an excerpt of the
+        // refusal is the loop handed back to the looping model — in a few-shot slot. The
+        // Supervisor reads the refusals on the step's own cards instead.
+        XCTAssertFalse(question.contains("Last message excerpt:"),
+                       "the escalation must not quote the model's output back at it: \(question)")
+        XCTAssertFalse(question.contains(Self.refusal),
+                       "…and must not carry the refusal verbatim: \(question)")
 
         let step = mockDelegate.taskToMutate?.runs.last?.steps.first
         XCTAssertEqual(step?.status, .needsSupervisorInput)

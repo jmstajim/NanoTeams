@@ -169,10 +169,11 @@ final class TeamCollaborationFlowTests: XCTestCase {
                        "Initiating role should be excluded from participants")
     }
 
-    func testFilterMeetingParticipants_supervisorByDefault_isRejected() {
-        var team = makeFAANGTeam()
-        // Default: supervisorCanBeInvited is false
-        team.settings.supervisorCanBeInvited = false
+    /// The Supervisor is rejected unconditionally — there is no setting that seats it —
+    /// while the teammate named alongside it still resolves. Until 2026-09-07 a
+    /// `supervisorCanBeInvited` seat let an LLM turn speak AS the Supervisor.
+    func testFilterMeetingParticipants_supervisor_isRejectedUnconditionally() {
+        let team = makeFAANGTeam()
 
         let result = MeetingParticipantResolver.filterParticipants(
             participantIDs: ["supervisor", "productManager"],
@@ -181,25 +182,11 @@ final class TeamCollaborationFlowTests: XCTestCase {
             teamSettings: team.settings
         )
 
-        XCTAssertFalse(result.participants.contains(where: { $0.baseID == "supervisor" }),
-                       "Supervisor should be excluded when supervisorCanBeInvited is false")
-    }
-
-    func testFilterMeetingParticipants_supervisorCanBeInvited() {
-        var team = makeFAANGTeam()
-        team.settings.supervisorCanBeInvited = true
-
-        let result = MeetingParticipantResolver.filterParticipants(
-            participantIDs: ["supervisor", "productManager"],
-            initiatingRole: .softwareEngineer,
-            team: team,
-            teamSettings: team.settings
-        )
-
-        // Supervisor should be included when setting allows
-        let hasSupervisor = result.participants.contains(where: { $0 == .supervisor })
-        XCTAssertTrue(hasSupervisor,
-                      "Supervisor should be included when supervisorCanBeInvited is true")
+        XCTAssertEqual(result.participants, [.productManager],
+                       "The teammate resolves; the Supervisor never does")
+        XCTAssertEqual(result.rejectedReasons.count, 1)
+        XCTAssertTrue(result.rejectedReasons[0].contains("not a meeting participant"),
+                      "Rejection names the seat rule, not a whitelist: \(result.rejectedReasons)")
     }
 
     func testFilterMeetingParticipants_unknownParticipant_isRejected() {

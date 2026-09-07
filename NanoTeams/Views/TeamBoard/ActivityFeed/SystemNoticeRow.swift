@@ -71,7 +71,8 @@ private let systemNoticeRowPreviewLoopCorrection: String = {
         supervisorMode: .autonomous,
         isChatMode: true,
         canParkForSupervisor: false,
-        roleName: "Coding Agent"
+        roleName: "Coding Agent",
+        allowedToolNames: [ToolNames.askSupervisor]
     ) else { return "" }
     return LLMMessage(role: .user, content: nudge, sourceContext: .loopCorrection).displayContent
 }()

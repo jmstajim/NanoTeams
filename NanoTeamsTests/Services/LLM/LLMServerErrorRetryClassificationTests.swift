@@ -113,6 +113,37 @@ final class LLMServerErrorRetryClassificationTests: XCTestCase {
         XCTAssertFalse(retrySpam, "A permanent error must not append a retry note")
     }
 
+    /// A context overflow reported by the server fails the step after ONE attempt, and the
+    /// recorded reason carries the provider's remedy, not only the server's sentence. Until
+    /// 2026-09-07 the step re-sent the byte-identical oversized wire every
+    /// `retryDelaySeconds` — with `maxLLMRetries = 0`, forever (playbook R2.7.4).
+    func testContextOverflow_failsStepAfterOneAttempt_andNamesTheRemedy() async throws {
+        makeService(script: [LLMClientError.providerError(
+            "input length (200000 tokens) exceeds the model's maximum context length (32768 tokens)")])
+        let stepID = "swe_overflow"
+        let task = makeRunningTask(taskID: 3, stepID: stepID)
+        mockDelegate.taskToMutate = task
+
+        service.startStepExecution(
+            stepID: stepID, taskID: 3, task: task, runIndex: 0, stepIndex: 0)
+
+        try await waitUntil { self.step(in: 3, stepID: stepID)?.status == .failed }
+
+        XCTAssertEqual(stubClient.callCount, 1, "an overflow must not be retried — the resend is byte-identical")
+        let failed = step(in: 3, stepID: stepID)
+        let errorNote = failed?.messages.last(where: {
+            $0.content.hasPrefix("\(StepExecution.llmErrorNotePrefix): ")
+        })
+        let text = try XCTUnwrap(errorNote?.content)
+        XCTAssertTrue(text.contains("context window"), text)
+        XCTAssertTrue(text.contains("32768"), "the server's own numbers stay in the reason: \(text)")
+        XCTAssertTrue(text.contains("context length"), "the provider remedy is named: \(text)")
+        let retrySpam = failed?.llmConversation.contains(where: {
+            $0.content.hasPrefix(LLMConstants.llmServerErrorRetryNotePrefix)
+        }) ?? false
+        XCTAssertFalse(retrySpam, "no \"attempt N\" note for a permanent error")
+    }
+
     // MARK: - Transient error → retry path (does not fail fast)
 
     func testHTTP503_takesRetryPath_appendsNoteAndDoesNotFail() async throws {

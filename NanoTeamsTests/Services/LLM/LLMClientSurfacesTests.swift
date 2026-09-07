@@ -769,7 +769,7 @@ final class LLMClientSurfacesTests: XCTestCase {
         var parser = SSEEventParser()
         _ = parser.parse(line: "event: chat.end")
 
-        guard case .chatEnd(let usage, let prefill, _, _)? = parser.parse(line: #"data: {"stats": {}}"#)
+        guard case .chatEnd(let usage, let prefill, _, _)? = parser.parse(line: #"data: {"stats": {}}"#).first
         else { return XCTFail("an empty stats object is still a chat.end") }
 
         XCTAssertNil(usage, "no counts were sent, and a fabricated zero would read as a measurement")
@@ -782,7 +782,7 @@ final class LLMClientSurfacesTests: XCTestCase {
         for payload in [#"data: {"stats": "#, "data: not-json", "data: [1,2,3]"] {
             var parser = SSEEventParser()
             _ = parser.parse(line: "event: chat.end")
-            let result = parser.parse(line: payload)
+            let result = parser.parse(line: payload).first
             guard case .ignored? = result else {
                 return XCTFail("Expected ignored for \(payload), got \(String(describing: result))")
             }
@@ -793,7 +793,7 @@ final class LLMClientSurfacesTests: XCTestCase {
         var parser = SSEEventParser()
         _ = parser.parse(line: "event: chat.end")
         let json = #"{"type":"chat.end","result":{"stats":{"input_tokens":11,"total_output_tokens":3}}}"#
-        guard case .chatEnd(let usage, _, _, _)? = parser.parse(line: "data: \(json)") else {
+        guard case .chatEnd(let usage, _, _, _)? = parser.parse(line: "data: \(json)").first else {
             return XCTFail("Expected chatEnd for the nested result shape")
         }
         XCTAssertEqual(usage, TokenUsage(inputTokens: 11, outputTokens: 3))
@@ -802,7 +802,7 @@ final class LLMClientSurfacesTests: XCTestCase {
     func testSSE_messageDeltaWithNonObjectPayload_isIgnored() {
         var parser = SSEEventParser()
         _ = parser.parse(line: "event: message.delta")
-        guard case .ignored? = parser.parse(line: "data: [1,2,3]") else {
+        guard case .ignored? = parser.parse(line: "data: [1,2,3]").first else {
             return XCTFail("Expected ignored for a non-object payload")
         }
     }
@@ -810,7 +810,7 @@ final class LLMClientSurfacesTests: XCTestCase {
     func testSSE_reasoningDeltaWithNonObjectPayload_isIgnored() {
         var parser = SSEEventParser()
         _ = parser.parse(line: "event: reasoning.delta")
-        guard case .ignored? = parser.parse(line: "data: \"just a string\"") else {
+        guard case .ignored? = parser.parse(line: "data: \"just a string\"").first else {
             return XCTFail("Expected ignored for a non-object payload")
         }
     }
@@ -820,7 +820,7 @@ final class LLMClientSurfacesTests: XCTestCase {
     func testSSE_errorFrameWithUndecodableBody_stillSurfacesAnError() {
         var parser = SSEEventParser()
         _ = parser.parse(line: "event: error")
-        guard case .error(let message)? = parser.parse(line: "data: [\"oops\"]") else {
+        guard case .error(let message)? = parser.parse(line: "data: [\"oops\"]").first else {
             return XCTFail("Expected error for an undecodable error frame")
         }
         XCTAssertEqual(message, "Stream error")
@@ -829,7 +829,7 @@ final class LLMClientSurfacesTests: XCTestCase {
     func testSSE_progressFrameMissingProgressField_isIgnored() {
         var parser = SSEEventParser()
         _ = parser.parse(line: "event: prompt_processing.progress")
-        guard case .ignored? = parser.parse(line: "data: {}") else {
+        guard case .ignored? = parser.parse(line: "data: {}").first else {
             return XCTFail("Expected ignored when `progress` is absent")
         }
     }
@@ -838,16 +838,16 @@ final class LLMClientSurfacesTests: XCTestCase {
     /// arm (`currentEventType ?? ""`).
     func testSSE_dataBeforeAnyEventHeader_isIgnored() {
         var parser = SSEEventParser()
-        guard case .ignored? = parser.parse(line: #"data: {"content":"orphan"}"#) else {
+        guard case .ignored? = parser.parse(line: #"data: {"content":"orphan"}"#).first else {
             return XCTFail("Expected ignored with no event type in scope")
         }
     }
 
     func testSSE_eventAndDataLinesTolerateSurroundingWhitespace() {
         var parser = SSEEventParser()
-        XCTAssertNil(parser.parse(line: "   event:   message.delta   "))
+        XCTAssertTrue(parser.parse(line: "   event:   message.delta   ").isEmpty)
         guard case .contentDelta(let text)? =
-            parser.parse(line: "   data:   {\"content\":\"padded\"}   ") else {
+            parser.parse(line: "   data:   {\"content\":\"padded\"}   ").first else {
             return XCTFail("Expected contentDelta despite padding")
         }
         XCTAssertEqual(text, "padded")
@@ -856,7 +856,7 @@ final class LLMClientSurfacesTests: XCTestCase {
     func testSSE_dataWithOnlyWhitespacePayload_returnsNil() {
         var parser = SSEEventParser()
         _ = parser.parse(line: "event: message.delta")
-        XCTAssertNil(parser.parse(line: "data:      "))
+        XCTAssertTrue(parser.parse(line: "data:      ").isEmpty)
     }
 
     // MARK: - OllamaClient: transport-failure arms
@@ -1025,18 +1025,21 @@ final class LLMClientSurfacesTests: XCTestCase {
         XCTAssertEqual(outcome.content, "final answer")
 
         let records = try readNetworkRecords(at: logURL)
-        XCTAssertEqual(records.count, 2)
-        XCTAssertEqual(records.first?.direction, .request)
-        XCTAssertEqual(records.first?.httpMethod, "POST")
-        XCTAssertEqual(records.first?.stepID, "step-9")
-        XCTAssertEqual(records.first?.roleName, "Software Engineer")
+        XCTAssertEqual(records.count, 3, "provenance, request, response")
+        XCTAssertEqual(records[0].direction, .provenance,
+                       "what the request ran on precedes it — written by the client seam (2026-09-07)")
+        XCTAssertEqual(records[0].roleName, "Software Engineer")
+        XCTAssertEqual(records[1].direction, .request)
+        XCTAssertEqual(records[1].httpMethod, "POST")
+        XCTAssertEqual(records[1].stepID, "step-9")
+        XCTAssertEqual(records[1].roleName, "Software Engineer")
 
         let response = try XCTUnwrap(records.last)
         XCTAssertEqual(response.direction, .response)
         XCTAssertEqual(response.statusCode, 200)
         XCTAssertEqual(response.inputTokens, 21)
         XCTAssertEqual(response.outputTokens, 5)
-        XCTAssertEqual(response.correlationID, records.first?.correlationID,
+        XCTAssertEqual(response.correlationID, records[1].correlationID,
                        "request and response must share a correlation id")
         let body = try XCTUnwrap(response.body)
         XCTAssertTrue(body.contains("[reasoning]"), body)
@@ -1072,7 +1075,7 @@ final class LLMClientSurfacesTests: XCTestCase {
         _ = await drainOllamaStream(client: client, config: ollamaConfig(), logger: logger)
 
         let records = try readNetworkRecords(at: logURL)
-        XCTAssertEqual(records.count, 2)
+        XCTAssertEqual(records.count, 3, "provenance, request, response")
         XCTAssertNil(records.last?.body, "nothing streamed → no body, not an empty string")
     }
 
@@ -1088,7 +1091,7 @@ final class LLMClientSurfacesTests: XCTestCase {
         XCTAssertNotNil(outcome.error)
 
         let records = try readNetworkRecords(at: logURL)
-        XCTAssertEqual(records.count, 2)
+        XCTAssertEqual(records.count, 3, "provenance, request, error")
         XCTAssertEqual(records.last?.statusCode, 0,
                        "the catch arm records a synthetic 0 — the HTTP code is inside the error")
         XCTAssertNotNil(records.last?.errorMessage)

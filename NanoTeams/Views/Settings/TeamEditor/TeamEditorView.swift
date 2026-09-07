@@ -23,10 +23,12 @@ nonisolated enum TeamEditorValidation {
 
     /// Combines structural validation (`TeamManagementService.validate` — always
     /// errors) with delegation policy (`TeamValidationService.validateDelegationPolicy`
-    /// — severity per `ValidationError.isError`) and attached-skill resolution
-    /// (`validateAttachedSkills`), each rendered via `displayMessage(in:)`. These
-    /// are the ONLY two `TeamValidationService` members the banner calls — pinned
-    /// by `TeamEditorValidationTests.testBannerCallsExactlyTheTwoLiveValidators`.
+    /// — severity per `ValidationError.isError`), attached-skill resolution
+    /// (`validateAttachedSkills`), the meeting-coordinator heal warning
+    /// (`validateMeetingCoordinator`) and the Off-in-chat-mode error
+    /// (`validateSupervisorMode`), each rendered via `displayMessage(in:)`. These
+    /// are the ONLY four `TeamValidationService` members the banner calls — pinned
+    /// by `TeamEditorValidationTests.testBannerCallsExactlyTheLiveValidators`.
     /// - Parameter knownSkillIDs: ids the agent-skill scanner discovered. Empty
     ///   means "no catalogue yet" and skips the attached-skill check entirely —
     ///   see `TeamValidationService.validateAttachedSkills`. Defaults to empty so
@@ -45,6 +47,12 @@ nonisolated enum TeamEditorValidation {
         issues += TeamValidationService.validateAttachedSkills(
             team: team, knownSkillIDs: knownSkillIDs
         ).map {
+            Issue(isError: $0.isError, message: $0.displayMessage(in: team))
+        }
+        issues += TeamValidationService.validateMeetingCoordinator(team: team).map {
+            Issue(isError: $0.isError, message: $0.displayMessage(in: team))
+        }
+        issues += TeamValidationService.validateSupervisorMode(team: team).map {
             Issue(isError: $0.isError, message: $0.displayMessage(in: team))
         }
         return issues
@@ -369,7 +377,11 @@ struct TeamEditorView: View {
             storage: .from(orchestratorURL: store.workFolderURL),
             selectedScheme: store.snapshot?.workFolder.settings.selectedScheme,
             isVisionConfigured: store.configuration.isVisionConfigured,
-            isComputerUseEnabled: store.configuration.isComputerUseEnabled,
+            approval: ToolApprovalAvailability.forTeam(
+                bashMode: store.configuration.bashMode,
+                computerUseMode: store.configuration.computerUseMode,
+                team: activeTeam,
+                workFolderSettings: store.snapshot?.workFolder.settings),
             autovisorTeamPolicy: store.snapshot.map { AutovisorTeamPolicy(settings: $0.workFolder.settings) }
                 ?? .unrestricted
         )

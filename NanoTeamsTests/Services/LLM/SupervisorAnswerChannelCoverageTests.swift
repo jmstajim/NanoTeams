@@ -14,7 +14,7 @@ final class SupervisorAnswerChannelCoverageTests: XCTestCase {
 
     /// Emits a scripted stream. `thinking` goes to the reasoning channel, which is where a
     /// reasoning model puts everything — neither client ever routes it into `contentDelta`
-    /// (`SSEEventParser` maps `reasoning.delta` to `.thinkingDelta`, and Ollama's
+    /// (`SSEEventParser` maps `reasoning.delta` to `.thinkingDelta`, and both parsers'
     /// `ThinkTagSplitter` actively pulls inline `<think>` OUT of content).
     private final class ScriptedClient: LLMClient, @unchecked Sendable {
         var content: [String] = []

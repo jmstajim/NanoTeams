@@ -228,11 +228,13 @@ extension LLMExecutionService {
         signal: LoopSignal,
         task: NTMSTask,
         supervisorMode: SupervisorMode,
+        allowedToolNames: Set<String> = [],
         conversationMessages: inout [ChatMessage]
     ) async -> LLMStepStop {
         await handleStreamLoopBreak(
             stepID: stepID, signal: signal, task: task,
             roleForMessage: .softwareEngineer, supervisorMode: supervisorMode,
+            allowedToolNames: allowedToolNames,
             conversationMessages: &conversationMessages)
     }
 

@@ -1,23 +1,21 @@
 import XCTest
 @testable import NanoTeams
 
-/// Pins that every reader of `team.settings.meetingCoordinatorRoleID`
-/// agrees on the orphan-self-heal contract under the same `Team` snapshot:
+/// Pins that every reader of the meeting coordinator agrees under the same `Team`
+/// snapshot, and that none of them ever answers "Auto":
 ///
-///   1. Picker UI       — `MeetingCoordinatorPickerLogic.normalizedSelection`
-///   2. Editor list   — `RoleToolBadgePolicy.model(...).autoInjected`
-///                         (via internal `DesignatedCoordinatorResolver.normalize`)
-///   3. Schema-build    — `LLMExecutionService+ToolResolution` step 6
-///                         (via internal `DesignatedCoordinatorResolver.normalize`)
-///   4. Runtime         — `LLMExecutionService.resolveCoordinatorRole`
-///                         (funneled through `DesignatedCoordinatorResolver.normalize`)
+///   1. Picker UI    — `MeetingCoordinatorPickerLogic.selection(for:)`
+///   2. Editor badge — `RoleToolBadgePolicy.model(..., approval: .available).meetingOnly` (the coordinator's
+///                     `conclude_meeting`)
+///   3. Meeting turn — `MeetingCoordinator.speakerTools` for the coordinator
+///   4. Runtime      — `LLMExecutionService.resolveCoordinatorRole`
 ///
-/// If any reader diverges, the consequence is a UI/runtime/schema discrepancy
-/// like the round-3 review C2.1 bug — picker shows "Auto", runtime self-heals
-/// to initiator-as-coordinator, but schema-build silently denies
-/// `conclude_meeting` because it read the raw orphan ID. Round-3 closed that
-/// by funneling all four readers through `DesignatedCoordinatorResolver.normalize`;
-/// this test guards against future divergence.
+/// All four resolve through `Team.meetingCoordinatorID`. Until 2026-09-06 a `nil` or
+/// orphan id meant "Auto" (the initiator coordinates), and the readers disagreed about
+/// it once — the picker showed "Auto", the runtime promoted the initiator, and the
+/// schema build silently gave `conclude_meeting` to nobody. There is no Auto now: a
+/// team with a role always has a coordinator, chosen by `TeamSettings.defaultCoordinatorID`
+/// when the stored id does not resolve.
 @MainActor
 final class CoordinatorResolutionConsistencyTests: XCTestCase {
 
@@ -38,46 +36,51 @@ final class CoordinatorResolutionConsistencyTests: XCTestCase {
         usePlanningPhase: false,
         dependencies: RoleDependencies()
     )
+    private let other = TeamRoleDefinition(
+        id: "other",
+        name: "Other Role",
+        prompt: "p",
+        toolIDs: [ToolNames.readFile],
+        usePlanningPhase: false,
+        dependencies: RoleDependencies()
+    )
 
     // MARK: - Helpers
 
     private func makeTeam(coordID: String?) -> Team {
         Team(
             name: "T",
-            roles: [supervisor, live],
+            roles: [supervisor, other, live],
             artifacts: [],
             settings: TeamSettings(meetingCoordinatorRoleID: coordID),
             graphLayout: TeamGraphLayout()
         )
     }
 
-    /// Pure-logic resolution from the picker UI's perspective.
     private func pickerResolves(team: Team) -> String? {
-        let nonSupervisorRoleIDs = team.roles.filter { !$0.isSupervisor }.map(\.id)
-        return MeetingCoordinatorPickerLogic.normalizedSelection(
-            stored: team.settings.meetingCoordinatorRoleID,
-            availableIDs: nonSupervisorRoleIDs
-        )
+        MeetingCoordinatorPickerLogic.selection(for: team)
     }
 
-    /// Pure-logic resolution from the predicate's perspective — emulates the
-    /// orphan-normalize step `fromEditorContext` performs before evaluating.
-    private func predicateResolves(team: Team) -> String? {
-        DesignatedCoordinatorResolver.normalize(
-            storedID: team.settings.meetingCoordinatorRoleID,
-            availableIDs: team.roles.filter { !$0.isSupervisor }.map(\.id)
-        )
+    /// The editor badge's view: the role whose `meetingOnly` carries `conclude_meeting`.
+    private func badgeResolves(team: Team) -> String? {
+        team.roles.first { role in
+            RoleToolBadgePolicy.model(
+                role: role, team: team, allTeams: [team], storage: .defaultStorage,
+                selectedScheme: nil, isVisionConfigured: false, approval: ToolApprovalAvailability(bash: .available, computerUse: .withheld(.switchedOff)),
+                autovisorTeamPolicy: .unrestricted
+            ).meetingOnly.contains(ToolNames.concludeMeeting)
+        }?.id
     }
 
-    /// Pure-logic resolution from the schema-build's perspective.
-    private func schemaResolves(team: Team) -> String? {
-        DesignatedCoordinatorResolver.normalize(
-            storedID: team.settings.meetingCoordinatorRoleID,
-            availableIDs: team.roles.filter { !$0.isSupervisor }.map(\.id)
-        )
+    /// The meeting turn's view: the role whose speaker tools carry `conclude_meeting`.
+    private func meetingTurnResolves(team: Team) -> String? {
+        team.roles.first { role in
+            MeetingCoordinator.speakerTools(
+                base: [], isCoordinator: team.meetingCoordinatorID == role.id
+            ).contains { $0.name == ToolNames.concludeMeeting }
+        }?.id
     }
 
-    /// Runtime resolution — yields the role ID portion of the resolved `Role?`.
     private func runtimeResolves(team: Team) -> String? {
         let service = LLMExecutionService(repository: NTMSRepository())
         return service.resolveCoordinatorRole(team: team)?.baseID
@@ -85,43 +88,50 @@ final class CoordinatorResolutionConsistencyTests: XCTestCase {
 
     private func assertAllAgree(
         on team: Team,
-        expectedNormalizedID: String?,
+        expectedID: String?,
         file: StaticString = #filePath,
         line: UInt = #line
     ) {
-        XCTAssertEqual(pickerResolves(team: team), expectedNormalizedID,
-                       "picker disagrees", file: file, line: line)
-        XCTAssertEqual(predicateResolves(team: team), expectedNormalizedID,
-                       "predicate disagrees", file: file, line: line)
-        XCTAssertEqual(schemaResolves(team: team), expectedNormalizedID,
-                       "schema-build disagrees", file: file, line: line)
-        XCTAssertEqual(runtimeResolves(team: team), expectedNormalizedID,
-                       "runtime disagrees", file: file, line: line)
+        XCTAssertEqual(pickerResolves(team: team), expectedID, "picker disagrees", file: file, line: line)
+        XCTAssertEqual(badgeResolves(team: team), expectedID, "badge disagrees", file: file, line: line)
+        XCTAssertEqual(meetingTurnResolves(team: team), expectedID, "meeting turn disagrees", file: file, line: line)
+        XCTAssertEqual(runtimeResolves(team: team), expectedID, "runtime disagrees", file: file, line: line)
     }
 
     // MARK: - Consistency across all 4 readers
 
-    func testAllReaders_agreeOnNilCoord_Auto() {
-        assertAllAgree(on: makeTeam(coordID: nil), expectedNormalizedID: nil)
-    }
-
     func testAllReaders_agreeOnLiveCoord() {
-        assertAllAgree(on: makeTeam(coordID: "live"), expectedNormalizedID: "live")
+        assertAllAgree(on: makeTeam(coordID: "other"), expectedID: "other")
     }
 
-    func testAllReaders_agreeOnOrphanCoord_collapsedToNil() {
-        assertAllAgree(on: makeTeam(coordID: "ghost-of-deleted-role"),
-                       expectedNormalizedID: nil)
+    /// `nil` is not Auto: the default rule picks the first role that can START a
+    /// meeting — `live` holds `request_team_meeting`, `other` (listed first) does not.
+    func testAllReaders_agreeOnNilCoord_defaultRulePrefersAMeetingStarter() {
+        assertAllAgree(on: makeTeam(coordID: nil), expectedID: "live")
     }
 
-    func testAllReaders_agreeOnSupervisorAsCoord_rejected() {
-        // Supervisor ID is structurally invalid as a coordinator — every
-        // reader filters Supervisor out of `availableIDs` so the stored ID
-        // becomes orphan-like and self-heals to nil.
-        assertAllAgree(on: makeTeam(coordID: "sup"), expectedNormalizedID: nil)
+    func testAllReaders_agreeOnOrphanCoord_healedToTheDefaultRule() {
+        assertAllAgree(on: makeTeam(coordID: "ghost-of-deleted-role"), expectedID: "live")
     }
 
-    func testAllReaders_agreeOnEmptyStoredCoord_collapsedToNil() {
-        assertAllAgree(on: makeTeam(coordID: ""), expectedNormalizedID: nil)
+    /// The Supervisor is the human — structurally never a coordinator; the stored id
+    /// is treated like an orphan and heals to the default rule.
+    func testAllReaders_agreeOnSupervisorAsCoord_healedToTheDefaultRule() {
+        assertAllAgree(on: makeTeam(coordID: "sup"), expectedID: "live")
+    }
+
+    func testAllReaders_agreeOnEmptyStoredCoord_healedToTheDefaultRule() {
+        assertAllAgree(on: makeTeam(coordID: ""), expectedID: "live")
+    }
+
+    /// No non-Supervisor role ⇒ nobody to coordinate; every reader answers `nil` and
+    /// none fabricates one.
+    func testAllReaders_agreeOnRolelessTeam_nil() {
+        let team = Team(
+            name: "T", roles: [supervisor], artifacts: [],
+            settings: TeamSettings(meetingCoordinatorRoleID: nil),
+            graphLayout: TeamGraphLayout()
+        )
+        assertAllAgree(on: team, expectedID: nil)
     }
 }

@@ -40,5 +40,61 @@ final class TeamValidationServiceTests: XCTestCase {
         XCTAssertFalse(ValidationError.noDelegationTargets(roleID: "a").isError)
         XCTAssertFalse(ValidationError.unknownAttachedSkill(roleID: "a", skillID: "s").isError,
                        "the run proceeds with the skill absent from the prompt — warn, do not block")
+        XCTAssertFalse(ValidationError.meetingCoordinatorHealed(from: "ghost", to: "a").isError,
+                       "the team runs with the healed coordinator — warn, do not block")
+    }
+
+    /// Off on a chat-mode team leaves its role with no reply channel — the one setting
+    /// combination that makes a run useless, so it blocks.
+    func testValidationError_isError_trueForAskSupervisorOffInChatMode() {
+        XCTAssertTrue(ValidationError.askSupervisorOffInChatMode.isError)
+    }
+
+    // MARK: - validateMeetingCoordinator / validateSupervisorMode
+
+    private func team(coordID: String?, mode: SupervisorMode = .manual, chatMode: Bool) -> Team {
+        let supervisor = TeamRoleDefinition(
+            id: "sup", name: "Supervisor", prompt: "", toolIDs: [], usePlanningPhase: false,
+            dependencies: RoleDependencies(requiredArtifacts: chatMode ? [] : ["Result"]),
+            isSystemRole: true, systemRoleID: "supervisor")
+        let worker = TeamRoleDefinition(
+            id: "w", name: "Worker", prompt: "p", toolIDs: [], usePlanningPhase: false,
+            dependencies: RoleDependencies(requiredArtifacts: ["Supervisor Task"],
+                                           producesArtifacts: chatMode ? [] : ["Result"]))
+        return Team(
+            name: "T", roles: [supervisor, worker], artifacts: [],
+            settings: TeamSettings(meetingCoordinatorRoleID: coordID, supervisorMode: mode),
+            graphLayout: TeamGraphLayout())
+    }
+
+    func testValidateMeetingCoordinator_liveStoredID_isClean() {
+        XCTAssertEqual(TeamValidationService.validateMeetingCoordinator(team: team(coordID: "w", chatMode: false)), [])
+    }
+
+    func testValidateMeetingCoordinator_nilOrOrphan_warnsNamingTheHealedRole() {
+        XCTAssertEqual(
+            TeamValidationService.validateMeetingCoordinator(team: team(coordID: nil, chatMode: false)),
+            [.meetingCoordinatorHealed(from: nil, to: "w")])
+        XCTAssertEqual(
+            TeamValidationService.validateMeetingCoordinator(team: team(coordID: "ghost", chatMode: false)),
+            [.meetingCoordinatorHealed(from: "ghost", to: "w")])
+    }
+
+    func testValidateSupervisorMode_offOnChatModeTeam_isAnError_elsewhereClean() {
+        XCTAssertEqual(
+            TeamValidationService.validateSupervisorMode(team: team(coordID: "w", mode: .off, chatMode: true)),
+            [.askSupervisorOffInChatMode])
+        XCTAssertEqual(TeamValidationService.validateSupervisorMode(team: team(coordID: "w", mode: .off, chatMode: false)), [])
+        XCTAssertEqual(TeamValidationService.validateSupervisorMode(team: team(coordID: "w", mode: .manual, chatMode: true)), [])
+    }
+
+    func testDisplayMessages_nameTheRoleAndTheRemedy() {
+        let t = team(coordID: "ghost", chatMode: true)
+        let healed = ValidationError.meetingCoordinatorHealed(from: "ghost", to: "w").displayMessage(in: t)
+        XCTAssertTrue(healed.contains("Worker"), "the healed role is named, not its id")
+        XCTAssertTrue(healed.contains("ghost"))
+        let off = ValidationError.askSupervisorOffInChatMode.displayMessage(in: t)
+        XCTAssertTrue(off.contains("ask_supervisor"))
+        XCTAssertTrue(off.contains("Manual or Autonomous"))
     }
 }

@@ -77,6 +77,53 @@ final class ChangeRequestVotingFailureTests: XCTestCase {
                        "A failed vote must not silently amend the target role's deliverable.")
     }
 
+    /// A change request is decided by a voting MEETING; with meetings off for the team the
+    /// dispatcher refuses the call before recording anything — the schema resolver already
+    /// withholds `request_changes` there, this is the backstop for a call that arrives anyway.
+    func testChangeRequest_meetingsOff_isRefusedBeforeAnyVoteOrRecord() async {
+        var team = makeTeam()
+        team.settings.meetingsEnabled = false
+        let task = makeTask(team: team)
+        mockDelegate.taskToMutate = task
+        mockDelegate.snapshot = makeSnapshot(team: team, task: task)
+        service._testRegisterStepTask(stepID: requestingStepID, taskID: task.id)
+
+        let reply = await service.handleChangeRequest(
+            stepID: requestingStepID, targetRoleID: targetStepID,
+            changes: "Tighten the error handling.", reasoning: "It swallows failures.",
+            requestingRole: .softwareEngineer, task: task, runIndex: 0, stepIndex: 0,
+            client: SilentLLMClient(), config: LLMConfig())
+
+        XCTAssertFalse(reply.succeeded)
+        XCTAssertEqual(reply.text,
+                       "Change requests are decided in a team meeting, and meetings are off for this team. Continue without one.")
+        XCTAssertTrue(mockDelegate.taskToMutate?.runs[0].changeRequests.isEmpty ?? false,
+                      "nothing is recorded for a request the team cannot vote on")
+        XCTAssertTrue(mockDelegate.taskToMutate?.runs[0].meetings.isEmpty ?? false)
+    }
+
+    /// The same refusal for a team that has nobody to vote with: the switch is on, but the
+    /// requesting role is alone. Fires before target validation — there is no vote to hold.
+    func testChangeRequest_singleRoleTeam_isRefusedNamingTheMissingTeammate() async {
+        var team = makeTeam()
+        team.roles.removeAll { $0.id == targetStepID }
+        let task = makeTask(team: team)
+        mockDelegate.taskToMutate = task
+        mockDelegate.snapshot = makeSnapshot(team: team, task: task)
+        service._testRegisterStepTask(stepID: requestingStepID, taskID: task.id)
+
+        let reply = await service.handleChangeRequest(
+            stepID: requestingStepID, targetRoleID: targetStepID,
+            changes: "Tighten the error handling.", reasoning: "It swallows failures.",
+            requestingRole: .softwareEngineer, task: task, runIndex: 0, stepIndex: 0,
+            client: SilentLLMClient(), config: LLMConfig())
+
+        XCTAssertFalse(reply.succeeded)
+        XCTAssertEqual(reply.text,
+                       "Change requests are decided in a team meeting, and this team has no teammate to meet with. Continue without one.")
+        XCTAssertTrue(mockDelegate.taskToMutate?.runs[0].changeRequests.isEmpty ?? false)
+    }
+
     // MARK: - Helpers
 
     private func makeTeam() -> Team {

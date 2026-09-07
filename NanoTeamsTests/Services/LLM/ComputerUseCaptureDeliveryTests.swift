@@ -141,6 +141,7 @@ final class ComputerUseCaptureDeliveryTests: XCTestCase, @unchecked Sendable {
         await sut.deliverCapture(
             captured: captured, collection: collection ?? self.collection(),
             target: target, key: TaskStepKey(taskID: taskID, stepID: stepID),
+            allowedToolNames: [],
             client: client,
             config: LLMConfig(provider: .lmStudio, baseURLString: "http://localhost:1234",
                               modelName: "m1", temperature: nil),
@@ -386,6 +387,7 @@ final class ComputerUseCaptureDeliveryTests: XCTestCase, @unchecked Sendable {
         await sut.deliverCapture(
             captured: Self.makeCapture(), collection: collection(), target: "Safari",
             key: TaskStepKey(taskID: 9, stepID: "gone"),
+            allowedToolNames: [],
             client: client,
             config: LLMConfig(provider: .lmStudio, baseURLString: "u", modelName: "m", temperature: nil),
             networkLogger: nil,

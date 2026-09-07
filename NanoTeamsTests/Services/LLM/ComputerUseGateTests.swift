@@ -84,7 +84,9 @@ final class ComputerUseGateTests: XCTestCase {
 
         XCTAssertEqual(client.callCount, 0,
                        "Semi-automatic must NOT route a mutating action to the unattended judge")
-        XCTAssertNotNil(results[0], "the click must be denied (no human), not passed through to execution")
+        XCTAssertNotNil(results[0], "the click must be refused (no human), not passed through to execution")
+        XCTAssertTrue(results[0]?.outputJSON.contains(ToolErrorCode.approvalUnavailable.rawValue) == true,
+                      "nobody decided — the refusal carries its own code, got: \(results[0]?.outputJSON ?? "nil")")
     }
 
     func testSemiAutomatic_capture_noHuman_allows() async {
@@ -96,6 +98,30 @@ final class ComputerUseGateTests: XCTestCase {
 
         XCTAssertTrue(results.isEmpty, "capture is read-only → passes through to execution")
         XCTAssertEqual(client.callCount, 0, "a read never consults the judge")
+    }
+
+    /// Ask Supervisor mode Off counts as a human present (same contract as the bash gate):
+    /// a semi-automatic click is held for the human — the judge is never consulted and the
+    /// action is not denied as unattended. The hold publishes an approval request.
+    func testSemiAutomatic_mutatingAction_offTeam_isHeldForTheHumanNotDenied() async {
+        let client = RecordingJudgeClient()
+        let gateTask = Task { [service, delegate] in
+            delegate!.computerUsePolicy = ComputerUsePolicy(mode: .semiAutomatic)
+            return await service!.gateComputerUseCalls(
+                resolvedToolCalls: [self.clickCall()],
+                allowedToolNames: ToolHandlerRegistry.computerUseTools,
+                stepID: "step1", taskID: 1, supervisorMode: .off, task: self.task(),
+                client: client, config: LLMConfig(), networkLogger: nil)
+        }
+        var held = false
+        for _ in 0..<500 {
+            if !delegate.computerUseApprovalBeganRequests.isEmpty { held = true; break }
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+        XCTAssertTrue(held, "Off must hold the click for the human, as manual does")
+        XCTAssertEqual(client.callCount, 0, "the judge is never consulted while a human is present")
+        gateTask.cancel()
+        _ = await gateTask.value
     }
 
     func testAuto_mutatingAction_routesToJudge() async {

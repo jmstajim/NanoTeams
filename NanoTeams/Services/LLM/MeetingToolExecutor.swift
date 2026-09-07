@@ -43,7 +43,8 @@ enum MeetingToolExecutor {
         recordPrefixChain: (([ChatMessage]) async -> Void)? = nil
     ) async throws -> (
         content: String, thinking: String,
-        toolSummaries: [MeetingToolSummary]
+        toolSummaries: [MeetingToolSummary],
+        conclusion: TeamMeetingService.MeetingConclusion?
     ) {
         var currentResult = initialResult
         var conversation = conversationSoFar
@@ -120,6 +121,23 @@ enum MeetingToolExecutor {
                 ))
             }
 
+            // `conclude_meeting` (coordinator only — anyone else's call was rejected
+            // above as not authorized in this meeting) ends the TURN here and the
+            // MEETING in the caller. No follow-up stream: the decision is the
+            // coordinator's contribution, and asking the model to speak again after
+            // it has concluded would only produce a reply nobody is listening to.
+            // The turn's own text (if any) still lands as its spoken content.
+            var conclusion: TeamMeetingService.MeetingConclusion?
+            for result in freshResults {
+                if case .concludeMeeting(let decision, let rationale, let nextSteps)? = result.signal {
+                    conclusion = .init(decision: decision, rationale: rationale, nextSteps: nextSteps)
+                    break
+                }
+            }
+            if let conclusion {
+                return (currentResult.content, allThinking, collectedToolSummaries, conclusion)
+            }
+
             // Feed back every call the model made — both executed and rejected
             // — so the LLM sees why a tool was blocked and can self-correct.
             // Appending to the RUNNING conversation (not a rebuild) keeps
@@ -169,6 +187,6 @@ enum MeetingToolExecutor {
             }
         }
 
-        return (currentResult.content, allThinking, collectedToolSummaries)
+        return (currentResult.content, allThinking, collectedToolSummaries, nil)
     }
 }

@@ -305,14 +305,20 @@ final class SandboxPathResolverTests: XCTestCase {
             "Absolute paths are not allowed: /etc/passwd. Paths are relative to the work-folder root; use \".\" for the root.")
     }
 
-    func testParentTraversalErrorDescription() {
+    func testParentTraversalErrorDescription() throws {
         let error = SandboxPathError.parentTraversalNotAllowed("../secret")
-        XCTAssertEqual(error.errorDescription, "Parent traversal (..) is not allowed: ../secret")
+        let text = try XCTUnwrap(error.errorDescription)
+        XCTAssertTrue(text.hasPrefix("Parent traversal (..) is not allowed: ../secret"), text)
+        XCTAssertTrue(text.contains("relative to the work-folder root"),
+                      "the fault alone leaves the next call to be guessed (R1.8.1): \(text)")
     }
 
-    func testOutsideSandboxErrorDescription() {
+    func testOutsideSandboxErrorDescription() throws {
         let error = SandboxPathError.outsideSandbox("escape")
-        XCTAssertEqual(error.errorDescription, "Path resolves outside the selected work folder: escape")
+        let text = try XCTUnwrap(error.errorDescription)
+        XCTAssertTrue(text.hasPrefix("Path resolves outside the selected work folder: escape"), text)
+        XCTAssertTrue(text.contains("relative to the work-folder root"),
+                      "the fault alone leaves the next call to be guessed (R1.8.1): \(text)")
     }
 
     // MARK: - Edge Cases

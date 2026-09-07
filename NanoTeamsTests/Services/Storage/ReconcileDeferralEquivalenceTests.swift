@@ -17,7 +17,7 @@ import XCTest
 ///     pinsTeamAsBusy(task) ⟹ task.derivedStatusFromActiveRun() ∈ sweepable
 ///
 /// Break it and a deferral becomes permanent: the team's prompts, tools and
-/// settings never receive another bundled update, with no error and no way for
+/// structure never receive another bundled update, with no error and no way for
 /// the user to tell. That is exactly the bug this suite was written for — a
 /// paused task derives `.paused`, which the sweep skips.
 ///

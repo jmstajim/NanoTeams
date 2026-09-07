@@ -107,6 +107,18 @@ nonisolated enum ToolHandlerRegistry {
     /// All tool schemas in display order. Available without a work folder.
     static let allSchemas: [ToolSchema] = allTypes.map { $0.schema }
 
+    /// The bundled schema of one tool, by canonical name — what `ToolRuntime` checks a
+    /// call's argument TYPES against before dispatch.
+    static func schema(named name: String) -> ToolSchema? {
+        schemasByName[name]
+    }
+
+    /// `uniqueKeysWithValues` on purpose: two handlers claiming one name is a programming
+    /// error (`DefaultToolSchemasTests` pins the names unique), and a keep-first merge
+    /// would hide it behind whichever schema `allTypes` lists first.
+    private static let schemasByName: [String: ToolSchema] =
+        Dictionary(uniqueKeysWithValues: allSchemas.map { ($0.name, $0) })
+
     /// Tools that must be filtered out of meeting turn schemas.
     static let meetingExcluded: Set<String> =
         Set(allTypes.filter { $0.excludedInMeetings }.map { $0.name })
@@ -192,8 +204,22 @@ nonisolated enum ToolHandlerRegistry {
     static let shellTools: Set<String> = names(in: .shell)
 
     /// Computer-use tools (`screen_capture` + `ui_click`/`ui_type`/`ui_key`/`ui_scroll`).
-    /// Stripped from every role's LLM schema when `ComputerUsePolicy.mode == .off`.
+    /// Stripped from every role's LLM schema when the family is `.withheld` —
+    /// `ComputerUsePolicy.mode == .off`, or Manual with nobody to approve
+    /// (`ApprovalGatedAvailability.forComputerUse`).
     static let computerUseTools: Set<String> = names(in: .computerUse)
+
+    /// The computer-use tools whose every action is a MUTATION and so always reaches
+    /// `ComputerUsePermissionService.evaluate`'s review tier (step 10): `ui_click`,
+    /// `ui_type`, `ui_key`. The other two — `screen_capture`, `ui_scroll` — are the
+    /// read-only tier that Semi-automatic runs without asking. Listed by name rather
+    /// than derived, because the split is a property of the EVALUATOR, not of a
+    /// `ToolCategory`; pinned against the evaluator by `ComputerUsePermissionServiceTests`.
+    /// Withheld from the schema under `.readOnlyUnattended` — Semi-automatic with no human,
+    /// where each of the three is refused on every call.
+    static let computerUseMutatingTools: Set<String> = [
+        ToolNames.uiClick, ToolNames.uiType, ToolNames.uiKey,
+    ]
 
     // MARK: - Handler Instance Construction
 

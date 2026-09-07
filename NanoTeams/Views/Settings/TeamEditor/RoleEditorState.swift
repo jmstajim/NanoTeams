@@ -31,6 +31,9 @@ nonisolated struct RoleEditorState {
     var roleName: String = ""
     var roleIcon: String = "person"
     var rolePrompt: String = ""
+    /// The MEETING body draft. Empty means "not authored" — the meeting turn then reads
+    /// `rolePrompt` (`TeamRoleDefinition.resolvedMeetingGuidance`).
+    var meetingGuidance: String = ""
     var selectedTools: Set<String> = []
     /// Off for a NEW role. The phase is a multi-turn read-and-plan stretch now,
     /// not the single `update_scratchpad` call it used to be, so it is opt-in
@@ -83,6 +86,7 @@ nonisolated struct RoleEditorState {
         roleIconColor = role.iconColor
         roleIconBackground = role.iconBackground
         rolePrompt = role.prompt
+        meetingGuidance = role.meetingGuidance ?? ""
         selectedTools = Set(role.toolIDs)
         usePlanningPhase = role.usePlanningPhase
         requiredArtifacts = role.dependencies.requiredArtifacts
@@ -104,6 +108,16 @@ nonisolated struct RoleEditorState {
         allowDelegationToGeneratedTeams = role.allowDelegationToGeneratedTeams
         // Verbatim — order is meaningful (see `attachedSkillIDs`).
         attachedSkillIDs = role.attachedSkillIDs
+    }
+
+    /// The ONE normalisation of the meeting-guidance draft, shared by the preview
+    /// (`provisionalDefinition`) and both save paths (`RoleEditorMutations`) so they
+    /// cannot disagree: a blank draft persists as `nil` (not authored — the meeting turn
+    /// falls back to the step prompt), anything else verbatim — never the trimmed copy,
+    /// for the same reason `attachedSkillIDs` is stored verbatim: the bytes the author
+    /// wrote are the bytes the model reads.
+    static func normalizedMeetingGuidance(_ draft: String) -> String? {
+        draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : draft
     }
 
     /// The role as it would be saved RIGHT NOW, from the in-flight draft.
@@ -135,6 +149,7 @@ nonisolated struct RoleEditorState {
         role.iconColor = roleIconColor
         role.iconBackground = roleIconBackground
         role.prompt = rolePrompt
+        role.meetingGuidance = Self.normalizedMeetingGuidance(meetingGuidance)
         role.toolIDs = Array(selectedTools)
         role.usePlanningPhase = usePlanningPhase
         role.dependencies = RoleDependencies(

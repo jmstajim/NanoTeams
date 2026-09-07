@@ -262,7 +262,11 @@ nonisolated struct GeneratedTeamConfig: Codable, Hashable {
         let supervisorMode: SupervisorMode?
         if let s = try c.decodeIfPresent(String.self, forKey: .supervisorMode),
            !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            guard let mode = SupervisorMode(rawValue: s.lowercased()) else {
+            // `.off` is a per-team human choice, not a generation option (see
+            // `SupervisorMode.generationModes`) — a generated chat-mode team with it would
+            // have no reply channel.
+            guard let mode = SupervisorMode(rawValue: s.lowercased()),
+                  SupervisorMode.generationModes.contains(mode) else {
                 throw DecodingError.dataCorruptedError(
                     forKey: .supervisorMode, in: c,
                     debugDescription: "Unknown supervisor_mode '\(s)'. Allowed: manual, autonomous."

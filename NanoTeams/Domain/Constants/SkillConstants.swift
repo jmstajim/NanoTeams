@@ -31,6 +31,12 @@ nonisolated enum SkillConstants {
     /// Heading level of `systemPromptHeaderPrefix`; skill bodies nest below it.
     static let systemPromptHeaderLevel = 3
 
+    /// Heading level of `promptHeaderPrefix` — the USER-message path. Bodies nest below
+    /// it exactly as they do in the system prompt; only the depth differs. The user path
+    /// went without re-levelling until 2026-09-06, so a skill or clip whose own markdown
+    /// opened with `##` produced a section of the same rank as `## Supervisor Task`.
+    static let promptHeaderLevel = 2
+
     /// Full section header for a named skill in a user message.
     static func promptHeader(name: String) -> String {
         "\(promptHeaderPrefix)\(singleLine(name))"

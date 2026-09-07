@@ -1,6 +1,12 @@
 import Foundation
 
 /// Stateless validation and resolution of team meeting participants.
+///
+/// The Supervisor is the human. It is never a meeting participant and never an
+/// `ask_teammate` target: an LLM turn "as the Supervisor" would be the model speaking for
+/// the user, and the role has no prompt to speak from. Until 2026-09-07 a
+/// `supervisorCanBeInvited` seat allowed exactly that on every single-role bundled team.
+/// The rejection below and the omission from `availableTeammatesList` are unconditional.
 enum MeetingParticipantResolver {
 
     // MARK: - Participant Filtering
@@ -28,8 +34,10 @@ enum MeetingParticipantResolver {
                 continue
             }
 
+            // The initiator is seated by `handleTeamMeeting` itself (`InitiatorSeat`), so
+            // an invitation to oneself is redundant rather than wrong — the reason says so.
             if role.baseID == initiatingRole.baseID {
-                rejectedReasons.append("\(role.displayName) (you — the initiator)")
+                rejectedReasons.append("\(role.displayName) (you — already a participant)")
                 continue
             }
 
@@ -41,8 +49,8 @@ enum MeetingParticipantResolver {
 
             let resolvedTeamRoleID = team?.findRole(byIdentifier: participantID)?.id ?? participantID
 
-            if team?.findRole(byIdentifier: participantID)?.isSupervisor == true && !teamSettings.supervisorCanBeInvited {
-                rejectedReasons.append("\(role.displayName) (Supervisor not invitable)")
+            if role == .supervisor || team?.findRole(byIdentifier: participantID)?.isSupervisor == true {
+                rejectedReasons.append("\(role.displayName) (the Supervisor — not a meeting participant)")
                 continue
             }
 
@@ -72,7 +80,7 @@ enum MeetingParticipantResolver {
                 let roleID = role.id
                 // Exclude the requesting role (by id or systemRoleID)
                 if roleID == excludeRoleID || role.systemRoleID == excludeRoleID { return false }
-                if role.isSupervisor && !teamSettings.supervisorCanBeInvited { return false }
+                if role.isSupervisor { return false }
                 if !teamSettings.invitableRoles.isEmpty && !teamSettings.invitableRoles.contains(roleID) { return false }
                 return true
             }
@@ -83,6 +91,7 @@ enum MeetingParticipantResolver {
         } else {
             let filteredIDs = Role.allBuiltInIDs.filter { roleID in
                 if roleID == excludeRoleID { return false }
+                if roleID == Role.builtInID(.supervisor) { return false }
                 return true
             }
             return filteredIDs.isEmpty ? "none" : filteredIDs.sorted().joined(separator: ", ")

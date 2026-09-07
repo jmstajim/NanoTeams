@@ -42,7 +42,7 @@ final class ComputerUseConfigurationTests: XCTestCase {
 
     func testMode_defaultsToManual_whenKeyAbsent() {
         XCTAssertEqual(config.computerUseMode, .manual)
-        XCTAssertTrue(config.isComputerUseEnabled)
+        XCTAssertTrue(config.computerUsePolicy.isEnabled)
         XCTAssertEqual(config.computerUsePolicy.mode, .manual)
     }
 
@@ -51,7 +51,7 @@ final class ComputerUseConfigurationTests: XCTestCase {
         config.computerUseMode = .off
         let fresh = StoreConfiguration(storage: storage)
         XCTAssertEqual(fresh.computerUseMode, .off)
-        XCTAssertFalse(fresh.isComputerUseEnabled)
+        XCTAssertFalse(fresh.computerUsePolicy.isEnabled)
     }
 
     func testMode_unknownRawValue_fallsBackToManual() {

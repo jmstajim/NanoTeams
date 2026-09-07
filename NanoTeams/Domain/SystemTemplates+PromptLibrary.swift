@@ -55,12 +55,12 @@ nonisolated extension SystemTemplates {
     
     ## Constraints
     - This work is executed entirely by an LLM using the tools in the Tool Calling section.
-    - Avoid human-only process steps (meetings, staffing, budgets, schedules, external approvals, placeholder links).
+    - Describe only steps an LLM can execute with the tools listed; skip meetings, staffing, budgets, schedules, external approvals and placeholder links.
     - Produce only your own artifacts — teammates own theirs.
     - Stay within the product defined by the Supervisor task and work folder context.
     - Keep output proportional to the task scope.
     - Only claim files/artifacts you actually created via tools; otherwise provide content inline.
-    - If this step is not applicable, say so briefly.
+    - If this step is not applicable, submit each deliverable with one paragraph saying why.
     
     ## Deliverables
     {expectedArtifacts}
@@ -73,7 +73,7 @@ nonisolated extension SystemTemplates {
     {toolCalling}
     
     ## Final reminder
-    Use the required artifacts already in this conversation before producing yours. Submit each deliverable exactly once — that is how the step ends.
+    Use the required artifacts already in this conversation before producing yours. {stepEnding}
     """
 
     static let softwareConsultationTemplate = """
@@ -128,7 +128,7 @@ nonisolated extension SystemTemplates {
     
     ## Team
     Members: {teamRoles}.
-    Your role: {positionContext}.
+    Your position: {positionContext}.
     
     ## Conversation mechanics
     {conversationMechanics}
@@ -154,7 +154,7 @@ nonisolated extension SystemTemplates {
     {toolCalling}
     
     ## Final reminder
-    The player is alone — no party, no backup. Every encounter, NPC, and lore detail you produce must work for a solo hero.
+    The player is alone — no party, no backup. Every encounter, NPC, and lore detail you produce must work for a solo hero. {stepEnding}
     """
 
     static let questPartyConsultationTemplate = """
@@ -210,7 +210,7 @@ nonisolated extension SystemTemplates {
     Members: {teamRoles}.
     
     Team purpose: {teamDescription}
-    Your perspective: {positionContext}.
+    Your position: {positionContext}.
     
     ## Conversation mechanics
     {conversationMechanics}
@@ -224,9 +224,6 @@ nonisolated extension SystemTemplates {
     ## Skills
     {roleSkills}
     
-    ## Conversation style
-    This is a conversation, not a presentation. Talk like a person, not a panelist. Short paragraphs, no bullets, no headers in your responses. React to what others say before making your own point. Stay on the Supervisor's topic; build on what others say rather than repeat yourself.
-    
     ## Deliverables
     {expectedArtifacts}
     {artifactInstructions}
@@ -238,7 +235,7 @@ nonisolated extension SystemTemplates {
     {toolCalling}
     
     ## Final reminder
-    Use the Supervisor's topic and prior discussion context to guide your contributions. Plain conversational prose only — no markdown structure in what you say.
+    Use the Supervisor's topic and prior discussion context to guide your contributions. {stepEnding}
     """
 
     static let discussionConsultationTemplate = """
@@ -309,7 +306,7 @@ nonisolated extension SystemTemplates {
     {toolCalling}
     
     ## Final reminder
-    Reply by calling `ask_supervisor` with your full response in its `question` field — plain text outside tool calls is invisible.
+    \(advisoryStepEnding)
     """
 
     // MARK: - Coding Assistant
@@ -340,7 +337,7 @@ nonisolated extension SystemTemplates {
     {toolCalling}
     
     ## Final reminder
-    Reply by calling `ask_supervisor` with your full response in its `question` field — plain text outside tool calls is invisible.
+    \(advisoryStepEnding)
     """
 
     // MARK: - Autovisor (single-role manager)
@@ -411,7 +408,7 @@ nonisolated extension SystemTemplates {
     {toolCalling}
     
     ## Final reminder
-    If Deliverables are listed above, submit each exactly once — that is how the step ends. Otherwise keep responding until the Supervisor finishes the role.
+    {stepEnding}
     """
 
     static let genericConsultationTemplate = """

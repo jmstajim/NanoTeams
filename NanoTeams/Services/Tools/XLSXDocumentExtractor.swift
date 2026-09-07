@@ -31,7 +31,7 @@ nonisolated struct XLSXDocumentExtractor: DocumentFormatExtractor {
         do {
             entryNames = try ZIPReader.listEntries(at: url).map(\.name)
         } catch {
-            return .failure(reason: String(describing: error))
+            return .failure(reason: ToolErrorHandler.classify(error).message)
         }
         let sheetEntries = entryNames
             .filter { $0.hasPrefix("xl/worksheets/sheet") && $0.hasSuffix(".xml") }

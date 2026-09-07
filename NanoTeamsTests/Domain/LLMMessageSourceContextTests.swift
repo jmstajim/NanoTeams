@@ -279,7 +279,7 @@ final class LLMMessageSourceContextTests: XCTestCase {
         // `.supervisorMessage` bubbles already show the role name — no secondary label.
         let msg = LLMMessage(
             role: .user,
-            content: "Supervisor:\nhi",
+            content: MessageSourceContext.supervisorMessagePrefix + "hi",
             sourceRole: .supervisor,
             sourceContext: .supervisorMessage
         )
@@ -353,7 +353,7 @@ final class LLMMessageSourceContextTests: XCTestCase {
     func testDisplayContent_stripsMultilineSupervisorHeader() {
         let msg = LLMMessage(
             role: .user,
-            content: "Supervisor:\nостановись",
+            content: MessageSourceContext.supervisorMessagePrefix + "остановись",
             sourceRole: .supervisor,
             sourceContext: .supervisorMessage
         )
@@ -363,11 +363,29 @@ final class LLMMessageSourceContextTests: XCTestCase {
     func testDisplayContent_stripsMultiMessageBatch() {
         let msg = LLMMessage(
             role: .user,
-            content: "Supervisor:\nmsg 1\nmsg 2\nmsg 3",
+            content: MessageSourceContext.supervisorMessagePrefix + "msg 1\nmsg 2\nmsg 3",
             sourceRole: .supervisor,
             sourceContext: .supervisorMessage
         )
         XCTAssertEqual(msg.displayContent, "msg 1\nmsg 2\nmsg 3")
+    }
+
+    /// The live marker is a `## ` heading (R1.3.2 — one marker family per conversation); a
+    /// bare `Supervisor:` line was the one colon label left on the wire until 2026-09-06.
+    func testSupervisorMessagePrefix_isAMarkdownHeading() {
+        XCTAssertEqual(MessageSourceContext.supervisorMessagePrefix, "## Supervisor\n")
+    }
+
+    /// Turns persisted by builds up to 2026-09-06 used the colon-label line. Those must
+    /// still strip cleanly after upgrade — the second legacy form after the inline one.
+    func testDisplayContent_stripsLegacyColonLinePrefix() {
+        let msg = LLMMessage(
+            role: .user,
+            content: "Supervisor:\ncolon-line style",
+            sourceRole: .supervisor,
+            sourceContext: .supervisorMessage
+        )
+        XCTAssertEqual(msg.displayContent, "colon-line style")
     }
 
     func testDisplayContent_stripsLegacyInlinePrefix() {
@@ -387,11 +405,11 @@ final class LLMMessageSourceContextTests: XCTestCase {
         // whose content happens to start with "Supervisor:" must NOT be stripped.
         let msg = LLMMessage(
             role: .user,
-            content: "Supervisor:\nshould not strip",
+            content: MessageSourceContext.supervisorMessagePrefix + "should not strip",
             sourceRole: nil,
             sourceContext: nil
         )
-        XCTAssertEqual(msg.displayContent, "Supervisor:\nshould not strip")
+        XCTAssertEqual(msg.displayContent, MessageSourceContext.supervisorMessagePrefix + "should not strip")
     }
 
     func testDisplayContent_supervisorMessage_withoutPrefix_returnsContentUnchanged() {

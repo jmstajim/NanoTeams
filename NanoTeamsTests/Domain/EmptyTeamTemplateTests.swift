@@ -121,7 +121,8 @@ final class EmptyTeamTemplateTests: XCTestCase {
         let team = TeamTemplateFactory.empty(name: "Alpha Team")
         // The Teammate has no systemRoleID, so `Role.fromDefinition` yields `.custom(name)`.
         let schemas = LLMExecutionService.resolveToolSchemas(
-            for: .custom(id: TeamTemplateFactory.teammateRoleName), team: team
+            for: .custom(id: TeamTemplateFactory.teammateRoleName), team: team,
+            approval: .available
         )
 
         let createArtifact = schemas.filter { $0.name == ToolNames.createArtifact }
@@ -225,14 +226,15 @@ final class EmptyTeamTemplateTests: XCTestCase {
 
     // MARK: - Wiring
 
-    func testEmpty_settingsWireTheTeammateToTheSupervisorWithAutoCoordinator() {
+    func testEmpty_settingsWireTheTeammateToTheSupervisorAsCoordinator() {
         let team = TeamTemplateFactory.empty(name: "Alpha Team")
         let supervisorID = team.roles[0].id
         let teammateID = team.nonSupervisorRoles[0].id
 
         XCTAssertEqual(team.settings.hierarchy.reportsTo, [teammateID: supervisorID])
         XCTAssertEqual(team.settings.invitableRoles, [teammateID])
-        XCTAssertNil(team.settings.meetingCoordinatorRoleID, "nil == Auto mode.")
+        XCTAssertEqual(team.settings.meetingCoordinatorRoleID, teammateID,
+                       "the only role that could coordinate does — there is no Auto")
     }
 
     func testEmpty_graphLayoutHasOneNodePerRole() {

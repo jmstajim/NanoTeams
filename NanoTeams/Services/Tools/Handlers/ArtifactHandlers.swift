@@ -7,10 +7,13 @@ private typealias JS = JSONSchema
 
 nonisolated struct CreateArtifactTool: ToolHandler {
     static let name = TN.createArtifact
+    /// The static schema is the tool-definitions surface only. At runtime `buildSchema(role:)`
+    /// replaces it per role, constraining `name` to the role's expected deliverables as an
+    /// enum — that sentence used to be IN the description, shipped to the model on every
+    /// call as a promise about plumbing it cannot act on.
     static let schema = ToolSchema(
         name: TN.createArtifact,
-        description: baseDescription
-            + "\n\nAt runtime the role's expected deliverable names are appended here and constrained on the `name` parameter.",
+        description: baseDescription,
         parameters: parameterSchema(nameEnum: nil)
     )
     static let category: ToolCategory = .artifact
@@ -60,19 +63,17 @@ nonisolated struct CreateArtifactTool: ToolHandler {
     /// the `isValidArtifactName` runtime guard inside `handle(...)` still
     /// catches the resulting bad calls and routes to a `tool_not_authorized`
     /// envelope so the LLM gets the "don't retry" guidance.
+    ///
+    /// The deliverable names live on the `name` parameter's `enum:` alone. The description
+    /// used to list them as well — the same fact twice in one schema, on every request
+    /// (R3.4.2 / R5.2.2); the prompt's `## Deliverables` section, the Harmony example and the
+    /// closing user turn already carry the names where the model reads prose.
     static func buildSchema(role: TeamRoleDefinition) -> ToolSchema {
         let names = role.dependencies.producesArtifacts
         let nameEnum: [String]? = names.isEmpty ? nil : names
-        let listSection: String
-        if names.isEmpty {
-            listSection = "Expected deliverables for this role: (none configured)"
-        } else {
-            listSection = "Expected deliverables for this role:\n- "
-                + names.joined(separator: "\n- ")
-        }
         return ToolSchema(
             name: TN.createArtifact,
-            description: baseDescription + "\n\n" + listSection,
+            description: baseDescription,
             parameters: parameterSchema(nameEnum: nameEnum)
         )
     }

@@ -53,6 +53,35 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
     private static let brokenCallEnvelope =
         ##"<|call|>{"name":"write_file","arguments":{"path":"x""##
 
+    /// The reasoning-envelope cap escalates through `setNeedsSupervisorInput`; when that
+    /// mutation does not persist there is no question for anyone to answer, so the step
+    /// FAILS naming the cause instead of looping on a nudge nobody reads. Every cap carries
+    /// this arm; this is the reasoning-channel one, first envelope nudged, second refused.
+    func testReasoningEnvelopeCap_whenTheEscalationDoesNotPersist_failsTheStepNamingIt() async {
+        let envelope = "<|call|>{\"name\":\"read_file\",\"arguments\":{\"path\":\"a.swift\"}}<|end|>"
+        var messages: [ChatMessage] = []
+        let first = await service._testHandleNoToolCalls(
+            stepID: stepID, assistantContent: "", sawHarmonyMarker: false,
+            task: mockDelegate.taskToMutate!, roleDefinition: nil,
+            conversationMessages: &messages, thinkingContent: "I will read it. " + envelope,
+            allowedToolNames: [ToolNames.readFile])
+        guard case .continueLoop = first else { return XCTFail("the first envelope is nudged, got \(first)") }
+        XCTAssertEqual(messages.count, 1)
+
+        mockDelegate.refuseMutations = true
+        let second = await service._testHandleNoToolCalls(
+            stepID: stepID, assistantContent: "", sawHarmonyMarker: false,
+            task: mockDelegate.taskToMutate!, roleDefinition: nil,
+            conversationMessages: &messages, thinkingContent: "Still reasoning. " + envelope,
+            allowedToolNames: [ToolNames.readFile])
+        guard case .toolFailure(let message) = second else {
+            return XCTFail("an escalation that did not persist must fail the step, got \(second)")
+        }
+        XCTAssertTrue(message.contains("Reasoning-channel cap exceeded"), message)
+        XCTAssertTrue(message.contains("escalation failed to persist"), message)
+        XCTAssertTrue(mockDelegate.eventLog.contains { $0.hasPrefix("mutate-refused") })
+    }
+
     func testHarmonyMarkerWithWhitespaceOnlyContent_sendsMalformedJSONRetry() async {
         // Repro of run EAE23A6D: pre-marker content is just "\n\n" from `[reasoning]` tail,
         // `sawHarmonyMarker == true` because parser saw `<|call|>` but failed to extract args.
@@ -290,7 +319,8 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
             count: 4, allowedToolNames: [ToolNames.waitForEvents, ToolNames.listTasks])
         XCTAssertTrue(text.contains(ToolNames.waitForEvents))
         XCTAssertFalse(text.contains(ToolNames.askSupervisor))
-        XCTAssertTrue(text.contains("last 4 responses"), "keeps the count, got: \(text)")
+        XCTAssertTrue(text.contains("The 4 turns immediately before this note"),
+                      "keeps the count, anchored to the note rather than to the reader's now (playbook §3.8), got: \(text)")
     }
 
     func testToolNameExamples_filtersToSchema_andNilsOutWhenNoneSurvive() {
@@ -646,6 +676,44 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
             retry.contains("Missing deliverables") && retry.contains("Code Review"),
             "Expected producing-role artifact-missing nudge, got: \(retry)"
         )
+    }
+
+    /// A role that has submitted one of two deliverables is told about the OTHER one only.
+    /// Until 2026-09-06 the nudge quoted the role definition's whole `producesArtifacts`,
+    /// so "Research Report" was reported missing on every no-tool turn after it had been
+    /// submitted — a false fact re-sent until the step ended, and one that disagreed with
+    /// `checkArtifactCompleteness`, which reads the STEP. Both now read
+    /// `StepExecution.missingArtifactNames`.
+    func testProducingRoleWithPartialSubmission_namesOnlyTheOutstandingDeliverable() async {
+        var step = StepExecution(
+            id: stepID, role: .uxDesigner, title: "Design",
+            expectedArtifacts: ["Research Report", "Design Spec"], status: .running)
+        step.artifacts = [Artifact(name: "Research Report")]
+        task = NTMSTask(id: 0, title: "Test", supervisorTask: "goal", runs: [Run(id: 0, steps: [step])])
+        mockDelegate.taskToMutate = task
+        let role = TeamRoleDefinition(
+            id: "ux_designer", name: "UX Designer", prompt: "", toolIDs: [], usePlanningPhase: false,
+            dependencies: RoleDependencies(requiredArtifacts: [],
+                                           producesArtifacts: ["Research Report", "Design Spec"]),
+            llmOverride: nil, isSystemRole: true, systemRoleID: "uxDesigner",
+            createdAt: Date(), updatedAt: Date())
+        var messages: [ChatMessage] = []
+        let stop = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: "Working on the spec now.",
+            sawHarmonyMarker: false,
+            task: task,
+            roleDefinition: role,
+            conversationMessages: &messages
+        )
+        guard case .continueLoop = stop else {
+            XCTFail("Expected .continueLoop, got \(stop)")
+            return
+        }
+        let retry = messages.last?.content ?? ""
+        XCTAssertTrue(retry.contains("Missing deliverables as of that turn: \"Design Spec\"."), retry)
+        XCTAssertFalse(retry.contains("Research Report"),
+                       "the submitted deliverable must not be reported missing: \(retry)")
     }
 
     // MARK: - Missing Tool Name Nudge (Run 13 regression)
@@ -1405,5 +1473,141 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
         XCTAssertFalse(nudge.contains("inside your reasoning"), "got: \(nudge)")
         XCTAssertTrue(nudge.contains("did not call any tools"), "got: \(nudge)")
         XCTAssertEqual(service._testReasoningEnvelopeCounter(stepID: stepID, taskID: task.id), 0)
+    }
+
+    // MARK: - Near-miss sentinel (MeditationApp task 39 run 8, 2026-09-06)
+
+    /// A shape the normalizer refuses to REPAIR but that is plainly a call attempt:
+    /// `<|call|` with a debris run before the payload. `sawHarmonyMarker` never closes on
+    /// it, so branch 4 (`classifyHarmonyCallIssue`) cannot run — and before this branch
+    /// existed a producing role fell through to the artifact nudge and was told, once per
+    /// turn, that it had not submitted its deliverables. In run 8 that happened 16 times.
+    ///
+    /// The repair and the diagnosis are complementary, not alternatives: the repair keeps
+    /// getting narrower shapes wrong until a run proves the next one, and this branch is
+    /// what makes that next one LOUD instead of silent.
+    private static let nearMissEnvelope =
+        ##"<|call|read_file{"path":"MeditationApp/SessionPlayer.swift"}"##
+
+    func testNearMissSentinel_producingRole_namesTheFormNotTheArtifacts() async {
+        let role = makeProducingRole(artifactName: "Engineering Notes")
+        var messages: [ChatMessage] = []
+        let stop = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: "Let me read the player.\n" + Self.nearMissEnvelope,
+            sawHarmonyMarker: false,
+            task: task,
+            roleDefinition: role,
+            conversationMessages: &messages,
+            allowedToolNames: [ToolNames.readFile, ToolNames.createArtifact])
+        guard case .continueLoop = stop else { return XCTFail("Expected .continueLoop, got \(stop)") }
+        XCTAssertEqual(messages.count, 1)
+        let retry = messages[0].content ?? ""
+        XCTAssertTrue(retry.contains("<|call|>"), "the nudge must show the canonical shape, got: \(retry)")
+        XCTAssertFalse(
+            retry.contains("Missing deliverables"),
+            "a format defect must not be diagnosed as a missing artifact, got: \(retry)")
+    }
+
+    /// R3.8.3: a nudge names only tools the role's schema holds, and never quotes the
+    /// model's own bytes back — a nudge is never retired, so a quoted path would ride the
+    /// prefix of every later request of the step.
+    func testNearMissSentinel_nudgeIsSchemaCleanAndQuotesNothing() async {
+        var messages: [ChatMessage] = []
+        _ = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: Self.nearMissEnvelope,
+            sawHarmonyMarker: false,
+            task: task,
+            roleDefinition: makeProducingRole(artifactName: "Engineering Notes"),
+            conversationMessages: &messages,
+            allowedToolNames: [ToolNames.readFile])
+        let retry = messages[0].content ?? ""
+        XCTAssertFalse(retry.contains("SessionPlayer.swift"),
+                       "the model's own bytes must not be quoted back, got: \(retry)")
+        XCTAssertFalse(retry.contains(ToolNames.writeFile),
+                       "the nudge must not name a tool the role does not hold, got: \(retry)")
+    }
+
+    /// The counter this branch shares with `.malformedJSON` is the whole point: before it,
+    /// the ONLY bound on this shape was `maxNonProductiveTurns = 20`, and run 8 reached 16
+    /// consecutive nudges without tripping anything.
+    func testNearMissSentinel_thirdConsecutive_escalatesToSupervisor() async {
+        let role = makeProducingRole(artifactName: "Engineering Notes")
+        var messages: [ChatMessage] = []
+        for turn in 1...2 {
+            let stop = await service._testHandleNoToolCalls(
+                stepID: stepID, assistantContent: Self.nearMissEnvelope, sawHarmonyMarker: false,
+                task: mockDelegate.taskToMutate!, roleDefinition: role,
+                conversationMessages: &messages, allowedToolNames: [ToolNames.readFile])
+            guard case .continueLoop = stop else { return XCTFail("turn \(turn): got \(stop)") }
+        }
+        let third = await service._testHandleNoToolCalls(
+            stepID: stepID, assistantContent: Self.nearMissEnvelope, sawHarmonyMarker: false,
+            task: mockDelegate.taskToMutate!, roleDefinition: role,
+            conversationMessages: &messages, allowedToolNames: [ToolNames.readFile])
+        guard case .needsSupervisorInput(let question) = third else {
+            return XCTFail("the third consecutive near-miss must escalate, got \(third)")
+        }
+        XCTAssertTrue(question.contains("<|call|>"), question)
+    }
+
+    /// **The seed-turn poisoning.** In planning phase an unparsed turn is recorded as the
+    /// step's durable plan and carried across the boundary into the implementation wire's
+    /// first USER turn. Run 8's record 60 was exactly this, and the broken marker then rode
+    /// every request of the next phase as the most authoritative example in the context.
+    /// `looksLikeToolCallAttempt` missed it because that predicate requires the WHOLE reply
+    /// to be one JSON object, and this reply is prose followed by a sentinel.
+    func testNearMissSentinel_inPlanningPhase_isNotRecordedAsThePlan() async {
+        var messages: [ChatMessage] = []
+        let stop = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: "TodayModel and TodayView are untracked leftovers.\n"
+                + ##"<|call|search{"query":": View"}"##,
+            sawHarmonyMarker: false,
+            task: task,
+            roleDefinition: nil,
+            conversationMessages: &messages,
+            allowedToolNames: [ToolNames.search, ToolNames.updateScratchpad],
+            wireIsMidPlanning: true)
+        guard case .continueLoop = stop else { return XCTFail("Expected .continueLoop, got \(stop)") }
+        XCTAssertNil(
+            mockDelegate.taskToMutate?.runs[0].steps[0].scratchpad,
+            "a failed tool call is not a plan — recording it carries the defect across the boundary")
+        let retry = messages[0].content ?? ""
+        XCTAssertTrue(retry.contains("did not parse"), retry)
+        XCTAssertFalse(retry.contains("Plan recorded"), retry)
+    }
+
+    /// A step whose deliverables are all in is DONE however its last turn was framed. The
+    /// near-miss branch stands ABOVE the arm that says so, so without repeating the
+    /// completeness check a near-miss on a turn after the final `create_artifact` would nudge
+    /// a step with nothing left to do — and the only thing that ends THAT is the twenty-turn
+    /// cap, which is the exact shape the branch exists to remove.
+    ///
+    /// RED: drop `checkArtifactCompleteness(...) == nil` from the branch condition →
+    /// `.continueLoop` with a form nudge instead of `.completed`.
+    func testNearMissSentinel_afterTheArtifactIsIn_completesRatherThanNudging() async {
+        var completed = StepExecution(
+            id: stepID, role: .softwareEngineer, title: "Eng",
+            expectedArtifacts: ["Engineering Notes"], status: .running)
+        completed.artifacts = [Artifact(name: "Engineering Notes")]
+        var finished = task!
+        finished.runs[0].steps = [completed]
+        mockDelegate.taskToMutate = finished
+
+        var messages: [ChatMessage] = []
+        let stop = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: "Done.\n" + Self.nearMissEnvelope,
+            sawHarmonyMarker: false,
+            task: finished,
+            roleDefinition: makeProducingRole(artifactName: "Engineering Notes"),
+            conversationMessages: &messages,
+            allowedToolNames: [ToolNames.createArtifact])
+        guard case .completed = stop else {
+            return XCTFail("a step with every deliverable in must complete, got \(stop)")
+        }
+        XCTAssertTrue(messages.isEmpty, "a completed step must not also be nudged")
     }
 }

@@ -2636,13 +2636,21 @@ final class ActivityFeedBuilderTests: XCTestCase {
 
     func testStripAttachedFiles_skillBodyWithMarkdownHeaders_survivesIntact() {
         // The common case: a SKILL.md body contains ordinary "## Heading" lines.
-        // They match neither the clip nor the skill regex, so the body is preserved.
+        //
+        // Since 2026-09-06 `AnswerTextBuilder` re-levels them below the `## Skill:` header
+        // it puts them under — the system path (`formatRoleSkills`) always did, and a body
+        // whose own `##` reads as a prompt-level section is the defect
+        // `InjectedBodyLevellingTests` pins. So the body reaching the feed is the DEMOTED
+        // one, and what this test guards is that the round trip is lossless: whatever went
+        // in comes back out under the right skill name, with the text intact.
         let body = "## Usage\nrun it\n\n## Examples\n`foo bar`"
         let built = AnswerTextBuilder.build(text: "", clips: [SkillClip(name: "guide", body: body).encoded()]).answer
         let result = ActivityFeedBuilder.stripAttachedFiles(from: built)
         let parsed = SkillClip.parse(result.clippedTexts.first ?? "")
         XCTAssertEqual(parsed?.name, "guide")
-        XCTAssertEqual(parsed?.body, body)
+        XCTAssertEqual(parsed?.body, "### Usage\nrun it\n\n### Examples\n`foo bar`")
+        XCTAssertTrue(parsed?.body.contains("run it") == true, "prose survives the demotion")
+        XCTAssertTrue(parsed?.body.contains("`foo bar`") == true)
     }
 
     func testStripAttachedFiles_skillBodyWithExactClipMarkerLine_knownDisplayEdge() {

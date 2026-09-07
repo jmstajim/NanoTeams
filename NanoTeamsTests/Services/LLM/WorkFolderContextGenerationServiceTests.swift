@@ -19,7 +19,15 @@ final class WorkFolderContextGenerationServiceTests: XCTestCase {
         // small context budget produces a visibly shorter prompt. The README is
         // large enough that even a mid-size context must trim it, so halving the
         // budget on retry shrinks the prompt further.
-        let readme = (0..<1000).map { "readme line \($0)" }.joined(separator: "\n")
+        //
+        // 4000 lines, not 1000, since 2026-09-06. At 1000 the fixture sat in a window
+        // one backtick wide: below ~16k of context the composition was already at the
+        // 50-line excerpt floor (which short-circuits the retry), and at 16k and above
+        // the whole README fit, so halving the budget changed nothing. Widening the
+        // excerpt fence by one character moved the boundary and both retry tests started
+        // failing — they had been passing on the coincidence. A README the budget must
+        // trim at every context worth testing takes the coincidence out.
+        let readme = (0..<4000).map { "readme line \($0)" }.joined(separator: "\n")
         try readme.write(to: tempDir.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
         let srcDir = tempDir.appendingPathComponent("src", isDirectory: true)
         try fm.createDirectory(at: srcDir, withIntermediateDirectories: true)
@@ -67,9 +75,24 @@ final class WorkFolderContextGenerationServiceTests: XCTestCase {
         let overflow = LLMClientError.providerError(
             "The number of tokens to keep from the initial prompt is greater than the context length."
         )
-        // Mid-size context so attempt 1 already trims the 1000-line README (not
-        // at the 50-line floor), leaving room for the halved retry to shrink more.
-        let client = ScriptedLLMClient(contextLength: 4096, successContent: "recovered")
+        // Two conditions have to hold at once, and they pull opposite ways: attempt 1 must
+        // NOT be at the 50-line excerpt floor (`atFloor` short-circuits the retry — that is
+        // the OTHER test), and the budget must still BIND, or halving it changes nothing.
+        //
+        // Re-calibrated 2026-09-06, and the margin it had is the point. Widening the excerpt
+        // fence by ONE backtick — 12 characters across six excerpts — flipped `atFloor` at
+        // the old 4096, and the obvious repair (raise the context) failed the other way: at
+        // 16384 the whole 1000-line README fit, so the halved retry produced a
+        // byte-identical prompt. The window was one backtick wide, so the test had been
+        // asserting the retry path by coincidence. Measured on this exact folder, README at
+        // 4000 lines:
+        //
+        //     ctx     budget   atFloor   chars    halved
+        //     8192     5727    true       9107     3359
+        //     16384   12690    true      16531     9763
+        //     32768   26616    false     69811    17187   ← both conditions
+        //     65536   54469    false     69811    69811
+        let client = ScriptedLLMClient(contextLength: 32768, successContent: "recovered")
         client.errorScript = [overflow, nil] // fail attempt 1, succeed attempt 2
 
         let result = try await WorkFolderContextService(client: client).generate(workFolderRoot: tempDir, config: makeConfig())
@@ -84,7 +107,10 @@ final class WorkFolderContextGenerationServiceTests: XCTestCase {
 
     func testGenerate_secondOverflow_throwsContextWindowTooSmall() async {
         let overflow = LLMClientError.providerError("context length exceeded, provide a shorter input")
-        let client = ScriptedLLMClient(contextLength: 8192, successContent: "unused")
+        // 32768 for the same reason as the test above, and see its measured table: below it
+        // the composition is already at the excerpt floor, and `atFloor` throws on attempt 1
+        // — which would make this test pass for the wrong reason (it asserts TWO attempts).
+        let client = ScriptedLLMClient(contextLength: 32768, successContent: "unused")
         client.errorScript = [overflow, overflow]
 
         do {

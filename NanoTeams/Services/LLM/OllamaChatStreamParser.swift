@@ -15,10 +15,11 @@ import Foundation
 /// Reasoning routing: newer Ollama builds separate reasoning into
 /// `message.thinking` for models whose chat templates they know. For models
 /// where they don't, reasoning arrives inline in `content` wrapped in
-/// `<think>…</think>` tags — `ThinkTagSplitter` re-routes those spans to the
-/// thinking channel so downstream consumers (thinking disclosure, loop
-/// detection, `HarmonyToolCallParser`) see the same content/thinking split as
-/// the LM Studio path.
+/// `<think>…</think>` tags — `ThinkTagSplitter` (its own file; `SSEEventParser`
+/// runs the same one on LM Studio's `message.delta`) re-routes those spans to
+/// the thinking channel so downstream consumers (thinking disclosure, loop
+/// detection, `HarmonyToolCallParser`) see one content/thinking split on both
+/// providers.
 nonisolated struct OllamaChatStreamParser {
 
     /// Everything the terminal `done:true` chunk said, as one value.
@@ -128,116 +129,5 @@ nonisolated struct OllamaChatStreamParser {
         if !split.thinking.isEmpty { events.append(.thinkingDelta(split.thinking)) }
         if !split.content.isEmpty { events.append(.contentDelta(split.content)) }
         return events
-    }
-}
-
-// MARK: - Think Tag Splitter
-
-/// Re-routes an inline leading `<think>…</think>` span (emitted by reasoning
-/// models whose templates Ollama doesn't parse server-side) from the content
-/// channel to the thinking channel. Stateful because a tag can split across
-/// stream chunks (`"<th"` + `"ink>"`): a chunk's trailing characters are held
-/// back while they are still a viable prefix of the next expected tag.
-///
-/// The open tag is recognized ONLY before any non-whitespace content has been
-/// emitted (reasoning models think first, answer second). Once real content
-/// has flowed, a literal `<think>` in prose or code stays content — this
-/// protects Harmony tool-call envelopes from being split across channels
-/// mid-JSON, which would corrupt `HarmonyToolCallParser` extraction.
-nonisolated struct ThinkTagSplitter {
-
-    struct Output: Equatable {
-        var content: String = ""
-        var thinking: String = ""
-    }
-
-    private static let openTag = "<think>"
-    private static let closeTag = "</think>"
-
-    private var inThink = false
-    private var hasEmittedContent = false
-    private var pending = ""
-
-    mutating func feed(_ chunk: String) -> Output {
-        // Fast path: past the (optional) leading think block, no further tags
-        // are recognized — pass everything straight through. `pending` can
-        // hold a previously held-back prefix whose tag window just closed.
-        if !inThink && hasEmittedContent {
-            let text = pending + chunk
-            pending = ""
-            var out = Output()
-            emit(text, into: &out)
-            return out
-        }
-
-        pending += chunk
-        var out = Output()
-        while true {
-            // The open-tag window closes the moment real content flows — also
-            // WITHIN a single chunk. Checked at the top of every loop pass
-            // (not just at feed() entry) so "prose <think>…" in one buffered
-            // chunk keeps the literal tag as content exactly like the same
-            // bytes split across two chunks would — semantics must not depend
-            // on how a server/proxy frames the deltas.
-            if !inThink && hasEmittedContent {
-                emit(pending, into: &out)
-                pending = ""
-                break
-            }
-            let tag = inThink ? Self.closeTag : Self.openTag
-            if let range = pending.range(of: tag) {
-                let before = String(pending[..<range.lowerBound])
-                if !inThink && !before.allSatisfy(\.isWhitespace) {
-                    // Real content precedes the tag in this same buffer — the
-                    // tag is literal prose/code, not a think opener.
-                    emit(pending, into: &out)
-                    pending = ""
-                    break
-                }
-                emit(before, into: &out)
-                pending = String(pending[range.upperBound...])
-                inThink.toggle()
-                continue
-            }
-            // No full tag: emit everything except a trailing viable prefix of
-            // the expected tag, which stays buffered for the next chunk.
-            let holdCount = trailingPrefixLength(of: tag, in: pending)
-            let emitEnd = pending.index(pending.endIndex, offsetBy: -holdCount)
-            emit(String(pending[..<emitEnd]), into: &out)
-            pending = String(pending[emitEnd...])
-            break
-        }
-        return out
-    }
-
-    /// Emit whatever is buffered (stream end). An unfinished tag prefix is
-    /// surfaced verbatim on the current channel rather than dropped.
-    mutating func flush() -> Output {
-        var out = Output()
-        emit(pending, into: &out)
-        pending = ""
-        return out
-    }
-
-    private mutating func emit(_ text: String, into out: inout Output) {
-        guard !text.isEmpty else { return }
-        if inThink {
-            out.thinking += text
-        } else {
-            out.content += text
-            // Whitespace before the opening tag must not close the tag window
-            // (models emit `\n<think>` on occasion).
-            if !text.allSatisfy(\.isWhitespace) { hasEmittedContent = true }
-        }
-    }
-
-    /// Length of the longest suffix of `s` that is a proper prefix of `tag`.
-    private func trailingPrefixLength(of tag: String, in s: String) -> Int {
-        let maxLen = min(tag.count - 1, s.count)
-        guard maxLen > 0 else { return 0 }
-        for len in stride(from: maxLen, through: 1, by: -1) {
-            if tag.hasPrefix(s.suffix(len)) { return len }
-        }
-        return 0
     }
 }

@@ -118,6 +118,7 @@ extension LLMExecutionService {
                 participantIDs: participants,
                 context: context,
                 initiatingRole: roleForMessage,
+                initiatorSeat: .speaks,
                 task: task,
                 runIndex: runIndex,
                 stepIndex: stepIndex,
@@ -125,10 +126,9 @@ extension LLMExecutionService {
                 config: config,
                 networkLogger: networkLogger
             )
-            // Auto mode = initiator-as-coordinator. The meeting result is
-            // attributed to the same effective coordinator the runtime used
-            // for the meeting itself (designated coordinator if set,
-            // otherwise the initiating role).
+            // The meeting result is attributed to the same coordinator the runtime
+            // used for the meeting itself — the team's coordinator (the initiator
+            // stands in only for a fixture with no team).
             reflectAttribution(reply, role: effectiveCoordinator(team: resolveTeam(task: task), initiator: roleForMessage), context: .meeting)
 
         case .changeRequest(let targetRoleID, let changes, let reasoning):
@@ -348,6 +348,7 @@ extension LLMExecutionService {
         taskID: Int,
         memoryStore: MemoryTagStore,
         wireIsMidPlanning: Bool,
+        allowedToolNames: Set<String>,
         conversationMessages: inout [ChatMessage],
         outcome: inout ToolResultsOutcome
     ) async -> Bool {
@@ -389,7 +390,8 @@ extension LLMExecutionService {
         // Conditional, and `nil` is the common case for `edit_file`: the envelope is the
         // preceding turn, so a direction that only restates it costs context and teaches
         // nothing (`ToolErrorNotePolicy`).
-        if result.isError, let guidance = ToolErrorNotePolicy.direction(for: result) {
+        if result.isError,
+           let guidance = ToolErrorNotePolicy.direction(for: result, allowedToolNames: allowedToolNames) {
             conversationMessages.append(ChatMessage(role: .user, content: guidance))
             // Persisted despite being invisible, and that is not belt-and-braces — two
             // consumers read the display record rather than the wire:

@@ -120,7 +120,7 @@ nonisolated extension NTMSRepository {
     ///    unconditional `producesArtifacts`) as a narrow safety net.
     /// 3. If `AppVersion.current > state.lastAppliedAppVersion`, run the
     ///    full reconcile via `applyBundledContentUpdates` (roles / prompt templates
-    ///    / settings / team structure / tools). Teams with a live tool loop are
+    ///    / team structure / tools — team settings only additively). Teams with a live tool loop are
     ///    deferred and recorded in `state.pendingReconcileTeamIDs`.
     /// 4. If nothing bumped but the pending set is non-empty, run a pass SCOPED to
     ///    those teams — the retry is independent of the version compare.
@@ -179,6 +179,15 @@ nonisolated extension NTMSRepository {
             teamsNeedsWrite = true
         }
 
+        // 2d. Structural invariant for meetings: every team with a non-Supervisor role
+        // names a coordinator — there is no "Auto" (see
+        // `TeamSettings.meetingCoordinatorRoleID`). Files written before 2026-09-06
+        // carry `nil`, and a role deleted outside the editor leaves an orphan; both
+        // heal to the default rule here and are written back. Idempotent.
+        for i in teamsFile.teams.indices where teamsFile.teams[i].healMeetingCoordinator() {
+            teamsNeedsWrite = true
+        }
+
         // 2c. Structural invariant for chat mode: a task whose effective team is the
         // Generated Team placeholder is NEVER a chat task — the placeholder's
         // `isChatMode` is vacuous (no roles ⇒ no Supervisor deliverables). Enforced at
@@ -195,9 +204,10 @@ nonisolated extension NTMSRepository {
             tasksIndexNeedsWrite = true
         }
 
-        // 3. Version-bump reconcile — overwrites scalar role fields, prompt
-        //    templates, team settings, additively adds missing system roles and
-        //    system artifacts, and re-syncs built-in tools.
+        // 3. Version-bump reconcile — overwrites scalar role fields and prompt
+        //    templates, additively adds missing system roles (with their hierarchy
+        //    edge and invite-list membership) and system artifacts, and re-syncs
+        //    built-in tools. Team settings are the user's and are not rewritten.
         let currentAppVersion = AppVersion.current
         var stateNeedsWrite = false
         let versionBumped = AppVersion.shouldReconcile(

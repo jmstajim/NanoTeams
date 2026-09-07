@@ -10,14 +10,18 @@ nonisolated enum SandboxPathError: LocalizedError {
     case outsideSandbox(String)
     case restrictedPath
 
-    var errorDescription: String? {
+    var errorDescription: String? { message }
+
+    /// Every case answers — this is the `error` a tool result carries to the model, so it
+    /// is never optional; `errorDescription` is the `LocalizedError` view of the same text.
+    var message: String {
         switch self {
         case .absolutePathNotAllowed(let path):
             "Absolute paths are not allowed: \(path). Paths are relative to the work-folder root; use \".\" for the root."
         case .parentTraversalNotAllowed(let path):
-            "Parent traversal (..) is not allowed: \(path)"
+            "Parent traversal (..) is not allowed: \(path). Paths are relative to the work-folder root; name the target from the root and use \".\" for the root itself."
         case .outsideSandbox(let path):
-            "Path resolves outside the selected work folder: \(path)"
+            "Path resolves outside the selected work folder: \(path). Paths are relative to the work-folder root; use \".\" for the root."
         case .restrictedPath:
             "File not found."
         }

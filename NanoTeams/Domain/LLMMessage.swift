@@ -324,9 +324,10 @@ nonisolated enum MessageSourceContext: String, Codable, CaseIterable {
     var attributionPrefixes: [String] {
         switch self {
         case .supervisorMessage:
-            // Legacy single-line form second: messages persisted by builds before the
-            // marker went multiline still render cleanly after upgrade.
-            return [Self.supervisorMessagePrefix, "Supervisor: "]
+            // Legacy forms after the live one: the colon-label line (until 2026-09-06) and
+            // the single-line form before it. Messages persisted by earlier builds still
+            // render cleanly after upgrade.
+            return [Self.supervisorMessagePrefix, "Supervisor:\n", "Supervisor: "]
         case .supervisorAnswer:
             // Composed form FIRST, and it is not hypothetical: `correctRole` Branch A (the
             // role was waiting on `ask_supervisor` when it paused) routes the correction
@@ -343,10 +344,15 @@ nonisolated enum MessageSourceContext: String, Codable, CaseIterable {
         }
     }
 
-    /// Shared attribution marker prepended to queued Supervisor turns. Single
-    /// source of truth so the write side (`NTMSOrchestrator.consumeQueuedSupervisorMessage`)
-    /// and the read side (`LLMMessage.displayContent`) can't drift on rename.
-    static let supervisorMessagePrefix = "Supervisor:\n"
+    /// Shared attribution marker prepended to queued Supervisor turns and to a restart
+    /// comment. Single source of truth so the write sides
+    /// (`NTMSOrchestrator.consumeQueuedSupervisorMessage`, `restartRole`) and the read side
+    /// (`LLMMessage.displayContent`) can't drift on rename.
+    ///
+    /// A `## ` heading, not a `Supervisor:` label line: every system prompt this turn is
+    /// injected under sections with `## `, and R1.3.2 allows one marker family per rendered
+    /// conversation — the colon line was the one bare label left on the wire (2026-09-06).
+    static let supervisorMessagePrefix = "## Supervisor\n"
 
     /// Attribution marker prepended to supervisor ANSWER turns (`.supervisorAnswer`).
     /// Single source of truth across the write sides

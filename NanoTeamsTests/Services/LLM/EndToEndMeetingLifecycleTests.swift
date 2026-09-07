@@ -60,8 +60,9 @@ final class EndToEndMeetingLifecycleTests: XCTestCase {
         XCTAssertFalse(filteredNames.contains("create_artifact"))
         XCTAssertFalse(filteredNames.contains("ask_teammate"))
         XCTAssertFalse(filteredNames.contains("request_team_meeting"))
-        XCTAssertFalse(filteredNames.contains("conclude_meeting"))
         XCTAssertFalse(filteredNames.contains("request_changes"))
+        // The coordinator's own meeting tool survives the filter — it is granted, not stripped.
+        XCTAssertTrue(filteredNames.contains("conclude_meeting"))
         XCTAssertFalse(filteredNames.contains("analyze_image"))
     }
 
@@ -123,9 +124,12 @@ final class EndToEndMeetingLifecycleTests: XCTestCase {
             teamSettings: team.settings
         )
 
-        // Supervisor should be filtered by default (supervisorCanBeInvited is false by default)
+        // The Supervisor is never a meeting participant — unconditionally, no setting seats
+        // it (until 2026-09-07 a `supervisorCanBeInvited` seat did).
         let hasSupervisor = result.participants.contains { $0 == .supervisor }
-        XCTAssertFalse(hasSupervisor, "Supervisor should be filtered when not invitable")
+        XCTAssertFalse(hasSupervisor, "The Supervisor is never a meeting participant")
+        XCTAssertTrue(result.rejectedReasons.contains { $0.contains("not a meeting participant") },
+                      "Rejection names the seat rule: \(result.rejectedReasons)")
 
         // Should have some resolved participants
         XCTAssertGreaterThan(result.participants.count, 0, "Should resolve some participants")
@@ -139,7 +143,7 @@ final class EndToEndMeetingLifecycleTests: XCTestCase {
         // All collaborative/control tools should be excluded
         XCTAssertTrue(excluded.contains(ToolNames.askTeammate))
         XCTAssertTrue(excluded.contains(ToolNames.requestTeamMeeting))
-        XCTAssertTrue(excluded.contains(ToolNames.concludeMeeting))
+        XCTAssertFalse(excluded.contains(ToolNames.concludeMeeting), "meeting-only, never excluded")
         XCTAssertTrue(excluded.contains(ToolNames.askSupervisor))
         XCTAssertTrue(excluded.contains(ToolNames.requestChanges))
         XCTAssertTrue(excluded.contains(ToolNames.createArtifact))

@@ -68,14 +68,14 @@ final class ChangeRequestServiceExtendedTests: XCTestCase {
             reasoning: "Missing edge cases"
         )
 
-        XCTAssertTrue(result.context.contains("Requested by:"))
-        XCTAssertTrue(result.context.contains("Target:"))
-        XCTAssertTrue(result.context.contains("Changes requested:"))
-        XCTAssertTrue(result.context.contains("Reasoning:"))
-        XCTAssertTrue(result.context.contains("Fix error handling"))
-        XCTAssertTrue(result.context.contains("Missing edge cases"))
-        XCTAssertTrue(result.context.contains("VOTE: APPROVE"))
-        XCTAssertTrue(result.context.contains("VOTE: REJECT"))
+        XCTAssertTrue(result.context.contains("Code Reviewer requests changes to SWE's work"))
+        XCTAssertTrue(result.context.contains("Changes requested: Fix error handling"))
+        XCTAssertTrue(result.context.contains("Reasoning: Missing edge cases"))
+        // The vote contract lives in `ChangeRequestService.voteInstruction`, appended to every
+        // turn directive of a `.changeRequestVote` meeting — not in the context.
+        XCTAssertFalse(result.context.contains("VOTE:"))
+        XCTAssertTrue(ChangeRequestService.voteInstruction.contains("VOTE: APPROVE"))
+        XCTAssertTrue(ChangeRequestService.voteInstruction.contains("VOTE: REJECT"))
     }
 
     func testBuildVotingContext_specialCharactersPreserved() {

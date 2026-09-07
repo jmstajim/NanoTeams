@@ -54,6 +54,83 @@ nonisolated enum JudgeConfig {
     }
 }
 
+/// Which channel a gate verdict may be taken from (playbook R2.3.6; decided 2026-09-07).
+///
+/// The content channel is the verdict. The reasoning channel is deliberation the model was
+/// not trained to the same safety standard on — so a `DENY` found only there is honoured
+/// (fail-closed either way), while an `OK` found only there is NOT a decision: the judge
+/// asks once more for the object in its visible reply, and denies if that reply is empty
+/// again. Until 2026-09-07 both judges promoted the reasoning channel symmetrically, so a
+/// reasoning model could mint an allow from the channel the prompt tells it to keep private.
+nonisolated enum JudgeReplyChannelPolicy {
+    enum Resolution: Equatable {
+        /// Parse this text as the verdict (the content channel, or a reasoning-only deny /
+        /// non-verdict — every non-`OK` outcome denies).
+        case verdict(String)
+        /// The reasoning channel says `OK` and the content channel is empty — not a verdict.
+        /// The judge asks once more for a visible object and denies when that reply is the
+        /// same; the attempt budget is the judge's (`for attempt in 0..<2`), not this
+        /// policy's. Until 2026-09-07 the policy counted the attempts itself, which left
+        /// every judge a post-loop deny nothing could reach.
+        case reasoningOnlyAllow
+    }
+
+    /// The one instruction the retry turn carries.
+    static let retryInstruction =
+        "Reply now with the JSON object only, in your visible reply — a decision written inside reasoning does not count."
+
+    static func resolve(content: String, reasoning: String, prepare: (String) -> String) -> Resolution {
+        let visible = prepare(content)
+        if !visible.isEmpty { return .verdict(visible) }
+        let hidden = prepare(reasoning)
+        guard !hidden.isEmpty else { return .verdict("") }
+        if case .allow = JudgeVerdictParser.evaluate(hidden) { return .reasoningOnlyAllow }
+        return .verdict(hidden)
+    }
+
+    static let reasoningOnlyAllowReason =
+        "The judge allowed only inside its reasoning channel, which is not a verdict; denied for safety."
+}
+
+/// The deny reasons the RUNTIME writes when the judge produced no usable verdict — a
+/// transport failure, an unparseable reply, or an allow that stayed in the reasoning
+/// channel. Distinct from a deny the MODEL made: that one carries the model's own `reason`
+/// (or `Denied by …` when it gave none).
+///
+/// They live here, beside the parser both gates share, because two readers need the same
+/// list and a copy would drift: the two services write them, and the one-shot prompt
+/// trainer must not read one as "the judge refused a dangerous command" — a fail-closed
+/// deny on a deny-worthy input measures the transport, not the prompt (2026-09-08).
+nonisolated enum JudgeFailClosedReason {
+    // `BashJudgeService.parse`
+    static let bashNoVerdict = "Judge returned no verdict; denied for safety."
+    static let bashNotSingleObject = "Judge did not return a single clean verdict object; denied for safety."
+    static let bashConflicting = "Judge returned a conflicting verdict; denied for safety."
+    static let bashMalformed = "Judge verdict was malformed; denied for safety."
+    // `ComputerUseJudgeService.parse`
+    static let actionNoVerdict = "Judge returned no verdict; denied."
+    static let actionUnparseable = "Could not parse the judge's verdict; denied."
+
+    /// A transport / client failure, the classified message interpolated.
+    /// `subject` is `"Command"` for the bash gate, `"Action"` for computer use.
+    static func callFailed(subject: String, message: String) -> String {
+        "\(subject) judge call failed (\(message)); denied for safety."
+    }
+
+    private static let fixed: Set<String> = [
+        bashNoVerdict, bashNotSingleObject, bashConflicting, bashMalformed,
+        actionNoVerdict, actionUnparseable,
+    ]
+    private static let callFailedPrefixes = ["Command judge call failed (", "Action judge call failed ("]
+
+    /// True when the deny came from the runtime rather than from the model's verdict.
+    static func isFailClosed(_ reason: String) -> Bool {
+        if fixed.contains(reason) { return true }
+        if reason == JudgeReplyChannelPolicy.reasoningOnlyAllowReason { return true }
+        return callFailedPrefixes.contains { reason.hasPrefix($0) }
+    }
+}
+
 nonisolated enum JudgeVerdictParser {
 
     /// The outcome of parsing a judge reply. `allow`/`deny` carry the object's `reason` field

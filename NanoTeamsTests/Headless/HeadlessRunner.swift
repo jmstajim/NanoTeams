@@ -50,6 +50,41 @@ final class HeadlessRunner {
         self.config = config
     }
 
+    /// The run's configuration: a FRESH install plus exactly the fields the config names.
+    ///
+    /// Built on `InMemoryConfigurationStorage`, never on `UserDefaults.standard`. The test
+    /// host is `NanoTeams.app` (`TEST_HOST` in the project), so the default storage is the
+    /// developer's live app preferences: until 2026-09-07 every headless run inherited them —
+    /// the audit of that day measured under the developer's Semi-automatic bash mode and
+    /// Auto computer-use while recording "the default" — and wrote seven fields back into
+    /// them through `didSet`. Isolated in both directions now: nothing leaks in, nothing
+    /// leaks out, and a re-run on any machine reads the same settings. Static and
+    /// LLM-free so `HeadlessConfigTests` can pin it without a server.
+    static func makeConfiguration(config: HeadlessConfig) -> StoreConfiguration {
+        let configuration = StoreConfiguration(storage: InMemoryConfigurationStorage())
+        configuration.llmProvider = config.resolvedProvider
+        configuration.llmBaseURLString = config.resolvedBaseURL
+        configuration.llmModelName = config.resolvedModel
+        if let retries = config.maxLLMRetries {
+            configuration.maxLLMRetries = retries
+        }
+        // Enable logging so network_log.jsonl and tool_calls.jsonl are written
+        configuration.loggingEnabled = true
+        // Configure vision model (enables analyze_image tool)
+        if let visionModel = config.visionModel, !visionModel.isEmpty {
+            configuration.visionModelName = visionModel
+            if let visionURL = config.visionBaseURL, !visionURL.isEmpty {
+                configuration.visionBaseURLString = visionURL
+            }
+        }
+        // Absent ⇒ the fresh-install default the storage already holds (Manual), which an
+        // autonomous run withholds `bash` under; `"manual"` (Semi-automatic) keeps it.
+        if let bashMode = config.bashMode {
+            configuration.bashMode = bashMode
+        }
+        return configuration
+    }
+
     func run() async -> HeadlessResult {
         let startTime = Date()
 
@@ -59,34 +94,20 @@ final class HeadlessRunner {
             return errorResult("Project path does not exist: \(config.projectPath)", startTime: startTime)
         }
 
-        // 2. Create orchestrator (LM Studio needs no API keys)
+        // 2. Create orchestrator (LM Studio needs no API keys). Its CONFIGURATION is
+        // built in memory: the test host is NanoTeams.app itself, so the default
+        // `StoreConfiguration()` would read — and, through `didSet`, WRITE — the
+        // developer's own app settings.
+        let configuration = Self.makeConfiguration(config: config)
         // NTMS-ALLOW-REAL-LLM-CLIENT: production-intent driver — a headless run
         // is SUPPOSED to talk to the configured LM Studio / Ollama server, so
         // this is the one place under NanoTeamsTests/ that must NOT route
         // through `TestOrchestrator.make`.
-        orchestrator = NTMSOrchestrator(repository: NTMSRepository())
-
-        // 3. Configure LLM
+        orchestrator = NTMSOrchestrator(repository: NTMSRepository(), configuration: configuration)
         let provider = config.resolvedProvider
-        orchestrator.configuration.llmProvider = provider
-        orchestrator.configuration.llmBaseURLString = config.resolvedBaseURL
-        orchestrator.configuration.llmModelName = config.resolvedModel
-        if let retries = config.maxLLMRetries {
-            orchestrator.configuration.maxLLMRetries = retries
-        }
-
-        // Enable logging so network_log.json and tool_calls.jsonl are written
-        orchestrator.configuration.loggingEnabled = true
-
-        // Configure vision model (enables analyze_image tool)
-        if let visionModel = config.visionModel, !visionModel.isEmpty {
-            orchestrator.configuration.visionModelName = visionModel
-            if let visionURL = config.visionBaseURL, !visionURL.isEmpty {
-                orchestrator.configuration.visionBaseURLString = visionURL
-            }
-        }
 
         print("[HEADLESS] Provider: \(provider.rawValue) | \(config.resolvedBaseURL) | \(config.resolvedModel)")
+        print("[HEADLESS] Bash mode: \(configuration.bashMode.rawValue) | Computer-use mode: \(configuration.computerUseMode.rawValue) (fresh in-memory configuration; only the config's fields override)")
 
         // 4. Open project
         await orchestrator.openWorkFolder(projectURL)
@@ -136,7 +157,7 @@ final class HeadlessRunner {
 
         // 10. Start run
         await orchestrator.startRun(taskID: taskID)
-        print("[HEADLESS] Run started (supervisorMode: autonomous)")
+        print("[HEADLESS] Run started (supervisorMode: autonomous | bash: \(configuration.bashMode.rawValue) | computerUse: \(configuration.computerUseMode.rawValue))")
 
         // 11. Poll for completion
         let result = await pollUntilComplete(taskID: taskID, startTime: startTime)

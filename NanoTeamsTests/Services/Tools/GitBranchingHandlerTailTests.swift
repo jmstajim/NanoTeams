@@ -49,8 +49,9 @@ final class GitBranchingHandlerTailTests: XCTestCase {
 
         XCTAssertTrue(result.isError, "got: \(result.outputJSON)")
         XCTAssertEqual(try errorCode(result), "FILE_NOT_FOUND")
-        XCTAssertEqual(try errorMessage(result), "Branch 'no_such_branch' not found",
-                       "the message must name the branch the model asked for")
+        let message = try errorMessage(result)
+        XCTAssertTrue(message.hasPrefix("Branch 'no_such_branch' not found"),
+                      "the message must name the branch the model asked for: \(message)")
     }
 
     /// `git checkout -b main` on an existing branch exits non-zero with
@@ -60,7 +61,8 @@ final class GitBranchingHandlerTailTests: XCTestCase {
 
         XCTAssertTrue(result.isError, "got: \(result.outputJSON)")
         XCTAssertEqual(try errorCode(result), "CONFLICT")
-        XCTAssertEqual(try errorMessage(result), "Branch 'main' already exists")
+        let message = try errorMessage(result)
+        XCTAssertTrue(message.hasPrefix("Branch 'main' already exists"), message)
         XCTAssertEqual(try currentBranch(), "main", "a rejected checkout must not move HEAD")
     }
 
@@ -240,7 +242,8 @@ final class GitBranchingHandlerTailTests: XCTestCase {
 
         XCTAssertTrue(result.isError, "got: \(result.outputJSON)")
         XCTAssertEqual(try errorCode(result), "FILE_NOT_FOUND")
-        XCTAssertEqual(try errorMessage(result), "Branch 'ghost' not found")
+        let message = try errorMessage(result)
+        XCTAssertTrue(message.hasPrefix("Branch 'ghost' not found"), message)
     }
 
     // MARK: - git_branch: create
@@ -265,7 +268,8 @@ final class GitBranchingHandlerTailTests: XCTestCase {
 
         XCTAssertTrue(result.isError, "got: \(result.outputJSON)")
         XCTAssertEqual(try errorCode(result), "CONFLICT")
-        XCTAssertEqual(try errorMessage(result), "Branch 'main' already exists")
+        let message = try errorMessage(result)
+        XCTAssertTrue(message.hasPrefix("Branch 'main' already exists"), message)
     }
 
     // MARK: - git_branch: argument guards

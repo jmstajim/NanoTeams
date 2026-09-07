@@ -64,7 +64,7 @@ final class TeamMeetingFlowTests: XCTestCase {
 
         let reply = await service.handleTeamMeeting(
             stepID: stepID, topic: "Ship the parser", participantIDs: ["team_pm"],
-            context: "some context", initiatingRole: initiator, task: task,
+            context: "some context", initiatingRole: initiator, initiatorSeat: .speaks, task: task,
             runIndex: 0, stepIndex: 0,
             client: ScriptedMeetingClient(reply: "I agree, ship it."), config: stubConfig())
 
@@ -93,7 +93,7 @@ final class TeamMeetingFlowTests: XCTestCase {
 
         _ = await service.handleTeamMeeting(
             stepID: stepID, topic: "t", participantIDs: ["team_pm"], context: nil,
-            initiatingRole: initiator, task: task, runIndex: 0, stepIndex: 0,
+            initiatingRole: initiator, initiatorSeat: .speaks, task: task, runIndex: 0, stepIndex: 0,
             client: ScriptedMeetingClient(reply: "ok"), config: stubConfig())
 
         XCTAssertFalse(mockDelegate.setMeetingParticipantsCalls.isEmpty,
@@ -118,7 +118,7 @@ final class TeamMeetingFlowTests: XCTestCase {
 
         let reply = await service.handleTeamMeeting(
             stepID: stepID, topic: "t", participantIDs: ["team_pm"], context: nil,
-            initiatingRole: initiator, task: task, runIndex: 0, stepIndex: 0,
+            initiatingRole: initiator, initiatorSeat: .speaks, task: task, runIndex: 0, stepIndex: 0,
             client: ScriptedMeetingClient(reply: "x"), config: stubConfig())
 
         XCTAssertFalse(reply.succeeded)
@@ -137,7 +137,7 @@ final class TeamMeetingFlowTests: XCTestCase {
 
         let reply = await service.handleTeamMeeting(
             stepID: stepID, topic: "t", participantIDs: ["nobody_at_all"], context: nil,
-            initiatingRole: initiator, task: task, runIndex: 0, stepIndex: 0,
+            initiatingRole: initiator, initiatorSeat: .speaks, task: task, runIndex: 0, stepIndex: 0,
             client: ScriptedMeetingClient(reply: "x"), config: stubConfig())
 
         XCTAssertFalse(reply.succeeded)
@@ -150,6 +150,8 @@ final class TeamMeetingFlowTests: XCTestCase {
 
     /// Inviting yourself is the degenerate case that leaves an EMPTY participant
     /// list after filtering — the same branch as "unknown role", reached differently.
+    /// The guard judges the INVITED list; the initiator is seated only afterwards, so
+    /// the reason says it is already a participant rather than that it is excluded.
     func testMeeting_invitingOnlyYourself_isRejected() async {
         let team = makeTeam(maxTurns: 2)
         let task = makeTask(team: team)
@@ -157,12 +159,12 @@ final class TeamMeetingFlowTests: XCTestCase {
 
         let reply = await service.handleTeamMeeting(
             stepID: stepID, topic: "t", participantIDs: ["team_software_engineer"], context: nil,
-            initiatingRole: initiator, task: task, runIndex: 0, stepIndex: 0,
+            initiatingRole: initiator, initiatorSeat: .speaks, task: task, runIndex: 0, stepIndex: 0,
             client: ScriptedMeetingClient(reply: "x"), config: stubConfig())
 
         XCTAssertFalse(reply.succeeded)
-        XCTAssertTrue(reply.text.contains("the initiator"),
-                      "self-invitation must be named as such; got: \(reply.text)")
+        XCTAssertTrue(reply.text.contains("already a participant"),
+                      "self-invitation must be named as redundant; got: \(reply.text)")
     }
 
     /// The limit is read from a FRESH task load, not from the `task` snapshot the
@@ -181,7 +183,7 @@ final class TeamMeetingFlowTests: XCTestCase {
 
         let reply = await service.handleTeamMeeting(
             stepID: stepID, topic: "t", participantIDs: ["team_pm"], context: nil,
-            initiatingRole: initiator, task: staleTask, runIndex: 0, stepIndex: 0,
+            initiatingRole: initiator, initiatorSeat: .speaks, task: staleTask, runIndex: 0, stepIndex: 0,
             client: ScriptedMeetingClient(reply: "x"), config: stubConfig())
 
         XCTAssertFalse(reply.succeeded)

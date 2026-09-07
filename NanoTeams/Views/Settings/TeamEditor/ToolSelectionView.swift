@@ -42,8 +42,10 @@ struct ToolSelectionView: View {
     @Binding var selectedTools: Set<String>
     let producedArtifacts: [String]
     let isVisionConfigured: Bool
-    /// `StoreConfiguration.isComputerUseEnabled` — drives the computer-use tool hints.
-    let isComputerUseEnabled: Bool
+    /// What the run could do with `bash` and the computer-use family
+    /// (`ToolApprovalAvailability.forTeam`, resolved by the sheet that holds the team) —
+    /// drives the per-tool hints for both families with the badge's own wording.
+    let approval: ToolApprovalAvailability
     /// Tool names the runtime will add on top of `selectedTools`, resolved by the
     /// SAME chain the wire uses (`RoleToolBadgePolicy` → `EffectiveToolset`).
     ///
@@ -124,8 +126,15 @@ struct ToolSelectionView: View {
         var hints: [String: String] = [:]
         hints[ToolNames.analyzeImage] = ToolAvailabilityRequirement.visionModel
             .hint(isMet: isVisionConfigured)
-        for tool in ToolHandlerRegistry.computerUseTools {
-            hints[tool] = ToolAvailabilityRequirement.computerUse.hint(isMet: isComputerUseEnabled)
+        // The two approval-gated families: `governing` names the requirement the way the
+        // badge does; a requirement with a met hint (`computerUse`, `bashEnabled`) reads as
+        // met exactly when the family is not `.withheld`.
+        for tool in ToolHandlerRegistry.computerUseTools.union(ToolHandlerRegistry.shellTools) {
+            guard let requirement = ToolAvailabilityRequirement.governing(
+                tool, isDefaultStorage: false, approval: approval)
+            else { continue }
+            let family = ToolHandlerRegistry.shellTools.contains(tool) ? approval.bash : approval.computerUse
+            hints[tool] = requirement.hint(isMet: requirement != .humanApprover && !family.isWithheld)
         }
         let gitTools = ToolHandlerRegistry.gitReadTools.union(ToolHandlerRegistry.gitWriteTools)
         for tool in ToolHandlerRegistry.defaultStorageBlocked {
@@ -244,7 +253,7 @@ private struct AutoInjectedToolsSection: View {
         case ToolNames.askSupervisor:
             return "Role has no output artifacts"
         case ToolNames.concludeMeeting:
-            return "Role can start team meetings"
+            return "Meeting coordinator — meeting turns only"
         case ToolNames.delegateToTeam:
             return delegationHint
         case ToolNames.cancelDelegation, ToolNames.resumeDelegation, ToolNames.forwardToTeam:
@@ -498,7 +507,7 @@ private struct ToolRow: View {
         selectedTools: $selected,
         producedArtifacts: ["Engineering Notes"],
         isVisionConfigured: true,
-        isComputerUseEnabled: true,
+        approval: .available,
         autoInjectedTools: [ToolNames.createArtifact, ToolNames.concludeMeeting],
         delegationHint: ""
     )
@@ -511,7 +520,7 @@ private struct ToolRow: View {
         selectedTools: $selected,
         producedArtifacts: [],
         isVisionConfigured: false,
-        isComputerUseEnabled: false,
+        approval: ToolApprovalAvailability(bash: .withheld(.switchedOff), computerUse: .withheld(.switchedOff)),
         autoInjectedTools: [ToolNames.askSupervisor],
         delegationHint: ""
     )
@@ -527,7 +536,7 @@ private struct ToolRow: View {
         selectedTools: $selected,
         producedArtifacts: ["Product Requirements", "Design Spec"],
         isVisionConfigured: true,
-        isComputerUseEnabled: true,
+        approval: .available,
         autoInjectedTools: [ToolNames.createArtifact],
         delegationHint: ""
     )
@@ -544,7 +553,7 @@ private struct ToolRow: View {
         selectedTools: $selected,
         producedArtifacts: [],
         isVisionConfigured: false,
-        isComputerUseEnabled: false,
+        approval: ToolApprovalAvailability(bash: .withheld(.switchedOff), computerUse: .withheld(.switchedOff)),
         autoInjectedTools: [ToolNames.askSupervisor],
         delegationHint: ""
     )

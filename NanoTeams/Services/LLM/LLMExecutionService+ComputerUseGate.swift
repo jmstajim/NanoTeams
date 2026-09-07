@@ -40,7 +40,11 @@ extension LLMExecutionService {
         }) else { return [:] }
 
         let policy = delegate?.computerUsePolicy ?? ComputerUsePolicy()
-        let humanPresent = (supervisorMode == .manual) && !isUnderAutovisor(task: task)
+        // The one predicate the schema resolver reads too (`ApprovalPresence`). With no human
+        // the resolver has already withheld the whole family under `.manual` and the mutating
+        // trio under `.semiAutomatic`, so the no-human arm below is reached in production only
+        // by a call the model made against a schema that no longer lists it.
+        let humanPresent = approvalHumanPresent(task: task, supervisorMode: supervisorMode)
         let ownBundle = Bundle.main.bundleIdentifier ?? ""
         let key = TaskStepKey(taskID: taskID, stepID: stepID)
 
@@ -94,12 +98,16 @@ extension LLMExecutionService {
                         synthetic[idx] = makeCancelledResult(for: call)
                     }
                 } else {
-                    // Twin of the `bash` gate's no-human arm — same rule: name a recourse
-                    // the MODEL can act on, never a Settings pane it cannot open.
-                    synthetic[idx] = makeComputerUseDeniedResult(
+                    // Twin of the `bash` gate's no-human arm: not a denial, its own code, no
+                    // escalation channel downstream, third person. Its "what runs without
+                    // approval" clause is this family's, not bash's: captures and scrolling
+                    // are the read-only tier (Semi-automatic); under Manual the first capture
+                    // is itself gated, which is why Manual is withheld from the schema instead.
+                    synthetic[idx] = makeApprovalUnavailableResult(
                         call: call,
-                        reason: "This action needs human approval (\(reason)), but no human is available to review it. "
-                            + "Ask the supervisor to allow unattended computer-use approval.")
+                        reason: "This action needs human approval (\(reason)), and this run has no human to give it. "
+                            + "Screen captures and scrolling run without approval; nothing inside the run can approve "
+                            + "clicks, typing or key presses — take a different step.")
                 }
             }
         }

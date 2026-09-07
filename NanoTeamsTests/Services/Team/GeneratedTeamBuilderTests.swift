@@ -49,8 +49,100 @@ final class GeneratedTeamBuilderTests: XCTestCase {
         )
     }
 
+    // MARK: - A team nobody can execute (2026-09-07d, `vague-short` on qwen3.8)
+
+    /// The generator answered "help me ship faster" with ONE role carrying neither
+    /// `requires_artifacts` nor `produces_artifacts` and an empty `supervisor_requires`: a
+    /// chat-mode team whose only member is an observer — a kind the engine skips in
+    /// `findReadyRoles`, so the run would end on "No roles ready to execute" with nobody
+    /// having spoken. The builder makes every such role a chat participant instead.
+    func testBuild_chatTeamWhereEveryRoleIsAnObserver_promotesThemAllToChatAndWarns() {
+        let config = makeConfig(
+            roles: [makeRoleConfig(name: "Coach", produces: [], requires: [], tools: ["read_file"]),
+                    makeRoleConfig(name: "Mentor", produces: [], requires: [], tools: [])],
+            supervisorRequires: [])
+        let result = GeneratedTeamBuilder.build(from: config)
+        let workers = result.team.roles.filter { !$0.isSupervisor }
+        XCTAssertEqual(workers.count, 2)
+        for role in workers {
+            XCTAssertEqual(role.dependencies.requiredArtifacts, [SystemTemplates.supervisorTaskArtifactName], role.name)
+            XCTAssertTrue(role.isAdvisory, "\(role.name) must be a chat participant, not an observer")
+        }
+        XCTAssertTrue(result.team.isChatMode)
+        XCTAssertEqual(result.warnings.filter { $0.contains("no role could execute") }.count, 1, "\(result.warnings)")
+    }
+
+    /// The two defects arrive together: `supervisor_requires` names a deliverable no role
+    /// produces (the A5 filter drops it, so the team IS chat-mode by the time the engine
+    /// sees it) AND every role is an observer. Guarding on the RAW config would miss it.
+    func testBuild_requirementNobodyProduces_plusAllObservers_stillPromotesThemToChat() {
+        let config = makeConfig(
+            roles: [makeRoleConfig(name: "Coach", produces: [], requires: [], tools: ["read_file"])],
+            supervisorRequires: ["Velocity Report"])
+        let result = GeneratedTeamBuilder.build(from: config)
+        XCTAssertTrue(result.team.isChatMode, "the unproduced requirement was dropped, so this is a chat team")
+        let coach = result.team.roles.first { $0.name == "Coach" }!
+        XCTAssertEqual(coach.dependencies.requiredArtifacts, [SystemTemplates.supervisorTaskArtifactName])
+        XCTAssertTrue(coach.isAdvisory)
+        XCTAssertEqual(result.warnings.filter { $0.contains("no role could execute") }.count, 1, "\(result.warnings)")
+    }
+
+    /// The mirror: the requirement IS produced, so the team stays a production team and the
+    /// observer beside its producer is left alone.
+    func testBuild_requirementProduced_withAnObserver_isNotTouched() {
+        let config = makeConfig(
+            roles: [makeRoleConfig(name: "Builder", produces: ["Report"], requires: ["Supervisor Task"]),
+                    makeRoleConfig(name: "Watcher", produces: [], requires: [], tools: [])],
+            artifacts: [makeArtifactConfig(name: "Report")],
+            supervisorRequires: ["Report"])
+        let result = GeneratedTeamBuilder.build(from: config)
+        XCTAssertFalse(result.team.isChatMode)
+        XCTAssertTrue(result.team.roles.first { $0.name == "Watcher" }!.isObserver)
+        XCTAssertFalse(result.warnings.contains { $0.contains("no role could execute") })
+    }
+
+    func testBuild_chatTeamWithOneChatRoleAndObservers_keepsTheObservers() {
+        // The Discussion Club shape: one participant that executes, the rest speak in meetings.
+        let config = makeConfig(
+            roles: [makeRoleConfig(name: "Host", produces: [], requires: ["Supervisor Task"]),
+                    makeRoleConfig(name: "Watcher", produces: [], requires: [], tools: [])],
+            supervisorRequires: [])
+        let result = GeneratedTeamBuilder.build(from: config)
+        let watcher = result.team.roles.first { $0.name == "Watcher" }!
+        XCTAssertTrue(watcher.isObserver)
+        XCTAssertTrue(watcher.dependencies.requiredArtifacts.isEmpty)
+        XCTAssertFalse(result.warnings.contains { $0.contains("no role could execute") })
+    }
+
+    func testBuild_productionTeamWithAnObserver_isNotTouched() {
+        let config = makeConfig(
+            roles: [makeRoleConfig(name: "Builder", produces: ["Output"], requires: ["Supervisor Task"]),
+                    makeRoleConfig(name: "Watcher", produces: [], requires: [], tools: [])],
+            artifacts: [makeArtifactConfig(name: "Output")],
+            supervisorRequires: ["Output"])
+        let result = GeneratedTeamBuilder.build(from: config)
+        XCTAssertTrue(result.team.roles.first { $0.name == "Watcher" }!.isObserver)
+        XCTAssertFalse(result.warnings.contains { $0.contains("no role could execute") })
+    }
+
+    func testBuild_noRolesAtAll_doesNotWarnAboutExecution() {
+        let result = GeneratedTeamBuilder.build(from: makeConfig(roles: [], supervisorRequires: []))
+        XCTAssertFalse(result.warnings.contains { $0.contains("no role could execute") })
+    }
+
     private func makeArtifactConfig(name: String = "Output") -> GeneratedTeamConfig.ArtifactConfig {
         GeneratedTeamConfig.ArtifactConfig(name: name, description: "Test artifact", icon: nil)
+    }
+
+    // MARK: - buildTeam: meetings need a second role
+
+    /// A generated team with one role has nobody to invite — the same structural rule as
+    /// the bundled single-role teams, with no field the LLM could get wrong.
+    func testBuildTeam_singleRole_cannotMeet_twoRolesCan() {
+        let solo = GeneratedTeamBuilder.buildTeam(from: makeConfig(roles: [makeRoleConfig()]))
+        XCTAssertEqual(solo.meetingAvailability, .noPartner)
+        let pair = GeneratedTeamBuilder.buildTeam(from: makeConfig(roles: [makeRoleConfig(), makeRoleConfig(name: "Second")]))
+        XCTAssertEqual(pair.meetingAvailability, .available)
     }
 
     // MARK: - buildTeam: Basic Structure
@@ -72,17 +164,19 @@ final class GeneratedTeamBuilderTests: XCTestCase {
         XCTAssertEqual(team.roles.count, 3) // Supervisor + A + B
     }
 
-    // LLM-generated teams default to Auto mode (no designated coordinator):
-    // initiator of each meeting becomes its effective coordinator. Aligns
-    // with the user-facing "Auto" first-class option in Team Settings.
-    func testBuildTeam_meetingCoordinatorRoleID_defaultsToAuto() {
+    /// A generated team names a coordinator like every other team (there is no Auto):
+    /// the generator is not asked; the default rule picks the first role that can start
+    /// a meeting, else the first role.
+    func testBuildTeam_meetingCoordinatorRoleID_isTheDefaultRulesPick() {
         let config = makeConfig(roles: [
             makeRoleConfig(name: "A"),
-            makeRoleConfig(name: "B"),
+            makeRoleConfig(name: "B", tools: [ToolNames.requestTeamMeeting]),
         ])
         let team = GeneratedTeamBuilder.buildTeam(from: config)
-        XCTAssertNil(team.settings.meetingCoordinatorRoleID,
-                     "Generated teams must default to Auto (nil), not force a designated coordinator")
+        let b = team.roles.first { $0.name == "B" }?.id
+        XCTAssertEqual(team.settings.meetingCoordinatorRoleID, b,
+                       "the role that can start a meeting coordinates; got \(String(describing: team.settings.meetingCoordinatorRoleID))")
+        XCTAssertEqual(team.settings.meetingCoordinatorRoleID, team.meetingCoordinatorID)
     }
 
     func testBuildTeam_usesConfigName() {

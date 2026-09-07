@@ -144,7 +144,7 @@ final class DelegateToTeamHandlerTests: XCTestCase {
         let result = try await invokeDelegate(runtime: runtime, args: ["team_id": "team-A", "task_brief": "   "])
         XCTAssertTrue(result.isError, "Whitespace-only task_brief should reject: \(result.outputJSON)")
         XCTAssertTrue(result.outputJSON.contains("INVALID_ARGS"), "envelope: \(result.outputJSON)")
-        XCTAssertTrue(result.outputJSON.contains("task_brief is empty"),
+        XCTAssertTrue(result.outputJSON.contains("'task_brief' is empty"),
                       "Error message should be actionable: \(result.outputJSON)")
     }
 

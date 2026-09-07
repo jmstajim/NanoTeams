@@ -121,6 +121,9 @@ nonisolated struct NativeLMStudioClient: LLMClient {
                     request.httpBody = bodyData
 
                     if let logger {
+                        // What this request runs on, once per (log, server, model) — the
+                        // seam every caller's wire traffic passes through.
+                        logger.noteProvenanceIfNeeded(config: config, stepID: stepID, roleName: roleName)
                         requestRecord = NetworkLogger.createRequestRecord(
                             url: url, method: "POST", body: bodyData,
                             stepID: stepID, roleName: roleName)
@@ -162,10 +165,7 @@ nonisolated struct NativeLMStudioClient: LLMClient {
 
                     var sseParser = SSEEventParser()
 
-                    for try await line in bytes.lines {
-                        try Task.checkCancellation()
-
-                        guard let event = sseParser.parse(line: line) else { continue }
+                    func handle(_ event: SSEEventParser.ParsedEvent) throws {
                         switch event {
                         case .contentDelta(let content):
                             accumulatedContent += content
@@ -185,6 +185,20 @@ nonisolated struct NativeLMStudioClient: LLMClient {
                         case .ignored:
                             break
                         }
+                    }
+
+                    for try await line in bytes.lines {
+                        try Task.checkCancellation()
+                        // One frame can carry several events: `message.delta` runs the
+                        // `<think>` splitter, so a chunk that closes the leading think span
+                        // is a thinking delta AND a content delta (the Ollama client's shape).
+                        for event in sseParser.parse(line: line) {
+                            try handle(event)
+                        }
+                    }
+                    // Transport ended — drain any held-back partial-tag text.
+                    for event in sseParser.finalize() {
+                        try handle(event)
                     }
 
                     // Emit final event with usage + the server's account of how it prefilled and

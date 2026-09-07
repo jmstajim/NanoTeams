@@ -12,7 +12,7 @@ nonisolated struct GitAddTool: ToolHandler {
         description: "Add files to git staging area for commit.",
         parameters: JS.object(
             properties: [
-                "paths": JS.array(items: JS.string("Path to add")),
+                "paths": JS.array(items: JS.string()),
             ],
             required: ["paths"]
         )
@@ -44,11 +44,9 @@ nonisolated struct GitAddTool: ToolHandler {
             // files, staged none, and read ok:true. Same success-envelope-for-a-no-op
             // shape as the git_pull regression fixed 2026-08-07.
             guard !paths.isEmpty else {
-                return makeErrorResult(
-                    toolName: Self.name, args: args,
-                    code: .invalidArgs,
-                    message: "paths is empty — name at least one file, or \".\" to stage everything."
-                )
+                throw ToolArgumentError.invalidValue(
+                    key: "paths",
+                    detail: "is empty — name at least one file, or \".\" to stage everything.")
             }
 
             // Tolerate absolute + redundant-work-folder-name path forms (globs/pathspec
@@ -66,7 +64,9 @@ nonisolated struct GitAddTool: ToolHandler {
                 return makeErrorResult(
                     toolName: Self.name, args: args,
                     code: .commandFailed,
-                    message: result.stderr.isEmpty ? "git add failed" : result.stderr
+                    message: result.stderr.isEmpty
+                        ? "git add failed with no output — check that the paths exist inside the work folder."
+                        : result.stderr
                 )
             }
 
@@ -91,8 +91,8 @@ nonisolated struct GitCommitTool: ToolHandler {
         description: "Commit staged changes.",
         parameters: JS.object(
             properties: [
-                "message": JS.string("Commit message"),
-                "amend": JS.boolean("Amend last commit"),
+                "message": JS.string(),
+                "amend": JS.boolean(),
             ],
             required: ["message"]
         )
@@ -141,7 +141,7 @@ nonisolated struct GitCommitTool: ToolHandler {
                         code: .conflict,
                         message: untrackedOnly
                             ? "Nothing to commit — only untracked files are present. Stage them with git_add first."
-                            : "Nothing to commit — the working tree is clean."
+                            : "Nothing to commit — the working tree is clean. Continue with the next step."
                     )
                 }
                 return makeErrorResult(
@@ -177,8 +177,8 @@ nonisolated struct GitPullTool: ToolHandler {
         description: "Pull from remote.",
         parameters: JS.object(
             properties: [
-                "remote": JS.string("Remote name"),
-                "branch": JS.string("Branch name"),
+                "remote": JS.string("Remote name; omit for origin."),
+                "branch": JS.string(),
                 "rebase": JS.boolean("Rebase instead of merge"),
             ]
         )
@@ -247,7 +247,7 @@ nonisolated struct GitPullTool: ToolHandler {
                     return makeErrorResult(
                         toolName: Self.name, args: args,
                         code: .conflict,
-                        message: "Merge conflicts detected",
+                        message: GitConflictParser.conflictMessage(paths: conflictFiles),
                         details: ["conflicts": conflictFiles.joined(separator: ", ")]
                     )
                 }
@@ -279,7 +279,7 @@ nonisolated struct GitPullTool: ToolHandler {
                 return makeErrorResult(
                     toolName: Self.name, args: args,
                     code: .conflict,
-                    message: "Merge conflicts detected",
+                    message: GitConflictParser.conflictMessage(paths: unmerged),
                     details: ["conflicts": unmerged.joined(separator: ", ")]
                 )
             }
@@ -303,16 +303,22 @@ nonisolated struct GitStashTool: ToolHandler {
             properties: [
                 "action": JS.string(
                     "Stash operation to perform.",
-                    enumValues: ["push", "pop", "apply", "list", "drop"]),
-                "message": JS.string("Stash message"),
-                "index": JS.integer("Stash index"),
-                "include_untracked": JS.boolean("Include untracked files"),
+                    enumValues: StashAction.allCases.map(\.rawValue)),
+                "message": JS.string(),
+                "index": JS.integer("0-based index into the stash list."),
+                "include_untracked": JS.boolean(),
             ],
             required: ["action"]
         )
     )
     static let category: ToolCategory = .gitWrite
     static let blockedInDefaultStorage = true
+
+    /// The verbs, in the order the schema advertises them — one source for the `enum:` the
+    /// model reads, the `requiredEnum` guard and the exhaustive dispatch below.
+    enum StashAction: String, CaseIterable {
+        case push, pop, apply, list, drop
+    }
 
     let workFolderRoot: URL
 
@@ -323,15 +329,33 @@ nonisolated struct GitStashTool: ToolHandler {
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
         await ToolErrorHandler.execute(toolName: Self.name, args: args) {
-            let action = try requiredString(args, "action")
+            let action = try requiredEnum(args, "action", as: StashAction.self)
             let message = optionalString(args, "message")
             let index = optionalInt(args, "index")
             let includeUntracked = optionalBool(args, "include_untracked", default: false)
 
+            // Each arm rejects the arguments it does not read (R3.5.2): `message` and
+            // `include_untracked` belong to `push`, `index` to the three stash-addressing
+            // verbs. Until 2026-09-06 they were silently dropped — `pop` with a `message`
+            // reported ok:true for a call that did something other than what it asked.
+            let stashIndexVerbs: [StashAction] = [.pop, .apply, .drop]
+            if action != .push {
+                if let rejected = rejectInapplicable(
+                    "message", supplied: message != nil, appliesTo: ["push"],
+                    toolName: Self.name, args: args) { return rejected }
+                if let rejected = rejectInapplicable(
+                    "include_untracked", supplied: args["include_untracked"] != nil, appliesTo: ["push"],
+                    toolName: Self.name, args: args) { return rejected }
+            }
+            if !stashIndexVerbs.contains(action),
+               let rejected = rejectInapplicable(
+                   "index", supplied: index != nil, appliesTo: stashIndexVerbs.map(\.rawValue),
+                   toolName: Self.name, args: args) { return rejected }
+
             var gitArgs = ["stash"]
 
             switch action {
-            case "push":
+            case .push:
                 gitArgs.append("push")
                 if includeUntracked {
                     gitArgs.append("-u")
@@ -341,33 +365,26 @@ nonisolated struct GitStashTool: ToolHandler {
                     gitArgs.append(message)
                 }
 
-            case "pop":
+            case .pop:
                 gitArgs.append("pop")
                 if let index = index {
                     gitArgs.append("stash@{\(index)}")
                 }
 
-            case "apply":
+            case .apply:
                 gitArgs.append("apply")
                 if let index = index {
                     gitArgs.append("stash@{\(index)}")
                 }
 
-            case "list":
+            case .list:
                 gitArgs.append("list")
 
-            case "drop":
+            case .drop:
                 gitArgs.append("drop")
                 if let index = index {
                     gitArgs.append("stash@{\(index)}")
                 }
-
-            default:
-                return makeErrorResult(
-                    toolName: Self.name, args: args,
-                    code: .invalidArgs,
-                    message: "Invalid action: \(action). Use: push, pop, apply, list, drop"
-                )
             }
 
             let result = try ProcessRunner.runGit(gitArgs, in: workFolderRoot)
@@ -386,7 +403,7 @@ nonisolated struct GitStashTool: ToolHandler {
 
             return makeSuccessResult(
                 toolName: Self.name, args: args,
-                data: StashData(action: action, output: result.stdout)
+                data: StashData(action: action.rawValue, output: result.stdout)
             )
         }
     }

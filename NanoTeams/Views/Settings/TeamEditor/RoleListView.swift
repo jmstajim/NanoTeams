@@ -14,7 +14,9 @@ struct RoleRowBadgeInputs: Equatable {
     var storage: EffectiveToolset.Storage = .defaultStorage
     var selectedScheme: String? = nil
     var isVisionConfigured: Bool = false
-    var isComputerUseEnabled: Bool = false
+    /// Preview default: a human present, both families on — the `#Preview`'s reading, never
+    /// the runtime's, which `TeamEditorView` computes with `ToolApprovalAvailability.forTeam`.
+    var approval: ToolApprovalAvailability = .available
     var autovisorTeamPolicy: AutovisorTeamPolicy = .unrestricted
 }
 
@@ -211,7 +213,7 @@ struct RoleListView: View {
                     storage: badgeInputs.storage,
                     selectedScheme: badgeInputs.selectedScheme,
                     isVisionConfigured: badgeInputs.isVisionConfigured,
-                    isComputerUseEnabled: badgeInputs.isComputerUseEnabled,
+                    approval: badgeInputs.approval,
                     autovisorTeamPolicy: badgeInputs.autovisorTeamPolicy
                 ),
                 skills: RoleEditorSkillsPolicy.badge(

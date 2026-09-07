@@ -130,8 +130,12 @@ extension LLMExecutionService {
 
     // MARK: - Tool Definitions
 
-    func toolSchemas(for role: Role, team: Team? = nil) -> [ToolSchema] {
-        guard let env = toolResolutionEnvironment() else { return [] }
+    /// `humanPresent` is the caller's answer to `ApprovalPresence` for the TASK it holds —
+    /// `approvalHumanPresent(task:supervisorMode:)` — and is what decides whether `bash` and
+    /// the computer-use family ship at all (`ApprovalGatedAvailability`). No default: a
+    /// caller that has not decided has not resolved a schema.
+    func toolSchemas(for role: Role, team: Team? = nil, humanPresent: Bool) -> [ToolSchema] {
+        guard let env = toolResolutionEnvironment(humanPresent: humanPresent) else { return [] }
         // Schema-build is the earliest and most universal detection point for
         // an orphan-coordinator (`reportOrphanCoordinatorIfNeeded` throttles
         // per team so this is safe to call on every iteration). The meeting
@@ -143,7 +147,7 @@ extension LLMExecutionService {
             allTeams: env.allTeams,
             selectedScheme: env.selectedScheme,
             isVisionConfigured: env.isVisionConfigured,
-            isComputerUseEnabled: env.isComputerUseEnabled,
+            approval: env.approval,
             autovisorTeamPolicy: env.autovisorTeamPolicy
         )
     }
@@ -152,8 +156,10 @@ extension LLMExecutionService {
     /// the role — it skips the lossy `Role → findRole` hop that can bind a
     /// duplicated system role to its twin's toolset. See the static
     /// `resolveToolSchemas(forDefinition:…)` for the full rationale.
-    func toolSchemas(forDefinition roleDefinition: TeamRoleDefinition, team: Team? = nil) -> [ToolSchema] {
-        guard let env = toolResolutionEnvironment() else { return [] }
+    func toolSchemas(
+        forDefinition roleDefinition: TeamRoleDefinition, team: Team? = nil, humanPresent: Bool
+    ) -> [ToolSchema] {
+        guard let env = toolResolutionEnvironment(humanPresent: humanPresent) else { return [] }
         reportOrphanCoordinatorIfNeeded(team: team)
         return Self.resolveToolSchemas(
             forDefinition: roleDefinition,
@@ -161,18 +167,28 @@ extension LLMExecutionService {
             allTeams: env.allTeams,
             selectedScheme: env.selectedScheme,
             isVisionConfigured: env.isVisionConfigured,
-            isComputerUseEnabled: env.isComputerUseEnabled,
+            approval: env.approval,
             autovisorTeamPolicy: env.autovisorTeamPolicy
         )
     }
 
+    /// The gates' and the resolver's one answer to "is a human there to approve": the
+    /// team's Supervisor mode and Autovisor supervision of this task, through
+    /// `ApprovalPresence`. Both gates spelled this inline until 2026-09-07; the resolver
+    /// did not read it at all, which is how `bash` shipped to runs where every call was
+    /// refused (KNOWN_ISSUES B3).
+    func approvalHumanPresent(task: NTMSTask, supervisorMode: SupervisorMode) -> Bool {
+        ApprovalPresence.humanPresent(
+            supervisorMode: supervisorMode, underAutovisor: isUnderAutovisor(task: task))
+    }
+
     /// Delegate-sourced inputs shared by both `toolSchemas` shims — kept in one
     /// place so the two entry points can't drift on which environment they read.
-    private func toolResolutionEnvironment() -> (
+    private func toolResolutionEnvironment(humanPresent: Bool) -> (
         allTeams: [Team],
         selectedScheme: String?,
         isVisionConfigured: Bool,
-        isComputerUseEnabled: Bool,
+        approval: ToolApprovalAvailability,
         autovisorTeamPolicy: AutovisorTeamPolicy
     )? {
         guard let delegate else { return nil }
@@ -180,7 +196,11 @@ extension LLMExecutionService {
             allTeams: delegate.snapshot?.workFolder.teams ?? [],
             selectedScheme: delegate.snapshot?.workFolder.settings.selectedScheme,
             isVisionConfigured: delegate.visionLLMConfig != nil,
-            isComputerUseEnabled: delegate.computerUsePolicy.isEnabled,
+            // The same two policies the gates evaluate against — one source, no drift.
+            approval: ToolApprovalAvailability(
+                bashMode: delegate.bashPolicy.mode,
+                computerUseMode: delegate.computerUsePolicy.mode,
+                humanPresent: humanPresent),
             autovisorTeamPolicy: delegate.snapshot.map { AutovisorTeamPolicy(settings: $0.workFolder.settings) } ?? .unrestricted
         )
     }
@@ -203,7 +223,7 @@ extension LLMExecutionService {
         allTeams: [Team] = [],
         selectedScheme: String? = nil,
         isVisionConfigured: Bool = false,
-        isComputerUseEnabled: Bool = false,
+        approval: ToolApprovalAvailability,
         autovisorTeamPolicy: AutovisorTeamPolicy = .unrestricted
     ) -> [ToolSchema] {
         // 1. Find role definition — findRole handles id, systemRoleID, and name (custom roles
@@ -218,7 +238,7 @@ extension LLMExecutionService {
                 allTeams: allTeams,
                 selectedScheme: selectedScheme,
                 isVisionConfigured: isVisionConfigured,
-                isComputerUseEnabled: isComputerUseEnabled,
+                approval: approval,
                 autovisorTeamPolicy: autovisorTeamPolicy
             )
         }
@@ -238,7 +258,7 @@ extension LLMExecutionService {
             allTeams: allTeams,
             selectedScheme: selectedScheme,
             isVisionConfigured: isVisionConfigured,
-            isComputerUseEnabled: isComputerUseEnabled,
+            approval: approval,
             autovisorTeamPolicy: autovisorTeamPolicy
         )
     }
@@ -259,7 +279,7 @@ extension LLMExecutionService {
         allTeams: [Team] = [],
         selectedScheme: String? = nil,
         isVisionConfigured: Bool = false,
-        isComputerUseEnabled: Bool = false,
+        approval: ToolApprovalAvailability,
         autovisorTeamPolicy: AutovisorTeamPolicy = .unrestricted
     ) -> [ToolSchema] {
         resolveToolSchemasCore(
@@ -275,7 +295,7 @@ extension LLMExecutionService {
             allTeams: allTeams,
             selectedScheme: selectedScheme,
             isVisionConfigured: isVisionConfigured,
-            isComputerUseEnabled: isComputerUseEnabled,
+            approval: approval,
             autovisorTeamPolicy: autovisorTeamPolicy
         )
     }
@@ -291,7 +311,7 @@ extension LLMExecutionService {
         allTeams: [Team],
         selectedScheme: String?,
         isVisionConfigured: Bool,
-        isComputerUseEnabled: Bool,
+        approval: ToolApprovalAvailability,
         autovisorTeamPolicy: AutovisorTeamPolicy
     ) -> [ToolSchema] {
 
@@ -305,9 +325,8 @@ extension LLMExecutionService {
         // be silently dropped here — the model calls it and hits
         // `tool_not_authorized` even though its handler is registered and
         // runnable. The same gap silently drops the `ask_supervisor` /
-        // `conclude_meeting` / delegation auto-injections below (all sourced
-        // from `allTools`). Then strip control-flow tools that have a dedicated
-        // invocation path.
+        // delegation auto-injections below (all sourced from `allTools`). Then
+        // strip control-flow tools that have a dedicated invocation path.
         let persistedByName = Dictionary(
             ToolDefinitionRegistry.shared.allToolSchemas().map { ($0.name, $0) },
             uniquingKeysWith: { first, _ in first }
@@ -328,12 +347,37 @@ extension LLMExecutionService {
         // also stripped — the tool was removed (catalog now embeds inline in
         // `delegate_to_team`'s description), but stale `teams.json` may still
         // carry it.
-        let delegationToolNames: Set<String> = [
-            tn.delegateToTeam,
-            tn.cancelDelegation, tn.resumeDelegation, tn.forwardToTeam,
-            "list_teams",
-        ]
-        allowedTools.removeAll { delegationToolNames.contains($0.name) }
+        allowedTools.removeAll { ToolHandlerRegistry.delegationToolsExcludedFromToolIDs.contains($0.name) }
+
+        // 3.0b The ten management tools DEFINE the Autovisor manager and mean nothing on any
+        // other role: their `ToolSignal`s are interpreted only by the manager's step loop, and
+        // `set_work_folder_context` rewrites the context every role of every task reads. A
+        // generated or hand-edited `toolIDs` could carry them until 2026-09-06 (the generator
+        // validated against the whole registry), so this is the structural backstop —
+        // the mirror of step 8, which strips `ask_supervisor` from the manager. Not
+        // `availableToRoles = false`: step 3 above would then strip them from the manager too.
+        if !isAutovisorManagerRole, team?.templateID != AutovisorConstants.teamTemplateID {
+            let managerOnly = Set(AutovisorConstants.managerMandatoryToolIDs)
+            allowedTools.removeAll { managerOnly.contains($0.name) }
+        }
+
+        // 3.0c A team that cannot hold a meeting holds none of the tools that convene
+        // one: `request_team_meeting`, and `request_changes`, whose vote IS a meeting.
+        // Structural, like 3.0b — the dispatcher refuses the call too, but the model
+        // should never be offered a tool the team has turned off (`TeamSettings.meetingsEnabled`)
+        // or has nobody to use with (`Team.meetingAvailability == .noPartner` — a
+        // single-role team, whose only possible reply was "No valid participants").
+        if let team, !team.canHoldMeetings {
+            allowedTools.removeAll { $0.name == tn.requestTeamMeeting || $0.name == tn.requestChanges }
+        }
+        // `ask_teammate` under the same partner rule (`Team.hasTeammatePartner`), but not
+        // under the meetings switch: switching meetings off leaves consultations alone.
+        // The Supervisor is never a consultable teammate, so a single-role team has no
+        // addressee at all — until 2026-09-07 its "partner" was an LLM answering AS the
+        // Supervisor through the `supervisorCanBeInvited` seat.
+        if let team, !team.hasTeammatePartner {
+            allowedTools.removeAll { $0.name == tn.askTeammate }
+        }
 
         // 3.1 Dynamic filtering based on project settings
         if selectedScheme == nil {
@@ -345,16 +389,32 @@ extension LLMExecutionService {
             allowedTools.removeAll { $0.name == tn.analyzeImage }
         }
 
-        // 3.2-bis Remove the computer-use tools when the feature is off
-        // (Settings → Computer Use → Approval = Off). The permission gate
-        // denies every action at runtime anyway, but without this filter the
-        // 5 schemas keep being advertised to the model on every iteration and
-        // it burns turns getting denied. Default `false` — feature-off is the
-        // safe default for orchestrator-free callers (preview/renderer pass
-        // the real state explicitly).
-        if !isComputerUseEnabled {
-            let computerUse = ToolHandlerRegistry.computerUseTools
+        // 3.2-bis Withhold the computer-use tools no call of which could run in THIS run
+        // (`ApprovalGatedAvailability.forComputerUse`): all five when the feature is Off or
+        // when Manual has nobody to confirm the first capture; the mutating trio when
+        // Semi-automatic has nobody to approve a click / type / key. The permission gate
+        // refuses every such action at runtime anyway, but an advertised schema is a model
+        // turn spent on the refusal, every iteration (KNOWN_ISSUES B3). No default for
+        // `approval`: an implicit "feature off" once hid a preview↔wire divergence.
+        switch approval.computerUse {
+        case .withheld:
+            let computerUse: Set<String> = ToolHandlerRegistry.computerUseTools
             allowedTools.removeAll { computerUse.contains($0.name) }
+        case .readOnlyUnattended:
+            let mutating: Set<String> = ToolHandlerRegistry.computerUseMutatingTools
+            allowedTools.removeAll { mutating.contains($0.name) }
+        case .available:
+            break
+        }
+
+        // 3.2-ter Withhold `bash` + `bash_output` when no command could run
+        // (`ApprovalGatedAvailability.forBash`): mode Off, or Manual with nobody to approve
+        // — Manual asks ABOVE the read-only bypass, so even `ls` waits for a human there.
+        // Semi-automatic keeps the tool with no human: its read-only commands run, and the
+        // gate refuses the rest per command, which a per-tool strip cannot express.
+        if approval.bash.isWithheld {
+            let shell: Set<String> = ToolHandlerRegistry.shellTools
+            allowedTools.removeAll { shell.contains($0.name) }
         }
 
         // 3.3 Autovisor: embed the team catalog inline in create_managed_task's
@@ -369,7 +429,11 @@ extension LLMExecutionService {
         // EXCEPT the Autovisor. The manager IS the top Supervisor (no one to
         // escalate to); under autonomous mode its own ask_supervisor would just be
         // auto-answered in a self-loop. The human steers it by messaging it instead.
+        // And EXCEPT a team whose Ask Supervisor mode is Off: no role asks (the
+        // explicit-`toolIDs` half of that rule is the strip beside step 8).
+        let askSupervisorAllowed = team?.settings.supervisorMode != .off
         if let roleDefinition, roleDefinition.shouldAutoInjectAskSupervisor,
+           askSupervisorAllowed,
            team?.templateID != AutovisorConstants.teamTemplateID {
             if let supervisorTool = allTools.first(where: { $0.name == tn.askSupervisor }) {
                 if !allowedTools.contains(where: { $0.name == tn.askSupervisor }) {
@@ -378,45 +442,29 @@ extension LLMExecutionService {
             }
         }
 
-        // 5. Auto-inject create_artifact for roles that produce artifacts.
-        // Schema is built per-role (`CreateArtifactTool.buildSchema`) so the
-        // role's expected deliverables are inlined in the description AND
-        // constrained on the `name` parameter as a JSON-schema enum — same
-        // at-the-decision-point pattern as `delegate_to_team` (step 7). The
-        // static schema is reserved for callers without role context.
+        // 5. Inject create_artifact for roles that produce artifacts, built per-role
+        // (`CreateArtifactTool.buildSchema`) so the deliverable names are constrained on
+        // the `name` parameter as a JSON-schema enum — the same at-the-decision-point
+        // pattern as `delegate_to_team` (step 7); `## Deliverables` and the closing user
+        // turn carry the names in prose, so the description does not repeat them (R3.4.2).
+        // REPLACE in place when the role's stored `toolIDs` already carries the static
+        // schema (a generated or hand-edited toolset), as step 3.3 does for
+        // `create_managed_task`: until 2026-09-06 that case kept the static schema, whose
+        // `name` has no enum and whose description promised the names were "appended here".
         if let roleDefinition,
            !roleDefinition.dependencies.producesArtifacts.isEmpty,
            !roleDefinition.isSupervisor {
-            if !allowedTools.contains(where: { $0.name == tn.createArtifact }) {
-                allowedTools.append(CreateArtifactTool.buildSchema(role: roleDefinition))
+            let built = CreateArtifactTool.buildSchema(role: roleDefinition)
+            if let idx = allowedTools.firstIndex(where: { $0.name == tn.createArtifact }) {
+                allowedTools[idx] = built
+            } else {
+                allowedTools.append(built)
             }
         }
 
-        // 6. Auto-inject conclude_meeting for roles that can start meetings.
-        // Coordinator mode (designated coordinator set & live): only the
-        // named coordinator gets it. Auto mode (`nil` OR orphan designation):
-        // every role with `request_team_meeting` gets it — under Auto, the
-        // role that starts a meeting becomes its effective coordinator and
-        // therefore needs to be able to close it. Orphan stored IDs (the
-        // designated role was removed) are normalized to nil here so the
-        // runtime self-heal in `effectiveCoordinator` matches the schema —
-        // without this normalization no role got `conclude_meeting` despite
-        // being able to start meetings.
-        if let roleDefinition, let team,
-           roleDefinition.toolIDs.contains(tn.requestTeamMeeting) {
-            let coordID = DesignatedCoordinatorResolver.normalize(
-                storedID: team.settings.meetingCoordinatorRoleID,
-                // Supervisor is filtered so a stored Supervisor ID
-                // self-heals to Auto-mode (symmetric with picker + runtime).
-                availableIDs: team.roles.filter { !$0.isSupervisor }.map(\.id)
-            )
-            let shouldInject = coordID == nil || coordID == roleDefinition.id
-            if shouldInject,
-               let concludeTool = allTools.first(where: { $0.name == tn.concludeMeeting }),
-               !allowedTools.contains(where: { $0.name == tn.concludeMeeting }) {
-                allowedTools.append(concludeTool)
-            }
-        }
+        // 6. (retired 2026-09-06) `conclude_meeting` is no longer injected into a STEP
+        // schema: it is `availableToRoles == false` and reaches only the meeting
+        // coordinator's MEETING turns through `MeetingCoordinator.speakerTools`.
 
         // 7. Auto-inject the full 4-tool delegation pack when the role's
         // delegation is enabled — peer-level with Supervisor AND has at least
@@ -486,6 +534,14 @@ extension LLMExecutionService {
         // the generic custom fallback, but the manager's runtime step role is always
         // the builtin `.autovisor`, and with no team the step fails at the engine.
         if team?.templateID == AutovisorConstants.teamTemplateID || isAutovisorManagerRole {
+            allowedTools.removeAll { $0.name == tn.askSupervisor }
+        }
+
+        // 8b. Ask Supervisor mode Off — the explicit-`toolIDs` half of step 4's rule: a
+        // role that lists `ask_supervisor` itself loses it too. Only the tool moves;
+        // every escalation the APP owns (loop caps, approval cards) still waits for the
+        // human, exactly as under `.manual` — see the `SupervisorMode` contract.
+        if !askSupervisorAllowed {
             allowedTools.removeAll { $0.name == tn.askSupervisor }
         }
 

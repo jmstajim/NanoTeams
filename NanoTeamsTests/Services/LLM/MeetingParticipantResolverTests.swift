@@ -41,13 +41,18 @@ final class MeetingParticipantResolverTests: XCTestCase {
         )
         XCTAssertTrue(participants.isEmpty)
         XCTAssertEqual(rejected.count, 1)
-        XCTAssertTrue(rejected[0].contains("initiator"))
+        XCTAssertTrue(rejected[0].contains("already a participant"),
+                      "self-invitation is redundant, not wrong — handleTeamMeeting seats the initiator; got: \(rejected[0])")
     }
 
-    func testFilterParticipants_supervisorNotInvitable_rejected() {
+    /// The Supervisor is the human and never a meeting participant, whatever the settings
+    /// say. `invitableRoles` is cleared so nothing but that rule can explain the rejection.
+    /// Until 2026-09-07 a `supervisorCanBeInvited` seat let an LLM turn speak AS the
+    /// Supervisor; the seat is gone and the rejection is unconditional.
+    func testFilterParticipants_supervisor_rejectedUnconditionally() {
         let team = makeTeam()
         var settings = team.settings
-        settings.supervisorCanBeInvited = false
+        settings.invitableRoles = []  // no whitelist — only the Supervisor rule remains
         let (participants, rejected) = MeetingParticipantResolver.filterParticipants(
             participantIDs: ["supervisor"],
             initiatingRole: .softwareEngineer,
@@ -56,22 +61,22 @@ final class MeetingParticipantResolverTests: XCTestCase {
         )
         XCTAssertTrue(participants.isEmpty)
         XCTAssertEqual(rejected.count, 1)
-        XCTAssertTrue(rejected[0].contains("not invitable"))
+        XCTAssertTrue(rejected[0].contains("not a meeting participant"))
+        XCTAssertTrue(rejected[0].hasPrefix("Supervisor"))
     }
 
-    func testFilterParticipants_supervisorInvitable_accepted() {
-        let team = makeTeam()
-        var settings = team.settings
-        settings.supervisorCanBeInvited = true
-        settings.invitableRoles = []  // Clear to allow all roles
+    /// Without a team the membership check is skipped, and the Supervisor is still
+    /// rejected by the built-in `.supervisor` identity alone.
+    func testFilterParticipants_noTeam_supervisorStillRejected() {
         let (participants, rejected) = MeetingParticipantResolver.filterParticipants(
-            participantIDs: ["supervisor"],
+            participantIDs: ["supervisor", "techLead"],
             initiatingRole: .softwareEngineer,
-            team: team,
-            teamSettings: settings
+            team: nil,
+            teamSettings: TeamSettings()
         )
-        XCTAssertEqual(participants.count, 1)
-        XCTAssertTrue(rejected.isEmpty)
+        XCTAssertEqual(participants, [.techLead])
+        XCTAssertEqual(rejected.count, 1)
+        XCTAssertTrue(rejected[0].contains("not a meeting participant"))
     }
 
     func testFilterParticipants_notInInvitableRoles_rejected() {
@@ -126,14 +131,16 @@ final class MeetingParticipantResolverTests: XCTestCase {
         XCTAssertFalse(list.contains("productManager"))
     }
 
-    func testAvailableTeammatesList_excludesSupervisorWhenNotInvitable() {
+    /// The Supervisor is never listed as a teammate — the roster it is dropped from is
+    /// otherwise non-empty, so the omission is the rule and not an empty list.
+    func testAvailableTeammatesList_neverListsSupervisor() {
         let team = makeTeam()
-        var settings = team.settings
-        settings.supervisorCanBeInvited = false
         let list = MeetingParticipantResolver.availableTeammatesList(
-            team: team, teamSettings: settings, excludeRoleID: "softwareEngineer"
+            team: team, teamSettings: team.settings, excludeRoleID: "softwareEngineer"
         )
         XCTAssertFalse(list.contains("supervisor"))
+        XCTAssertNotEqual(list, "none")
+        XCTAssertTrue(list.contains("productManager"))
     }
 
     func testAvailableTeammatesList_noTeam_usesBuiltInRoles() {
@@ -145,12 +152,23 @@ final class MeetingParticipantResolverTests: XCTestCase {
         XCTAssertNotEqual(list, "none")
     }
 
+    /// The no-team branch drops the Supervisor too — not merely when it is the requester.
+    /// Until 2026-09-07 this branch listed every built-in id, the Supervisor included.
+    func testAvailableTeammatesList_noTeam_dropsSupervisorEvenWhenNotTheRequester() {
+        let list = MeetingParticipantResolver.availableTeammatesList(
+            team: nil, teamSettings: TeamSettings(), excludeRoleID: "softwareEngineer"
+        )
+        XCTAssertFalse(list.contains("supervisor"))
+        XCTAssertFalse(list.contains("softwareEngineer"))
+        XCTAssertNotEqual(list, "none")
+        XCTAssertTrue(list.contains("techLead"))
+    }
+
     func testAvailableTeammatesList_allExcluded_returnsNone() {
         // Single-role team (only Supervisor + excluding everyone else)
         let team = makeTeam()
         var settings = team.settings
         settings.invitableRoles = Set(["nonexistent_role"])
-        settings.supervisorCanBeInvited = false
         let sweRole = team.roles.first { $0.systemRoleID == "softwareEngineer" }!
         let list = MeetingParticipantResolver.availableTeammatesList(
             team: team, teamSettings: settings, excludeRoleID: sweRole.systemRoleID ?? sweRole.id

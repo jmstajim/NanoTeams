@@ -76,6 +76,7 @@ extension LLMExecutionService {
         toolCallID: UUID,
         stepID: String,
         taskID: Int,
+        allowedToolNames: Set<String>,
         client: any LLMClient,
         config: LLMConfig,
         networkLogger: NetworkLogger?,
@@ -103,7 +104,7 @@ extension LLMExecutionService {
         switch action {
         case .capture(let target, let windowTitle):
             await runCapture(
-                target: target, windowTitle: windowTitle, key: key,
+                target: target, windowTitle: windowTitle, key: key, allowedToolNames: allowedToolNames,
                 client: client, config: config, networkLogger: networkLogger,
                 result: result, toolCallID: toolCallID, stepID: stepID, taskID: taskID,
                 conversationMessages: &conversationMessages, tracker: tracker)
@@ -218,7 +219,7 @@ extension LLMExecutionService {
     """
 
     private func runCapture(
-        target: String, windowTitle: String?, key: TaskStepKey,
+        target: String, windowTitle: String?, key: TaskStepKey, allowedToolNames: Set<String>,
         client: any LLMClient, config: LLMConfig, networkLogger: NetworkLogger?,
         result: ToolExecutionResult, toolCallID: UUID, stepID: String, taskID: Int,
         conversationMessages: inout [ChatMessage], tracker: ToolCallTracker?
@@ -246,6 +247,7 @@ extension LLMExecutionService {
         let collection = await axElements(for: captured, ownBundle: ownBundle)
         await deliverCapture(
             captured: captured, collection: collection, target: target, key: key,
+            allowedToolNames: allowedToolNames,
             client: client, config: config, networkLogger: networkLogger,
             result: result, toolCallID: toolCallID, stepID: stepID, taskID: taskID,
             conversationMessages: &conversationMessages, tracker: tracker)
@@ -265,6 +267,7 @@ extension LLMExecutionService {
     /// producing a real `CapturedScreen` means taking a real screenshot.
     func deliverCapture(
         captured: CapturedScreen, collection: AXCollectionResult, target: String, key: TaskStepKey,
+        allowedToolNames: Set<String>,
         client: any LLMClient, config: LLMConfig, networkLogger: NetworkLogger?,
         result: ToolExecutionResult, toolCallID: UUID, stepID: String, taskID: Int,
         conversationMessages: inout [ChatMessage], tracker: ToolCallTracker?
@@ -324,8 +327,8 @@ extension LLMExecutionService {
                 envelope: makeErrorEnvelope(code: .computerUseDenied,
                                             message: "The main model cannot see images and no Vision model is configured, "
                                                 + "so this screenshot cannot be delivered. Do not re-capture — the result "
-                                                + "will be identical. Work from the ax_elements list, or ask the supervisor "
-                                                + "to configure a Vision model."),
+                                                + "will be identical. Work from the ax_elements list"
+                                                + "\(Self.visionEscalationClause(allowedToolNames: allowedToolNames))."),
                 isError: true, result: result, toolCallID: toolCallID,
                 stepID: stepID, taskID: taskID, conversationMessages: &conversationMessages, tracker: tracker)
             return
@@ -416,7 +419,7 @@ extension LLMExecutionService {
         else {
             await finalizeToolResult(
                 envelope: makeErrorEnvelope(code: .invalidArgs,
-                                            message: "Coordinates (\(x), \(y)) are outside the \(captured.pixelWidth)×\(captured.pixelHeight) screenshot."),
+                                            message: "Coordinates (\(x), \(y)) are outside the \(captured.pixelWidth)×\(captured.pixelHeight) screenshot. Use x in 0…\(captured.pixelWidth - 1) and y in 0…\(captured.pixelHeight - 1), read off the latest screenshot."),
                 isError: true, result: result, toolCallID: toolCallID,
                 stepID: stepID, taskID: taskID, conversationMessages: &conversationMessages, tracker: tracker)
             return
@@ -540,8 +543,12 @@ extension LLMExecutionService {
                         resultJSON: envelope, isError: isError)
     }
 
+    /// Model-read: the ONE reader of a foreign error is `ToolErrorHandler.classify`, which
+    /// passes an app-authored `LocalizedError` verbatim and turns a Cocoa/POSIX/URL error
+    /// into a stable English sentence (R1.8.2). The former `localizedDescription` fallback
+    /// put the system language and, for file errors, an absolute path on the wire.
     private func errorText(_ error: Error) -> String {
-        (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        ToolErrorHandler.classify(error).message
     }
 }
 

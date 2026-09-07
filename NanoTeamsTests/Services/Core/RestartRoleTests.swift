@@ -507,7 +507,7 @@ final class RestartRoleTests: NTMSOrchestratorTestBase, @unchecked Sendable {
         let prompt = await sut.consumeQueuedSupervisorMessage(
             taskID: taskID, roleID: roleID, stepID: roleID
         )
-        XCTAssertEqual(prompt, "Supervisor:\nдоложи статус",
+        XCTAssertEqual(prompt, MessageSourceContext.supervisorMessagePrefix + "доложи статус",
                        "Message must deliver on the restarted step with the Supervisor: attribution header")
         XCTAssertFalse(formState.hasQueuedMessage(for: taskID),
                        "Queue drained after successful delivery")

@@ -74,15 +74,19 @@ nonisolated struct BashTool: ToolHandler {
             guard fileManager.fileExists(atPath: cwd.path, isDirectory: &isDir), isDir.boolValue else {
                 return makeErrorResult(
                     toolName: Self.name, args: args, code: .notADirectory,
-                    message: "working_directory does not exist or is not a directory.")
+                    message: "working_directory does not exist or is not a directory — send a directory relative to the work folder, or omit working_directory to run at its root.",
+                    next: NextHint(
+                        suggested_cmd: ToolNames.listFiles,
+                        suggested_args: ["path": "."],
+                        reason: "See the directories under the work folder"
+                    ))
             }
 
             // Reject a non-positive timeout (a sign typo) instead of silently
             // clamping it to 1s; clamp the upper bound to the ceiling.
             guard let timeoutSec = BashArguments.resolveTimeoutSeconds(milliseconds: optionalInt(args, "timeout")) else {
-                return makeErrorResult(
-                    toolName: Self.name, args: args, code: .invalidArgs,
-                    message: "timeout must be a positive number of milliseconds.")
+                throw ToolArgumentError.invalidValue(
+                    key: "timeout", detail: "must be a positive number of milliseconds.")
             }
             let runInBackground = optionalBool(args, "run_in_background", default: false)
 
@@ -135,9 +139,15 @@ nonisolated struct BashTool: ToolHandler {
                             suggested_args: ["command_id": id],
                             reason: "Read background command output"))
                 } catch {
+                    // Classified, not localized: `Process.run()` failures arrive as Cocoa
+                    // errors, whose `localizedDescription` is in the USER's system language
+                    // and names absolute paths. `classify` also picks the right code — a
+                    // spawn refused because `working_directory` does not exist is an
+                    // argument problem, not a command failure.
+                    let (code, message) = ToolErrorHandler.classify(error)
                     return makeErrorResult(
-                        toolName: Self.name, args: args, code: .commandFailed,
-                        message: "Failed to start background command: \(error.localizedDescription)")
+                        toolName: Self.name, args: args, code: code,
+                        message: "Failed to start background command: \(message) Check the command and its working_directory.")
                 }
             }
 
@@ -298,13 +308,20 @@ nonisolated struct BashTool: ToolHandler {
 /// Reads incremental output from — or stops — a background command started by
 /// `bash` with `run_in_background: true`.
 nonisolated struct BashOutputTool: ToolHandler {
+    /// `ToolErrorNotePolicy` appends "Fix the arguments and retry" plus the required list for
+    /// every `INVALID_ARGS`; what it cannot know is WHERE a valid value comes from — the one
+    /// fact this message adds (playbook R1.8.1). One string for both actions.
+    static func unknownCommandIDMessage(_ commandID: String) -> String {
+        "Unknown command_id '\(commandID)' — send the command_id returned by bash with run_in_background: true."
+    }
+
     static let name = TN.bashOutput
     static let schema = ToolSchema(
         name: TN.bashOutput,
         description: """
-        Read new output from a background command started by `bash` (run_in_background), \
-        or stop it. Returns output produced since your last read, whether it is still \
-        running, and its exit code once finished.
+        Read new output from a background command started by `bash` (run_in_background). \
+        Returns output produced since your last read, whether it is still running, and its \
+        exit code once finished.
         """,
         parameters: JS.object(
             properties: [
@@ -333,7 +350,7 @@ nonisolated struct BashOutputTool: ToolHandler {
                 guard stopped else {
                     return makeErrorResult(
                         toolName: Self.name, args: args, code: .invalidArgs,
-                        message: "Unknown command_id '\(commandID)'.")
+                        message: Self.unknownCommandIDMessage(commandID))
                 }
                 return makeSuccessResult(
                     toolName: Self.name, args: args,
@@ -345,7 +362,7 @@ nonisolated struct BashOutputTool: ToolHandler {
             guard let read = BackgroundBashRegistry.shared.read(commandID: commandID) else {
                 return makeErrorResult(
                     toolName: Self.name, args: args, code: .invalidArgs,
-                    message: "Unknown command_id '\(commandID)'.")
+                    message: Self.unknownCommandIDMessage(commandID))
             }
             return makeSuccessResult(
                 toolName: Self.name, args: args,

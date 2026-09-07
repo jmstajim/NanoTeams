@@ -42,7 +42,13 @@ nonisolated enum ZIPReader {
         case deflate   // compression method 8
     }
 
-    enum Failure: Error, CustomStringConvertible {
+    /// `LocalizedError` as well as `CustomStringConvertible`: every extractor hands a caught
+    /// error to `ToolErrorHandler.classify`, which returns an app-authored `errorDescription`
+    /// verbatim and maps anything else to a typed English sentence. Without the conformance
+    /// a ZIP failure would fall to the classifier's domain-code arm and lose its reason.
+    enum Failure: Error, CustomStringConvertible, LocalizedError {
+        var errorDescription: String? { description }
+
         case notAZIPFile
         case corruptArchive(reason: String)
         case zip64Unsupported
@@ -108,7 +114,7 @@ nonisolated private extension ZIPReader {
             attrs = try FileManager.default.attributesOfItem(atPath: url.path)
         } catch {
             throw Failure.corruptArchive(
-                reason: "cannot stat ZIP file: \(error.localizedDescription)"
+                reason: "cannot stat ZIP file: \(ToolErrorHandler.classify(error).message)"
             )
         }
         if let size = attrs[.size] as? NSNumber,
@@ -121,7 +127,7 @@ nonisolated private extension ZIPReader {
         do {
             return try Data(contentsOf: url, options: .mappedIfSafe)
         } catch {
-            throw Failure.corruptArchive(reason: "cannot read ZIP file: \(error.localizedDescription)")
+            throw Failure.corruptArchive(reason: "cannot read ZIP file: \(ToolErrorHandler.classify(error).message)")
         }
     }
 

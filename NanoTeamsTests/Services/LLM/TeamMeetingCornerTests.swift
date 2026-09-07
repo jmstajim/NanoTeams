@@ -54,7 +54,7 @@ final class TeamMeetingCornerTests: XCTestCase {
 
         let reply = await service.handleTeamMeeting(
             stepID: stepID, topic: "t", participantIDs: ["team_pm"], context: nil,
-            initiatingRole: initiator, task: mockDelegate.taskToMutate!,
+            initiatingRole: initiator, initiatorSeat: .speaks, task: mockDelegate.taskToMutate!,
             runIndex: 0, stepIndex: 0,
             client: ThrowingMeetingClient(error: LLMClientError.badHTTPStatus(500, "boom")),
             config: stubConfig())
@@ -69,6 +69,24 @@ final class TeamMeetingCornerTests: XCTestCase {
                        "a meeting that died mid-turn must not be left in progress")
     }
 
+    /// The reason the initiator reads is classified, never the system-language
+    /// `localizedDescription` of a transport error (R1.8.2).
+    func testMeeting_streamThrowsAForeignError_classifiesTheReason() async {
+        seedDefault(maxTurns: 3)
+
+        let reply = await service.handleTeamMeeting(
+            stepID: stepID, topic: "t", participantIDs: ["team_pm"], context: nil,
+            initiatingRole: initiator, initiatorSeat: .speaks, task: mockDelegate.taskToMutate!,
+            runIndex: 0, stepIndex: 0,
+            client: ThrowingMeetingClient(error: NSError(
+                domain: NSURLErrorDomain, code: NSURLErrorCannotConnectToHost,
+                userInfo: [NSLocalizedDescriptionKey: "Не удалось подключиться к серверу."])),
+            config: stubConfig())
+
+        XCTAssertFalse(reply.succeeded)
+        XCTAssertEqual(reply.text, "Meeting failed: The server could not be reached.")
+    }
+
     /// Cancellation (pause during a meeting) is a DIFFERENT arm from a failure and
     /// must not be reported as one — a `Meeting failed:` prefix on a user-initiated
     /// pause reads as a bug to the model and to the human.
@@ -77,7 +95,7 @@ final class TeamMeetingCornerTests: XCTestCase {
 
         let reply = await service.handleTeamMeeting(
             stepID: stepID, topic: "t", participantIDs: ["team_pm"], context: nil,
-            initiatingRole: initiator, task: mockDelegate.taskToMutate!,
+            initiatingRole: initiator, initiatorSeat: .speaks, task: mockDelegate.taskToMutate!,
             runIndex: 0, stepIndex: 0,
             client: ThrowingMeetingClient(error: CancellationError()),
             config: stubConfig())
@@ -100,7 +118,7 @@ final class TeamMeetingCornerTests: XCTestCase {
 
         let reply = await service.handleTeamMeeting(
             stepID: stepID, topic: "t", participantIDs: ["team_pm"], context: nil,
-            initiatingRole: initiator, task: mockDelegate.taskToMutate!,
+            initiatingRole: initiator, initiatorSeat: .speaks, task: mockDelegate.taskToMutate!,
             runIndex: 0, stepIndex: 0, client: client, config: stubConfig())
 
         XCTAssertTrue(reply.succeeded, "a meeting that ends at the limit is not an error; got: \(reply.text)")
@@ -125,7 +143,7 @@ final class TeamMeetingCornerTests: XCTestCase {
 
         let reply = await service.handleTeamMeeting(
             stepID: stepID, topic: "t", participantIDs: ["team_pm"], context: nil,
-            initiatingRole: initiator, task: task, runIndex: 0, stepIndex: 0,
+            initiatingRole: initiator, initiatorSeat: .speaks, task: task, runIndex: 0, stepIndex: 0,
             client: CountingMeetingClient(reply: "agreed"), config: stubConfig())
 
         XCTAssertTrue(reply.succeeded,
@@ -159,7 +177,7 @@ final class TeamMeetingCornerTests: XCTestCase {
         let client = CapturingMeetingClient(reply: "noted")
         _ = await service.handleTeamMeeting(
             stepID: stepID, topic: "t", participantIDs: ["team_pm"], context: nil,
-            initiatingRole: initiator, task: task, runIndex: 0, stepIndex: 1,
+            initiatingRole: initiator, initiatorSeat: .speaks, task: task, runIndex: 0, stepIndex: 1,
             client: client, config: stubConfig())
 
         let wire = client.capturedMessages.flatMap { $0 }.compactMap(\.content).joined(separator: "\n")
@@ -180,7 +198,7 @@ final class TeamMeetingCornerTests: XCTestCase {
 
         _ = await service.handleTeamMeeting(
             stepID: stepID, topic: "t", participantIDs: ["team_pm"], context: nil,
-            initiatingRole: initiator, task: mockDelegate.taskToMutate!,
+            initiatingRole: initiator, initiatorSeat: .speaks, task: mockDelegate.taskToMutate!,
             runIndex: 0, stepIndex: 0,
             client: ToolCallThenTextClient(toolName: ToolNames.readFile),
             config: stubConfig())
@@ -203,7 +221,7 @@ final class TeamMeetingCornerTests: XCTestCase {
 
         let reply = await service.handleTeamMeeting(
             stepID: stepID, topic: "t", participantIDs: ["team_pm"], context: nil,
-            initiatingRole: initiator, task: mockDelegate.taskToMutate!,
+            initiatingRole: initiator, initiatorSeat: .speaks, task: mockDelegate.taskToMutate!,
             runIndex: 0, stepIndex: 0,
             client: ToolCallThenTextClient(toolName: ToolNames.readFile),
             config: stubConfig())

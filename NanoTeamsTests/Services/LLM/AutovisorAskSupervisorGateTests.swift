@@ -15,7 +15,7 @@ final class AutovisorAskSupervisorGateTests: XCTestCase {
     func testManagerTeam_doesNotAutoInjectAskSupervisor() {
         let team = TeamTemplateFactory.autovisor()
         let managerName = team.nonSupervisorRoles.first?.name ?? "Manager"
-        let schemas = LLMExecutionService.resolveToolSchemas(for: .custom(id: managerName), team: team)
+        let schemas = LLMExecutionService.resolveToolSchemas(for: .custom(id: managerName), team: team, approval: .available)
         XCTAssertFalse(
             schemas.isEmpty,
             "sanity: the manager still resolves its management toolset"
@@ -44,14 +44,16 @@ final class AutovisorAskSupervisorGateTests: XCTestCase {
         let runners = [ToolNames.runXcodebuild, ToolNames.runXcodetests]
 
         let withScheme = LLMExecutionService.resolveToolSchemas(
-            for: .custom(id: managerName), team: team, selectedScheme: "NanoTeams")
+            for: .custom(id: managerName), team: team, selectedScheme: "NanoTeams",
+            approval: .available)
         for tool in runners {
             XCTAssertTrue(withScheme.contains { $0.name == tool },
                           "\(tool) must survive schema resolution and reach the manager's wire")
         }
 
         let noScheme = LLMExecutionService.resolveToolSchemas(
-            for: .custom(id: managerName), team: team, selectedScheme: nil)
+            for: .custom(id: managerName), team: team, selectedScheme: nil,
+            approval: .available)
         for tool in runners {
             XCTAssertFalse(noScheme.contains { $0.name == tool },
                            "\(tool) must be stripped without a scheme — the precondition, not "
@@ -77,7 +79,7 @@ final class AutovisorAskSupervisorGateTests: XCTestCase {
         team.roles[idx].toolIDs.append(ToolNames.askSupervisor)
 
         let managerName = team.roles[idx].name
-        let schemas = LLMExecutionService.resolveToolSchemas(for: .custom(id: managerName), team: team)
+        let schemas = LLMExecutionService.resolveToolSchemas(for: .custom(id: managerName), team: team, approval: .available)
 
         XCTAssertFalse(schemas.contains { $0.name == ToolNames.askSupervisor },
                        "a planted ask_supervisor in the manager's toolIDs must be stripped")
@@ -102,7 +104,7 @@ final class AutovisorAskSupervisorGateTests: XCTestCase {
         team.roles[idx].systemRoleID = "corrupted-system-id"
         team.roles[idx].name = "Corrupted"
 
-        let schemas = LLMExecutionService.resolveToolSchemas(for: .autovisor, team: team)
+        let schemas = LLMExecutionService.resolveToolSchemas(for: .autovisor, team: team, approval: .available)
 
         XCTAssertFalse(schemas.contains { $0.name == ToolNames.askSupervisor },
                        "the role-lookup-miss fallback must not grant ask_supervisor to the manager")
@@ -124,7 +126,7 @@ final class AutovisorAskSupervisorGateTests: XCTestCase {
     func testManagerBuiltinRole_teamNil_noAskSupervisor() {
         // team == nil (team resolution failed entirely): the strip's templateID arm
         // can't fire, so the role.baseID arm + the fallback key must hold the line.
-        let schemas = LLMExecutionService.resolveToolSchemas(for: .autovisor, team: nil)
+        let schemas = LLMExecutionService.resolveToolSchemas(for: .autovisor, team: nil, approval: .available)
         XCTAssertFalse(schemas.contains { $0.name == ToolNames.askSupervisor },
                        "the builtin .autovisor role must never resolve ask_supervisor, even with no team")
         XCTAssertTrue(schemas.contains { $0.name == ToolNames.listTasks },
@@ -146,7 +148,7 @@ final class AutovisorAskSupervisorGateTests: XCTestCase {
         }) else { return XCTFail("manager team must carry the manager role") }
         team.roles[idx].toolIDs.append(ToolNames.askSupervisor)
 
-        let schemas = LLMExecutionService.resolveToolSchemas(for: .autovisor, team: team)
+        let schemas = LLMExecutionService.resolveToolSchemas(for: .autovisor, team: team, approval: .available)
 
         XCTAssertFalse(schemas.contains { $0.name == ToolNames.askSupervisor },
                        "templateID loss must not re-open the ask_supervisor gate (Hole 3)")
@@ -169,7 +171,7 @@ final class AutovisorAskSupervisorGateTests: XCTestCase {
     func testManagerSchema_noNudgeNamesAskSupervisor() {
         let team = TeamTemplateFactory.autovisor()
         let allowed = Set(
-            LLMExecutionService.resolveToolSchemas(for: .autovisor, team: team).map(\.name))
+            LLMExecutionService.resolveToolSchemas(for: .autovisor, team: team, approval: .available).map(\.name))
         XCTAssertFalse(allowed.contains(ToolNames.askSupervisor), "precondition: the strip held")
 
         let nudges = [
@@ -193,7 +195,7 @@ final class AutovisorAskSupervisorGateTests: XCTestCase {
     func testManagerSchema_genericNudgeSteersToWaitForEvents() {
         let team = TeamTemplateFactory.autovisor()
         let allowed = Set(
-            LLMExecutionService.resolveToolSchemas(for: .autovisor, team: team).map(\.name))
+            LLMExecutionService.resolveToolSchemas(for: .autovisor, team: team, approval: .available).map(\.name))
         XCTAssertTrue(allowed.contains(ToolNames.waitForEvents),
                       "precondition: wait_for_events is the manager's pass terminal")
 
@@ -213,7 +215,7 @@ final class AutovisorAskSupervisorGateTests: XCTestCase {
             id: "t", name: "T", roles: [advisory], artifacts: [],
             settings: TeamSettings(), graphLayout: TeamGraphLayout()
         )
-        let schemas = LLMExecutionService.resolveToolSchemas(for: .custom(id: "Assistant"), team: team)
+        let schemas = LLMExecutionService.resolveToolSchemas(for: .custom(id: "Assistant"), team: team, approval: .available)
         XCTAssertTrue(
             schemas.contains { $0.name == ToolNames.askSupervisor },
             "a normal advisory role must still get ask_supervisor auto-injected"

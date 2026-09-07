@@ -112,8 +112,23 @@ enum ChangeRequestService {
 
     // MARK: - Voting Context
 
+    /// The vote contract, worded once. `MeetingCoordinator.turnDirective` appends it to
+    /// EVERY turn of a `.changeRequestVote` meeting — the recency slot, so the rule the
+    /// tally depends on is the last thing each speaker reads (playbook R1.1.3, R1.4.1).
+    /// The two literals are what `tallyVotes` matches.
+    nonisolated static let voteInstruction =
+        "End your reply with exactly one line: `VOTE: APPROVE` or `VOTE: REJECT`."
+
     /// Builds the topic and context strings for a change request voting meeting.
-    static func buildVotingContext(
+    ///
+    /// The context is the meeting's `### Context` body under `## Team meeting`: lowercase
+    /// prose in the `## `/`### ` family every other block of the wire uses. Until
+    /// 2026-09-07 it opened with `CHANGE REQUEST DETAILS:` and
+    /// `INSTRUCTIONS FOR ALL PARTICIPANTS:` — bare ALL-CAPS colon labels, a second marker
+    /// family in one payload (playbook R1.3.2 / R1.5.1 / R4.3.2) — and was the ONLY carrier
+    /// of the vote contract, a standing rule in a mid-conversation user turn that sank
+    /// behind the transcript (R1.1.3). The contract now rides `voteInstruction`.
+    nonisolated static func buildVotingContext(
         requestingRole: Role,
         targetRoleDef: TeamRoleDefinition,
         changes: String,
@@ -121,17 +136,10 @@ enum ChangeRequestService {
     ) -> (topic: String, context: String) {
         let topic = "Change Request: \(requestingRole.displayName) requests changes to \(targetRoleDef.name)'s work"
         let context = """
-        CHANGE REQUEST DETAILS:
-        Requested by: \(requestingRole.displayName)
-        Target: \(targetRoleDef.name)
+        \(requestingRole.displayName) requests changes to \(targetRoleDef.name)'s work.
         Changes requested: \(changes)
         Reasoning: \(reasoning)
-        
-        INSTRUCTIONS FOR ALL PARTICIPANTS:
-        Discuss whether these changes should be made. Consider impact on your own work.
-        Each participant MUST end their final message with exactly one of:
-        VOTE: APPROVE
-        VOTE: REJECT
+        Discuss whether these changes should be made, weighing the impact on your own work.
         """
         return (topic, context)
     }

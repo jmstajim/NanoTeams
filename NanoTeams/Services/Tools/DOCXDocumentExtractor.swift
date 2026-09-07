@@ -11,7 +11,7 @@ nonisolated struct DOCXDocumentExtractor: DocumentFormatExtractor {
         do {
             data = try ZIPReader.readEntry(named: "word/document.xml", from: url)
         } catch {
-            return .failure(reason: String(describing: error))
+            return .failure(reason: ToolErrorHandler.classify(error).message)
         }
         guard let docXML = data else {
             return .failure(reason: "word/document.xml missing")
@@ -52,8 +52,9 @@ nonisolated private final class DOCXTextCollector: NSObject, XMLParserDelegate {
         if !parsed { collector.accumulator += collector.runBuffer }
         let text = collector.accumulator.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !parsed else { return (text, nil) }
-        let reason = parser.parserError?.localizedDescription ?? "malformed XML"
-        return (text, "XML parse stopped early — \(reason); content may be truncated")
+        // The line number is the one fact the model can act on; `parserError`'s
+        // `localizedDescription` is Foundation's localized prose (playbook R1.8.2).
+        return (text, "XML parse stopped early at line \(parser.lineNumber); content may be truncated")
     }
 
     func parser(

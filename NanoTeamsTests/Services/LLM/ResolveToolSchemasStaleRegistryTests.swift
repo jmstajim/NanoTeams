@@ -43,7 +43,7 @@ final class ResolveToolSchemasStaleRegistryTests: XCTestCase {
     private func resolveManager(allTeams: [Team] = []) -> [ToolSchema] {
         let team = TeamTemplateFactory.autovisor()
         let managerName = team.nonSupervisorRoles.first?.name ?? "Manager"
-        return LLMExecutionService.resolveToolSchemas(for: .custom(id: managerName), team: team, allTeams: allTeams)
+        return LLMExecutionService.resolveToolSchemas(for: .custom(id: managerName), team: team, allTeams: allTeams, approval: .available)
     }
 
     override func setUp() {
@@ -105,18 +105,19 @@ final class ResolveToolSchemasStaleRegistryTests: XCTestCase {
             id: "t", name: "T", roles: [advisory], artifacts: [],
             settings: TeamSettings(), graphLayout: TeamGraphLayout()
         )
-        let schemas = LLMExecutionService.resolveToolSchemas(for: .custom(id: "Assistant"), team: team)
+        let schemas = LLMExecutionService.resolveToolSchemas(for: .custom(id: "Assistant"), team: team, approval: .available)
         XCTAssertTrue(
             schemas.contains { $0.name == ToolNames.askSupervisor },
             "ask_supervisor auto-injection must survive a stale tool registry (sourced from the live set)"
         )
     }
 
-    // MARK: - C. conclude_meeting auto-injection (Auto coordinator)
+    // MARK: - C. conclude_meeting (meeting-only, sourced from the live handler)
 
-    /// `conclude_meeting` is auto-injected (Auto coordinator) by sourcing its schema
-    /// from `allTools` — same poisoning surface as `ask_supervisor`, distinct branch.
-    func testConcludeMeetingAutoInjection_survivesStaleRegistry() {
+    /// `conclude_meeting` never rides a STEP schema, and the coordinator's meeting turn
+    /// takes it straight from `ConcludeMeetingTool.schema` — so a stale `tools.json`
+    /// snapshot that lacks it cannot suppress it.
+    func testConcludeMeeting_meetingTurnGrant_survivesStaleRegistry() {
         ToolDefinitionRegistry.shared.update(staleSubset)   // snapshot lacks conclude_meeting
 
         let host = TeamRoleDefinition(
@@ -127,12 +128,15 @@ final class ResolveToolSchemasStaleRegistryTests: XCTestCase {
         )
         let team = Team(
             id: "m", name: "M", roles: [host], artifacts: [],
-            settings: TeamSettings(), graphLayout: TeamGraphLayout()   // coordinator nil = Auto
+            settings: TeamSettings(), graphLayout: TeamGraphLayout()   // host is the default coordinator
         )
-        let schemas = LLMExecutionService.resolveToolSchemas(for: .custom(id: "Host"), team: team)
+        let step = LLMExecutionService.resolveToolSchemas(for: .custom(id: "Host"), team: team, approval: .available)
+        XCTAssertFalse(step.contains { $0.name == ToolNames.concludeMeeting },
+                       "a step schema never carries conclude_meeting")
+        let meetingTurn = MeetingCoordinator.speakerTools(base: step, isCoordinator: true)
         XCTAssertTrue(
-            schemas.contains { $0.name == ToolNames.concludeMeeting },
-            "conclude_meeting auto-injection (Auto coordinator) must survive a stale registry"
+            meetingTurn.contains { $0.name == ToolNames.concludeMeeting },
+            "the coordinator's meeting grant comes from the live handler, not the snapshot"
         )
     }
 
@@ -156,7 +160,7 @@ final class ResolveToolSchemasStaleRegistryTests: XCTestCase {
             id: "d", name: "D", roles: [agent], artifacts: [],
             settings: TeamSettings(), graphLayout: TeamGraphLayout()
         )
-        let schemas = LLMExecutionService.resolveToolSchemas(for: Role.fromDefinition(agent), team: team)
+        let schemas = LLMExecutionService.resolveToolSchemas(for: Role.fromDefinition(agent), team: team, approval: .available)
         let names = Set(schemas.map(\.name))
         for tool in [ToolNames.delegateToTeam, ToolNames.cancelDelegation,
                      ToolNames.resumeDelegation, ToolNames.forwardToTeam] {
@@ -219,6 +223,7 @@ final class ResolveToolSchemasStaleRegistryTests: XCTestCase {
         let managerName = team.nonSupervisorRoles.first?.name ?? "Manager"
         return LLMExecutionService.resolveToolSchemas(
             for: .custom(id: managerName), team: team, allTeams: allTeams,
+            approval: .available,
             autovisorTeamPolicy: AutovisorTeamPolicy(allowGeneration: allowGenerated)
         )
     }
@@ -260,6 +265,7 @@ final class ResolveToolSchemasStaleRegistryTests: XCTestCase {
         for allow in [true, false] {
             let schemas = LLMExecutionService.resolveToolSchemas(
                 for: .custom(id: pm.name), team: faang,
+                approval: .available,
                 autovisorTeamPolicy: AutovisorTeamPolicy(allowGeneration: allow)
             )
             XCTAssertFalse(schemas.contains { $0.name == ToolNames.createManagedTask },

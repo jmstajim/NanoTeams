@@ -42,6 +42,7 @@ final class ToolUnavailabilityClassifierTests: XCTestCase {
             isDefaultStorage: false,
             isVisionConfigured: true,
             selectedScheme: "Foo",
+            approval: .available,
             fileManager: fm
         )
         XCTAssertEqual(reason, .gitRepoMissing)
@@ -62,6 +63,7 @@ final class ToolUnavailabilityClassifierTests: XCTestCase {
             isDefaultStorage: false,
             isVisionConfigured: true,
             selectedScheme: "Foo",
+            approval: .available,
             fileManager: fm
         )
         XCTAssertEqual(reason, .notInRoleConfig)
@@ -76,6 +78,7 @@ final class ToolUnavailabilityClassifierTests: XCTestCase {
             isDefaultStorage: true,
             isVisionConfigured: true,
             selectedScheme: nil,
+            approval: .available,
             fileManager: fm
         )
         XCTAssertEqual(reason, .workFolderClosed)
@@ -92,6 +95,7 @@ final class ToolUnavailabilityClassifierTests: XCTestCase {
             isDefaultStorage: false,
             isVisionConfigured: false,
             selectedScheme: "Foo",
+            approval: .available,
             fileManager: fm
         )
         XCTAssertEqual(reason, .visionNotConfigured)
@@ -108,6 +112,7 @@ final class ToolUnavailabilityClassifierTests: XCTestCase {
             isDefaultStorage: false,
             isVisionConfigured: true,
             selectedScheme: nil,
+            approval: .available,
             fileManager: fm
         )
         XCTAssertEqual(reason, .xcodeSchemeNotSelected)
@@ -129,6 +134,7 @@ final class ToolUnavailabilityClassifierTests: XCTestCase {
             isDefaultStorage: false,
             isVisionConfigured: true,
             selectedScheme: "",
+            approval: .available,
             fileManager: fm
         )
         XCTAssertEqual(reason, .xcodeSchemeNotSelected)
@@ -145,7 +151,7 @@ final class ToolUnavailabilityClassifierTests: XCTestCase {
                 isDefaultStorage: false,
                 isVisionConfigured: true,
                 selectedScheme: "Foo",
-                isComputerUseEnabled: false,
+                approval: ToolApprovalAvailability(bash: .available, computerUse: .withheld(.switchedOff)),
                 fileManager: fm
             )
             XCTAssertEqual(reason, .computerUseDisabled, "expected .computerUseDisabled for \(tool)")
@@ -166,7 +172,7 @@ final class ToolUnavailabilityClassifierTests: XCTestCase {
             isDefaultStorage: true,
             isVisionConfigured: true,
             selectedScheme: nil,
-            isComputerUseEnabled: false,
+            approval: ToolApprovalAvailability(bash: .available, computerUse: .withheld(.switchedOff)),
             fileManager: fm
         )
         XCTAssertEqual(reason, .computerUseDisabled)
@@ -181,7 +187,7 @@ final class ToolUnavailabilityClassifierTests: XCTestCase {
             isDefaultStorage: false,
             isVisionConfigured: false,
             selectedScheme: nil,
-            isComputerUseEnabled: false,
+            approval: ToolApprovalAvailability(bash: .available, computerUse: .withheld(.switchedOff)),
             fileManager: fm
         )
         XCTAssertEqual(reason, .computerUseDisabled)
@@ -196,23 +202,134 @@ final class ToolUnavailabilityClassifierTests: XCTestCase {
             isDefaultStorage: false,
             isVisionConfigured: true,
             selectedScheme: "Foo",
-            isComputerUseEnabled: true,
+            approval: .available,
             fileManager: fm
         )
         XCTAssertEqual(explicit, .notInRoleConfig)
-        // Same call with the param omitted pins the default `true` — a caller
-        // that can't see the policy must NOT blame the Computer Use setting
-        // (mirrors the `xcodeSchemeKnown` "don't blame a setting you can't
-        // see" contract).
-        let defaulted = LLMExecutionService.classifyUnavailability(
-            toolName: ToolNames.uiClick,
-            workFolderRoot: tempDir,
-            isDefaultStorage: false,
-            isVisionConfigured: true,
-            selectedScheme: "Foo",
-            fileManager: fm
-        )
-        XCTAssertEqual(defaulted, .notInRoleConfig)
+        // `approval` has no default (unlike the retired `isComputerUseEnabled: Bool = true`):
+        // a caller that cannot see the policy has to say so, and the only honest reading it
+        // can pass is `.available` — which is what this test asserts falls through to the
+        // role-config verdict.
+    }
+
+    // MARK: - approverUnavailable (B3, 2026-09-07)
+
+    /// A stripped `bash` the model calls anyway: the role holds it, the mode is on, and the
+    /// block is the run's lack of a human — its own reason, not "not in role config" and
+    /// not the Off-mode blocker.
+    func testClassify_bash_manualWithNoHuman_returnsApproverUnavailable() {
+        let noApprover = ToolApprovalAvailability(bashMode: .manual, computerUseMode: .manual, humanPresent: false)
+        for tool in ToolHandlerRegistry.shellTools {
+            let reason = LLMExecutionService.classifyUnavailability(
+                toolName: tool, workFolderRoot: tempDir, isDefaultStorage: false,
+                isVisionConfigured: true, selectedScheme: "Foo", approval: noApprover, fileManager: fm)
+            XCTAssertEqual(reason, .approverUnavailable, tool)
+        }
+    }
+
+    /// The shell spellings a model invents when the schema carries no `bash` resolve to
+    /// `bash` FIRST (`LLMExecutionService+ToolExecution` line 119), so the withheld reason —
+    /// not a bare `tool_not_authorized` — is what `run_shell` gets. Seen live 2026-09-07.
+    func testClassify_inventedShellSpellings_resolveToBash_andGetApproverUnavailable() {
+        let noApprover = ToolApprovalAvailability(bashMode: .manual, computerUseMode: .manual, humanPresent: false)
+        for spelling in ["run_shell", "run_shell_command", "shell_command", "run_bash", "RUN_SHELL"] {
+            let resolved = ToolRegistry.resolveToolName(spelling)
+            XCTAssertEqual(resolved, ToolNames.bash, spelling)
+            let reason = LLMExecutionService.classifyUnavailability(
+                toolName: resolved, workFolderRoot: tempDir, isDefaultStorage: false,
+                isVisionConfigured: true, selectedScheme: "Foo", approval: noApprover, fileManager: fm)
+            XCTAssertEqual(reason, .approverUnavailable, spelling)
+        }
+        XCTAssertEqual(ToolRegistry.resolveToolName("run_shellfish"), "run_shellfish",
+                       "a name that merely starts like a spelling is not an alias")
+    }
+
+    func testClassify_bash_offWithNoHuman_stillNamesTheOffSwitch() {
+        let off = ToolApprovalAvailability(bashMode: .off, computerUseMode: .off, humanPresent: false)
+        XCTAssertEqual(
+            LLMExecutionService.classifyUnavailability(
+                toolName: ToolNames.bash, workFolderRoot: tempDir, isDefaultStorage: false,
+                isVisionConfigured: true, selectedScheme: "Foo", approval: off, fileManager: fm),
+            .bashDisabled, "Off is the durable blocker whoever is present")
+    }
+
+    /// Semi-automatic with no human keeps `bash` (read-only commands run), so a `bash` call
+    /// landing here is a genuine role-config miss, never an approver problem.
+    func testClassify_bash_semiAutomaticWithNoHuman_isNotApproverUnavailable() {
+        let readOnly = ToolApprovalAvailability(bashMode: .semiAutomatic, computerUseMode: .manual, humanPresent: false)
+        XCTAssertEqual(readOnly.bash, .readOnlyUnattended)
+        XCTAssertEqual(
+            LLMExecutionService.classifyUnavailability(
+                toolName: ToolNames.bash, workFolderRoot: tempDir, isDefaultStorage: false,
+                isVisionConfigured: true, selectedScheme: "Foo", approval: readOnly, fileManager: fm),
+            .notInRoleConfig)
+    }
+
+    func testClassify_computerUse_manualWithNoHuman_returnsApproverUnavailable_forAllFive() {
+        let noApprover = ToolApprovalAvailability(bashMode: .auto, computerUseMode: .manual, humanPresent: false)
+        for tool in ToolHandlerRegistry.computerUseTools {
+            let reason = LLMExecutionService.classifyUnavailability(
+                toolName: tool, workFolderRoot: tempDir, isDefaultStorage: false,
+                isVisionConfigured: true, selectedScheme: "Foo", approval: noApprover, fileManager: fm)
+            XCTAssertEqual(reason, .approverUnavailable, tool)
+        }
+    }
+
+    /// Semi-automatic with no human withholds exactly the mutating trio; the read-only two
+    /// ship, so a call to one of them is a role-config miss.
+    func testClassify_computerUse_semiAutomaticWithNoHuman_splitsTheTrioFromTheReadOnlyTier() {
+        let readOnly = ToolApprovalAvailability(bashMode: .auto, computerUseMode: .semiAutomatic, humanPresent: false)
+        for tool in ToolHandlerRegistry.computerUseMutatingTools {
+            XCTAssertEqual(
+                LLMExecutionService.classifyUnavailability(
+                    toolName: tool, workFolderRoot: tempDir, isDefaultStorage: false,
+                    isVisionConfigured: true, selectedScheme: "Foo", approval: readOnly, fileManager: fm),
+                .approverUnavailable, tool)
+        }
+        for tool in ToolHandlerRegistry.computerUseTools.subtracting(ToolHandlerRegistry.computerUseMutatingTools) {
+            XCTAssertEqual(
+                LLMExecutionService.classifyUnavailability(
+                    toolName: tool, workFolderRoot: tempDir, isDefaultStorage: false,
+                    isVisionConfigured: true, selectedScheme: "Foo", approval: readOnly, fileManager: fm),
+                .notInRoleConfig, tool)
+        }
+    }
+
+    /// The approver block outranks the phase, like Off does: recording a plan brings no human.
+    func testClassify_approverUnavailable_outranksThePhase() {
+        let noApprover = ToolApprovalAvailability(bashMode: .manual, computerUseMode: .manual, humanPresent: false)
+        XCTAssertEqual(
+            LLMExecutionService.classifyUnavailability(
+                toolName: ToolNames.bash, workFolderRoot: tempDir, isDefaultStorage: false,
+                isVisionConfigured: true, selectedScheme: "Foo", approval: noApprover,
+                phaseWithheldToolNames: [ToolNames.bash], fileManager: fm),
+            .approverUnavailable)
+    }
+
+    /// Own executor code — the lowercase twin of `ToolErrorCode.approvalUnavailable` — so the
+    /// direction turn reaches the channel-free arm; `precondition_failed` would blame the work
+    /// folder and offer `ask_supervisor`, the ring KNOWN_ISSUES A15 describes.
+    func testEnvelope_approverUnavailable_carriesItsOwnCode_namesTheTool_andSaysWhatToDo() throws {
+        let shell = LLMExecutionService.makeUnavailableToolResult(
+            call: StepToolCall(name: ToolNames.bash, argumentsJSON: #"{"command":"make"}"#),
+            canonicalName: ToolNames.bash, scope: "for this role", reason: .approverUnavailable)
+        let dict = try XCTUnwrap(JSONUtilities.parseJSONDictionary(shell.outputJSON))
+        XCTAssertEqual(dict["error"] as? String, "approval_unavailable")
+        XCTAssertEqual(dict["error"] as? String, ToolErrorCode.approvalUnavailable.rawValue.lowercased())
+        XCTAssertEqual(dict["tool"] as? String, ToolNames.bash, "the precondition shape keeps the tool field")
+        let message = try XCTUnwrap(dict["message"] as? String)
+        XCTAssertTrue(message.contains(ToolNames.bash), message)
+        XCTAssertTrue(message.contains("no human") || message.contains("has none"), message)
+        XCTAssertTrue(message.contains("Continue without a shell"), message)
+        XCTAssertFalse(message.lowercased().contains("supervisor"), "no channel: the answerer cannot approve — \(message)")
+        XCTAssertFalse(message.contains("work folder"), "the blocker is the run, not the folder — \(message)")
+
+        let click = LLMExecutionService.makeUnavailableToolResult(
+            call: StepToolCall(name: ToolNames.uiClick, argumentsJSON: "{}"),
+            canonicalName: ToolNames.uiClick, scope: "for this role", reason: .approverUnavailable)
+        let clickMessage = try XCTUnwrap(JSONUtilities.parseJSONDictionary(click.outputJSON)?["message"] as? String)
+        XCTAssertFalse(clickMessage.contains("shell"), "the computer-use phrasing must not talk about a shell — \(clickMessage)")
+        XCTAssertTrue(clickMessage.contains(ToolNames.uiClick), clickMessage)
     }
 
     func testClassify_unknownTool_returnsNotInRoleConfig() throws {
@@ -228,6 +345,7 @@ final class ToolUnavailabilityClassifierTests: XCTestCase {
             isDefaultStorage: false,
             isVisionConfigured: true,
             selectedScheme: "Foo",
+            approval: .available,
             fileManager: fm
         )
         XCTAssertEqual(reason, .notInRoleConfig)
@@ -420,7 +538,7 @@ final class ToolUnavailabilityClassifierTests: XCTestCase {
             "the envelope must name the missing prerequisite, got: \(envelope.outputJSON)"
         )
 
-        let guidance = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope))
+        let guidance = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope, allowedToolNames: []))
 
         XCTAssertTrue(
             guidance.contains("Do not retry 'git_add'"),
@@ -450,6 +568,7 @@ final class ToolUnavailabilityClassifierTests: XCTestCase {
             isDefaultStorage: true,
             isVisionConfigured: false,
             selectedScheme: nil,
+            approval: .available,
             phaseWithheldToolNames: [ToolNames.writeFile]
         )
         XCTAssertEqual(reason, .withheldUntilPlanRecorded)
@@ -463,6 +582,7 @@ final class ToolUnavailabilityClassifierTests: XCTestCase {
             isDefaultStorage: false,
             isVisionConfigured: true,
             selectedScheme: "App",
+            approval: .available,
             phaseWithheldToolNames: [ToolNames.writeFile]
         )
         XCTAssertEqual(reason, .notInRoleConfig)
@@ -504,7 +624,7 @@ final class ToolUnavailabilityClassifierTests: XCTestCase {
         XCTAssertFalse(message.contains("different tool"), message)
 
         XCTAssertNil(
-            ToolErrorNotePolicy.direction(for: envelope),
+            ToolErrorNotePolicy.direction(for: envelope, allowedToolNames: []),
             "the envelope states the remedy AND the retry — a paraphrase is a second instruction"
         )
     }

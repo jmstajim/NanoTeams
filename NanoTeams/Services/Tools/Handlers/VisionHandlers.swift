@@ -55,7 +55,7 @@ nonisolated struct AnalyzeImageTool: ToolHandler {
                 return makeErrorResult(
                     toolName: Self.name, args: args,
                     code: .invalidArgs,
-                    message: "Unsupported image format '.\(ext)'. Supported: \(VisionConstants.supportedExtensions.sorted().joined(separator: ", "))"
+                    message: "Unsupported image format '.\(ext)'. Use a file with one of: \(VisionConstants.supportedExtensions.sorted().joined(separator: ", "))"
                 )
             }
 
@@ -63,7 +63,8 @@ nonisolated struct AnalyzeImageTool: ToolHandler {
                 return makeErrorResult(
                     toolName: Self.name, args: args,
                     code: .fileNotFound,
-                    message: "Image file not found: \(path)"
+                    message: "Image file not found: \(path)",
+                    next: NextHint.listingParent(of: path)
                 )
             }
 

@@ -125,8 +125,10 @@ final class ChangeRequestVotingTests: XCTestCase {
         XCTAssertTrue(tools.contains("request_changes"))
         XCTAssertTrue(tools.contains("ask_teammate"))
         XCTAssertTrue(tools.contains("request_team_meeting"))
-        XCTAssertFalse(tools.contains("read_lines"))
-        XCTAssertFalse(tools.contains("update_scratchpad"))
+        // The fallback IS the role template (plus `ask_supervisor`) since 2026-09-06 — this
+        // test used to pin the hand-written table's divergence from it (no `read_lines`,
+        // no `update_scratchpad` for a TPM whose template grants both).
+        XCTAssertEqual(tools, Set(SystemTemplates.roles["tpm"]!.toolIDs).union([ToolNames.askSupervisor]))
     }
 
     func testSoftwareEngineer_doesNotHaveRequestChanges() {

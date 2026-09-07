@@ -136,7 +136,7 @@ final class PromptPrefixWireParityTests: XCTestCase {
 
     func testInsertBeforeTail_breaksTheOllamaPrefixAtANonTailMessage() {
         var after = midPhaseWire
-        after.insert(user("Supervisor:\nalso check the parser"), at: 2)
+        after.insert(user(MessageSourceContext.supervisorMessagePrefix + "also check the parser"), at: 2)
 
         let b = ollamaWire(midPhaseWire)
         let a = ollamaWire(after)
@@ -151,7 +151,7 @@ final class PromptPrefixWireParityTests: XCTestCase {
 
     func testInsertBeforeTail_breaksTheLMStudioInputString() {
         var after = midPhaseWire
-        after.insert(user("Supervisor:\nalso check the parser"), at: 2)
+        after.insert(user(MessageSourceContext.supervisorMessagePrefix + "also check the parser"), at: 2)
 
         guard let b = lmStudioInput(midPhaseWire).conversationText,
               let a = lmStudioInput(after).conversationText
@@ -187,7 +187,7 @@ final class PromptPrefixWireParityTests: XCTestCase {
     /// The half that must NOT be missed: a divergence that is not tail-local is reported.
     func testFingerprint_neverMissesANonTailWireDivergence() {
         var after = midPhaseWire
-        after.insert(user("Supervisor:\nalso check the parser"), at: 2)
+        after.insert(user(MessageSourceContext.supervisorMessagePrefix + "also check the parser"), at: 2)
 
         let verdict = PrefixCachePolicy.compare(
             previous: PromptPrefixFingerprint.chain(messages: midPhaseWire, toolSchemaText: ""),

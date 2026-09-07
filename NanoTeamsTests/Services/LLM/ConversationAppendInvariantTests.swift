@@ -184,6 +184,12 @@ final class ConversationAppendInvariantTests: XCTestCase, @unchecked Sendable {
     func testEveryConversationMutationIsAnAppend() throws {
         let subscriptNeedle = "conversationMessages" + "["
         let appendNeedle = "conversationMessages" + ".append("
+        // A SHRINK is as much a prefix break as an index write — the server's cached prefix
+        // ends where the surviving bytes diverge. Until 2026-09-07 only the subscript was a
+        // needle, so a `removeLast` / `remove(at:)` / `removeSubrange` on the wire array was
+        // invisible to this pin (R3.9.1 / R4.2.3).
+        let shrinkNeedles = ["removeLast(", "removeFirst(", "remove(at:", "removeSubrange(", "removeAll(", "insert("]
+            .map { "conversationMessages." + $0 }
 
         /// Each entry is a file that legitimately writes through an index, with the exemption
         /// that covers it. Adding a file here without an exemption in
@@ -219,7 +225,8 @@ final class ConversationAppendInvariantTests: XCTestCase, @unchecked Sendable {
             for (offset, rawLine) in text.components(separatedBy: "\n").enumerated() {
                 let line = Self.strippingLineComments(rawLine)
                 if line.contains(appendNeedle) { appendCount += 1 }
-                guard line.contains(subscriptNeedle), exempt[relative] == nil else { continue }
+                guard line.contains(subscriptNeedle) || shrinkNeedles.contains(where: { line.contains($0) }),
+                      exempt[relative] == nil else { continue }
                 offenders.append("\(relative):\(offset + 1)")
             }
         }
@@ -231,6 +238,32 @@ final class ConversationAppendInvariantTests: XCTestCase, @unchecked Sendable {
         XCTAssertGreaterThan(
             appendCount, 20,
             "anti-vacuity: the scan must actually be seeing the mutation sites")
+    }
+
+    /// The ONE sanctioned shrink of a wire: `ConversationRepairService` drops the tail the
+    /// server refused with HTTP 500 before the retry (its own doc says why), on the array it
+    /// receives `inout`. Every other `removeLast` on a `messages` array under `Services/LLM`
+    /// is an offender — the tool loop's array reaches those files under its own name and is
+    /// covered above; this pins the parameter-named copies.
+    func testTheOnlyShrinkOfAMessagesArrayIsTheRepairService() throws {
+        let sanctioned = "NanoTeams/Services/LLM/ConversationRepairService.swift"
+        let needle = "messages" + ".removeLast("
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let walker = FileManager.default.enumerator(
+            at: root.appendingPathComponent("NanoTeams/Services/LLM"), includingPropertiesForKeys: nil)
+        var sites: [String] = []
+        while let url = walker?.nextObject() as? URL {
+            guard url.pathExtension == "swift" else { continue }
+            let relative = url.path.replacingOccurrences(of: root.path + "/", with: "")
+            for (offset, rawLine) in try String(contentsOf: url, encoding: .utf8).components(separatedBy: "\n").enumerated()
+                where Self.strippingLineComments(rawLine).contains(needle) {
+                sites.append("\(relative):\(offset + 1)")
+            }
+        }
+        XCTAssertEqual(sites.count, 1, "exactly one shrink site — the HTTP-500 repair; got \(sites)")
+        XCTAssertTrue(sites.allSatisfy { $0.hasPrefix(sanctioned) }, "a shrink outside the repair service: \(sites)")
     }
 
     /// The tool loop's message-loop ring is pushed at ONE site (`appendAssistantTurn` in

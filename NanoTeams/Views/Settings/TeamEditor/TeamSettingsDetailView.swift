@@ -1,5 +1,22 @@
 import SwiftUI
 
+// MARK: - Supervisor Mode Picker Logic
+
+/// Which `SupervisorMode` segments the Ask Supervisor card offers. Pure so the rule is
+/// unit-testable without a SwiftUI host: a chat-mode team replies THROUGH
+/// `ask_supervisor`, so `.off` would leave its role with no way to answer and is not
+/// offered there (a stored `.off` on such a team is a validation error instead — see
+/// `TeamValidationService.validateSupervisorMode`).
+nonisolated enum SupervisorModePickerLogic {
+    static func isSelectable(_ mode: SupervisorMode, isChatMode: Bool) -> Bool {
+        mode != .off || !isChatMode
+    }
+
+    static func options(isChatMode: Bool) -> [SupervisorMode] {
+        SupervisorMode.allCases.filter { isSelectable($0, isChatMode: isChatMode) }
+    }
+}
+
 // MARK: - Team Settings Detail View
 
 /// View for editing team settings (name, acceptance mode, limits, collaboration).
@@ -11,7 +28,6 @@ struct TeamSettingsDetailView: View {
     @State private var acceptanceMode: AcceptanceMode = .afterEachRole
     @State private var acceptanceCheckpoints: Set<String> = []
     @State private var supervisorMode: SupervisorMode = .manual
-    @State private var supervisorCanBeInvited: Bool = false
     @State private var limits: TeamLimits = .default
 
     /// Name and description are edited through local drafts and committed on
@@ -46,7 +62,6 @@ struct TeamSettingsDetailView: View {
                     supervisorModeSection
                     TeamSettingsCollaborationSection(
                         team: $team,
-                        supervisorCanBeInvited: $supervisorCanBeInvited,
                         nonSupervisorRoles: nonSupervisorRoles,
                         onSave: onSave
                     )
@@ -87,10 +102,6 @@ struct TeamSettingsDetailView: View {
         }
         .onChange(of: supervisorMode) { _, newValue in
             team.settings.supervisorMode = newValue
-            onSave()
-        }
-        .onChange(of: supervisorCanBeInvited) { _, newValue in
-            team.settings.supervisorCanBeInvited = newValue
             onSave()
         }
         .onChange(of: limits) { _, newValue in
@@ -185,12 +196,18 @@ struct TeamSettingsDetailView: View {
                     Spacer()
                     TerminalSegmentedPicker(
                         selection: $supervisorMode,
-                        options: SupervisorMode.allCases.map { (value: $0, label: $0.displayName) }
+                        options: SupervisorModePickerLogic.options(isChatMode: team.isChatMode)
+                            .map { (value: $0, label: $0.displayName) }
                     )
                 }
                 Text(supervisorMode.description)
                     .font(Typography.caption)
                     .foregroundStyle(Colors.textSecondary)
+                if team.isChatMode {
+                    Text("Chat-mode teams reply through ask_supervisor, so Off is unavailable here.")
+                        .font(Typography.caption)
+                        .foregroundStyle(Colors.textSecondary)
+                }
             }
         }
     }
@@ -205,7 +222,6 @@ struct TeamSettingsDetailView: View {
         acceptanceMode = team.settings.defaultAcceptanceMode
         acceptanceCheckpoints = team.settings.acceptanceCheckpoints
         supervisorMode = team.settings.supervisorMode
-        supervisorCanBeInvited = team.settings.supervisorCanBeInvited
         limits = team.settings.limits
         draftName = team.name
         draftDescription = team.description

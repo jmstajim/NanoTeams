@@ -183,6 +183,21 @@ final class ContextBudgetPolicyTests: XCTestCase {
 
     /// The remedy is server-specific, and pointing at the wrong server's setting sends the
     /// user somewhere that does not exist.
+    func testOverflowFailureMessage_carriesServerSentenceAndProviderRemedy() {
+        let ollama = ContextBudgetPolicy.overflowFailureMessage(
+            modelName: "qwen3.8:27b-mlx",
+            serverMessage: "input length (200000 tokens) exceeds the model's maximum context length (32768 tokens)\n",
+            provider: .ollama)
+        XCTAssertTrue(ollama.hasPrefix("qwen3.8:27b-mlx: "), ollama)
+        XCTAssertTrue(ollama.contains("32768"), "the server's numbers survive: \(ollama)")
+        XCTAssertTrue(ollama.contains("num_ctx"), ollama)
+        XCTAssertFalse(ollama.contains("\n"), "the server's trailing newline is trimmed: \(ollama)")
+        let lmStudio = ContextBudgetPolicy.overflowFailureMessage(
+            modelName: "m", serverMessage: "context overflow", provider: .lmStudio)
+        XCTAssertTrue(lmStudio.contains("LM Studio"), lmStudio)
+        XCTAssertFalse(lmStudio.contains("num_ctx"), lmStudio)
+    }
+
     func testWarningMessage_remedyIsProviderSpecific() {
         let ollama = ContextBudgetPolicy.warningMessage(
             modelName: "m", promptTokens: 9000, contextLength: 4096, provider: .ollama)

@@ -27,11 +27,6 @@ class TempDirTestCase: XCTestCase {
         try? content.write(to: url, atomically: true, encoding: .utf8)
         return url
     }
-
-    func makeAttachment(name: String, content: String = "test") throws -> StagedAttachment {
-        let url = makeFile(name: name, content: content)
-        return try StagedAttachment(url: url, stagedRelativePath: "draft/\(name)")
-    }
 }
 
 // MARK: - StagedAttachmentTests

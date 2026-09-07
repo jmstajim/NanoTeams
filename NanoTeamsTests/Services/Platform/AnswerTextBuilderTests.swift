@@ -346,7 +346,7 @@ final class AnswerTextBuilderTests: XCTestCase {
         guard case .embedded(let section) = AnswerTextBuilder.embedSection(url: url) else {
             return XCTFail("expected .embedded")
         }
-        XCTAssertEqual(section, "## Attached File: note.txt\nhello world")
+        XCTAssertEqual(section, "## Attached File: note.txt\n````\nhello world\n````")
     }
 
     func testEmbedSection_imageExtension_returnsSkippedBinary() {
@@ -393,7 +393,7 @@ final class AnswerTextBuilderTests: XCTestCase {
         let url = createTempFile(name: "log.txt", content: body)
         XCTAssertEqual(
             AnswerTextBuilder.embedSection(url: url),
-            .embedded(section: "## Attached File: log.txt\n\(body)"),
+            .embedded(section: "## Attached File: log.txt\n````\n\(body)\n````"),
             "a successful verbatim read must not be judged by what the bytes happen to say"
         )
     }
@@ -407,21 +407,39 @@ final class AnswerTextBuilderTests: XCTestCase {
     func testEmbedSection_emptyFile_embedsEmptyContent() {
         // A readable 0-byte file is a valid (if empty) embed — not a failure.
         let url = createTempFile(name: "empty.txt", content: "")
-        XCTAssertEqual(AnswerTextBuilder.embedSection(url: url), .embedded(section: "## Attached File: empty.txt\n"))
+        XCTAssertEqual(AnswerTextBuilder.embedSection(url: url),
+                       .embedded(section: "## Attached File: empty.txt\n````\n\n````"))
     }
 
     func testEmbedSection_noExtension_embedsAsText() {
         // No extension → not an image, not a document format → UTF-8 read succeeds.
         let url = createTempFile(name: "README", content: "plain readme body")
-        XCTAssertEqual(AnswerTextBuilder.embedSection(url: url), .embedded(section: "## Attached File: README\nplain readme body"))
+        XCTAssertEqual(AnswerTextBuilder.embedSection(url: url),
+                       .embedded(section: "## Attached File: README\n````\nplain readme body\n````"))
     }
 
     func testEmbedSection_markdownFile_embedsRawMarkup() {
         // Source-like formats (.md) are NOT run through DocumentTextExtractor — the raw
-        // markup is embedded verbatim (headings/backticks preserved).
+        // markup is embedded verbatim (headings/backticks preserved) INSIDE a fence.
+        // Fenced rather than heading-shifted since 2026-09-06: an attached file is
+        // arbitrary bytes, and re-levelling would rewrite a `# comment` at column 0 in a
+        // shell or Python file. The fence outgrows any backtick run in the body, so the
+        // file cannot close it early and spill into prompt structure.
         let md = "# Title\n\n- `code`\n"
         let url = createTempFile(name: "spec.md", content: md)
-        XCTAssertEqual(AnswerTextBuilder.embedSection(url: url), .embedded(section: "## Attached File: spec.md\n\(md)"))
+        XCTAssertEqual(AnswerTextBuilder.embedSection(url: url),
+                       .embedded(section: "## Attached File: spec.md\n````\n\(md)\n````"))
+    }
+
+    func testEmbedSection_bodyWithItsOwnFence_getsALongerWrapper() {
+        // A markdown file containing a ```` block would close a hardcoded ``` wrapper on
+        // its own first fence; everything after it then reads as prompt structure.
+        let body = "intro\n````\ncode\n````\ntail"
+        let url = createTempFile(name: "nested.md", content: body)
+        guard case .embedded(let section) = AnswerTextBuilder.embedSection(url: url) else {
+            return XCTFail("expected .embedded")
+        }
+        XCTAssertEqual(section, "## Attached File: nested.md\n`````\n\(body)\n`````")
     }
 
     // MARK: - Helpers

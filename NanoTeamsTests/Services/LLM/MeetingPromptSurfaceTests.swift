@@ -98,7 +98,7 @@ final class MeetingPromptSurfaceTests: XCTestCase {
             speaker: .softwareEngineer, meeting: meeting, context: makeContext(team: faang)
         )
 
-        // system + header + "Discussion so far:" + one transcript line + directive.
+        // system + header + "## Discussion so far" + one transcript line + directive.
         // Split deliberately: the transcript grows by APPENDING, so a speaker's next turn reuses
         // this request's prefix instead of re-prefilling the whole discussion.
         XCTAssertEqual(messages.count, 5)
@@ -109,6 +109,30 @@ final class MeetingPromptSurfaceTests: XCTestCase {
             messages.last?.content?.contains("Provide your input"), true,
             "the directive must be LAST — it is the only volatile element, and it holds the "
                 + "recency slot")
+    }
+
+    /// The grounding turn is rendered once per meeting, in `MeetingContext.init`, not per
+    /// turn: a reader called on every `buildMeetingMessages` re-derived segment 1 from disk
+    /// and let a mid-meeting artifact rewrite re-prefill the whole discussion (R4.2.1).
+    func testBuildMeetingMessages_artifactBodiesAreReadOncePerMeeting_notPerTurn() {
+        let faang = TeamTemplateFactory.faang()
+        var meeting = TeamMeetingService.createMeeting(
+            topic: "API design", initiatedBy: .productManager,
+            participants: [.productManager, .techLead], context: nil)
+        let artifact = Artifact(name: "Product Requirements", relativePath: "a.md")
+        final class Counter { var reads = 0 }
+        let counter = Counter()
+        let context = makeContext(team: faang, artifacts: [artifact],
+                                  artifactReader: { _ in counter.reads += 1; return "REQ CONTENT" })
+        XCTAssertEqual(counter.reads, 1, "the body is read when the context is built")
+
+        for turn in 1...3 {
+            let messages = MeetingStreamingService.buildMeetingMessages(
+                speaker: turn % 2 == 0 ? .techLead : .productManager, meeting: meeting, context: context)
+            XCTAssertTrue(messages[1].content?.contains("REQ CONTENT") ?? false)
+            meeting.addMessage(TeamMessage(role: .productManager, content: "turn \(turn)"))
+        }
+        XCTAssertEqual(counter.reads, 1, "three turns must not re-read the artifact — segment 1 is fixed for the meeting")
     }
 
     func testBuildMeetingMessages_artifactGroundingInjected() {
@@ -131,6 +155,66 @@ final class MeetingPromptSurfaceTests: XCTestCase {
         XCTAssertTrue(
             messages[2].content?.contains("## Team meeting") ?? false,
             "the fixed header sits ahead of the volatile directive")
+    }
+
+    /// R1.3.2: one marker family per rendered conversation. Every meeting template is
+    /// `## `-headed, so no user turn may be a bare `Label:` line — "Discussion so far:" was
+    /// one until 2026-09-06, and on a wire that merges consecutive user turns it read as the
+    /// last line of the artifact block above it rather than as a boundary. The header's
+    /// `Topic: …` lines carry a value and are not labels.
+    /// A tool-less speaker (the four Discussion Club observers, The Agreeable in a meeting)
+    /// reads "None available — respond directly without tool calls." and must not ALSO read
+    /// "Call one tool per response." — which it did until 2026-09-07, when the rule rode
+    /// `## Global guidance`; a speaker with tools reads the rule once, inside the body.
+    func testBuildMeetingMessages_oneToolRule_ridesOnlyTheToolCallingBody() {
+        let meeting = TeamMeetingService.createMeeting(
+            topic: "t", initiatedBy: .theAgreeable, participants: [.theAgreeable, .theOpen], context: nil)
+        let context = TeamMeetingService.MeetingContext(
+            initiatedBy: .theAgreeable, participants: [.theAgreeable, .theOpen],
+            availableArtifacts: [], artifactReader: { _ in nil }, team: nil,
+            coordinatorRole: .theAgreeable, limits: TeamLimits(), globalContext: AppDefaults.globalContext)
+        let rule = NativeLMStudioClient.oneToolPerResponseRule
+
+        let toolLess = MeetingStreamingService.buildMeetingMessages(
+            speaker: .theOpen, meeting: meeting, context: context, tools: [])
+        let toolLessSystem = toolLess.first?.content ?? ""
+        XCTAssertTrue(toolLessSystem.contains("None available"), toolLessSystem)
+        XCTAssertFalse(toolLessSystem.contains(rule),
+                       "a tool-less speaker must not be told to call a tool: \(toolLessSystem)")
+
+        let schema = ToolSchema(name: "read_file", description: "Read a file",
+                                parameters: JSONSchema(type: "object", properties: [:], required: []))
+        let withTools = MeetingStreamingService.buildMeetingMessages(
+            speaker: .theOpen, meeting: meeting, context: context, tools: [schema])
+        let withToolsSystem = withTools.first?.content ?? ""
+        XCTAssertEqual(withToolsSystem.components(separatedBy: rule).count - 1, 1, withToolsSystem)
+    }
+
+    func testBuildMeetingMessages_noUserTurnIsABareColonLabel() throws {
+        let faang = TeamTemplateFactory.faang()
+        var meeting = TeamMeetingService.createMeeting(
+            topic: "API design", initiatedBy: .productManager,
+            participants: [.productManager, .softwareEngineer], context: "REST vs GraphQL")
+        meeting.addMessage(TeamMessage(
+            id: UUID(), createdAt: MonotonicClock.shared.now(),
+            role: .productManager, content: "I propose REST.", messageType: .proposal))
+        let artifact = Artifact(name: "Product Requirements", relativePath: "a.md")
+
+        let messages = MeetingStreamingService.buildMeetingMessages(
+            speaker: .softwareEngineer, meeting: meeting,
+            context: makeContext(team: faang, artifacts: [artifact],
+                                 artifactReader: { _ in "REQ CONTENT" }))
+
+        let label = try NSRegularExpression(pattern: #"^[A-Z][A-Za-z ]+:$"#, options: .anchorsMatchLines)
+        let userTurns = messages.filter { $0.role == .user }.compactMap(\.content)
+        XCTAssertEqual(userTurns.count, 5, "grounding, header, discussion heading, transcript line, directive")
+        for turn in userTurns {
+            let range = NSRange(turn.startIndex..., in: turn)
+            XCTAssertNil(label.firstMatch(in: turn, range: range), "bare colon label in a user turn:\n\(turn)")
+        }
+        XCTAssertTrue(userTurns.contains("## Discussion so far"))
+        XCTAssertTrue(userTurns[0].hasPrefix("## Available team artifacts\n\n### Product Requirements\n"),
+                      userTurns[0])
     }
 
     // MARK: - Tool follow-up continues the SAME conversation

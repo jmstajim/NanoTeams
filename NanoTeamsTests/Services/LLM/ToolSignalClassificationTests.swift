@@ -25,6 +25,8 @@ final class ToolSignalClassificationTests: XCTestCase {
         "exploratorySearch",    // rewritten by its own finalizer (see shouldRecordInTrackerPreFinalize)
         "visionAnalysis",       // ditto
         "computerUse",          // ditto
+        "concludeMeeting",      // raised only inside a MEETING tool loop (MeetingToolExecutor); the
+        // step path never sees it — the tool is availableToRoles == false
     ]
 
     private var repoRoot: URL {

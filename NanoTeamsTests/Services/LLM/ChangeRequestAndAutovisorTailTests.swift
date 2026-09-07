@@ -286,6 +286,32 @@ final class ChangeRequestHandlerFlowTests: XCTestCase {
                        "the engine picks the revision up from this status")
     }
 
+
+    /// The voting meeting seats the requester as presenter only: its case is the topic
+    /// (`ChangeRequestService.buildVotingContext`), it is not a participant and casts no
+    /// ballot. With three turns the coordinator (the PM, by the default rule) opens, the
+    /// empty rotation hands the second turn back to it, and it closes — the SWE never
+    /// appears in the transcript `tallyVotes` counts.
+    ///
+    /// RED: pass `.speaks` from `handleChangeRequest` → the SWE is seated at index 0 and
+    /// takes turn 1, voting on its own request.
+    func testHandler_vote_theRequesterPresentsOnly_andCastsNoBallot() async {
+        install(team: makeTeam(limits: TeamLimits(maxMeetingTurns: 3)), task: makeTask())
+        let client = ScriptedVoteLLMClient(vote: "Fine by me.\nVOTE: APPROVE")
+
+        let reply = await submitChangeRequest(client: client)
+
+        XCTAssertTrue(reply.succeeded, "got: \(reply.text)")
+        guard let meeting = mockDelegate.taskToMutate?.runs.last?.meetings.last else {
+            return XCTFail("the voting meeting was not recorded")
+        }
+        XCTAssertEqual(meeting.initiatedBy, .softwareEngineer)
+        XCTAssertEqual(meeting.participants, [.productManager], "the requester is not in the room")
+        XCTAssertFalse(meeting.messages.contains { $0.role == .softwareEngineer },
+                       "the requester never speaks, so it can never vote; got \(meeting.messages.map(\.role))")
+        XCTAssertEqual(meeting.messages.count, 3, "premise: the meeting ran its three turns")
+    }
+
     /// A voting meeting that RAN and decided nothing must not carry the change.
     ///
     /// This is not a hypothetical: `tallyVotes` recognises one token, and a participant that

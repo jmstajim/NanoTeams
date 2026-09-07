@@ -30,10 +30,18 @@ nonisolated struct GitStatusTool: ToolHandler {
                 if GitErrorClassifier.isNotARepository(stderr: result.stderr) {
                     return GitErrorClassifier.notARepositoryError(toolName: Self.name, args: args)
                 }
+                // git's own first line is the fact the model can act on (a broken
+                // `.git/config`, a stale `index.lock`); the absolute work-folder path it
+                // may embed is not (playbook R1.8.2), and the sentence after it is the
+                // repair (R1.8.1).
+                let reason = result.stderr
+                    .split(separator: "\n", omittingEmptySubsequences: true)
+                    .first.map { String($0).replacingOccurrences(of: workFolderRoot.path, with: ".") }
+                    ?? "no output"
                 return makeErrorResult(
                     toolName: Self.name, args: args,
                     code: .commandFailed,
-                    message: result.stderr.isEmpty ? "git status failed" : result.stderr
+                    message: "git status failed: \(reason). Repair what it names (for example a broken .git/config or a stale index.lock), or continue without git_* tools."
                 )
             }
 
@@ -219,9 +227,9 @@ nonisolated struct GitLogTool: ToolHandler {
         description: "Show git log.",
         parameters: JS.object(
             properties: [
-                "max": JS.integer("Max commits to show"),
+                "max": JS.integer("Cap on commits returned (20 when omitted)."),
                 "oneline": JS.boolean("Oneline format"),
-                "paths": JS.array(items: JS.string("Filter by paths")),
+                "paths": JS.array(items: JS.string()),
             ]
         )
     )
@@ -317,8 +325,8 @@ nonisolated struct GitDiffTool: ToolHandler {
         parameters: JS.object(
             properties: [
                 "cached": JS.boolean("Show staged changes"),
-                "paths": JS.array(items: JS.string("Filter by paths")),
-                "max_lines": JS.integer("Max lines of diff"),
+                "paths": JS.array(items: JS.string()),
+                "max_lines": JS.integer("Cap on diff lines (400 when omitted)."),
             ]
         )
     )
@@ -441,7 +449,9 @@ nonisolated struct GitDiffTool: ToolHandler {
                     .map(String.init),
                 [])
         } catch {
-            return ([], ["untracked_files probe failed: \(error.localizedDescription)"])
+            // This warning rides `meta.warnings` into the model's context, so it obeys the
+            // same rule as an error message: no localized system text, no absolute paths.
+            return ([], ["untracked_files probe failed: \(ToolErrorHandler.classify(error).message)"])
         }
     }
 }

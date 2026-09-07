@@ -15,6 +15,21 @@ nonisolated enum ToolAvailabilityRequirement: Hashable, Sendable, CaseIterable {
     case gitRepository
     case workFolder
     case xcodeScheme
+    /// `request_team_meeting` / `request_changes` on a team with meetings switched off.
+    case meetingsEnabled
+    /// `request_team_meeting` / `request_changes` / `ask_teammate` on a team with no second
+    /// non-Supervisor role (`Team.hasTeammatePartner == false`) — the one partner rule
+    /// both collaboration channels share.
+    case teammatePartner
+    /// `ask_supervisor` on a team whose Ask Supervisor mode is Off.
+    case askSupervisorEnabled
+    /// `bash` / `bash_output` while the bash execution mode is Off.
+    case bashEnabled
+    /// A tool whose every call would wait for a human's approval, on a team where no human
+    /// is there to give it: Supervisor mode Autonomous (or the Autovisor supervising this
+    /// folder) while the family's mode is Manual — or Semi-automatic, for the computer-use
+    /// tools that are never read-only (`ApprovalGatedAvailability`).
+    case humanApprover
 
     /// Wording shown when the precondition is NOT met. Also used as the tooltip
     /// group header in the role-list badge.
@@ -25,6 +40,13 @@ nonisolated enum ToolAvailabilityRequirement: Hashable, Sendable, CaseIterable {
         case .gitRepository: return "Requires git repo"
         case .workFolder: return "Requires work folder"
         case .xcodeScheme: return "Requires Xcode scheme"
+        case .meetingsEnabled: return "Meetings are off in Team Settings → Collaboration"
+        case .teammatePartner: return "Needs a second teammate in this team"
+        case .askSupervisorEnabled: return "Ask Supervisor is Off in Team Settings"
+        case .bashEnabled: return "Bash is Off in Settings → Bash"
+        case .humanApprover:
+            return "Needs a human to approve — Supervisor mode is Autonomous "
+                + "(or the Autovisor supervises this folder) while the tool's mode asks a human"
         }
     }
 
@@ -34,7 +56,9 @@ nonisolated enum ToolAvailabilityRequirement: Hashable, Sendable, CaseIterable {
         switch self {
         case .visionModel: return "Vision model configured"
         case .computerUse: return "Computer Use enabled"
-        case .gitRepository, .workFolder, .xcodeScheme: return nil
+        case .bashEnabled: return "Bash enabled"
+        case .gitRepository, .workFolder, .xcodeScheme, .meetingsEnabled, .teammatePartner,
+             .askSupervisorEnabled, .humanApprover: return nil
         }
     }
 
@@ -48,9 +72,48 @@ nonisolated enum ToolAvailabilityRequirement: Hashable, Sendable, CaseIterable {
     /// Order matters and mirrors the runtime's: a git tool in default storage is
     /// blocked by the missing WORK FOLDER first — reporting "requires git repo"
     /// there would send the user to `git init` in a folder they haven't opened.
-    static func governing(_ toolName: String, isDefaultStorage: Bool) -> ToolAvailabilityRequirement? {
+    /// The team gates are named only when the setting is actually off or the roster is
+    /// actually short — with meetings on and a partner present, those tools have no
+    /// precondition at all. `ask_teammate` reads the partner alone: the meetings switch
+    /// does not govern consultations. The two approval-gated families read `approval`:
+    /// `.withheld(.switchedOff)` names the family's Off switch, `.withheld(.noApprover)`
+    /// the missing human, and `.readOnlyUnattended` the missing human for exactly the
+    /// computer-use tools that are never read-only; an `.available` family — like
+    /// `bash` under Semi-automatic with no human, whose read-only commands still run —
+    /// names its master switch so the surface can render the met hint.
+    static func governing(
+        _ toolName: String,
+        isDefaultStorage: Bool,
+        approval: ToolApprovalAvailability,
+        meetings: MeetingAvailability = .available,
+        hasTeammatePartner: Bool = true,
+        askSupervisorEnabled: Bool = true
+    ) -> ToolAvailabilityRequirement? {
+        if toolName == ToolNames.requestTeamMeeting || toolName == ToolNames.requestChanges {
+            switch meetings {
+            case .switchedOff: return .meetingsEnabled
+            case .noPartner: return .teammatePartner
+            case .available: break
+            }
+        }
+        if !hasTeammatePartner, toolName == ToolNames.askTeammate { return .teammatePartner }
+        if !askSupervisorEnabled, toolName == ToolNames.askSupervisor { return .askSupervisorEnabled }
         if toolName == ToolNames.analyzeImage { return .visionModel }
-        if ToolHandlerRegistry.computerUseTools.contains(toolName) { return .computerUse }
+        if ToolHandlerRegistry.computerUseTools.contains(toolName) {
+            switch approval.computerUse {
+            case .withheld(.noApprover): return .humanApprover
+            case .readOnlyUnattended:
+                return ToolHandlerRegistry.computerUseMutatingTools.contains(toolName)
+                    ? .humanApprover : .computerUse
+            case .withheld(.switchedOff), .available: return .computerUse
+            }
+        }
+        if ToolHandlerRegistry.shellTools.contains(toolName) {
+            switch approval.bash {
+            case .withheld(.noApprover): return .humanApprover
+            case .withheld(.switchedOff), .readOnlyUnattended, .available: return .bashEnabled
+            }
+        }
         if isDefaultStorage, ToolHandlerRegistry.defaultStorageBlocked.contains(toolName) {
             return .workFolder
         }
@@ -88,6 +151,11 @@ nonisolated enum RoleToolBadgePolicy {
         let policyBlocked: [String]
         /// Selected names withheld by an unmet precondition, grouped by it.
         let unavailableHere: [ToolAvailabilityRequirement: [String]]
+        /// Names the role holds ONLY inside its meeting turns — `conclude_meeting`,
+        /// for the team's coordinator while meetings are on. Not in `effective`
+        /// (that is the step set) and not selectable; listed so the editor and the
+        /// row tooltip can say the role has it.
+        let meetingOnly: [String]
 
         var count: Int { effective.count }
         var isEmpty: Bool { effective.isEmpty }
@@ -155,7 +223,7 @@ nonisolated enum RoleToolBadgePolicy {
         storage: EffectiveToolset.Storage,
         selectedScheme: String?,
         isVisionConfigured: Bool,
-        isComputerUseEnabled: Bool,
+        approval: ToolApprovalAvailability,
         autovisorTeamPolicy: AutovisorTeamPolicy,
         fileManager: FileManager = .default
     ) -> Model {
@@ -166,7 +234,7 @@ nonisolated enum RoleToolBadgePolicy {
             storage: storage,
             selectedScheme: selectedScheme,
             isVisionConfigured: isVisionConfigured,
-            isComputerUseEnabled: isComputerUseEnabled,
+            approval: approval,
             autovisorTeamPolicy: autovisorTeamPolicy,
             fileManager: fileManager
         )
@@ -190,7 +258,11 @@ nonisolated enum RoleToolBadgePolicy {
             } else if blocked.contains(name) {
                 policyBlocked.append(name)
             } else if let requirement = ToolAvailabilityRequirement.governing(
-                name, isDefaultStorage: isDefaultStorage) {
+                name, isDefaultStorage: isDefaultStorage,
+                approval: approval,
+                meetings: team?.meetingAvailability ?? .available,
+                hasTeammatePartner: team?.hasTeammatePartner ?? true,
+                askSupervisorEnabled: team?.settings.supervisorMode != .off) {
                 unavailable[requirement, default: []].append(name)
             } else {
                 // No precondition explains it — the Autovisor's `ask_supervisor`
@@ -200,12 +272,18 @@ nonisolated enum RoleToolBadgePolicy {
             }
         }
 
+        // The coordinator's meeting-only tool — read from the same list the meeting
+        // runtime appends (`MeetingCoordinator.speakerTools`), not restated here.
+        let isCoordinator = team.map { $0.canHoldMeetings && $0.meetingCoordinatorID == role.id } ?? false
+        let meetingOnly = isCoordinator ? MeetingCoordinator.coordinatorOnlyToolNames.sorted() : []
+
         return Model(
             effective: effectiveNames.sorted(),
             autoInjected: effectiveNames.subtracting(configured).sorted(),
             notInstalled: notInstalled.sorted(),
             policyBlocked: policyBlocked.sorted(),
-            unavailableHere: unavailable.mapValues { $0.sorted() }
+            unavailableHere: unavailable.mapValues { $0.sorted() },
+            meetingOnly: meetingOnly
         )
     }
 
@@ -223,6 +301,9 @@ nonisolated enum RoleToolBadgePolicy {
         }
         if !model.autoInjected.isEmpty {
             blocks.append("Auto-injected: " + model.autoInjected.joined(separator: ", "))
+        }
+        if !model.meetingOnly.isEmpty {
+            blocks.append("In meeting turns only (coordinator): " + model.meetingOnly.joined(separator: ", "))
         }
         // Stable order so the tooltip doesn't reshuffle between renders.
         for requirement in ToolAvailabilityRequirement.allCases {

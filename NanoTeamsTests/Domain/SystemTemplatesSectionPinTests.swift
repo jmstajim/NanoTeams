@@ -27,7 +27,7 @@ final class SystemTemplatesSectionPinTests: XCTestCase {
 
     func testDiscussionTemplate_containsRequiredSections() {
         let t = SystemTemplates.discussionTemplate
-        for section in ["## Role", "## Club", "## Guidance", "## Conversation style", "## Deliverables", "## Final reminder"] {
+        for section in ["## Role", "## Club", "## Guidance", "## Deliverables", "## Final reminder"] {
             XCTAssertTrue(t.contains(section), "discussionTemplate must contain `\(section)`")
         }
     }
@@ -154,6 +154,33 @@ final class SystemTemplatesSectionPinTests: XCTestCase {
                       "## Final reminder must restate the manager's reply format (one short line — its only channel)")
     }
 
+    // MARK: - Collaboration templates: `## Final reminder` is the LAST h2 (R1.4.2)
+
+    /// The consultation and meeting templates were pinned for PRESENCE only (the two tests
+    /// below say "must close with" and assert `contains`), so a `## ` block after the
+    /// reminder stayed green. Same scan as the step-template test.
+    func testEveryCollaborationTemplate_finalReminderIsLastH2Section() {
+        let templates: [(String, String)] = [
+            ("softwareConsultationTemplate", SystemTemplates.softwareConsultationTemplate),
+            ("softwareMeetingTemplate", SystemTemplates.softwareMeetingTemplate),
+            ("questPartyConsultationTemplate", SystemTemplates.questPartyConsultationTemplate),
+            ("questPartyMeetingTemplate", SystemTemplates.questPartyMeetingTemplate),
+            ("discussionConsultationTemplate", SystemTemplates.discussionConsultationTemplate),
+            ("discussionMeetingTemplate", SystemTemplates.discussionMeetingTemplate),
+            ("genericConsultationTemplate", SystemTemplates.genericConsultationTemplate),
+            ("genericMeetingTemplate", SystemTemplates.genericMeetingTemplate),
+        ]
+        for (name, template) in templates {
+            var lastH2: String?
+            for raw in template.split(separator: "\n", omittingEmptySubsequences: false) {
+                let line = raw.trimmingCharacters(in: .whitespaces)
+                guard line.hasPrefix("## ") else { continue }
+                lastH2 = line
+            }
+            XCTAssertEqual(lastH2, "## Final reminder", "[\(name)] `## Final reminder` must be the last `## ` section, not merely present")
+        }
+    }
+
     // MARK: - Consultation templates (every variant carries `## Final reminder`)
 
     func testEveryConsultationTemplate_hasFinalReminder() {
@@ -228,13 +255,20 @@ final class SystemTemplatesSectionPinTests: XCTestCase {
 
     // MARK: - Discussion-style invariants (conversation, no markdown structure)
 
-    func testDiscussionTemplate_enforcesPlainProseStyle() {
-        // Load-bearing: discussion club roles must NOT emit headers or lists.
-        // If a future cleanup softens this to "minimal structure", the model
-        // will revert to bullet-pointed assessments, breaking the chat illusion.
-        let t = SystemTemplates.discussionTemplate
-        XCTAssertTrue(t.contains("no markdown structure"),
-                      "discussionTemplate's plain-prose contract is load-bearing")
+    /// Load-bearing: discussion club roles must NOT emit headers or lists in a MEETING —
+    /// the conversation is the meeting. The step template used to carry the same rule
+    /// twice (a `## Conversation style` section plus a `## Final reminder` clause) for a
+    /// step whose only output is `Discussion Summary`, an artifact whose own template
+    /// asks for headings — so the step prompt contradicted the deliverable. The rule now
+    /// lives where it applies, in the meeting template, and nowhere else.
+    func testDiscussionMeetingTemplate_enforcesPlainProseStyle_andTheStepTemplateDoesNot() {
+        XCTAssertTrue(SystemTemplates.discussionMeetingTemplate.contains("No headers or lists"),
+                      "discussionMeetingTemplate's plain-prose contract is load-bearing")
+        let step = SystemTemplates.discussionTemplate
+        XCTAssertFalse(step.contains("## Conversation style"),
+                       "the step prompt must not restate the meeting's prose rule")
+        XCTAssertFalse(step.contains("no markdown structure"),
+                       "the step's deliverable is a headed summary — no prose-only clause in its Final reminder")
     }
 
     // MARK: - `## Final reminder` LITERAL-last invariant (playbook §1.4 [Liu2024] / G3)
@@ -519,8 +553,12 @@ final class SystemTemplatesSectionPinTests: XCTestCase {
             "roleName", "roleGuidance", "teamRoles", "teamDescription", "toolList",
             "expectedArtifacts", "artifactInstructions", "stepInfo", "positionContext",
             "globalContext", "conversationMechanics", "toolCalling", "workFolderContext",
+            "stepEnding",
         ]
-        for (roleID, prompt) in SystemTemplates.rolePrompts {
+        for (roleID, prompt) in SystemTemplates.rolePrompts.merging(
+            SystemTemplates.roleMeetingGuidance.map { ("meeting:" + $0.key, $0.value) },
+            uniquingKeysWith: { a, _ in a }
+        ) {
             for chip in chips {
                 XCTAssertFalse(
                     prompt.contains("{\(chip)}"),
@@ -542,5 +580,35 @@ final class SystemTemplatesSectionPinTests: XCTestCase {
                     + "the template's tail `## Final reminder` must stay the single final block"
             )
         }
+    }
+
+    // MARK: - Meeting guidance names no tool a meeting turn does not hold (F20)
+
+    /// A meeting turn's schema is `ToolHandlerRegistry.meetingExcluded` stripped from the
+    /// role's toolset, and `{roleGuidance}` in that turn is `resolvedMeetingGuidance` — the
+    /// authored meeting body, else the step prompt. Nine bundled step prompts name
+    /// `create_artifact` / `ask_supervisor` / `request_changes` / `request_team_meeting`;
+    /// read in a meeting they either provoke the call (`tool_not_authorized`) or teach the
+    /// model that instructions are decorative. Every such role must have a meeting body, and
+    /// no meeting body may name a stripped tool.
+    func testNoMeetingSpeakerGuidanceNamesAMeetingStrippedTool() {
+        let stripped = ToolHandlerRegistry.meetingExcluded
+        XCTAssertGreaterThanOrEqual(stripped.count, 25, "anti-vacuum: 28 meeting-excluded tools on 2026-09-06")
+        var population = 0
+        var offenders: [String] = []
+        // A meeting needs a second participant (`handleTeamMeeting` fails on an empty
+        // list), so a single-role team never holds one and its role is never a speaker.
+        for team in Team.defaultTeams + [TeamTemplateFactory.empty(name: "E")]
+            where team.nonSupervisorRoles.count >= 2 {
+            for role in team.nonSupervisorRoles {
+                population += 1
+                let guidance = role.resolvedMeetingGuidance
+                for tool in stripped where guidance.range(of: "\\b\(tool)\\b", options: .regularExpression) != nil {
+                    offenders.append("\(team.name) / \(role.name) names `\(tool)`")
+                }
+            }
+        }
+        XCTAssertGreaterThanOrEqual(population, 20, "anti-vacuum: every meeting-capable bundled role is scanned")
+        XCTAssertTrue(offenders.isEmpty, "meeting guidance names a tool the meeting turn does not hold: \(offenders)")
     }
 }

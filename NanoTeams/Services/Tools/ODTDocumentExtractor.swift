@@ -11,7 +11,7 @@ nonisolated struct ODTDocumentExtractor: DocumentFormatExtractor {
         do {
             data = try ZIPReader.readEntry(named: "content.xml", from: url)
         } catch {
-            return .failure(reason: String(describing: error))
+            return .failure(reason: ToolErrorHandler.classify(error).message)
         }
         guard let contentXML = data else {
             return .failure(reason: "content.xml missing")
@@ -64,8 +64,9 @@ nonisolated private final class ODTTextCollector: NSObject, XMLParserDelegate {
         let parsed = parser.parse()
         let text = collector.accumulator.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !parsed else { return (text, nil) }
-        let reason = parser.parserError?.localizedDescription ?? "malformed XML"
-        return (text, "XML parse stopped early — \(reason); content may be truncated")
+        // The line number is the one fact the model can act on; `parserError`'s
+        // `localizedDescription` is Foundation's localized prose (playbook R1.8.2).
+        return (text, "XML parse stopped early at line \(parser.lineNumber); content may be truncated")
     }
 
     func parser(

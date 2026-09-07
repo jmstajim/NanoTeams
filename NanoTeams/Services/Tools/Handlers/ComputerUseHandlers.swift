@@ -14,9 +14,7 @@ nonisolated struct ScreenCaptureTool: ToolHandler {
         with image-pixel coordinates: cx/cy is the point to click, w/h the element size. Elements \
         marked "web":true are page content inside a browser; unmarked elements in a browser \
         capture are the browser's own chrome. Coordinates are valid only for the most recent \
-        capture; prefer ax_elements coordinates over guessing from pixels. To open an app that \
-        isn't running, use Spotlight (cmd+space, type its name, return) — the shell cannot launch \
-        GUI apps.
+        capture; prefer ax_elements coordinates over guessing from pixels.
         """,
         parameters: JS.object(
             properties: [
@@ -48,17 +46,14 @@ nonisolated struct UIClickTool: ToolHandler {
         name: TN.uiClick,
         description: """
         Click at (x, y) in image pixels from the most recent capture. Use an element's cx/cy \
-        from ax_elements. The result echoes which listed element is under the point; if it \
-        isn't the one you meant, re-check coordinates before acting further. If the click \
-        changes the UI (a menu/dialog opens or the page navigates), re-capture the screen \
-        before the next click — the earlier coordinates and element list are then stale.
+        from ax_elements. The result echoes which listed element is under the point.
         """,
         parameters: JS.object(
             properties: [
                 "x": JS.integer("Horizontal coordinate."),
                 "y": JS.integer("Vertical coordinate."),
                 "button": JS.string("Right for a context-menu click.", enumValues: ["left", "right"]),
-                "double": JS.boolean("True for a double-click."),
+                "double": JS.boolean(),
                 "target": JS.string("Application name / bundle id the click is intended for."),
             ],
             required: ["x", "y"]
@@ -90,12 +85,11 @@ nonisolated struct UITypeTool: ToolHandler {
         name: TN.uiType,
         description: """
         Type text into the currently focused field of the front app. Typing does not press \
-        Enter or submit. To open a URL in a browser, focus the address bar first (cmd+L), \
-        type the URL, then press return.
+        Enter or submit.
         """,
         parameters: JS.object(
             properties: [
-                "text": JS.string("The text to type."),
+                "text": JS.string(),
                 "target": JS.string("Application name / bundle id to type into."),
             ],
             required: ["text"]
@@ -110,8 +104,9 @@ nonisolated struct UITypeTool: ToolHandler {
         await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let text = optionalString(args, "text") ?? resolveContentString(args) ?? ""
             guard !text.isEmpty else {
-                return makeErrorResult(toolName: Self.name, args: args, code: .invalidArgs,
-                                       message: "No text provided to type.")
+                // Named after the SCHEMA key, not after the prose: "No text provided"
+                // left the model to guess which argument to add.
+                throw ToolArgumentError.missingRequired("text")
             }
             let target = optionalString(args, "target").flatMap { $0.isEmpty ? nil : $0 }
             return signalResult(args: args, action: .typeText(text: text, target: target))
@@ -143,8 +138,7 @@ nonisolated struct UIKeyTool: ToolHandler {
         await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let keys = optionalString(args, "keys") ?? optionalString(args, "key") ?? ""
             guard !keys.isEmpty else {
-                return makeErrorResult(toolName: Self.name, args: args, code: .invalidArgs,
-                                       message: "No key combination provided.")
+                throw ToolArgumentError.missingRequired("keys")
             }
             let target = optionalString(args, "target").flatMap { $0.isEmpty ? nil : $0 }
             return signalResult(args: args, action: .pressKey(keys: keys, target: target))

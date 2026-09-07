@@ -213,7 +213,16 @@ final class GitHandlerTailTests: XCTestCase {
         XCTAssertTrue(result.isError, "got: \(result.outputJSON)")
         let error = try errorOf(result)
         XCTAssertEqual(error["code"] as? String, "CONFLICT")
-        XCTAssertEqual(error["message"] as? String, "Merge conflicts detected")
+        // The message NAMES the files and the recovery since 2026-09-06. `details.conflicts`
+        // had the list from the day it was added and the model never saw it: an error
+        // envelope carries `data: nil` and `ToolErrorNotePolicy`'s default arm reads only
+        // `message` — whose direction for CONFLICT was "if the message indicates bad
+        // arguments, fix them and retry", wrong in every particular.
+        let message = try XCTUnwrap(error["message"] as? String)
+        XCTAssertTrue(message.hasPrefix("Merge conflicts detected"), message)
+        XCTAssertTrue(message.contains("Conflicted files: base.txt"), message)
+        XCTAssertTrue(message.contains("edit_file"), message)
+        XCTAssertTrue(message.contains("git_add"), message)
         let details = try XCTUnwrap(error["details"] as? [String: Any],
                                     "conflict envelope must carry details: \(result.outputJSON)")
         let conflicts = try XCTUnwrap(details["conflicts"] as? String)
@@ -314,6 +323,42 @@ final class GitHandlerTailTests: XCTestCase {
     }
 
     // MARK: - git_stash
+
+    /// R3.5.2: an argument the verb does not read is rejected, never silently dropped —
+    /// `pop` with a `message` reported ok:true for a call that did something other than
+    /// what it asked until 2026-09-06, while `git_branch` next door already refused the
+    /// same shape. The message names the verb the argument belongs to.
+    func testGitStash_argumentOfAnotherVerb_isRejectedNamingThatVerb() async throws {
+        let rows: [(args: [String: Any], argument: String, verb: String)] = [
+            (["action": "pop", "message": "wip"], "message", "push"),
+            (["action": "list", "include_untracked": true], "include_untracked", "push"),
+            (["action": "push", "index": 0], "index", "pop"),
+            (["action": "list", "index": 0], "index", "pop"),
+        ]
+        for row in rows {
+            let result = try await call(ToolNames.gitStash, row.args)
+            XCTAssertTrue(result.isError, "\(row.args) must be refused: \(result.outputJSON)")
+            let error = try errorOf(result)
+            XCTAssertEqual(error["code"] as? String, ToolErrorCode.invalidArgs.rawValue)
+            let message = error["message"] as? String ?? ""
+            XCTAssertTrue(message.hasPrefix("`\(row.argument)` applies only with `action: \"\(row.verb)\"`"),
+                          message)
+        }
+    }
+
+    /// `requiredEnum`: the verb is matched after trimming and lowercasing, like the
+    /// `bash_output` and Autovisor dispatchers always did and the two git dispatchers did not.
+    func testGitStash_verbCaseAndWhitespace_areNormalised() async throws {
+        try Data("modified\n".utf8).write(to: tempDir.appendingPathComponent("base.txt"))
+        let pushed = try await dataOf(ToolNames.gitStash, ["action": " Push\n"])
+        XCTAssertEqual(pushed["action"] as? String, "push")
+        XCTAssertEqual(try contents(of: "base.txt"), "base\n")
+
+        let result = try await call(ToolNames.gitStash, ["action": "yeet"])
+        XCTAssertTrue(result.isError)
+        let message = (try errorOf(result))["message"] as? String ?? ""
+        XCTAssertTrue(message.contains("must be one of: push, pop, apply, list, drop"), message)
+    }
 
     /// `push` with BOTH optional modifiers (`-u` and `-m`), then `list`, then
     /// `pop`. `include_untracked` is the one that fails silently if dropped: the

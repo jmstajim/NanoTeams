@@ -17,7 +17,7 @@ struct ComputerUseSettingsView: View {
             VStack(spacing: Spacing.xl) {
                 introCard
                 executionCard
-                if config.isComputerUseEnabled {
+                if config.computerUseMode != .off {
                     // The judge (strictness) only rules in Auto mode — omit the
                     // card entirely in Manual so it never renders header-only.
                     if mode == .auto {

@@ -264,11 +264,9 @@ extension LLMExecutionService {
         // first — prompt §Review), for chat tasks (excluded by the predicate), or for
         // closed ones (they derive `.done`).
         let next: NextHint? = task.isReadyForFinalAcceptance
-            ? NextHint(
-                suggested_cmd: ToolNames.controlTask,
-                suggested_args: ["task_id": String(taskID), "action": "close"],
-                reason: "Task is in Review with no per-role gates; \(AutovisorStatus.closeAcceptsEverything) — or manage_role request_changes if the work falls short."
-            )
+            ? AutovisorStatus.closeTaskHint(
+                taskID: taskID,
+                reason: "Task is in Review with no per-role gates; \(AutovisorStatus.closeAcceptsEverything) — or manage_role request_changes if the work falls short.")
             : nil
         return makeSuccessEnvelope(data: data, next: next)
     }
@@ -367,9 +365,13 @@ extension LLMExecutionService {
         let result = await delegate.performAutovisorAction(action)
         if result.ok {
             struct OKData: Codable { var status: String; var message: String; var task_id: Int? }
-            return makeSuccessEnvelope(data: OKData(status: "ok", message: result.message, task_id: result.createdTaskID))
+            return makeSuccessEnvelope(
+                data: OKData(status: "ok", message: result.message, task_id: result.createdTaskID),
+                next: result.next)
         }
-        return makeErrorEnvelope(code: .commandFailed, message: result.message)
+        // The `next` slot on the collaboration path: empty for every Autovisor rejection
+        // until `NextHint` became a Domain type — see `Domain/NextHint.swift`.
+        return makeErrorEnvelope(code: .commandFailed, message: result.message, next: result.next)
     }
 
 }

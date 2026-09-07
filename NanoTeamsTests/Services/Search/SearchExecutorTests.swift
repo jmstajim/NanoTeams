@@ -16,9 +16,15 @@ final class SearchModeTests: XCTestCase {
 
     func testRaw_unknownString_yieldsSubstring() {
         XCTAssertEqual(SearchMode(raw: "glob"), .substring)
-        XCTAssertEqual(SearchMode(raw: "REGEX"), .substring,
-                       "Case-sensitive — 'REGEX' is not 'regex'. Falls back safely.")
         XCTAssertEqual(SearchMode(raw: ""), .substring)
+    }
+
+    /// Trimmed and lowercased like every other enum argument (`requiredEnum`): a model that
+    /// sends `"Regex"` asked for regex, and a silent downgrade to substring under a success
+    /// envelope is the wrong answer to a right question (R3.3.4).
+    func testRaw_caseAndWhitespaceVariants_yieldRegex() {
+        XCTAssertEqual(SearchMode(raw: "REGEX"), .regex)
+        XCTAssertEqual(SearchMode(raw: " Regex\n"), .regex)
     }
 }
 
@@ -310,6 +316,18 @@ final class SearchExecutorTests: XCTestCase {
                           "localizedDescription should reference the bad pattern; got: \(desc)")
             XCTAssertTrue(desc.contains("regex"),
                           "localizedDescription should classify the failure mode; got: \(desc)")
+            // R1.8.2: the argument's vocabulary, never NSRegularExpression's localized compile
+            // detail — a token the model cannot map to an argument is copied into the next
+            // call, not repaired. The platform text stays on the case for diagnostics only.
+            guard case SearchExecutorError.regexCompileFailed(_, let platformDetail) = error else {
+                return XCTFail("expected regexCompileFailed, got \(error)")
+            }
+            XCTAssertFalse(platformDetail.isEmpty, "anti-vacuum: the platform detail is still captured")
+            XCTAssertFalse(desc.contains(platformDetail),
+                           "the platform compile detail must not reach the envelope; got: \(desc)")
+            XCTAssertFalse(desc.contains("NSRegularExpression"), "got: \(desc)")
+            XCTAssertTrue(desc.contains("mode: substring"),
+                          "the repair names the argument and the value to send; got: \(desc)")
         }
     }
 

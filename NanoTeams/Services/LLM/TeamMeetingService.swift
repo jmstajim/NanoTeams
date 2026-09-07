@@ -5,6 +5,22 @@ import Foundation
 /// Streaming and message construction are in MeetingStreamingService.
 nonisolated struct TeamMeetingService {
 
+    /// What the role that convened a meeting does in it. Passed to
+    /// `LLMExecutionService.handleTeamMeeting` explicitly — no default — because the two
+    /// callers want opposite things and a silent default would hand one of them the other's
+    /// behaviour.
+    enum InitiatorSeat: Sendable {
+        /// `request_team_meeting`: the initiator is a participant by construction (like the
+        /// coordinator), takes the first turn after the coordinator's opening — the meeting is
+        /// its topic — and bypasses `invitableRoles`. Until 2026-09-07 the initiator never
+        /// spoke in a meeting it convened; its whole contribution was the `topic` / `context`.
+        case speaks
+        /// `request_changes`: the requester's case IS the topic and it must not vote on its
+        /// own request — `handleChangeRequest` excludes it from the voters on purpose. It is
+        /// announced to the UI as part of the meeting (its node glows) but never speaks.
+        case presentsOnly
+    }
+
     /// Context required for a team meeting.
     ///
     /// No `topic` / `additionalContext` / `task` fields, on purpose (wave 32): every
@@ -18,17 +34,23 @@ nonisolated struct TeamMeetingService {
         let availableArtifacts: [Artifact]
         let artifactReader: (Artifact) -> String?
         let team: Team?
-        /// The **effective** coordinator for this meeting: the team's
-        /// designated coordinator (`team.settings.meetingCoordinatorRoleID`)
-        /// when set, otherwise the meeting's initiating role (Auto mode =
-        /// initiator-as-coordinator of meetings they start). Resolved at the
-        /// call site via `LLMExecutionService.effectiveCoordinator(team:initiator:)`
-        /// so this stays non-optional and the runtime never branches on nil.
+        /// The team's coordinator (`Team.meetingCoordinator`, the mandatory one — there
+        /// is no Auto mode); the initiator only when there is no team to resolve
+        /// against. Resolved at the call site via
+        /// `LLMExecutionService.effectiveCoordinator(team:initiator:)` so this stays
+        /// non-optional and the runtime never branches on nil.
         let coordinatorRole: Role
         let limits: TeamLimits
         /// App-wide instruction appended to the resolved system prompt.
         /// Default `""` keeps existing test call sites compiling.
         let globalContext: String
+        /// The upstream-artifact grounding turn (segment 1 of every turn's wire), rendered
+        /// ONCE here. Reading the bodies per turn — as `buildMeetingMessages` did until
+        /// 2026-09-07 — re-derived a "fixed" head from disk on every turn, so an upstream
+        /// artifact rewritten mid-meeting changed the leading bytes and re-prefilled the
+        /// whole discussion (playbook R4.2.1 / A6.18). `nil` when there is nothing to
+        /// ground on.
+        let artifactGrounding: String?
 
         init(
             initiatedBy: Role,
@@ -48,6 +70,9 @@ nonisolated struct TeamMeetingService {
             self.coordinatorRole = coordinatorRole
             self.limits = limits
             self.globalContext = globalContext
+            self.artifactGrounding = PromptBuilder.buildArtifactSection(
+                heading: "Available team artifacts", artifacts: availableArtifacts,
+                cap: ArtifactConstants.maxConsultationChars, artifactReader: artifactReader)
         }
     }
 
@@ -58,6 +83,16 @@ nonisolated struct TeamMeetingService {
         var resolvedToolCalls: [StepToolCall]
     }
 
+    /// What the coordinator's `conclude_meeting` call carried. Produced by
+    /// `MeetingToolExecutor` when the signal arrives, consumed by `handleTeamMeeting`,
+    /// which records it through `concludeMeeting` and stops the turn loop.
+    struct MeetingConclusion: Equatable {
+        var decision: String
+        var rationale: String?
+        /// Raw `next_steps` text; `concludeMeeting` splits it one step per line.
+        var nextSteps: String?
+    }
+
     // MARK: - Meeting Lifecycle
 
     /// Create a new team meeting
@@ -65,14 +100,16 @@ nonisolated struct TeamMeetingService {
         topic: String,
         initiatedBy: Role,
         participants: [Role],
-        context: String?
+        context: String?,
+        kind: TeamMeetingKind = .discussion
     ) -> TeamMeeting {
         TeamMeeting(
             topic: topic,
             initiatedBy: initiatedBy,
             participants: participants,
             context: context,
-            status: .pending
+            status: .pending,
+            kind: kind
         )
     }
 
@@ -92,14 +129,21 @@ nonisolated struct TeamMeetingService {
         meeting.turnCount >= limits.maxMeetingTurns
     }
 
-    /// Complete a turn by adding the final message and checking for conclusion.
+    /// Complete a turn by adding the final message. Returns whether the meeting may take
+    /// another turn: `false` only at the turn limit. A meeting otherwise ends by the
+    /// coordinator's `conclude_meeting` call (handled by the caller), never by reading
+    /// agreement into the text — until 2026-09-06 three "I agree"-shaped replies in a row
+    /// ended it here, before the coordinator had said anything.
+    /// - Parameter messageType: an explicit classification for a turn the runtime already
+    ///   understands (the concluding turn is `.conclusion`); `nil` classifies the text.
     static func completeTurn(
         meeting: inout TeamMeeting,
         speaker: Role,
         content: String,
         thinking: String?,
         toolSummaries: [MeetingToolSummary]?,
-        context: MeetingContext
+        context: MeetingContext,
+        messageType: TeamMessageType? = nil
     ) -> Bool {
         // A reasoning model can put its whole contribution in the reasoning channel and
         // leave content empty. `MeetingStreamingService` has always COLLECTED that channel
@@ -116,13 +160,13 @@ nonisolated struct TeamMeetingService {
         let message = TeamMessage(
             role: speaker,
             content: spoken,
-            messageType: TeamMessageType.determine(from: spoken),
+            messageType: messageType ?? TeamMessageType.determine(from: spoken),
             thinking: cleanedContent.isEmpty ? nil : thinking,
             toolSummaries: toolSummaries
         )
         meeting.addMessage(message)
 
-        return !shouldConcludeMeeting(meeting: meeting, context: context)
+        return !hasReachedTurnLimit(meeting: meeting, limits: context.limits)
     }
 
     /// Conclude a meeting with a decision
@@ -144,69 +188,36 @@ nonisolated struct TeamMeetingService {
         meeting.addDecision(teamDecision)
         meeting.complete()
     }
-
-    // MARK: - Private Helpers
-
-    private static func shouldConcludeMeeting(
-        meeting: TeamMeeting,
-        context: MeetingContext
-    ) -> Bool {
-        if hasReachedTurnLimit(meeting: meeting, limits: context.limits) {
-            return true
-        }
-
-        let allParticipated = context.participants.allSatisfy { participant in
-            meeting.hasParticipated(participant)
-        }
-
-        if allParticipated {
-            let recentMessages = meeting.messages.suffix(3)
-            let hasAgreement = recentMessages.contains { $0.messageType == .agreement }
-            let hasConclusion = recentMessages.contains { $0.messageType == .conclusion }
-
-            if hasAgreement || hasConclusion {
-                return true
-            }
-        }
-
-        return false
-    }
 }
 
 // MARK: - Meeting Summary Generation
 
 extension TeamMeetingService {
 
-    /// Generate a summary of a completed meeting
-    static func generateMeetingSummary(meeting: TeamMeeting) -> String {
-        var summary = "Meeting Summary: \(meeting.topic)\n"
-        summary += "Status: \(meeting.status.displayName)\n"
-        summary += "Participants: \(meeting.participants.map { $0.displayName }.joined(separator: ", "))\n"
-        summary += "Messages: \(meeting.messages.count)\n"
-
-        if !meeting.decisions.isEmpty {
-            summary += "\nDecisions:\n"
-            for decision in meeting.decisions {
-                summary += "- \(decision.summary)\n"
-                if let rationale = decision.rationale {
-                    summary += "  Rationale: \(rationale)\n"
-                }
-                if !decision.nextSteps.isEmpty {
-                    summary += "  Next steps:\n"
-                    for step in decision.nextSteps {
-                        summary += "    - \(step)\n"
-                    }
-                }
-            }
-        }
-
-        return summary
-    }
-
-    /// Generate a concise meeting result for injection into conversation
-    static func generateMeetingResultForConversation(meeting: TeamMeeting) -> String {
+    /// The concise meeting result the INITIATING role reads as its `request_team_meeting`
+    /// tool result. Every name resolves through the team (`MeetingCoordinator.displayName`),
+    /// like every other line of a meeting prompt: the initiator's `## Team` block and its
+    /// `ask_teammate` schema speak in team role names, and on a generated or renamed team
+    /// the enum `displayName` this used to print is a roster the model cannot match
+    /// (R1.8.3 — the answer must be in the reader's vocabulary).
+    ///
+    /// The former `generateMeetingSummary` sibling had no production caller and is gone.
+    static func generateMeetingResultForConversation(
+        meeting: TeamMeeting, context: MeetingContext
+    ) -> String {
+        let names = meeting.participants.map { MeetingCoordinator.displayName(of: $0, context: context) }
         var result = "Team Meeting Result - \(meeting.topic)\n"
-        result += "Participants: \(meeting.participants.map { $0.displayName }.joined(separator: ", "))\n"
+        result += "Participants: \(names.joined(separator: ", "))\n"
+        let coordinatorName = MeetingCoordinator.displayName(of: context.coordinatorRole, context: context)
+        switch meeting.conclusionKind {
+        case .coordinatorCall:
+            result += "Concluded by: \(coordinatorName) via conclude_meeting\n"
+        case .turnLimitFallback:
+            result += "Concluded at the turn limit — \(coordinatorName) made no conclude_meeting call; "
+                + "the decision below is their last contribution.\n"
+        case nil:
+            break
+        }
 
         if let lastDecision = meeting.decisions.last {
             result += "\nDecision: \(lastDecision.summary)\n"
@@ -223,7 +234,8 @@ extension TeamMeetingService {
             if !keyMessages.isEmpty {
                 result += "\nKey points discussed:\n"
                 for msg in keyMessages.prefix(3) {
-                    result += "- [\(msg.role.displayName)]: \(msg.content.prefix(200))...\n"
+                    let speaker = MeetingCoordinator.displayName(of: msg.role, context: context)
+                    result += "- [\(speaker)]: \(msg.content.prefix(200))...\n"
                 }
             }
         }

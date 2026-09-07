@@ -63,7 +63,7 @@ final class ComputerUseDispatcherCoverageTests: XCTestCase, @unchecked Sendable 
         var messages: [ChatMessage] = []
         await sut.appendComputerUseResult(
             result: result(action, tool: tool), toolCallID: UUID(),
-            stepID: Self.stepID, taskID: Self.taskID,
+            stepID: Self.stepID, taskID: Self.taskID, allowedToolNames: [],
             client: UnreachableChatClient(), config: LLMConfig(), networkLogger: nil,
             conversationMessages: &messages, tracker: nil)
         return messages
@@ -407,7 +407,7 @@ final class ComputerUseDispatcherCoverageTests: XCTestCase, @unchecked Sendable 
         var messages: [ChatMessage] = []
         await sut.appendComputerUseResult(
             result: result(.capture(target: "screen", windowTitle: nil), tool: ToolNames.screenCapture),
-            toolCallID: UUID(), stepID: Self.stepID, taskID: Self.taskID,
+            toolCallID: UUID(), stepID: Self.stepID, taskID: Self.taskID, allowedToolNames: [],
             client: CancellingChatClient(), config: LLMConfig(), networkLogger: nil,
             conversationMessages: &messages, tracker: nil)
 
@@ -425,7 +425,7 @@ final class ComputerUseDispatcherCoverageTests: XCTestCase, @unchecked Sendable 
             result: ToolExecutionResult(
                 providerID: "call-1", toolName: ToolNames.readFile, argumentsJSON: "{}",
                 outputJSON: "", isError: false),
-            toolCallID: UUID(), stepID: Self.stepID, taskID: Self.taskID,
+            toolCallID: UUID(), stepID: Self.stepID, taskID: Self.taskID, allowedToolNames: [],
             client: UnreachableChatClient(), config: LLMConfig(), networkLogger: nil,
             conversationMessages: &messages, tracker: nil)
 

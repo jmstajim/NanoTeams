@@ -507,13 +507,24 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         return sections.joined(separator: "\n\n")
     }
 
+    /// The non-diagnostic expected artifacts with no submitted artifact of that name, in
+    /// `expectedArtifacts` order. The ONE predicate behind both the completion terminal
+    /// (`isArtifactComplete`) and the missing-deliverables nudge, so the two cannot
+    /// disagree about what is outstanding — until 2026-09-06 the nudge read the role
+    /// definition instead and named already-submitted deliverables as missing.
+    var missingArtifactNames: [String] {
+        let existing = Set(artifacts.map(\.name))
+        return expectedArtifacts.filter {
+            $0 != ArtifactConstants.buildDiagnosticsName && !existing.contains($0)
+        }
+    }
+
     /// Whether all non-diagnostic expected artifacts have been created.
     /// Returns `false` if there are no expected artifacts (advisory/observer roles).
     var isArtifactComplete: Bool {
         let expected = expectedArtifacts.filter { $0 != ArtifactConstants.buildDiagnosticsName }
         guard !expected.isEmpty else { return false }
-        let existing = Set(artifacts.map(\.name))
-        return expected.allSatisfy { existing.contains($0) }
+        return missingArtifactNames.isEmpty
     }
 
     /// Resets all execution state so the step can be re-run from scratch.

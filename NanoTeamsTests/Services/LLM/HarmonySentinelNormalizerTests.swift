@@ -273,13 +273,37 @@ final class HarmonySentinelNormalizerTests: XCTestCase {
         XCTAssertEqual(HarmonySentinelNormalizer.normalize(input), input)
     }
 
-    func testNormalize_truncatedCanonicalWithSpaceBeforeBrace_isUntouched() {
-        let input = #"<|call| {"name":"search"}"#
+    /// A WHITESPACE run between the broken sentinel and its payload is repaired, and the
+    /// abutment rule the type comment gives never covered it: `prefixTable` is sorted
+    /// longest-first, so `<|call|>` matches as `.canonical` BEFORE `<|call|` is offered —
+    /// which means at a `.truncatedCanonical` hit the next character is provably not `>`,
+    /// and no shape that parses today can carry whitespace there. This pin asserted the
+    /// opposite from 2026-09-05 until 2026-09-07, and its fixture is byte-for-byte the
+    /// shape that broke `MeditationApp` task 39 run 8 the next day.
+    func testNormalize_truncatedCanonicalWithSpaceBeforeBrace_becomesCanonical() {
+        XCTAssertEqual(
+            HarmonySentinelNormalizer.normalize(#"<|call| {"name":"search"}"#),
+            #"<|call|>{"name":"search"}"#)
+    }
+
+    func testNormalize_truncatedCanonicalWithNewlineBeforeBrace_becomesCanonical() {
+        XCTAssertEqual(
+            HarmonySentinelNormalizer.normalize("<|call|\n{\"name\":\"search\"}"),
+            #"<|call|>{"name":"search"}"#)
+    }
+
+    /// The gap is a CAP, not an invitation. Five spaces is prose spacing, not a mangled
+    /// token, and the same argument that bounds `maxWrapperGap` bounds this one.
+    func testNormalize_truncatedCanonicalGapOverCap_isUntouched() {
+        let input = #"<|call|     {"name":"search"}"#
         XCTAssertEqual(HarmonySentinelNormalizer.normalize(input), input)
     }
 
-    func testNormalize_truncatedCanonicalWithNewlineBeforeBrace_isUntouched() {
-        let input = "<|call|\n{\"name\":\"search\"}"
+    /// Whitespace is the ONLY tolerated run. A name in the gap stays untouched exactly as
+    /// it did before the gap existed — `trailingToolName` would otherwise have to decide
+    /// identity across a space, which is the 2026-08-14 identity-loss defect one step on.
+    func testNormalize_truncatedCanonicalWithSpacedName_isUntouched() {
+        let input = #"<|call| read_file{"path":"a.swift"}"#
         XCTAssertEqual(HarmonySentinelNormalizer.normalize(input), input)
     }
 
@@ -318,6 +342,16 @@ final class HarmonySentinelNormalizerTests: XCTestCase {
             "<|call|",
             "prose with no sentinel",
             #"<|tool_call>call|>{"name":"search"}"#,
+            // ChatML wrapper family (2026-09-07) — both sides of every decision.
+            "x<tool_call>\n" + #"<|call|>{"name":"bash"}"#,
+            "x<tool_call>" + #"<|call|>{"name":"bash"}"#,
+            "<tool_call>\n<|start|>assistant",
+            "x<tool_call>\n" + #"<|call|{"name":"bash"}"#,
+            "x<tool_call>     \n" + #"<|call|>{"name":"bash"}"#,
+            "x<tool_call> but first some prose " + #"<|call|>{"name":"bash"}"#,
+            #"<tool_call>{"name":"bash"}</tool_call>"#,
+            "<tool_call> alone in prose",
+            #"<|call|>{"name":"bash"}</tool_call>"#,
         ]
         for text in cases {
             let rewritten = HarmonySentinelNormalizer.normalize(text) != text
@@ -325,5 +359,360 @@ final class HarmonySentinelNormalizerTests: XCTestCase {
                 HarmonySentinelNormalizer.hasNormalizableOccurrence(in: text[...]), rewritten,
                 "gate and rewrite disagree on: \(text)")
         }
+    }
+
+    // MARK: - ChatML wrapper (MeditationApp task 39 run 1, 2026-09-07)
+
+    /// `ornith-1.5:35b` on Ollama wrapped the CANONICAL envelope in its own native
+    /// ChatML tool-call tag instead of choosing between the two forms:
+    ///
+    ///     …and ContentView.swift.<tool_call>
+    ///     <|call|>{"name":"read_file",…}
+    ///     <|end|>
+    ///     </tool_call>
+    ///
+    /// The envelope parses and the call dispatches, so nothing raised a diagnostic — but
+    /// the opening tag sits BEFORE the earliest marker, survives the truncation rewind
+    /// into `assistantCollected`, and is invisible to `ModelTokenCleaner` (whose contract
+    /// is `<|…|>` spans only). It reached the user as literal text in the bubble AND rode
+    /// the append-only wire, so the model saw its own tag as the freshest example: 10 of
+    /// 10 non-empty turns after the first slip carried it, 64 occurrences replayed.
+    ///
+    /// Measured over the run: the gap between tag and marker was a single `\n` in all 10
+    /// cases; `</tool_call>` appeared exactly ONCE in 28 turns (the model almost never
+    /// closes it), which is why the marker-less `<tool_call>{…}</tool_call>` form is out
+    /// of scope by measurement rather than deferred.
+    private let wrappedTurn = """
+    I'll start by reading the key files to understand the current structure before \
+    implementing the Today tab. Let me first look at the folder layout and \
+    ContentView.swift.<tool_call>
+    <|call|>{"name":"read_file","arguments":{"path":"MeditationApp/ContentView.swift"}}
+    <|end|>
+    </tool_call>
+    """
+
+    func testNormalize_chatMLWrapperBeforeCanonical_isStripped() {
+        let expected = """
+        I'll start by reading the key files to understand the current structure before \
+        implementing the Today tab. Let me first look at the folder layout and \
+        ContentView.swift.
+        <|call|>{"name":"read_file","arguments":{"path":"MeditationApp/ContentView.swift"}}
+        <|end|>
+        </tool_call>
+        """
+        XCTAssertEqual(HarmonySentinelNormalizer.normalize(wrappedTurn), expected)
+    }
+
+    /// Zero gap — the tag abuts the marker directly.
+    func testNormalize_chatMLWrapperZeroGap_isStripped() {
+        XCTAssertEqual(
+            HarmonySentinelNormalizer.normalize(#"done.<tool_call><|call|>{"name":"bash"}"#),
+            #"done.<|call|>{"name":"bash"}"#)
+    }
+
+    /// The tag opens the buffer, so the wrapper's lower bound EQUALS the rebuild cursor.
+    /// The floor comparison must therefore be `>=`, not `>` — records 68 and 80 of the run
+    /// are exactly this shape, and a strict comparison would leave both uncleaned.
+    func testNormalize_chatMLWrapperAtBufferStart_isStripped() {
+        XCTAssertEqual(
+            HarmonySentinelNormalizer.normalize("<tool_call>\n" + #"<|call|>{"name":"bash"}"#),
+            "\n" + #"<|call|>{"name":"bash"}"#)
+    }
+
+    /// The wrapper is stripped before ANY marker the streamer latches on, not just
+    /// `<|call|>` — the family is defined by `HarmonyToolCallParser.harmonyMarkers`, the
+    /// same set `sawHarmonyMarker` and the earliest-marker rewind use.
+    func testNormalize_chatMLWrapperBeforeStartMarker_isStripped() {
+        XCTAssertEqual(
+            HarmonySentinelNormalizer.normalize("x<tool_call>\n<|start|>assistant"),
+            "x\n<|start|>assistant")
+    }
+
+    func testNormalize_chatMLWrapperBeforeChannelMarker_isStripped() {
+        XCTAssertEqual(
+            HarmonySentinelNormalizer.normalize("x<tool_call>\n<|channel|>commentary"),
+            "x\n<|channel|>commentary")
+    }
+
+    /// Composition with the 2026-09-05 family: the tag must not survive in front of a
+    /// sentinel this same pass repairs, or the leak simply moves one family to the left.
+    func testNormalize_chatMLWrapperBeforeTruncatedSentinel_bothRepaired() {
+        XCTAssertEqual(
+            HarmonySentinelNormalizer.normalize("x<tool_call>\n" + #"<|call|{"name":"bash"}"#),
+            "x\n" + #"<|call|>{"name":"bash"}"#)
+    }
+
+    /// Same, for the 2026-08-07 alien family.
+    func testNormalize_chatMLWrapperBeforeAlienSentinel_bothRepaired() {
+        XCTAssertEqual(
+            HarmonySentinelNormalizer.normalize("x<tool_call>\n" + #"<|tool_call>call|>{"a":1}"#),
+            "x\n" + #"<|call|>{"a":1}"#)
+    }
+
+    func testNormalize_twoChatMLWrappers_bothStripped() {
+        let input = "a<tool_call>\n" + #"<|call|>{"a":1}"# + " b<tool_call>\n" + #"<|call|>{"b":2}"#
+        XCTAssertEqual(
+            HarmonySentinelNormalizer.normalize(input),
+            "a\n" + #"<|call|>{"a":1}"# + " b\n" + #"<|call|>{"b":2}"#)
+    }
+
+    func testNormalize_chatMLWrapper_isIdempotent() {
+        let once = HarmonySentinelNormalizer.normalize(wrappedTurn)
+        XCTAssertEqual(HarmonySentinelNormalizer.normalize(once), once)
+    }
+
+    /// The CLOSING tag is deliberately left alone: it arrives after the latch, so the
+    /// streamer never re-normalizes it, and in the one branch where it can still reach the
+    /// wire (`unresolvedEnvelopeAnchor`) evidence beats cleanliness. Pinned so a future
+    /// "tidy up the closer too" edit has to argue with this comment first.
+    func testNormalize_chatMLClosingTag_survivesVerbatim() {
+        XCTAssertTrue(HarmonySentinelNormalizer.normalize(wrappedTurn).hasSuffix("</tool_call>"))
+    }
+
+    // MARK: - ChatML wrapper: the negatives carry the safety argument
+
+    /// The tag alone is prose about a format — `evidence.md` documents this very DSL, and
+    /// the playbook names it at R3.8.7. Promoting it would corrupt our own documentation.
+    func testNormalize_chatMLTagWithoutEnvelope_isByteIdentical() {
+        let input = "Qwen3.8 emits <tool_call><function=read_file> natively."
+        XCTAssertEqual(HarmonySentinelNormalizer.normalize(input), input)
+    }
+
+    /// The marker-less form. OUT OF SCOPE BY MEASUREMENT, not deferred: it needs a paired
+    /// closer to be recognisable, and the model wrote `</tool_call>` exactly once in 28
+    /// turns. Promoting text to a call without field evidence is the over-reach both
+    /// `BareToolCallSalvage` and this file exist to refuse.
+    func testNormalize_chatMLWrappedJSONWithoutMarker_isByteIdentical() {
+        let input = #"<tool_call>{"name":"read_file","arguments":{"path":"a"}}</tool_call>"#
+        XCTAssertEqual(HarmonySentinelNormalizer.normalize(input), input)
+    }
+
+    /// Gap over the cap: five spaces. The cap exists so the strip stays adjacency-gated
+    /// rather than becoming a backward scan that could swallow prose.
+    func testNormalize_chatMLTagGapOverCap_isUntouched() {
+        let input = "x<tool_call>     " + #"<|call|>{"name":"bash"}"#
+        XCTAssertEqual(HarmonySentinelNormalizer.normalize(input), input)
+    }
+
+    /// Non-whitespace between tag and marker means the model was writing prose.
+    func testNormalize_proseBetweenChatMLTagAndMarker_isUntouched() {
+        let input = "x<tool_call> as in " + #"<|call|>{"name":"bash"}"#
+        XCTAssertEqual(HarmonySentinelNormalizer.normalize(input), input)
+    }
+
+    func testNormalize_truncatedChatMLTag_isUntouched() {
+        let input = "x<tool_call\n" + #"<|call|>{"name":"bash"}"#
+        XCTAssertEqual(HarmonySentinelNormalizer.normalize(input), input)
+    }
+
+    /// Exact literal only — case-folding here would be inference, the same rule
+    /// `trailingToolName` states for tool names.
+    func testNormalize_uppercaseChatMLTag_isUntouched() {
+        let input = "x<TOOL_CALL>\n" + #"<|call|>{"name":"bash"}"#
+        XCTAssertEqual(HarmonySentinelNormalizer.normalize(input), input)
+    }
+
+    func testNormalize_spacedChatMLTag_isUntouched() {
+        let input = "x< tool_call >\n" + #"<|call|>{"name":"bash"}"#
+        XCTAssertEqual(HarmonySentinelNormalizer.normalize(input), input)
+    }
+
+    /// `<tool_call|>` — the gemma junk form that ALREADY lives in two fixtures
+    /// (`RealGemmaRunEnvelopeTests`, `MalformedToolCallEnvelopeCornerTests`). It differs
+    /// from the wrapper on both axes at once: it does not open with `<|`, and it is not
+    /// the literal `<tool_call>`. Assert both so a future widening of either has to break
+    /// this test on purpose.
+    func testNormalize_toolCallPipeGtJunk_isUntouched() {
+        let input = #"<|call|>{"name":"create_artifact"}<tool_call|><afthought>done.</afthought>"#
+        XCTAssertEqual(HarmonySentinelNormalizer.normalize(input), input)
+    }
+
+    /// A bare marker must come back byte-identical even though `.canonical` now makes the
+    /// scan STOP on it — `nextSentinel` used to walk straight past `<|start|>` and
+    /// `<|channel|>`, and re-emitting them is what keeps `classifyHarmonyCallIssue`'s
+    /// input unchanged.
+    func testNormalize_bareStartAndChannelMarkers_areByteIdentical() {
+        let cases = [
+            "<|start|>assistant<|channel|>final<|message|>hello",
+            "<|channel|>analysis<|message|>thinking out loud",
+            #"<|start|>{"name":"x"}"#,
+            #"<|channel|>{"name":"x"}"#,
+        ]
+        for input in cases {
+            XCTAssertEqual(HarmonySentinelNormalizer.normalize(input), input, input)
+        }
+    }
+
+    /// **The fast-path invariant.** `.canonical` must count as normalizable ONLY when a
+    /// wrapper actually precedes it. Without that condition `hasNormalizableOccurrence`
+    /// returns `true` for every ordinary `<|call|>{…}` — and it is the guard on
+    /// `normalize`'s early return, so every envelope-bearing turn would rebuild the whole
+    /// buffer. That regression is invisible in output and shows up only as slowness,
+    /// which is exactly why it is pinned rather than left to a behavioural test.
+    func testHasNormalizableOccurrence_ordinaryEnvelope_staysOffTheRebuildPath() {
+        let ordinary = [
+            #"<|call|>{"name":"read_file","arguments":{"path":"a.swift"}}<|end|>"#,
+            #"Here you go. <|call|>{"name":"bash","arguments":{"command":"ls"}}<|end|>"#,
+            "<|start|>assistant<|channel|>final<|message|>plain answer",
+            #"<|call|>read_file{"path":"a.swift"}<|end|>"#,
+        ]
+        for text in ordinary {
+            XCTAssertFalse(
+                HarmonySentinelNormalizer.hasNormalizableOccurrence(in: text[...]),
+                "ordinary envelope must not arm the rebuild: \(text)")
+        }
+    }
+
+    /// The classifier reads the NORMALIZED buffer, so a `.canonical` branch that failed to
+    /// re-emit its marker verbatim would flip the verdict to `.noEnvelopeAttempt` and hand
+    /// the model a nudge about a call it plainly made. Run through `classifyHarmonyCallIssue`,
+    /// not just `normalize` — that is the consumer whose answer must not move.
+    func testClassify_chatMLWrappedEnvelope_matchesTheUnwrappedOne() {
+        let payload = #"<|call|>{"name":"read_file","arguments":{"path":"a" "b"}}<|end|>"#
+        let wrapped = "prose.<tool_call>\n" + payload + "\n</tool_call>"
+        let bare = "prose.\n" + payload
+        XCTAssertEqual(ToolCallParsingHelpers.classifyHarmonyCallIssue(in: wrapped), .malformedJSON)
+        XCTAssertEqual(
+            ToolCallParsingHelpers.classifyHarmonyCallIssue(in: wrapped),
+            ToolCallParsingHelpers.classifyHarmonyCallIssue(in: bare))
+    }
+
+    // MARK: - Linearity (DEBTS.md D-B6)
+
+    /// `nextSentinel` inspects each `<|` candidate AT MOST ONCE across a whole rebuild:
+    /// `searchFrom` only ever moves forward past an inspected opener, so its searches are
+    /// disjoint spans whose lengths sum to the buffer's. That argument is the central
+    /// claim of this file and, since the repair loop moved into a private helper, the
+    /// complexity ratchet no longer guards it (D-B6) — so it is asserted here instead.
+    ///
+    /// The bound is deliberately loose (4×): `normalize` legitimately walks the candidates
+    /// twice, once for the gate and once for the rebuild. A non-disjoint scan is
+    /// quadratic — for this fixture ~20 000 inspections against a cap of 804 — so the
+    /// margin costs nothing in discrimination.
+    ///
+    /// RED: in `nextSentinel`, search from the rebuild `cursor` instead of the advancing
+    /// `searchFrom` → the scans stop being disjoint and the `LessThanOrEqual` bound below
+    /// fails, reporting inspections in the tens of thousands.
+    func testNextSentinel_inspectsEachCandidateAtMostOnce() {
+        let candidates = 200
+        let text = String(repeating: "<|x ", count: candidates) + #"<|call|{"a":1}"#
+        HarmonySentinelNormalizer._testResetScanWork()
+        _ = HarmonySentinelNormalizer.normalize(text)
+        let work = HarmonySentinelNormalizer._testScanWork()
+        XCTAssertGreaterThan(work, 0, "the counter must sit on the path actually taken")
+        XCTAssertLessThanOrEqual(
+            work, 4 * (candidates + 1),
+            "scans must stay disjoint — \(work) inspections over \(candidates + 1) candidates")
+    }
+
+    // MARK: - Dangling `<|` before an envelope opening (task 39 run 8, record 115)
+
+    /// The run's LAST turn opened with a bare `<|` on its own line and then the canonical
+    /// envelope. The truncation rewind cuts at the earliest marker, so `<|` survived as
+    /// assistant prose; `ModelTokenCleaner` cannot see it (no `|>` anywhere after it, so
+    /// `stripTokensInPlace` breaks and returns the remainder verbatim), and it reached the
+    /// user as a two-character bubble.
+    ///
+    /// It is the SAME shape as the `<tool_call>` wrapper — debris standing immediately to
+    /// the left of an opening — so it is recognised by the same bounded look-back rather
+    /// than by anything new (CLAUDE.md #192).
+    func testNormalize_danglingSentinelOpenBeforeCanonical_isStripped() {
+        XCTAssertEqual(
+            HarmonySentinelNormalizer.normalize("<|\n" + #"<|call|>{"name":"create_artifact"}"#),
+            "\n" + #"<|call|>{"name":"create_artifact"}"#)
+    }
+
+    func testNormalize_danglingSentinelOpenZeroGap_isStripped() {
+        XCTAssertEqual(
+            HarmonySentinelNormalizer.normalize(#"done.<|<|call|>{"name":"bash"}"#),
+            #"done.<|call|>{"name":"bash"}"#)
+    }
+
+    /// A COMPLETE token to the left is not debris. `<|end|>` ends in `|>`, so the two
+    /// characters before the marker are `|>` and the look-back finds no wrapper — the
+    /// property that keeps this family off every ordinary back-to-back envelope.
+    func testNormalize_completeTokenBeforeMarker_isUntouched() {
+        let input = #"<|call|>{"a":1}<|end|>"# + "\n" + #"<|call|>{"b":2}"#
+        XCTAssertEqual(HarmonySentinelNormalizer.normalize(input), input)
+    }
+
+    /// An unrepaired truncated sentinel immediately before a healthy one: the floor is the
+    /// rebuild cursor, which sits just past the emitted `<|call|`, so the look-back cannot
+    /// reach back into text already committed and re-eat it.
+    func testNormalize_unrepairedTruncatedThenCanonical_onlyTheCanonicalSurvives() {
+        let input = #"<|call|<|call|>{"name":"bash"}"#
+        XCTAssertEqual(HarmonySentinelNormalizer.normalize(input), input)
+    }
+
+    // MARK: - unrepairedSentinel: naming a near-miss the repair refuses
+
+    /// The repair is deliberately conservative; the DIAGNOSIS must not be. A shape too
+    /// mangled to repair is exactly the one the model most needs named — before this,
+    /// `sawHarmonyMarker` stayed open and `handleNoToolCalls` fell through to whichever
+    /// branch happened to match, which for a producing role is the artifact nudge.
+    func testUnrepairedSentinel_debrisRun_namesTheTruncatedPrefix() {
+        XCTAssertEqual(
+            HarmonySentinelNormalizer.unrepairedSentinel(in: #"<|call|read_file{"path":"a"}"#),
+            "<|call|")
+    }
+
+    /// Past `maxDebrisRun` the repair refuses — the diagnosis window is wider on purpose.
+    func testUnrepairedSentinel_alienDebrisOverRepairCap_namesTheAlienPrefix() {
+        let text = "<|tool_call>" + String(repeating: "x", count: 25) + #"{"name":"search"}"#
+        XCTAssertEqual(HarmonySentinelNormalizer.unrepairedSentinel(in: text), "<|tool_call")
+    }
+
+    /// A shape this pass REPAIRS is not a near-miss: it dispatches, and naming it would
+    /// nudge a model whose call worked.
+    func testUnrepairedSentinel_repairableShapes_areNil() {
+        let repairable = [
+            #"<|call| {"name":"search"}"#,
+            #"<|call|{"name":"search"}"#,
+            #"<|tool_call>call|>{"name":"search"}"#,
+        ]
+        for text in repairable {
+            XCTAssertNil(HarmonySentinelNormalizer.unrepairedSentinel(in: text), text)
+        }
+    }
+
+    /// A healthy envelope is not a near-miss either.
+    func testUnrepairedSentinel_canonicalEnvelope_isNil() {
+        XCTAssertNil(HarmonySentinelNormalizer.unrepairedSentinel(
+            in: #"<|call|>{"name":"read_file","arguments":{"path":"a"}}<|end|>"#))
+        XCTAssertNil(HarmonySentinelNormalizer.unrepairedSentinel(
+            in: #"<|call|>read_file{"path":"a"}<|end|>"#))
+    }
+
+    /// **The safety argument.** Whitespace in the run means the model was writing PROSE
+    /// about the sentinel, so the same rule that keeps the repair off prose keeps the
+    /// diagnosis off it — one rule, both places.
+    func testUnrepairedSentinel_prose_isNil() {
+        let prose = [
+            "Write <|call| and then the JSON object on the same line.",
+            "Emit your call as <|tool_call|> followed by the arguments.",
+            #"Use <|call| when you want {"name":"x"} to run."#,
+            "Let me call a tool.\n<|call|",
+            "plain prose with no sentinel at all",
+            "",
+        ]
+        for text in prose {
+            XCTAssertNil(HarmonySentinelNormalizer.unrepairedSentinel(in: text), text)
+        }
+    }
+
+    /// The diagnosis window is bounded too — a `{` far downstream is an unrelated brace.
+    func testUnrepairedSentinel_payloadPastTheDiagnosticWindow_isNil() {
+        let text = "<|tool_call>" + String(repeating: "x", count: 80) + #"{"name":"search"}"#
+        XCTAssertNil(HarmonySentinelNormalizer.unrepairedSentinel(in: text))
+    }
+
+    /// It returns a literal from `prefixTable`, never a slice of the model's own bytes:
+    /// a nudge is never retired, and quoting the looping output back into the prefix of
+    /// every later request is the defect playbook R3.8.3 exists to forbid.
+    func testUnrepairedSentinel_returnsOurOwnLiteral_notModelBytes() {
+        let name = HarmonySentinelNormalizer.unrepairedSentinel(
+            in: #"<|call|read_file{"path":"secret/path.swift"}"#)
+        XCTAssertEqual(name, "<|call|")
+        XCTAssertFalse(name?.contains("secret") ?? true)
     }
 }

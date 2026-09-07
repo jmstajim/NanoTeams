@@ -63,16 +63,67 @@ struct FirstPromptRendererConfig: Codable {
     /// `analyze_image` survives the step 3.2 filter. Default `false`.
     let visionConfigured: Bool?
 
-    /// Mirrors `ComputerUsePolicy.isEnabled` (same threading as `visionConfigured`).
-    /// Default `false` — the safe orchestrator-free default.
-    let computerUseEnabled: Bool?
+    /// Mirrors `StoreConfiguration.computerUseMode` — the MODE, not a switch, because the
+    /// resolver reads the mode against whether a human is there to approve
+    /// (`ApprovalGatedAvailability.forComputerUse`): Manual with no human withholds all five
+    /// tools, Semi-automatic with no human the mutating trio. Raw values `off` /
+    /// `manual` / `semiAutomatic` / `auto`; a typo fails the load, not the render. Default
+    /// `.manual` — the fresh-install value `StoreConfiguration` applies — so a render is
+    /// what the first request of a fresh install would carry. Until 2026-09-07 this was a
+    /// Bool defaulting to `false` (= Off), which is NOT what a fresh install ships: every
+    /// render of a role holding computer-use tools (Assistant, Coding Assistant, the
+    /// Autovisor manager) lacked their five schemas and nothing said so.
+    let computerUseMode: ComputerUseMode?
+
+    /// Mirrors `StoreConfiguration.bashMode` (raw values `off` / `alwaysConfirm` / `manual`
+    /// / `auto` — `manual` is Semi-automatic, the legacy spelling). Read against the same
+    /// presence answer: Off or Manual with no human withholds `bash` + `bash_output`.
+    /// Default `BashConstants.defaultMode` (Manual), the fresh-install value.
+    let bashMode: BashExecutionMode?
+
+    /// Which call site's first prompt to render. `step` (default) is the step run loop's
+    /// first request — `buildChatMessages` plus the real `buildRequest`. `consultation` and
+    /// `meeting` render the system prompt and toolset of those side calls through
+    /// `PromptBuilder.buildWirePromptPreview`, the same seam the Settings preview uses
+    /// (byte-parity with the runtime pinned by `PromptBuilderWirePreviewTests`); their user
+    /// turns are runtime-dynamic (the question, the transcript) and are not rendered. Until
+    /// 2026-09-07 the renderer knew one kind, so the observer of a Discussion Club meeting —
+    /// the surface that carried both "Call one tool per response." and "None available" —
+    /// could not be audited offline (playbook REC.10 / KF4).
+    let kind: RenderKind?
 
     // MARK: - Resolved helpers
 
+    var resolvedKind: RenderKind { kind ?? .step }
+
     var resolvedModelName: String { modelName ?? "render-only" }
-    var resolvedGlobalContext: String { globalContext ?? "" }
+    /// The production default when the config carries no `globalContext` — the same
+    /// fallback `StoreConfiguration` applies — so a render is byte-identical to the first
+    /// request a fresh install sends. Until 2026-09-06 the default here was the EMPTY string:
+    /// every render (and every audit numbered from one) lacked the `## Global guidance`
+    /// section, three playbook Checks could not be executed on a render, and nothing said so.
+    /// An explicit `""` still renders without the section (the user cleared the setting).
+    var resolvedGlobalContext: String { globalContext ?? AppDefaults.globalContext }
     var resolvedVisionConfigured: Bool { visionConfigured ?? false }
-    var resolvedComputerUseEnabled: Bool { computerUseEnabled ?? false }
+    var resolvedComputerUseMode: ComputerUseMode { computerUseMode ?? .manual }
+    var resolvedBashMode: BashExecutionMode { bashMode ?? BashConstants.defaultMode }
+}
+
+// MARK: - Render kind
+
+/// Raw values are what `--kind` passes; a typo fails the load, not the render.
+enum RenderKind: String, Codable {
+    case step
+    case consultation
+    case meeting
+
+    var wireKind: WirePromptKind {
+        switch self {
+        case .step: return .stepExecution
+        case .consultation: return .consultation
+        case .meeting: return .meeting
+        }
+    }
 }
 
 // MARK: - Targets

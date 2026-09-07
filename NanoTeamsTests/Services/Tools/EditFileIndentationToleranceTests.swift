@@ -250,21 +250,31 @@ final class EditFileIndentationToleranceTests: XCTestCase {
         XCTAssertFalse(text.contains("whitespace and indentation"), text)
     }
 
-    /// The two legacy diagnoses keep the old base sentence, because for a malformed
-    /// (rather than mislocated) anchor the character-level advice is still true.
+    /// Inverted 2026-09-06 with the states it pins. The two SHAPE diagnoses used to compose
+    /// their message as `anchorNotFoundMessage + " " + hint`, and the base half told the
+    /// model to "make sure it matches exactly including whitespace and indentation" — which
+    /// for a whitespace-only anchor is the advice that PRODUCED the failure, sitting one
+    /// space before the hint that contradicts it. An anchor longer than the file is the same
+    /// class: no respelling of whitespace can make it fit.
     ///
-    /// RED: route these through the typed path → the base sentence disappears and
-    /// `ToolErrorNotePolicy.direction` stops appending its steering.
-    func testLegacyDiagnoses_keepTheBaseSentence() async throws {
+    /// Both now write a complete, state-specific message, so the whole six-state family is
+    /// answered by the envelope alone — which is what this file's own `.absent` test above
+    /// already demanded for its state.
+    ///
+    /// RED: restore the composed message → the contradictory sentence is back and the first
+    /// assertion of each pair fails.
+    func testShapeDiagnoses_replaceTheBaseSentenceInsteadOfPrefixingIt() async throws {
         try writeFile("j.swift", "a\nb\n")
 
         let longer = await runEdit(path: "j.swift", oldText: "a\nb\nc\nd", newText: "z")
-        XCTAssertTrue(message(longer).contains("Make sure it matches exactly"), message(longer))
-        XCTAssertTrue(message(longer).contains("more lines (4) than the file (2)"), message(longer))
+        XCTAssertFalse(message(longer).contains("Make sure it matches exactly"), message(longer))
+        XCTAssertTrue(message(longer).contains("cannot match anywhere"), message(longer))
+        XCTAssertTrue(message(longer).contains("4 lines but"), message(longer))
 
         let blank = await runEdit(path: "j.swift", oldText: "   \n   ", newText: "z")
-        XCTAssertTrue(message(blank).contains("Make sure it matches exactly"), message(blank))
+        XCTAssertFalse(message(blank).contains("Make sure it matches exactly"), message(blank))
         XCTAssertTrue(message(blank).contains("whitespace-only"), message(blank))
+        XCTAssertTrue(message(blank).contains("nearest non-blank lines"), message(blank))
     }
 
     // MARK: - Unit-level: pairing + the map

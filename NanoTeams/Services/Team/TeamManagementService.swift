@@ -194,7 +194,7 @@ nonisolated enum TeamManagementService {
 
     /// Keeps the hidden Autovisor team in sync with template invariants the user
     /// never customizes — the "Manager" role icon, the management toolset policy, and the
-    /// Auto (nil) meeting coordinator. Icon + coordinator are overwritten; the **mandatory**
+    /// meeting coordinator (the lone Manager). Icon + coordinator are overwritten; the **mandatory**
     /// tools are **union-enforced** (additive) so they can never be lost; and tools OUTSIDE
     /// the allowed set (`mandatory ∪ optional`) are **stripped** — so a manager seeded by an
     /// older build that carried now-disallowed tools (e.g. git-write) is brought in line on
@@ -245,10 +245,9 @@ nonisolated enum TeamManagementService {
             }
         }
 
-        // Meeting coordinator → Auto (nil). The lone Manager role is the only
-        // possible coordinator anyway; Auto reads correctly in the settings UI.
-        if teams[teamIndex].settings.meetingCoordinatorRoleID != nil {
-            teams[teamIndex].settings.meetingCoordinatorRoleID = nil
+        // The lone Manager role is the only possible coordinator; keep the stored id
+        // resolved rather than `nil` (Auto no longer exists — see `TeamSettings`).
+        if teams[teamIndex].healMeetingCoordinator() {
             changed = true
         }
 

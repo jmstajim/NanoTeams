@@ -44,14 +44,16 @@ nonisolated enum ConversationRepairService {
         // The replacement message must restate WHICH call failed: the repair
         // just deleted the assistant turn it refers to, so "your previous tool
         // call" would point at nothing the model can see [Laban2025 — restate
-        // the critical context you removed].
+        // the critical context you removed]. And it is anchored to THIS note,
+        // not to the reader's present (playbook R3.8.4): the note is never
+        // retired, so "your previous" would also be false one turn later.
         let failedCalls = (assistantMsg.toolCalls ?? []).map { call in
             let args = String(call.argumentsJSON.prefix(200))
             return "\(call.name)(\(args))"
         }
         let callsDescription = failedCalls.isEmpty
-            ? "Your previous tool call"
-            : "Your \(failedCalls.joined(separator: ", ")) call"
+            ? "The tool call before this note"
+            : "The \(failedCalls.joined(separator: ", ")) call before this note"
         let removeCount = 1 + toolCount + 1 // assistant + tools + user
         messages.removeLast(removeCount)
         messages.append(

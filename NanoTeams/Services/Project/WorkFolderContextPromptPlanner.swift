@@ -164,7 +164,7 @@ nonisolated enum WorkFolderContextPromptPlanner {
     // MARK: - Compose
 
     /// Formats the user message, trimming to fit `tokenBudget`. When the full
-    /// input fits, the output is byte-identical to the legacy formatter.
+    /// input fits, the output is the untrimmed full shape.
     static func compose(input: WorkFolderContextInput, tokenBudget: Int) -> Composition {
         var trim = TrimSummary()
 
@@ -172,7 +172,7 @@ nonisolated enum WorkFolderContextPromptPlanner {
         let headerLines = headerLines(input)
         let headerTokens = estimateTokens(headerLines.joined(separator: "\n"))
 
-        // Fast path: does everything fit as-is? Keep byte-identical legacy output.
+        // Fast path: does everything fit as-is? Ship the full shape untrimmed.
         let fullLines = headerLines + fullListLines(input) + fullExcerptLines(input)
         let fullMessage = fullLines.joined(separator: "\n")
         if estimateTokens(fullMessage) <= tokenBudget {
@@ -233,17 +233,24 @@ nonisolated enum WorkFolderContextPromptPlanner {
 
     private static func fullListLines(_ input: WorkFolderContextInput) -> [String] {
         guard !input.fileList.isEmpty else { return [] }
-        return ["File snapshot:"] + input.fileList.map { "- \($0)" }
+        // `## ` headings, one marker family for the whole turn — `File snapshot:` and
+        // `Excerpts:` were bare colon labels until 2026-09-07 (R1.3.2).
+        return ["## File snapshot"] + input.fileList.map { "- \($0)" }
     }
 
     private static func fullExcerptLines(_ input: WorkFolderContextInput) -> [String] {
         guard !input.excerpts.isEmpty else { return [] }
-        var lines = ["", "Excerpts:"]
+        var lines = ["", "## Excerpts"]
         for excerpt in input.excerpts {
-            lines.append("File: \(excerpt.path)")
-            lines.append("```")
+            // These are RAW file bodies going into a system prompt, so the fence has to
+            // outgrow whatever backtick run is inside — a markdown file in the work folder
+            // closed the hardcoded ``` on its own first fence and spilled the rest of the
+            // file, plus every later excerpt, into prompt structure.
+            let fence = PromptBuilder.artifactFence(for: excerpt.content)
+            lines.append("### \(excerpt.path)")
+            lines.append(fence)
             lines.append(excerpt.content)
-            lines.append("```")
+            lines.append(fence)
         }
         return lines
     }
@@ -284,7 +291,7 @@ nonisolated enum WorkFolderContextPromptPlanner {
 
         let lineTexts = input.fileList.map { "- \($0)" }
         let lineCounts = lineTexts.map { scalarCounts($0) }
-        let headerCounts = scalarCounts("File snapshot:")
+        let headerCounts = scalarCounts("## File snapshot")
 
         // Running class totals of the CURRENT list: header + "\n"-joined lines.
         var ascii = headerCounts.ascii
@@ -368,7 +375,7 @@ nonisolated enum WorkFolderContextPromptPlanner {
         }
 
         return ListResult(
-            lines: ["File snapshot:"] + entries.map(\.text),
+            lines: ["## File snapshot"] + entries.map(\.text),
             tokenCost: currentCost(),
             collapsedDirs: collapsedDirs,
             truncatedFileCount: truncatedFileCount
@@ -449,7 +456,10 @@ nonisolated enum WorkFolderContextPromptPlanner {
 
             let allLines = excerpt.content.components(separatedBy: "\n")
             let totalLines = allLines.count
-            let fullBlockTokens = estimateTokens(excerptBlock(excerpt, lines: allLines, marker: nil).joined(separator: "\n"))
+            let fence = PromptBuilder.artifactFence(for: excerpt.content)
+            let fullBlockTokens = estimateTokens(
+                excerptBlock(excerpt, lines: allLines, marker: nil, fence: fence)
+                    .joined(separator: "\n"))
 
             let remainingCount = excerpts.count - index
             let fairShare = remainingBudget / max(1, remainingCount)
@@ -458,7 +468,9 @@ nonisolated enum WorkFolderContextPromptPlanner {
 
             // How many whole lines fit within `allowed` tokens?
             var takenLines = 0
-            var runningTokens = estimateTokens(excerptBlock(excerpt, lines: [], marker: nil).joined(separator: "\n"))
+            var runningTokens = estimateTokens(
+                excerptBlock(excerpt, lines: [], marker: nil, fence: fence)
+                    .joined(separator: "\n"))
             for line in allLines {
                 let next = runningTokens + estimateTokens(line + "\n")
                 if next > allowed { break }
@@ -487,7 +499,7 @@ nonisolated enum WorkFolderContextPromptPlanner {
                 marker = nil
             }
 
-            let block = excerptBlock(excerpt, lines: selected, marker: marker)
+            let block = excerptBlock(excerpt, lines: selected, marker: marker, fence: fence)
             blocks.append(block)
             remainingBudget -= estimateTokens(block.joined(separator: "\n"))
         }
@@ -496,7 +508,7 @@ nonisolated enum WorkFolderContextPromptPlanner {
             return ExcerptResult(lines: [], trimmedPaths: trimmedPaths, droppedPaths: droppedPaths, atFloor: atFloor)
         }
 
-        var lines = ["", "Excerpts:"]
+        var lines = ["", "## Excerpts"]
         for block in blocks { lines += block }
         if !droppedPaths.isEmpty {
             let note = "Note: \(droppedPaths.count) more excerpts omitted to fit the model's context window: "
@@ -506,16 +518,29 @@ nonisolated enum WorkFolderContextPromptPlanner {
         return ExcerptResult(lines: lines, trimmedPaths: trimmedPaths, droppedPaths: droppedPaths, atFloor: atFloor)
     }
 
+    /// The fence is computed ONCE per excerpt, over the WHOLE file, and handed in — it is
+    /// not re-derived per call.
+    ///
+    /// Sizing it over the trimmed slice instead looks more precise and is wrong here, because
+    /// the caller measures this block three times per excerpt with three different bodies:
+    /// empty (to price the wrapper), whole-file (to price the maximum), and the selected
+    /// slice (what ships). A per-body fence makes those three disagree, so the budget
+    /// arithmetic prices a wrapper that is not the one emitted — and the empty-body call
+    /// would price the MINIMUM fence against a body that may need a longer one.
+    ///
+    /// Over-sizing is the safe direction and costs one character: a fence measured over a
+    /// superset of the emitted body can only be too LONG, never too short, and too short is
+    /// the failure that lets a file's own ``` close the wrapper and spill the rest of the
+    /// file into prompt structure.
     private static func excerptBlock(
         _ excerpt: WorkFolderContextInput.FileExcerpt,
         lines: [String],
-        marker: String?
+        marker: String?,
+        fence: String
     ) -> [String] {
-        var block = ["File: \(excerpt.path)", "```"]
-        block += lines
-        if let marker { block.append(marker) }
-        block.append("```")
-        return block
+        var body = lines
+        if let marker { body.append(marker) }
+        return ["### \(excerpt.path)", fence] + body + [fence]
     }
 
     // MARK: - Path helpers

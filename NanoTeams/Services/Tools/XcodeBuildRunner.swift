@@ -148,12 +148,18 @@ nonisolated enum XcodeBuildRunner {
                         .trimmingCharacters(in: .whitespacesAndNewlines)
                     schemes = stored.isEmpty ? [] : [stored]
                 } catch {
+                    // `COMMAND_FAILED`, not `INVALID_ARGS`: nothing the model passed caused
+                    // this and no re-spelling of the arguments can clear it, so the
+                    // "fix the arguments and retry" direction `INVALID_ARGS` earns from
+                    // `ToolErrorNotePolicy` was pointing at the wrong actor entirely.
+                    // The description is classified rather than localized for the same
+                    // reason it is in `ToolErrorHandler.classify` — see there.
                     return .error(makeErrorResult(
                         toolName: toolName, args: args,
-                        code: .invalidArgs,
+                        code: .commandFailed,
                         message:
                         """
-                        Project settings file exists but could not be decoded: \(error.localizedDescription).
+                        Project settings file exists but could not be decoded: \(ToolErrorHandler.classify(error).message)
                         This usually means the settings schema changed after the file was last written.
                         The user should open NanoTeams settings and re-select the Xcode scheme.
                         """
@@ -173,9 +179,11 @@ nonisolated enum XcodeBuildRunner {
             if !detected.isEmpty {
                 schemes = [detected[0]]
             } else {
+                // Same reason as the decode arm above: a missing scheme is a work-folder
+                // precondition the model cannot supply through its arguments.
                 return .error(makeErrorResult(
                     toolName: toolName, args: args,
-                    code: .invalidArgs,
+                    code: .commandFailed,
                     message:
                     """
                     No scheme configured in project settings.

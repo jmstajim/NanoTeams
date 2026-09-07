@@ -655,7 +655,6 @@ final class TeamModelTests: XCTestCase {
     func testTeamSettings_Codable_RoundTrip() throws {
         var settings = TeamSettings.default
         settings.meetingCoordinatorRoleID = "swe-123"
-        settings.supervisorCanBeInvited = true
         settings.defaultAcceptanceMode = .finalOnly
         settings.acceptanceCheckpoints = ["sre", "uxDesigner"]
 
@@ -663,7 +662,6 @@ final class TeamModelTests: XCTestCase {
         let decoded = try JSONDecoder().decode(TeamSettings.self, from: encoded)
 
         XCTAssertEqual(decoded.meetingCoordinatorRoleID, "swe-123")
-        XCTAssertEqual(decoded.supervisorCanBeInvited, true)
         XCTAssertEqual(decoded.defaultAcceptanceMode, .finalOnly)
         XCTAssertEqual(decoded.acceptanceCheckpoints, ["sre", "uxDesigner"])
     }
@@ -672,7 +670,6 @@ final class TeamModelTests: XCTestCase {
         let settings = TeamSettings.default
 
         XCTAssertNil(settings.meetingCoordinatorRoleID)
-        XCTAssertEqual(settings.supervisorCanBeInvited, false)
         XCTAssertEqual(settings.defaultAcceptanceMode, .afterEachRole)
         XCTAssertEqual(settings.acceptanceCheckpoints, [])
         XCTAssertTrue(settings.invitableRoles.isEmpty)
@@ -704,7 +701,6 @@ final class TeamModelTests: XCTestCase {
         XCTAssertEqual(questTeam.roles.count, 6)  // 5 Quest Party roles + Supervisor
         XCTAssertFalse(questTeam.settings.hierarchy.reportsTo.isEmpty)
         XCTAssertNotNil(questTeam.settings.meetingCoordinatorRoleID)
-        XCTAssertTrue(questTeam.settings.supervisorCanBeInvited)
         XCTAssertEqual(questTeam.settings.defaultAcceptanceMode, .finalOnly)
         XCTAssertFalse(questTeam.settings.invitableRoles.isEmpty)
     }
@@ -718,7 +714,6 @@ final class TeamModelTests: XCTestCase {
 
         XCTAssertEqual(startupTeam.roles.count, 2)  // Supervisor + SWE
         XCTAssertNotNil(startupTeam.settings.meetingCoordinatorRoleID)
-        XCTAssertTrue(startupTeam.settings.supervisorCanBeInvited)
         XCTAssertEqual(startupTeam.settings.defaultAcceptanceMode, .finalOnly)
     }
 
@@ -1315,8 +1310,14 @@ final class TeamModelTests: XCTestCase {
         XCTAssertNil(team.settings.hierarchy.reportsTo[roleA.id],
                      "Subordinate of removed role should have its supervisor cleared")
 
-        XCTAssertNil(team.settings.meetingCoordinatorRoleID,
-                     "meetingCoordinatorRoleID should be nil after removing that role")
+        // Removing the coordinator re-picks one — never `nil`, which used to mean "Auto"
+        // and no longer exists (`TeamSettings.meetingCoordinatorRoleID`).
+        XCTAssertNotEqual(team.settings.meetingCoordinatorRoleID, roleB.id,
+                          "the removed role must not stay the coordinator")
+        XCTAssertNotNil(team.settings.meetingCoordinatorRoleID,
+                        "a team with roles always has a coordinator")
+        XCTAssertEqual(team.settings.meetingCoordinatorRoleID, team.meetingCoordinatorID,
+                       "the stored id is the resolved one after a removal")
         XCTAssertFalse(team.settings.invitableRoles.contains(roleB.id),
                        "invitableRoles should not contain removed role")
         XCTAssertFalse(team.settings.acceptanceCheckpoints.contains(roleB.id),
@@ -1778,7 +1779,6 @@ final class TeamModelTests: XCTestCase {
             hierarchy: TeamHierarchy(reportsTo: ["a": "b"]),
             meetingCoordinatorRoleID: "a",
             invitableRoles: ["a"],
-            supervisorCanBeInvited: true,
             limits: .default,
             defaultAcceptanceMode: .finalOnly,
             acceptanceCheckpoints: ["a"],
@@ -1787,7 +1787,6 @@ final class TeamModelTests: XCTestCase {
 
         let result = settings.remappingRoleIDs(["a": "x", "b": "y"])
 
-        XCTAssertTrue(result.supervisorCanBeInvited)
         XCTAssertEqual(result.defaultAcceptanceMode, .finalOnly)
         XCTAssertEqual(result.supervisorMode, .autonomous)
     }

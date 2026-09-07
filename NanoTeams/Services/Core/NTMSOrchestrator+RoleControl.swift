@@ -107,7 +107,7 @@ extension NTMSOrchestrator {
                     // Primary role gets the Supervisor comment; downstream roles reset clean
                     let supervisorComment: String? =
                         (resetRoleID == roleID && !(comment ?? "").isEmpty)
-                            ? "Supervisor: \(comment!)"
+                            ? MessageSourceContext.supervisorMessagePrefix + comment!
                             : nil
                     task.runs[runIndex].steps[stepIndex].reset(supervisorComment: supervisorComment)
                 }

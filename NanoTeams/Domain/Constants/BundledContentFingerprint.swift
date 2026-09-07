@@ -13,7 +13,10 @@ import Foundation
 /// nothing says so. `BundledContentFingerprintPinTests` closes that by failing
 /// when this value moves, with a message pointing at the version to bump.
 ///
-/// Not used at runtime. It exists purely so the omission is loud.
+/// It exists so that omission is loud. Its one runtime READER, added 2026-09-06, does not
+/// change that: `NetworkLogger.createProvenanceRecord` stamps this value into the run log so
+/// a request can be traced back to the bundled prompts that produced it. Nothing branches on
+/// it, and it is still computed once per process.
 nonisolated enum BundledContentFingerprint {
 
     /// FNV-1a over exactly the fields `applyBundledContentUpdates` writes.
@@ -26,9 +29,11 @@ nonisolated enum BundledContentFingerprint {
     /// shipped content moves, and not otherwise.
     ///
     /// Computed once per process.
-    static let current: String = compute()
+    static let current: String = compute(bundled: Team.defaultTeams + [TeamTemplateFactory.autovisor()])
 
-    private static func compute() -> String {
+    /// Internal so a test can fingerprint two rosters that differ in one field and prove
+    /// the field is folded — `current` is a single value and cannot show that.
+    static func compute(bundled teams: [Team]) -> String {
         var hash: UInt64 = 0xcbf5_2913_1c93_1e00
 
         func fold(_ data: Data) {
@@ -47,8 +52,7 @@ nonisolated enum BundledContentFingerprint {
         let encoder = JSONCoderFactory.makePersistenceEncoder()
 
         // Teams, sorted by templateID so array order can't move the value.
-        let bundled = (Team.defaultTeams + [TeamTemplateFactory.autovisor()])
-            .sorted { ($0.templateID ?? "") < ($1.templateID ?? "") }
+        let bundled = teams.sorted { ($0.templateID ?? "") < ($1.templateID ?? "") }
         for team in bundled {
             fold(team.templateID ?? "")
             fold(team.systemPromptTemplate)
@@ -62,10 +66,11 @@ nonisolated enum BundledContentFingerprint {
             // version bump remembered by hand — narrower coverage, but coverage
             // that works.
 
-            // Step 1 writes these seven fields on every system role.
+            // Step 1 writes these ten fields on every system role.
             for role in team.roles.sorted(by: { ($0.systemRoleID ?? "") < ($1.systemRoleID ?? "") }) {
                 fold(role.systemRoleID ?? "")
                 fold(role.prompt)
+                fold(role.meetingGuidance ?? "")
                 fold(role.toolIDs)
                 fold(role.dependencies.requiredArtifacts)
                 fold(role.dependencies.producesArtifacts)

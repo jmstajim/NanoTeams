@@ -133,6 +133,14 @@ final class DefaultToolSchemasTests: XCTestCase {
         )
     }
 
+    /// `conclude_meeting` reaches only the meeting coordinator's MEETING turns
+    /// (`MeetingCoordinator.speakerTools`); a step schema never carries it, so it is
+    /// `unavailableToRoles` — and it is the one collaboration tool a meeting keeps.
+    func testConcludeMeeting_unavailableToRoles_andNotExcludedInMeetings() {
+        XCTAssertTrue(ToolHandlerRegistry.unavailableToRoles.contains(ToolNames.concludeMeeting))
+        XCTAssertFalse(ToolHandlerRegistry.meetingExcluded.contains(ToolNames.concludeMeeting))
+    }
+
     // MARK: - Registry Invariants
 
     /// Every signaling tool (one whose runtime result produces a `ToolSignal`) must be
@@ -143,7 +151,8 @@ final class DefaultToolSchemasTests: XCTestCase {
             "ask_supervisor",
             "ask_teammate",
             "request_team_meeting",
-            "conclude_meeting",
+            // `conclude_meeting` is the one signaling tool a meeting KEEPS — the
+            // coordinator's, granted by `MeetingCoordinator.speakerTools`.
             "request_changes",
             "create_artifact",
             "analyze_image",
@@ -563,8 +572,8 @@ final class DefaultToolSchemasTests: XCTestCase {
         XCTAssertEqual(propertyNames(for: "delete_file").count, 2)
     }
 
-    func testSearchProjectHasEightProperties() {
-        XCTAssertEqual(propertyNames(for: "search").count, 8)
+    func testSearchProjectHasNineProperties() {
+        XCTAssertEqual(propertyNames(for: "search").count, 9)
     }
 
     func testGitCommitHasTwoProperties() {
@@ -618,7 +627,7 @@ final class DefaultToolSchemasTests: XCTestCase {
     func testSearchProjectPropertyNames() {
         XCTAssertEqual(
             propertyNames(for: "search"),
-            ["query", "paths", "file_glob", "max_results", "offset",
+            ["query", "mode", "paths", "file_glob", "max_results", "offset",
              "context_before", "context_after", "exploratory"])
     }
 
@@ -662,11 +671,18 @@ final class DefaultToolSchemasTests: XCTestCase {
             "request_team_meeting description should mention meeting")
     }
 
-    func testConcludeMeetingDescriptionMentionsConclude() {
+    func testConcludeMeetingDescriptionNamesTheDecision() {
         let desc = tool(named: "conclude_meeting")?.description ?? ""
         XCTAssertTrue(
-            desc.lowercased().contains("conclude"),
-            "conclude_meeting description should mention conclude")
+            desc.lowercased().contains("end the meeting") && desc.contains("decision"),
+            "conclude_meeting description should say it ends the meeting with the decision")
+    }
+
+    /// `search.mode` is the only way to reach the regex matcher the handler has always had;
+    /// until 2026-09-06 the schema did not list it, so no model could send it.
+    func testSearchModeIsAnEnumOfSubstringAndRegex() {
+        let mode = tool(named: "search")?.parameters.properties?["mode"]
+        XCTAssertEqual(mode?.enumValues, ["substring", "regex"])
     }
 
     func testRequestChangesDescriptionMentionsChanges() {

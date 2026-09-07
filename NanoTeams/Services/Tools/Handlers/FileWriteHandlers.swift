@@ -13,7 +13,7 @@ nonisolated struct WriteFileTool: ToolHandler {
         parameters: JS.object(
             properties: [
                 "path": JS.string("Relative path to file"),
-                "content": JS.string("Content to write"),
+                "content": JS.string(),
             ],
             required: ["path", "content"]
         )
@@ -34,7 +34,6 @@ nonisolated struct WriteFileTool: ToolHandler {
         await ToolErrorHandler.execute(toolName: Self.name, args: args) {
             let path = try requiredString(args, "path")
             let content = try requiredString(args, "content")
-            let createDirs = optionalBool(args, "create_dirs", default: true)
 
             let fileURL = try resolver.resolveFileURL(relativePath: path)
             let parentDir = fileURL.deletingLastPathComponent()
@@ -42,19 +41,22 @@ nonisolated struct WriteFileTool: ToolHandler {
             var isDir: ObjCBool = false
             let parentExists = fileManager.fileExists(atPath: parentDir.path, isDirectory: &isDir)
 
+            // Missing parents are created — what the description promises and what every
+            // caller gets. Until 2026-09-06 an undeclared `create_dirs` argument could switch
+            // that off, and the one branch it opened rejected the write with a hint to send
+            // the argument back — a parameter the schema never showed the model (R3.4.4).
+            // The rejection below names the parent RELATIVE to the work folder
+            // (`parentDir.path` was absolute — the one thing `SandboxPathResolver` is careful
+            // never to leak) and says what to send next (playbook R1.8.1).
+            let parentRelative = (path as NSString).deletingLastPathComponent
             if !parentExists {
-                if createDirs {
-                    try fileManager.createDirectory(at: parentDir, withIntermediateDirectories: true)
-                } else {
-                    return makeErrorResult(
-                        toolName: Self.name, args: args,
-                        code: .notADirectory, message: "Parent directory does not exist: \(parentDir.path)"
-                    )
-                }
+                try fileManager.createDirectory(at: parentDir, withIntermediateDirectories: true)
             } else if !isDir.boolValue {
                 return makeErrorResult(
                     toolName: Self.name, args: args,
-                    code: .notADirectory, message: "Parent path is not a directory"
+                    code: .notADirectory,
+                    message: "Parent path is not a directory: \(parentRelative) is a file — name a directory path.",
+                    next: NextHint.listingParent(of: parentRelative)
                 )
             }
 
@@ -85,13 +87,13 @@ nonisolated struct EditFileTool: ToolHandler {
     static let name = TN.editFile
     static let schema = ToolSchema(
         name: TN.editFile,
-        description: "Replace exact text in a file. `old_text` must match byte-for-byte (whitespace + indentation included).",
+        description: "Replace `old_text` with `new_text` in a file. Leading, trailing and interior whitespace drift in `old_text` is tolerated.",
         parameters: JS.object(
             properties: [
                 "path": JS.string("Relative path to file"),
                 "old_text": JS.string("Text to find."),
                 "new_text": JS.string("Replacement text."),
-                "replace_all": JS.boolean("Replace every occurrence."),
+                "replace_all": JS.boolean("Replace every occurrence; without it an ambiguous `old_text` is rejected."),
             ],
             required: ["path", "old_text", "new_text"]
         )
@@ -128,7 +130,8 @@ nonisolated struct EditFileTool: ToolHandler {
             guard fileManager.fileExists(atPath: fileURL.path) else {
                 return makeErrorResult(
                     toolName: Self.name, args: args,
-                    code: .fileNotFound, message: "File not found: \(path)"
+                    code: .fileNotFound, message: "File not found: \(path)",
+                    next: NextHint.listingParent(of: path)
                 )
             }
 
@@ -490,25 +493,33 @@ nonisolated struct EditFileTool: ToolHandler {
             case ambiguous(replaceAllRequested: Bool)
         }
 
-        /// The `details["diagnosis"]` key. Present only for the four states whose
-        /// message SUPERSEDES the generic character-level steering in
-        /// `ToolErrorNotePolicy.direction`; the two legacy states keep the old shape
-        /// (generic sentence + appended hint) so their pins stay meaningful.
+        /// The `details["diagnosis"]` key. Present for every state, because every
+        /// state's message now SUPERSEDES the generic character-level steering in
+        /// `ToolErrorNotePolicy.direction`.
+        ///
+        /// The two former "legacy" states were the exception until 2026-09-06, and for
+        /// `.whitespaceOnlyAnchor` the composed result CONTRADICTED itself: the generic
+        /// half says "make sure it matches exactly including whitespace and indentation"
+        /// while the hint says "old_text is whitespace-only — anchor on adjacent
+        /// non-blank lines instead". The first half is precisely the advice that produced
+        /// the failure, and this file's own comment calls that shape "actively WRONG" for
+        /// the states where it does not apply. `.anchorLongerThanFile` is the same class:
+        /// an anchor with more lines than the file cannot be fixed by respelling its
+        /// whitespace.
         var key: String? {
             switch self {
             case .indentationMismatch: "indentation_mismatch"
             case .diverges: "diverges"
             case .interiorWhitespaceMismatch: "interior_whitespace_mismatch"
             case .absent: "absent"
-            case .whitespaceOnlyAnchor, .anchorLongerThanFile: nil
+            case .whitespaceOnlyAnchor: "whitespace_only_anchor"
+            case .anchorLongerThanFile: "anchor_longer_than_file"
             }
         }
 
-        /// Kept for the two legacy states, whose `message` composes as
-        /// `anchorNotFoundMessage + " " + hint` — so the hint is already on the wire.
-        /// `ToolErrorNotePolicy` appends it only when an envelope carried NO message at all;
-        /// re-stating it beside a message that contains it put the same sentence in front of
-        /// the model twice.
+        /// The structured half of the two shape diagnoses, kept in `details` for a reader
+        /// that wants the fact without parsing prose. It is no longer concatenated onto
+        /// `anchorNotFoundMessage` — see `key`.
         var hint: String? {
             switch self {
             case .whitespaceOnlyAnchor:
@@ -529,11 +540,17 @@ nonisolated struct EditFileTool: ToolHandler {
 
         func message(path: String) -> String {
             switch self {
-            case .whitespaceOnlyAnchor, .anchorLongerThanFile:
-                // Legacy shape: base sentence + hint. Both states mean the anchor is
-                // malformed rather than mislocated, so the character-level advice holds.
-                return hint.map { EditFileTool.anchorNotFoundMessage + " " + $0 }
-                    ?? EditFileTool.anchorNotFoundMessage
+            case .whitespaceOnlyAnchor:
+                // The anchor is MALFORMED, not mistranscribed, so the character-level
+                // sentence does not apply — and pasted in front of this one it said the
+                // opposite thing.
+                return "old_text is whitespace-only, so it cannot identify a location in "
+                    + "\(path). Anchor on the nearest non-blank lines above and below the "
+                    + "span you want to change, and put the blank lines inside old_text."
+
+            case .anchorLongerThanFile(let anchorLines, let fileLines):
+                return "old_text has \(anchorLines) lines but \(path) has \(fileLines), so it "
+                    + "cannot match anywhere. Re-read the file and copy a span that fits it."
 
             case .indentationMismatch(let lines, let fileText):
                 // The phrase "ignoring indentation" is load-bearing — existing pins
@@ -605,8 +622,6 @@ nonisolated struct EditFileTool: ToolHandler {
             }
         }
     }
-
-    static let anchorNotFoundMessage = "old_text not found in file. Make sure it matches exactly including whitespace and indentation. Do not include line numbers from read_lines output."
 
     /// Last-resort anchor matching for old_text that differs from the file only in
     /// whitespace (including the CR of CRLF line endings) — in either direction:
@@ -1177,7 +1192,9 @@ nonisolated struct DeleteFileTool: ToolHandler {
                 if mustExist {
                     return makeErrorResult(
                         toolName: Self.name, args: args,
-                        code: .fileNotFound, message: "File not found: \(path)"
+                        code: .fileNotFound,
+                        message: "File not found: \(path) — nothing to delete; check the path.",
+                        next: NextHint.listingParent(of: path)
                     )
                 } else {
                     return makeSuccessResult(
@@ -1190,7 +1207,9 @@ nonisolated struct DeleteFileTool: ToolHandler {
             if isDir.boolValue {
                 return makeErrorResult(
                     toolName: Self.name, args: args,
-                    code: .notAFile, message: "Path is a directory: \(path)"
+                    code: .notAFile,
+                    message: "Path is a directory: \(path) — delete_file removes files only; name a file inside it.",
+                    next: NextHint.listing(path)
                 )
             }
 

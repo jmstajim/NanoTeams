@@ -118,7 +118,7 @@ final class InertComputerUseEnvironmentTests: XCTestCase {
                 providerID: "call-1", toolName: ToolNames.uiType, argumentsJSON: "{}",
                 outputJSON: "", isError: false,
                 signal: .computerUse(.typeText(text: "must not be typed", target: nil))),
-            toolCallID: UUID(), stepID: "engineer", taskID: 1,
+            toolCallID: UUID(), stepID: "engineer", taskID: 1, allowedToolNames: [],
             client: UnreachableChatClient(), config: LLMConfig(), networkLogger: nil,
             conversationMessages: &messages, tracker: nil)
 

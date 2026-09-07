@@ -342,7 +342,11 @@ final class ComputerUseGateResolutionTests: XCTestCase {
             policy: ComputerUsePolicy(mode: .manual))
 
         XCTAssertNil(results[0], "the granted app must pass through with no review")
-        assertIsComputerUseDeny(results[1])
+        // The ungranted app reaches review, and autonomously there is nobody to review:
+        // APPROVAL_UNAVAILABLE (no decision), not a COMPUTER_USE_DENIED.
+        XCTAssertEqual(results[1]?.isError, true)
+        XCTAssertTrue(results[1]?.outputJSON.contains(ToolErrorCode.approvalUnavailable.rawValue) == true,
+                      "got: \(results[1]?.outputJSON ?? "nil")")
         XCTAssertEqual(judgeClient.callCount, 0, "a session grant is not a judge question")
     }
 
@@ -619,23 +623,32 @@ final class ComputerUseGateResolutionTests: XCTestCase {
             "the deny must name the policy blocker, got: \(denyMessage(results[0]))")
     }
 
-    /// Manual mode with nobody to ask denies, and the message names a recourse the MODEL can
-    /// act on — rather than leaving an autonomous run wedged on an unexplained refusal, or
-    /// telling it to open a Settings pane it cannot reach.
-    func testGate_manualModeWithoutAHuman_deniesAndNamesTheSupervisorRecourse() async {
+    /// Manual mode with nobody to ask refuses with ITS OWN code — nobody decided, so this is
+    /// not a `COMPUTER_USE_DENIED` and `assertIsComputerUseDeny` stays pinned to the decision
+    /// arms — and the message says why, without naming a recourse that cannot help: until
+    /// 2026-09-07 it asked the supervisor to "allow unattended computer-use approval", a
+    /// setting that never existed. In production the resolver withholds the whole family for
+    /// this cell; the gate is reached here directly.
+    func testGate_manualModeWithoutAHuman_isApprovalUnavailable_withoutARecourse() async {
         let results = await gate(
             [call(ToolNames.uiClick, #"{"x":10,"y":10}"#)],
             policy: ComputerUsePolicy(mode: .manual),
             supervisorMode: .autonomous)
 
-        assertIsComputerUseDeny(results[0])
-        let message = denyMessage(results[0])
-        XCTAssertTrue(message.contains("no human is available"),
-                      "the deny must explain WHY it could not ask, got: \(message)")
-        XCTAssertTrue(message.contains("Ask the supervisor"),
-                      "the deny must name a model-reachable recourse, got: \(message)")
+        let result = results[0]
+        XCTAssertEqual(result?.isError, true)
+        XCTAssertTrue(result?.outputJSON.contains(ToolErrorCode.approvalUnavailable.rawValue) == true,
+                      "expected APPROVAL_UNAVAILABLE, got: \(result?.outputJSON ?? "nil")")
+        XCTAssertFalse(result?.outputJSON.contains(ToolErrorCode.computerUseDenied.rawValue) == true,
+                       "nobody decided — this is not a denial")
+        let message = denyMessage(result)
+        XCTAssertTrue(message.contains("no human"), "the refusal must explain WHY it could not ask, got: \(message)")
+        XCTAssertFalse(message.lowercased().contains("supervisor"),
+                       "no recourse: the answerer this run has cannot approve, got: \(message)")
         XCTAssertFalse(message.contains("Settings"),
                        "the model cannot open a Settings pane, got: \(message)")
+        XCTAssertFalse(message.contains("Read-only commands"),
+                       "the clause is this family's: captures and scrolling, not shell commands — \(message)")
         XCTAssertEqual(judgeClient.callCount, 0,
                        "a non-Auto mode must never fall back to the unattended judge")
     }

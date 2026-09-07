@@ -500,4 +500,43 @@ final class BashJudgeServiceTests: XCTestCase {
                            "echoing example \(line) must be a deny")
         }
     }
+
+    // MARK: - JudgeFailClosedReason (2026-09-08)
+
+    /// Every deny the RUNTIME writes is recognisable as one. The list is single-sourced
+    /// because a second reader — the one-shot prompt trainer — must not count a transport
+    /// failure as "the judge refused a dangerous command".
+    func testIsFailClosed_recognisesEveryRuntimeDeny() {
+        for reason in [JudgeFailClosedReason.bashNoVerdict,
+                       JudgeFailClosedReason.bashNotSingleObject,
+                       JudgeFailClosedReason.bashConflicting,
+                       JudgeFailClosedReason.bashMalformed,
+                       JudgeFailClosedReason.actionNoVerdict,
+                       JudgeFailClosedReason.actionUnparseable,
+                       JudgeReplyChannelPolicy.reasoningOnlyAllowReason,
+                       JudgeFailClosedReason.callFailed(subject: "Command", message: "Network error"),
+                       JudgeFailClosedReason.callFailed(subject: "Action", message: "timed out")] {
+            XCTAssertTrue(JudgeFailClosedReason.isFailClosed(reason), reason)
+        }
+    }
+
+    /// A deny the MODEL made is not fail-closed — including the no-reason default both
+    /// gates substitute, which is still the model's verdict.
+    func testIsFailClosed_isFalseForAModelVerdict() {
+        for reason in ["Deletes the entire home directory.",
+                       "Denied by command judge.",
+                       "Denied by judge.",
+                       "Approved by command judge.",
+                       ""] {
+            XCTAssertFalse(JudgeFailClosedReason.isFailClosed(reason), reason)
+        }
+    }
+
+    /// The constants are what `parse` actually returns — an extraction that drifted from its
+    /// call site would make the trainer's classification silently wrong.
+    func testParse_unparseableReply_returnsTheConstantVerbatim() {
+        XCTAssertEqual(BashJudgeService.parse("").reason, JudgeFailClosedReason.bashNoVerdict)
+        XCTAssertEqual(BashJudgeService.parse("{\"decision\":\"OK\"} and also {\"decision\":\"DENY\"}").reason,
+                       JudgeFailClosedReason.bashNotSingleObject)
+    }
 }

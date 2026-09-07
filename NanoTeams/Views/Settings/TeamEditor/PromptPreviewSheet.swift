@@ -94,7 +94,11 @@ struct PromptPreviewSheet: View {
             workFolderState: PromptBuilder.WireWorkFolder.from(orchestratorURL: store.workFolderURL),
             selectedScheme: workFolder?.settings.selectedScheme,
             isVisionConfigured: store.visionLLMConfig != nil,
-            isComputerUseEnabled: config.isComputerUseEnabled,
+            approval: ToolApprovalAvailability.forTeam(
+                bashMode: config.bashMode,
+                computerUseMode: config.computerUseMode,
+                team: team,
+                workFolderSettings: workFolder?.settings),
             globalContext: config.globalContext,
             agentInstructions: store.agentInstructions,
             attachedSkills: store.roleSkills?.resolve(roleDefinition.attachedSkillIDs) ?? []

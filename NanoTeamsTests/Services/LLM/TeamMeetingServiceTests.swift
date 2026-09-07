@@ -195,33 +195,32 @@ final class TeamMeetingServiceTests: XCTestCase {
         XCTAssertTrue(decision.nextSteps.isEmpty)
     }
 
-    // Regression pin for Auto-mode auto-conclusion attribution (PR review I2).
-    // The +TeamMeeting.swift call site passes `effectiveCoordinator` into
-    // `concludedBy:`, which equals `resolveCoordinatorRole(team) ?? initiator`.
-    // In Auto mode (designated == nil) the initiator therefore ends up on
-    // `TeamDecision.proposedBy`.
+    // Regression pin for conclusion attribution (PR review I2): `concludedBy:` lands on
+    // `TeamDecision.proposedBy`. The +TeamMeeting.swift call site passes
+    // `effectiveCoordinator`, which is `resolveCoordinatorRole(team) ?? initiator` —
+    // since 2026-09-06 there is no Auto mode, so the initiator stands in only for a
+    // fixture with no team to resolve against; that is the case simulated here.
     func testConcludeMeeting_concludedByInitiator_setsProposedBy() {
         var meeting = TeamMeetingService.createMeeting(
-            topic: "Auto-mode topic",
+            topic: "No-team topic",
             initiatedBy: .softwareEngineer,
             participants: [.uxDesigner, .sre],
             context: nil
         )
         meeting.start()
 
-        // The +TeamMeeting.swift call site computes `effectiveCoordinator`
-        // for Auto mode (designated == nil → initiator). Simulate that here.
+        // `effectiveCoordinator` with no team resolves to the initiator. Simulate that here.
         let effectiveCoordinator: Role = .softwareEngineer  // = initiator
         TeamMeetingService.concludeMeeting(
             meeting: &meeting,
-            decision: "Auto-mode decision",
+            decision: "No-team decision",
             rationale: nil,
             nextSteps: nil,
             concludedBy: effectiveCoordinator
         )
 
         XCTAssertEqual(meeting.decisions.first?.proposedBy, .softwareEngineer,
-                       "Auto mode: TeamDecision.proposedBy must equal the initiator")
+                       "no team to resolve against: the initiator stands in as coordinator and lands on proposedBy")
     }
 
     func testConcludeMeeting_SetsAgreedByToParticipants() {
@@ -248,47 +247,6 @@ final class TeamMeetingServiceTests: XCTestCase {
         XCTAssertTrue(decision.agreedBy.contains(.sre))
     }
 
-    // MARK: - generateMeetingSummary Tests
-
-    func testGenerateMeetingSummary_IncludesBasicInfo() {
-        var meeting = createBasicMeeting()
-        addMessages(to: &meeting, count: 3)
-        meeting.complete()
-
-        let summary = TeamMeetingService.generateMeetingSummary(meeting: meeting)
-
-        XCTAssertTrue(summary.contains("Test Topic"))
-        XCTAssertTrue(summary.contains("Completed"))
-        XCTAssertTrue(summary.contains("Messages: 3"))
-    }
-
-    func testGenerateMeetingSummary_IncludesDecisions() {
-        var meeting = createBasicMeeting()
-        meeting.start()
-        TeamMeetingService.concludeMeeting(
-            meeting: &meeting,
-            decision: "Use REST API",
-            rationale: "Simpler implementation",
-            nextSteps: "Start implementation\nWrite tests",
-            concludedBy: .tpm
-        )
-
-        let summary = TeamMeetingService.generateMeetingSummary(meeting: meeting)
-
-        XCTAssertTrue(summary.contains("Decisions:"))
-        XCTAssertTrue(summary.contains("Use REST API"))
-        XCTAssertTrue(summary.contains("Simpler implementation"))
-        XCTAssertTrue(summary.contains("Start implementation"))
-    }
-
-    func testGenerateMeetingSummary_WithNoDecisions_OmitsDecisionSection() {
-        let meeting = createBasicMeeting()
-
-        let summary = TeamMeetingService.generateMeetingSummary(meeting: meeting)
-
-        XCTAssertFalse(summary.contains("Decisions:"))
-    }
-
     // MARK: - generateMeetingResultForConversation Tests
 
     func testGenerateMeetingResultForConversation_WithDecision_IncludesDecision() {
@@ -302,7 +260,7 @@ final class TeamMeetingServiceTests: XCTestCase {
             concludedBy: .tpm
         )
 
-        let result = TeamMeetingService.generateMeetingResultForConversation(meeting: meeting)
+        let result = TeamMeetingService.generateMeetingResultForConversation(meeting: meeting, context: makeContext())
 
         XCTAssertTrue(result.contains("Team Meeting Result"))
         XCTAssertTrue(result.contains("Decision: Implement caching layer"))
@@ -326,10 +284,34 @@ final class TeamMeetingServiceTests: XCTestCase {
             messageType: .agreement
         ))
 
-        let result = TeamMeetingService.generateMeetingResultForConversation(meeting: meeting)
+        let result = TeamMeetingService.generateMeetingResultForConversation(meeting: meeting, context: makeContext())
 
         XCTAssertTrue(result.contains("Team Meeting Result"))
         XCTAssertTrue(result.contains("Key points discussed:"))
+    }
+
+    /// R1.8.3: the initiator reads the result in its own vocabulary. On a renamed team the
+    /// enum `displayName` is a roster the model cannot match against `## Team` or the
+    /// `ask_teammate` schema ("as listed under Members"), so every name resolves through the
+    /// team — the rule every other meeting line already followed.
+    func testGenerateMeetingResultForConversation_namesParticipantsAsTheTeamDoes() {
+        var team = TeamTemplateFactory.faang()
+        guard var designer = team.roles.first(where: { $0.systemRoleID == "uxDesigner" }) else {
+            return XCTFail("FAANG has a UX Designer")
+        }
+        designer.name = "Experience Lead"
+        team.updateRole(designer)
+        var meeting = createBasicMeeting()
+        meeting.start()
+        meeting.addMessage(TeamMessage(
+            role: .uxDesigner, content: "Ship the flow as drawn.", messageType: .proposal))
+
+        let result = TeamMeetingService.generateMeetingResultForConversation(
+            meeting: meeting, context: makeContext(team: team))
+
+        XCTAssertTrue(result.contains("Participants: Experience Lead, Software Engineer, SRE"), result)
+        XCTAssertTrue(result.contains("- [Experience Lead]: Ship the flow as drawn."), result)
+        XCTAssertFalse(result.contains("UX Designer"), result)
     }
 
     // MARK: - TeamMeeting Model Tests
@@ -544,6 +526,18 @@ final class TeamMeetingServiceTests: XCTestCase {
     }
 
     // MARK: - Helpers
+
+    private func makeContext(team: Team? = nil) -> TeamMeetingService.MeetingContext {
+        TeamMeetingService.MeetingContext(
+            initiatedBy: .softwareEngineer,
+            participants: [.uxDesigner, .softwareEngineer, .sre],
+            availableArtifacts: [],
+            artifactReader: { _ in nil },
+            team: team,
+            coordinatorRole: .tpm,
+            limits: TeamLimits()
+        )
+    }
 
     private func createBasicMeeting() -> TeamMeeting {
         TeamMeeting(

@@ -35,9 +35,11 @@ final class DomainValueTypeCoverageTests: XCTestCase {
         let settings = try JSONDecoder().decode(TeamSettings.self, from: Data("{}".utf8))
 
         XCTAssertTrue(settings.hierarchy.reportsTo.isEmpty, "hierarchy defaults to empty")
-        XCTAssertNil(settings.meetingCoordinatorRoleID, "nil coordinator is Auto mode, not a missing value")
+        XCTAssertNil(settings.meetingCoordinatorRoleID,
+                     "a bare settings object has no roster to resolve a coordinator against — "
+                         + "`Team.meetingCoordinatorID` heals it once roles exist")
+        XCTAssertTrue(settings.meetingsEnabled, "meetings are on unless the team switched them off")
         XCTAssertTrue(settings.invitableRoles.isEmpty)
-        XCTAssertFalse(settings.supervisorCanBeInvited)
         XCTAssertEqual(settings.limits, TeamLimits.default)
         XCTAssertEqual(settings.defaultAcceptanceMode, .afterEachRole,
                        "the fail-VISIBLE default: one extra Accept click beats silently accepting "
@@ -50,6 +52,9 @@ final class DomainValueTypeCoverageTests: XCTestCase {
     /// The other half of the same contract: a present value must win over the default, or the
     /// test above would pass against a decoder that ignored its input entirely.
     func testTeamSettings_presentValuesBeatTheDefaults() throws {
+        // `supervisorCanBeInvited` is the Supervisor seat retired on 2026-09-07 — kept in the
+        // fixture on purpose as a "legacy key is ignored" pin: it sits BEFORE two live keys,
+        // so a decoder that tripped on it would lose `invitableRoles` and `acceptanceCheckpoints`.
         let json = """
         {"supervisorMode":"autonomous","defaultAcceptanceMode":"finalOnly",
          "supervisorCanBeInvited":true,"invitableRoles":["a"],"acceptanceCheckpoints":["b"]}
@@ -58,9 +63,28 @@ final class DomainValueTypeCoverageTests: XCTestCase {
 
         XCTAssertEqual(settings.supervisorMode, .autonomous)
         XCTAssertEqual(settings.defaultAcceptanceMode, .finalOnly)
-        XCTAssertTrue(settings.supervisorCanBeInvited)
         XCTAssertEqual(settings.invitableRoles, ["a"])
         XCTAssertEqual(settings.acceptanceCheckpoints, ["b"])
+    }
+
+    /// Until 2026-09-07 `TeamSettings` carried a `supervisorCanBeInvited` seat that let an LLM
+    /// speak AS the Supervisor in meetings and `ask_teammate`. The seat is gone — no stored
+    /// property, no `CodingKeys` case — but every `teams.json` written before that still
+    /// carries the key. A keyed container ignores a key nobody asks for, so the file decodes,
+    /// the live field AFTER the retired key is still read, and the key is not written back.
+    ///
+    /// RED: re-add the seat as a `CodingKeys` case → the re-encoded JSON carries it again;
+    /// make the decoder strict about unknown keys → the decode throws.
+    func testTeamSettings_ignoresTheRetiredSupervisorSeatKey() throws {
+        let json = #"{"supervisorCanBeInvited":true,"meetingsEnabled":false}"#
+
+        let settings = try JSONDecoder().decode(TeamSettings.self, from: Data(json.utf8))
+
+        XCTAssertFalse(settings.meetingsEnabled, "decode read past the retired key to a live field")
+        let reEncoded = try JSONSerialization.jsonObject(with: try JSONEncoder().encode(settings)) as? [String: Any]
+        XCTAssertNotNil(reEncoded, "TeamSettings encodes as a JSON object")
+        XCTAssertNil(reEncoded?["supervisorCanBeInvited"], "the retired seat is dropped on the next write, not round-tripped")
+        XCTAssertEqual(reEncoded?["meetingsEnabled"] as? Bool, false, "the live neighbour survives the same write")
     }
 
     // MARK: - The exhaustiveness invariant behind the unreachable `??` arms

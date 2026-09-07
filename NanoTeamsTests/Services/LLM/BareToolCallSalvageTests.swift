@@ -206,20 +206,27 @@ final class BareToolCallSalvageTests: XCTestCase {
             .deletingLastPathComponent()  // repo root
     }
 
-    /// The sole expected call site — also the resolves-pin's marker, so the marker is a
+    /// The step path's call site — also the resolves-pin's marker, so the marker is a
     /// file every compiling checkout carries (the public mirror ships no CLAUDE.md).
     private static let expectedCallSitePath = "NanoTeams/Services/LLM/LLMExecutionService+Streaming.swift"
 
-    /// Exactly one production call site: route 3 of `performStreamingCall`.
+    /// Exactly two production call sites: route 3 of `performStreamingCall`, and its
+    /// finished-reply twin `FinishedReplyToolCallResolver` (the meeting turn, 2026-09-07).
     ///
     /// A source pin because the property is about where this may NOT be used, and no
-    /// behavioural test can observe a call site that doesn't exist yet. The step tool loop
-    /// is the only place whose guards were reasoned through: it has a role's schema, a
-    /// runtime that answers `tool_not_authorized`, and a ceiling that now counts an
-    /// all-rejected batch. Meeting turns, consultations, the delegated-supervisor answer,
-    /// team generation and vision analysis have none of that, and the last two are
-    /// conversations where a model quoting a JSON object is ordinary.
-    func testSalvageHasExactlyOneProductionCallSite() throws {
+    /// behavioural test can observe a call site that doesn't exist yet. Both sites hand
+    /// the salvage the schemas advertised on THAT call, so a name the speaker does not
+    /// hold is never promoted, and both feed a runtime that answers `tool_not_authorized`
+    /// and a ceiling that counts an all-rejected batch (the meeting tool loop mirrors the
+    /// step's). Consultations, the delegated-supervisor answer, team generation and vision
+    /// analysis have none of that, and the last two are conversations where a model
+    /// quoting a JSON object is ordinary.
+    private static let expectedCallSiteFiles = [
+        "FinishedReplyToolCallResolver.swift",
+        "LLMExecutionService+Streaming.swift",
+    ]
+
+    func testSalvageHasExactlyTwoProductionCallSites() throws {
         let needle = "BareToolCallSalvage" + ".salvage("
         let enumerator = FileManager.default.enumerator(
             at: repoRoot.appendingPathComponent("NanoTeams"),
@@ -233,9 +240,11 @@ final class BareToolCallSalvageTests: XCTestCase {
             guard url.lastPathComponent != "BareToolCallSalvage.swift" else { continue }
             sites.append(url.lastPathComponent)
         }
+        XCTAssertTrue(
+            Self.expectedCallSiteFiles.contains(URL(fileURLWithPath: Self.expectedCallSitePath).lastPathComponent))
         XCTAssertEqual(
-            sites, [URL(fileURLWithPath: Self.expectedCallSitePath).lastPathComponent],
-            "the salvage is scoped to the step tool loop; adding a caller means re-arguing "
+            sites.sorted(), Self.expectedCallSiteFiles,
+            "the salvage is scoped to the two tool loops; adding a caller means re-arguing "
                 + "its guards for that surface, not reusing them")
     }
 

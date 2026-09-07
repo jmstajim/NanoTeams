@@ -36,6 +36,29 @@ nonisolated enum GitConflictParser {
     /// Every conflicted path named in a git merge/pull's combined output, in the order
     /// git printed them, de-duplicated. Empty when the output names none — which is not
     /// the same as "no conflict", and callers must not treat it as such.
+    /// The one sentence four sites used to spell as `"Merge conflicts detected"`.
+    ///
+    /// Three words for the state with the most specific recovery on this whole tool
+    /// surface, and the file list was ALREADY computed beside it: every one of those
+    /// sites passed `details: ["conflicts": …]`. The model never saw it. An error
+    /// envelope carries `data: nil`, `ToolErrorNotePolicy`'s default arm reads only
+    /// `message`, and the direction it picks for `CONFLICT` is "if the message
+    /// indicates bad arguments, fix them and retry" — wrong in every particular: the
+    /// arguments were fine, the retry re-conflicts, and the work to do is in the
+    /// working tree.
+    ///
+    /// Names the files when git named them and says so when it did not, because
+    /// "conflicts detected somewhere" and "conflicts in these two files" call for
+    /// different next moves.
+    static func conflictMessage(paths: [String]) -> String {
+        let where_ = paths.isEmpty
+            ? "Run git_status to see which files are conflicted"
+            : "Conflicted files: \(paths.joined(separator: ", "))"
+        return "Merge conflicts detected — the working tree now contains conflict markers. "
+            + "\(where_). Resolve each marked region with edit_file, then git_add the "
+            + "resolved paths. Re-running this command cannot clear them."
+    }
+
     static func conflictedPaths(in output: String) -> [String] {
         var seen = Set<String>()
         var paths: [String] = []

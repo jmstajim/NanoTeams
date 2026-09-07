@@ -456,9 +456,13 @@ extension NTMSOrchestrator {
             if let advice = AutovisorStatus.acceptRejectionAdvice(
                 roleStatus: run.roleStatuses[roleID],
                 isChatModeTask: isChatModeTask,
-                taskReadyToClose: task.isReadyForFinalAcceptance
+                taskReadyToClose: task.isReadyForFinalAcceptance,
+                taskID: taskID,
+                roleID: roleID
             ) {
-                return .failure(reason + " — " + advice)
+                // Prose into the message, the same call into `next` — the manager's
+                // recovery no longer depends on it re-deriving arguments from a sentence.
+                return .failure(reason + " — " + advice.prose, next: advice.next)
             }
             return .failure(reason)
         case .finishChatRole:

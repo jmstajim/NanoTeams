@@ -28,6 +28,13 @@ extension LLMExecutionService {
         let team = resolveTeam(task: task)
         let teamSettings = team?.settings ?? .default
 
+        // A single-role team has nobody to consult (`Team.hasTeammatePartner` — the same
+        // rule resolver step 3.0c withholds the tool by). Refused before any role lookup so
+        // the model is not sent a roster it cannot use; the Supervisor is not a teammate.
+        if let team, !team.hasTeammatePartner {
+            return .failed("This team has no teammate to consult. Continue on your own.")
+        }
+
         // Get the consulted role — try built-in ID first, then team lookup by any identifier
         let consultedRole: Role
         if let builtIn = Role.builtInRole(for: consultedRoleID) {
@@ -210,7 +217,8 @@ extension LLMExecutionService {
             if CancellationClassifier.isCancellation(error) {
                 return .failed("Consultation cancelled.")
             }
-            let message = "Unable to get response from \(consultedRole.displayName): \(error.localizedDescription)"
+            // `.failed` feeds the wire as the teammate's answer — classified, never localized (R1.8.2).
+            let message = "Unable to get response from \(consultedRole.displayName): \(ToolErrorHandler.classify(error).message)"
             consultation.fail(with: message)
             await recordConsultation(stepID: stepID, taskID: tid, consultation: consultation)
             return .failed(message)
@@ -250,8 +258,12 @@ extension LLMExecutionService {
             return "\(consultedRole.displayName) is not a member of this team. Available teammates: \(MeetingParticipantResolver.availableTeammatesList(team: team, teamSettings: teamSettings, excludeRoleID: requestingRoleID))"
         }
 
-        if let team, let found = team.findRole(byIdentifier: consultedRoleID), found.isSupervisor && !teamSettings.supervisorCanBeInvited {
-            return "Supervisor cannot be consulted in this team configuration. Available teammates: \(MeetingParticipantResolver.availableTeammatesList(team: team, teamSettings: teamSettings, excludeRoleID: requestingRoleID))"
+        // The Supervisor is the human, never a teammate (`MeetingParticipantResolver`).
+        // `ask_supervisor` is named only when the team's mode still offers it.
+        if consultedRole == .supervisor || team?.findRole(byIdentifier: consultedRoleID)?.isSupervisor == true {
+            let route = teamSettings.supervisorMode != .off
+                ? "; questions for the Supervisor go through \(ToolNames.askSupervisor)" : ""
+            return "The Supervisor is not a teammate\(route). Available teammates: \(MeetingParticipantResolver.availableTeammatesList(team: team, teamSettings: teamSettings, excludeRoleID: requestingRoleID))"
         }
 
         let resolvedID = team?.findRole(byIdentifier: consultedRoleID)?.id ?? consultedRoleID

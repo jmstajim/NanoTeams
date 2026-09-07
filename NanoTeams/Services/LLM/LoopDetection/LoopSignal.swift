@@ -26,10 +26,27 @@ nonisolated enum LoopSignal: Equatable, Hashable {
         }
     }
 
-    /// Short scope label embedded in the delegation paused-envelope's
-    /// `supervisor_message`. Mirrors the legacy `fireInterrupt` scope strings
-    /// verbatim (`"across messages"` / `"tool-call repetition"`) so the
-    /// LLM-facing envelope text — and the tests pinning it — are unchanged.
+    /// The clause a MODEL may read — how the discarded output repeated itself, derived from
+    /// the case alone. `diagnostic` and `scope` are for the human feed: `diagnostic` quotes
+    /// up to 80 characters of the repeated block plus tool names and paths, and on an
+    /// append-only wire a quoted fragment rides the prefix of every later request and
+    /// re-seeds the loop it was meant to break (R3.8.3 / R5.2.6; measured 2026-08-24).
+    /// `LoopRecoveryPolicy` composed this itself since then; `DelegationLoopWatcher` and
+    /// `AutovisorStuckEvaluator.wireRow` shipped `diagnostic` to a model until 2026-09-07.
+    /// Exhaustive on purpose: a fourth shape must be given words here.
+    var modelFacingClause: String {
+        switch self {
+        case .withinMessage:
+            return " — the same block of text, several times in a row."
+        case .acrossMessages:
+            return " — restating content from its earlier turns almost verbatim."
+        case .identicalToolCallSequence:
+            return " — the same tool call with identical arguments, several times in a row."
+        }
+    }
+
+    /// Short scope label for the human-facing feed row. Mirrors the legacy `fireInterrupt`
+    /// scope strings verbatim (`"across messages"` / `"tool-call repetition"`).
     var scope: String {
         switch self {
         case .withinMessage: return "within-message"

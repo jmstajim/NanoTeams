@@ -160,7 +160,7 @@ final class PromptImprovementServiceTests: XCTestCase {
         // Guards against regressing to a vague "clearer / more effective" goal that
         // forces a small model to guess what "better" means (playbook §1/§5).
         let prompt = PromptImprovementService.systemPrompt
-        XCTAssertTrue(prompt.contains("remove ambiguity"),
+        XCTAssertTrue(prompt.contains("ambiguity removed"),
                       "must name concrete improvement levers, not just the abstract goal")
         XCTAssertTrue(prompt.contains("expanding only what is genuinely underspecified"),
                       "must carry the faithfulness guard so short prompts aren't over-inflated")
@@ -188,8 +188,10 @@ final class PromptImprovementServiceTests: XCTestCase {
                        "only the model's OUTPUT is trimmed; the input prompt is sent verbatim")
     }
 
-    func testImprove_thinkingOnlyStream_returnsEmpty() async throws {
-        // A reasoning model that emits only thinking deltas (no visible content) → empty result.
+    func testImprove_thinkingOnlyStream_promotesTheReasoningChannel() async throws {
+        // A reasoning model that writes the whole rewrite in the reasoning channel and
+        // nothing in content: `ModelReplyChannels.answer` promotes the reasoning (R2.3.6).
+        // Until 2026-09-07 the field was filled with "" and the user's prompt vanished.
         let client = MockLLMClient()
         client.streamedEvents = [
             StreamEvent(thinkingDelta: "let me reason about this"),
@@ -198,7 +200,7 @@ final class PromptImprovementServiceTests: XCTestCase {
 
         let result = try await PromptImprovementService.improve(prompt: "x", config: makeConfig(), client: client)
 
-        XCTAssertEqual(result, "", "thinking deltas are not content — the field must not be filled with reasoning")
+        XCTAssertEqual(result, "let me reason about this some more", "content empty ⇒ the reasoning channel IS the answer")
     }
 
     func testImprove_ignoresMetadataEvents_accumulatesOnlyContent() async throws {

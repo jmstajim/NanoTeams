@@ -35,8 +35,34 @@ nonisolated func unwrapReentrantEnvelope(_ args: [String: Any], expectedToolName
 
 // MARK: - Argument Extraction Helpers
 
+/// A required string, with the same present-but-mistyped DIAGNOSIS `requiredInt`
+/// has had since it was written.
+///
+/// The bare `as? String` this replaced answered "was a String there", not "was
+/// the key there", so every non-String value reported the argument ABSENT:
+/// `{"content": 42}` came back as "Missing required argument: content" and sent
+/// the model hunting for an omission it had not made. Two different repairs,
+/// one sentence.
+///
+/// Diagnosis only — deliberately NOT coercion, which is where this differs from
+/// `coerceInt`'s tolerance one screen down. A quoted number is unambiguous: the
+/// model typed a number and JSON quoted it, so `"501"` can only have meant 501.
+/// The reverse has no such reading. `{"path": 123}` coerced to `"123"` INVENTS a
+/// filename and returns `FILE_NOT_FOUND` for a file nobody named — trading an
+/// accurate type error for a wrong fact one layer down, which is the defect this
+/// function is being fixed for, not a fix for it. (Pinned by
+/// `ToolsEnvelopeTests.testRequiredStringWrongType`.)
 nonisolated func requiredString(_ args: [String: Any], _ key: String) throws -> String {
     if let value = args[key] as? String { return value }
+    // Present and non-null decides between the two repairs BEFORE the
+    // `__raw_input__` fallback, which exists for the case where the key is
+    // absent entirely (the model sent a bare string instead of a JSON object).
+    // JSON `null` counts as absent, matching `requiredInt`.
+    if let value = args[key], !(value is NSNull) {
+        throw ToolArgumentError.invalidValue(
+            key: key,
+            detail: "must be a string; received \(ToolArgumentError.jsonTypeName(of: value))")
+    }
     // Fallback: LLM passed a plain string instead of a JSON object
     if let raw = args["__raw_input__"] as? String {
         // Try to parse as JSON and extract the requested key
@@ -48,6 +74,47 @@ nonisolated func requiredString(_ args: [String: Any], _ key: String) throws -> 
         return raw
     }
     throw ToolArgumentError.missingRequired(key)
+}
+
+/// A required string that must be one of `Verb.allCases` — the `enum:` the `Args:` line shows
+/// the model — matched after trimming and lowercasing, so `"Push"` and `" PUSH "` reach the
+/// `push` arm. Returns the VERB, not the string: the caller's `switch` is then exhaustive over
+/// the same enum the schema advertises, and there is no "invalid action" arm after the guard
+/// — that arm was unreachable by construction and read as untested code until 2026-09-06.
+/// The one seam for every verb-dispatching tool: `bash_output` and the Autovisor verbs
+/// lowercased and the two git dispatchers did not, in the same registry for the same
+/// argument name (R3.3.4).
+nonisolated func requiredEnum<Verb: RawRepresentable & CaseIterable>(
+    _ args: [String: Any], _ key: String, as _: Verb.Type
+) throws -> Verb where Verb.RawValue == String {
+    let raw = try requiredString(args, key)
+    let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    guard let verb = Verb(rawValue: normalized) else {
+        throw ToolArgumentError.invalidValue(
+            key: key,
+            detail: "must be one of: \(Verb.allCases.map(\.rawValue).joined(separator: ", ")); received '\(raw)'")
+    }
+    return verb
+}
+
+/// `nil` when the argument was not supplied; an `invalidArgs` envelope naming the actions it
+/// belongs to otherwise. An argument accepted and ignored is the mirror of advertise-then-
+/// reject: the call reports `ok:true` for something other than what it asked (R3.5.2). Says
+/// which verb to use rather than only which one not to, so the correction is a single edit
+/// — the shape `git_checkout`'s own `from`-rejection settled on, hoisted here on 2026-09-06
+/// when `git_stash` turned out to be dropping three arguments across four of its five verbs.
+nonisolated func rejectInapplicable(
+    _ argument: String, supplied: Bool, appliesTo actions: [String],
+    toolName: String, args: [String: Any]
+) -> ToolExecutionResult? {
+    guard supplied else { return nil }
+    let verbs = actions.map { "`action: \"\($0)\"`" }.joined(separator: " or ")
+    return makeErrorResult(
+        toolName: toolName, args: args, code: .invalidArgs,
+        message: "`\(argument)` applies only with \(verbs). "
+            + "It was ignored here, so this call would not have done what it asked for — "
+            + "omit it, or switch to an action it applies to."
+    )
 }
 
 /// A required string whose EMPTY value the callee cannot act on.
@@ -73,8 +140,8 @@ nonisolated func requiredString(_ args: [String: Any], _ key: String) throws -> 
 /// argument has no site-specific meaning to preserve. Hence a helper here and
 /// call-site guards there.
 ///
-/// Deliberately NOT applied to every `requiredString`. Three exclusions, and the
-/// second and third were both learned by getting them wrong first:
+/// Deliberately NOT applied to every `requiredString`. Two exclusions; the second
+/// was learned by getting it wrong first:
 ///
 /// 1. **Empty is a real value.** `write_file`'s `content` and `edit_file`'s
 ///    `new_text` create an empty file and delete a span. `analyze_image`'s
@@ -88,10 +155,11 @@ nonisolated func requiredString(_ args: [String: Any], _ key: String) throws -> 
 ///    empty" is strictly worse: it fixes a diagnosis that was already right and
 ///    deletes the only actionable half. The test for this exclusion is not "does
 ///    it fail" but "does the failure say what to send instead".
-/// 3. **Nothing reads it.** `conclude_meeting`'s `decision` is echoed back in a
-///    success envelope with no `ToolSignal` and no dispatcher arm; an empty one
-///    buys neither a state change nor a round-trip, so rejecting it only spends a
-///    correction turn.
+///
+/// A third exclusion stood here until 2026-09-06 — "nothing reads it", for
+/// `conclude_meeting`'s `decision`, which was an echo with no `ToolSignal`. The tool
+/// now ends the meeting and its `decision` is the recorded outcome, so the argument
+/// moved to this helper like every other free-text value a callee acts on.
 ///
 /// What is left — and what this helper is for — are arguments whose empty value
 /// produces a SUCCESS envelope or an expensive no-op AND whose rejection message
@@ -187,7 +255,9 @@ nonisolated func requiredInt(_ args: [String: Any], _ key: String) throws -> Int
     // JSON `null` counts as absent: the model omitted a value, it didn't
     // supply a malformed one.
     if let value = args[key], !(value is NSNull) {
-        throw ToolArgumentError.invalidValue(key: key, detail: "must be an integer")
+        throw ToolArgumentError.invalidValue(
+            key: key,
+            detail: "must be an integer; received \(ToolArgumentError.jsonTypeName(of: value))")
     }
     throw ToolArgumentError.missingRequired(key)
 }
@@ -223,6 +293,41 @@ nonisolated private func coerceBool(_ value: Any?) -> Bool? {
 nonisolated func optionalBool(_ args: [String: Any], _ key: String, default defaultValue: Bool = false) -> Bool
 {
     coerceBool(args[key]) ?? defaultValue
+}
+
+/// The arguments the model SENT that no handler could honour: a value present under a key
+/// the tool declares as boolean / integer / array of strings, in a form the shared coercion
+/// above refuses (`"on"` for a boolean, `5` for `paths`). Run by `ToolRuntime` before
+/// dispatch, so the call is answered with `INVALID_ARGS` naming the key and the accepted
+/// form. Until 2026-09-07 the helpers returned the caller's default in that case and the
+/// wrong branch ran under `ok:true` — `search {"paths": 5}` walked the whole tree and
+/// reported success (playbook REC.5 / R3.3.4; the hazard is spelled out on `coerceBool`).
+/// Only the three coerced families are judged; a `string` or `object` property is left to
+/// the handler, and JSON `null` counts as absent.
+nonisolated func argumentTypeViolations(args: [String: Any], schema: JSONSchema) -> [String] {
+    guard let properties = schema.properties else { return [] }
+    var violations: [String] = []
+    for key in properties.keys.sorted() {
+        guard let value = args[key], !(value is NSNull), let property = properties[key] else { continue }
+        let received = ToolArgumentError.jsonTypeName(of: value)
+        switch property.type {
+        case "boolean":
+            if coerceBool(value) == nil {
+                violations.append("`\(key)` must be a boolean — send true or false; received \(received).")
+            }
+        case "integer":
+            if coerceInt(value) == nil {
+                violations.append("`\(key)` must be an integer; received \(received).")
+            }
+        case "array":
+            if coerceStringArray(value) == nil, !(value is [Any]) {
+                violations.append("`\(key)` must be an array of strings; received \(received).")
+            }
+        default:
+            continue
+        }
+    }
+    return violations
 }
 
 /// Best-effort `[String]` extraction. A one-element list emitted as a bare
@@ -280,17 +385,20 @@ nonisolated func requiredStringArray(_ args: [String: Any], _ key: String) throw
 nonisolated func requiredStringArray(
     _ args: [String: Any], aliases: [String], display: String? = nil
 ) throws -> [String] {
-    var malformedKey: String?
+    var malformed: (key: String, value: Any)?
     for key in aliases {
         if let value = coerceStringArray(args[key]) {
             return value
         }
-        if malformedKey == nil, let raw = args[key], !(raw is NSNull) {
-            malformedKey = key
+        if malformed == nil, let raw = args[key], !(raw is NSNull) {
+            malformed = (key, raw)
         }
     }
-    if let malformedKey {
-        throw ToolArgumentError.invalidValue(key: malformedKey, detail: "must be a list of strings")
+    if let malformed {
+        throw ToolArgumentError.invalidValue(
+            key: malformed.key,
+            detail: "must be a list of strings; received "
+                + ToolArgumentError.jsonTypeName(of: malformed.value))
     }
     throw ToolArgumentError.missingRequired(display ?? aliases.joined(separator: " / "))
 }
@@ -299,7 +407,7 @@ nonisolated func requiredStringArray(
 
 /// Known non-content keys that should never be treated as content fallbacks.
 nonisolated private let nonContentKeys: Set<String> = [
-    "path", "create_dirs", "encoding", "max_lines",
+    "path", "encoding", "max_lines",
     "must_exist", "mode", "file_glob", "patch",
     "start_line", "end_line", "include_line_numbers",
     "new_text", "anchors", "replace_range", "occurrence",

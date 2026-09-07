@@ -305,16 +305,19 @@ final class CreateArtifactFormatValidationTests: XCTestCase {
 
     /// The role's expected deliverables must appear in the description so the
     /// model sees them at the point of decision (not buried in the system prompt).
-    func testBuildSchema_perRole_inlinesExpectedArtifactsInDescription() throws {
+    /// The names live on the `name` parameter's `enum:` ALONE. The description used to list
+    /// them as well — the same fact twice in one schema on every request (R3.4.2 / R5.2.2),
+    /// while `## Deliverables`, the Harmony example and the closing user turn already carry
+    /// the names in prose.
+    func testBuildSchema_perRole_descriptionDoesNotRepeatTheEnum() throws {
         let role = makeRoleFixture(producesArtifacts: ["Implementation Plan", "Engineering Notes"])
         let schema = CreateArtifactTool.buildSchema(role: role)
-        let description = schema.description
-        XCTAssertTrue(description.contains("Implementation Plan"),
-                      "Description must inline expected deliverables: \(description)")
-        XCTAssertTrue(description.contains("Engineering Notes"),
-                      "Description must inline expected deliverables: \(description)")
-        XCTAssertTrue(description.contains("Expected deliverables for this role:"),
-                      "Description must label the inlined list: \(description)")
+        XCTAssertEqual(schema.parameters.properties?["name"]?.enumValues,
+                       ["Implementation Plan", "Engineering Notes"])
+        for name in ["Implementation Plan", "Engineering Notes", "Expected deliverables"] {
+            XCTAssertFalse(schema.description.contains(name),
+                           "the description must not restate the enum: \(schema.description)")
+        }
     }
 
     /// `name` parameter must carry an `enum` constraint exactly equal to the
@@ -381,20 +384,17 @@ final class CreateArtifactFormatValidationTests: XCTestCase {
             settings: TeamSettings(), graphLayout: TeamGraphLayout()
         )
 
-        let schemas = service.toolSchemas(for: .custom(id: "Engineer"), team: team)
+        let schemas = service.toolSchemas(for: .custom(id: "Engineer"), team: team, humanPresent: true)
         guard let createArtifactSchema = schemas.first(where: { $0.name == ToolNames.createArtifact }) else {
             XCTFail("Pipeline must auto-inject create_artifact for a role with producesArtifacts")
             return
         }
 
-        // Description-side: per-role schema inlines deliverables.
-        XCTAssertTrue(
+        // Description-side: the per-role schema does NOT restate the enum (R3.4.2) — the
+        // per-role build is recognised by the enum below, never by the description.
+        XCTAssertFalse(
             createArtifactSchema.description.contains("Engineering Notes"),
-            "Pipeline must use per-role schema (description carries the role's deliverables); regression: \(createArtifactSchema.description)"
-        )
-        XCTAssertTrue(
-            createArtifactSchema.description.contains("Test Plan"),
-            "Pipeline must include every declared deliverable in the description: \(createArtifactSchema.description)"
+            "the description must not repeat the deliverable names: \(createArtifactSchema.description)"
         )
 
         // Parameter-side: enum constraint mirrors role.producesArtifacts. The

@@ -27,8 +27,8 @@ nonisolated enum ToolConstants {
                                     TN.gitCheckout, TN.gitMerge, TN.gitLog, TN.gitDiff, TN.gitStash, TN.gitBranch]),
         ToolCategoryDisplay(id: "build", name: "Build", icon: "hammer",
                             tools: [TN.runXcodebuild, TN.runXcodetests]),
-        // conclude_meeting is auto-injected for the Meeting Coordinator (see `toolSchemas`)
-        // and shown in the Auto-injected UI section — not manually selectable.
+        // conclude_meeting is meeting-only: the coordinator's meeting turns carry it
+        // (`MeetingCoordinator.speakerTools`); never selectable, never in a step schema.
         ToolCategoryDisplay(id: "collaboration", name: "Collaboration", icon: "bubble.left.and.bubble.right",
                             tools: [TN.askTeammate, TN.requestTeamMeeting, TN.requestChanges]),
         ToolCategoryDisplay(id: "memory", name: "Memory", icon: "brain.head.profile",
@@ -68,7 +68,7 @@ nonisolated enum ToolConstants {
     static let definitionDisplayCategories: [ToolCategoryDisplay] =
         displayCategories.map { category in
             // The definitions list shows `conclude_meeting` alongside the other
-            // collaboration tools (it's auto-injected, so omitted from the
+            // collaboration tools (it is meeting-only, so omitted from the
             // role-editor picker's Collaboration section).
             category.id == "collaboration"
                 ? ToolCategoryDisplay(id: category.id, name: category.name, icon: category.icon,

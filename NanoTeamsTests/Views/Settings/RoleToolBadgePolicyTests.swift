@@ -64,7 +64,9 @@ final class RoleToolBadgePolicyTests: XCTestCase {
         storage: EffectiveToolset.Storage? = nil,
         selectedScheme: String? = nil,
         isVisionConfigured: Bool = false,
-        isComputerUseEnabled: Bool = false
+        // Helper default, not the runtime's: computer-use Off, bash available — the reading
+        // every existing case was written against when the parameter was a Bool.
+        approval: ToolApprovalAvailability = ToolApprovalAvailability(bash: .available, computerUse: .withheld(.switchedOff))
     ) -> RoleToolBadgePolicy.Model {
         RoleToolBadgePolicy.model(
             role: def,
@@ -73,7 +75,7 @@ final class RoleToolBadgePolicyTests: XCTestCase {
             storage: storage ?? .realFolder(root: nonGitRoot),
             selectedScheme: selectedScheme,
             isVisionConfigured: isVisionConfigured,
-            isComputerUseEnabled: isComputerUseEnabled,
+            approval: approval,
             autovisorTeamPolicy: .unrestricted
         )
     }
@@ -107,11 +109,188 @@ final class RoleToolBadgePolicyTests: XCTestCase {
         XCTAssertFalse(m.autoInjected.contains(ToolNames.askSupervisor))
     }
 
-    func testMeetingRole_inAutoCoordinatorMode_getsConcludeMeeting() {
-        let def = role(toolIDs: [ToolNames.requestTeamMeeting])
+    // MARK: - Meeting-only tools
+
+    /// `conclude_meeting` is never a STEP tool — not injected, not selectable — but the
+    /// team's coordinator holds it inside meeting turns, and the badge says so through
+    /// `meetingOnly`, read from the same list the meeting runtime appends.
+    func testCoordinator_getsConcludeMeetingAsMeetingOnly_neverAsAutoInjected() {
+        let coordinator = role(id: "coord", toolIDs: [ToolNames.requestTeamMeeting])
+        let other = role(id: "other", toolIDs: [ToolNames.requestTeamMeeting])
+        let t = team([coordinator, other],
+                     settings: TeamSettings(meetingCoordinatorRoleID: "coord"))
+
+        let coordModel = model(coordinator, team: t)
+        let otherModel = model(other, team: t)
+
+        XCTAssertEqual(coordModel.meetingOnly, [ToolNames.concludeMeeting])
+        XCTAssertFalse(coordModel.autoInjected.contains(ToolNames.concludeMeeting))
+        XCTAssertFalse(coordModel.effective.contains(ToolNames.concludeMeeting),
+                       "the step set never carries it")
+        XCTAssertEqual(otherModel.meetingOnly, [], "only the coordinator holds it")
+        XCTAssertTrue(RoleToolBadgePolicy.tooltip(coordModel).contains("In meeting turns only"))
+    }
+
+    /// A legacy `toolIDs` entry for `conclude_meeting` cannot ship from a step schema —
+    /// it is `availableToRoles == false` — and the badge files it as policy-blocked.
+    func testLegacyConcludeMeetingInToolIDs_isPolicyBlocked() {
+        let def = role(toolIDs: [ToolNames.requestTeamMeeting, ToolNames.concludeMeeting])
         let m = model(def, team: team([def]))
 
-        XCTAssertTrue(m.autoInjected.contains(ToolNames.concludeMeeting))
+        XCTAssertTrue(m.policyBlocked.contains(ToolNames.concludeMeeting))
+        XCTAssertFalse(m.effective.contains(ToolNames.concludeMeeting))
+    }
+
+    func testMeetingsOff_withholdsMeetingToolsUnderTheirOwnRequirement_andNoMeetingOnly() {
+        let def = role(id: "coord", toolIDs: [ToolNames.requestTeamMeeting, ToolNames.requestChanges, ToolNames.readFile])
+        let t = team([def], settings: TeamSettings(meetingCoordinatorRoleID: "coord", meetingsEnabled: false))
+        let m = model(def, team: t)
+
+        XCTAssertEqual(m.unavailableHere[.meetingsEnabled],
+                       [ToolNames.requestChanges, ToolNames.requestTeamMeeting])
+        XCTAssertFalse(m.effective.contains(ToolNames.requestTeamMeeting))
+        XCTAssertEqual(m.meetingOnly, [], "no meetings ⇒ nothing to conclude")
+        XCTAssertTrue(RoleToolBadgePolicy.tooltip(m).contains("Meetings are off"))
+    }
+
+    /// Switch on, nobody to reach: the two meeting tools AND `ask_teammate` file under the
+    /// ONE partner requirement (`Team.hasTeammatePartner`) with a hint about the roster,
+    /// not the switch; the lone coordinator has no meeting to conclude. Until 2026-09-07
+    /// the `supervisorCanBeInvited` seat made an LLM answering AS the Supervisor this
+    /// role's only "partner", so a single-role team still shipped `ask_teammate`.
+    func testSingleRoleTeam_withholdsCollaborationToolsUnderTeammatePartner_andNoMeetingOnly() {
+        let def = role(id: "coord", toolIDs: [ToolNames.requestTeamMeeting, ToolNames.requestChanges,
+                                              ToolNames.askTeammate, ToolNames.readFile])
+        let t = team([def], settings: TeamSettings(meetingCoordinatorRoleID: "coord"))
+        XCTAssertFalse(t.hasTeammatePartner)
+        let m = model(def, team: t)
+
+        XCTAssertEqual(m.unavailableHere[.teammatePartner],
+                       [ToolNames.askTeammate, ToolNames.requestChanges, ToolNames.requestTeamMeeting].sorted())
+        XCTAssertNil(m.unavailableHere[.meetingsEnabled], "the switch is on — the roster is the reason")
+        XCTAssertFalse(m.effective.contains(ToolNames.askTeammate))
+        XCTAssertTrue(m.effective.contains(ToolNames.readFile))
+        XCTAssertEqual(m.meetingOnly, [], "no partner ⇒ no meeting ⇒ nothing to conclude")
+        XCTAssertTrue(RoleToolBadgePolicy.tooltip(m).contains("second teammate"))
+    }
+
+    /// The meetings switch governs meetings alone: a two-role team with meetings off still
+    /// ships `ask_teammate`, and only `request_team_meeting` files under the switch.
+    func testMeetingsOff_withAPartner_keepsAskTeammate() {
+        let def = role(id: "coord", toolIDs: [ToolNames.askTeammate, ToolNames.requestTeamMeeting])
+        let partner = role(id: "partner", toolIDs: [ToolNames.readFile])
+        let t = team([def, partner],
+                     settings: TeamSettings(meetingCoordinatorRoleID: "coord", meetingsEnabled: false))
+        XCTAssertTrue(t.hasTeammatePartner)
+        let m = model(def, team: t)
+
+        XCTAssertEqual(m.unavailableHere[.meetingsEnabled], [ToolNames.requestTeamMeeting])
+        XCTAssertTrue(m.effective.contains(ToolNames.askTeammate))
+        XCTAssertNil(m.unavailableHere[.teammatePartner],
+                     "a partner exists — the switch is not the partner rule")
+    }
+
+    /// The Supervisor is the human and never counts as a partner: Supervisor + one role is
+    /// still a single-role roster, so `ask_teammate` has nobody to reach. Until 2026-09-07
+    /// this was exactly the roster on which the seat let an LLM answer AS the Supervisor.
+    func testSupervisorPlusOneRole_isNoPartner_askTeammateWithheld() {
+        let supervisor = role(id: "sup", name: "Supervisor", toolIDs: [], systemRoleID: "supervisor")
+        let def = role(toolIDs: [ToolNames.askTeammate, ToolNames.readFile])
+        let t = team([supervisor, def])
+        XCTAssertFalse(t.hasTeammatePartner, "the Supervisor is not a partner")
+        let m = model(def, team: t)
+
+        XCTAssertEqual(m.unavailableHere[.teammatePartner], [ToolNames.askTeammate])
+        XCTAssertFalse(m.effective.contains(ToolNames.askTeammate))
+        XCTAssertTrue(m.effective.contains(ToolNames.readFile))
+    }
+
+    /// Two non-Supervisor roles ARE a partner: `ask_teammate` ships and no requirement names it.
+    func testTwoRoleTeam_shipsAskTeammate() {
+        let def = role(id: "a", toolIDs: [ToolNames.askTeammate])
+        let partner = role(id: "b", toolIDs: [])
+        let t = team([def, partner])
+        XCTAssertTrue(t.hasTeammatePartner)
+        let m = model(def, team: t)
+
+        XCTAssertTrue(m.effective.contains(ToolNames.askTeammate))
+        XCTAssertTrue(m.unavailableHere.isEmpty)
+    }
+
+    /// No team ⇒ no roster to apply the partner rule to: resolver step 3.0c withholds
+    /// `ask_teammate` only under `if let team`, and the badge agrees.
+    func testNoTeam_keepsAskTeammate_thePartnerRuleNeedsARoster() {
+        let def = role(toolIDs: [ToolNames.askTeammate])
+        let m = model(def, team: nil)
+
+        XCTAssertTrue(m.effective.contains(ToolNames.askTeammate))
+        XCTAssertNil(m.unavailableHere[.teammatePartner])
+    }
+
+    // MARK: - ToolAvailabilityRequirement.governing
+
+    /// The one partner rule read directly: `ask_teammate` is governed by the roster alone —
+    /// neither the meetings switch nor anything else reaches a consultation.
+    func testGoverning_askTeammate_readsThePartnerAlone() {
+        XCTAssertEqual(
+            ToolAvailabilityRequirement.governing(
+                ToolNames.askTeammate, isDefaultStorage: false, approval: .available, hasTeammatePartner: false),
+            .teammatePartner)
+        XCTAssertNil(
+            ToolAvailabilityRequirement.governing(
+                ToolNames.askTeammate, isDefaultStorage: false, approval: .available, hasTeammatePartner: true))
+        XCTAssertNil(
+            ToolAvailabilityRequirement.governing(
+                ToolNames.askTeammate, isDefaultStorage: false, approval: .available,
+                meetings: .switchedOff, hasTeammatePartner: true),
+            "the meetings switch does not govern consultations")
+        XCTAssertEqual(
+            ToolAvailabilityRequirement.governing(
+                ToolNames.askTeammate, isDefaultStorage: false, approval: .available,
+                meetings: .switchedOff, hasTeammatePartner: false),
+            .teammatePartner,
+            "with meetings off AND no partner, ask_teammate still names the roster, not the switch")
+    }
+
+    /// Both meeting tools name the same partner requirement under `.noPartner`; the switch
+    /// is the user's explicit choice and wins the wording when it is off.
+    func testGoverning_meetingTools_underNoPartner_nameTheTeammatePartner() {
+        for name in [ToolNames.requestTeamMeeting, ToolNames.requestChanges] {
+            XCTAssertEqual(
+                ToolAvailabilityRequirement.governing(name, isDefaultStorage: false, approval: .available, meetings: .noPartner),
+                .teammatePartner, name)
+            XCTAssertEqual(
+                ToolAvailabilityRequirement.governing(
+                    name, isDefaultStorage: false, approval: .available, meetings: .switchedOff, hasTeammatePartner: false),
+                .meetingsEnabled, "\(name): the switch is reported before the roster")
+            XCTAssertNil(
+                ToolAvailabilityRequirement.governing(name, isDefaultStorage: false, approval: .available, meetings: .available),
+                "\(name): meetings on and a partner present — no precondition at all")
+        }
+    }
+
+    /// `.teammatePartner` replaced `.meetingPartner` on 2026-09-07 — one hint for both
+    /// collaboration channels, worded for the roster, not for meetings.
+    func testTeammatePartner_unmetHint_namesTheRoster() {
+        XCTAssertEqual(ToolAvailabilityRequirement.teammatePartner.unmetHint,
+                       "Needs a second teammate in this team")
+        XCTAssertNil(ToolAvailabilityRequirement.teammatePartner.metHint,
+                     "a present partner needs no annotation")
+        XCTAssertTrue(ToolAvailabilityRequirement.allCases.contains(.teammatePartner),
+                      "the tooltip iterates allCases — a case missing there never renders")
+    }
+
+    // MARK: - Ask Supervisor switch
+
+    func testAskSupervisorOff_withholdsAskSupervisorUnderItsOwnRequirement() {
+        // Explicit in `toolIDs` AND advisory (would be auto-injected): both routes close.
+        let def = role(toolIDs: [ToolNames.askSupervisor, ToolNames.readFile], requires: ["Brief"])
+        let t = team([def], settings: TeamSettings(supervisorMode: .off))
+        let m = model(def, team: t)
+
+        XCTAssertEqual(m.unavailableHere[.askSupervisorEnabled], [ToolNames.askSupervisor])
+        XCTAssertFalse(m.effective.contains(ToolNames.askSupervisor))
+        XCTAssertFalse(m.autoInjected.contains(ToolNames.askSupervisor))
     }
 
     // MARK: - Delegation pack
@@ -164,9 +343,87 @@ final class RoleToolBadgePolicyTests: XCTestCase {
     func testComputerUseOff_reportsTheFiveToolsUnderOneReason() {
         let tools = Array(ToolHandlerRegistry.computerUseTools)
         let def = role(toolIDs: tools + [ToolNames.readFile])
-        let m = model(def, team: team([def]), isComputerUseEnabled: false)
+        let m = model(def, team: team([def]),
+                      approval: ToolApprovalAvailability(bash: .available, computerUse: .withheld(.switchedOff)))
 
         XCTAssertEqual(Set(m.unavailableHere[.computerUse] ?? []), Set(tools))
+    }
+
+    // MARK: - The approval-gated families (B3, 2026-09-07)
+
+    func testBashOff_reportsTheShellToolsUnderTheOffSwitch() {
+        let def = role(toolIDs: [ToolNames.bash, ToolNames.bashOutput, ToolNames.readFile])
+        let m = model(def, team: team([def]),
+                      approval: ToolApprovalAvailability(bash: .withheld(.switchedOff), computerUse: .available))
+        XCTAssertEqual(Set(m.unavailableHere[.bashEnabled] ?? []), [ToolNames.bash, ToolNames.bashOutput])
+        XCTAssertNil(m.unavailableHere[.humanApprover])
+        XCTAssertTrue(m.effective.contains(ToolNames.readFile))
+    }
+
+    /// Manual with nobody to approve: the shell tools are withheld for want of a HUMAN, and
+    /// the badge says so — not "Bash is Off", which the user would go and check.
+    func testBashManualWithNoHuman_reportsTheShellToolsUnderHumanApprover() {
+        let def = role(toolIDs: [ToolNames.bash, ToolNames.bashOutput])
+        let m = model(def, team: team([def]),
+                      approval: ToolApprovalAvailability(bashMode: .manual, computerUseMode: .manual, humanPresent: false))
+        XCTAssertEqual(Set(m.unavailableHere[.humanApprover] ?? []), [ToolNames.bash, ToolNames.bashOutput])
+        XCTAssertNil(m.unavailableHere[.bashEnabled])
+        XCTAssertTrue(m.effective.isEmpty)
+        XCTAssertTrue(m.needsAttention, "a selection that ships nothing wants the badge")
+    }
+
+    /// Semi-automatic with no human keeps `bash` (read-only commands run): nothing to report.
+    func testBashSemiAutomaticWithNoHuman_shipsTheShellTools() {
+        let def = role(toolIDs: [ToolNames.bash, ToolNames.bashOutput])
+        let m = model(def, team: team([def]),
+                      approval: ToolApprovalAvailability(bashMode: .semiAutomatic, computerUseMode: .manual, humanPresent: false))
+        XCTAssertEqual(Set(m.effective), [ToolNames.bash, ToolNames.bashOutput])
+        XCTAssertTrue(m.unavailableHere.isEmpty)
+    }
+
+    func testComputerUseManualWithNoHuman_reportsAllFiveUnderHumanApprover() {
+        let tools = Array(ToolHandlerRegistry.computerUseTools)
+        let def = role(toolIDs: tools)
+        let m = model(def, team: team([def]),
+                      approval: ToolApprovalAvailability(bashMode: .auto, computerUseMode: .manual, humanPresent: false))
+        XCTAssertEqual(Set(m.unavailableHere[.humanApprover] ?? []), Set(tools))
+        XCTAssertNil(m.unavailableHere[.computerUse], "not Off — a human is what is missing")
+    }
+
+    /// Semi-automatic with no human: the mutating trio is withheld under the human reason, the
+    /// read-only two ship.
+    func testComputerUseSemiAutomaticWithNoHuman_splitsTheTrioFromTheReadOnlyTier() {
+        let tools = Array(ToolHandlerRegistry.computerUseTools)
+        let def = role(toolIDs: tools)
+        let m = model(def, team: team([def]),
+                      approval: ToolApprovalAvailability(bashMode: .auto, computerUseMode: .semiAutomatic, humanPresent: false))
+        XCTAssertEqual(Set(m.unavailableHere[.humanApprover] ?? []), ToolHandlerRegistry.computerUseMutatingTools)
+        XCTAssertEqual(Set(m.effective), ToolHandlerRegistry.computerUseTools.subtracting(ToolHandlerRegistry.computerUseMutatingTools))
+    }
+
+    func testApprovalRequirements_haveHintsAndRenderInTheTooltip() {
+        XCTAssertEqual(ToolAvailabilityRequirement.bashEnabled.unmetHint, "Bash is Off in Settings → Bash")
+        XCTAssertEqual(ToolAvailabilityRequirement.bashEnabled.metHint, "Bash enabled")
+        XCTAssertTrue(ToolAvailabilityRequirement.humanApprover.unmetHint.contains("human"))
+        XCTAssertTrue(ToolAvailabilityRequirement.humanApprover.unmetHint.contains("Autonomous"))
+        XCTAssertNil(ToolAvailabilityRequirement.humanApprover.metHint)
+        for requirement in [ToolAvailabilityRequirement.bashEnabled, .humanApprover] {
+            XCTAssertTrue(ToolAvailabilityRequirement.allCases.contains(requirement),
+                          "the tooltip iterates allCases — a case missing there never renders")
+        }
+    }
+
+    /// `governing` reads `approval` the way the resolver does — one reading per family.
+    func testGoverning_readsEachFamilyAgainstItsAvailability() {
+        let unattended = ToolApprovalAvailability(bashMode: .manual, computerUseMode: .semiAutomatic, humanPresent: false)
+        XCTAssertEqual(ToolAvailabilityRequirement.governing(ToolNames.bash, isDefaultStorage: false, approval: unattended), .humanApprover)
+        XCTAssertEqual(ToolAvailabilityRequirement.governing(ToolNames.uiClick, isDefaultStorage: false, approval: unattended), .humanApprover)
+        XCTAssertEqual(ToolAvailabilityRequirement.governing(ToolNames.screenCapture, isDefaultStorage: false, approval: unattended), .computerUse)
+        XCTAssertEqual(ToolAvailabilityRequirement.governing(ToolNames.bash, isDefaultStorage: false, approval: .available), .bashEnabled)
+        XCTAssertEqual(ToolAvailabilityRequirement.governing(ToolNames.uiClick, isDefaultStorage: false, approval: .available), .computerUse)
+        let off = ToolApprovalAvailability(bash: .withheld(.switchedOff), computerUse: .withheld(.switchedOff))
+        XCTAssertEqual(ToolAvailabilityRequirement.governing(ToolNames.bash, isDefaultStorage: false, approval: off), .bashEnabled)
+        XCTAssertEqual(ToolAvailabilityRequirement.governing(ToolNames.uiKey, isDefaultStorage: false, approval: off), .computerUse)
     }
 
     func testNoXcodeScheme_reportsTheXcodeTools() {
@@ -274,9 +531,11 @@ final class RoleToolBadgePolicyTests: XCTestCase {
         let t = team([original, copy])
 
         let viaRole = LLMExecutionService.resolveToolSchemas(
-            for: Role.fromDefinition(copy), team: t).map(\.name)
+            for: Role.fromDefinition(copy), team: t,
+            approval: .available).map(\.name)
         let viaDefinition = LLMExecutionService.resolveToolSchemas(
-            forDefinition: copy, team: t).map(\.name)
+            forDefinition: copy, team: t,
+            approval: .available).map(\.name)
 
         XCTAssertTrue(viaRole.contains(ToolNames.readFile),
                       "the lossy path picks up the FIRST systemRoleID match")

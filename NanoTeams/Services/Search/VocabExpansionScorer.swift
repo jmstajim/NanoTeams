@@ -8,7 +8,7 @@ import Foundation
 /// loaded `VocabVectorIndex`. No file I/O, no network, no `state`. That makes
 /// every scoring decision unit-testable without spinning an actor or mocking
 /// the embedding client (mirrors the pure-policy pattern of `LoopRecoveryPolicy`,
-/// `DesignatedCoordinatorResolver`, `MessageKeyPolicy`, `VectorMath`).
+/// `MeetingCoordinator`, `MessageKeyPolicy`, `VectorMath`).
 ///
 /// The two tiers map 1:1 onto the original inline logic:
 /// - Tier 1 (`tier1PerToken`) ranks each query token's precomputed vector

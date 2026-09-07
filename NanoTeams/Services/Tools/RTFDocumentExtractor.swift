@@ -28,7 +28,7 @@ nonisolated struct RTFDocumentExtractor: DocumentFormatExtractor {
                 ? .empty(reason: "RTF contains no text", scope: .wholeDocument)
                 : .text(text, warnings: [])
         } catch {
-            return .failure(reason: "could not read RTF: \(error.localizedDescription)")
+            return .failure(reason: "could not read RTF: \(ToolErrorHandler.classify(error).message)")
         }
     }
 }

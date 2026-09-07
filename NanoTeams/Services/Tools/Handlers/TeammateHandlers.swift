@@ -1,6 +1,15 @@
 import Foundation
 
 private typealias TN = ToolNames
+
+/// The one description of a roster-valued argument. Three properties take a teammate by
+/// name (`ask_teammate.teammate`, `request_changes.target_role`,
+/// `request_team_meeting.participants` items); the model reads the roster under
+/// `Members`, and the three used to say it in two wordings plus "Role IDs", which the
+/// prompt never shows. Pinned equal by `ToolSchemaTextPinTests`.
+nonisolated enum TeammateSchemaText {
+    static let rosterName = "The teammate's name, as listed under Members."
+}
 private typealias JS = JSONSchema
 
 // MARK: - Teammate Consultation Data Types
@@ -108,8 +117,8 @@ nonisolated struct AskTeammateTool: ToolHandler {
         description: "Ask a teammate a question. Limited per step.",
         parameters: JS.object(
             properties: [
-                "teammate": JS.string("The teammate's name, as listed under Members."),
-                "question": JS.string("Question to ask."),
+                "teammate": JS.string(TeammateSchemaText.rosterName),
+                "question": JS.string(),
                 "context": JS.string("Optional extra context."),
             ],
             required: ["teammate", "question"]
@@ -159,9 +168,9 @@ nonisolated struct RequestTeamMeetingTool: ToolHandler {
         description: "Start a multi-participant meeting on `topic`. Blocks until the meeting concludes; the full discussion is returned. Limited per run.",
         parameters: JS.object(
             properties: [
-                "topic": JS.string("Topic to discuss in the meeting"),
-                "participants": JS.array(items: JS.string("Role IDs of participants")),
-                "context": JS.string("Optional context for the meeting"),
+                "topic": JS.string(),
+                "participants": JS.array(items: JS.string(TeammateSchemaText.rosterName)),
+                "context": JS.string(),
             ],
             required: ["topic", "participants"]
         )
@@ -187,12 +196,9 @@ nonisolated struct RequestTeamMeetingTool: ToolHandler {
             let ctx = optionalString(args, "context")
 
             if participants.isEmpty {
-                return makeErrorResult(
-                    toolName: Self.name,
-                    args: args,
-                    code: .invalidArgs,
-                    message: "At least one participant is required"
-                )
+                throw ToolArgumentError.invalidValue(
+                    key: "participants",
+                    detail: "is empty — name at least one role to invite.")
             }
 
             return makeMeetingRequestResult(
@@ -208,67 +214,57 @@ nonisolated struct RequestTeamMeetingTool: ToolHandler {
 
 // MARK: - conclude_meeting
 
+/// The meeting coordinator's own end of a meeting.
+///
+/// Never in a STEP schema: `availableToRoles == false`, so neither `toolIDs` nor an
+/// auto-injection can grant it, and the resolver's `unavailableToRoles` strip removes a
+/// legacy `toolIDs` entry. Never stripped from a MEETING turn either — `excludedInMeetings`
+/// stays `false` and `MeetingCoordinator.speakerTools` appends it to the coordinator's
+/// turn only. Its `ToolSignal` is read by `MeetingToolExecutor`, which stops the turn, and
+/// by `handleTeamMeeting`, which records the decision and stops the meeting. Until
+/// 2026-09-06 this handler was an echo whose payload no consumer read: `excludedInMeetings`
+/// was `true`, the step resolver injected it where no meeting was ever active, and every
+/// meeting ended by turn limit or by a text heuristic instead of by its coordinator.
 nonisolated struct ConcludeMeetingTool: ToolHandler {
     static let name = TN.concludeMeeting
     static let schema = ToolSchema(
         name: TN.concludeMeeting,
-        description: "Conclude the active meeting with decisions and next steps. Returns the consolidated decision.",
+        description: "End the meeting: record the decision, its rationale and the next steps, drawn from the whole discussion.",
         parameters: JS.object(
             properties: [
-                "decision": JS.string("Summary of the decision reached"),
-                "rationale": JS.string("Reasoning behind the decision"),
-                "next_steps": JS.string("Next steps after the meeting"),
+                "decision": JS.string("What the group settled on, in one or two sentences."),
+                "rationale": JS.string("The arguments that carried it."),
+                "next_steps": JS.string("One per line."),
             ],
             required: ["decision"]
         )
     )
     static let category: ToolCategory = .collaboration
-    static let excludedInMeetings = true
+    static let availableToRoles = false
 
-    
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self {
         Self()
     }
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
         await ToolErrorHandler.execute(toolName: Self.name, args: args) {
-            // Deliberately `requiredString`. An earlier version of this sweep
-            // guarded emptiness here on the stated grounds that the decision "is
-            // recorded on the meeting and re-enters the initiating role's
-            // conversation" — which is false, and checkable: this handler returns
-            // a plain success envelope with NO `ToolSignal`, there is no
-            // `conclude_meeting` arm in `processToolSignal`, and the sole writer of
-            // `meeting.addDecision` is `TeamMeetingService.concludeMeeting`, called
-            // from the auto-conclude block using `meeting.messages.last`. The tool
-            // is also `excludedInMeetings`, and `request_team_meeting` blocks until
-            // the meeting has already concluded. So an empty decision buys neither
-            // a state-mutating success nor a round-trip — it is the one argument in
-            // the sweep whose premise does not apply, and rejecting it would spend a
-            // correction turn on a call that changes nothing either way.
-            //
-            // The larger finding stands separately: this tool is an ECHO whose
-            // payload no consumer reads. Wiring it to `concludeMeeting` or retiring
-            // it is its own change, not this one.
-            let decision = try requiredString(args, "decision")
+            // The decision IS the meeting's outcome: it is recorded on the meeting and
+            // returned to the initiator as the result of `request_team_meeting`. An empty
+            // one would end the meeting with nothing, so it is refused with what to send.
+            let decision = try requiredNonEmptyString(args, "decision")
             let rationale = optionalString(args, "rationale")
             let nextSteps = optionalString(args, "next_steps")
 
             struct ConcludeMeetingData: Codable {
-                var decision: String
-                var rationale: String?
-                var next_steps: String?
                 var status: String
             }
 
-            return makeSuccessResult(
+            return ToolExecutionResult(
                 toolName: Self.name,
-                args: args,
-                data: ConcludeMeetingData(
-                    decision: decision,
-                    rationale: rationale,
-                    next_steps: nextSteps,
-                    status: "concluded"
-                )
+                argumentsJSON: encodeArgsToJSON(args),
+                outputJSON: makeSuccessEnvelope(data: ConcludeMeetingData(status: "concluded")),
+                isError: false,
+                signal: .concludeMeeting(decision: decision, rationale: rationale, nextSteps: nextSteps)
             )
         }
     }
@@ -283,7 +279,7 @@ nonisolated struct RequestChangesTool: ToolHandler {
         description: "Request changes to a teammate's completed work. Triggers a team vote; on approval the target role re-executes with your amendments.",
         parameters: JS.object(
             properties: [
-                "target_role": JS.string("The teammate's name, as listed under Members."),
+                "target_role": JS.string(TeammateSchemaText.rosterName),
                 "changes": JS.string("What must change."),
                 "reasoning": JS.string("Why the change is necessary."),
             ],

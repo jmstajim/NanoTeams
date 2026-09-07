@@ -176,47 +176,12 @@ final class TeamMeetingExtendedTests: XCTestCase {
         XCTAssertTrue(meeting.hasParticipated(.softwareEngineer))
     }
 
-    // MARK: - generateMeetingSummary Edge Cases
-
-    func testGenerateMeetingSummary_EmptyMeeting() {
-        let meeting = createMeeting(participants: [.uxDesigner])
-
-        let summary = TeamMeetingService.generateMeetingSummary(meeting: meeting)
-
-        XCTAssertTrue(summary.contains("Test Topic"))
-        XCTAssertTrue(summary.contains("Messages: 0"))
-        XCTAssertFalse(summary.contains("Decisions:"))
-    }
-
-    func testGenerateMeetingSummary_MultipleDecisions() {
-        var meeting = createMeeting(participants: [.uxDesigner, .softwareEngineer])
-        meeting.start()
-
-        meeting.addDecision(TeamDecision(
-            summary: "First decision",
-            proposedBy: .tpm
-        ))
-        meeting.addDecision(TeamDecision(
-            summary: "Second decision",
-            rationale: "Better approach",
-            proposedBy: .softwareEngineer,
-            nextSteps: ["Step A", "Step B"]
-        ))
-
-        let summary = TeamMeetingService.generateMeetingSummary(meeting: meeting)
-
-        XCTAssertTrue(summary.contains("First decision"))
-        XCTAssertTrue(summary.contains("Second decision"))
-        XCTAssertTrue(summary.contains("Better approach"))
-        XCTAssertTrue(summary.contains("Step A"))
-    }
-
     // MARK: - generateMeetingResultForConversation Edge Cases
 
     func testGenerateMeetingResult_EmptyMeetingNoDecisions() {
         let meeting = createMeeting(participants: [.uxDesigner])
 
-        let result = TeamMeetingService.generateMeetingResultForConversation(meeting: meeting)
+        let result = TeamMeetingService.generateMeetingResultForConversation(meeting: meeting, context: makeContext())
 
         XCTAssertTrue(result.contains("Team Meeting Result"))
         XCTAssertTrue(result.contains("Test Topic"))
@@ -239,7 +204,7 @@ final class TeamMeetingExtendedTests: XCTestCase {
             messageType: .agreement
         ))
 
-        let result = TeamMeetingService.generateMeetingResultForConversation(meeting: meeting)
+        let result = TeamMeetingService.generateMeetingResultForConversation(meeting: meeting, context: makeContext())
 
         XCTAssertTrue(result.contains("Key points discussed:"))
         XCTAssertTrue(result.contains("Software Engineer"))
@@ -256,7 +221,7 @@ final class TeamMeetingExtendedTests: XCTestCase {
             messageType: .proposal
         ))
 
-        let result = TeamMeetingService.generateMeetingResultForConversation(meeting: meeting)
+        let result = TeamMeetingService.generateMeetingResultForConversation(meeting: meeting, context: makeContext())
 
         // The message content should be truncated to prefix(200) + "..."
         XCTAssertTrue(result.contains("..."))
@@ -401,6 +366,18 @@ final class TeamMeetingExtendedTests: XCTestCase {
     }
 
     // MARK: - Helpers
+
+    private func makeContext() -> TeamMeetingService.MeetingContext {
+        TeamMeetingService.MeetingContext(
+            initiatedBy: .softwareEngineer,
+            participants: [.uxDesigner, .softwareEngineer],
+            availableArtifacts: [],
+            artifactReader: { _ in nil },
+            team: nil,
+            coordinatorRole: .tpm,
+            limits: TeamLimits()
+        )
+    }
 
     private func createMeeting(
         participants: [Role]

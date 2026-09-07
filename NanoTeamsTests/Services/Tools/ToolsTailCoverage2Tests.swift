@@ -111,6 +111,10 @@ final class FToolsProcessLaunchTests: XCTestCase {
         }
         XCTAssertEqual(executable, shell)
         XCTAssertFalse(reason.isEmpty, "the underlying reason must be preserved, not discarded")
+        // R1.8.2: classified, not localized — the spawn error's own text names the directory's
+        // absolute path in the user's system language, and the reason rides the tool envelope.
+        XCTAssertFalse(reason.contains(locked.path), "no absolute path in the reason: \(reason)")
+        XCTAssertFalse(reason.contains("\u{201C}"), "no localized Cocoa prose: \(reason)")
 
         let rendered = try XCTUnwrap(runnerError.errorDescription)
         XCTAssertFalse(

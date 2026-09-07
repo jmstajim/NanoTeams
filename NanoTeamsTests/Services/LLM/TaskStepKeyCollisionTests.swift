@@ -957,7 +957,7 @@ final class PostTeardownWriteBarrierCornerTests: XCTestCase, @unchecked Sendable
             isError: false, signal: .visionAnalysis(imagePath: "img.png", prompt: "describe"))
         var conversation: [ChatMessage] = []
         await service.appendVisionResult(
-            result: result, toolCallID: UUID(), stepID: stepID, taskID: taskA,
+            result: result, toolCallID: UUID(), stepID: stepID, taskID: taskA, allowedToolNames: [],
             client: SilentClient(), config: stubConfig(), networkLogger: nil,
             conversationMessages: &conversation)
 
@@ -980,7 +980,7 @@ final class PostTeardownWriteBarrierCornerTests: XCTestCase, @unchecked Sendable
 
         let meeting = await service.handleTeamMeeting(
             stepID: stepID, topic: "t", participantIDs: [], context: nil,
-            initiatingRole: .softwareEngineer, task: task, runIndex: 0, stepIndex: 0,
+            initiatingRole: .softwareEngineer, initiatorSeat: .speaks, task: task, runIndex: 0, stepIndex: 0,
             client: SilentClient(), config: stubConfig())
         XCTAssertTrue(meeting.text.contains("no task context"), "got: \(meeting.text)")
         XCTAssertFalse(meeting.succeeded, "rejected meeting must report failure")

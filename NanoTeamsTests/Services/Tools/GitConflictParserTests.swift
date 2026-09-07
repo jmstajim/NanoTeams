@@ -173,4 +173,29 @@ final class GitConflictParserTests: XCTestCase {
                 inLine: "CONFLICT (file/directory): directory in the way of thing."),
             "thing")
     }
+
+    // MARK: - conflictMessage
+
+    /// Four sites spelled this "Merge conflicts detected" — three words for the state with
+    /// the most specific recovery on the tool surface — while passing the file list in
+    /// `details.conflicts`, which the model never sees (an error envelope has `data: nil`
+    /// and `ToolErrorNotePolicy`'s default arm reads only `message`).
+    func testConflictMessage_namesTheFilesAndTheRecovery() {
+        let m = GitConflictParser.conflictMessage(paths: ["a.swift", "b/c.swift"])
+        XCTAssertTrue(m.hasPrefix("Merge conflicts detected"), m)
+        XCTAssertTrue(m.contains("Conflicted files: a.swift, b/c.swift"), m)
+        XCTAssertTrue(m.contains("edit_file"), "name the tool that resolves them: \(m)")
+        XCTAssertTrue(m.contains("git_add"), "…and the one that stages the result: \(m)")
+        XCTAssertTrue(m.contains("cannot clear them"),
+                      "the direction the envelope alone never gave: retrying is not the fix — \(m)")
+    }
+
+    /// "Conflicts somewhere" and "conflicts in these two files" call for different next
+    /// moves, so an empty list must not render as an empty sentence fragment.
+    func testConflictMessage_noPaths_pointsAtGitStatusInstead() {
+        let m = GitConflictParser.conflictMessage(paths: [])
+        XCTAssertTrue(m.contains("Run git_status to see which files are conflicted"), m)
+        XCTAssertFalse(m.contains("Conflicted files:"), m)
+        XCTAssertFalse(m.contains(": ."), "no dangling empty list: \(m)")
+    }
 }

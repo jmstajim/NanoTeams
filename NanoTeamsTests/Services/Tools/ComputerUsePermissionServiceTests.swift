@@ -129,6 +129,32 @@ final class ComputerUsePermissionServiceTests: XCTestCase {
         }
     }
 
+    /// `ToolHandlerRegistry.computerUseMutatingTools` is a NAME list, and the evaluator is the
+    /// thing it claims to describe: under Semi-automatic exactly those three tools' actions
+    /// reach the review tier, and the other two (capture, scroll) are auto-allowed. The
+    /// resolver withholds the trio with no human on the strength of this pin.
+    func testSemiAutomatic_theMutatingTrioIsExactlyWhatAsks() {
+        XCTAssertTrue(ToolHandlerRegistry.computerUseMutatingTools.isSubset(of: ToolHandlerRegistry.computerUseTools))
+        XCTAssertEqual(ToolHandlerRegistry.computerUseMutatingTools, [ToolNames.uiClick, ToolNames.uiType, ToolNames.uiKey])
+        let byTool: [(String, ComputerUseAction)] = [
+            (ToolNames.uiClick, .click(x: 10, y: 10, button: "left", double: false, target: nil)),
+            (ToolNames.uiType, .typeText(text: "hello", target: nil)),
+            (ToolNames.uiKey, .pressKey(keys: "cmd+s", target: nil)),
+            (ToolNames.uiScroll, .scroll(x: 5, y: 5, dx: 0, dy: -3, target: nil)),
+            (ToolNames.screenCapture, .capture(target: "screen", windowTitle: nil)),
+        ]
+        XCTAssertEqual(Set(byTool.map(\.0)), ToolHandlerRegistry.computerUseTools, "every tool of the family has a row")
+        for (tool, action) in byTool {
+            let decision = ComputerUsePermissionService.evaluate(
+                input(action, bounds: true, captured: false), policy: policy(mode: .semiAutomatic))
+            if ToolHandlerRegistry.computerUseMutatingTools.contains(tool) {
+                XCTAssertTrue(isAsk(decision), "\(tool) must ask under Semi-automatic")
+            } else {
+                XCTAssertTrue(isAllow(decision), "\(tool) is the read-only tier and must auto-allow")
+            }
+        }
+    }
+
     func testSemiAutomatic_hardDenyRulesStillApply() {
         // The read-only auto-allow sits BELOW every deny tier.
         let p = policy(mode: .semiAutomatic, typing: ["password"], keys: ["cmd\\+q"], gateFirstCaptureOnly: false)

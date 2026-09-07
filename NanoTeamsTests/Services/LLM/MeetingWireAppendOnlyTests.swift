@@ -188,8 +188,8 @@ final class MeetingWireAppendOnlyTests: XCTestCase {
             speaker: .productManager,
             meeting(turns: (0..<9).map { (Role.softwareEngineer, "t\($0)") }), ctx).last?.content ?? ""
         XCTAssertTrue(
-            lateTurn.contains("summarize") || lateTurn.contains("steering"),
-            "and so did the escalating wrap-up steering")
+            lateTurn.contains("conclude_meeting"),
+            "and so did the wrap-up — the last turn names the call that ends the meeting")
     }
 
     // MARK: - Ordering invariants that make the above true

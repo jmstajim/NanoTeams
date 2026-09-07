@@ -385,14 +385,14 @@ final class StepCompletionAndToolResolutionTests: XCTestCase {
             id: "swe", name: "Engineer", toolIDs: [ToolNames.readFile])])
 
         XCTAssertTrue(
-            detachedService.toolSchemas(for: .custom(id: "swe"), team: team).isEmpty,
+            detachedService.toolSchemas(for: .custom(id: "swe"), team: team, humanPresent: true).isEmpty,
             "No delegate ⇒ no resolution environment ⇒ no tools (never a silent default)")
     }
 
     func testToolSchemasForDefinition_withoutDelegate_returnsEmpty() async {
         let role = makeRole(id: "swe", name: "Engineer", toolIDs: [ToolNames.readFile])
 
-        XCTAssertTrue(detachedService.toolSchemas(forDefinition: role, team: nil).isEmpty)
+        XCTAssertTrue(detachedService.toolSchemas(forDefinition: role, team: nil, humanPresent: true).isEmpty)
     }
 
     func testToolSchemas_visionAvailabilityComesFromTheDelegatesVisionConfig() async {
@@ -403,14 +403,14 @@ final class StepCompletionAndToolResolutionTests: XCTestCase {
         installSnapshot(teams: [team])
 
         delegate.visionLLMConfig = nil
-        let withoutVision = Set(service.toolSchemas(forDefinition: role, team: team).map(\.name))
+        let withoutVision = Set(service.toolSchemas(forDefinition: role, team: team, humanPresent: true).map(\.name))
         XCTAssertFalse(
             withoutVision.contains(ToolNames.analyzeImage),
             "Vision not configured ⇒ analyze_image is never advertised")
 
         delegate.visionLLMConfig = LLMConfig(
             provider: .lmStudio, baseURLString: "http://vision:1234", modelName: "vlm")
-        let withVision = Set(service.toolSchemas(forDefinition: role, team: team).map(\.name))
+        let withVision = Set(service.toolSchemas(forDefinition: role, team: team, humanPresent: true).map(\.name))
         XCTAssertTrue(
             withVision.contains(ToolNames.analyzeImage),
             "The instance shim must read `delegate.visionLLMConfig`, not a hardcoded default")
@@ -424,12 +424,12 @@ final class StepCompletionAndToolResolutionTests: XCTestCase {
         let team = makeTeam(roles: [makeSupervisorRole(), role])
 
         installSnapshot(teams: [team], selectedScheme: nil)
-        let noScheme = Set(service.toolSchemas(forDefinition: role, team: team).map(\.name))
+        let noScheme = Set(service.toolSchemas(forDefinition: role, team: team, humanPresent: true).map(\.name))
         XCTAssertFalse(noScheme.contains(ToolNames.runXcodebuild))
         XCTAssertFalse(noScheme.contains(ToolNames.runXcodetests))
 
         installSnapshot(teams: [team], selectedScheme: "NanoTeams")
-        let withScheme = Set(service.toolSchemas(forDefinition: role, team: team).map(\.name))
+        let withScheme = Set(service.toolSchemas(forDefinition: role, team: team, humanPresent: true).map(\.name))
         XCTAssertTrue(withScheme.contains(ToolNames.runXcodebuild))
         XCTAssertTrue(withScheme.contains(ToolNames.runXcodetests))
     }
@@ -441,7 +441,8 @@ final class StepCompletionAndToolResolutionTests: XCTestCase {
 
         let names = Set(
             LLMExecutionService.resolveToolSchemas(
-                for: .custom(id: "ghost_role_xyz"), team: team
+                for: .custom(id: "ghost_role_xyz"), team: team,
+                approval: .available
             ).map(\.name))
 
         XCTAssertFalse(names.isEmpty, "The fallback must still yield a workable toolset")
@@ -458,87 +459,177 @@ final class StepCompletionAndToolResolutionTests: XCTestCase {
     func testResolveToolSchemas_roleMissingFromTeam_withNilTeam_stillResolves() async {
         let names = Set(
             LLMExecutionService.resolveToolSchemas(
-                for: .custom(id: "ghost_role_xyz"), team: nil
+                for: .custom(id: "ghost_role_xyz"), team: nil,
+                approval: .available
             ).map(\.name))
 
         XCTAssertTrue(names.isSubset(of: SystemTemplates.fallbackCustomRoleToolIDs))
     }
 
-    // MARK: - resolveToolSchemas: conclude_meeting auto-injection (step 6)
+    // MARK: - resolveToolSchemas: conclude_meeting is meeting-only (retired step 6)
 
-    func testResolveToolSchemas_autoCoordinator_injectsConcludeMeetingForEveryMeetingStarter() async {
-        let meeter = makeRole(
-            id: "pm", name: "PM", toolIDs: [ToolNames.requestTeamMeeting])
-        let team = makeTeam(
-            roles: [makeSupervisorRole(), meeter],
-            settings: TeamSettings(meetingCoordinatorRoleID: nil))
-
-        let names = Set(
-            LLMExecutionService.resolveToolSchemas(forDefinition: meeter, team: team).map(\.name))
-
-        XCTAssertTrue(
-            names.contains(ToolNames.concludeMeeting),
-            "Auto mode ⇒ the initiator becomes coordinator, so it must be able to close the meeting")
-    }
-
-    func testResolveToolSchemas_designatedCoordinator_withholdsConcludeMeetingFromOtherRoles() async {
+    /// `conclude_meeting` never reaches a STEP schema — not for the team's coordinator, not
+    /// for another meeting starter, not through a legacy `toolIDs` entry. It is granted only
+    /// inside the coordinator's meeting turns (`MeetingCoordinator.speakerTools`); until
+    /// 2026-09-06 step 6 injected it into steps, where no meeting is ever active.
+    func testResolveToolSchemas_stepSchemaNeverCarriesConcludeMeeting() async {
         let coordinator = makeRole(
             id: "pm", name: "PM", toolIDs: [ToolNames.requestTeamMeeting])
         let other = makeRole(
             id: "tl", name: "Tech Lead", toolIDs: [ToolNames.requestTeamMeeting])
+        let legacy = makeRole(
+            id: "cr", name: "Reviewer",
+            toolIDs: [ToolNames.requestTeamMeeting, ToolNames.concludeMeeting])
         let team = makeTeam(
-            roles: [makeSupervisorRole(), coordinator, other],
+            roles: [makeSupervisorRole(), coordinator, other, legacy],
             settings: TeamSettings(meetingCoordinatorRoleID: "pm"))
 
-        let coordNames = Set(
-            LLMExecutionService.resolveToolSchemas(forDefinition: coordinator, team: team).map(\.name))
-        let otherNames = Set(
-            LLMExecutionService.resolveToolSchemas(forDefinition: other, team: team).map(\.name))
-
-        XCTAssertTrue(coordNames.contains(ToolNames.concludeMeeting))
-        XCTAssertFalse(
-            otherNames.contains(ToolNames.concludeMeeting),
-            "With a live designated coordinator only that role may conclude")
+        for role in [coordinator, other, legacy] {
+            let names = Set(
+                LLMExecutionService.resolveToolSchemas(forDefinition: role, team: team, approval: .available).map(\.name))
+            XCTAssertFalse(names.contains(ToolNames.concludeMeeting),
+                           "\(role.name): a step schema must never carry conclude_meeting")
+            XCTAssertTrue(names.contains(ToolNames.requestTeamMeeting), "\(role.name) keeps its own tools")
+        }
     }
 
-    func testResolveToolSchemas_orphanCoordinatorDesignation_selfHealsToAutoMode() async {
-        // The designated role was deleted. Pre-normalization NO role got conclude_meeting
-        // despite every one of them being able to START a meeting — an unclosable meeting.
-        let meeter = makeRole(
-            id: "pm", name: "PM", toolIDs: [ToolNames.requestTeamMeeting])
-        let team = makeTeam(
-            roles: [makeSupervisorRole(), meeter],
-            settings: TeamSettings(meetingCoordinatorRoleID: "deleted-role-id"))
+    /// The meeting turn is where the coordinator — and only the coordinator — gets it.
+    func testSpeakerTools_grantsConcludeMeetingToTheCoordinatorOnly() {
+        let base = LLMExecutionService.resolveToolSchemas(
+            forDefinition: makeRole(id: "pm", name: "PM", toolIDs: [ToolNames.readFile, ToolNames.requestTeamMeeting]),
+            team: makeTeam(roles: [makeSupervisorRole()]),
+            approval: .available)
 
-        let names = Set(
-            LLMExecutionService.resolveToolSchemas(forDefinition: meeter, team: team).map(\.name))
+        let coordinatorTools = Set(MeetingCoordinator.speakerTools(base: base, isCoordinator: true).map(\.name))
+        let participantTools = Set(MeetingCoordinator.speakerTools(base: base, isCoordinator: false).map(\.name))
 
-        XCTAssertTrue(
-            names.contains(ToolNames.concludeMeeting),
-            "An orphan designation normalizes to Auto so meetings stay closable")
+        XCTAssertTrue(coordinatorTools.contains(ToolNames.concludeMeeting))
+        XCTAssertFalse(participantTools.contains(ToolNames.concludeMeeting))
+        XCTAssertFalse(coordinatorTools.contains(ToolNames.requestTeamMeeting),
+                       "meeting-excluded tools stay excluded for the coordinator too")
+        XCTAssertTrue(coordinatorTools.contains(ToolNames.readFile))
+        XCTAssertEqual(
+            MeetingCoordinator.speakerTools(base: base, isCoordinator: true)
+                .filter { $0.name == ToolNames.concludeMeeting }.count, 1,
+            "granted once, even if a base schema somehow already carried it")
     }
 
-    func testResolveToolSchemas_roleWithoutRequestTeamMeeting_neverGetsConcludeMeeting() async {
-        let plain = makeRole(id: "pm", name: "PM", toolIDs: [ToolNames.readFile])
-        let team = makeTeam(roles: [makeSupervisorRole(), plain])
+    // MARK: - resolveToolSchemas: meetings switched off (step 3.0c)
 
-        let names = Set(
-            LLMExecutionService.resolveToolSchemas(forDefinition: plain, team: team).map(\.name))
-
-        XCTAssertFalse(names.contains(ToolNames.concludeMeeting))
-    }
-
-    func testResolveToolSchemas_concludeMeetingIsNotDuplicatedWhenAlreadyConfigured() async {
-        let meeter = makeRole(
+    /// `meetingsEnabled == false` withholds BOTH tools that convene a meeting from every
+    /// role's step schema — `request_changes` too, because its vote IS a meeting.
+    func testResolveToolSchemas_meetingsOff_withholdsRequestTeamMeetingAndRequestChanges() async {
+        let role = makeRole(
             id: "pm", name: "PM",
-            toolIDs: [ToolNames.requestTeamMeeting, ToolNames.concludeMeeting])
-        let team = makeTeam(roles: [makeSupervisorRole(), meeter])
+            toolIDs: [ToolNames.readFile, ToolNames.requestTeamMeeting, ToolNames.requestChanges])
+        // A second role, so the "on" team actually has somebody to invite.
+        let partner = makeRole(id: "tl", name: "TL", toolIDs: [ToolNames.readFile])
+        let off = makeTeam(
+            roles: [makeSupervisorRole(), role, partner],
+            settings: TeamSettings(meetingsEnabled: false))
+        let on = makeTeam(roles: [makeSupervisorRole(), role, partner])
 
-        let names = LLMExecutionService.resolveToolSchemas(forDefinition: meeter, team: team)
-            .map(\.name)
-            .filter { $0 == ToolNames.concludeMeeting }
+        let offNames = Set(LLMExecutionService.resolveToolSchemas(forDefinition: role, team: off, approval: .available).map(\.name))
+        let onNames = Set(LLMExecutionService.resolveToolSchemas(forDefinition: role, team: on, approval: .available).map(\.name))
+        let noTeam = Set(LLMExecutionService.resolveToolSchemas(forDefinition: role, team: nil, approval: .available).map(\.name))
 
-        XCTAssertEqual(names.count, 1, "Auto-injection must be idempotent against a configured tool")
+        XCTAssertFalse(offNames.contains(ToolNames.requestTeamMeeting))
+        XCTAssertFalse(offNames.contains(ToolNames.requestChanges))
+        XCTAssertTrue(offNames.contains(ToolNames.readFile), "only the meeting tools go")
+        XCTAssertTrue(onNames.contains(ToolNames.requestTeamMeeting))
+        XCTAssertTrue(onNames.contains(ToolNames.requestChanges))
+        XCTAssertTrue(noTeam.contains(ToolNames.requestTeamMeeting), "no team ⇒ no setting ⇒ no strip")
+    }
+
+    /// A single-role team has nobody to invite, so both meeting tools leave the schema
+    /// with the switch ON — the same step 3.0c, through `Team.canHoldMeetings`; the
+    /// Supervisor in the roster is the human and does not count. A second role brings
+    /// the tools back. Until 2026-09-07 every single-role bundled team shipped
+    /// `request_team_meeting` to a role whose only possible reply was "No valid
+    /// participants".
+    func testResolveToolSchemas_singleRoleTeam_withholdsMeetingToolsUntilASecondRoleExists() async {
+        let role = makeRole(
+            id: "pm", name: "PM",
+            toolIDs: [ToolNames.readFile, ToolNames.requestTeamMeeting, ToolNames.requestChanges])
+        let solo = makeTeam(roles: [makeSupervisorRole(), role])
+        let pair = makeTeam(roles: [makeSupervisorRole(), role, makeRole(id: "tl", name: "TL", toolIDs: [ToolNames.readFile])])
+
+        let soloNames = Set(LLMExecutionService.resolveToolSchemas(forDefinition: role, team: solo, approval: .available).map(\.name))
+        let pairNames = Set(LLMExecutionService.resolveToolSchemas(forDefinition: role, team: pair, approval: .available).map(\.name))
+
+        XCTAssertFalse(soloNames.contains(ToolNames.requestTeamMeeting), "the Supervisor is not a partner")
+        XCTAssertFalse(soloNames.contains(ToolNames.requestChanges))
+        XCTAssertTrue(soloNames.contains(ToolNames.readFile))
+        XCTAssertTrue(pairNames.contains(ToolNames.requestTeamMeeting))
+        XCTAssertTrue(pairNames.contains(ToolNames.requestChanges))
+    }
+
+    /// `ask_teammate` falls under the SAME partner rule (`Team.hasTeammatePartner`): a
+    /// single-role team has no consultable teammate — the Supervisor is never one — so
+    /// step 3.0c withholds the tool; a second non-Supervisor role brings it back; no team
+    /// at all means no roster and therefore no strip. Until 2026-09-07 the tool stayed on
+    /// such a role, and its only addressee was an LLM answering AS the Supervisor through
+    /// the `supervisorCanBeInvited` seat.
+    func testResolveToolSchemas_singleRoleTeam_withholdsAskTeammate_untilASecondRoleExists() async {
+        let role = makeRole(id: "pm", name: "PM", toolIDs: [ToolNames.readFile, ToolNames.askTeammate])
+        let solo = makeTeam(roles: [makeSupervisorRole(), role])
+        let alone = makeTeam(roles: [role])
+        let pair = makeTeam(roles: [makeSupervisorRole(), role, makeRole(id: "tl", name: "TL", toolIDs: [ToolNames.readFile])])
+
+        let soloNames = Set(LLMExecutionService.resolveToolSchemas(forDefinition: role, team: solo, approval: .available).map(\.name))
+        let aloneNames = Set(LLMExecutionService.resolveToolSchemas(forDefinition: role, team: alone, approval: .available).map(\.name))
+        let pairNames = Set(LLMExecutionService.resolveToolSchemas(forDefinition: role, team: pair, approval: .available).map(\.name))
+        let noTeam = Set(LLMExecutionService.resolveToolSchemas(forDefinition: role, team: nil, approval: .available).map(\.name))
+
+        XCTAssertFalse(soloNames.contains(ToolNames.askTeammate), "the Supervisor is not a partner")
+        XCTAssertTrue(soloNames.contains(ToolNames.readFile), "only ask_teammate goes")
+        XCTAssertFalse(aloneNames.contains(ToolNames.askTeammate), "no Supervisor in the roster changes nothing")
+        XCTAssertTrue(pairNames.contains(ToolNames.askTeammate))
+        XCTAssertTrue(noTeam.contains(ToolNames.askTeammate), "no team ⇒ no roster ⇒ no strip")
+    }
+
+    /// The meetings switch is NOT the partner rule: `meetingsEnabled == false` on a
+    /// two-role team withholds the tools that convene a meeting and leaves `ask_teammate`
+    /// alone — switching meetings off does not take consultations with it.
+    func testResolveToolSchemas_meetingsOff_leavesAskTeammateAlone() async {
+        let role = makeRole(
+            id: "pm", name: "PM",
+            toolIDs: [ToolNames.readFile, ToolNames.askTeammate, ToolNames.requestTeamMeeting, ToolNames.requestChanges])
+        let partner = makeRole(id: "tl", name: "TL", toolIDs: [ToolNames.readFile])
+        let off = makeTeam(
+            roles: [makeSupervisorRole(), role, partner],
+            settings: TeamSettings(meetingsEnabled: false))
+
+        let offNames = Set(LLMExecutionService.resolveToolSchemas(forDefinition: role, team: off, approval: .available).map(\.name))
+
+        XCTAssertTrue(offNames.contains(ToolNames.askTeammate), "a partner exists; the switch is about meetings")
+        XCTAssertFalse(offNames.contains(ToolNames.requestTeamMeeting))
+        XCTAssertFalse(offNames.contains(ToolNames.requestChanges))
+        XCTAssertTrue(offNames.contains(ToolNames.readFile))
+    }
+
+    // MARK: - resolveToolSchemas: Ask Supervisor mode Off (steps 4 / 8b)
+
+    /// Off closes BOTH routes to `ask_supervisor`: the advisory auto-injection (step 4) and
+    /// an explicit `toolIDs` entry (step 8b). Manual and autonomous are untouched.
+    func testResolveToolSchemas_askSupervisorOff_withholdsAskSupervisorOnBothRoutes() async {
+        let advisory = makeRole(id: "qm", name: "Quest Master", requires: ["Supervisor Task"])
+        let explicit = makeRole(
+            id: "pm", name: "PM", toolIDs: [ToolNames.readFile, ToolNames.askSupervisor],
+            produces: ["PRD"])
+        let off = makeTeam(
+            roles: [makeSupervisorRole(), advisory, explicit],
+            settings: TeamSettings(supervisorMode: .off))
+        let manual = makeTeam(
+            roles: [makeSupervisorRole(), advisory, explicit],
+            settings: TeamSettings(supervisorMode: .manual))
+
+        for role in [advisory, explicit] {
+            let offNames = Set(LLMExecutionService.resolveToolSchemas(forDefinition: role, team: off, approval: .available).map(\.name))
+            let manualNames = Set(LLMExecutionService.resolveToolSchemas(forDefinition: role, team: manual, approval: .available).map(\.name))
+            XCTAssertFalse(offNames.contains(ToolNames.askSupervisor), "\(role.name): Off withholds ask_supervisor")
+            XCTAssertTrue(manualNames.contains(ToolNames.askSupervisor), "\(role.name): manual keeps it")
+        }
     }
 
     // MARK: - resolveToolSchemas: create_artifact auto-injection (step 5)
@@ -549,13 +640,64 @@ final class StepCompletionAndToolResolutionTests: XCTestCase {
             produces: ["Product Requirements"])
         let team = makeTeam(roles: [makeSupervisorRole(requires: ["Product Requirements"]), producer])
 
-        let schemas = LLMExecutionService.resolveToolSchemas(forDefinition: producer, team: team)
+        let schemas = LLMExecutionService.resolveToolSchemas(forDefinition: producer, team: team, approval: .available)
         let createArtifact = schemas.first(where: { $0.name == ToolNames.createArtifact })
 
         XCTAssertNotNil(createArtifact, "A producing role always gets create_artifact")
-        XCTAssertTrue(
-            createArtifact?.description.contains("Product Requirements") ?? false,
-            "The schema is built per-role so the deliverable list is inline at the decision point")
+        XCTAssertEqual(
+            createArtifact?.parameters.properties?["name"]?.enumValues, ["Product Requirements"],
+            "The schema is built per-role so the deliverable names constrain `name` at the decision point")
+        XCTAssertFalse(
+            createArtifact?.description.contains("Product Requirements") ?? true,
+            "the description does not repeat the enum — `## Deliverables` and the closing turn carry the "
+                + "names in prose (R3.4.2)")
+    }
+
+    /// A stored `toolIDs` that already carries `create_artifact` (a generated or hand-edited
+    /// toolset) gets the per-role schema too: until 2026-09-06 step 5 skipped such a role and
+    /// left it the static schema, whose `name` has no enum and whose description promised the
+    /// names were "appended here" — the R3.1.4 stop-condition contract without the contract.
+    func testResolveToolSchemas_storedCreateArtifact_isReplacedByThePerRoleSchema() async {
+        let producer = makeRole(
+            id: "pm", name: "PM", toolIDs: [ToolNames.readFile, ToolNames.createArtifact],
+            produces: ["Product Requirements"])
+        let team = makeTeam(roles: [makeSupervisorRole(requires: ["Product Requirements"]), producer])
+
+        let schemas = LLMExecutionService.resolveToolSchemas(forDefinition: producer, team: team, approval: .available)
+        let createArtifacts = schemas.filter { $0.name == ToolNames.createArtifact }
+
+        XCTAssertEqual(createArtifacts.count, 1, "replaced in place, never duplicated")
+        XCTAssertEqual(createArtifacts.first?.parameters.properties?["name"]?.enumValues,
+                       ["Product Requirements"])
+    }
+
+    // MARK: - resolveToolSchemas: manager-only tools never reach a team role (step 3.0b)
+
+    /// The ten management tools define the Autovisor; their signals mean nothing on any other
+    /// role's step loop, and `set_work_folder_context` rewrites what every role of every task
+    /// reads. A generated or hand-edited `toolIDs` carrying them is stripped structurally —
+    /// the mirror of step 8, which strips `ask_supervisor` from the manager.
+    func testResolveToolSchemas_managerOnlyTools_areStrippedFromATeamRole_andKeptOnTheManager() async {
+        let planted = [ToolNames.controlTask, ToolNames.waitForEvents, ToolNames.setWorkFolderContext]
+        let role = makeRole(
+            id: "swe", name: "SWE", toolIDs: [ToolNames.readFile] + planted, produces: ["Notes"])
+        let team = makeTeam(roles: [makeSupervisorRole(requires: ["Notes"]), role])
+        let names = Set(LLMExecutionService.resolveToolSchemas(forDefinition: role, team: team, approval: .available).map(\.name))
+        for tool in planted {
+            XCTAssertFalse(names.contains(tool), "\(tool) is the manager's alone")
+        }
+        XCTAssertTrue(names.contains(ToolNames.readFile))
+
+        let manager = makeRole(
+            id: "mgr", name: "Autovisor", toolIDs: AutovisorConstants.managerDefaultToolIDs,
+            systemRoleID: AutovisorConstants.managerRoleSystemID)
+        let managerTeam = makeTeam(
+            roles: [makeSupervisorRole(), manager], templateID: AutovisorConstants.teamTemplateID)
+        let managerNames = Set(
+            LLMExecutionService.resolveToolSchemas(forDefinition: manager, team: managerTeam, approval: .available).map(\.name))
+        for tool in AutovisorConstants.managerMandatoryToolIDs {
+            XCTAssertTrue(managerNames.contains(tool), "the manager keeps \(tool)")
+        }
     }
 
     func testResolveToolSchemas_supervisorRole_neverGetsCreateArtifact() async {
@@ -566,7 +708,7 @@ final class StepCompletionAndToolResolutionTests: XCTestCase {
         let team = makeTeam(roles: [supervisor, makeRole(id: "pm", name: "PM")])
 
         let names = Set(
-            LLMExecutionService.resolveToolSchemas(forDefinition: supervisor, team: team).map(\.name))
+            LLMExecutionService.resolveToolSchemas(forDefinition: supervisor, team: team, approval: .available).map(\.name))
 
         XCTAssertFalse(names.contains(ToolNames.createArtifact))
     }
@@ -578,7 +720,7 @@ final class StepCompletionAndToolResolutionTests: XCTestCase {
         let team = makeTeam(roles: [makeSupervisorRole(), advisory])
 
         let names = Set(
-            LLMExecutionService.resolveToolSchemas(forDefinition: advisory, team: team).map(\.name))
+            LLMExecutionService.resolveToolSchemas(forDefinition: advisory, team: team, approval: .available).map(\.name))
 
         XCTAssertTrue(names.contains(ToolNames.askSupervisor), "Non-producing roles escalate")
         XCTAssertFalse(names.contains(ToolNames.createArtifact))
@@ -597,7 +739,7 @@ final class StepCompletionAndToolResolutionTests: XCTestCase {
         let team = makeTeam(roles: [makeSupervisorRole(), role])
 
         let names = Set(
-            LLMExecutionService.resolveToolSchemas(forDefinition: role, team: team).map(\.name))
+            LLMExecutionService.resolveToolSchemas(forDefinition: role, team: team, approval: .available).map(\.name))
 
         XCTAssertFalse(names.contains(ToolNames.delegateToTeam))
         XCTAssertFalse(names.contains(ToolNames.cancelDelegation))
@@ -627,7 +769,8 @@ final class StepCompletionAndToolResolutionTests: XCTestCase {
 
         let names = Set(
             LLMExecutionService.resolveToolSchemas(
-                forDefinition: delegator, team: ownTeam, allTeams: [ownTeam, chatTeam]
+                forDefinition: delegator, team: ownTeam, allTeams: [ownTeam, chatTeam],
+                approval: .available
             ).map(\.name))
 
         XCTAssertFalse(names.contains(ToolNames.delegateToTeam))
@@ -650,7 +793,8 @@ final class StepCompletionAndToolResolutionTests: XCTestCase {
 
         let names = Set(
             LLMExecutionService.resolveToolSchemas(
-                forDefinition: delegator, team: ownTeam, allTeams: [ownTeam, targetTeam]
+                forDefinition: delegator, team: ownTeam, allTeams: [ownTeam, targetTeam],
+                approval: .available
             ).map(\.name))
 
         XCTAssertTrue(names.contains(ToolNames.delegateToTeam))
@@ -675,7 +819,8 @@ final class StepCompletionAndToolResolutionTests: XCTestCase {
 
         let names = Set(
             LLMExecutionService.resolveToolSchemas(
-                forDefinition: subordinate, team: ownTeam, allTeams: [ownTeam, targetTeam]
+                forDefinition: subordinate, team: ownTeam, allTeams: [ownTeam, targetTeam],
+                approval: .available
             ).map(\.name))
 
         XCTAssertFalse(
@@ -950,7 +1095,7 @@ final class StepCompletionAndToolResolutionTests: XCTestCase {
         installLiveTask()
 
         await service.appendLLMMessage(
-            stepID: "swe", taskID: 0, role: .user, content: "Supervisor:\nDo X",
+            stepID: "swe", taskID: 0, role: .user, content: MessageSourceContext.supervisorMessagePrefix + "Do X",
             sourceRole: .supervisor, sourceContext: .supervisorMessage)
 
         let msg = currentStep()?.llmConversation.first
@@ -1106,9 +1251,11 @@ final class StepCompletionAndToolResolutionTests: XCTestCase {
             "Delegation children keep their own routing")
     }
 
-    func testGateBashCalls_manualModeUnderAutovisor_deniesInsteadOfHoldingForAHuman() async {
+    func testGateBashCalls_manualModeUnderAutovisor_refusesAsApprovalUnavailableInsteadOfHoldingForAHuman() async {
         // Manual bash mode but the folder's Supervisor is the Autovisor — nobody is at the
-        // keyboard, so holding the command would wedge the run forever.
+        // keyboard, so holding the command would wedge the run forever. Nobody decided
+        // either, so the refusal carries its own code, not BASH_DENIED (in production the
+        // resolver withholds `bash` for this cell; the gate is reached here directly).
         autovisorSnapshot(managerTaskID: 99)
         delegate.bashPolicy = BashPolicy(mode: .manual)
         let task = NTMSTask(id: 7, title: "T", supervisorTask: "G", runs: [])
@@ -1120,10 +1267,10 @@ final class StepCompletionAndToolResolutionTests: XCTestCase {
             client: StubStreamingClient(), config: LLMConfig(), networkLogger: nil)
 
         XCTAssertEqual(results[0]?.isError, true)
-        XCTAssertEqual(errorCode(results[0]?.outputJSON ?? ""), ToolErrorCode.bashDenied.rawValue)
+        XCTAssertEqual(errorCode(results[0]?.outputJSON ?? ""), ToolErrorCode.approvalUnavailable.rawValue)
         XCTAssertTrue(
-            results[0]?.outputJSON.contains("no human is available") ?? false,
-            "The denial must name the actual blocker so the MODEL knows why it was refused — "
+            results[0]?.outputJSON.contains("no human") ?? false,
+            "The refusal must name the actual blocker so the MODEL knows why it was refused — "
                 + "this envelope is model-only; the user never reads it")
         XCTAssertNil(service.pendingBashApproval(stepID: "swe", taskID: 7))
         XCTAssertTrue(delegate.bashApprovalBeganRequests.isEmpty, "Nothing may be held")
@@ -1269,11 +1416,11 @@ final class StepCompletionAndToolResolutionTests: XCTestCase {
         XCTAssertEqual(messages.count, 2, "One-shot: system + user, nothing else")
 
         let user = messages[1].content ?? ""
-        XCTAssertTrue(user.contains("Task: Calculator"))
-        XCTAssertTrue(user.contains("Supervisor Task: Build a calculator"))
-        XCTAssertTrue(user.contains("Current role: \(Role.softwareEngineer.displayName)"))
+        XCTAssertTrue(user.contains("## Task\nCalculator"))
+        XCTAssertTrue(user.contains("## Supervisor Task\nBuild a calculator"))
+        XCTAssertTrue(user.contains("## Current role\n\(Role.softwareEngineer.displayName)"))
         guard let contextRange = user.range(of: "CTX-SENTINEL"),
-              let questionRange = user.range(of: "Question: Which UI framework?")
+              let questionRange = user.range(of: "## Question\nWhich UI framework?")
         else {
             return XCTFail("Both the pipeline context and the question must be present:\n\(user)")
         }
@@ -1308,7 +1455,7 @@ final class StepCompletionAndToolResolutionTests: XCTestCase {
             client: client, config: LLMConfig(), artifactReader: { _ in nil })
 
         let user = client.captured[0].messages[1].content ?? ""
-        XCTAssertFalse(user.contains("Context:"), "Step 0 has no prior steps to summarize")
+        XCTAssertFalse(user.contains("## Prior Steps"), "Step 0 has no prior steps to summarize")
         XCTAssertFalse(user.contains("CTX-SENTINEL"))
     }
 
@@ -1326,8 +1473,8 @@ final class StepCompletionAndToolResolutionTests: XCTestCase {
         XCTAssertFalse(
             user.contains("TAIL-SENTINEL"),
             "The context blob is capped at ArtifactConstants.maxDescriptionChars")
-        XCTAssertTrue(user.contains("..."), "…and the cut is marked, not silent")
-        XCTAssertTrue(user.contains("Question: Q?"), "The question always survives the cut")
+        XCTAssertTrue(user.contains("(earlier context truncated)"), "…and the cut is marked, not silent")
+        XCTAssertTrue(user.contains("## Question\nQ?"), "The question always survives the cut")
     }
 
     func testGenerateAnswer_advertisesNoTools() async {
@@ -1468,6 +1615,112 @@ final class StepCompletionAndToolResolutionTests: XCTestCase {
         XCTAssertEqual(stub.lastInfoMessages.count, 1)
         XCTAssertTrue(stub.answerSupervisorCalls.isEmpty)
     }
+
+    // MARK: - resolveToolSchemas: the approval-gated families (B3, 2026-09-07)
+
+    private func shellAndComputerUseRole() -> TeamRoleDefinition {
+        makeRole(
+            id: "swe", name: "SWE",
+            toolIDs: [ToolNames.readFile, ToolNames.bash, ToolNames.bashOutput]
+                + Array(ToolHandlerRegistry.computerUseTools),
+            produces: ["Engineering Notes"])
+    }
+
+    private func names(approval: ToolApprovalAvailability) -> Set<String> {
+        let role = shellAndComputerUseRole()
+        let team = makeTeam(roles: [makeSupervisorRole(requires: ["Engineering Notes"]), role])
+        return Set(LLMExecutionService.resolveToolSchemas(forDefinition: role, team: team, approval: approval).map(\.name))
+    }
+
+    /// Manual with no human: every command would wait for a human, so the tool is withheld —
+    /// the 2026-09-07 audit's `bash` cost a model turn per refusal while advertised.
+    func testResolve_bashManualWithNoHuman_withholdsBothShellTools() {
+        let n = names(approval: ToolApprovalAvailability(bashMode: .manual, computerUseMode: .auto, humanPresent: false))
+        XCTAssertFalse(n.contains(ToolNames.bash))
+        XCTAssertFalse(n.contains(ToolNames.bashOutput))
+        XCTAssertTrue(n.contains(ToolNames.readFile), "only the shell family is withheld")
+    }
+
+    func testResolve_bashManualWithAHuman_keepsTheShellTools() {
+        let n = names(approval: ToolApprovalAvailability(bashMode: .manual, computerUseMode: .auto, humanPresent: true))
+        XCTAssertTrue(n.contains(ToolNames.bash))
+        XCTAssertTrue(n.contains(ToolNames.bashOutput))
+    }
+
+    /// Semi-automatic keeps the tool with no human: its read-only commands run, and the gate
+    /// refuses the rest per command — a per-tool strip cannot say that.
+    func testResolve_bashSemiAutomaticWithNoHuman_keepsTheShellTools() {
+        let n = names(approval: ToolApprovalAvailability(bashMode: .semiAutomatic, computerUseMode: .auto, humanPresent: false))
+        XCTAssertTrue(n.contains(ToolNames.bash))
+        XCTAssertTrue(n.contains(ToolNames.bashOutput))
+    }
+
+    func testResolve_bashAuto_keepsTheShellTools_whoeverIsPresent() {
+        for present in [true, false] {
+            let n = names(approval: ToolApprovalAvailability(bashMode: .auto, computerUseMode: .auto, humanPresent: present))
+            XCTAssertTrue(n.contains(ToolNames.bash), "present=\(present)")
+        }
+    }
+
+    /// Off used to be caught only at runtime (`.bashDisabled`); the schema now withholds it
+    /// like the computer-use family's Off always did.
+    func testResolve_bashOff_withholdsBothShellTools_whoeverIsPresent() {
+        for present in [true, false] {
+            let n = names(approval: ToolApprovalAvailability(bashMode: .off, computerUseMode: .auto, humanPresent: present))
+            XCTAssertFalse(n.contains(ToolNames.bash), "present=\(present)")
+            XCTAssertFalse(n.contains(ToolNames.bashOutput), "present=\(present)")
+        }
+    }
+
+    func testResolve_computerUseManualWithNoHuman_withholdsAllFive() {
+        let n = names(approval: ToolApprovalAvailability(bashMode: .auto, computerUseMode: .manual, humanPresent: false))
+        XCTAssertTrue(n.isDisjoint(with: ToolHandlerRegistry.computerUseTools), "got \(n.intersection(ToolHandlerRegistry.computerUseTools))")
+    }
+
+    /// Semi-automatic with no human: the read-only tier (capture, scroll) ships, the mutating
+    /// trio does not — the family's granularity is per tool, so the strip can say exactly that.
+    func testResolve_computerUseSemiAutomaticWithNoHuman_keepsTheReadOnlyTier_withholdsTheTrio() {
+        let n = names(approval: ToolApprovalAvailability(bashMode: .auto, computerUseMode: .semiAutomatic, humanPresent: false))
+        XCTAssertTrue(n.contains(ToolNames.screenCapture))
+        XCTAssertTrue(n.contains(ToolNames.uiScroll))
+        XCTAssertTrue(n.isDisjoint(with: ToolHandlerRegistry.computerUseMutatingTools),
+                      "got \(n.intersection(ToolHandlerRegistry.computerUseMutatingTools))")
+    }
+
+    func testResolve_computerUseSemiAutomaticWithAHuman_keepsAllFive() {
+        let n = names(approval: ToolApprovalAvailability(bashMode: .auto, computerUseMode: .semiAutomatic, humanPresent: true))
+        XCTAssertTrue(ToolHandlerRegistry.computerUseTools.isSubset(of: n))
+    }
+
+    func testResolve_computerUseAuto_keepsAllFive_whoeverIsPresent() {
+        for present in [true, false] {
+            let n = names(approval: ToolApprovalAvailability(bashMode: .auto, computerUseMode: .auto, humanPresent: present))
+            XCTAssertTrue(ToolHandlerRegistry.computerUseTools.isSubset(of: n), "present=\(present)")
+        }
+    }
+
+    func testResolve_computerUseOff_withholdsAllFive_whoeverIsPresent() {
+        for present in [true, false] {
+            let n = names(approval: ToolApprovalAvailability(bashMode: .auto, computerUseMode: .off, humanPresent: present))
+            XCTAssertTrue(n.isDisjoint(with: ToolHandlerRegistry.computerUseTools), "present=\(present)")
+        }
+    }
+
+    /// The Autovisor-supervised reading is the same cell as autonomous: `ApprovalPresence`
+    /// says no human, and the resolver reads only the pair — pinned through `forTeam`.
+    func testResolve_underAutovisor_readsAsNoHuman() {
+        var team = makeTeam(roles: [makeSupervisorRole(requires: ["Engineering Notes"]), shellAndComputerUseRole()])
+        team.settings.supervisorMode = .manual
+        var activation = AutovisorActivation.default
+        activation.onTaskNeedsSupervisor = true
+        let approval = ToolApprovalAvailability.forTeam(
+            bashMode: .manual, computerUseMode: .manual, team: team,
+            workFolderSettings: ProjectSettings(autovisorEnabled: true, autovisorActivation: activation))
+        let n = names(approval: approval)
+        XCTAssertFalse(n.contains(ToolNames.bash))
+        XCTAssertTrue(n.isDisjoint(with: ToolHandlerRegistry.computerUseTools))
+    }
+
 }
 
 // MARK: - Private doubles
@@ -1568,4 +1821,5 @@ private final class StubStreamingClient: LLMClient, @unchecked Sendable {
     }
 
     func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
+
 }

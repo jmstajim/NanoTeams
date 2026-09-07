@@ -97,6 +97,7 @@ final class ToolExecutionTests: XCTestCase {
 
         let batch = await service.executeToolCalls(
             resolvedToolCalls: [call],
+            gateRefusals: [],
             allowedToolNames: ["read_file", "list_files"],
             runtime: runtime,
             tracker: tracker,
@@ -142,6 +143,7 @@ final class ToolExecutionTests: XCTestCase {
 
         _ = await service.executeToolCalls(
             resolvedToolCalls: [call],
+            gateRefusals: [],
             allowedToolNames: ["read_file", "list_files"],
             runtime: rt,
             tracker: tracker,
@@ -174,6 +176,7 @@ final class ToolExecutionTests: XCTestCase {
         // second is the identical-write rejection.
         _ = await service.executeToolCalls(
             resolvedToolCalls: [first, second],
+            gateRefusals: [],
             allowedToolNames: ["write_file"],
             runtime: rt,
             tracker: tracker,
@@ -199,6 +202,7 @@ final class ToolExecutionTests: XCTestCase {
 
         _ = await service.executeToolCalls(
             resolvedToolCalls: [executed, rejected],
+            gateRefusals: [],
             allowedToolNames: ["list_files"],
             runtime: rt,
             tracker: tracker,
@@ -227,6 +231,7 @@ final class ToolExecutionTests: XCTestCase {
 
         let batch = await service.executeToolCalls(
             resolvedToolCalls: [],
+            gateRefusals: [],
             allowedToolNames: ["list_files"],
             runtime: rt,
             tracker: tracker,
@@ -252,6 +257,7 @@ final class ToolExecutionTests: XCTestCase {
 
         _ = await service.executeToolCalls(
             resolvedToolCalls: [executed, rejected],
+            gateRefusals: [],
             allowedToolNames: ["list_files"],
             runtime: rt,
             tracker: tracker,
@@ -280,6 +286,7 @@ final class ToolExecutionTests: XCTestCase {
 
         let batch = await service.executeToolCalls(
             resolvedToolCalls: [call],
+            gateRefusals: [],
             allowedToolNames: ["read_file"],
             runtime: rt,
             tracker: tracker,
@@ -301,6 +308,7 @@ final class ToolExecutionTests: XCTestCase {
 
         let batch = await service.executeToolCalls(
             resolvedToolCalls: [call],
+            gateRefusals: [],
             allowedToolNames: ["list_files"],
             runtime: runtime,
             tracker: tracker,
@@ -321,6 +329,7 @@ final class ToolExecutionTests: XCTestCase {
 
         let batch = await service.executeToolCalls(
             resolvedToolCalls: [call],
+            gateRefusals: [],
             allowedToolNames: ["search"],
             runtime: runtime,
             tracker: tracker,
@@ -377,6 +386,7 @@ final class ToolExecutionTests: XCTestCase {
         for _ in 0..<2 {
             _ = await service.executeToolCalls(
                 resolvedToolCalls: [makeToolCall(name: probeName)],
+                gateRefusals: [],
                 allowedToolNames: [probeName],
                 runtime: probeRuntime,
                 tracker: tracker,
@@ -406,6 +416,7 @@ final class ToolExecutionTests: XCTestCase {
 
         let batch = await service.executeToolCalls(
             resolvedToolCalls: [call1, call2],
+            gateRefusals: [],
             allowedToolNames: ["write_file"],
             runtime: runtime,
             tracker: tracker,
@@ -428,6 +439,7 @@ final class ToolExecutionTests: XCTestCase {
 
         let batch = await service.executeToolCalls(
             resolvedToolCalls: [],
+            gateRefusals: [],
             allowedToolNames: ["read_file"],
             runtime: runtime,
             tracker: tracker,
@@ -493,6 +505,7 @@ final class ToolExecutionTests: XCTestCase {
 
         let batch = await orphanService.executeToolCalls(
             resolvedToolCalls: [call],
+            gateRefusals: [],
             allowedToolNames: ["list_files"],
             runtime: runtime,
             tracker: tracker,
@@ -524,6 +537,7 @@ final class ToolExecutionTests: XCTestCase {
 
         let batch = await service.executeToolCalls(
             resolvedToolCalls: [call1, call2, call3],
+            gateRefusals: [],
             allowedToolNames: ["read_file", "list_files"],
             runtime: runtime,
             tracker: tracker,
@@ -555,6 +569,7 @@ final class ToolExecutionTests: XCTestCase {
 
         let batch = await service.executeToolCalls(
             resolvedToolCalls: calls,
+            gateRefusals: [],
             allowedToolNames: ["read_file"],
             runtime: runtime,
             tracker: tracker,
@@ -600,6 +615,7 @@ final class ToolExecutionTests: XCTestCase {
         let probeRuntime = ToolRuntime(registry: registry, logger: nil)
         let batch = await service.executeToolCalls(
             resolvedToolCalls: [makeToolCall(name: probeName)],
+            gateRefusals: [],
             allowedToolNames: [probeName],
             runtime: probeRuntime,
             tracker: tracker,
@@ -659,6 +675,7 @@ final class ToolExecutionTests: XCTestCase {
         let executeTask = Task { @MainActor in
             await self.service.executeToolCalls(
                 resolvedToolCalls: [call1, call2],
+                gateRefusals: [],
                 allowedToolNames: [probe1Name, probe2Name],
                 runtime: probeRuntime,
                 tracker: self.tracker,

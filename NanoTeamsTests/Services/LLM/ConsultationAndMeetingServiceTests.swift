@@ -90,10 +90,14 @@ private enum ConsultMeetFixtures {
     static let requester: Role = .softwareEngineer
 
     /// PM + SWE, optionally a Supervisor role, with tunable limits / invite policy.
+    /// `includePM: false` leaves the SWE as the only non-Supervisor role — a SINGLE-role
+    /// roster (`Team.hasTeammatePartner == false`), the shape of the five single-role
+    /// bundled teams. The Supervisor never counts as a partner, so adding it does not
+    /// turn such a roster into a pair.
     static func makeTeam(
         limits: TeamLimits = TeamLimits(),
         includeSupervisor: Bool = false,
-        supervisorCanBeInvited: Bool = false,
+        includePM: Bool = true,
         invitableRoles: Set<String> = [],
         pmOverride: LLMOverride? = nil
     ) -> Team {
@@ -104,11 +108,13 @@ private enum ConsultMeetFixtures {
                 toolIDs: [], usePlanningPhase: false,
                 dependencies: RoleDependencies(), systemRoleID: "supervisor"))
         }
-        roles.append(TeamRoleDefinition(
-            id: "team_pm", name: "Product Manager", prompt: "pm guidance",
-            toolIDs: [ToolNames.askTeammate], usePlanningPhase: false,
-            dependencies: RoleDependencies(), llmOverride: pmOverride,
-            systemRoleID: "productManager"))
+        if includePM {
+            roles.append(TeamRoleDefinition(
+                id: "team_pm", name: "Product Manager", prompt: "pm guidance",
+                toolIDs: [ToolNames.askTeammate], usePlanningPhase: false,
+                dependencies: RoleDependencies(), llmOverride: pmOverride,
+                systemRoleID: "productManager"))
+        }
         roles.append(TeamRoleDefinition(
             id: "team_swe", name: "Software Engineer", prompt: "swe guidance",
             toolIDs: [ToolNames.askTeammate], usePlanningPhase: false,
@@ -120,7 +126,6 @@ private enum ConsultMeetFixtures {
             artifacts: [],
             settings: TeamSettings(
                 invitableRoles: invitableRoles,
-                supervisorCanBeInvited: supervisorCanBeInvited,
                 limits: limits),
             graphLayout: TeamGraphLayout())
     }
@@ -288,31 +293,99 @@ final class TeammateConsultationHandlerTests: XCTestCase {
         XCTAssertEqual(client.callCount, 0)
     }
 
-    func testConsultation_supervisorNotInvitable_isRejected() async {
-        let team = ConsultMeetFixtures.makeTeam(includeSupervisor: true, supervisorCanBeInvited: false)
-        let task = ConsultMeetFixtures.makeTask(team: team)
-        install(team: team, task: task)
-        let client = ScriptedConsultClient(content: "unused")
-
-        let reply = await consult("supervisor", question: "q", task: task, client: client)
-
-        XCTAssertFalse(reply.succeeded)
-        XCTAssertTrue(reply.text.contains("Supervisor cannot be consulted"), "got: \(reply.text)")
-        XCTAssertEqual(client.callCount, 0)
-    }
-
-    /// Same team, same role — but the team's invite policy now allows it. The
-    /// negative test above would pass for the wrong reason without this pair.
-    func testConsultation_supervisorInvitable_reachesTheWire() async {
-        let team = ConsultMeetFixtures.makeTeam(includeSupervisor: true, supervisorCanBeInvited: true)
+    /// The Supervisor is the human, never a teammate: consulting it is refused whatever
+    /// identifier the model addresses it by (built-in id, team role id, display name), and
+    /// the refusal routes the question to `ask_supervisor` — the team's mode (default
+    /// `.manual`) still offers it. Until 2026-09-07 a `supervisorCanBeInvited` seat made
+    /// this call reach the wire and let an LLM answer AS the Supervisor.
+    func testConsultation_theSupervisor_isNeverATeammate() async {
+        let team = ConsultMeetFixtures.makeTeam(includeSupervisor: true)
         let task = ConsultMeetFixtures.makeTask(team: team)
         install(team: team, task: task)
         let client = ScriptedConsultClient(content: "Ship it.")
 
-        let reply = await consult("supervisor", question: "q", task: task, client: client)
+        for identifier in ["supervisor", "team_supervisor", "Supervisor"] {
+            let reply = await consult(identifier, question: "q", task: task, client: client)
 
+            XCTAssertFalse(reply.succeeded, "\(identifier): got: \(reply.text)")
+            XCTAssertTrue(reply.text.contains("The Supervisor is not a teammate"),
+                          "\(identifier): got: \(reply.text)")
+            XCTAssertTrue(reply.text.contains("questions for the Supervisor go through \(ToolNames.askSupervisor)"),
+                          "\(identifier): manual mode names the route; got: \(reply.text)")
+            XCTAssertTrue(reply.text.contains("Available teammates"), "\(identifier): got: \(reply.text)")
+            XCTAssertFalse(reply.text.contains("Supervisor cannot be consulted"),
+                           "\(identifier): the pre-2026-09-07 wording is gone; got: \(reply.text)")
+        }
+        XCTAssertEqual(client.callCount, 0, "the Supervisor is never a wire addressee")
+        XCTAssertTrue(mockDelegate.taskToMutate?.runs[0].steps[0].consultations.isEmpty ?? false,
+                      "a refused consultation leaves no record")
+    }
+
+    /// Same refusal under `supervisorMode == .off`, where `ask_supervisor` is withheld from
+    /// every role: the text must not name a route the model cannot take. The `.manual`
+    /// arm above names it; this is the other branch of the same string.
+    func testConsultation_theSupervisor_underAskSupervisorOff_namesNoRoute() async {
+        let team = ConsultMeetFixtures.makeTeam(includeSupervisor: true)
+
+        let off = service._testConsultationValidationError(
+            consultedRoleID: "supervisor", requestingRoleID: requester.baseID,
+            team: team, teamSettings: TeamSettings(supervisorMode: .off))
+        let manual = service._testConsultationValidationError(
+            consultedRoleID: "supervisor", requestingRoleID: requester.baseID,
+            team: team, teamSettings: TeamSettings(supervisorMode: .manual))
+
+        XCTAssertEqual(off?.hasPrefix("The Supervisor is not a teammate. Available teammates:"), true,
+                       "got: \(off ?? "nil")")
+        XCTAssertFalse(off?.contains(ToolNames.askSupervisor) ?? true, "Off ⇒ no route to name; got: \(off ?? "nil")")
+        XCTAssertEqual(
+            manual?.hasPrefix("The Supervisor is not a teammate; questions for the Supervisor go through "
+                + "\(ToolNames.askSupervisor). Available teammates:"), true,
+            "got: \(manual ?? "nil")")
+    }
+
+    /// A single-role team has nobody to consult — the Supervisor is not a partner — so the
+    /// dispatcher refuses BEFORE any role lookup: no roster is offered, nothing reaches the
+    /// wire, no record is written. Both single-role shapes: with and without a Supervisor
+    /// seat in the roster. Until 2026-09-07 the `supervisorCanBeInvited` seat gave such a
+    /// role an LLM answering AS the Supervisor as its only "teammate".
+    func testConsultation_singleRoleTeam_isRefusedBeforeAnyLookup() async {
+        for includeSupervisor in [true, false] {
+            let team = ConsultMeetFixtures.makeTeam(includeSupervisor: includeSupervisor, includePM: false)
+            XCTAssertFalse(team.hasTeammatePartner, "premise: SWE is the only non-Supervisor role")
+            let task = ConsultMeetFixtures.makeTask(team: team)
+            install(team: team, task: task)
+            let client = ScriptedConsultClient(content: "Ship it.")
+
+            for identifier in ["team_pm", "supervisor", "ghost_role"] {
+                let reply = await consult(identifier, question: "q", task: task, client: client)
+
+                XCTAssertFalse(reply.succeeded, "\(identifier): got: \(reply.text)")
+                XCTAssertTrue(reply.text.contains("This team has no teammate to consult. Continue on your own."),
+                              "\(identifier): got: \(reply.text)")
+                XCTAssertFalse(reply.text.contains("Available teammates"),
+                               "\(identifier): no roster is offered — there is none to offer; got: \(reply.text)")
+            }
+            XCTAssertEqual(client.callCount, 0, "supervisor seat \(includeSupervisor): nothing reaches the wire")
+            XCTAssertTrue(mockDelegate.taskToMutate?.runs[0].steps[0].consultations.isEmpty ?? false,
+                          "supervisor seat \(includeSupervisor): a refused consultation leaves no record")
+        }
+    }
+
+    /// Positive control for the test above: the SAME roster plus one more non-Supervisor
+    /// role is a pair, and the partner refusal is not produced — the consultation goes
+    /// through to the wire. Without this, the negative test could pass for the wrong reason.
+    func testConsultation_twoRoleTeam_isNotRefusedForLackOfAPartner() async {
+        let team = ConsultMeetFixtures.makeTeam(includeSupervisor: true, includePM: true)
+        XCTAssertTrue(team.hasTeammatePartner, "premise: PM + SWE")
+        let task = ConsultMeetFixtures.makeTask(team: team)
+        install(team: team, task: task)
+        let client = ScriptedConsultClient(content: "Ship it.")
+
+        let reply = await consult("team_pm", question: "q", task: task, client: client)
+
+        XCTAssertFalse(reply.text.contains("no teammate to consult"), "got: \(reply.text)")
         XCTAssertTrue(reply.succeeded, "got: \(reply.text)")
-        XCTAssertEqual(client.callCount, 1)
+        XCTAssertEqual(client.callCount, 1, "a pair reaches the wire")
     }
 
     func testConsultation_roleOutsideInvitableRoles_isRejected() async {
@@ -491,6 +564,21 @@ final class TeammateConsultationHandlerTests: XCTestCase {
         XCTAssertEqual(record?.response, reply.text)
         XCTAssertNil(mockDelegate.taskToMutate?.runs[0].consultationChats["team_pm"],
                      "a failed exchange must not persist a chat holding an unanswered question")
+    }
+
+    /// A foreign transport error is CLASSIFIED before it becomes the teammate's answer: the
+    /// system-language `localizedDescription` never reaches the wire (R1.8.2), and the
+    /// message is the stable English `ToolErrorHandler.classify` writes for that code.
+    func testConsultation_streamThrowsAForeignError_classifiesItInsteadOfLocalizing() async {
+        let (_, task) = seed()
+        let client = ScriptedConsultClient(shouldThrow: NSError(
+            domain: NSURLErrorDomain, code: NSURLErrorTimedOut,
+            userInfo: [NSLocalizedDescriptionKey: "Превышено время ожидания запроса."]))
+
+        let reply = await consult("team_pm", question: "q", task: task, client: client)
+
+        XCTAssertFalse(reply.succeeded)
+        XCTAssertEqual(reply.text, "Unable to get response from Product Manager: The request timed out.")
     }
 
     /// RED: drop the `CancellationClassifier` arm from the catch → a `.failed` consultation
@@ -1180,6 +1268,67 @@ final class MeetingStreamingTransportTests: XCTestCase {
         XCTAssertEqual(result.resolvedToolCalls.first?.argumentsJSON, #"{"path":"a.swift"}"#)
     }
 
+    /// The route that was missing until 2026-09-07. No shipping client emits
+    /// `toolCallDeltas`: both providers render the tool schema as TEXT and the model
+    /// answers with the `<|call|>` envelope in `content` — which the meeting path used to
+    /// leave in the transcript as prose, so `conclude_meeting` never fired and every
+    /// meeting ran to `maxMeetingTurns` (playbook R3.1.4 / R3.8.7).
+    func testStreamParticipantResponse_harmonyEnvelopeInContent_resolvesTheCall() async throws {
+        let client = ScriptedConsultClient(
+            content: "We have converged.\n\n"
+                + #"<|call|>{"name":"conclude_meeting","arguments":{"decision":"Ship"}}<|end|>"#)
+
+        let result = try await MeetingStreamingService.streamParticipantResponse(
+            messages: [ChatMessage(role: .user, content: "go")],
+            client: client, config: Self.config(), tools: [])
+
+        XCTAssertEqual(result.resolvedToolCalls.map(\.name), [ToolNames.concludeMeeting],
+                       "a Harmony envelope in the content channel is the call the prompt taught")
+        XCTAssertEqual(result.resolvedToolCalls.first?.argumentsJSON, #"{"decision":"Ship"}"#)
+        XCTAssertEqual(result.content, "We have converged.",
+                       "the spoken prose stays; the envelope leaves the content or the wire carries it twice")
+    }
+
+    /// End to end through the executor: the envelope arrives in `content`, the real
+    /// runtime executes `conclude_meeting`, and the turn returns a conclusion instead of
+    /// a transcript line quoting the call back to the next speaker.
+    func testExecuteTurnToolLoop_concludeMeetingEnvelopeInContent_endsTheMeeting() async throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let client = ScriptedConsultClient(
+            content: "Decision time. "
+                + #"<|call|>{"name":"conclude_meeting","arguments":{"decision":"Ship it","rationale":"Tests are green"}}<|end|>"#)
+        let tools = [ConcludeMeetingTool.schema]
+        let initial = try await MeetingStreamingService.streamParticipantResponse(
+            messages: [ChatMessage(role: .system, content: "meeting")],
+            client: client, config: Self.config(), tools: tools)
+
+        let (_, runtime) = ToolRegistry.defaultRegistry(
+            workFolderRoot: tempDir, toolCallsLogURL: nil)
+        let context = TeamMeetingService.MeetingContext(
+            initiatedBy: .softwareEngineer,
+            participants: [.softwareEngineer, .productManager], availableArtifacts: [],
+            artifactReader: { _ in nil }, team: nil,
+            coordinatorRole: .softwareEngineer, limits: TeamLimits())
+        let toolContext = ToolExecutionContext(
+            workFolderRoot: tempDir, taskID: 7, runID: 0, roleID: "team_software_engineer")
+
+        let outcome = try await MeetingToolExecutor.executeTurnToolLoop(
+            initialResult: initial,
+            conversationSoFar: [ChatMessage(role: .system, content: "meeting")],
+            meetingContext: context,
+            client: client, config: Self.config(), tools: tools,
+            runtime: runtime, toolContext: toolContext)
+
+        XCTAssertEqual(outcome.conclusion?.decision, "Ship it")
+        XCTAssertEqual(outcome.conclusion?.rationale, "Tests are green")
+        XCTAssertEqual(outcome.content, "Decision time.",
+                       "the coordinator's spoken words around the call are its contribution")
+    }
+
     /// Both channels are trimmed: a turn whose content is padded whitespace must
     /// not enter the transcript as a leading blank line.
     func testStreamParticipantResponse_trimsBothChannels() async throws {
@@ -1247,9 +1396,9 @@ final class MeetingStreamingTransportTests: XCTestCase {
         XCTAssertEqual(wire.first?.role, .system)
         let grounding = wire[1]
         XCTAssertEqual(grounding.role, .user)
-        XCTAssertTrue(grounding.content?.contains("Available team artifacts:") ?? false,
+        XCTAssertTrue(grounding.content?.contains("## Available team artifacts") ?? false,
                       "got: \(grounding.content ?? "nil")")
-        XCTAssertTrue(grounding.content?.contains("[Product Requirements]:") ?? false)
+        XCTAssertTrue(grounding.content?.contains("### Product Requirements") ?? false)
         XCTAssertTrue(grounding.content?.contains("Ship the parser.") ?? false)
         XCTAssertTrue(wire[2].content?.contains("## Team meeting") ?? false,
                       "the header must follow the grounding turn")
@@ -1275,7 +1424,7 @@ final class MeetingStreamingTransportTests: XCTestCase {
             context: Self.context(artifacts: [Artifact(name: "Design Spec")], reader: { _ in nil }))
 
         let grounding = wire[1].content ?? ""
-        XCTAssertTrue(grounding.contains("[Design Spec]:"), "got: \(grounding)")
+        XCTAssertTrue(grounding.contains("### Design Spec\n(content not available)"), "got: \(grounding)")
         XCTAssertFalse(grounding.contains("```"), "no fence may be opened for absent content")
     }
 
@@ -1314,7 +1463,7 @@ final class MeetingStreamingTransportTests: XCTestCase {
         meeting.addMessage(TeamMessage(role: .softwareEngineer, content: "done"))
 
         let next = MeetingStreamingService.determineNextSpeaker(
-            meeting: meeting, participants: [], coordinator: .productManager)
+            meeting: meeting, participants: [], coordinator: .productManager, maxTurns: 10)
 
         XCTAssertEqual(next, .productManager)
     }
@@ -1328,7 +1477,7 @@ final class MeetingStreamingTransportTests: XCTestCase {
         let next = MeetingStreamingService.determineNextSpeaker(
             meeting: meeting,
             participants: [.productManager, .softwareEngineer],
-            coordinator: .productManager)
+            coordinator: .productManager, maxTurns: 10)
 
         XCTAssertEqual(next, .softwareEngineer)
     }
@@ -1378,9 +1527,11 @@ final class TeamMeetingTurnCompletionTests: XCTestCase {
         XCTAssertEqual(meeting.messages.count, 1)
     }
 
-    /// Everyone has spoken AND the last turns carry a CONCLUSION: the meeting
-    /// stops. This is the `hasConclusion` half of the agreement/conclusion pair.
-    func testCompleteTurn_allParticipatedAndConcluded_stops() {
+    /// Everyone has spoken AND the last turn READS like a conclusion — and the meeting
+    /// still continues. Only the coordinator's `conclude_meeting` call ends a meeting;
+    /// until 2026-09-06 this text heuristic ended it here, before the coordinator had
+    /// said anything.
+    func testCompleteTurn_allParticipatedAndConclusionShapedText_stillContinues() {
         var meeting = Self.meeting()
         meeting.addMessage(TeamMessage(role: .productManager, content: "Let's use REST.",
                                        messageType: .proposal))
@@ -1390,8 +1541,21 @@ final class TeamMeetingTurnCompletionTests: XCTestCase {
             context: Self.context(maxTurns: 10))
 
         XCTAssertEqual(meeting.messages.last?.messageType, .conclusion,
-                       "precondition: the classifier must read this as a conclusion")
-        XCTAssertFalse(shouldContinue, "an all-hands conclusion ends the meeting")
+                       "precondition: the classifier reads this as a conclusion")
+        XCTAssertTrue(shouldContinue, "text that sounds like a conclusion is not a decision")
+    }
+
+    /// The runtime labels the concluding turn itself rather than trusting the classifier —
+    /// a coordinator's `conclude_meeting` call with a one-word spoken line must still be
+    /// recorded as `.conclusion`.
+    func testCompleteTurn_explicitMessageType_overridesTheClassifier() {
+        var meeting = Self.meeting()
+        _ = TeamMeetingService.completeTurn(
+            meeting: &meeting, speaker: .productManager,
+            content: "Done.", thinking: nil, toolSummaries: nil,
+            context: Self.context(maxTurns: 10), messageType: .conclusion)
+
+        XCTAssertEqual(meeting.messages.last?.messageType, .conclusion)
     }
 
     /// The turn limit stops the meeting regardless of who has spoken — the

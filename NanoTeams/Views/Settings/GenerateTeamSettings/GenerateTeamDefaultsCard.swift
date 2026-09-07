@@ -22,7 +22,7 @@ struct GenerateTeamDefaultsCard: View {
                 TerminalPicker(
                     selection: $config.teamGenForcedSupervisorMode,
                     options: [(Optional<SupervisorMode>.none, "Auto (LLM decides)")]
-                        + SupervisorMode.allCases.map { (Optional<SupervisorMode>.some($0), $0.displayName) }
+                        + SupervisorMode.generationModes.map { (Optional<SupervisorMode>.some($0), $0.displayName) }
                 )
                 .frame(maxWidth: 220)
             }

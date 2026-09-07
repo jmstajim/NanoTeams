@@ -96,18 +96,33 @@ struct RoleEditorSheet: View {
     /// runtime declines — the delegation pack is withheld when every whitelisted
     /// team has been deleted or turned chat-mode, and `ask_supervisor` is stripped
     /// for the Autovisor manager, neither of which the editor's own booleans knew.
+    /// Step-execution injections plus the coordinator's meeting-only tool — one list,
+    /// because the Tools tab has one "Auto-injected" section and the per-tool hint says
+    /// which turn a tool rides.
     private var autoInjectedToolNames: [String] {
-        RoleToolBadgePolicy.model(
+        let model = RoleToolBadgePolicy.model(
             role: editorState.provisionalDefinition(mode: mode),
             team: team,
             allTeams: store.workFolder?.teams ?? [],
             storage: .from(orchestratorURL: store.workFolderURL),
             selectedScheme: store.snapshot?.workFolder.settings.selectedScheme,
             isVisionConfigured: store.configuration.isVisionConfigured,
-            isComputerUseEnabled: store.configuration.isComputerUseEnabled,
+            approval: approvalAvailability,
             autovisorTeamPolicy: store.snapshot.map { AutovisorTeamPolicy(settings: $0.workFolder.settings) }
                 ?? .unrestricted
-        ).autoInjected
+        )
+        return model.autoInjected + model.meetingOnly
+    }
+
+    /// The folder-level answer to "would a human be there to approve" — the team's Supervisor
+    /// mode against Autovisor supervision of this folder — read with the two execution modes,
+    /// so the Tools tab hints and the auto-injected list describe the schema the wire ships.
+    private var approvalAvailability: ToolApprovalAvailability {
+        ToolApprovalAvailability.forTeam(
+            bashMode: store.configuration.bashMode,
+            computerUseMode: store.configuration.computerUseMode,
+            team: team,
+            workFolderSettings: store.snapshot?.workFolder.settings)
     }
 
     /// Sections available for the current role:
@@ -189,6 +204,7 @@ struct RoleEditorSheet: View {
             RoleEditorToolsTab(
                 editorState: $editorState,
                 autoInjectedTools: autoInjectedToolNames,
+                approval: approvalAvailability,
                 lockedTools: isManagedSingletonRole ? AutovisorConstants.managerMandatoryToolIDs : [],
                 restrictToTools: isManagedSingletonRole ? Set(AutovisorConstants.managerDefaultToolIDs) : nil
             )

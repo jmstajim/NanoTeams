@@ -22,6 +22,7 @@ nonisolated extension SystemTemplates {
             name: name,
             icon: icon,
             prompt: rolePrompts[id] ?? "",
+            meetingGuidance: roleMeetingGuidance[id],
             toolIDs: toolIDs,
             usePlanningPhase: usePlanningPhase,
             dependencies: RoleDependencies(
@@ -41,11 +42,18 @@ nonisolated extension SystemTemplates {
                        TN.updateScratchpad, TN.analyzeImage,
                        TN.askTeammate, TN.requestTeamMeeting, TN.askSupervisor],
              requires: [supervisorTaskArtifactName], produces: ["Product Requirements"]),
+        // Both UX roles are told to read the codebase ("read files to understand the
+        // existing user experience", "reference existing patterns") — the same read set
+        // the PM and Tech Lead hold; until 2026-09-06 they held no file tool at all.
         role("uxResearcher", name: "UX Researcher", icon: "person.2",
-             toolIDs: [TN.askTeammate, TN.requestTeamMeeting],
+             toolIDs: [TN.readFile, TN.readLines, TN.listFiles, TN.search,
+                       TN.updateScratchpad, TN.analyzeImage,
+                       TN.askTeammate, TN.requestTeamMeeting, TN.askSupervisor],
              requires: [supervisorTaskArtifactName], produces: ["Research Report"]),
         role("uxDesigner", name: "UX Designer", icon: "paintbrush.pointed",
-             toolIDs: [TN.askTeammate, TN.requestTeamMeeting],
+             toolIDs: [TN.readFile, TN.readLines, TN.listFiles, TN.search,
+                       TN.updateScratchpad, TN.analyzeImage,
+                       TN.askTeammate, TN.requestTeamMeeting, TN.askSupervisor],
              requires: ["Product Requirements", "Research Report"], produces: ["Design Spec"]),
         role("techLead", name: "Tech Lead", icon: "brain.head.profile",
              toolIDs: [TN.readFile, TN.readLines, TN.listFiles, TN.search,

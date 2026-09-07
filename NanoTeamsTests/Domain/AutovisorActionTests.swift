@@ -81,6 +81,24 @@ final class AutovisorActionTests: XCTestCase {
         XCTAssertEqual(try? ControlVerb.parse(action: "set_timeout", arg: nil).get(), .setTimeout(seconds: nil))
     }
 
+    /// `arg` is read by `rename` and `set_timeout` only. Until 2026-09-06 the six other verbs
+    /// accepted it and dropped it — an `ok:true` for a call that asked for something else
+    /// (the schema even said "Ignored otherwise."). Now the call is refused and the error
+    /// names the two verbs that read it; whitespace-only is still "absent".
+    func testControlVerb_parse_rejectsAStrayArgOnVerbsThatDoNotReadIt() {
+        for action in ["start", "pause", "resume", "stop", "close", "delete"] {
+            guard case .failure(let error) = ControlVerb.parse(action: action, arg: "42") else {
+                return XCTFail("\(action) with a non-empty arg must be refused, not silently applied")
+            }
+            XCTAssertTrue(error.message.contains("rename") && error.message.contains("set_timeout"),
+                          "\(action): the refusal names the verbs `arg` belongs to")
+            XCTAssertTrue(error.message.contains("`\(action)`"), "\(action): the refusal names the verb sent")
+            XCTAssertEqual(try? ControlVerb.parse(action: action, arg: "   ").get(),
+                           try? ControlVerb.parse(action: action, arg: nil).get(),
+                           "\(action): whitespace-only arg is absent, not stray")
+        }
+    }
+
     func testControlVerb_parse_rejectsUnknownAndEmptyRename() {
         guard case .failure = ControlVerb.parse(action: "frobnicate", arg: nil) else { return XCTFail("unknown action must fail") }
         guard case .failure = ControlVerb.parse(action: "rename", arg: "   ") else { return XCTFail("empty rename title must fail") }
@@ -128,9 +146,16 @@ final class AutovisorActionTests: XCTestCase {
 
     // MARK: - AutovisorStatus.acceptRejectionAdvice (remedy at the decision point)
 
-    private func advice(_ status: RoleExecutionStatus?, chat: Bool = false, ready: Bool = false) -> String? {
+    private func adviceValue(
+        _ status: RoleExecutionStatus?, chat: Bool = false, ready: Bool = false
+    ) -> AutovisorStatus.AcceptRejectionAdvice? {
         AutovisorStatus.acceptRejectionAdvice(
-            roleStatus: status, isChatModeTask: chat, taskReadyToClose: ready)
+            roleStatus: status, isChatModeTask: chat, taskReadyToClose: ready,
+            taskID: 7, roleID: "pm")
+    }
+
+    private func advice(_ status: RoleExecutionStatus?, chat: Bool = false, ready: Bool = false) -> String? {
+        adviceValue(status, chat: chat, ready: ready)?.prose
     }
 
     func testAcceptAdvice_doneInReview_advisesClose() {
@@ -229,5 +254,73 @@ final class AutovisorActionTests: XCTestCase {
         // count means an arm of the table stopped producing advice.
         XCTAssertEqual(checked, RoleExecutionStatus.allCases.count * 4 - 4,
                        "anti-vacuum: every non-.needsAcceptance arm must produce advice under every flag combination")
+    }
+
+    // MARK: - The machine-copyable half (`next`)
+
+    /// The incident this whole slot exists for: the manager got prose and had to
+    /// re-derive the call. Every arm that speaks must also hand back a call.
+    func testAcceptAdvice_everyArmCarriesAMachineCopyableNextHint() {
+        var checked = 0
+        for status in RoleExecutionStatus.allCases {
+            for chat in [false, true] {
+                for ready in [false, true] {
+                    guard let a = adviceValue(status, chat: chat, ready: ready) else { continue }
+                    checked += 1
+                    let ctx = "\(status) chat=\(chat) ready=\(ready)"
+                    let cmd = a.next.suggested_cmd
+                    XCTAssertNotNil(cmd, "\(ctx): next hint names no command")
+                    // Through the house lint, not a hand-written list — same reason the
+                    // prose pin above uses it: a tool renamed tomorrow is covered today.
+                    XCTAssertTrue(
+                        AutovisorGoalLint.scanStrict(cmd ?? "").isEmpty,
+                        "\(ctx): next hint names '\(cmd ?? "")', which the manager's schema does not carry")
+                    XCTAssertEqual(a.next.suggested_args?["task_id"], "7",
+                                   "\(ctx): the hint must carry the task it applies to")
+                    XCTAssertFalse(a.next.reason?.isEmpty ?? true, "\(ctx): hint has no reason")
+                }
+            }
+        }
+        XCTAssertEqual(checked, RoleExecutionStatus.allCases.count * 4 - 4,
+                       "anti-vacuum: same arms as the prose pin above")
+    }
+
+    /// One factory, two surfaces. `task_status`'s success envelope and an `accept`
+    /// rejection both offer close on a ready-to-close Review task; they were built
+    /// independently and are now required to be the same value.
+    func testAcceptAdvice_readyToClose_reusesTheSharedCloseHint() throws {
+        let a = try XCTUnwrap(adviceValue(.done, ready: true))
+        let shared = AutovisorStatus.closeTaskHint(taskID: 7, reason: a.next.reason ?? "")
+        XCTAssertEqual(a.next, shared,
+                       "the accept-rejection close hint must BE the shared factory's value, not a copy of it")
+        XCTAssertEqual(a.next.suggested_args, ["task_id": "7", "action": "close"])
+    }
+
+    func testAcceptAdvice_restartHint_carriesRoleAndNoGhostComment() throws {
+        for status in [RoleExecutionStatus.failed, .skipped] {
+            let a = try XCTUnwrap(adviceValue(status))
+            XCTAssertEqual(a.next.suggested_cmd, ToolNames.manageRole, "\(status)")
+            XCTAssertEqual(a.next.suggested_args?["role_id"], "pm", "\(status)")
+            XCTAssertEqual(a.next.suggested_args?["action"], "restart", "\(status)")
+            // A placeholder comment is copied verbatim by exactly the models this hint
+            // is for, so the guidance stays the manager's to write.
+            XCTAssertNil(a.next.suggested_args?["comment"], "\(status)")
+        }
+    }
+
+    func testAcceptAdvice_needsAcceptance_hasNoHintEither() {
+        for ready in [false, true] {
+            XCTAssertNil(adviceValue(.needsAcceptance, ready: ready), "ready=\(ready)")
+        }
+    }
+
+    /// The funnel end of the same fix: `.failure` must be able to CARRY a hint, or the
+    /// Domain half above never reaches the wire.
+    func testActionResult_failureCarriesNextHint_andDefaultsToNone() {
+        let hint = AutovisorStatus.closeTaskHint(taskID: 3, reason: "why")
+        XCTAssertEqual(AutovisorActionResult.failure("no", next: hint).next, hint)
+        XCTAssertNil(AutovisorActionResult.failure("no").next)
+        XCTAssertEqual(AutovisorActionResult.success("ok", next: hint).next, hint)
+        XCTAssertNil(AutovisorActionResult.success("ok").next)
     }
 }

@@ -210,7 +210,23 @@ nonisolated struct Team: Codable, Identifiable {
             graphLayout.nodePositions.append(TeamNodePosition(roleID: role.id, x: pos.x, y: pos.y))
         }
 
+        // The first non-Supervisor role of a team becomes its coordinator (there is no
+        // "Auto"); a later role never displaces a stored, still-live pick.
+        healMeetingCoordinator()
         updatedAt = MonotonicClock.shared.now()
+    }
+
+    /// Writes the resolved meeting coordinator back into `settings` when the stored id
+    /// would be replaced by the default rule (see `meetingCoordinatorID`). Returns `true`
+    /// iff the stored value changed; bumps `updatedAt` on change so `Team.==`'s
+    /// id+timestamp shortcut (CLAUDE.md #42) lets observers see it.
+    @discardableResult
+    mutating func healMeetingCoordinator() -> Bool {
+        let resolved = meetingCoordinatorID
+        guard settings.meetingCoordinatorRoleID != resolved else { return false }
+        settings.meetingCoordinatorRoleID = resolved
+        updatedAt = MonotonicClock.shared.now()
+        return true
     }
 
     /// Remove a role from the team, cleaning up all references.
@@ -234,9 +250,9 @@ nonisolated struct Team: Codable, Identifiable {
         for (sub, sup) in settings.hierarchy.reportsTo where sup == roleID {
             settings.hierarchy.reportsTo.removeValue(forKey: sub)
         }
-        if settings.meetingCoordinatorRoleID == roleID {
-            settings.meetingCoordinatorRoleID = nil
-        }
+        // Removing the coordinator re-picks one by the default rule — never `nil`
+        // (Auto no longer exists; see `TeamSettings.meetingCoordinatorRoleID`).
+        healMeetingCoordinator()
         settings.invitableRoles.remove(roleID)
         settings.acceptanceCheckpoints.remove(roleID)
         updatedAt = MonotonicClock.shared.now()

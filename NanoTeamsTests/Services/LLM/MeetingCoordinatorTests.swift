@@ -12,7 +12,9 @@ final class MeetingCoordinatorTests: XCTestCase {
         let excluded = MeetingCoordinator.meetingExcludedTools
         XCTAssertTrue(excluded.contains(TN.askTeammate))
         XCTAssertTrue(excluded.contains(TN.requestTeamMeeting))
-        XCTAssertTrue(excluded.contains(TN.concludeMeeting))
+        // `conclude_meeting` is the coordinator's MEETING tool — the one collaboration
+        // tool a meeting turn keeps (see `speakerTools`).
+        XCTAssertFalse(excluded.contains(TN.concludeMeeting))
         XCTAssertTrue(excluded.contains(TN.askSupervisor))
         XCTAssertTrue(excluded.contains(TN.requestChanges))
         XCTAssertTrue(excluded.contains(TN.createArtifact))
@@ -42,7 +44,9 @@ final class MeetingCoordinatorTests: XCTestCase {
         XCTAssertTrue(excluded.contains(TN.uiType))
         XCTAssertTrue(excluded.contains(TN.uiKey))
         XCTAssertTrue(excluded.contains(TN.uiScroll))
-        XCTAssertEqual(excluded.count, 29)
+        // 29 until 2026-09-06; `conclude_meeting` left the set when it became the
+        // coordinator's real meeting tool (granted by `speakerTools`, not stripped).
+        XCTAssertEqual(excluded.count, 28)
     }
 
     // MARK: - filterMeetingTools
@@ -88,7 +92,7 @@ final class MeetingCoordinatorTests: XCTestCase {
     ) -> String {
         var parts = [MeetingCoordinator.buildMeetingHeader(meeting: meeting, context: context)]
         if !meeting.messages.isEmpty {
-            parts.append("Discussion so far:")
+            parts.append("## Discussion so far")
             parts.append(contentsOf: meeting.messages.map {
                 MeetingCoordinator.buildTranscriptLine($0, context: context)
             })
@@ -120,6 +124,21 @@ final class MeetingCoordinatorTests: XCTestCase {
             context: context
         )
         XCTAssertTrue(msg.contains("REST vs GraphQL"))
+        XCTAssertTrue(msg.contains("### Context\nWe need to decide on REST vs GraphQL"),
+                      "the context is a nested heading under `## Team meeting`, not a `Context:` label: \(msg)")
+        XCTAssertFalse(msg.contains("Context: "), msg)
+    }
+
+    func testBuildTurnDirective_changeRequestVote_carriesTheVoteContractEveryTurn() {
+        var (meeting, context) = makeMeetingAndContext(topic: "Vote")
+        meeting.kind = .changeRequestVote
+        let directive = MeetingCoordinator.buildTurnDirective(
+            speaker: .softwareEngineer, meeting: meeting, context: context)
+        XCTAssertTrue(directive.hasSuffix(ChangeRequestService.voteInstruction), directive)
+        meeting.kind = .discussion
+        let plain = MeetingCoordinator.buildTurnDirective(
+            speaker: .softwareEngineer, meeting: meeting, context: context)
+        XCTAssertFalse(plain.contains("VOTE:"), plain)
     }
 
     func testBuildTurnMessage_noMessages_noDiscussionSection() {
