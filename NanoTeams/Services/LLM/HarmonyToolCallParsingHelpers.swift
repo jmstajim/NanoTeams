@@ -102,9 +102,32 @@ nonisolated enum ToolCallParsingHelpers {
     /// rest of the buffer, so a brace inside a LATER envelope's string value can be
     /// counted as structure and march `lastCloseEnd` into that envelope; refusing an
     /// anchor past the first end marker keeps this salvage inside the same bound
-    /// `extractCallObject`'s premature-close repair already respects. Recovering the first
-    /// call in that case needs a walker-state SNAPSHOT at the boundary (the pad count is
-    /// EOF-`depth`, so a clamped anchor alone is not enough) — deliberately not done.
+    /// `extractCallObject`'s premature-close repair already respects.
+    ///
+    /// **Third arm — pad-and-validate at the model's own terminator** (2026-09-08). The
+    /// same marching happens in the NOT-in-string arm, which has no anchor bound at all,
+    /// and there it is worse: the arm does not refuse, it silently returns a span that
+    /// swallowed `<|end|>` and whatever followed. Twice in one production run
+    /// (`ornith-1.0-35b`, CastleSurvivors 2026-09-08): a `create_managed_task` envelope one
+    /// closer short, followed by a HALLUCINATED `[Tool Result]{…}` block. The first landed
+    /// as `MALFORMED_TOOL_CALL`; the second shared its reply with a valid `wait_for_events`,
+    /// so `handleNoToolCalls` never ran and the call vanished with no card, no nudge and no
+    /// log row while the Autovisor parked believing the task existed (`DEBTS.md` Q-4, whose
+    /// recorded trigger is exactly "a `malformed_tool_call` card beside a successfully
+    /// parsed LATER call").
+    ///
+    /// So: at the FIRST `salvageEndMarker` seen OUTSIDE a string with the object still
+    /// open, close what the model wrote with `depth` synthetic `}` and accept that
+    /// candidate iff it strictly parses; otherwise keep walking, byte-identically to
+    /// before. Safety is structural rather than statistical — outside a string, valid JSON
+    /// holds only structure, numbers, literals and whitespace, and `<` is none of them, so
+    /// an outside-string terminator at `depth > 0` PROVES the payload is already broken at
+    /// that byte. This is stronger than the walker-state SNAPSHOT an earlier note here
+    /// called the only correct move: a snapshot keeps walking and still loses to a depth-0
+    /// close after the boundary, it cannot fire when no `}` was ever observed
+    /// (`lastCloseEnd == nil`), and it inherits the EOF arm's silent drop of members
+    /// written after the last close — `{"name":"x","arguments":{"a":1},"b":2<|end|>` keeps
+    /// `b` here, and `spilledSiblingKeys` then reports it to the model.
     ///
     /// The missing-key-quote family (`,path":`, `HarmonyJSONDefectRepairTests`) is NOT
     /// reliably excluded by either arm's guards — an earlier note here claimed parity
@@ -143,6 +166,14 @@ nonisolated enum ToolCallParsingHelpers {
         // member is `key : value`, so no structural colon after the anchor means the
         // truncation discards at most a partial key name, never a value the model sent.
         var memberBeganAfterLastClose = false
+        // The boundary arm's cheap gate and its once-per-walk latch. Comparing one
+        // Character before `hasPrefix` keeps the common path at a single extra comparison,
+        // and the latch keeps the arm from turning every outside-string `<` into a slice
+        // plus a `JSONSerialization` parse — which would make this walk quadratic and move
+        // `Ratchet/ComplexityRatchetPinTests`. The latch is also literally "the FIRST
+        // occurrence", which is what the doc comment above promises.
+        let boundaryFirst: Character? = salvageEndMarker?.first
+        var triedEndMarkerBoundary = false
 
         var end = i
         while end < s.endIndex {
@@ -184,6 +215,25 @@ nonisolated enum ToolCallParsingHelpers {
                     }
                 } else if ch == ":" {
                     memberBeganAfterLastClose = true
+                } else if !triedEndMarkerBoundary, ch == boundaryFirst,
+                          let marker = salvageEndMarker,
+                          depth <= Self.maxSalvageDepth,
+                          s[end...].hasPrefix(marker)
+                {
+                    // The model's own terminator, outside a string, with the object still
+                    // open: everything from here belongs to a later envelope or to prose it
+                    // hallucinated. Close what it wrote and take that iff it parses.
+                    //
+                    // `depth > 0` needs no test — the walk returns at the first depth-0
+                    // close, so it cannot be standing here otherwise. An escaped `\<` never
+                    // reaches this branch (the escape arm consumed it), which fails closed
+                    // and is the correct outcome for bytes that are already malformed.
+                    triedEndMarkerBoundary = true
+                    if let padded = Self.paddedAtEndMarkerBoundary(
+                        s, from: i, upTo: end, depth: depth)
+                    {
+                        return (padded, end)
+                    }
                 }
             }
 
@@ -210,6 +260,33 @@ nonisolated enum ToolCallParsingHelpers {
         }
         let salvaged = String(s[i..<truncate]) + String(repeating: "}", count: depth)
         return (salvaged, truncate)
+    }
+
+    /// The bytes before the model's own end marker, closed with `depth` synthetic `}` —
+    /// or nil when that is not valid JSON, in which case the caller keeps walking.
+    ///
+    /// Validation is what makes the boundary arm safe to fire without a member-list or
+    /// colon discriminator: a reconstruction that does not parse is never returned, so the
+    /// arm can only ever REPLACE a span the caller would have failed on anyway.
+    ///
+    /// Validated on the SANITIZED form and returned RAW. A raw control character inside a
+    /// `brief` / `content` value is a defect `parseToolCallFromJSON` repairs for itself, so
+    /// judging the candidate on the unsanitized bytes would refuse a recovery the pipeline
+    /// can complete; returning sanitized bytes instead would make this the one span whose
+    /// content differs from the source, which every downstream repair assumes it does not.
+    ///
+    /// Padding is `}`-only, mirroring the EOF arm. An unbalanced ARRAY therefore fails
+    /// validation and declines rather than producing `[1,2}` — fail-closed by construction,
+    /// with no separate branch to keep in step.
+    private static func paddedAtEndMarkerBoundary(
+        _ s: Substring, from start: String.Index, upTo boundary: String.Index, depth: Int
+    ) -> String? {
+        let candidate = String(s[start..<boundary]) + String(repeating: "}", count: depth)
+        let sanitized = JSONUtilities.sanitizeJSONControlCharacters(candidate)
+        guard let data = sanitized.data(using: .utf8),
+              (try? JSONSerialization.jsonObject(with: data, options: [])) != nil
+        else { return nil }
+        return candidate
     }
 
     /// Whether the text at `index` continues an object's member list — optional
@@ -342,6 +419,27 @@ nonisolated enum ToolCallParsingHelpers {
               object is [String: Any]
         else { return nil }
         return out
+    }
+
+    /// The RAW bytes between a call object's opening brace and the model's own `<|end|>`,
+    /// plus the index just past that marker — nil when the buffer carries no terminator.
+    ///
+    /// The ONE definition of "what the model sent for this call", shared by the three readers
+    /// that have to agree on it: dispatch's raw-body fallback (`CallMarkerStrategy`), the
+    /// failed-attempt card (`LLMExecutionService.extractCallEnvelope`) and the retry
+    /// diagnostic (`postCallJSON`). They computed it separately until 2026-09-08, and the
+    /// diagnostic did not compute it at all — it read the walker's span over the WHOLE buffer,
+    /// so a payload dispatch had already given up on for a stray quote was described to the
+    /// model as unbalanced braces.
+    ///
+    /// Raw and untrimmed by contract: a caller that wants the trimmed form (the card does,
+    /// for display) trims its own copy. Every parse downstream skips leading whitespace on
+    /// its own.
+    static func endMarkerBoundedBody(
+        in s: Substring, from index: String.Index, endMarker: String
+    ) -> (body: String, next: String.Index)? {
+        guard let endRange = s.range(of: endMarker, range: index..<s.endIndex) else { return nil }
+        return (String(s[index..<endRange.lowerBound]), endRange.upperBound)
     }
 
     static func advanceCursor(
@@ -520,6 +618,7 @@ nonisolated enum ToolCallParsingHelpers {
         let sanitized = JSONUtilities.sanitizeJSONControlCharacters(jsonText)
         guard let data = sanitized.data(using: .utf8) else { return nil }
         let dict: [String: Any]
+        var repairNotes: [String] = []
         if let object = try? JSONSerialization.jsonObject(with: data, options: []),
            let strictDict = object as? [String: Any]
         {
@@ -531,13 +630,15 @@ nonisolated enum ToolCallParsingHelpers {
             // repair-rate metric isn't blind to RC3-class fixes. Mutually exclusive with the
             // `parseAfterRepair` bump below (that branch only runs when strict parse fails).
             if sanitized != jsonText { _bumpRepairFireCount() }
-        } else if let repairedDict = parseAfterRepair(sanitized) {
+        } else if let repaired = parseAfterRepair(sanitized) {
             // Strict parse failed. Apply known model-defect repairs and retry —
             // the program covers the model's weakness rather than asking it to
             // fix what it can't see (CORE_PRINCIPLES). When a repair succeeds,
-            // the tool call dispatches normally and the model never knows its
-            // first-emit JSON was broken.
-            dict = repairedDict
+            // the tool call dispatches normally; a repair that CHOSE between two
+            // readings of the bytes also hands the model a note, so the defect is
+            // not re-emitted for the rest of the run (REC.5).
+            dict = repaired.dict
+            repairNotes = repaired.notes
         } else if let reescapedDict = parseAfterContentReescape(jsonText) {
             // True last resort: the model emitted a large `content`/`new_text` field with raw
             // (unescaped) quotes and/or control chars — which the narrow regex chain above
@@ -573,9 +674,19 @@ nonisolated enum ToolCallParsingHelpers {
             providerID: providerID,
             name: resolved.name,
             argumentsJSON: normalizeArgumentsJSON(resolved.arguments),
-            argumentRepairNote: spilledArgumentsNote(recoveredKeys: recovered))
+            argumentRepairNote: mergedRepairNote(
+                repairNotes + [spilledArgumentsNote(recoveredKeys: recovered)].compactMap { $0 }))
     }
 
+    /// One `format_note` line out of however many repairs fired, or nil when none did.
+    /// Joined rather than ranked: each note names a different defect, and dropping one would
+    /// leave the model re-emitting exactly that shape.
+    static func mergedRepairNote(_ notes: [String]) -> String? {
+        notes.isEmpty ? nil : notes.joined(separator: "; ")
+    }
+
+    /// runtime-prompt
+    ///
     /// One line for the model, or nil when it emitted the call correctly.
     static func spilledArgumentsNote(recoveredKeys: [String]) -> String? {
         guard !recoveredKeys.isEmpty else { return nil }
@@ -651,8 +762,8 @@ nonisolated enum ToolCallParsingHelpers {
     /// output, so retry nudges asking it to "use valid JSON" loop forever.
     /// Each repair targets ONE concrete payload pattern observed in a network
     /// trace, never a generic "best-effort fix" that could corrupt valid JSON.
-    static func parseAfterRepair(_ sanitized: String) -> [String: Any]? {
-        let repaired = repairCommonJSONDefects(sanitized)
+    static func parseAfterRepair(_ sanitized: String) -> (dict: [String: Any], notes: [String])? {
+        let (repaired, notes) = appliedRepairs(to: sanitized)
         guard repaired != sanitized,
               let data = repaired.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data, options: []),
@@ -661,7 +772,7 @@ nonisolated enum ToolCallParsingHelpers {
             return nil
         }
         _bumpRepairFireCount()
-        return dict
+        return (dict, notes)
     }
 
     /// Last-resort rescue for an `<|end|>`-bounded `<|call|>` body whose UNREPAIRED bytes
@@ -689,7 +800,7 @@ nonisolated enum ToolCallParsingHelpers {
     /// `parseAfterRepair` on already-repaired bytes returns nil).
     static func parseAfterRepairAndRewalk(_ rawBody: String) -> StepToolCall? {
         let sanitized = JSONUtilities.sanitizeJSONControlCharacters(rawBody)
-        let repaired = repairCommonJSONDefects(sanitized)
+        let (repaired, _) = appliedRepairs(to: sanitized)
         guard repaired != sanitized else { return nil }
         let sub = Substring(repaired)
         let start = skipWhitespace(in: sub, from: sub.startIndex)
@@ -698,6 +809,15 @@ nonisolated enum ToolCallParsingHelpers {
             in: sub, from: start, endMarker: CallMarkerStrategy.endMarker)
         else { return nil }
         guard let call = parseToolCallFromJSON(span) else { return nil }
+        // Deliberately note-LESS, though `appliedRepairs` above knows what it changed: those
+        // notes describe the whole `<|end|>`-bounded body, while `span` is only its first
+        // balanced object. Reaching this arm needs a defect INSIDE the call (so the raw walk
+        // failed) plus, for a note to exist, a repairable shape in the remainder the walk then
+        // discards — and the note would then name a defect in bytes that never became
+        // arguments. Verified live on `{"name":"read_lines","arguments":{"path":"a.gd",start_line":"1"}}
+        // noise {"x":"5,"y":true}`: the call dispatched carrying a note about the noise while
+        // its own missing key quote went unnamed. Naming the wrong defect is the failure this
+        // whole wave removes (rule #225), so the rescue says nothing rather than guessing.
         _bumpRepairFireCount()
         return call
     }
@@ -780,18 +900,43 @@ nonisolated enum ToolCallParsingHelpers {
 
     /// Applies all known repair patterns. Pure string transform — does NOT
     /// validate the result. The caller re-parses with `JSONSerialization` and
-    /// falls back to `nil` if repair didn't help. All three repairs are idempotent
-    /// on already-fixed input, so the order is not load-bearing today.
+    /// falls back to `nil` if repair didn't help. Every pass is idempotent on already-fixed
+    /// input — but idempotence is NOT order-independence, and since 2026-09-08 the ORDER IS
+    /// LOAD-BEARING: `repairTransposedQuoteAfterNumericValue` needs a `"` immediately after
+    /// the comma, and on a payload carrying both that defect and a dropped key-opening quote
+    /// (`{"end_line":"588,include_line_numbers":false,…}`) it is `repairMissingQuoteBeforeJSONKey`
+    /// that supplies it. Measured both ways: shipped order recovers the call, the reverse
+    /// leaves `"588,"include_line_numbers"` and drops it. Pinned by
+    /// `HarmonyJSONDefectRepairTests.testRepair_compositeKeyQuotePlusTransposedQuote_…`.
     static func repairCommonJSONDefects(_ raw: String) -> String {
+        appliedRepairs(to: raw).text
+    }
+
+    /// The repair chain, plus a model-facing note for every repair that CHOSE between two
+    /// readings of the bytes — REC.5: "every rewrite that changes what the model asked for is
+    /// reported in the tool result". Most repairs here restore the one form the payload could
+    /// have had (a dropped escape, a dropped key quote) and report nothing; the transposed
+    /// quote is the exception, because its bytes parse under two readings and only one of them
+    /// is executable.
+    ///
+    /// Reporting is not politeness. A repair nobody reports is a defect the model re-emits for
+    /// the rest of the run — the 2026-08-13 gemma run did exactly that, eight seconds apart,
+    /// after being told only "Fix the arguments and retry" (`spilledArgumentsNote`).
+    static func appliedRepairs(to raw: String) -> (text: String, notes: [String]) {
         var s = raw
+        var notes: [String] = []
         s = repairUnescapedHTMLAttributeClose(s)
         s = repairMissingQuoteBeforeJSONKey(s)
         s = repairOverescapedKeyValuePair(s)
-        // Bare keys last: the three above are byte-surgery on quoting defects, and running
+        if let repaired = repairTransposedQuoteAfterNumericValue(s) {
+            s = repaired
+            notes.append(transposedQuoteRepairNote)
+        }
+        // Bare keys last: the four above are byte-surgery on quoting defects, and running
         // them first means this pass sees the closest thing to well-formed JSON the chain
         // can produce. Nil (nothing of the kind present) leaves `s` alone.
         s = repairUnquotedJSONKeys(s) ?? s
-        return s
+        return (s, notes)
     }
 
     /// `qwen3.5-9b-mlx` defect: inside a JSON string holding HTML, the model
@@ -851,6 +996,88 @@ nonisolated enum ToolCallParsingHelpers {
             in: raw, range: range, withTemplate: #"$1"$2":"#)
     }
 
+    /// `ornith-1.0-35b` defect: the closing quote of a NUMERIC string value and the member
+    /// comma are TRANSPOSED — `"end_line":"588,"include_line_numbers":false` where the model
+    /// meant `"end_line":"588","include_line_numbers":false`. Verbatim from CastleSurvivors
+    /// task 5 run 0, response 2026-09-08T14:30:32.536Z: every argument was present and the
+    /// braces balanced, but the stray byte inverts string parity for the rest of the payload,
+    /// so the walker ends inside a string with no `}` ever seen outside one — `lastCloseEnd`
+    /// stays nil and BOTH EOF-salvage arms decline. The raw-body fallback then hands these
+    /// bytes to this chain, which is the only layer that can help.
+    ///
+    /// **Why an integer-typed KEY, and only that.** The bytes parse under two readings —
+    /// `end_line: "588"` (quote transposed) and `end_line: "588,"` (the next key lost its
+    /// opening quote) — and BOTH produce valid JSON, so no re-validation gate can separate
+    /// them. What separates them is executability: `coerceInt("588,")` is nil
+    /// (`ToolArgumentHelpers`), so the second reading dispatches a call that cannot run.
+    ///
+    /// That argument holds for a key the schema coerces to `Int` and for NO other key. Gating
+    /// on the VALUE being digits — the shape this repair shipped with for one afternoon on
+    /// 2026-09-08 — reaches `{"old_text":"588","new_text":"600,"path":"x.gd"}` and silently
+    /// writes `600` where the model wrote `600,`: for a free-text argument both readings ARE
+    /// executable, so the wrong one lands in the user's file under `ok:true` with a note
+    /// asserting a quote was missing. Hence `integerArgumentKeys`, derived from the shipped
+    /// schemas rather than listed, and hence the shape `"note":"see 588,"path":…` stays
+    /// fail-closed: it earns a nudge carrying the real parser error instead of a guess.
+    ///
+    /// Returns nil when the shape is absent, so `appliedRepairs` can tell whether it fired
+    /// without diffing bytes (the `repairUnquotedJSONKeys` convention).
+    ///
+    /// Detection: an identifier-shaped KEY closed by `":`, its value opener `"`, digits, the
+    /// comma, optional insignificant whitespace, the quote, and — with no intervening quote —
+    /// the next identifier-shaped key closed by `":`. The trailing lookahead is what makes the
+    /// match a MEMBER BOUNDARY rather than a byte pair: a digit run inside a string value is
+    /// followed by escaped quotes (`\"`), which this pattern's bare `"` cannot match. Matches
+    /// are rewritten back to front so earlier replacements cannot shift later ranges. Same
+    /// try!-on-compile-time-literal rationale as the repairs around it, and the same call-path
+    /// safety: this runs only after a strict parse has already failed, and every caller
+    /// re-validates — but note that re-validation does NOT protect this repair (both readings
+    /// are valid JSON), which is why the key gate carries the whole correctness argument.
+    static func repairTransposedQuoteAfterNumericValue(_ raw: String) -> String? {
+        let regex = try! NSRegularExpression(
+            pattern: #"([A-Za-z_][A-Za-z0-9_]*)":"(\d+),(\s*)"(?=[A-Za-z_][A-Za-z0-9_]*"\s*:)"#)
+        let ns = raw as NSString
+        let matches = regex.matches(in: raw, options: [], range: NSRange(location: 0, length: ns.length))
+            .filter { integerArgumentKeys.contains(ns.substring(with: $0.range(at: 1))) }
+        guard !matches.isEmpty else { return nil }
+        var out = raw
+        for match in matches.reversed() {
+            let key = ns.substring(with: match.range(at: 1))
+            let digits = ns.substring(with: match.range(at: 2))
+            let spacing = ns.substring(with: match.range(at: 3))
+            let replacement = "\(key)\":\"\(digits)\",\(spacing)\""
+            out = (out as NSString).replacingCharacters(in: match.range, with: replacement)
+        }
+        return out
+    }
+
+    /// Argument keys the shipped tool schemas type as `integer`, at both nesting levels the
+    /// schema allows. Derived, never listed: a hand-maintained set would go stale the first
+    /// time a tool gains a numeric argument, and staleness here does not fail loudly — it
+    /// declines a recovery (harmless) or, if someone widened it by hand, corrupts a value.
+    static let integerArgumentKeys: Set<String> = {
+        var keys: Set<String> = []
+        for schema in ToolHandlerRegistry.allSchemas {
+            for (key, property) in schema.parameters.properties ?? [:] {
+                if property.type == "integer" { keys.insert(key) }
+                for (nested, leaf) in property.properties ?? [:] where leaf.type == "integer" {
+                    keys.insert(nested)
+                }
+            }
+        }
+        return keys
+    }()
+
+    /// runtime-prompt
+    ///
+    /// What the model is told when the repair above fired. Names the defect and the form to
+    /// send next (R1.8.1), quotes none of the model's own bytes back (R3.8.3), and stays true
+    /// at any distance — it rides the tool result, which is never retired.
+    static let transposedQuoteRepairNote =
+        "a string value in `arguments` was missing its closing quote before the next key; "
+            + "it was repaired and the call ran. Close each string value with a quote, then the "
+            + "comma"
+
     /// `gemma-4-26b-a4b` defect: the model backslash-escapes the quotes of an ENTIRE
     /// key:value pair at a property boundary, e.g.
     ///   {"content":"…",\"path\":\"src/core/__init__.py\"}
@@ -907,6 +1134,12 @@ nonisolated enum ToolCallParsingHelpers {
         /// name. `inferredToolName` is non-nil when shape inference recognises the
         /// payload — used to craft a concrete retry example for the model.
         case missingToolName(inferredToolName: String?)
+        /// The tool id was written inside `arguments` AND names no registered tool — two
+        /// faults in one envelope, and the misplacement is the one models repeat. Distinct
+        /// from `.missingToolName` because that arm's nudge tells the model to keep its
+        /// arguments and add a name; here the name it has is also wrong, so echoing it back
+        /// as the retry example would teach a vocabulary the runtime rejects.
+        case toolNameInsideArguments(name: String)
         /// The buffer contains Harmony markers (specifically, `<|start|>`
         /// followed by a role identifier — `user`/`assistant`/`system`/
         /// `developer`/`tool`) but no envelope shape at all. The model emitted
@@ -924,7 +1157,7 @@ nonisolated enum ToolCallParsingHelpers {
     enum PostCallJSON {
         case noCallMarker
         case noObject           // marker present, next non-whitespace is not `{`
-        case unbalanced         // braces never balance (beyond salvage)
+        case unbalanced         // no `<|end|>`, and the braces never balance either
         case extracted(String)  // the braced value (pre-sanitize)
     }
 
@@ -943,6 +1176,17 @@ nonisolated enum ToolCallParsingHelpers {
             let (jsonText, _) = extractJSONBracedValue(
                 in: tail, from: jsonStart, salvageEndMarker: CallMarkerStrategy.endMarker)
         else {
+            // The walker declined — but dispatch does not stop here when the model wrote its
+            // own terminator: `CallMarkerStrategy` falls through to the `<|end|>`-bounded raw
+            // body and runs the repair chain on THOSE bytes. Reading anything else would
+            // diagnose a byte range no dispatch path ever tried, which is how an envelope
+            // whose braces were all present earned "the JSON object's braces never balance"
+            // and sent `ornith-1.0-35b` to add closers it had already written (2026-09-08).
+            if let (body, _) = endMarkerBoundedBody(
+                in: tail, from: jsonStart, endMarker: CallMarkerStrategy.endMarker)
+            {
+                return .extracted(body)
+            }
             return .unbalanced
         }
         return .extracted(jsonText)
@@ -983,31 +1227,35 @@ nonisolated enum ToolCallParsingHelpers {
            let strictDict = object as? [String: Any]
         {
             dict = strictDict
-        } else if let repairedDict = parseAfterRepair(sanitized) {
+        } else if let repaired = parseAfterRepair(sanitized) {
             // Strict parse failed but a known-defect repair recovered the
             // envelope. The actual tool call dispatch path (`parseToolCallFromJSON`)
             // will also rescue it, so this is not a real "malformed" failure
             // from the role's perspective.
-            dict = repairedDict
+            dict = repaired.dict
         } else {
             return .malformedJSON
         }
 
-        // If any recognised tool-name field is present, the parser should have
-        // succeeded — either the name was reserved (e.g. `commentary`) or something
-        // novel tripped us. Fall back to the generic nudge rather than claiming
-        // "missing name" falsely.
-        let hasTopLevelName = stringValue(dict["name"]) != nil
-            || stringValue(dict["tool_name"]) != nil
-            || stringValue(dict["tool"]) != nil
-            || stringValue(dict["function_name"]) != nil
-            || (dict["function"] as? [String: Any]).flatMap { stringValue($0["name"]) } != nil
-        if hasTopLevelName {
+        // Where the id sits is the recognizer's fact, not ours. This block used to restate
+        // `resolve`'s key precedence by hand, with no shared constant and no test asserting
+        // the two agreed — one edit away from reporting a missing name for a payload the
+        // parser had dispatched.
+        switch ToolCallShapeRecognizer.toolNamePosition(in: dict) {
+        case .topLevel:
+            // A recognised name field is present, so the parser should have succeeded —
+            // either the name was reserved (e.g. `commentary`) or something novel tripped
+            // us. The generic nudge, rather than a false "missing name".
             return .malformedJSON
+        case .insideArguments(_, isRegisteredTool: true):
+            // `resolve` recovers this shape, so reaching here means a different defect in
+            // the same envelope. Same reasoning as `.topLevel`.
+            return .malformedJSON
+        case .insideArguments(let name, isRegisteredTool: false):
+            return .toolNameInsideArguments(name: name)
+        case .absent(let inferred):
+            return .missingToolName(inferredToolName: inferred)
         }
-
-        return .missingToolName(
-            inferredToolName: ToolCallShapeRecognizer.inferToolNameFromShape(dict)?.name)
     }
 
     /// Re-derives a human-readable defect description for a `.malformedJSON`
@@ -1023,6 +1271,12 @@ nonisolated enum ToolCallParsingHelpers {
     /// fell to `.malformedJSON` for a different reason (e.g. a reserved tool
     /// name), and a strict-parse error would mislead the model about JSON the
     /// pipeline can in fact accept. The caller keeps its generic hints for nil.
+    /// runtime-prompt
+    ///
+    /// Two of its three return values are app-authored strings the model reads verbatim
+    /// (`LLMExecutionService+StepFlowControl` wraps them as `parser error: …` inside the
+    /// malformed-JSON nudge), so they are versioned like a nudge; the third is Foundation's
+    /// own message about the model's bytes and varies per payload.
     static func malformedJSONDiagnostic(in text: String) -> String? {
         // Same normalization as `classifyHarmonyCallIssue`, and for the same reason: both
         // build on `postCallJSON`, whose marker test is an exact substring. Normalizing
@@ -1046,7 +1300,7 @@ nonisolated enum ToolCallParsingHelpers {
         case .noObject:
             return "no JSON object follows `<|call|>`"
         case .unbalanced:
-            return "the JSON object's braces never balance"
+            return "the `<|call|>` block never closed — no `<|end|>`, and its JSON does not balance"
         case .extracted(let extracted):
             jsonText = extracted
         }

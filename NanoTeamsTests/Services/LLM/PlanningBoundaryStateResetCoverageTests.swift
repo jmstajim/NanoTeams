@@ -210,4 +210,64 @@ final class PlanningBoundaryStateResetCoverageTests: XCTestCase {
                        "the array those contents described no longer exists — the boundary "
                            + "caller re-seeds from the replacement")
     }
+    // MARK: - What the epoch's own reset must and must not clear
+
+    /// A compaction epoch may run against a differently-loaded model, and the window answer
+    /// that was unobtainable while it was cold is obtainable now. So the per-epoch probe
+    /// budget resets with everything else that described the old conversation.
+    ///
+    /// RED: drop `windowReprobeSpent = false` → the second epoch of a step can never learn a
+    /// window, and its budget stays unknown for the rest of the step.
+    func testTheResetClearsThePerEpochWindowProbeBudget() {
+        sut._testSetCompactionState(stepID: stepID, taskID: taskID, windowReprobeSpent: true)
+        sut._testResetConversationScopedState(stepID: stepID, taskID: taskID)
+        XCTAssertEqual(sut._testWindowReprobeSpent(stepID: stepID, taskID: taskID), false)
+    }
+
+    /// A pending compaction verdict is ABOUT a conversation, and the boundary REPLACES the
+    /// conversation — the same sentence `lastServerPromptTokens` is in this list for.
+    ///
+    /// Carried across, it is consumed at the top of the very next iteration (the boundary sets
+    /// `wireIsMidPlanning` false, which is the gate it was waiting on) against a wire that is
+    /// nothing but its pinned head. `CompactionPolicy.plan` returns nil there, and
+    /// `compactConversationInLoop` reads that as "the head alone is the problem" and latches
+    /// `autoCompactExhausted` — silently, with no banner — for the rest of the step entry.
+    ///
+    /// Startup is the team where this bites: one role, Software Engineer, whose template ships
+    /// `usePlanningPhase: true`, so crossing the budget while reading the work folder is the
+    /// NORMAL case, and it turned auto-compaction off the moment planning ended.
+    ///
+    /// RED: drop `compactRequested = nil` → this fails, and
+    /// `testAHeadOnlyWireLatchesTheStepOff` next door says what that costs.
+    func testTheResetClearsAPendingCompactionVerdict() {
+        sut._testSetCompactionState(
+            stepID: stepID, taskID: taskID, compactRequested: .budgetExceeded)
+        sut._testResetConversationScopedState(stepID: stepID, taskID: taskID)
+        XCTAssertNil(sut._testCompactRequested(stepID: stepID, taskID: taskID))
+    }
+
+    /// The two fields that DELIBERATELY survive it, and the reason is that this function runs
+    /// AT an epoch: both record what that epoch established, so clearing them here would let
+    /// the next iteration re-run the epoch that just failed to buy anything — one LLM call and
+    /// one discarded conversation per turn, forever.
+    ///
+    /// RED: add either field to `resetConversationScopedState` → this fails, and the ping-pong
+    /// the latch exists to stop comes back.
+    func testTheTerminalLatchSurvivesTheReset_andDiesWithTheStep() {
+        sut._testSetCompactionState(
+            stepID: stepID, taskID: taskID,
+            autoCompactExhausted: true, lastCompactionServerPromptTokens: 9000)
+
+        sut._testResetConversationScopedState(stepID: stepID, taskID: taskID)
+        XCTAssertEqual(
+            sut._testAutoCompactExhausted(stepID: stepID, taskID: taskID), true,
+            "the latch records what THIS epoch established — the epoch cannot clear it")
+
+        sut.clearRunningTask(stepID: stepID, taskID: taskID)
+        sut._testRegisterStepTask(stepID: stepID, taskID: taskID)
+        XCTAssertEqual(
+            sut._testAutoCompactExhausted(stepID: stepID, taskID: taskID), false,
+            "a fresh entry starts clean — the latch is per-step, not per-service")
+    }
+
 }

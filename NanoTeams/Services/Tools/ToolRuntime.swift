@@ -14,7 +14,10 @@ nonisolated enum ToolRuntimeError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .argumentsNotObject:
-            "Tool arguments must be a JSON object. Expected format: {\"param\": \"value\"}"
+            // The keys are named by the TOOL's schema, so this says the SHAPE and stops:
+            // a concrete placeholder here is copyable, and one was copied verbatim into
+            // `read_file` on 2026-09-08 (playbook R3.8.8).
+            "Tool arguments must be a JSON object whose keys are this tool's parameter names."
         }
     }
 }

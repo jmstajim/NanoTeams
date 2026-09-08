@@ -164,4 +164,46 @@ nonisolated enum AppDefaults {
     /// reading rather than a measurement. Fifteen is where a run stops feeling like a click and
     /// starts feeling like a job that should have a progress bar and a reason.
     static let benchmarkRepeatsRange = 2...15
+
+    /// Share of the model's loaded context window one step may occupy before an automatic
+    /// compaction epoch fires, as a percentage.
+    ///
+    /// **Two different questions bear on this number, and they disagree.**
+    ///
+    /// The MECHANICAL ceiling is derivable. The epoch's summary request carries the whole wire
+    /// (`ContextCompactionSummaryService.summarize` sends `wire + summaryRequestTurn`), so the
+    /// compaction is the largest request of the step's life, and it must still fit:
+    ///
+    ///     budget + Δ + G ≤ window
+    ///
+    /// `Δ` is what one iteration appends between the server count that armed the epoch and the
+    /// epoch itself — the trigger reads request N's count and the epoch runs at the top of the
+    /// next iteration, so one append always lands in between. It is unbounded by policy: tool
+    /// results carry no byte cap, and a single `read_file` of a large file is tens of thousands
+    /// of tokens. `G` is the summary, which asks for five sections restating every name and
+    /// path in full — 1–3k in practice. At a 262,144 window, 85% leaves 39k for both: enough for
+    /// an ordinary iteration, and about one large file read away from not being enough.
+    ///
+    /// The RELIABILITY band is measured, and it is tighter: playbook R2.5.4 caps a step's wire
+    /// at one QUARTER of the loaded window and reports reliability falling monotonically with
+    /// wire length on every in-window model. This default sits deliberately above that band —
+    /// it is chosen for "does the epoch survive" rather than "does the model still reason well
+    /// at this length", and the two answers are 85 and 25. A role whose output degrades on long
+    /// wires wants the slider back down; that is what the slider is for.
+    ///
+    /// Overshooting is not a cliff either way: `serverTruncation` and `serverRefusedOverflow`
+    /// each arm their own epoch, and the refusal arm compacts WITHOUT a summary request (which
+    /// would be refused for the same reason), seeding from the role's notes and the Supervisor
+    /// record instead. The cost of a miss is a poorer seed, not a lost step.
+    ///
+    /// Configurable because "how much room the rest of the step needs" is a property of the
+    /// task, not of the app: a role that reads three files and answers wants a bigger share
+    /// than one that edits twenty.
+    static let autoCompactBudgetPercent = 85
+
+    /// Five is the floor because below it the head alone (system prompt + tool catalog) already
+    /// exceeds the budget on any real model, so every epoch would latch as exhausted on its
+    /// first measurement. A hundred is the ceiling because the budget is a share of a window,
+    /// and "the whole window" is where the server's own refusal takes over.
+    static let autoCompactBudgetPercentRange = 5...100
 }

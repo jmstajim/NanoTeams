@@ -464,11 +464,10 @@ nonisolated enum PrefixCachePolicy {
         }
     }
 
-    /// `12927` → `~12.9k`, `840` → `~840`.
+    /// `12927` → `~12.9k`, `840` → `~840`. Delegates to `TokenCountFormat`, the one
+    /// rounding rule every surface that prints a token count shares.
     static func formatTokens(_ tokens: Int) -> String {
-        tokens < 1000
-            ? "~\(tokens)"
-            : "~\((Double(tokens) / 1000 * 10).rounded() / 10)k"
+        TokenCountFormat.approximate(tokens)
     }
 
     static func formatSeconds(_ seconds: Double) -> String {

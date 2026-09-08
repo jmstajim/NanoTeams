@@ -976,43 +976,50 @@ final class TeamActivityFeedLogicTests: XCTestCase {
     /// the per-symbol truth tables can't (e.g. a future `resolveStatusText`
     /// branch returning text while `hasThinkingContent` is true would pass
     /// its own suite but double-indicate here).
+    ///
+    /// `isCompacting` is a dimension here because it was NOT one when the flag landed, and
+    /// that blindness is exactly how the epoch shipped drawing two identical "Compacting…"
+    /// rows: the disclosure's own row and a status row saying the same thing.
     func testLiveIndicators_atMostOne_acrossFullFlagMatrix() {
-        for isStreaming in [false, true] {
-            for hasContent in [false, true] {
-                for toolCall in [false, true] {
-                    for hasThinking in [false, true] {
-                        for progress in [nil, .indeterminate, .fraction(0.42)] as [PromptProcessingStatus?] {
-                            for activity in [false, true] {
-                                // Production never sets both: the implicit-target term is
-                                // ANDed with `!scheduleIsStreaming`, so it is false for
-                                // the live preview target. The
-                                // `&& activity` conjunct is matrix pruning only (an
-                                // implicit target with no activity has no live
-                                // indicator candidates at all) — production does NOT
-                                // couple the two; `BubbleInputs.committed` zeroes
-                                // `hasStreamActivity` regardless.
-                                let implicitTarget = !isStreaming && activity
+        for isCompacting in [false, true] {
+            for isStreaming in [false, true] {
+                for hasContent in [false, true] {
+                    for toolCall in [false, true] {
+                        for hasThinking in [false, true] {
+                            for progress in [nil, .indeterminate, .fraction(0.42)] as [PromptProcessingStatus?] {
+                                for activity in [false, true] {
+                                    // Production never sets both: the implicit-target term is
+                                    // ANDed with `!scheduleIsStreaming`, so it is false for
+                                    // the live preview target. The
+                                    // `&& activity` conjunct is matrix pruning only (an
+                                    // implicit target with no activity has no live
+                                    // indicator candidates at all) — production does NOT
+                                    // couple the two; `BubbleInputs.committed` zeroes
+                                    // `hasStreamActivity` regardless.
+                                    let implicitTarget = !isStreaming && activity
 
-                                let top = renderedTopRowAnimates(
-                                    isStreaming: isStreaming, hasContent: hasContent,
-                                    toolCall: toolCall, hasThinking: hasThinking)
-                                let trailing = MessageBubbleView.showsTrailingThinkingRow(
-                                    isStreaming: isStreaming,
-                                    hasMessageContent: hasContent,
-                                    isStreamingToolCall: toolCall,
-                                    hasThinkingContent: hasThinking)
-                                let statusText = MessageBubbleStreamingIndicator.resolveStatusText(
-                                    isStreaming: isStreaming,
-                                    isImplicitStreamTarget: implicitTarget,
-                                    hasMessageContent: hasContent,
-                                    hasThinkingContent: hasThinking,
-                                    processingStatus: progress,
-                                    hasStreamActivity: activity,
-                                    isStreamingToolCall: toolCall)
+                                    let top = renderedTopRowAnimates(
+                                        isStreaming: isStreaming, hasContent: hasContent,
+                                        toolCall: toolCall, hasThinking: hasThinking)
+                                    let trailing = MessageBubbleView.showsTrailingThinkingRow(
+                                        isStreaming: isStreaming,
+                                        hasMessageContent: hasContent,
+                                        isStreamingToolCall: toolCall,
+                                        hasThinkingContent: hasThinking)
+                                    let statusText = MessageBubbleStreamingIndicator.resolveStatusText(
+                                        isStreaming: isStreaming,
+                                        isImplicitStreamTarget: implicitTarget,
+                                        hasMessageContent: hasContent,
+                                        hasThinkingContent: hasThinking,
+                                        processingStatus: progress,
+                                        hasStreamActivity: activity,
+                                        isStreamingToolCall: toolCall,
+                                        isCompacting: isCompacting)
 
-                                let liveCount = [top, trailing, statusText != nil].filter(\.self).count
-                                XCTAssertLessThanOrEqual(liveCount, 1,
-                                                         "Multiple live indicators (top: \(top), trailing: \(trailing), status: \(statusText ?? "nil")) at (isStreaming: \(isStreaming), hasContent: \(hasContent), toolCall: \(toolCall), hasThinking: \(hasThinking), progress: \(String(describing: progress)), activity: \(activity))")
+                                    let liveCount = [top, trailing, statusText != nil].filter(\.self).count
+                                    XCTAssertLessThanOrEqual(liveCount, 1,
+                                                             "Multiple live indicators (top: \(top), trailing: \(trailing), status: \(statusText ?? "nil")) at (isStreaming: \(isStreaming), hasContent: \(hasContent), toolCall: \(toolCall), hasThinking: \(hasThinking), progress: \(String(describing: progress)), activity: \(activity), isCompacting: \(isCompacting))")
+                                }
                             }
                         }
                     }
@@ -1214,31 +1221,35 @@ final class TeamActivityFeedLogicTests: XCTestCase {
     /// freeze during tool-call envelope assembly: a future edit that hides a
     /// row without handing the live signal to another component fails here.
     func testStreamingBubble_alwaysHasLiveSignal() {
-        for hasContent in [false, true] {
-            for toolCall in [false, true] {
-                for hasThinking in [false, true] {
-                    for progress in [nil, .indeterminate, .fraction(0.42)] as [PromptProcessingStatus?] {
-                        for activity in [false, true] {
-                            let top = renderedTopRowAnimates(
-                                isStreaming: true, hasContent: hasContent,
-                                toolCall: toolCall, hasThinking: hasThinking)
-                            let trailing = MessageBubbleView.showsTrailingThinkingRow(
-                                isStreaming: true,
-                                hasMessageContent: hasContent,
-                                isStreamingToolCall: toolCall,
-                                hasThinkingContent: hasThinking)
-                            let statusText = MessageBubbleStreamingIndicator.resolveStatusText(
-                                isStreaming: true,
-                                isImplicitStreamTarget: false,
-                                hasMessageContent: hasContent,
-                                hasThinkingContent: hasThinking,
-                                processingStatus: progress,
-                                hasStreamActivity: activity,
-                                isStreamingToolCall: toolCall)
-                            let growingProse = hasContent && !toolCall
+        // A compaction epoch is the same contract: relabelling the rows must not remove them.
+        for isCompacting in [false, true] {
+            for hasContent in [false, true] {
+                for toolCall in [false, true] {
+                    for hasThinking in [false, true] {
+                        for progress in [nil, .indeterminate, .fraction(0.42)] as [PromptProcessingStatus?] {
+                            for activity in [false, true] {
+                                let top = renderedTopRowAnimates(
+                                    isStreaming: true, hasContent: hasContent,
+                                    toolCall: toolCall, hasThinking: hasThinking)
+                                let trailing = MessageBubbleView.showsTrailingThinkingRow(
+                                    isStreaming: true,
+                                    hasMessageContent: hasContent,
+                                    isStreamingToolCall: toolCall,
+                                    hasThinkingContent: hasThinking)
+                                let statusText = MessageBubbleStreamingIndicator.resolveStatusText(
+                                    isStreaming: true,
+                                    isImplicitStreamTarget: false,
+                                    hasMessageContent: hasContent,
+                                    hasThinkingContent: hasThinking,
+                                    processingStatus: progress,
+                                    hasStreamActivity: activity,
+                                    isStreamingToolCall: toolCall,
+                                    isCompacting: isCompacting)
+                                let growingProse = hasContent && !toolCall
 
-                            XCTAssertTrue(top || trailing || statusText != nil || growingProse,
-                                          "Zero live signal while streaming at (hasContent: \(hasContent), toolCall: \(toolCall), hasThinking: \(hasThinking), progress: \(String(describing: progress)), activity: \(activity))")
+                                XCTAssertTrue(top || trailing || statusText != nil || growingProse,
+                                              "Zero live signal while streaming at (hasContent: \(hasContent), toolCall: \(toolCall), hasThinking: \(hasThinking), progress: \(String(describing: progress)), activity: \(activity), isCompacting: \(isCompacting))")
+                            }
                         }
                     }
                 }

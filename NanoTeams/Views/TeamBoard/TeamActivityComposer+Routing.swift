@@ -56,6 +56,18 @@ extension TeamActivityComposer {
     /// resume, or an idle team between chat turns, where the resolved recipient is just
     /// `candidateRoles.first` — return `nil` so the message is queued untargeted and
     /// consumed by whichever role resumes, rather than mis-targeted to an arbitrary role.
+    /// The role id a chip addresses.
+    ///
+    /// Both cases carry one: `.answer` names the step that asked, and a step id IS the role
+    /// id (`StepExecution.effectiveRoleID`). So the fill indicator can key on either chip
+    /// without the composer re-deriving the mapping per chip.
+    static func roleID(for recipient: Recipient) -> String {
+        switch recipient {
+        case .answer(let stepID): stepID
+        case .role(let id): id
+        }
+    }
+
     static func queueTarget(roleID: String, workingRoleIDs: Set<String>) -> String? {
         workingRoleIDs.contains(roleID) ? roleID : nil
     }

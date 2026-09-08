@@ -268,61 +268,10 @@ extension NativeLMStudioClient {
             return s
         }
         guard let first = tools.first else { return nil }
-        let argsJSON = exampleArgumentsJSON(for: first.parameters)
+        let argsJSON = HarmonyCallExample.argumentsJSON(for: first.parameters)
         var s = "<|call|>{\"name\":\"\(first.name)\",\"arguments\":\(argsJSON)}<|end|>\n\n"
         s += "The top-level `name` is the tool id; arguments go inside the `arguments` object.\n\n"
         return s
-    }
-
-    /// Synthesize a `{key:placeholder,...}` JSON body for the schema's required
-    /// parameters (sorted), or the first 2 properties (sorted) when no params
-    /// are required. Placeholders respect each property's `enumValues` (so the
-    /// example never violates an enum constraint) and `array.items.type` (so an
-    /// array example shows a representative element).
-    private static func exampleArgumentsJSON(for schema: JSONSchema) -> String {
-        let properties = schema.properties ?? [:]
-        guard !properties.isEmpty else { return "{}" }
-        let required = Set(schema.required ?? [])
-        let reqKeys = properties.keys.filter { required.contains($0) }.sorted()
-        let keys: [String] = reqKeys.isEmpty
-            ? Array(properties.keys.sorted().prefix(2))
-            : reqKeys
-        let parts: [String] = keys.compactMap { key in
-            guard let prop = properties[key] else { return nil }
-            return "\"\(key)\":\(examplePlaceholder(for: prop))"
-        }
-        return "{\(parts.joined(separator: ","))}"
-    }
-
-    private static func examplePlaceholder(for prop: JSONSchemaProperty) -> String {
-        // An enum-constrained parameter must use a valid enum value: small
-        // models verbatim-copy the example and the runtime would reject an
-        // out-of-enum placeholder.
-        if let first = prop.enumValues?.first {
-            return "\"\(first)\""
-        }
-        switch prop.type {
-        case "integer", "number": return "0"
-        case "boolean": return "true"
-        case "array":
-            if let itemType = prop.items?.type {
-                return "[\(scalarPlaceholder(for: itemType))]"
-            }
-            return "[]"
-        case "object": return "{}"
-        default: return "\"...\""
-        }
-    }
-
-    /// Scalar-only placeholder used inside `array.items` rendering — arrays of
-    /// objects aren't a real shape in the current tool registry, so the leaf
-    /// types are sufficient.
-    private static func scalarPlaceholder(for type: String) -> String {
-        switch type {
-        case "integer", "number": return "0"
-        case "boolean": return "true"
-        default: return "\"...\""
-        }
     }
 
     /// Flat parameter list for the tool's JSON Schema. Sorted keys for deterministic

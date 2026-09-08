@@ -268,12 +268,13 @@ final class ToolLoopIterationScanWorkTests: XCTestCase {
 
     /// The ring is correct only while every event that REPLACES or SHRINKS the wire re-derives
     /// it: step entry (a replayed transcript already carries turns), the planning boundary
-    /// (the slice keeps a prefix that may hold turns), and the poisoned-tail repair. A new
+    /// (the slice keeps a prefix that may hold turns), the poisoned-tail repair, and — since
+    /// 2026-09-08 — a context-compaction epoch, the second whole-array replacement. A new
     /// truncation path without a reseed desynchronises the detector silently.
     ///
     /// RED: drop the `reseedMessageLoopRing` call after `seedTagCounters` (entry), after
-    /// `implementationWire` (boundary) or inside the `repairConversationIfNeeded` arm (retry)
-    /// → fails naming the site.
+    /// `implementationWire` (boundary), inside the `repairConversationIfNeeded` arm (retry) or
+    /// after the epoch's own `resetConversationScopedState()` → fails naming the site.
     func testEveryWireShrinkSite_isFollowedByARingReseed() throws {
         let reseed = "reseedMessageLoopRing" + "("
         let root = RatchetSourceScan.repoRoot.appendingPathComponent("NanoTeams/Services/LLM")
@@ -296,8 +297,10 @@ final class ToolLoopIterationScanWorkTests: XCTestCase {
                                 in: "LLMExecutionService+StepLifecycle.swift", within: 700)
         try assertReseedFollows("resetConversationScopedState()",
                                 in: "LLMExecutionService+PlanningPhase.swift", within: 400)
+        try assertReseedFollows("resetConversationScopedState()",
+                                in: "LLMExecutionService+ContextCompaction.swift", within: 400)
 
-        // Anti-vacuum: exactly the three production call sites above, plus the definition and
+        // Anti-vacuum: exactly the four production call sites above, plus the definition and
         // the DEBUG helper, and no reseed sitting somewhere this pin does not know about.
         var callSites = 0
         for url in RatchetSourceScan.swiftFiles(under: root) {
@@ -315,9 +318,10 @@ final class ToolLoopIterationScanWorkTests: XCTestCase {
                 callSites += hits
             }
         }
-        XCTAssertEqual(callSites, 3,
-                       "three production reseed sites (entry, boundary, repair) — a fourth means a "
-                           + "new shrink path this pin must name, a missing one means a blind detector")
+        XCTAssertEqual(callSites, 4,
+                       "four production reseed sites (entry, boundary, repair, compaction epoch) "
+                           + "— a fifth means a new shrink path this pin must name, a missing one "
+                           + "means a blind detector")
     }
 }
 

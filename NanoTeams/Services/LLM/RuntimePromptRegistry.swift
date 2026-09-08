@@ -146,6 +146,102 @@ enum RuntimePromptRegistry {
         add("LLMExecutionService.toolNameExamples") {
             LLMExecutionService.toolNameExamples(allowedToolNames: sampleTools)!
         }
+        // Every text `handleNoToolCalls` appends after a no-tool turn, plus its five cap
+        // escalations. They were inline literals until 2026-09-08, so their bytes shipped
+        // under a `runtimePromptVersion` that said nothing had moved — measured that day, when
+        // seven of them were rewritten and this fingerprint did not budge (REC.9). The census
+        // is enforced by `Ratchet/RuntimePromptCensusPinTests`, not by this list's length.
+        add("NoToolTurnNudges.reasoningChannel") {
+            NoToolTurnNudges.reasoningChannel(
+                namedCalls: [ToolNames.readFile], allowedToolNames: sampleTools)
+        }
+        add("NoToolTurnNudges.reasoningChannel/unnamed") {
+            NoToolTurnNudges.reasoningChannel(namedCalls: [], allowedToolNames: sampleTools)
+        }
+        add("NoToolTurnNudges.thinkingDrift") {
+            NoToolTurnNudges.thinkingDrift(thousandsOfCharacters: 12)
+        }
+        add("NoToolTurnNudges.missingToolName") {
+            NoToolTurnNudges.missingToolName(allowedToolNames: sampleTools)
+        }
+        add("NoToolTurnNudges.toolNameInsideArguments") {
+            NoToolTurnNudges.toolNameInsideArguments(allowedToolNames: sampleTools)
+        }
+        add("NoToolTurnNudges.malformedJSON") {
+            NoToolTurnNudges.malformedJSON(
+                defect: "parser error: unescaped control character", allowedToolNames: sampleTools)
+        }
+        add("NoToolTurnNudges.noCallEnvelope") {
+            NoToolTurnNudges.noCallEnvelope(allowedToolNames: sampleTools)
+        }
+        add("NoToolTurnNudges.tokensOnly") { NoToolTurnNudges.tokensOnly() }
+        add("NoToolTurnNudges.planningSalvage") {
+            NoToolTurnNudges.planningSalvage(allowedToolNames: sampleTools)
+        }
+        add("NoToolTurnNudges.planRecorded") { NoToolTurnNudges.planRecorded() }
+        add("NoToolTurnNudges.unrecognisedSentinel") {
+            NoToolTurnNudges.unrecognisedSentinel(
+                sentinel: "<|tool_call|", allowedToolNames: sampleTools)
+        }
+        add("NoToolTurnNudges.revisionArtifacts") {
+            NoToolTurnNudges.revisionArtifacts(allowedToolNames: sampleTools)
+        }
+        add("HarmonyCallExample.envelope") {
+            HarmonyCallExample.envelope(preferring: sampleTools)!
+        }
+        add("LLMExecutionService.callShapeClause") {
+            LLMExecutionService.callShapeClause(allowedToolNames: sampleTools)
+        }
+        add("LLMExecutionService.reasoningEnvelopeEscalationQuestion") {
+            LLMExecutionService.reasoningEnvelopeEscalationQuestion(roleName: "Software Engineer")
+        }
+        add("LLMExecutionService.driftEscalationQuestion") {
+            LLMExecutionService.driftEscalationQuestion(
+                roleName: "Software Engineer", thousandsOfCharacters: 12)
+        }
+        add("LLMExecutionService.refusalLoopEscalationQuestion") {
+            LLMExecutionService.refusalLoopEscalationQuestion(
+                roleName: "Software Engineer", count: 3)
+        }
+        add("LLMExecutionService.malformedJSONEscalationQuestion") {
+            LLMExecutionService.malformedJSONEscalationQuestion(roleName: "Software Engineer")
+        }
+        add("LLMExecutionService.unrecognisedSentinelEscalationQuestion") {
+            LLMExecutionService.unrecognisedSentinelEscalationQuestion(
+                roleName: "Software Engineer", sentinel: "<|tool_call|")
+        }
+        add("LLMExecutionService.noToolParkQuestion") {
+            LLMExecutionService.noToolParkQuestion(turns: 20)
+        }
+        add("LLMExecutionService.nonProductiveEscalationQuestion") {
+            LLMExecutionService.nonProductiveEscalationQuestion(
+                roleName: "Software Engineer", turns: 20)
+        }
+        // The two notes a REPAIR hands the model on the tool result it rides. Same property
+        // as a nudge — model-facing, never retired — and neither was versioned until
+        // 2026-09-08 (rule #220: a registry that looks complete and is not).
+        // The parse-failure diagnostic's own two literals: they reach the model inside the
+        // malformed-JSON nudge as `parser error: …`, so a rewording of either moves the
+        // fingerprint. The third return value is Foundation's message about the model's own
+        // bytes and cannot be versioned.
+        add("ToolCallParsingHelpers.malformedJSONDiagnostic/noObject") {
+            ToolCallParsingHelpers.malformedJSONDiagnostic(in: "<|call|>ping<|end|>")!
+        }
+        add("ToolCallParsingHelpers.malformedJSONDiagnostic/unbalanced") {
+            ToolCallParsingHelpers.malformedJSONDiagnostic(
+                in: #"<|call|>{"name":"write_file","arguments":{"path":"x"#)!
+        }
+        add("ToolCallParsingHelpers.spilledArgumentsNote") {
+            ToolCallParsingHelpers.spilledArgumentsNote(
+                recoveredKeys: ["path", "old_text"])!
+        }
+        add("ToolCallParsingHelpers.transposedQuoteRepairNote") {
+            ToolCallParsingHelpers.transposedQuoteRepairNote
+        }
+        add("ToolRuntimeError.argumentsNotObject") {
+            ToolRuntimeError.argumentsNotObject.errorDescription ?? ""
+        }
+
         let loopDetections: [(String, LoopDetection)] = [
             ("repetitivePlanning", .repetitivePlanning(count: 3)),
             ("repetitiveTool", .repetitiveTool(tool: ToolNames.readFile, count: 3)),
@@ -200,6 +296,20 @@ enum RuntimePromptRegistry {
             PlanningPhasePolicy.implementationSeedTurn(notes: "- sample note", expectedArtifacts: sampleArtifacts)
         }
         add("PlanningPhasePolicy.planningClosedTurn") { PlanningPhasePolicy.planningClosedTurn }
+
+        // Context compaction — the epoch's request and its seed. Both reach the model: the
+        // request is the trailing turn of the summary call, the seed is the one `.user` turn
+        // the compacted wire keeps. They shipped a wave before this row existed, because the
+        // census pin's population was three NAMED files — the registry's own failure shape
+        // (rule #220) reproduced in the pin that guards it. The seed sample carries all three
+        // sections so a rewording of any one moves the fingerprint.
+        add("CompactionPolicy.summaryRequestTurn") { CompactionPolicy.summaryRequestTurn() }
+        add("CompactionPolicy.seedTurn") {
+            CompactionPolicy.seedTurn(
+                summary: "Wrote the parser and its tests.",
+                notes: "- sample note",
+                record: ["Ship the smaller change first."])
+        }
 
         // Meetings and votes.
         add("ChangeRequestService.voteInstruction") { ChangeRequestService.voteInstruction }

@@ -28,7 +28,8 @@ final class MessageBubbleStreamingIndicatorEquatableTests: XCTestCase {
         hasThinkingContent: Bool = false,
         processingStatus: PromptProcessingStatus? = nil,
         hasStreamActivity: Bool = false,
-        isStreamingToolCall: Bool = false
+        isStreamingToolCall: Bool = false,
+        isCompacting: Bool = false
     ) -> MessageBubbleStreamingIndicator {
         MessageBubbleStreamingIndicator(
             isStreaming: isStreaming,
@@ -37,8 +38,17 @@ final class MessageBubbleStreamingIndicatorEquatableTests: XCTestCase {
             hasThinkingContent: hasThinkingContent,
             processingStatus: processingStatus,
             hasStreamActivity: hasStreamActivity,
-            isStreamingToolCall: isStreamingToolCall
+            isStreamingToolCall: isStreamingToolCall,
+            isCompacting: isCompacting
         )
+    }
+
+    /// The flag decides the caption ("Compacting…" vs the ordinary ladder), so a coalesced
+    /// tick would leave the epoch's row reading "Waiting…" for its whole duration.
+    func testNotEqual_whenIsCompactingDiffers() async {
+        XCTAssertNotEqual(
+            Self.makeIndicator(isStreaming: true, isCompacting: false),
+            Self.makeIndicator(isStreaming: true, isCompacting: true))
     }
 
     // MARK: - Identical baselines compare equal

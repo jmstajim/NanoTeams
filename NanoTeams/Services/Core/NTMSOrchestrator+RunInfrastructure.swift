@@ -23,6 +23,9 @@ extension NTMSOrchestrator {
         // every miss since launch, and the banner latch must re-arm for it. Scoped to this task
         // so the Autovisor's once-a-minute run cannot zero the counts of the user's own tasks.
         prefixCacheReporter.resetCounters(forTaskID: taskID)
+        // And the same for the fill indicator: the previous run's occupancy describes a
+        // conversation this run does not have.
+        contextFill.removeTask(taskID)
 
         await mutateTask(taskID: taskID) { task in
             // Clear closedAt so the new run goes through needsSupervisorAcceptance when it
@@ -71,6 +74,7 @@ extension NTMSOrchestrator {
                 }
             }
             refreshBackgroundTaskInMemory(task)
+            contextFill.seed(from: task)
             syncEngineStateFromRun(taskID: taskID, task: task)
             return recoveryPersisted
         } catch {

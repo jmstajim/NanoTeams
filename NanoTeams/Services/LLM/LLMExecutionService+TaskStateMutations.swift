@@ -6,16 +6,76 @@ extension LLMExecutionService {
 
     // MARK: - Token Usage
 
+    /// Writes the step's cumulative usage — and, in the same mutation, the context fill the
+    /// composer's indicator reads.
+    ///
+    /// The two ride together because they are measured together and because this function is
+    /// already called at every arm that ends an iteration: piggybacking costs no extra write,
+    /// while a separate persist would have to re-derive which arms matter and would drift the
+    /// moment a new one was added.
     func persistTokenUsage(stepID: String, taskID: Int, usage: TokenUsage) async {
         guard usage.inputTokens > 0 || usage.outputTokens > 0,
               let delegate, isExecutionLive(stepID: stepID, taskID: taskID) else { return }
+        let fill = executionStates[TaskStepKey(taskID: taskID, stepID: stepID)]?.lastContextFill
         await delegate.mutateTask(taskID: taskID) { task in
             guard let runIndex = task.runs.indices.last,
                   let stepIndex = task.runs[runIndex].steps.firstIndex(where: { $0.id == stepID })
             else { return }
             task.runs[runIndex].steps[stepIndex].tokenUsage = usage
+            if let fill { task.runs[runIndex].steps[stepIndex].contextFill = fill }
         }
     }
+
+    // MARK: - Context compaction
+
+    /// Writes a compacted wire for a step that is NOT in its tool loop — parked on a
+    /// Supervisor question, paused, or failed — under a compare-and-swap on the transcript
+    /// it was built from.
+    ///
+    /// **Not `persistWireTranscript`.** That one unconditionally clears
+    /// `supervisorAnswerPendingDelivery`, on the sound argument that the transcript it writes
+    /// already carries the answer. Here it does not: the summary call takes seconds, and a
+    /// Supervisor who answers during it would have that answer marked delivered while the
+    /// wire this function writes was built before it existed — the answer would never reach
+    /// the model, and nothing would say so.
+    ///
+    /// So the swap refuses on three conditions, each of which means the world moved:
+    /// the transcript is no longer the one summarised, an answer is waiting, or the step has
+    /// left the set of statuses an out-of-loop compaction is defined for.
+    ///
+    /// - Returns: `true` when the compacted wire was written.
+    func persistCompactedWire(
+        stepID: String,
+        taskID: Int,
+        expected: [ChatMessage],
+        compacted: [ChatMessage],
+        fill: ContextFill?
+    ) async -> Bool {
+        guard let delegate, !compacted.isEmpty else { return false }
+        var didApply = false
+        let mutated = await delegate.mutateTask(taskID: taskID) { task in
+            guard let runIndex = task.runs.indices.last,
+                  let stepIndex = task.runs[runIndex].steps.firstIndex(where: { $0.id == stepID })
+            else { return }
+            let step = task.runs[runIndex].steps[stepIndex]
+            guard step.wireTranscript == expected,
+                  !step.supervisorAnswerPendingDelivery,
+                  Self.compactableSuspendedStatuses.contains(step.status)
+            else { return }
+            task.runs[runIndex].steps[stepIndex].wireTranscript = compacted
+            if let fill { task.runs[runIndex].steps[stepIndex].contextFill = fill }
+            task.runs[runIndex].steps[stepIndex].updatedAt = MonotonicClock.shared.now()
+            didApply = true
+        }
+        return mutated && didApply
+    }
+
+    /// Statuses in which a step can be compacted from OUTSIDE its tool loop. Each one
+    /// re-enters through `startStepExecution`, which replays `wireTranscript` — so a
+    /// compacted transcript is what the next entry continues from.
+    static let compactableSuspendedStatuses: Set<StepStatus> = [
+        .needsSupervisorInput, .paused, .failed,
+    ]
 
     // MARK: - Tool Call Recording
 

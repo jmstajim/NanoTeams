@@ -187,15 +187,138 @@ final class ContextBudgetPolicyTests: XCTestCase {
         let ollama = ContextBudgetPolicy.overflowFailureMessage(
             modelName: "qwen3.8:27b-mlx",
             serverMessage: "input length (200000 tokens) exceeds the model's maximum context length (32768 tokens)\n",
-            provider: .ollama)
+            provider: .ollama,
+            compaction: .disabled)
         XCTAssertTrue(ollama.hasPrefix("qwen3.8:27b-mlx: "), ollama)
         XCTAssertTrue(ollama.contains("32768"), "the server's numbers survive: \(ollama)")
         XCTAssertTrue(ollama.contains("num_ctx"), ollama)
         XCTAssertFalse(ollama.contains("\n"), "the server's trailing newline is trimmed: \(ollama)")
         let lmStudio = ContextBudgetPolicy.overflowFailureMessage(
-            modelName: "m", serverMessage: "context overflow", provider: .lmStudio)
+            modelName: "m", serverMessage: "context overflow", provider: .lmStudio,
+            compaction: .disabled)
         XCTAssertTrue(lmStudio.contains("LM Studio"), lmStudio)
         XCTAssertFalse(lmStudio.contains("num_ctx"), lmStudio)
+    }
+
+    /// The three outcomes point at three different actions, so each has to READ differently.
+    /// Before compaction existed the sentence stated one of them as a law of the wire; a
+    /// shared phrase here would put that lie back.
+    func testOverflowFailureMessage_namesWhatTheRuntimeAlreadyTried() {
+        let outcomes: [ContextBudgetPolicy.CompactionOutcome] = [
+            .disabled, .attempted, .nothingToSeed,
+        ]
+        let texts = outcomes.map {
+            ContextBudgetPolicy.overflowFailureMessage(
+                modelName: "m", serverMessage: "overflow", provider: .lmStudio, compaction: $0)
+        }
+        XCTAssertEqual(Set(texts).count, 3, "each outcome must say something different")
+        for text in texts {
+            XCTAssertTrue(text.hasPrefix("m: "), text)
+            XCTAssertTrue(text.contains("overflow"), text)
+            XCTAssertTrue(text.contains("LM Studio"), text)
+            XCTAssertFalse(
+                text.contains("cannot shrink on retry"),
+                "the wire CAN shrink now — at a compaction epoch: \(text)")
+        }
+        XCTAssertTrue(texts[0].contains("off"), texts[0])
+        XCTAssertTrue(texts[1].contains("summary"), texts[1])
+        XCTAssertTrue(texts[2].contains("head"), texts[2])
+    }
+
+    // MARK: - stepBudget
+
+    func testStepBudget_isTheFloorOfTheShare() {
+        XCTAssertEqual(ContextBudgetPolicy.stepBudget(window: 8192, percent: 25), 2048)
+        XCTAssertEqual(ContextBudgetPolicy.stepBudget(window: 4095, percent: 25), 1023)
+        XCTAssertEqual(ContextBudgetPolicy.stepBudget(window: 8192, percent: 100), 8192)
+    }
+
+    /// A failed probe must never manufacture a budget — the whole automatic path reads `nil`
+    /// as "cannot judge" and declines to compact.
+    /// What the house default actually leaves for the rest of the step, at the windows the
+    /// playbook names — because the share is scale-free and the thing it has to leave room for
+    /// is NOT.
+    ///
+    /// The epoch's summary request carries the whole wire, so the largest request of a step's
+    /// life is its compaction, and `budget + Δ + G ≤ window` has to hold: `Δ` is the append of
+    /// the one iteration that always lands between the count that arms the epoch and the epoch
+    /// itself, `G` the summary. `Δ` is unbounded by policy (tool results carry no byte cap), and
+    /// crucially it does not shrink when the window does — a 40k file read is 40k on an 8k model
+    /// too. So the same 85% that leaves 39k of headroom at 262k leaves 1.2k at 8k.
+    ///
+    /// This is the arithmetic, not an alarm: `serverTruncation` and `serverRefusedOverflow` each
+    /// arm their own epoch, so a small window degrades to a summary-less seed rather than a
+    /// lost step. What the test pins is that the headroom is KNOWN, so a future change to the
+    /// default has to look at this column rather than at the percentage alone.
+    func testStepBudget_atTheHouseShare_leavesTheseAbsoluteHeadrooms() {
+        let expected: [(window: Int, budget: Int, headroom: Int)] = [
+            (262_144, 222_822, 39_322),
+            (131_072, 111_411, 19_661),
+            (32_768, 27_852, 4_916),
+            (8_192, 6_963, 1_229),
+        ]
+        for row in expected {
+            let budget = ContextBudgetPolicy.stepBudget(
+                window: row.window, percent: AppDefaults.autoCompactBudgetPercent)
+            XCTAssertEqual(budget, row.budget, "window \(row.window)")
+            XCTAssertEqual((budget ?? 0).distance(to: row.window), row.headroom, "window \(row.window)")
+        }
+    }
+
+    /// RED: move the default back to the playbook's quarter → the 262k budget drops to 65,536
+    /// and this fails. The two numbers answer different questions and the code comments say so;
+    /// this is the one place they are both written down next to each other.
+    func testTheHouseShare_isTheMechanicalCeilingNotThePlaybookBand() {
+        XCTAssertEqual(AppDefaults.autoCompactBudgetPercent, 85)
+        XCTAssertEqual(ContextBudgetPolicy.stepBudget(window: 262_144, percent: 85), 222_822)
+        XCTAssertEqual(
+            ContextBudgetPolicy.stepBudget(window: 262_144, percent: 25), 65_536,
+            "playbook R2.5.4's quarter, still what a reliability audit reads against")
+    }
+
+    func testStepBudget_unknownOrDegenerateWindow_isNil() {
+        XCTAssertNil(ContextBudgetPolicy.stepBudget(window: nil, percent: 25))
+        XCTAssertNil(ContextBudgetPolicy.stepBudget(window: 0, percent: 25))
+        XCTAssertNil(ContextBudgetPolicy.stepBudget(window: -1, percent: 25))
+        XCTAssertNil(ContextBudgetPolicy.stepBudget(window: 8192, percent: 0))
+        XCTAssertNil(ContextBudgetPolicy.stepBudget(window: 8192, percent: -5))
+        // Floors to zero: a window smaller than 100/percent tokens is not a budget.
+        XCTAssertNil(ContextBudgetPolicy.stepBudget(window: 3, percent: 25))
+    }
+
+    // MARK: - compactionVerdict
+
+    func testCompactionVerdict_equalityCountsAsExceeded() {
+        let verdict = ContextBudgetPolicy.compactionVerdict(
+            serverPromptTokens: 2048, window: 8192, percent: 25)
+        XCTAssertEqual(verdict, .budgetExceeded(promptTokens: 2048, budget: 2048))
+        XCTAssertTrue(verdict.isExceeded)
+    }
+
+    func testCompactionVerdict_belowBudget_isWithin() {
+        let verdict = ContextBudgetPolicy.compactionVerdict(
+            serverPromptTokens: 2047, window: 8192, percent: 25)
+        XCTAssertEqual(verdict, .withinBudget(promptTokens: 2047, budget: 2048))
+        XCTAssertFalse(verdict.isExceeded)
+    }
+
+    /// No server count and no window are the two ways to know nothing, and neither may read
+    /// as "compact now" — an estimate-driven compaction would discard a Cyrillic
+    /// conversation at 45% of the occupancy it actually has.
+    func testCompactionVerdict_noCountOrNoWindow_isUnknown() {
+        XCTAssertEqual(
+            ContextBudgetPolicy.compactionVerdict(
+                serverPromptTokens: nil, window: 8192, percent: 25), .unknown)
+        XCTAssertEqual(
+            ContextBudgetPolicy.compactionVerdict(
+                serverPromptTokens: 0, window: 8192, percent: 25), .unknown)
+        XCTAssertEqual(
+            ContextBudgetPolicy.compactionVerdict(
+                serverPromptTokens: 9000, window: nil, percent: 25), .unknown)
+        XCTAssertFalse(
+            ContextBudgetPolicy.compactionVerdict(
+                serverPromptTokens: 9000, window: nil, percent: 25).isExceeded,
+            "unknown must not read as exceeded at any call site")
     }
 
     func testWarningMessage_remedyIsProviderSpecific() {

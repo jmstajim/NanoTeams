@@ -93,11 +93,26 @@ final class StreamingPreviewManager {
     /// @ObservationIgnored — polled, never drives view updates.
     @ObservationIgnored private(set) var lastStreamActivityAt: [TaskStepKey: Date] = [:]
 
+    /// Whether the step's live bubble belongs to a CONTEXT-COMPACTION epoch rather than to
+    /// the model taking a turn.
+    ///
+    /// The summary call streams through the same delegate as any other turn, so without this
+    /// the bubble would say "Thinking…" while the app discards the conversation behind it —
+    /// the one reading that must not happen. Set right after `beginStreaming` by the epoch
+    /// and cleared when it ends, on every path including cancellation.
+    /// @ObservationIgnored — polled by TimelineView like the tool-call flag.
+    @ObservationIgnored private(set) var compacting: [TaskStepKey: Bool] = [:]
+
     // MARK: - Inline Streaming
 
     /// Marks a message as actively streaming for a step.
     /// Creates an empty preview and registers the (taskID, stepID) → messageID mapping.
-    func beginStreaming(stepID: String, taskID: Int, messageID: UUID, role: Role) {
+    ///
+    /// `isCompacting` is a birth property, not a follow-up call: the transient reset below
+    /// clears the mark, so a caller raising it afterwards races the feed's own poll.
+    func beginStreaming(
+        stepID: String, taskID: Int, messageID: UUID, role: Role, isCompacting: Bool = false
+    ) {
         let key = TaskStepKey(taskID: taskID, stepID: stepID)
         let isNew = previews[key] == nil
         // Remove old messageID if replacing an existing streaming session
@@ -119,6 +134,7 @@ final class StreamingPreviewManager {
         // posts a visible "LLM server error … Retrying in Xs" bubble first.
         hasStreamActivity[key] = nil
         streamingToolCall[key] = nil
+        compacting[key] = isCompacting ? true : nil
         thinkingPreviews[key] = nil
         processingStatus[key] = nil
         // The activity CLOCK is stamped, not cleared — stream begin is
@@ -276,6 +292,16 @@ final class StreamingPreviewManager {
         streamingToolCall[TaskStepKey(taskID: taskID, stepID: stepID)] = true
     }
 
+    /// Marks (or unmarks) the step's live bubble as a compaction epoch's.
+    func markCompacting(stepID: String, taskID: Int, _ isCompacting: Bool) {
+        compacting[TaskStepKey(taskID: taskID, stepID: stepID)] = isCompacting ? true : nil
+    }
+
+    /// Polled per tick by `TeamActivityFeedView`: makes the status row read "Compacting…".
+    func isCompacting(stepID: String, taskID: Int) -> Bool {
+        compacting[TaskStepKey(taskID: taskID, stepID: stepID)] == true
+    }
+
     /// Polled per tick by `TeamActivityFeedView` — keeps the Thinking
     /// loader animating during tool-call assembly
     /// (`MessageBubbleView.isThinkingStreaming`) and surfaces the
@@ -329,6 +355,7 @@ final class StreamingPreviewManager {
         processingStatus[key] = nil
         hasStreamActivity[key] = nil
         streamingToolCall[key] = nil
+        compacting[key] = nil
         lastStreamActivityAt[key] = nil
         // Structural change (preview removal) only happened if one existed.
         if hadPreview { structuralVersion &+= 1 }
@@ -340,6 +367,7 @@ final class StreamingPreviewManager {
         guard previews[key] != nil || streamingMessageIDs[key] != nil
             || thinkingPreviews[key] != nil || processingStatus[key] != nil
             || hasStreamActivity[key] != nil || streamingToolCall[key] != nil
+            || compacting[key] != nil
             || lastStreamActivityAt[key] != nil else { return }
         if let msgID = streamingMessageIDs[key] { activeMessageIDs.remove(msgID) }
         previews[key] = nil
@@ -348,6 +376,7 @@ final class StreamingPreviewManager {
         processingStatus[key] = nil
         hasStreamActivity[key] = nil
         streamingToolCall[key] = nil
+        compacting[key] = nil
         lastStreamActivityAt[key] = nil
         structuralVersion &+= 1
     }
@@ -357,6 +386,7 @@ final class StreamingPreviewManager {
         guard !previews.isEmpty || !streamingMessageIDs.isEmpty
             || !thinkingPreviews.isEmpty || !processingStatus.isEmpty
             || !hasStreamActivity.isEmpty || !streamingToolCall.isEmpty
+            || !compacting.isEmpty
             || !lastStreamActivityAt.isEmpty else { return }
         previews.removeAll()
         streamingMessageIDs.removeAll()
@@ -365,6 +395,7 @@ final class StreamingPreviewManager {
         processingStatus.removeAll()
         hasStreamActivity.removeAll()
         streamingToolCall.removeAll()
+        compacting.removeAll()
         lastStreamActivityAt.removeAll()
         structuralVersion &+= 1
     }

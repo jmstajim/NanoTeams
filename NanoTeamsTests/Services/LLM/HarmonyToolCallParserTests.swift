@@ -816,15 +816,25 @@ final class HarmonyToolCallParserTests: XCTestCase {
         XCTAssertTrue(calls.isEmpty, "Should not attempt to salvage deeply broken input")
     }
 
-    func testDoesNotSalvageWhenNoCloseBraceObserved() {
-        // Guard: when walker has never seen a closing brace, there's no anchor to truncate
-        // at — lastCloseEnd is nil, salvage must refuse. Input has depth=2 with no closes.
+    /// Was `testDoesNotSalvageWhenNoCloseBraceObserved` until 2026-09-08, and it pinned the
+    /// ABSENCE of a capability rather than a safety property: with no closer ever observed
+    /// `lastCloseEnd` is nil and the EOF arm has no anchor, so this call was dropped. The
+    /// model had sent it whole — name, one complete argument — and lost only its closers
+    /// before its own terminator, which is what the `<|end|>`-boundary arm now uses as the
+    /// anchor (`EndMarkerBoundarySalvageTests`). Safety is unchanged: the arm lives in the
+    /// outside-string branch, so it can only fire between tokens, where everything written
+    /// so far is complete.
+    func testNoCloseBraceObserved_isRecoveredAtTheEndMarker() {
         let input = "<|call|>{\"name\":\"x\",\"arguments\":{\"a\":\"b\"<|end|>"
         let calls = HarmonyToolCallParser().extractAllToolCalls(from: input)
-        XCTAssertTrue(
-            calls.isEmpty,
-            "Should not salvage when no close brace was observed (lastCloseEnd == nil)"
-        )
+        XCTAssertEqual(calls.map(\.name), ["x"])
+        XCTAssertEqual(calls.first?.argumentsJSON, "{\"a\":\"b\"}")
+    }
+
+    /// The half that still refuses: no closer observed AND no end marker to anchor on.
+    func testNoCloseBraceAndNoEndMarker_staysRefused() {
+        let input = "<|call|>{\"name\":\"x\",\"arguments\":{\"a\":\"b\""
+        XCTAssertTrue(HarmonyToolCallParser().extractAllToolCalls(from: input).isEmpty)
     }
 
     func testDoesNotSalvageUnterminatedString() {

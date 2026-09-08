@@ -113,7 +113,9 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
         func autovisorLoadTask(_ taskID: Int) async -> NTMSTask? { loadedTask(taskID) }
 
         // MARK: LLMStreamingDelegate (no-op stubs)
-        func beginStreaming(stepID _: String, taskID _: Int, messageID _: UUID, role _: Role) async {}
+        func beginStreaming(
+            stepID _: String, taskID _: Int, messageID _: UUID, role _: Role, isCompacting _: Bool
+        ) async {}
         func appendStreamingPreview(stepID _: String, taskID _: Int, messageID _: UUID, role _: Role, content _: String) {}
         func replaceStreamingPreview(stepID _: String, taskID _: Int, messageID _: UUID, role _: Role, content _: String) {}
         func appendStreamingThinking(stepID _: String, taskID _: Int, content _: String) {}
@@ -125,6 +127,13 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
         func clearStreamingProcessingStatus(stepID _: String, taskID _: Int) {}
         func markStreamActivity(stepID _: String, taskID _: Int) {}
         func markStreamingToolCall(stepID _: String, taskID _: Int) {}
+        var compactingStepIDs: Set<String> = []
+        var compactionMarks: [(String, Bool)] = []
+        func markStreamingCompaction(stepID: String, taskID: Int, _ isCompacting: Bool) {
+            compactionMarks.append((stepID, isCompacting))
+            if isCompacting { compactingStepIDs.insert(stepID) }
+            else { compactingStepIDs.remove(stepID) }
+        }
 
         // MARK: LLMMeetingDelegate (no-op stubs)
         func setActiveMeetingParticipants(_ participantIDs: Set<String>, for taskID: Int) {}

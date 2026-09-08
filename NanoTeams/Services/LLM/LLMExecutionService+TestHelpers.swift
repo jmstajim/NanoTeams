@@ -69,6 +69,116 @@ extension LLMExecutionService {
         executionStates[TaskStepKey(taskID: taskID, stepID: stepID)]?.didWarnContextOverflow
     }
 
+    // MARK: - Context compaction
+
+    /// Seeds the per-step compaction state a trigger would otherwise have to earn through a
+    /// live request.
+    func _testSetCompactionState(
+        stepID: String,
+        taskID: Int,
+        compactRequested: CompactionPolicy.CompactionReason? = nil,
+        lastContextFill: ContextFill? = nil,
+        windowReprobeSpent: Bool = false,
+        autoCompactExhausted: Bool = false,
+        lastCompactionServerPromptTokens: Int? = nil,
+        lastServerPromptTokens: Int? = nil,
+        overflowCompactionsSinceLastResponse: Int = 0
+    ) {
+        let key = TaskStepKey(taskID: taskID, stepID: stepID)
+        if executionStates[key] == nil { executionStates[key] = StepExecutionState() }
+        executionStates[key]?.compactRequested = compactRequested
+        executionStates[key]?.lastContextFill = lastContextFill
+        executionStates[key]?.windowReprobeSpent = windowReprobeSpent
+        executionStates[key]?.autoCompactExhausted = autoCompactExhausted
+        executionStates[key]?.lastCompactionServerPromptTokens = lastCompactionServerPromptTokens
+        executionStates[key]?.lastServerPromptTokens = lastServerPromptTokens
+        executionStates[key]?.overflowCompactionsSinceLastResponse =
+            overflowCompactionsSinceLastResponse
+    }
+
+    /// Marks an epoch as in flight without running one, so a caller-facing guard
+    /// (`isCompacting`) can be exercised without racing a real summary.
+    func _testSetCompactionEpochToken(stepID: String, taskID: Int) {
+        let key = TaskStepKey(taskID: taskID, stepID: stepID)
+        if executionStates[key] == nil { executionStates[key] = StepExecutionState() }
+        executionStates[key]?.compactionEpochToken = UUID()
+    }
+
+    func _testCompactRequested(
+        stepID: String, taskID: Int
+    ) -> CompactionPolicy.CompactionReason? {
+        executionStates[TaskStepKey(taskID: taskID, stepID: stepID)]?.compactRequested ?? nil
+    }
+
+    func _testLastContextFill(stepID: String, taskID: Int) -> ContextFill? {
+        executionStates[TaskStepKey(taskID: taskID, stepID: stepID)]?.lastContextFill ?? nil
+    }
+
+    func _testAutoCompactExhausted(stepID: String, taskID: Int) -> Bool? {
+        executionStates[TaskStepKey(taskID: taskID, stepID: stepID)]?.autoCompactExhausted
+    }
+
+    func _testWindowReprobeSpent(stepID: String, taskID: Int) -> Bool? {
+        executionStates[TaskStepKey(taskID: taskID, stepID: stepID)]?.windowReprobeSpent
+    }
+
+    func _testCompactionsThisEntry(stepID: String, taskID: Int) -> Int? {
+        executionStates[TaskStepKey(taskID: taskID, stepID: stepID)]?.compactionsThisEntry
+    }
+
+    /// Replaces the step's execution-state entry the way `startStepExecution` does on
+    /// re-entry: cancel whatever is running under the key, then install a fresh state.
+    ///
+    /// Distinct from `_testRegisterStepTask`, which only creates one when absent — the
+    /// REPLACEMENT is what supersedes an out-of-loop compaction, and a test that only added an
+    /// entry would prove nothing about it.
+    func _testRegisterStepTaskReplacingEntry(stepID: String, taskID: Int) {
+        let key = TaskStepKey(taskID: taskID, stepID: stepID)
+        executionStates[key]?.runningTask?.cancel()
+        executionStates[key] = StepExecutionState()
+    }
+
+    /// Drives one in-loop epoch with the wire the caller owns, so a test can assert what the
+    /// array became without standing up a whole step.
+    func _testCompactConversationInLoop(
+        stepID: String,
+        taskID: Int,
+        reason: CompactionPolicy.CompactionReason,
+        step: StepExecution,
+        client: any LLMClient,
+        config: LLMConfig,
+        roleForMessage: Role,
+        conversationMessages: inout [ChatMessage]
+    ) async -> Bool {
+        await compactConversationInLoop(
+            stepID: stepID, taskID: taskID, reason: reason, step: step,
+            client: client, config: config, networkLogger: nil,
+            roleForMessage: roleForMessage, conversationMessages: &conversationMessages)
+    }
+
+    func _testEvaluateCompactionTrigger(
+        stepID: String,
+        taskID: Int,
+        client: any LLMClient,
+        config: LLMConfig,
+        serverPromptTokens: Int?
+    ) async {
+        await evaluateCompactionTrigger(
+            stepID: stepID, taskID: taskID, client: client, config: config,
+            serverPromptTokens: serverPromptTokens)
+    }
+
+    func _testCompactAfterServerRefusal(
+        stepID: String,
+        taskID: Int,
+        step: StepExecution,
+        conversationMessages: inout [ChatMessage]
+    ) async -> Bool {
+        await compactAfterServerRefusal(
+            stepID: stepID, taskID: taskID, step: step,
+            conversationMessages: &conversationMessages)
+    }
+
     /// Seeds the service-wide window memo so a test can distinguish "the probe answered" from
     /// "the probe was spent and returned nothing" — the two states the post-send truncation
     /// observation branches on. Note the double optional: a stored `nil` means "asked, no answer".

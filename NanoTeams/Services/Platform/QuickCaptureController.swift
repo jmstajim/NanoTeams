@@ -557,6 +557,7 @@ final class QuickCaptureController {
         .environment(store)
         .environment(store.configuration)
         .environment(store.streamingPreviewManager)
+        .environment(store.contextFill)
         .environment(dictation)
         // The panel hosts SwiftUI in a standalone NSHostingView, outside the app's
         // scene roots — so carry the terminal mono font + toggle style explicitly,

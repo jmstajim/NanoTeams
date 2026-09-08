@@ -762,6 +762,58 @@ final class PausePreservesStreamingContentTests: XCTestCase, @unchecked Sendable
         private(set) var value = 0
         func increment() { value += 1 }
     }
+
+    // MARK: - The compaction delegate's defaults
+
+    /// The four `LLMStateDelegate` members context compaction needs all carry protocol
+    /// DEFAULTS, which is why none of this target's ~44 narrow doubles had to change when they
+    /// were added. The defaults are a contract, not a convenience: a delegate that opts into
+    /// nothing still gets compaction ON at the house budget, and the two publication hooks are
+    /// no-ops rather than traps.
+    ///
+    /// Asserted through THIS stub precisely because it does not implement any of them —
+    /// `MockLLMExecutionDelegate` does, so the same test there would read its stored
+    /// properties and prove nothing about the defaults.
+    ///
+    /// RED: change the default of `autoCompactEnabled` to `false` → the epoch is never armed
+    /// and this fails; change `autoCompactBudgetPercent` → the boundary moves off the house share.
+    func testStateDelegateDefaults_armCompactionAtTheHouseBudget() async throws {
+        let stepID = "defaults_step"
+        let taskID = 91
+        let mock = StreamPersistingMockDelegate()
+        mock.workFolderURL = tempDir
+        mock.taskToMutate = makeTaskWithRunningStep(taskID: taskID, stepID: stepID)
+
+        XCTAssertTrue(mock.autoCompactEnabled, "the default must be ON")
+        XCTAssertEqual(mock.autoCompactBudgetPercent, AppDefaults.autoCompactBudgetPercent)
+
+        let service = LLMExecutionService(repository: NTMSRepository())
+        service.attach(delegate: mock)
+        service._testRegisterStepTask(stepID: stepID, taskID: taskID)
+        let client = WindowOnlyClient(contextLength: 8192)
+        let config = LLMConfig(baseURLString: "http://127.0.0.1:1234", modelName: "m")
+
+        // The boundary IS the house share of 8192 — derived, not written down, because the
+        // claim is "a delegate that opts into nothing lands on the house budget" and a literal
+        // here would turn every future change of that default into a puzzle in this file.
+        let budget = try XCTUnwrap(ContextBudgetPolicy.stepBudget(
+            window: 8192, percent: AppDefaults.autoCompactBudgetPercent))
+        await service._testEvaluateCompactionTrigger(
+            stepID: stepID, taskID: taskID, client: client, config: config,
+            serverPromptTokens: budget - 1)
+        XCTAssertNil(service._testCompactRequested(stepID: stepID, taskID: taskID))
+
+        await service._testEvaluateCompactionTrigger(
+            stepID: stepID, taskID: taskID, client: client, config: config,
+            serverPromptTokens: budget)
+        XCTAssertEqual(
+            service._testCompactRequested(stepID: stepID, taskID: taskID), .budgetExceeded,
+            "a delegate that implements neither setting still compacts at the house budget")
+        // And the default publication hooks swallowed both fills without a delegate to
+        // receive them — the point of giving them defaults at all.
+        XCTAssertNotNil(service._testLastContextFill(stepID: stepID, taskID: taskID))
+    }
+
 }
 
 // MARK: - Streaming stub LLM client
@@ -878,6 +930,13 @@ private final class StreamPersistingMockDelegate: LLMExecutionDelegate {
     func markStreamActivity(stepID: String, taskID _: Int) { markStreamActivityCalls.append(stepID) }
     var markStreamingToolCallCalls: [String] = []
     func markStreamingToolCall(stepID: String, taskID _: Int) { markStreamingToolCallCalls.append(stepID) }
+    var compactingStepIDs: Set<String> = []
+    var compactionMarks: [(String, Bool)] = []
+    func markStreamingCompaction(stepID: String, taskID: Int, _ isCompacting: Bool) {
+        compactionMarks.append((stepID, isCompacting))
+        if isCompacting { compactingStepIDs.insert(stepID) }
+        else { compactingStepIDs.remove(stepID) }
+    }
     func notifyQueuedMessageBackstop(taskID _: Int) {}
 
     var taskToMutate: NTMSTask?
@@ -903,7 +962,9 @@ private final class StreamPersistingMockDelegate: LLMExecutionDelegate {
 
     /// Mirrors `NTMSOrchestrator.beginStreaming`: pre-creates an empty LLMMessage in
     /// the step's conversation so the activity feed picks up the streaming bubble.
-    func beginStreaming(stepID: String, taskID: Int, messageID: UUID, role: Role) async {
+    func beginStreaming(
+        stepID: String, taskID: Int, messageID: UUID, role: Role, isCompacting _: Bool
+    ) async {
         beginStreamingCalls.append((stepID, messageID, role, taskID))
         streamingMessageIDs[stepID] = messageID
         streamingRoles[stepID] = role
@@ -1058,4 +1119,24 @@ private final class StreamPersistingMockDelegate: LLMExecutionDelegate {
     func performAutovisorAction(_ action: AutovisorAction) async -> AutovisorActionResult { .success("ok") }
     func persistAutovisorMemory(_ text: String) async -> Bool { true }
     func autovisorLoadTask(_ taskID: Int) async -> NTMSTask? { loadedTask(taskID) }
+}
+
+/// Answers only the window probe — enough to give the trigger a budget without standing up a
+/// streaming stub.
+@MainActor
+private final class WindowOnlyClient: LLMClient, @unchecked Sendable {
+    let contextLength: Int?
+    init(contextLength: Int?) { self.contextLength = contextLength }
+
+    nonisolated func streamChat(
+        config _: LLMConfig, messages _: [ChatMessage], tools _: [ToolSchema],
+        logger _: NetworkLogger?, stepID _: String?, roleName _: String?
+    ) -> AsyncThrowingStream<StreamEvent, Error> {
+        AsyncThrowingStream { $0.finish() }
+    }
+
+    nonisolated func fetchModels(
+        config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
+
+    nonisolated func modelContextLength(config _: LLMConfig) async -> Int? { contextLength }
 }

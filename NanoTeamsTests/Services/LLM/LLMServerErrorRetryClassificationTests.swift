@@ -144,6 +144,50 @@ final class LLMServerErrorRetryClassificationTests: XCTestCase {
         XCTAssertFalse(retrySpam, "no \"attempt N\" note for a permanent error")
     }
 
+    /// The other half of the overflow rule, and the reason the arm sits AHEAD of
+    /// `isRetryable`: when the conversation can actually be made smaller, the refusal opens a
+    /// compaction epoch and the same response is retried once against the folded wire. No LLM
+    /// call is spent on a summary — that request would carry the same oversized conversation —
+    /// so the seed is built from the notes the step already recorded.
+    ///
+    /// RED: move the arm below `if !LLMRetryPolicy.isRetryable(error) { throw error }` → the
+    /// step fails on the first refusal and `callCount` stays at 1.
+    func testContextOverflow_withFoldableWire_compactsAndRetriesTheSameResponse() async throws {
+        makeService(script: [
+            LLMClientError.providerError("context overflow: the prompt is too long"),
+            // The retry's own answer, and a permanent one so the loop ends here rather than
+            // running until the safety cap.
+            LLMClientError.badHTTPStatus(404, "{\"error\":{\"code\":\"model_not_found\"}}"),
+        ])
+        let stepID = "swe_overflow_foldable"
+        var task = makeRunningTask(taskID: 4, stepID: stepID)
+        task.runs[0].steps[0].scratchpad = "Findings: the parser is recursive-descent."
+        task.runs[0].steps[0].wireTranscript = [
+            ChatMessage(role: .system, content: "System prompt"),
+            ChatMessage(role: .user, content: "## Supervisor Task\nBuild it."),
+            ChatMessage(role: .assistant, content: "Reading the parser."),
+            ChatMessage(role: .tool, content: #"{"ok":true}"#),
+        ]
+        mockDelegate.taskToMutate = task
+
+        service.startStepExecution(
+            stepID: stepID, taskID: 4, task: task, runIndex: 0, stepIndex: 0)
+
+        try await waitUntil { self.step(in: 4, stepID: stepID)?.status == .failed }
+
+        XCTAssertEqual(
+            stubClient.callCount, 2,
+            "the refusal must be retried exactly once, against the compacted wire")
+        let failed = step(in: 4, stepID: stepID)
+        XCTAssertTrue(
+            failed?.llmConversation.contains { $0.sourceContext == .compaction } ?? false,
+            "the epoch reports itself to the feed")
+        let retrySpam = failed?.llmConversation.contains {
+            $0.content.hasPrefix(LLMConstants.llmServerErrorRetryNotePrefix)
+        } ?? false
+        XCTAssertFalse(retrySpam, "a compaction is not an error retry — no \"attempt N\" note")
+    }
+
     // MARK: - Transient error → retry path (does not fail fast)
 
     func testHTTP503_takesRetryPath_appendsNoteAndDoesNotFail() async throws {

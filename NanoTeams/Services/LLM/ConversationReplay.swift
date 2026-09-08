@@ -51,7 +51,11 @@ nonisolated enum ConversationReplay {
     /// Display-only entries are dropped — they were never sent, so replaying them would
     /// both mislead the model and guarantee a prefix miss:
     /// - `.serverError` retry notices (`TaskMutationService.appendOrReplaceRetryNotice`),
-    /// - the delegation Q/A pairs recorded purely for activity-feed visibility.
+    /// - the delegation Q/A pairs recorded purely for activity-feed visibility,
+    /// - the `.compaction` record. Its wire counterpart is the seed turn
+    ///   `CompactionPolicy` already wrote INTO the transcript, so replaying the record
+    ///   would state the epoch twice — and this rebuild only ever runs for a step whose
+    ///   `wireTranscript` is empty, i.e. one persisted before compaction existed.
     ///
     /// `.tool` entries keep their `[CALL] … Arguments: … [RESULT] …` composite verbatim.
     /// It is self-describing, so a model reading it recovers which call produced which
@@ -59,20 +63,69 @@ nonisolated enum ConversationReplay {
     /// traffic (no client emits `toolCallDeltas`; the Harmony parser hard-codes nil), so
     /// there is no `tool_call_id` to pair on and never was.
     static func rebuildFromDisplayRecord(_ conversation: [LLMMessage]) -> [ChatMessage] {
-        conversation.compactMap { message -> ChatMessage? in
+        var out: [ChatMessage] = []
+        var index = conversation.startIndex
+        while index < conversation.endIndex {
+            let message = conversation[index]
+            index = conversation.index(after: index)
             switch message.sourceContext {
-            case .serverError, .delegatedQuestion, .delegationEscalation:
-                return nil
+            case .serverError, .delegatedQuestion, .delegationEscalation, .compaction:
+                continue
             default:
                 break
             }
-            guard let role = MessageRole(rawValue: message.role.rawValue) else { return nil }
+            guard let role = MessageRole(rawValue: message.role.rawValue) else { continue }
+
             // An assistant turn that carried only a tool-call envelope persists with empty
-            // content (the streaming path truncates at the Harmony marker). Dropping it
-            // keeps the replay from showing the model a run of blank assistant turns; the
-            // following `.tool` composite still names the call.
-            if role == .assistant, message.content.isEmpty { return nil }
-            return ChatMessage(role: role, content: message.content)
+            // content: the streaming path truncates at the Harmony marker and files the calls
+            // under `ChatMessage.toolCalls`, which `LLMMessage` has no field for.
+            //
+            // This used to DROP the turn, to keep the replay from showing a run of blank
+            // assistant turns — and the following `.tool` composite does still name the call.
+            // But the composite names it in the `[CALL] name` / `Arguments: {…}` shape, which
+            // is not the shape the model must EMIT, and after the drop the wire carries tool
+            // results for calls the model has no record of making. That is the history loss
+            // this type's own doc comment says it exists to prevent, one level down: measured
+            // on a production wire (`ornith-1.0-35b`, CastleSurvivors 2026-09-08) as 21
+            // `[Tool Result]` blocks with ZERO `[Assistant]` turns, in a step whose nudges
+            // told the model to compare against an attempt that was not there.
+            //
+            // So re-materialize instead: the consecutive `.tool` composites that follow ARE
+            // the calls, and `HarmonyToolCallEnvelope` renders them back to the byte-identical
+            // envelope the live path writes.
+            if role == .assistant, message.content.isEmpty {
+                let calls = Self.leadingToolCalls(of: conversation, from: index)
+                if calls.isEmpty { continue }
+                out.append(ChatMessage(role: .assistant, content: nil, toolCalls: calls))
+                continue
+            }
+            out.append(ChatMessage(role: role, content: message.content))
         }
+        return out
+    }
+
+    /// The calls named by the run of `.tool` composites starting at `index` — the batch the
+    /// assistant turn just before them made.
+    ///
+    /// Reads, never consumes: the composites are emitted as `.tool` turns by the loop above,
+    /// exactly as before, because the model needs both the call and its result.
+    private static func leadingToolCalls(
+        of conversation: [LLMMessage], from index: Int
+    ) -> [ChatToolCall] {
+        var calls: [ChatToolCall] = []
+        var i = index
+        while i < conversation.endIndex, conversation[i].role.rawValue == "tool" {
+            if let parsed = TaskMutationService.parseToolResultComposite(conversation[i].content) {
+                calls.append(
+                    ChatToolCall(
+                        // `providerID` is nil in essentially all production traffic, so there is
+                        // no id to restore; the wire renderer does not read one.
+                        id: UUID().uuidString,
+                        name: parsed.toolName,
+                        argumentsJSON: parsed.argumentsJSON))
+            }
+            i += 1
+        }
+        return calls
     }
 }

@@ -167,18 +167,45 @@ nonisolated enum ContextBudgetPolicy {
             + "shorten the work-folder context."
     }
 
+    /// What the runtime already tried before giving up on an overflow the server refused.
+    ///
+    /// The failure text has to say this, because the three outcomes point the user at three
+    /// different actions: turn compaction on, raise the window, or accept that the head
+    /// itself is too big for this model. Before compaction existed there was one outcome and
+    /// the sentence stated it as a law of the wire ("an append-only conversation cannot
+    /// shrink on retry") — true of the RETRY, and now misleading about the app.
+    enum CompactionOutcome: Equatable {
+        /// Auto-compaction is off, so nothing was attempted.
+        case disabled
+        /// A compaction epoch ran and the next request still did not fit.
+        case attempted
+        /// Nothing could be compacted: the pinned head is already past the budget, or the
+        /// step carries no summarizable body.
+        case nothingToSeed
+    }
+
     /// The step-failure text for an overflow the SERVER refused (Ollama's MLX runner and
     /// LM Studio both answer with an error rather than a silent head-drop). Carries the
-    /// server's own sentence — it names both numbers when the runner has them — and the
-    /// provider's remedy, because the bubble is the only place the user learns why the
-    /// step stopped.
+    /// server's own sentence — it names both numbers when the runner has them — the
+    /// provider's remedy, and what the runtime already tried, because the bubble is the
+    /// only place the user learns why the step stopped.
     static func overflowFailureMessage(
         modelName: String,
         serverMessage: String,
-        provider: LLMProvider
+        provider: LLMProvider,
+        compaction: CompactionOutcome
     ) -> String {
-        "\(modelName): the prompt does not fit the model's context window, and an append-only "
-            + "conversation cannot shrink on retry. Server: \(serverMessage.trimmingCharacters(in: .whitespacesAndNewlines)) "
+        let tried: String
+        switch compaction {
+        case .disabled:
+            tried = "auto-compaction is off, so the conversation was resent unchanged"
+        case .attempted:
+            tried = "compacting the conversation to a summary did not make it fit"
+        case .nothingToSeed:
+            tried = "there was nothing left to compact — the pinned head does not fit on its own"
+        }
+        return "\(modelName): the prompt does not fit the model's context window, and \(tried). "
+            + "Server: \(serverMessage.trimmingCharacters(in: .whitespacesAndNewlines)) "
             + "\(remedy(for: provider)), or shorten the work-folder context and restart the role."
     }
 
@@ -208,5 +235,58 @@ nonisolated enum ContextBudgetPolicy {
             + "context window is \(contextLength). The server truncates from the START, so "
             + "the system prompt and tool catalog may be dropped without an error. "
             + "\(remedy), or shorten the work-folder context."
+    }
+
+    // MARK: - Step budget (compaction)
+
+    /// How many tokens ONE step may occupy before it compacts, from the window and the
+    /// user's chosen share.
+    ///
+    /// Deliberately a fraction of the window rather than the window itself: what has to fit
+    /// is the prompt PLUS everything the remainder of the step will append to it — tool
+    /// results, the model's own turns, and the generation. `overflowFraction` sits at 1.0
+    /// because it answers a different question (has this request already overflowed), and a
+    /// budget that waited that long would compact after the failure it exists to prevent.
+    ///
+    /// `nil` — never a manufactured number — when the window is unknown or so small that the
+    /// share floors to zero. The callers treat `nil` as "cannot judge", which is why a failed
+    /// probe can never trigger a compaction.
+    static func stepBudget(window: Int?, percent: Int) -> Int? {
+        guard let window, window > 0, percent > 0 else { return nil }
+        let budget = Int((Double(window) * Double(percent) / 100).rounded(.down))
+        return budget > 0 ? budget : nil
+    }
+
+    /// Whether a step has crossed its budget, given the SERVER's own prompt count.
+    ///
+    /// Server-only by contract, for the reason `shouldReportTruncation` is: the estimator
+    /// spans 0.45×–2.58× against real tokenizers (see the table above), so a Cyrillic
+    /// conversation reads 2.2× too big and would compact itself on a quarter-full window,
+    /// discarding work to solve a problem it does not have.
+    ///
+    /// Equality counts as exceeded, matching `verdict`.
+    static func compactionVerdict(
+        serverPromptTokens: Int?,
+        window: Int?,
+        percent: Int
+    ) -> CompactionVerdict {
+        guard let serverPromptTokens, serverPromptTokens > 0,
+              let budget = stepBudget(window: window, percent: percent)
+        else { return .unknown }
+        return serverPromptTokens >= budget
+            ? .budgetExceeded(promptTokens: serverPromptTokens, budget: budget)
+            : .withinBudget(promptTokens: serverPromptTokens, budget: budget)
+    }
+
+    enum CompactionVerdict: Equatable {
+        /// No server count, or no window to measure it against. Never compacts on a guess.
+        case unknown
+        case withinBudget(promptTokens: Int, budget: Int)
+        case budgetExceeded(promptTokens: Int, budget: Int)
+
+        var isExceeded: Bool {
+            if case .budgetExceeded = self { return true }
+            return false
+        }
     }
 }

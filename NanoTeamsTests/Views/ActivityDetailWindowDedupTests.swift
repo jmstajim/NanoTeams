@@ -95,11 +95,15 @@ final class ActivityDetailWindowDedupTests: XCTestCase {
         // `.thinking`, so this pair is a real collision risk, not a theoretical
         // one: one message can own both a thinking window and a notice window.
         let systemNotice = ActivityDetailWindow.systemNotice(id: id, label: "retry", text: "y")
+        // Same argument for the compaction disclosure: its id is the epoch's streaming
+        // `LLMMessage.id`, so it shares the space with `.thinking` and `.systemNotice`.
+        let compaction = ActivityDetailWindow.compaction(id: id, roleName: "X", text: "y")
 
         // All pairwise-distinct because each case prefixes its own namespace
         // into `dedupKey`.
         let cases: [ActivityDetailWindow] = [
             llm, meeting, supervisor, toolCall, meetingTool, meetingTools, systemNotice,
+            compaction,
         ]
         for i in 0..<cases.count {
             for j in (i + 1)..<cases.count {
@@ -107,6 +111,24 @@ final class ActivityDetailWindowDedupTests: XCTestCase {
                                   "Cases \(i) and \(j) share UUID \(id) but must dedup separately.")
             }
         }
+    }
+
+    // MARK: - Compaction
+
+    /// The disclosure grows on EVERY delta of the epoch, so identity must ignore the payload
+    /// or a second click would open a second window mid-write.
+    func testCompaction_sameIDDifferentText_areEqual() {
+        let id = UUID()
+        XCTAssertEqual(
+            ActivityDetailWindow.compaction(id: id, roleName: "X", text: "R."),
+            ActivityDetailWindow.compaction(id: id, roleName: "X", text: "R.\n\nS."))
+    }
+
+    func testCompaction_encodeWritesTheDedupKey() throws {
+        let id = UUID()
+        let data = try JSONEncoder().encode(
+            ActivityDetailWindow.compaction(id: id, roleName: "X", text: "y"))
+        XCTAssertEqual(try JSONDecoder().decode(String.self, from: data), "compaction:\(id)")
     }
 
     // MARK: - Artifact dedup uses relativePath, not name

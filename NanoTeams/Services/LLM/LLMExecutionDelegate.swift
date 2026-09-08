@@ -31,6 +31,19 @@ protocol LLMStateDelegate: TaskMutationDelegate {
     var globalLLMContext: String { get }
     /// Maximum consecutive LLM server error retries (0 = unlimited).
     var maxLLMRetries: Int { get }
+    /// Whether a step may replace its own conversation with a summary when it crosses its
+    /// share of the model's window. Off leaves the pre-compaction behaviour exactly — warn,
+    /// then fail — and leaves the manual click available.
+    var autoCompactEnabled: Bool { get }
+    /// That share, as a percentage of the model's loaded context window.
+    var autoCompactBudgetPercent: Int { get }
+    /// Publishes how full a step's context is, for the composer's indicator. Called after
+    /// every response that carries a server count, and once per epoch.
+    func updateContextFill(stepID: String, taskID: Int, fill: ContextFill)
+    /// Publishes whether a compaction epoch is running for a step, so the indicator can show
+    /// it and refuse a second click. Distinct from the streaming flag below: this one drives
+    /// the COMPOSER, which a parked step still has on screen when no bubble is streaming.
+    func setContextCompacting(stepID: String, taskID: Int, _ isCompacting: Bool)
     /// Vision model configuration (nil = vision not configured).
     var visionLLMConfig: LLMConfig? { get }
     /// Shell-command execution policy (mode, rules, restriction level, sandbox,
@@ -347,6 +360,14 @@ extension LLMStateDelegate {
         owner _: LLMCallOwner, config _: LLMConfig, messages _: [ChatMessage]) async {}
 
     func requeueSupervisorMessageAtHead(taskID _: Int, roleID _: String, text _: String) {}
+
+    var autoCompactEnabled: Bool { true }
+
+    var autoCompactBudgetPercent: Int { AppDefaults.autoCompactBudgetPercent }
+
+    func updateContextFill(stepID _: String, taskID _: Int, fill _: ContextFill) {}
+
+    func setContextCompacting(stepID _: String, taskID _: Int, _: Bool) {}
 }
 
 // MARK: - LLMStreamingDelegate
@@ -358,7 +379,15 @@ protocol LLMStreamingDelegate: AnyObject {
     /// Pre-creates an empty LLMMessage in the step's conversation at stream start.
     /// This allows the timeline to render the message immediately (with spinner)
     /// and stream content into it inline, avoiding visual jumps on commit.
-    func beginStreaming(stepID: String, taskID: Int, messageID: UUID, role: Role) async
+    ///
+    /// `isCompacting` names the stream a context-compaction epoch at birth rather than by a
+    /// `markStreamingCompaction` call afterwards: the message reaches the feed before this
+    /// method's own suspension (multi-task invariant #6) and the manager RESETS the mark on
+    /// the way through, so a raise afterwards leaves a tick in which the epoch's row reads
+    /// "Waiting…". Default `false` — every ordinary turn keeps its call site unchanged.
+    func beginStreaming(
+        stepID: String, taskID: Int, messageID: UUID, role: Role, isCompacting: Bool
+    ) async
     /// Appends content to the streaming preview for a step.
     func appendStreamingPreview(stepID: String, taskID: Int, messageID: UUID, role: Role, content: String)
     /// Replaces the streaming preview content for a step in one shot.
@@ -414,6 +443,15 @@ protocol LLMStreamingDelegate: AnyObject {
     /// Idempotent; reset by the next `beginStreaming` and cleared on
     /// commit/clear.
     func markStreamingToolCall(stepID: String, taskID: Int)
+    /// Marks the step's live bubble as a COMPACTION rather than an ordinary turn, so the
+    /// status row reads "Compacting…" instead of "Thinking…" / "Generating…".
+    ///
+    /// The summary call streams through the same delegate as any other turn — the user
+    /// watches the summary being written, and its reasoning under the same disclosure — but
+    /// it is not the model taking a step, and a bubble that says "Thinking…" while the app
+    /// discards the conversation behind it is the one reading that must not happen.
+    /// Cleared when the epoch ends, on every path including cancellation.
+    func markStreamingCompaction(stepID: String, taskID: Int, _ isCompacting: Bool)
 }
 
 // MARK: - LLMMeetingDelegate

@@ -77,14 +77,15 @@ nonisolated struct CallMarkerStrategy: ToolCallParsingStrategy {
                 // envelope in that case. Note the raw body keeps everything before `<|end|>`,
                 // so it cannot repair a trailing `,"` on its own: every re-escape split leaves
                 // the stray comma-quote in place.
-                if let endRange = tail.range(of: Self.endMarker, range: idx..<tail.endIndex) {
-                    let rawBody = String(tail[idx..<endRange.lowerBound])
+                if let (rawBody, afterMarker) = ToolCallParsingHelpers.endMarkerBoundedBody(
+                    in: tail, from: idx, endMarker: Self.endMarker)
+                {
                     if let call = ToolCallParsingHelpers.parseToolCallFromJSON(rawBody)
                         ?? ToolCallParsingHelpers.parseAfterRepairAndRewalk(rawBody)
                     {
                         results.append(call)
                     }
-                    cursor = endRange.upperBound
+                    cursor = afterMarker
                     continue
                 }
             }

@@ -21,7 +21,7 @@ final class BubbleInputsTests: XCTestCase {
             thinking: "thoughts",
             processingStatus: .fraction(0.42),
             hasStreamActivity: true,
-            isStreamingToolCall: false
+            isStreamingToolCall: false, isCompacting: false
         )
         XCTAssertEqual(inputs.contentForBubble, "live")
         XCTAssertEqual(inputs.thinkingForBubble, "thoughts")
@@ -59,7 +59,7 @@ final class BubbleInputsTests: XCTestCase {
     /// dispatcher's `inputs.isStreaming` forwarding to `MessageBubbleView`
     /// stays in sync if the cases ever rearrange.
     func testIsStreaming_matchesCase() async {
-        let s = BubbleInputs.streaming(content: "x", thinking: nil, processingStatus: nil, hasStreamActivity: false, isStreamingToolCall: false)
+        let s = BubbleInputs.streaming(content: "x", thinking: nil, processingStatus: nil, hasStreamActivity: false, isStreamingToolCall: false, isCompacting: false)
         let c = BubbleInputs.committed(content: "x", thinking: nil, attachmentPaths: [], clippedTexts: [])
         XCTAssertTrue(s.isStreaming)
         XCTAssertFalse(c.isStreaming)
@@ -72,7 +72,7 @@ final class BubbleInputsTests: XCTestCase {
             thinking: nil,
             processingStatus: nil,
             hasStreamActivity: true,
-            isStreamingToolCall: true
+            isStreamingToolCall: true, isCompacting: false
         )
         XCTAssertTrue(inputs.isStreamingToolCall)
     }
@@ -80,7 +80,7 @@ final class BubbleInputsTests: XCTestCase {
     // MARK: - Equatable synthesis
 
     func testEquatable_streamingVsCommitted_sameContent_neverEqual() async {
-        let s = BubbleInputs.streaming(content: "x", thinking: nil, processingStatus: nil, hasStreamActivity: false, isStreamingToolCall: false)
+        let s = BubbleInputs.streaming(content: "x", thinking: nil, processingStatus: nil, hasStreamActivity: false, isStreamingToolCall: false, isCompacting: false)
         let c = BubbleInputs.committed(content: "x", thinking: nil, attachmentPaths: [], clippedTexts: [])
         XCTAssertNotEqual(s, c, "Cross-case must never compare equal even with same content.")
     }
@@ -92,14 +92,14 @@ final class BubbleInputsTests: XCTestCase {
     }
 
     func testEquatable_sameCaseDifferentField_areNotEqual() async {
-        let a = BubbleInputs.streaming(content: "x", thinking: nil, processingStatus: .fraction(0.1), hasStreamActivity: true, isStreamingToolCall: false)
-        let b = BubbleInputs.streaming(content: "x", thinking: nil, processingStatus: .fraction(0.2), hasStreamActivity: true, isStreamingToolCall: false)
+        let a = BubbleInputs.streaming(content: "x", thinking: nil, processingStatus: .fraction(0.1), hasStreamActivity: true, isStreamingToolCall: false, isCompacting: false)
+        let b = BubbleInputs.streaming(content: "x", thinking: nil, processingStatus: .fraction(0.2), hasStreamActivity: true, isStreamingToolCall: false, isCompacting: false)
         XCTAssertNotEqual(a, b, "Different progress in same case must compare not-equal.")
     }
 
     func testEquatable_differentToolCallFlag_areNotEqual() async {
-        let a = BubbleInputs.streaming(content: "x", thinking: nil, processingStatus: nil, hasStreamActivity: true, isStreamingToolCall: false)
-        let b = BubbleInputs.streaming(content: "x", thinking: nil, processingStatus: nil, hasStreamActivity: true, isStreamingToolCall: true)
+        let a = BubbleInputs.streaming(content: "x", thinking: nil, processingStatus: nil, hasStreamActivity: true, isStreamingToolCall: false, isCompacting: false)
+        let b = BubbleInputs.streaming(content: "x", thinking: nil, processingStatus: nil, hasStreamActivity: true, isStreamingToolCall: true, isCompacting: false)
         XCTAssertNotEqual(a, b, "Tool-call flag flip must propagate through Equatable — the TimelineView tick relies on it.")
     }
 }

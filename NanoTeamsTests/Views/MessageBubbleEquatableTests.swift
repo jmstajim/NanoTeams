@@ -54,6 +54,7 @@ final class MessageBubbleEquatableTests: XCTestCase {
         processingStatus: PromptProcessingStatus? = nil,
         hasStreamActivity: Bool = false,
         isStreamingToolCall: Bool = false,
+        isCompacting: Bool = false,
         isStreaming: Bool = false,
         isImplicitStreamTarget: Bool = false,
         showHeader: Bool = true,
@@ -73,6 +74,7 @@ final class MessageBubbleEquatableTests: XCTestCase {
             processingStatus: processingStatus,
             hasStreamActivity: hasStreamActivity,
             isStreamingToolCall: isStreamingToolCall,
+            isCompacting: isCompacting,
             isStreaming: isStreaming,
             isImplicitStreamTarget: isImplicitStreamTarget,
             showHeader: showHeader,
@@ -89,6 +91,15 @@ final class MessageBubbleEquatableTests: XCTestCase {
 
     func testEqual_whenAllPropsMatch() async {
         XCTAssertEqual(Self.makeBubble(), Self.makeBubble())
+    }
+
+    /// The flag relabels both rows AND decides which detail window the disclosure opens
+    /// (`MessageThinkingSection.detailWindow`), so a coalesced tick would leave the row
+    /// opening a window headed "Thinking" over a compaction transcript.
+    func testNotEqual_whenIsCompactingDiffers() async {
+        XCTAssertNotEqual(
+            Self.makeBubble(isCompacting: false),
+            Self.makeBubble(isCompacting: true))
     }
 
     // MARK: - Per-prop drift coverage

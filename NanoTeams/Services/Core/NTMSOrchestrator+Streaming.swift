@@ -31,8 +31,12 @@ extension NTMSOrchestrator {
     // MARK: - Streaming (Inline Architecture)
 
     // periphery:ignore - protocol conformance (LLMStreamingDelegate)
-    func beginStreaming(stepID: String, taskID: Int, messageID: UUID, role: Role) async {
-        streamingPreviewManager.beginStreaming(stepID: stepID, taskID: taskID, messageID: messageID, role: role)
+    func beginStreaming(
+        stepID: String, taskID: Int, messageID: UUID, role: Role, isCompacting: Bool = false
+    ) async {
+        streamingPreviewManager.beginStreaming(
+            stepID: stepID, taskID: taskID, messageID: messageID, role: role,
+            isCompacting: isCompacting)
 
         // Pre-create empty LLMMessage in step.llmConversation so timeline picks it up
         let msg = LLMMessage(id: messageID, role: .assistant, content: "")
@@ -62,6 +66,12 @@ extension NTMSOrchestrator {
 
     func markStreamingToolCall(stepID: String, taskID: Int) {
         streamingPreviewManager.markStreamingToolCall(stepID: stepID, taskID: taskID)
+    }
+
+    // periphery:ignore - protocol conformance (LLMStreamingDelegate)
+    func markStreamingCompaction(stepID: String, taskID: Int, _ isCompacting: Bool) {
+        streamingPreviewManager.markCompacting(
+            stepID: stepID, taskID: taskID, isCompacting)
     }
 
     /// Reactive in-stream streaming-loop signal for a CHILD task — forwards to

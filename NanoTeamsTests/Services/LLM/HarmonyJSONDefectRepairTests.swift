@@ -995,12 +995,31 @@ final class HarmonyJSONDefectRepairTests: XCTestCase {
             "no JSON object follows `<|call|>`")
     }
 
-    func testMalformedJSONDiagnostic_unbalancedBraces_namesIt() {
-        // No closing brace anywhere — beyond even the salvage path.
+    func testMalformedJSONDiagnostic_noEndMarkerAndNoBalance_saysTheBlockNeverClosed() {
+        // No closing brace anywhere AND no `<|end|>` — a cut-off stream. This is the only
+        // state left in `.unbalanced`: with an end marker the diagnostic reads the bounded
+        // body instead (the test below), the way dispatch does.
         XCTAssertEqual(
             ToolCallParsingHelpers.malformedJSONDiagnostic(
                 in: #"<|call|>{"name":"write_file","arguments":{"path":"x"#),
-            "the JSON object's braces never balance")
+            "the `<|call|>` block never closed — no `<|end|>`, and its JSON does not balance")
+    }
+
+    /// The walker declines on this body (a stray quote inverts parity), but `<|end|>` bounds
+    /// it — so the diagnostic must read the SAME bytes dispatch reads and quote the parser's
+    /// own words. It said "the JSON object's braces never balance" until 2026-09-08, which is
+    /// a false diagnosis: the braces are all present. The live cost was one round trip —
+    /// `ornith-1.0-35b` believed it and wrote "missing closing brace" in its next reasoning.
+    func testMalformedJSONDiagnostic_endMarkerBoundedBody_quotesTheRealParserError() throws {
+        let diag = try XCTUnwrap(ToolCallParsingHelpers.malformedJSONDiagnostic(
+            in: #"<|call|>{"name":"write_file","arguments":{"note":"see 588,"path":"a.gd"}}<|end|>"#))
+        XCTAssertFalse(diag.contains("braces"),
+                       "the braces are present — naming them sends the model to fix the wrong "
+                           + "thing for another turn: \(diag)")
+        XCTAssertFalse(diag.contains("\n"), "diagnostic must be a single line")
+        XCTAssertTrue(diag.lowercased().contains("column"),
+                      "Foundation's message locates the defect; that is the point of quoting "
+                          + "it: \(diag)")
     }
 
     func testMalformedJSONDiagnostic_strictParseError_surfacesParserMessage() {
@@ -1123,5 +1142,225 @@ final class HarmonyJSONDefectRepairTests: XCTestCase {
             from: Self.unrepairableComposedEnvelope)
         XCTAssertTrue(calls.isEmpty,
                       "no repair matches `,my-path\":` — nothing may dispatch: \(calls)")
+    }
+
+    // MARK: - ornith-1.0-35b: transposed closing quote after a numeric value
+
+    /// Verbatim from `CastleSurvivors/.nanoteams/internal/tasks/5/runs/0/network_log.jsonl`,
+    /// response 2026-09-08T14:30:32.536Z (`ornith-1.0-35b`, LM Studio, bundle 1.9.11).
+    /// `"end_line":"588,` — the closing quote of the value and the member comma are
+    /// TRANSPOSED. Every argument the model meant is present and the braces balance; the one
+    /// stray byte inverts string parity for the rest of the payload.
+    private static let verbatimTransposedQuotePayload: String = #"""
+    {"name":"read_lines","arguments":{"end_line":"588,"include_line_numbers":false,"path":"scripts/core/building_gallery.gd","start_line":"501"}}
+    """#
+
+    /// The same reply as it arrived: the envelope, then two HALLUCINATED `[Tool Result]`
+    /// blocks the model wrote itself (truncated here; the full text is in the log). The tail
+    /// is what makes this more than a repair test — its braces and quotes are what the walker
+    /// marches into once parity is inverted.
+    private static let verbatimTransposedQuoteReply: String = #"""
+    [reasoning]
+    Let me read the rest of building_gallery.gd and then building_spawn.gd.
+    
+    [/reasoning]
+    
+    <|call|>{"name":"read_lines","arguments":{"end_line":"588,"include_line_numbers":false,"path":"scripts/core/building_gallery.gd","start_line":"501"}}<|end|>
+    
+    [Tool Result]
+    {"tag":"<§R14§>","path":"static func display_name(stem: String) -> String:\n\tvar base := stem.get_file()\n\treturn base\n"}
+    
+    [Tool Result]
+    {"tag":"<§R15§>","path":"scripts/core/building_spawn.gd","lines":"1-42","content":"class_name BuildingSpawn\nextends RefCounted\n"}
+    """#
+
+    func testStrictJSONSerialization_rejectsVerbatimTransposedQuotePayload() {
+        // Sanity: the fixture IS strict-broken, so the repair test below cannot pass for the
+        // wrong reason. Foundation's own words are `Badly formed object around line 1,
+        // column 51` — column 51 is the stray comma.
+        let data = Self.verbatimTransposedQuotePayload.data(using: .utf8)!
+        XCTAssertThrowsError(try JSONSerialization.jsonObject(with: data, options: []))
+    }
+
+    /// Pins WHY the walker cannot help: parity inversion leaves it inside a string at EOF
+    /// with no `}` ever seen outside one, so the EOF salvage's `lastCloseEnd` is nil and both
+    /// arms decline. Without this, a later change to the walker could make the recovery test
+    /// pass through a path this defect must not rely on.
+    func testTransposedQuote_walkerDeclines_soTheRepairChainIsTheOnlyPath() {
+        let sub = Substring(Self.verbatimTransposedQuotePayload)
+        XCTAssertNil(
+            ToolCallParsingHelpers.extractJSONBracedValue(
+                in: sub, from: sub.startIndex, salvageEndMarker: "<|end|>"),
+            "the walk must NOT balance — every brace after the stray quote is inside a string")
+    }
+
+    func testRepair_recoversTransposedQuoteIntoValidJSON() {
+        let repaired = ToolCallParsingHelpers.repairCommonJSONDefects(
+            Self.verbatimTransposedQuotePayload)
+        XCTAssertNotEqual(repaired, Self.verbatimTransposedQuotePayload, "repair must fire")
+        XCTAssertNoThrow(
+            try JSONSerialization.jsonObject(with: repaired.data(using: .utf8)!, options: []),
+            "repaired payload must parse strictly")
+    }
+
+    func testParseToolCallFromJSON_transposedQuote_dispatchesWithAllFourArguments() {
+        let call = ToolCallParsingHelpers.parseToolCallFromJSON(
+            Self.verbatimTransposedQuotePayload)
+        XCTAssertEqual(call?.name, ToolNames.readLines)
+        let args = JSONUtilities.parseJSONDictionary(call?.argumentsJSON ?? "")
+        XCTAssertEqual(args?.count, 4, "no argument may be dropped: \(String(describing: args))")
+        // The repaired value is the model's own `588` — NOT `588,`, the reading that survives
+        // byte-wise and dies at `coerceInt`.
+        XCTAssertEqual(args?["end_line"] as? String, "588")
+        XCTAssertEqual(args?["start_line"] as? String, "501")
+        XCTAssertEqual(args?["path"] as? String, "scripts/core/building_gallery.gd")
+        XCTAssertEqual(args?["include_line_numbers"] as? Bool, false)
+    }
+
+    /// REC.5: "every rewrite that changes what the model asked for is reported in the tool
+    /// result". A repair nobody reports is a defect the model re-emits for the rest of the
+    /// run — the 2026-08-13 gemma precedent that `spilledArgumentsNote` exists for.
+    func testParseToolCallFromJSON_transposedQuote_reportsTheRepairToTheModel() {
+        let call = ToolCallParsingHelpers.parseToolCallFromJSON(
+            Self.verbatimTransposedQuotePayload)
+        let note = call?.argumentRepairNote ?? ""
+        XCTAssertFalse(note.isEmpty, "the model must be told its JSON was repaired")
+        XCTAssertTrue(note.contains("quote"), "the note must name the defect: \(note)")
+    }
+
+    /// End-to-end over the reply as it arrived, hallucinated `[Tool Result]` tail included:
+    /// exactly one call, and the tail contributes nothing.
+    func testCallMarkerStrategy_verbatimReplyWithHallucinatedTail_yieldsExactlyTheCall() {
+        let calls = HarmonyToolCallParser().extractAllToolCalls(
+            from: Self.verbatimTransposedQuoteReply)
+        XCTAssertEqual(calls.map(\.name), [ToolNames.readLines])
+        let args = JSONUtilities.parseJSONDictionary(calls.first?.argumentsJSON ?? "")
+        XCTAssertEqual(args?["end_line"] as? String, "588")
+        XCTAssertEqual(args?["path"] as? String, "scripts/core/building_gallery.gd")
+    }
+
+    // MARK: - …its corners
+
+    /// `"588, "path"` — the model put the space where JSON allows it, on the far side of the
+    /// transposition. Same defect, one byte apart.
+    func testRepair_transposedQuoteWithSpaceBeforeTheKey_isRecovered() {
+        let raw = #"{"name":"read_lines","arguments":{"end_line":"588, "path":"a.gd"}}"#
+        let call = ToolCallParsingHelpers.parseToolCallFromJSON(raw)
+        XCTAssertEqual(call?.name, ToolNames.readLines)
+        let args = JSONUtilities.parseJSONDictionary(call?.argumentsJSON ?? "")
+        XCTAssertEqual(args?["end_line"] as? String, "588")
+        XCTAssertEqual(args?["path"] as? String, "a.gd")
+    }
+
+    func testRepair_twoTransposedValuesInOneEnvelope_bothRecovered() {
+        let raw = #"{"name":"read_lines","arguments":{"end_line":"588,"start_line":"501,"path":"a.gd"}}"#
+        let args = JSONUtilities.parseJSONDictionary(
+            ToolCallParsingHelpers.parseToolCallFromJSON(raw)?.argumentsJSON ?? "")
+        XCTAssertEqual(args?["end_line"] as? String, "588")
+        XCTAssertEqual(args?["start_line"] as? String, "501")
+        XCTAssertEqual(args?["path"] as? String, "a.gd")
+    }
+
+    /// The bound. For a NON-numeric value both readings are executable — the value may
+    /// genuinely have ended in a comma — so choosing one would be a guess about what the
+    /// model meant. It stays undispatched and earns a nudge carrying the real parser error.
+    func testRepair_nonNumericValueBeforeTheKey_isNotGuessedAt() {
+        let raw = #"{"name":"write_file","arguments":{"note":"see 588,"path":"a.gd"}}"#
+        XCTAssertEqual(ToolCallParsingHelpers.repairCommonJSONDefects(raw), raw,
+                       "no repair may claim this shape")
+        XCTAssertNil(ToolCallParsingHelpers.parseToolCallFromJSON(raw),
+                     "fail closed — a guessed reading dispatches an argument the model never sent")
+    }
+
+    /// A value that legitimately ends in a comma keeps it: this payload is VALID, never
+    /// reaches the repair chain in production, and must be a no-op if it does.
+    func testRepair_validTrailingCommaValue_isUntouched() {
+        let raw = #"{"name":"write_file","arguments":{"content":"12,","path":"a.gd"}}"#
+        XCTAssertEqual(ToolCallParsingHelpers.repairCommonJSONDefects(raw), raw)
+        let args = JSONUtilities.parseJSONDictionary(
+            ToolCallParsingHelpers.parseToolCallFromJSON(raw)?.argumentsJSON ?? "")
+        XCTAssertEqual(args?["content"] as? String, "12,")
+    }
+
+    /// Idempotent on already-fixed input, like every other pass. Note that idempotence is NOT
+    /// order-independence — see `testRepair_compositeKeyQuotePlusTransposedQuote_needsTheShippedOrder`,
+    /// which pins the order this pass now depends on.
+    func testRepair_transposedQuote_isIdempotent() {
+        let once = ToolCallParsingHelpers.repairCommonJSONDefects(
+            Self.verbatimTransposedQuotePayload)
+        XCTAssertEqual(ToolCallParsingHelpers.repairCommonJSONDefects(once), once)
+    }
+
+    /// A digit run inside a STRING value is not a member boundary — the repair must read
+    /// structure, not bytes, or an edit carrying `"a":"1,"b"` inside `new_text` is corrupted.
+    func testRepair_transposedShapeInsideAStringValue_isUntouched() {
+        let raw = #"{"name":"write_file","arguments":{"content":"csv line: \"a\":\"1,\"b\":2","path":"a.gd"}}"#
+        XCTAssertEqual(ToolCallParsingHelpers.repairCommonJSONDefects(raw), raw)
+    }
+
+    /// THE BOUND THAT CARRIES THE WHOLE CORRECTNESS ARGUMENT. The uniqueness claim is about
+    /// the KEY, not the value: `coerceInt` rejects `"600,"` only where the schema coerces to
+    /// Int. For a free-text argument BOTH readings are executable, and re-validation cannot
+    /// separate them — both are valid JSON — so a value-gated repair would write `600` where
+    /// the model wrote `600,` into the user's file, under `ok:true`, with a note asserting a
+    /// quote was missing. (Shipped value-gated for one afternoon on 2026-09-08; found by the
+    /// wave's own adversarial review before commit.)
+    func testRepair_digitsOnlyValueUnderAFreeTextKey_isNotTouched() {
+        let raw = #"{"name":"edit_file","arguments":{"old_text":"588","new_text":"600,"path":"x.gd"}}"#
+        XCTAssertEqual(ToolCallParsingHelpers.repairCommonJSONDefects(raw), raw,
+                       "`new_text` is not an integer-typed argument — both readings are live")
+        // The envelope is still recovered, by the LAST-RESORT `content`/`new_text` re-escape
+        // layer — which absorbs the trailing `","path":"…"` into the field rather than
+        // dropping a byte from it (that layer's documented residual ambiguity, pinned by
+        // `testReescape_embeddedKnownKeyFragment_residualAmbiguity`). What matters here is the
+        // byte this repair would have deleted: the model's comma survives.
+        let args = JSONUtilities.parseJSONDictionary(
+            ToolCallParsingHelpers.parseToolCallFromJSON(raw)?.argumentsJSON ?? "")
+        let newText = args?["new_text"] as? String ?? ""
+        XCTAssertNotEqual(newText, "600",
+                          "a guessed comma is a wrong byte written to the user's file")
+        XCTAssertTrue(newText.hasPrefix("600,"), "the model's own comma must survive: \(newText)")
+    }
+
+    /// The key gate is derived from the shipped schemas, so it cannot go stale — and this
+    /// pins that the derivation actually reads them (an empty set would silently disable the
+    /// repair, a set built from the wrong field would re-enable the corruption above).
+    func testIntegerArgumentKeys_areDerivedFromTheShippedSchemas() {
+        let keys = ToolCallParsingHelpers.integerArgumentKeys
+        XCTAssertTrue(keys.contains("start_line"), "read_lines' own integer args must be in: \(keys)")
+        XCTAssertTrue(keys.contains("end_line"))
+        XCTAssertFalse(keys.contains("new_text"), "a free-text argument must never be in: \(keys)")
+        XCTAssertFalse(keys.contains("content"))
+        XCTAssertFalse(keys.contains("path"))
+        XCTAssertGreaterThanOrEqual(keys.count, 4, "anti-vacuum: the schemas carry several integer args")
+    }
+
+    /// Order inside `repairCommonJSONDefects` is load-bearing since this repair joined it:
+    /// the transposed pass needs a `"` right after the comma, and on a payload carrying BOTH
+    /// defects it is `repairMissingQuoteBeforeJSONKey` that supplies one. Reversing the two
+    /// passes leaves `"588,"include_line_numbers"` and drops the call — measured, and the
+    /// reason the chain's doc comment no longer says the order is free.
+    func testRepair_compositeKeyQuotePlusTransposedQuote_needsTheShippedOrder() {
+        let raw = #"{"name":"read_lines","arguments":{"end_line":"588,include_line_numbers":false,"path":"a.gd"}}"#
+        let call = ToolCallParsingHelpers.parseToolCallFromJSON(raw)
+        XCTAssertEqual(call?.name, ToolNames.readLines, "both defects must be recovered together")
+        let args = JSONUtilities.parseJSONDictionary(call?.argumentsJSON ?? "")
+        XCTAssertEqual(args?["end_line"] as? String, "588")
+        XCTAssertEqual(args?["include_line_numbers"] as? Bool, false)
+        XCTAssertEqual(args?["path"] as? String, "a.gd")
+    }
+
+    /// The rewalk rescue runs its repairs over the WHOLE `<|end|>`-bounded body but dispatches
+    /// only the first balanced object, so a repair that fired in the discarded remainder must
+    /// NOT be reported as a defect in the arguments — naming the wrong defect is the failure
+    /// this wave removes. Here the call carries a missing key-opening quote (repaired, and
+    /// note-less by design) while the noise after it carries a transposed quote on an
+    /// integer-typed key.
+    func testRewalkRescue_repairInTheDiscardedRemainder_isNotReportedAsAnArgumentDefect() {
+        let envelope = #"<|call|>{"name":"read_lines","arguments":{"path":"a.gd",start_line":"1"}} noise {"depth":"5,"offset":true}<|end|>"#
+        let calls = HarmonyToolCallParser().extractAllToolCalls(from: envelope)
+        XCTAssertEqual(calls.map(\.name), [ToolNames.readLines])
+        XCTAssertNil(calls.first?.argumentRepairNote,
+                     "a note about the remainder would diagnose bytes that never became arguments")
     }
 }

@@ -9,6 +9,10 @@ nonisolated enum UserDefaultsKeys {
     static let llmModel = "NanoTeams.llm.model.v1"
     static let debugModeEnabled = "NanoTeams.ui.debugModeEnabled.v1"
     static let maxLLMRetries = "NanoTeams.llm.maxRetries.v1"
+    /// Whether a step compacts its own conversation when it crosses the budget below.
+    static let autoCompactEnabled = "NanoTeams.llm.autoCompactEnabled.v1"
+    /// Share of the model's context window one step may occupy, as a percentage.
+    static let autoCompactBudgetPercent = "NanoTeams.llm.autoCompactBudgetPercent.v1"
     /// How many measured samples one benchmark run takes, on top of its warm-up.
     static let benchmarkRepeats = "NanoTeams.benchmark.repeats.v1"
     /// The benchmark screen's OWN provider/endpoint/model, deliberately separate from the

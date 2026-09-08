@@ -3,15 +3,19 @@ import Foundation
 /// Classifies a conversation turn as a SYSTEM-AUTHORED notice and derives the
 /// one-line form the activity feed collapses it into.
 ///
-/// Six `MessageSourceContext` cases are written by the runtime itself rather
+/// Seven `MessageSourceContext` cases are written by the runtime itself rather
 /// than by a human or a model: the retry nudges (every `handleNoToolCalls`
 /// site and the repetition warning), the correction appended after a thinking
 /// loop was discarded, the transient server-error retry note, the
 /// `update_scratchpad` acknowledgement, a failure in the app's own work, and the
 /// Autovisor's mid-review event notice — the app reporting that folder state
-/// moved while the manager was reviewing. That last one used to borrow
-/// `.supervisorMessage` and therefore rendered as a crowned Supervisor bubble
-/// the human never typed; it is the reason this table has a sixth row.
+/// moved while the manager was reviewing, and the record of a context-compaction
+/// epoch. The event notice used to borrow `.supervisorMessage` and therefore
+/// rendered as a crowned Supervisor bubble the human never typed; it is the reason
+/// this table has a sixth row. The seventh is the compaction record, whose
+/// substance — the summary the model wrote — belongs in the detail window rather
+/// than the feed: it is the model's memory, not news for the human, and it is
+/// already on the wire where it is read.
 /// The steering appended after a failed TOOL call used to be a sixth and is not:
 /// it comments on one event the feed already draws as a card, so it is persisted
 /// unattributed and never reaches this table — see `ToolErrorNotePolicy`.
@@ -82,6 +86,7 @@ nonisolated enum SystemNoticePresentation {
         .toolAcknowledgement: ("note", false),
         .runtimeWarning: ("warning", true),
         .autovisorEvent: ("event", false),
+        .compaction: ("compaction", false),
     ]
 
     /// Leading lines a kind's PREVIEW skips — self-describing banners that the row

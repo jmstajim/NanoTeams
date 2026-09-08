@@ -153,6 +153,20 @@ nonisolated enum MessageSourceContext: String, Codable, CaseIterable {
     /// Ordinary CONTENT rather than a system notice — it is the only record of what the model
     /// was actually shown, so it renders as a normal bubble instead of a one-line row.
     case screenDescription
+    /// The app's own record that a context-compaction epoch happened on this step: the
+    /// wire was replaced by its pinned head plus a summary seed
+    /// (`CompactionPolicy.compactedWire`), and this row says by how much.
+    ///
+    /// **Display-only, and structurally so.** The seed itself is a `.user` turn on the
+    /// WIRE, written by the policy; this context never reaches a wire at all. The two
+    /// must stay separate: the model reads the summary as its own memory, while the
+    /// human needs a row that names the before/after numbers and holds the summary text
+    /// for inspection — a fact the model has no use for and would only re-narrate.
+    ///
+    /// Rendered as a collapsed one-line system notice
+    /// (`SystemNoticePresentation`), the shape already used for every other
+    /// app-authored bookkeeping row.
+    case compaction
 
     /// Did this turn PUSH information at the model that no tool call of its own asked for?
     ///
@@ -236,7 +250,8 @@ nonisolated enum MessageSourceContext: String, Codable, CaseIterable {
              .supervisorFeedback,
              .delegatedQuestion, .delegationEscalation,
              .serverError, .loopCorrection, .retryNudge,
-             .toolAcknowledgement, .runtimeWarning, .screenDescription:
+             .toolAcknowledgement, .runtimeWarning, .screenDescription,
+             .compaction:
             return false
         }
     }
@@ -261,6 +276,7 @@ nonisolated enum MessageSourceContext: String, Codable, CaseIterable {
         .runtimeWarning: "warning",
         .autovisorEvent: "event",
         .screenDescription: "screen description",
+        .compaction: "compaction",
     ]
 
     var displayLabel: String { Self.displayLabelMap[self] ?? rawValue }

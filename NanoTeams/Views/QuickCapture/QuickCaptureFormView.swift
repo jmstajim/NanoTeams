@@ -124,6 +124,11 @@ struct QuickCaptureFormView: View {
 
     @Environment(NTMSOrchestrator.self) private var store
     @Environment(StreamingPreviewManager.self) private var streamingManager
+    /// Read for one fact: whether the working role is COMPACTING rather than thinking. An
+    /// observable projection rather than the streaming manager's own flag, because that one
+    /// is `@ObservationIgnored` (polled by the feed's `TimelineView`) and this overlay has no
+    /// ticker — it would keep saying "is thinking…" for the whole epoch.
+    @Environment(ContextFillProjection.self) private var contextFill
     @Environment(DictationService.self) private var dictation
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Read here and handed to `SettingsNavigation` — an environment action resolves
@@ -372,7 +377,9 @@ struct QuickCaptureFormView: View {
             } else if case .taskInitializing = mode {
                 overlayHeaderRow { workingHeader(caption: RunInitializationDisplay.caption) }
             } else if case .taskWorking(let roleName, _) = mode {
-                overlayHeaderRow { workingHeader(roleName: roleName) }
+                overlayHeaderRow {
+                    workingHeader(roleName: roleName, isCompacting: activeTaskIsCompacting)
+                }
             } else {
                 overlayHeaderRow { overlayHeader }
             }
@@ -522,8 +529,22 @@ struct QuickCaptureFormView: View {
 
     // MARK: - Task Working
 
-    private func workingHeader(roleName: String) -> some View {
-        workingHeader(caption: roleName.isEmpty ? "Thinking…" : "\(roleName) is thinking…")
+    /// Whether any step of the task this overlay is showing has a compaction epoch running.
+    ///
+    /// Task-scoped rather than step-scoped because the overlay names one working ROLE and
+    /// carries no step id — and a task has exactly one such role on screen, so "this task is
+    /// compacting" and "the role named above is compacting" are the same fact here.
+    private var activeTaskIsCompacting: Bool {
+        guard let taskID = store.activeTaskID else { return false }
+        return contextFill.compactingKeys.contains { $0.taskID == taskID }
+    }
+
+    private func workingHeader(roleName: String, isCompacting: Bool) -> some View {
+        let verb = isCompacting ? "compacting" : "thinking"
+        return workingHeader(
+            caption: roleName.isEmpty
+                ? "\(verb.capitalized)…"
+                : "\(roleName) is \(verb)…")
     }
 
     private func workingHeader(caption: String) -> some View {

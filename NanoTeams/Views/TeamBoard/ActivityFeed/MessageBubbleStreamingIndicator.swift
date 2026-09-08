@@ -78,6 +78,12 @@ struct MessageBubbleStreamingIndicator: View, Equatable {
     /// without access to the streaming preview manager.
     var isStreamingToolCall: Bool = false
 
+    /// This bubble belongs to a CONTEXT-COMPACTION epoch: the app asked the model to
+    /// summarise its own conversation and is about to replace that conversation with the
+    /// answer. Outranks every other status EXCEPT the disclosure, which carries the same
+    /// wording and the animation once anything has streamed — see `resolveStatusText`.
+    var isCompacting: Bool = false
+
     var body: some View {
         if let text = statusText {
             HStack(spacing: 0) {
@@ -112,7 +118,8 @@ struct MessageBubbleStreamingIndicator: View, Equatable {
             hasThinkingContent: hasThinkingContent,
             processingStatus: processingStatus,
             hasStreamActivity: hasStreamActivity,
-            isStreamingToolCall: isStreamingToolCall
+            isStreamingToolCall: isStreamingToolCall,
+            isCompacting: isCompacting
         )
     }
 
@@ -138,8 +145,39 @@ struct MessageBubbleStreamingIndicator: View, Equatable {
         hasThinkingContent: Bool,
         processingStatus: PromptProcessingStatus?,
         hasStreamActivity: Bool,
-        isStreamingToolCall: Bool = false
+        isStreamingToolCall: Bool = false,
+        isCompacting: Bool = false
     ) -> String? {
+        // FIRST, above `isStreaming` — an epoch on a parked step has no live stream by that
+        // definition and the row still has to say what is happening.
+        //
+        // The epoch writes NOTHING into the content preview (see
+        // `LLMExecutionService.summarizeWithLiveBubble`): both channels go into the
+        // disclosure, whose own row reads "Compacting…" and animates while it is the live
+        // tail. So this row covers the window BEFORE the first delta, and yields afterwards —
+        // returning a status there would stack a second, identical, animated row under the
+        // first, which is what shipped in `ef8a1cc0`.
+        //
+        // The condition is "a disclosure row is ANIMATING", not "a disclosure exists": a
+        // static row is not a live signal, and yielding to one would leave the bubble with
+        // zero animation — the regression class `testStreamingBubble_alwaysHasLiveSignal`
+        // exists to catch. Asked of the two view helpers that decide it, the way
+        // `reservesStatusSlot` already asks, so the rule cannot drift from the rows it
+        // mirrors. Only the first arm is reachable for an epoch (no prose, no tool call); the
+        // rest is what makes the rule total, since nothing at this seam states that.
+        if isCompacting {
+            let disclosureIsLive = hasThinkingContent
+                && (MessageBubbleView.topThinkingRowAnimates(
+                    isStreaming: isStreaming,
+                    hasMessageContent: hasMessageContent,
+                    isStreamingToolCall: isStreamingToolCall)
+                    || MessageBubbleView.showsTrailingThinkingRow(
+                        isStreaming: isStreaming,
+                        hasMessageContent: hasMessageContent,
+                        isStreamingToolCall: isStreamingToolCall,
+                        hasThinkingContent: hasThinkingContent))
+            return disclosureIsLive ? nil : "Compacting…"
+        }
         if isStreaming {
             // Thinking row is the indicator whenever a thinking preview
             // exists — during tool-call assembly the streaming loop pipes
@@ -206,7 +244,8 @@ struct MessageBubbleStreamingIndicator: View, Equatable {
         hasThinkingContent: Bool,
         processingStatus: PromptProcessingStatus?,
         hasStreamActivity: Bool,
-        isStreamingToolCall: Bool
+        isStreamingToolCall: Bool,
+        isCompacting: Bool = false
     ) -> Bool {
         let hasStatus = resolveStatusText(
             isStreaming: isStreaming,
@@ -215,7 +254,8 @@ struct MessageBubbleStreamingIndicator: View, Equatable {
             hasThinkingContent: hasThinkingContent,
             processingStatus: processingStatus,
             hasStreamActivity: hasStreamActivity,
-            isStreamingToolCall: isStreamingToolCall
+            isStreamingToolCall: isStreamingToolCall,
+            isCompacting: isCompacting
         ) != nil
         return hasStatus || reservesStatusSlot(
             isStreaming: isStreaming,

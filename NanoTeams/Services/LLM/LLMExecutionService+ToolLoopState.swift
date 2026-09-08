@@ -332,6 +332,22 @@ extension LLMExecutionService {
         preferredExampleTools.first(where: allowedToolNames.contains)
     }
 
+    /// The one-line `<|call|>…<|end|>` illustration a correction attaches, or `""` when the
+    /// role holds none of the candidate tools.
+    ///
+    /// Empty rather than a `TOOL_NAME` placeholder, deliberately. A placeholder is itself
+    /// copyable — the same corpus that produced this change shows a model copying
+    /// `{"param":"value"}` verbatim into `read_file` — and a nudge without an illustration
+    /// still carries its instruction, while one with a fake id teaches an id that dispatches
+    /// to `tool_not_found`. Leading newline included so callers interpolate it directly
+    /// after a sentence.
+    nonisolated static func callShapeClause(allowedToolNames: Set<String>) -> String {
+        guard let envelope = HarmonyCallExample.envelope(preferring: allowedToolNames) else {
+            return ""
+        }
+        return "\n`\(envelope)`"
+    }
+
     // MARK: - Supervisor Auto-Answer in Tool Loop
 
     /// Handles Supervisor auto-answer when in auto-answer mode.

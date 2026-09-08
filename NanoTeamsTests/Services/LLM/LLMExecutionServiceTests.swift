@@ -76,7 +76,7 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
     }
 
     // Tracking calls for verification
-    var beginStreamingCalls: [(String, UUID, Role, Int)] = []
+    var beginStreamingCalls: [(stepID: String, messageID: UUID, role: Role, taskID: Int, isCompacting: Bool)] = []
     var appendStreamingPreviewCalls: [(String, UUID, Role, String)] = []
     var replaceStreamingPreviewCalls: [(String, UUID, Role, String)] = []
     var appendStreamingThinkingCalls: [(String, String)] = []
@@ -93,6 +93,13 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
     func markStreamingToolCall(stepID: String, taskID: Int) {
         markStreamingToolCallCalls.append(stepID)
         streamingTaskIDTrace.append(("markStreamingToolCall", stepID, taskID))
+    }
+    var compactingStepIDs: Set<String> = []
+    var compactionMarks: [(String, Bool)] = []
+    func markStreamingCompaction(stepID: String, taskID: Int, _ isCompacting: Bool) {
+        compactionMarks.append((stepID, isCompacting))
+        if isCompacting { compactingStepIDs.insert(stepID) }
+        else { compactingStepIDs.remove(stepID) }
     }
     /// Uniform (method, stepID, taskID) trace across every streaming-delegate call.
     /// The per-method arrays above keep their legacy shapes (stepID-keyed) for
@@ -144,8 +151,10 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
     /// conversation entries are unaffected; retry-collapse tests turn it on so the
     /// harness faithfully reproduces the production sequence.
     var plantsEmptyAssistantMessage = false
-    func beginStreaming(stepID: String, taskID: Int, messageID: UUID, role: Role) async {
-        beginStreamingCalls.append((stepID, messageID, role, taskID))
+    func beginStreaming(
+        stepID: String, taskID: Int, messageID: UUID, role: Role, isCompacting: Bool
+    ) async {
+        beginStreamingCalls.append((stepID, messageID, role, taskID, isCompacting))
         streamingTaskIDTrace.append(("beginStreaming", stepID, taskID))
         // Model the production reset: `StreamingPreviewManager.beginStreaming` sets
         // `processingStatus[key] = nil`. Without this the double is a WEAKER
@@ -269,6 +278,24 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
     var lastErrorMessages: [String] = []
     func setLastErrorMessageForUI(_ message: String) {
         lastErrorMessages.append(message)
+    }
+
+    // MARK: - Context compaction
+
+    /// Both settings are stated here rather than inherited from the protocol extension: the
+    /// automatic path is gated on them, and a test that could not turn them off would be
+    /// asserting the default instead of the behaviour.
+    var autoCompactEnabled: Bool = true
+    var autoCompactBudgetPercent: Int = AppDefaults.autoCompactBudgetPercent
+
+    var contextFillUpdates: [(stepID: String, taskID: Int, fill: ContextFill)] = []
+    func updateContextFill(stepID: String, taskID: Int, fill: ContextFill) {
+        contextFillUpdates.append((stepID, taskID, fill))
+    }
+
+    var contextCompactingMarks: [(stepID: String, taskID: Int, isCompacting: Bool)] = []
+    func setContextCompacting(stepID: String, taskID: Int, _ isCompacting: Bool) {
+        contextCompactingMarks.append((stepID, taskID, isCompacting))
     }
 
     /// Prompt-prefix cache misses reported by the detector. The protocol default is a no-op, so

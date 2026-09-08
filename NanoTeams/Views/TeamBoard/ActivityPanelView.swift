@@ -76,6 +76,7 @@ struct ActivityPanelView: View {
         onRequestChanges: { _, _ in }
     )
     .environment(store)
+    .environment(store.contextFill)
     .environment(store.engineState)
     .environment(store.configuration)
     .environment(store.streamingPreviewManager)
@@ -99,6 +100,7 @@ struct ActivityPanelView: View {
         onRequestChanges: { _, _ in }
     )
     .environment(store)
+    .environment(store.contextFill)
     .environment(store.engineState)
     .environment(store.configuration)
     .environment(store.streamingPreviewManager)

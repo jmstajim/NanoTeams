@@ -471,6 +471,32 @@ final class StoreConfiguration {
         }
     }
 
+    /// Whether a step replaces its own conversation with a summary when it crosses
+    /// `autoCompactBudgetPercent` of the model's loaded window.
+    ///
+    /// On by default: the alternative to compacting is not "a longer conversation" but a
+    /// silently truncated head or a refused request, and both arrive with the conversation
+    /// already past saving. Off leaves today's behaviour exactly — warn, then fail — and
+    /// leaves the manual compaction click available.
+    var autoCompactEnabled: Bool {
+        didSet { storage.set(autoCompactEnabled, forKey: Keys.autoCompactEnabled) }
+    }
+
+    /// Share of the model's loaded context window one step may occupy before automatic
+    /// compaction fires, as a percentage. Clamped to `AppDefaults.autoCompactBudgetPercentRange`.
+    var autoCompactBudgetPercent: Int {
+        didSet {
+            let clamped = min(
+                max(autoCompactBudgetPercent, AppDefaults.autoCompactBudgetPercentRange.lowerBound),
+                AppDefaults.autoCompactBudgetPercentRange.upperBound)
+            if clamped != autoCompactBudgetPercent {
+                autoCompactBudgetPercent = clamped
+                return
+            }
+            storage.set(autoCompactBudgetPercent, forKey: Keys.autoCompactBudgetPercent)
+        }
+    }
+
     /// Streaming HTTP request timeout in seconds. 0 = no timeout (wait indefinitely).
     /// Applied to every streaming LLM call.
     var llmRequestTimeoutSeconds: Int {
@@ -973,6 +999,10 @@ final class StoreConfiguration {
             (storage.object(forKey: Keys.benchmarkExcludedProviders) as? [String] ?? [])
                 .compactMap(LLMProvider.init(rawValue:)))
         self.maxLLMRetries = (storage.object(forKey: Keys.maxLLMRetries) as? Int) ?? LLMConstants.defaultMaxLLMRetries
+        self.autoCompactEnabled = (storage.object(forKey: Keys.autoCompactEnabled) as? Bool) ?? true
+        self.autoCompactBudgetPercent =
+            (storage.object(forKey: Keys.autoCompactBudgetPercent) as? Int)
+                ?? AppDefaults.autoCompactBudgetPercent
         self.llmRequestTimeoutSeconds = (storage.object(forKey: Keys.llmRequestTimeoutSeconds) as? Int) ?? LLMConstants.defaultLLMRequestTimeoutSeconds
         self.ollamaKeepAliveSeconds = (storage.object(forKey: Keys.ollamaKeepAliveSeconds) as? Int) ?? LLMConstants.defaultOllamaKeepAliveSeconds
         self.timelineClearedUpToDate = storage.object(forKey: Keys.timelineClearedUpToDate) as? Date
@@ -1195,6 +1225,8 @@ final class StoreConfiguration {
         storage.removeObject(forKey: Keys.benchmarkTarget)
         storage.removeObject(forKey: Keys.benchmarkExcludedProviders)
         storage.removeObject(forKey: Keys.maxLLMRetries)
+        storage.removeObject(forKey: Keys.autoCompactEnabled)
+        storage.removeObject(forKey: Keys.autoCompactBudgetPercent)
         storage.removeObject(forKey: Keys.llmRequestTimeoutSeconds)
         storage.removeObject(forKey: Keys.ollamaKeepAliveSeconds)
         storage.removeObject(forKey: Keys.visionEnabled)
@@ -1262,6 +1294,8 @@ final class StoreConfiguration {
         benchmarkTarget = nil
         benchmarkExcludedProviders = []
         maxLLMRetries = LLMConstants.defaultMaxLLMRetries
+        autoCompactEnabled = true
+        autoCompactBudgetPercent = AppDefaults.autoCompactBudgetPercent
         llmRequestTimeoutSeconds = LLMConstants.defaultLLMRequestTimeoutSeconds
         ollamaKeepAliveSeconds = LLMConstants.defaultOllamaKeepAliveSeconds
         visionEnabled = Self.defaultVisionEnabled

@@ -147,6 +147,7 @@ private enum TeamBoardPreviewData {
     @Previewable @State var dictation = DictationService()
     TeamBoardView(workFolder: nil as WorkFolderProjection?)
         .environment(store)
+        .environment(store.contextFill)
         .environment(engineState)
         .environment(config)
         .environment(streaming)
@@ -207,6 +208,7 @@ private enum TeamBoardPreviewData {
 
     TeamBoardView(workFolder: TeamBoardPreviewData.workFolder)
         .environment(store)
+        .environment(store.contextFill)
         .environment(engineState)
         .environment(config)
         .environment(streaming)
@@ -246,6 +248,7 @@ private enum TeamBoardPreviewData {
 
     TeamBoardView(workFolder: TeamBoardPreviewData.workFolder)
         .environment(store)
+        .environment(store.contextFill)
         .environment(engineState)
         .environment(config)
         .environment(streaming)
@@ -286,6 +289,7 @@ private enum TeamBoardPreviewData {
 
     TeamBoardView(workFolder: TeamBoardPreviewData.workFolder)
         .environment(store)
+        .environment(store.contextFill)
         .environment(engineState)
         .environment(config)
         .environment(streaming)
@@ -326,6 +330,7 @@ private enum TeamBoardPreviewData {
 
     TeamBoardView(workFolder: TeamBoardPreviewData.workFolder)
         .environment(store)
+        .environment(store.contextFill)
         .environment(engineState)
         .environment(config)
         .environment(streaming)
@@ -367,6 +372,7 @@ private enum TeamBoardPreviewData {
 
     TeamBoardView(workFolder: TeamBoardPreviewData.workFolder)
         .environment(store)
+        .environment(store.contextFill)
         .environment(engineState)
         .environment(config)
         .environment(streaming)
@@ -404,6 +410,7 @@ private enum TeamBoardPreviewData {
 
     TeamBoardView(workFolder: TeamBoardPreviewData.workFolder)
         .environment(store)
+        .environment(store.contextFill)
         .environment(engineState)
         .environment(config)
         .environment(streaming)
@@ -443,6 +450,7 @@ private enum TeamBoardPreviewData {
 
     TeamBoardView(workFolder: TeamBoardPreviewData.workFolder)
         .environment(store)
+        .environment(store.contextFill)
         .environment(engineState)
         .environment(config)
         .environment(streaming)
@@ -489,6 +497,7 @@ private enum TeamBoardPreviewData {
 
     TeamBoardView(workFolder: TeamBoardPreviewData.workFolder)
         .environment(store)
+        .environment(store.contextFill)
         .environment(engineState)
         .environment(config)
         .environment(streaming)
@@ -535,6 +544,7 @@ private enum TeamBoardPreviewData {
 
     TeamBoardView(workFolder: TeamBoardPreviewData.workFolder)
         .environment(store)
+        .environment(store.contextFill)
         .environment(engineState)
         .environment(config)
         .environment(streaming)
@@ -608,6 +618,7 @@ private enum TeamBoardPreviewData {
 
     TeamBoardView(workFolder: TeamBoardPreviewData.workFolder)
         .environment(store)
+        .environment(store.contextFill)
         .environment(engineState)
         .environment(config)
         .environment(streaming)
@@ -679,6 +690,7 @@ private enum TeamBoardPreviewData {
 
     TeamBoardView(workFolder: TeamBoardPreviewData.workFolder)
         .environment(store)
+        .environment(store.contextFill)
         .environment(engineState)
         .environment(config)
         .environment(streaming)
@@ -743,6 +755,7 @@ private enum TeamBoardPreviewData {
 
     TeamBoardView(workFolder: TeamBoardPreviewData.workFolder)
         .environment(store)
+        .environment(store.contextFill)
         .environment(engineState)
         .environment(config)
         .environment(streaming)
@@ -795,6 +808,7 @@ private enum TeamBoardPreviewData {
 
     TeamBoardView(workFolder: TeamBoardPreviewData.workFolder)
         .environment(store)
+        .environment(store.contextFill)
         .environment(engineState)
         .environment(config)
         .environment(streaming)
@@ -886,6 +900,7 @@ private enum TeamBoardPreviewData {
 
     TeamBoardView(workFolder: TeamBoardPreviewData.workFolder)
         .environment(store)
+        .environment(store.contextFill)
         .environment(engineState)
         .environment(config)
         .environment(streaming)
@@ -1028,6 +1043,7 @@ private enum TeamBoardPreviewData {
 
     TeamBoardView(workFolder: TeamBoardPreviewData.workFolder)
         .environment(store)
+        .environment(store.contextFill)
         .environment(engineState)
         .environment(config)
         .environment(streaming)
@@ -1076,6 +1092,7 @@ private enum TeamBoardPreviewData {
 
     TeamBoardView(workFolder: store.workFolder)
         .environment(store)
+        .environment(store.contextFill)
         .environment(engineState)
         .environment(config)
         .environment(streaming)

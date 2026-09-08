@@ -1,6 +1,11 @@
 import SwiftUI
 
-/// Network & error-handling card: request timeout + retry count.
+/// Network & error-handling card: request timeout, retry count, and what happens when a
+/// conversation outgrows the model's window.
+///
+/// Compaction lives here rather than in its own card because it is the third answer to the
+/// same question the other two rows answer — what the app does when a request cannot
+/// complete as sent.
 struct LLMErrorHandlingCard: View {
     @Bindable var config: StoreConfiguration
 
@@ -23,6 +28,23 @@ struct LLMErrorHandlingCard: View {
                     value: $config.maxLLMRetries,
                     range: 0...1000,
                     caption: "Retries re-issue the call on server errors. 0 = unlimited."
+                )
+
+                SettingsToggleRow(
+                    title: "Auto-Compact Context",
+                    icon: "arrow.down.right.and.arrow.up.left",
+                    isOn: $config.autoCompactEnabled
+                )
+
+                LLMStepperSettingsRow(
+                    title: "Compaction Budget (% of window)",
+                    value: $config.autoCompactBudgetPercent,
+                    range: AppDefaults.autoCompactBudgetPercentRange.lowerBound
+                        ... AppDefaults.autoCompactBudgetPercentRange.upperBound,
+                    step: 5,
+                    caption: "Summarises a role's conversation once it fills this share of "
+                        + "the model's window; system prompt, task brief and Supervisor turns "
+                        + "stay verbatim."
                 )
             }
         }

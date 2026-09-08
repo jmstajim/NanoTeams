@@ -357,6 +357,7 @@ struct MainLayoutView: View {
     @Previewable @State var store = PreviewStore.make()
     MainLayoutView()
         .environment(store)
+        .environment(store.contextFill)
         .environment(store.engineState)
         .environment(store.configuration)
         .environment(store.streamingPreviewManager)

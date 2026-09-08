@@ -807,4 +807,76 @@ final class StreamingPreviewManagerTests: XCTestCase {
         XCTAssertNil(manager.streamingThinking(stepID: stepID, taskID: 0))
         XCTAssertNil(manager.processingStatus[TaskStepKey(taskID: 0, stepID: stepID)])
     }
+    // MARK: - Compaction mark
+
+    func testMarkCompacting_setsAndClears() {
+        XCTAssertFalse(manager.isCompacting(stepID: "engineer", taskID: 0))
+        manager.markCompacting(stepID: "engineer", taskID: 0, true)
+        XCTAssertTrue(manager.isCompacting(stepID: "engineer", taskID: 0))
+        manager.markCompacting(stepID: "engineer", taskID: 0, false)
+        XCTAssertFalse(manager.isCompacting(stepID: "engineer", taskID: 0))
+        XCTAssertTrue(manager.compacting.isEmpty, "clearing must remove the key, not store false")
+    }
+
+    /// Keyed by `TaskStepKey`, like every other per-step registry: `StepExecution.id` is the
+    /// role id, so two tasks on one team share step ids (multi-task invariant #5).
+    func testMarkCompacting_isPerTask() {
+        manager.markCompacting(stepID: "engineer", taskID: 0, true)
+        XCTAssertFalse(manager.isCompacting(stepID: "engineer", taskID: 1))
+    }
+
+    /// A fresh ordinary stream must not inherit a stale epoch's mark.
+    func testBeginStreaming_clearsAStaleCompactingMark() {
+        manager.markCompacting(stepID: "engineer", taskID: 0, true)
+        manager.beginStreaming(
+            stepID: "engineer", taskID: 0, messageID: UUID(), role: .softwareEngineer)
+        XCTAssertFalse(manager.isCompacting(stepID: "engineer", taskID: 0))
+    }
+
+    /// …and an epoch's stream must be born WITH it. The reset above is why: a caller raising
+    /// the mark after `beginStreaming` races the feed's own poll, and the message is already
+    /// on screen by then (multi-task invariant #6), so the epoch's only row reads "Waiting…"
+    /// for that tick.
+    func testBeginStreaming_carriesTheCompactingFlag() {
+        manager.beginStreaming(
+            stepID: "engineer", taskID: 0, messageID: UUID(), role: .softwareEngineer,
+            isCompacting: true)
+        XCTAssertTrue(manager.isCompacting(stepID: "engineer", taskID: 0))
+        XCTAssertFalse(manager.isCompacting(stepID: "engineer", taskID: 1),
+                       "still per-task — the flag rides the key, not the step id")
+    }
+
+    /// The disclosure buffer is now a compaction epoch's ONLY visible output, so a previous
+    /// turn's reasoning surviving into it would show up inside the "Compacting" window as
+    /// text the epoch never wrote.
+    func testBeginStreaming_clearsAStaleThinkingPreview() {
+        manager.appendThinking(stepID: "engineer", taskID: 0, content: "old reasoning")
+        manager.beginStreaming(
+            stepID: "engineer", taskID: 0, messageID: UUID(), role: .softwareEngineer,
+            isCompacting: true)
+        XCTAssertNil(manager.streamingThinking(stepID: "engineer", taskID: 0))
+    }
+
+    func testCommitAndClear_dropTheCompactingMark() {
+        manager.markCompacting(stepID: "engineer", taskID: 0, true)
+        manager.commit(stepID: "engineer", taskID: 0)
+        XCTAssertFalse(manager.isCompacting(stepID: "engineer", taskID: 0))
+
+        manager.markCompacting(stepID: "engineer", taskID: 0, true)
+        manager.clear(stepID: "engineer", taskID: 0)
+        XCTAssertFalse(manager.isCompacting(stepID: "engineer", taskID: 0))
+
+        manager.markCompacting(stepID: "engineer", taskID: 0, true)
+        manager.clearAll()
+        XCTAssertTrue(manager.compacting.isEmpty)
+    }
+
+    /// `clear` early-returns when nothing is set. A mark alone must be enough to make it act,
+    /// or an epoch that ended with no preview would leave the flag on forever.
+    func testClear_actsWhenOnlyTheCompactingMarkIsSet() {
+        manager.markCompacting(stepID: "engineer", taskID: 0, true)
+        manager.clear(stepID: "engineer", taskID: 0)
+        XCTAssertFalse(manager.isCompacting(stepID: "engineer", taskID: 0))
+    }
+
 }

@@ -85,6 +85,9 @@ extension NTMSOrchestrator {
             for step in run.steps where rolesToReset.contains(step.effectiveRoleID) {
                 await llmExecutionService.cancelStepExecution(stepID: step.id, taskID: taskID)
                 clearStreamingPreview(stepID: step.id, taskID: taskID)
+                // `reset()` destroys the transcript the fill was measured against, so the
+                // indicator must not keep showing that conversation's occupancy.
+                contextFill.removeStep(stepID: step.id, taskID: taskID)
             }
         }
 

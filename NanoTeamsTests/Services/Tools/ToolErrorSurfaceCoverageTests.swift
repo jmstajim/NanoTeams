@@ -39,10 +39,18 @@ final class ToolErrorSurfaceCoverageTests: XCTestCase {
     /// runtime, never thrown, so their messages were dead copy nothing could ever send).
     ///
     /// RED: blank the arm's text → the content assertion fails.
+    /// The second assertion read `contains("Expected format")` until 2026-09-08, which pinned
+    /// the LITERAL that introduced a copyable example — `{"param": "value"}`, a key that exists
+    /// in no schema. A small model retries from the example rather than adapting it, and one
+    /// did (playbook R3.8.8). The property this was defending is that the message names the
+    /// required SHAPE, and it still does; the shape now points at the tool's own parameter
+    /// names instead of inventing one.
     func testToolRuntimeError_argumentsNotObjectNamesItsFailure() {
         let notObject = ToolRuntimeError.argumentsNotObject.errorDescription ?? ""
         XCTAssertTrue(notObject.contains("must be a JSON object"), "got: \(notObject)")
-        XCTAssertTrue(notObject.contains("Expected format"),
-                      "the corrective example is what a small model retries from; got: \(notObject)")
+        XCTAssertTrue(notObject.contains("parameter names"),
+                      "the message must still say what shape to send; got: \(notObject)")
+        XCTAssertFalse(notObject.contains("param\": \"value"),
+                       "a copyable placeholder key is what R3.8.8 forbids; got: \(notObject)")
     }
 }

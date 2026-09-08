@@ -67,6 +67,10 @@ struct ActivityDetailWindowView: View {
                 textBody(eyebrow: "Meeting Thinking", title: roleName, text: text)
             case .supervisorThinking(_, let roleName, let text):
                 textBody(eyebrow: "Thinking", title: roleName, text: text)
+            case .compaction(_, let roleName, let text):
+                // Verb, not noun: the live surfaces say "Compacting" while it happens; the
+                // durable feed row says "compaction" (`SystemNoticePresentation.kinds`).
+                textBody(eyebrow: "Compacting", title: roleName, text: text)
             case .toolCall(_, let toolName, let argumentsJSON, let resultJSON, let isError, let createdAt):
                 ToolCallDetailBody(
                     toolName: toolName,

@@ -158,7 +158,7 @@ final class LLMMessageSourceContextTests: XCTestCase {
     ///
     /// RED: delete any row from `displayLabelMap` → this fails naming the case.
     func testDisplayLabel_neverLeaksACamelCaseRawValue() {
-        XCTAssertGreaterThanOrEqual(MessageSourceContext.allCases.count, 15,
+        XCTAssertGreaterThanOrEqual(MessageSourceContext.allCases.count, 16,
                                     "anti-vacuity: a short allCases would check almost nothing")
         for context in MessageSourceContext.allCases {
             // `.serverError` is the one documented absence: the red bubble and the
@@ -882,7 +882,7 @@ final class LLMMessageSourceContextTests: XCTestCase {
     func testAppAuthoredTurns_areNotABoundary() {
         for context: MessageSourceContext in [
             .serverError, .loopCorrection, .retryNudge,
-            .toolAcknowledgement, .runtimeWarning, .screenDescription,
+            .toolAcknowledgement, .runtimeWarning, .screenDescription, .compaction,
         ] {
             XCTAssertFalse(
                 context.carriesUnsolicitedInformation,
@@ -946,7 +946,8 @@ final class LLMMessageSourceContextTests: XCTestCase {
         case .supervisorFeedback: return .unqueuedHumanTurn
         case .delegatedQuestion, .delegationEscalation: return .delegationChatter
         case .serverError, .loopCorrection, .retryNudge,
-             .toolAcknowledgement, .runtimeWarning, .screenDescription: return .appAuthored
+             .toolAcknowledgement, .runtimeWarning, .screenDescription,
+             .compaction: return .appAuthored
         }
     }
 
@@ -957,7 +958,7 @@ final class LLMMessageSourceContextTests: XCTestCase {
     /// already forces the author of a new case through `bucket`, so a literal list here would
     /// add a second place to forget and no coverage.
     func testBucketing_agreesWithThePredicate() {
-        XCTAssertGreaterThanOrEqual(MessageSourceContext.allCases.count, 15,
+        XCTAssertGreaterThanOrEqual(MessageSourceContext.allCases.count, 16,
                                     "anti-vacuity: a short allCases would check almost nothing")
         for context in MessageSourceContext.allCases {
             XCTAssertEqual(

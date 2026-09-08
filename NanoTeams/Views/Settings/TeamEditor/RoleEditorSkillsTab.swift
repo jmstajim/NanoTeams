@@ -157,11 +157,11 @@ nonisolated enum RoleEditorSkillsPolicy {
         }
     }
 
-    /// `~4.2k` / `~840` — deliberately coarse, matching the estimator's honesty.
+    /// `~4.2k tokens` / `~840 tokens` — deliberately coarse, matching the estimator's
+    /// honesty. The number itself comes from `TokenCountFormat`, shared with the
+    /// prefix-cache report and the composer's context-fill indicator.
     static func formatTokens(_ tokens: Int) -> String {
-        tokens >= 1000
-            ? "~\(String(format: "%.1f", Double(tokens) / 1000))k tokens"
-            : "~\(tokens) tokens"
+        "\(TokenCountFormat.approximate(tokens)) tokens"
     }
 }
 

@@ -320,42 +320,62 @@ struct TeamActivityComposer: View {
             ? selectedFill
             : (isHovered ? Colors.surfaceHover : Colors.surfaceElevated)
 
-        return Button {
-            withAnimation(Animations.quick) {
-                selectedRecipient = option.recipient
+        // Two sibling buttons in one pill: the name selects the recipient, the fill bar
+        // compacts that role's conversation. Not nested buttons — a `Button` inside a
+        // `Button`'s label has no defined hit resolution on macOS.
+        return HStack(spacing: 0) {
+            Button {
+                withAnimation(Animations.quick) {
+                    selectedRecipient = option.recipient
+                }
+            } label: {
+                HStack(spacing: Spacing.xxs) {
+                    Image(systemName: option.icon)
+                        .font(Typography.caption2.weight(.semibold))
+                    Text(option.label)
+                        .font(Typography.termXs.weight(.semibold))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(isSelected ? Colors.textOnAccent : Colors.textPrimary)
+                .padding(.horizontal, Spacing.s - 2)
+                .padding(.vertical, Spacing.xs)
+                // The chip's fill used to live here and was what made the whole pill
+                // clickable; it now spans both zones, so this zone needs a shape of its own
+                // or the selection target collapses to the icon-and-text box (CLAUDE.md #12).
+                // `IconButtonHitAreaPinTests` does not cover a composite label, so this is
+                // held by the shape, not by a pin.
+                .contentShape(Rectangle())
             }
-        } label: {
-            HStack(spacing: Spacing.xxs) {
-                Image(systemName: option.icon)
-                    .font(Typography.caption2.weight(.semibold))
-                Text(option.label)
-                    .font(Typography.termXs.weight(.semibold))
-                    .lineLimit(1)
-            }
-            .foregroundStyle(isSelected ? Colors.textOnAccent : Colors.textPrimary)
-            .padding(.horizontal, Spacing.s - 2)
-            .padding(.vertical, Spacing.xs)
-            .background(
-                RoundedRectangle.squircle(CornerRadius.small)
-                    .fill(chipFill)
-            )
-            .overlay(
-                RoundedRectangle.squircle(CornerRadius.small)
-                    .strokeBorder(
-                        isSelected ? Color.clear : Colors.borderSubtle,
-                        lineWidth: 0.5
-                    )
-            )
-            .scaleEffect(isHovered && !isSelected ? 1.02 : 1.0)
+            .buttonStyle(.plain)
+            .accessibilityLabel(option.label)
+            .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+
+            // Inside the pill, right of the name: the fill belongs to the conversation this
+            // chip addresses. Its own leaf view, so the fill's once-per-request change does
+            // not re-evaluate this row.
+            ContextFillIndicator(
+                taskID: taskID,
+                roleID: Self.roleID(for: option.recipient),
+                roleName: option.label,
+                isOnAccent: isSelected)
         }
-        .buttonStyle(.plain)
+        // ONE fill for the whole pill, both zones. The bar draws no ground of its own — it
+        // adapts its ink to this one instead (`ContextFillIndicator.isOnAccent`).
+        .background(chipFill)
+        .clipShape(RoundedRectangle.squircle(CornerRadius.small))
+        .overlay(
+            RoundedRectangle.squircle(CornerRadius.small)
+                .strokeBorder(
+                    isSelected ? Color.clear : Colors.borderSubtle,
+                    lineWidth: 0.5
+                )
+        )
+        .scaleEffect(isHovered && !isSelected ? 1.02 : 1.0)
         .onHover { hovering in
             hoveredChipRecipient = hovering ? option.recipient : nil
         }
         .animationWithReduceMotion(Animations.quick, value: isSelected)
         .animationWithReduceMotion(Animations.quick, value: isHovered)
-        .accessibilityLabel(option.label)
-        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 
     private func questionPreviewCard(_ q: TeamActivityActiveQuestion) -> some View {

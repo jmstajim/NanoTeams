@@ -38,6 +38,16 @@ nonisolated enum ActivityDetailWindow: Hashable, Codable {
     /// can host several historical Q&A pairs, each with its own toolCallID).
     case supervisorThinking(id: UUID, roleName: String, text: String)
 
+    /// A context-compaction epoch's live disclosure: the model's reasoning AND the summary it
+    /// wrote, joined in arrival order — the epoch's whole visible output, since it prints no
+    /// prose. `id` = the epoch's streaming `LLMMessage.id`, the same id space as `.thinking`,
+    /// which is what the per-case `dedupKey` prefix is for.
+    ///
+    /// Its own case rather than `.thinking` with a different eyebrow, because the eyebrow is
+    /// the point: this text is the model reading its own transcript in order to replace it,
+    /// not deliberating about the task.
+    case compaction(id: UUID, roleName: String, text: String)
+
     /// Tool call arguments + result, full untruncated.
     case toolCall(
         id: UUID,
@@ -79,6 +89,7 @@ nonisolated enum ActivityDetailWindow: Hashable, Codable {
         case .thinking(let id, _, _):           return "thinking:\(id)"
         case .meetingThinking(let id, _, _):    return "meeting-thinking:\(id)"
         case .supervisorThinking(let id, _, _): return "supervisor-thinking:\(id)"
+        case .compaction(let id, _, _):         return "compaction:\(id)"
         case .toolCall(let id, _, _, _, _, _):  return "tool:\(id)"
         case .artifact(let taskID, let name, _, let relativePath, let createdAt):
             // `relativePath` (not `name`) is the source of truth for artifact

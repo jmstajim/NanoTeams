@@ -8,7 +8,14 @@ extension LLMExecutionService {
     // MARK: - Step Execution State
 
     /// Per-step execution context. Consolidates all ephemeral per-step state into one struct,
-    /// eliminating the need for 7 parallel dictionaries. Entry exists iff step is executing.
+    /// eliminating the need for 7 parallel dictionaries.
+    ///
+    /// **Entry exists iff the step is executing OR compacting.** The second half arrived with
+    /// out-of-loop compaction and is not a widening of the first: `setNeedsSupervisorInput`
+    /// already leaves the entry in place with `runningTask == nil` when a step parks, so
+    /// "is there an entry" has never answered "is it running". The predicate for that is
+    /// `isStepRunning` (`runningTask != nil`), and a compaction of a parked step borrows the
+    /// SAME slot — which is what makes every existing re-entry door cancel it for free.
     struct StepExecutionState {
         var runningTask: Task<Void, Never>?
         /// The (base, model) residency key this step resolved its effective
@@ -243,6 +250,71 @@ extension LLMExecutionService {
         /// re-capture instead of probing stale coordinates.
         var computerUseActionsSinceCapture: Int = 0
 
+        // MARK: Context compaction
+
+        /// A compaction epoch this step owes, set by a trigger and consumed at the top of the
+        /// next tool iteration.
+        ///
+        /// A one-shot FLAG rather than a condition re-derived per iteration, because deriving
+        /// it means walking the wire and `ToolLoopIterationScanWorkTests` counts exactly that
+        /// walk: the trigger already holds the server count it needs, so the loop pays O(1).
+        var compactRequested: CompactionPolicy.CompactionReason?
+
+        /// The last fill measured for this step — mirrored into `step.contextFill` by
+        /// `persistTokenUsage`, so a suspended step still has a number to show.
+        var lastContextFill: ContextFill?
+
+        /// Whether this epoch has already spent its one post-response window re-probe.
+        ///
+        /// A probe is normally taken before the first request, when Ollama's `/api/ps` is
+        /// silent about a model it has not loaded and LM Studio reports the model's NOMINAL
+        /// `max_context_length` rather than the `loaded_context_length` that actually bounds
+        /// the request. Both answer honestly once the model is warm — i.e. right after the
+        /// first response — so one re-probe per epoch converts "window unknown, cannot judge"
+        /// into a real budget. Bounded to one because the answer does not change again inside
+        /// an epoch, and cleared by `resetConversationScopedState` because the next epoch may
+        /// run against a different loaded model.
+        var windowReprobeSpent: Bool = false
+
+        /// Terminal latch: no further AUTOMATIC epoch will run for this step.
+        ///
+        /// Set when an epoch fails to buy anything — the first server count after it is still
+        /// past the budget, or within `PrefixCachePolicy.materialTokenThreshold` of what it
+        /// was before. Without it the pair (compact → still too big → compact) is an infinite
+        /// ping-pong that burns one LLM call per iteration and discards the conversation each
+        /// time; the same "a branch that runs once must be terminal" lesson the loop
+        /// recovery paths learned.
+        ///
+        /// **Deliberately survives `resetConversationScopedState`**, unlike every other latch
+        /// there: that function runs AT an epoch, so clearing it would clear the very fact the
+        /// epoch just established. It dies with the step, in `cleanup()`. A manual click
+        /// ignores it — a human asking twice knows the first one did not help.
+        var autoCompactExhausted: Bool = false
+
+        /// The server's prompt count as it stood just before the last epoch, for the
+        /// "did that buy anything" comparison above. Survives the reset for the same reason.
+        var lastCompactionServerPromptTokens: Int?
+
+        /// Epochs run for the current RESPONSE's overflow refusal. Bounds the
+        /// refusal→compact→retry arc to one attempt per response: a second refusal means the
+        /// head alone does not fit, which no epoch can fix, so it takes the ordinary
+        /// permanent-failure path. Zeroed beside `llmErrorCount` on a successful response.
+        var overflowCompactionsSinceLastResponse: Int = 0
+
+        /// Epochs run since this step entered. Rides into `ContextFill.compactions` for the
+        /// indicator's tooltip.
+        var compactionsThisEntry: Int = 0
+
+        /// Identity of the in-flight OUT-OF-LOOP compaction, if any.
+        ///
+        /// The gate that `performStreamingCall` gets from `isExecutionLive` — "am I still the
+        /// execution that started this" — is unavailable here, because a parked step's entry
+        /// is live by that test whether or not this compaction still owns it. The token
+        /// answers the real question: re-entry replaces the whole entry
+        /// (`startStepExecution`), so a mismatch means this compaction was superseded and
+        /// must not write.
+        var compactionEpochToken: UUID?
+
         /// In-flight detached tool-batch task spawned by `executeToolCalls`.
         /// Stored so cancellation reaches the synchronous handler chain
         /// (`ToolRuntime.executeAll` observes `Task.isCancelled` between calls;
@@ -291,6 +363,27 @@ extension LLMExecutionService {
             probedVisionKeys = []
             // The ring described the replaced array; the caller re-seeds from the new one.
             recentNoToolAssistantContents = []
+            // A pending verdict is ABOUT a conversation, and this is the event that replaces
+            // it — the same sentence `lastServerPromptTokens` is here for. Carried across the
+            // planning boundary it is consumed at the top of the very NEXT iteration (the
+            // boundary is what clears `wireIsMidPlanning`, the gate it was waiting on) against
+            // a wire that is nothing but its pinned head. `CompactionPolicy.plan` returns nil
+            // there, and `compactConversationInLoop` reads that as "the head alone is the
+            // problem" and latches `autoCompactExhausted` — silently — for the rest of the
+            // step. Startup is where it bit: one role, Software Engineer, whose template ships
+            // the planning phase ON, so crossing the budget while reading the work folder is
+            // the normal case, and it turned auto-compaction off the moment planning ended.
+            //
+            // A no-op at an epoch, the function's other caller: `compactConversationInLoop`
+            // clears the flag before it starts.
+            compactRequested = nil
+            // A fresh epoch may run against a differently-loaded model, and the answer that
+            // was unobtainable while it was cold is obtainable now.
+            windowReprobeSpent = false
+            // `autoCompactExhausted` and `lastCompactionServerPromptTokens` are deliberately
+            // NOT here: this function runs AT an epoch, and both fields record what that epoch
+            // established. Clearing them would let the next iteration re-run the epoch that
+            // just failed to buy anything. They die in `cleanup()`.
         }
 
         /// Cancels the running task and resets all fields to defaults.
@@ -308,6 +401,13 @@ extension LLMExecutionService {
             consecutiveNonProductiveTurns = 0
             consecutiveHarmonyParseFailureCount = 0
             consecutiveReasoningEnvelopeCount = 0
+            compactRequested = nil
+            lastContextFill = nil
+            autoCompactExhausted = false
+            lastCompactionServerPromptTokens = nil
+            overflowCompactionsSinceLastResponse = 0
+            compactionsThisEntry = 0
+            compactionEpochToken = nil
             lastComputerUseCapture = nil
             lastComputerUseElements = []
             computerUseActionsSinceCapture = 0

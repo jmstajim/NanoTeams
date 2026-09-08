@@ -60,7 +60,7 @@ extension LLMExecutionService {
         roleDefinition: TeamRoleDefinition?,
         allowedToolNames: Set<String>,
         wireIsMidPlanning: Bool,
-        runtime: ToolRuntime? = nil,
+        runtime: ToolRuntime?,
         conversationMessages: inout [ChatMessage]
     ) async -> LLMStepStop {
         // The one bound that doesn't care HOW the model failed. Every cap below it is
@@ -124,13 +124,8 @@ extension LLMExecutionService {
                 if newCount >= 2 {
                     // Reset so a post-supervisor restart starts clean.
                     executionStates[stepKey]?.consecutiveReasoningEnvelopeCount = 0
-                    let question = """
-                    Role \(roleForMessage.displayName) wrote its tool call inside its reasoning \
-                    on two consecutive turns. Nothing dispatches from there, so both turns did \
-                    nothing — the model is not moving the call into its reply on its own. Advise \
-                    how to proceed (give an explicit next step, restart the role with a \
-                    different model, or mark the step failed).
-                    """
+                    let question = Self.reasoningEnvelopeEscalationQuestion(
+                        roleName: roleForMessage.displayName)
                     let escalated = await setNeedsSupervisorInput(
                         stepID: stepID, taskID: task.id, question: question)
                     // Same fallback as the drift and malformed-JSON caps: transitioning to
@@ -142,21 +137,8 @@ extension LLMExecutionService {
                     return .needsSupervisorInput(question: question)
                 }
             }
-            let named = reasoningCallNames.filter(allowedToolNames.contains)
-            let wrote = named.isEmpty
-                ? ""
-                : " You wrote a call to \(named.map { "`\($0)`" }.joined(separator: ", ")) there."
-            let example = Self.toolNameExample(allowedToolNames: allowedToolNames) ?? "TOOL_NAME"
-            // Anchored on the STATE, not on "your previous turn": the reasoning channel is
-            // stripped from the history the model is resent, so a nudge that opens by naming
-            // what the model wrote there points at a turn it cannot see. What it CAN verify is
-            // that nothing ran.
-            let nudge = """
-            This step received no callable output — the tool call was written inside your \
-            reasoning, where nothing can run it.\(wrote) Write the call in your reply instead \
-            of your reasoning, as a single envelope on its own line:
-            `<|call|>{"name":"\(example)","arguments":{"param":"value"}}<|end|>`
-            """
+            let nudge = NoToolTurnNudges.reasoningChannel(
+                namedCalls: reasoningCallNames, allowedToolNames: allowedToolNames)
             conversationMessages.append(ChatMessage(role: .user, content: nudge))
             await appendLLMMessage(
                 stepID: stepID, taskID: task.id, role: .user, content: nudge,
@@ -182,13 +164,9 @@ extension LLMExecutionService {
             if newCount >= 2 {
                 // Reset so a post-supervisor restart starts clean.
                 executionStates[stepKey]?.consecutiveDriftTurnCount = 0
-                let question = """
-                Role \(roleForMessage.displayName) produced two consecutive long reasoning \
-                responses (~\(thinkingTrimmedLen / 1000)k characters of internal thinking \
-                last turn) without calling any tool. The model is reasoning instead of acting \
-                — advise how to proceed (clarify the task, give an explicit next step, \
-                or mark the step failed).
-                """
+                let question = Self.driftEscalationQuestion(
+                    roleName: roleForMessage.displayName,
+                    thousandsOfCharacters: thinkingTrimmedLen / 1000)
                 let escalated = await setNeedsSupervisorInput(
                     stepID: stepID, taskID: task.id, question: question)
                 // If persistence failed, surface a real failure instead of transitioning to
@@ -199,13 +177,8 @@ extension LLMExecutionService {
                 }
                 return .needsSupervisorInput(question: question)
             }
-            // Same re-anchor as the reasoning-channel nudge above: the reasoning it measures
-            // is not in the history the model is resent.
-            let nudge = """
-            This step received ~\(thinkingTrimmedLen / 1000)k characters of internal reasoning \
-            and no tool call — reasoning alone cannot read files, write files, or submit \
-            artifacts. Take one concrete action now: call the tool that advances your next step.
-            """
+            let nudge = NoToolTurnNudges.thinkingDrift(
+                thousandsOfCharacters: thinkingTrimmedLen / 1000)
             conversationMessages.append(ChatMessage(role: .user, content: nudge))
             await appendLLMMessage(
                 stepID: stepID, taskID: task.id, role: .user, content: nudge,
@@ -249,11 +222,8 @@ extension LLMExecutionService {
                 //
                 // The human loses nothing: every refusal is already a card in the step's feed,
                 // which is where the Supervisor reads it.
-                let question = """
-                Role \(roleForMessage.displayName) emitted \(count) consecutive refusal messages without \
-                calling any tools. The model appears stuck — advise how to proceed (answer the \
-                underlying need, provide explicit instructions, or mark the step failed).
-                """
+                let question = Self.refusalLoopEscalationQuestion(
+                    roleName: roleForMessage.displayName, count: count)
                 let escalated = await setNeedsSupervisorInput(
                     stepID: stepID, taskID: task.id, question: question)
                 guard escalated else {
@@ -308,25 +278,26 @@ extension LLMExecutionService {
                 runtime: runtime)
             let retryMessage: String?
             switch issue {
-            case .missingToolName(let inferredToolName):
+            case .missingToolName:
                 // `.missingToolName` is a different recoverable defect — the inferred-name
                 // nudge below usually self-corrects on the next attempt. Reset the
                 // malformed-JSON counter so a previous .malformedJSON streak doesn't
                 // pre-trigger escalation on the very next .malformedJSON turn after
                 // the model recovered to a parseable-but-name-missing shape.
                 executionStates[stepKey]?.consecutiveHarmonyParseFailureCount = 0
-                let example = inferredToolName ?? "TOOL_NAME"
-                // Examples filtered to the role's schema — an illustration naming a
-                // tool it doesn't have teaches a vocabulary the runtime rejects.
-                let examples = Self.toolNameExamples(allowedToolNames: allowedToolNames)
-                    .map { " (e.g. \($0))" } ?? ""
-                retryMessage = """
-                Your tool call JSON parsed, but it is missing the top-level `name` field. \
-                The top-level `name` identifies the tool to call\(examples); the `name` \
-                inside `arguments` is a tool *parameter*, not the tool id. Retry, keeping \
-                your original arguments object:
-                `<|call|>{"name":"\(example)","arguments":{"param":"value"}}<|end|>`
-                """
+                retryMessage = NoToolTurnNudges.missingToolName(
+                    allowedToolNames: allowedToolNames)
+            case .toolNameInsideArguments:
+                // Same class as `.missingToolName` — a shape defect the model corrects on
+                // the next attempt — so the malformed-JSON counter resets rather than
+                // advancing toward an escalation about broken braces.
+                //
+                // The id it wrote is deliberately NOT echoed: it names no registered tool,
+                // and a nudge that repeats it teaches a vocabulary the runtime rejects
+                // (R3.8.3). The card carries it for the human.
+                executionStates[stepKey]?.consecutiveHarmonyParseFailureCount = 0
+                retryMessage = NoToolTurnNudges.toolNameInsideArguments(
+                    allowedToolNames: allowedToolNames)
             case .malformedJSON:
                 // Cap consecutive malformed-JSON retries — some models reproduce the
                 // same broken envelope every iteration (e.g. unescaped `"` inside HTML
@@ -352,14 +323,8 @@ extension LLMExecutionService {
                         // was opened and its payload really is broken JSON. Before the
                         // split it also fired for envelopes containing no JSON at all,
                         // misdiagnosing the fault to the HUMAN reading this question.
-                        let question = """
-                        Role \(roleForMessage.displayName) produced 3 consecutive malformed \
-                        tool-call JSON envelopes (often an unescaped `"` inside a string literal — \
-                        a common defect when models emit HTML/JS content inside `create_artifact`). \
-                        The model cannot self-correct from generic retry hints. Restart the role \
-                        with a different model, simplify the brief to avoid embedded markup, or \
-                        mark the step failed and re-plan.
-                        """
+                        let question = Self.malformedJSONEscalationQuestion(
+                            roleName: roleForMessage.displayName)
                         let escalated = await setNeedsSupervisorInput(
                             stepID: stepID, taskID: task.id, question: question)
                         // Critical fallback: if persistence fails the engine would otherwise
@@ -383,12 +348,8 @@ extension LLMExecutionService {
                 // shipping the literal `TOOL_NAME`, so the model was asked to fix a call
                 // without being shown a single valid id — and, before the anchor now
                 // carries the raw buffer, without being shown its own attempt either.
-                let example = Self.toolNameExample(allowedToolNames: allowedToolNames)
-                    ?? "TOOL_NAME"
-                // Anchored to this note's own position, never to the reader's present: the
-                // note is never retired, and "your previous turn" is false the moment one more
-                // turn follows it (playbook R3.8.4; same rule as `LoopRecoveryPolicy.nudgePrefix`).
-                retryMessage = "The tool call in the turn immediately before this note had malformed JSON and could not be parsed (\(defect)). That attempt is quoted verbatim in that turn — compare it against this shape: `<|call|>{\"name\":\"\(example)\",\"arguments\":{\"param\":\"value\"}}<|end|>` — note the two closing braces before `<|end|>`."
+                retryMessage = NoToolTurnNudges.malformedJSON(
+                    defect: defect, allowedToolNames: allowedToolNames)
             case .noCallEnvelope:
                 // Framing without a call: a `<|channel|>` / `<|start|>` envelope whose
                 // recipient is missing or reserved, or whose body is prose. Deliberately
@@ -397,15 +358,8 @@ extension LLMExecutionService {
                 // reaches for the channel form and may never emit `<|call|>` in a whole
                 // pass, so a nudge teaching only the canonical form describes a syntax the
                 // model isn't using while saying nothing about the one it is.
-                let example = Self.toolNameExample(allowedToolNames: allowedToolNames)
-                    ?? "TOOL_NAME"
-                retryMessage = """
-                The turn immediately before this note opened a Harmony channel but never made a tool call — \
-                there was no recipient and no JSON body to dispatch. Name the tool and give it \
-                arguments, either as \
-                `<|channel|>commentary to=\(example)<|message|>{"param":"value"}` or as \
-                `<|call|>{"name":"\(example)","arguments":{"param":"value"}}<|end|>`.
-                """
+                retryMessage = NoToolTurnNudges.noCallEnvelope(
+                    allowedToolNames: allowedToolNames)
             case .noEnvelopeAttempt:
                 // Inlined role turn (`<|start|>userhello<|end|>` and similar) —
                 // the model didn't try to call a tool, just emitted a role
@@ -443,7 +397,7 @@ extension LLMExecutionService {
             // The turn this describes reaches the model EMPTY — that is the branch condition
             // (`cleanedContent.isEmpty`) — so "your previous response" names nothing it can
             // look at. The state is the anchor.
-            let retryMessage = "This step received no usable content: the last reply was only model-internal tokens (<|...|>). Emit a tool call or a completion message."
+            let retryMessage = NoToolTurnNudges.tokensOnly()
             conversationMessages.append(
                 ChatMessage(role: .user, content: retryMessage)
             )
@@ -492,14 +446,8 @@ extension LLMExecutionService {
                 // from the phase's narrowed schema, as the `.malformedJSON` arm resolves —
                 // this arm shipped the literal `TOOL_NAME` until 2026-09-06, in the one
                 // phase where the model most needs to be shown which ids survive.
-                let example = Self.toolNameExample(allowedToolNames: allowedToolNames) ?? "TOOL_NAME"
-                let nudge = """
-                The turn immediately before this note looked like a tool call but did not \
-                parse as one, so nothing ran and nothing was recorded. Emit it as a single \
-                envelope on its own line:
-                `<|call|>{"name":"\(example)","arguments":{"param":"value"}}<|end|>`
-                Nothing before the `<|call|>` and nothing after the `<|end|>`.
-                """
+                let nudge = NoToolTurnNudges.planningSalvage(
+                    allowedToolNames: allowedToolNames)
                 conversationMessages.append(ChatMessage(role: .user, content: nudge))
                 await appendLLMMessage(
                     stepID: stepID, taskID: task.id, role: .user, content: nudge,
@@ -517,7 +465,7 @@ extension LLMExecutionService {
                     }
                 }
             }
-            let nudge = "Plan recorded from your text response. The implementation phase starts on your next turn with your full toolset."
+            let nudge = NoToolTurnNudges.planRecorded()
             conversationMessages.append(ChatMessage(role: .user, content: nudge))
             await appendLLMMessage(
                 stepID: stepID, taskID: task.id, role: .user, content: nudge,
@@ -575,14 +523,8 @@ extension LLMExecutionService {
                 executionStates[stepKey]?.consecutiveHarmonyParseFailureCount = newCount
                 if newCount >= 3 {
                     executionStates[stepKey]?.consecutiveHarmonyParseFailureCount = 0
-                    let question = """
-                    Role \(roleForMessage.displayName) produced 3 consecutive tool calls whose \
-                    opening sentinel the parser could not recognise — the model writes \
-                    `\(nearMissSentinel)` where the format is `<|call|>`. On an append-only wire \
-                    it is copying its own broken form back from the conversation, so a nudge \
-                    cannot reach it. Restart the role with a different model, or mark the step \
-                    failed and re-plan.
-                    """
+                    let question = Self.unrecognisedSentinelEscalationQuestion(
+                        roleName: roleForMessage.displayName, sentinel: nearMissSentinel)
                     let escalated = await setNeedsSupervisorInput(
                         stepID: stepID, taskID: task.id, question: question)
                     // Same critical fallback as every other cap: a transition to "needs
@@ -594,18 +536,12 @@ extension LLMExecutionService {
                 }
             }
 
-            let example = Self.toolNameExample(allowedToolNames: allowedToolNames) ?? "TOOL_NAME"
             // Anchored to the note's own position, and it names the form by OUR literal
             // rather than quoting the model's bytes: a nudge is never retired, so a quoted
             // attempt rides the prefix of every later request and re-seeds the loop it was
             // meant to break (R3.8.3, R3.8.4).
-            let nudge = """
-            The turn immediately before this note opened a tool call with `\(nearMissSentinel)`, \
-            which is not the call sentinel — so nothing ran and nothing was recorded. The \
-            sentinel is `<|call|>`, closing `>` included, with the payload's `{` next:
-            `<|call|>{"name":"\(example)","arguments":{"param":"value"}}<|end|>`
-            Nothing before the `<|call|>` and nothing after the `<|end|>`.
-            """
+            let nudge = NoToolTurnNudges.unrecognisedSentinel(
+                sentinel: nearMissSentinel, allowedToolNames: allowedToolNames)
             conversationMessages.append(ChatMessage(role: .user, content: nudge))
             await appendLLMMessage(
                 stepID: stepID, taskID: task.id, role: .user, content: nudge,
@@ -623,7 +559,7 @@ extension LLMExecutionService {
                 }
 
                 if isStepInRevision(stepID: stepID, taskID: task.id) {
-                    let retryMessage = "Address the supervisor's feedback and submit updated artifacts via create_artifact."
+                    let retryMessage = NoToolTurnNudges.revisionArtifacts(allowedToolNames: allowedToolNames)
                     conversationMessages.append(ChatMessage(role: .user, content: retryMessage))
                     await appendLLMMessage(
                         stepID: stepID, taskID: task.id, role: .user, content: retryMessage,
@@ -692,7 +628,13 @@ extension LLMExecutionService {
         runID: Int,
         issue: ToolCallParsingHelpers.HarmonyCallIssue,
         envelope: String,
-        runtime: ToolRuntime? = nil
+        // No default, deliberately. The production caller holds a non-optional `ToolRuntime`
+        // (`+ToolIteration`), so `= nil` served only the DEBUG test helper — and turned a
+        // convenience into a silent parity break: `if let runtime` below writes the feed card
+        // and drops BOTH per-run audit rows, so a future caller that forgot the argument
+        // would ship a run whose logs disagree with its own feed. Same class as rule #199;
+        // now the compiler carries the claim a comment used to.
+        runtime: ToolRuntime?
     ) async {
         let name: String
         let code: String
@@ -702,6 +644,16 @@ extension LLMExecutionService {
             name = inferred ?? "unknown_tool"
             code = "MISSING_TOOL_NAME"
             message = "Tool-call JSON parsed but had no top-level `name` field; not dispatched."
+        case .toolNameInsideArguments(let nested):
+            // Named after what the model actually wrote, not `unknown_tool`: the card is the
+            // human's record of what the parser saw, and "unknown" was false — the id was
+            // right there, one level too deep. The CODE stays `MISSING_TOOL_NAME` so the
+            // `jq` audits in `.claude/skills/train-app` keep matching; the message is what
+            // separates the two cases.
+            name = nested
+            code = "MISSING_TOOL_NAME"
+            message = "Tool-call JSON put the tool id inside `arguments` (`\(nested)`), "
+                + "and no tool of that name is registered; not dispatched."
         case .malformedJSON:
             // Only surface when an actual call block was attempted — a channel-only or
             // token-only buffer is a formatting hiccup, not a tool-call attempt.
@@ -781,11 +733,10 @@ extension LLMExecutionService {
         // truncation read as the model's defect during diagnosis when the model's actual
         // `old_text` was complete. The walker remains the fallback for a buffer with no
         // end marker (a cut-off stream), where no better boundary exists.
-        if let endRange = tail.range(
-            of: CallMarkerStrategy.endMarker, range: start..<tail.endIndex)
+        if let (body, _) = ToolCallParsingHelpers.endMarkerBoundedBody(
+            in: tail, from: start, endMarker: CallMarkerStrategy.endMarker)
         {
-            return String(tail[start..<endRange.lowerBound])
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return body.trimmingCharacters(in: .whitespacesAndNewlines)
         }
         return ToolCallParsingHelpers.extractJSONBracedValue(in: tail, from: start)?.0
     }
@@ -946,6 +897,74 @@ extension LLMExecutionService {
     /// it for every downstream role. So it names the observable fact and the capability to
     /// change, never the Settings pane: truthful for the human, actionable-shaped for the
     /// model. Deliberately NOT `AutovisorConstants.idleParkQuestion` — see the call site.
+    /// runtime-prompt — the five cap escalations `handleNoToolCalls` raises.
+    ///
+    /// Addressed to the Supervisor, which under `SupervisorMode.autonomous` is an LLM
+    /// (`SupervisorAutoAnswerService`) and whose answer is replayed into the role's own next
+    /// request — so these are model-facing text too, and `Ratchet/NudgeTextPinTests` reads
+    /// them for politeness tokens and reader's-present anchoring.
+    nonisolated static func reasoningEnvelopeEscalationQuestion(roleName: String) -> String {
+        """
+        Role \(roleName) wrote its tool call inside its reasoning \
+        on two consecutive turns. Nothing dispatches from there, so both turns did \
+        nothing — the model is not moving the call into its reply on its own. Advise \
+        how to proceed (give an explicit next step, restart the role with a \
+        different model, or mark the step failed).
+        """
+    }
+
+    /// runtime-prompt
+    nonisolated static func driftEscalationQuestion(
+        roleName: String, thousandsOfCharacters: Int
+    ) -> String {
+        """
+        Role \(roleName) produced two consecutive long reasoning \
+        responses (~\(thousandsOfCharacters)k characters of internal thinking \
+        last turn) without calling any tool. The model is reasoning instead of acting \
+        — advise how to proceed (clarify the task, give an explicit next step, \
+        or mark the step failed).
+        """
+    }
+
+    /// runtime-prompt
+    nonisolated static func refusalLoopEscalationQuestion(roleName: String, count: Int) -> String {
+        """
+        Role \(roleName) emitted \(count) consecutive refusal messages without \
+        calling any tools. The model appears stuck — advise how to proceed (answer the \
+        underlying need, provide explicit instructions, or mark the step failed).
+        """
+    }
+
+    /// runtime-prompt
+    nonisolated static func malformedJSONEscalationQuestion(roleName: String) -> String {
+        // The example defect is safe to name now that `.noCallEnvelope` is its own case: the
+        // arm that raises this fires only when a `<|call|>` block really was opened and its
+        // payload really is broken JSON. Before the split it also fired for envelopes
+        // containing no JSON at all, misdiagnosing the fault to the HUMAN reading this.
+        """
+        Role \(roleName) produced 3 consecutive malformed \
+        tool-call JSON envelopes (often an unescaped `"` inside a string literal — \
+        a common defect when models emit HTML/JS content inside `create_artifact`). \
+        The model cannot self-correct from generic retry hints. Restart the role \
+        with a different model, simplify the brief to avoid embedded markup, or \
+        mark the step failed and re-plan.
+        """
+    }
+
+    /// runtime-prompt
+    nonisolated static func unrecognisedSentinelEscalationQuestion(
+        roleName: String, sentinel: String
+    ) -> String {
+        """
+        Role \(roleName) produced 3 consecutive tool calls whose \
+        opening sentinel the parser could not recognise — the model writes \
+        `\(sentinel)` where the format is `<|call|>`. On an append-only wire \
+        it is copying its own broken form back from the conversation, so a nudge \
+        cannot reach it. Restart the role with a different model, or mark the step \
+        failed and re-plan.
+        """
+    }
+
     nonisolated static func noToolParkQuestion(turns: Int) -> String {
         """
         The Autovisor produced \(turns) consecutive turns without calling any tool, so this review pass \

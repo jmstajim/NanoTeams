@@ -127,6 +127,7 @@ struct NanoTeamsApp: App {
                     .environment(store.engineState)
                     .environment(store.configuration)
                     .environment(store.streamingPreviewManager)
+                    .environment(store.contextFill)
                     .environment(folderAccess)
                     .environment(llmStatusMonitor)
                     .environment(dictation)
@@ -213,6 +214,7 @@ struct NanoTeamsApp: App {
                 .environment(store.engineState)
                 .environment(store.configuration)
                 .environment(store.streamingPreviewManager)
+                .environment(store.contextFill)
                 .environment(dictation)
                 .environment(appUpdateState)
                 .environment(modelCatalog)
@@ -231,7 +233,8 @@ struct NanoTeamsApp: App {
         .restorationBehavior(.disabled)
 
         // Standalone window for any "open in new window" Activity Feed detail
-        // (LLM/meeting/supervisor thinking, tool calls, artifacts, meeting tools).
+        // (LLM/meeting/supervisor thinking, compaction disclosures, tool calls,
+        // artifacts, meeting tools, system notices).
         // SwiftUI dedups by `Hashable` value: clicking the same record again
         // focuses the existing window rather than opening a duplicate.
         WindowGroup(for: ActivityDetailWindow.self) { $detail in

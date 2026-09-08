@@ -136,7 +136,7 @@ extension LLMExecutionService {
         if isExecutionLive(stepID: stepID, taskID: taskID) {
             await delegate.beginStreaming(
                 stepID: stepID, taskID: taskID,
-                messageID: streamingMessageID, role: roleForMessage)
+                messageID: streamingMessageID, role: roleForMessage, isCompacting: false)
             #if DEBUG
             // The end of the submit's silence: from here the bubble says `Processing…`.
             // A no-op unless a submit measurement is open and still awaiting its first

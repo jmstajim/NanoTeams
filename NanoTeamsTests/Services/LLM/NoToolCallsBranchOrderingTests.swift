@@ -167,9 +167,9 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
     }
 
     func testMalformedJSONRetry_attachesConcreteParserDiagnostic() async {
-        // Envelope with no closing brace at all — the retry must name the
-        // ACTUAL defect (playbook: re-prompt with the parse error attached)
-        // instead of the generic brace/quote/comma guess list.
+        // Envelope with no closing brace AND no `<|end|>` — a cut-off stream, the one state
+        // `.unbalanced` still covers. The retry must name the ACTUAL defect (playbook R5.2.5:
+        // re-prompt with the parse error attached) instead of the generic guess list.
         var messages: [ChatMessage] = []
         let stop = await service._testHandleNoToolCalls(
             stepID: stepID,
@@ -185,10 +185,27 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
         }
         let retry = messages[0].content ?? ""
         XCTAssertTrue(retry.contains("malformed JSON"))
-        XCTAssertTrue(retry.contains("parser error: the JSON object's braces never balance"),
-                      "retry must carry the concrete parser diagnostic, got: \(retry)")
+        XCTAssertTrue(
+            retry.contains("parser error: the `<|call|>` block never closed — no `<|end|>`"),
+            "retry must carry the concrete parser diagnostic, got: \(retry)")
         XCTAssertFalse(retry.contains("e.g. a missing closing brace"),
                        "generic hint list must be replaced when a concrete diagnostic exists")
+        XCTAssertFalse(
+            retry.contains("two closing braces"),
+            "prescribing ONE repair for every parse failure is a false diagnosis for the "
+                + "shapes it does not fit (R1.8.5 / R3.8.2 / R3.8.7): \(retry)")
+    }
+
+    /// A transposed closing quote after a numeric value (`"end_line":"588,`) is repaired by
+    /// the parser, so this branch must not run at all: the call dispatches and no nudge is
+    /// appended. Verbatim payload from `ornith-1.0-35b`, CastleSurvivors task 5 run 0,
+    /// 2026-09-08 — where it cost a `malformed_tool_call` card and one round trip.
+    func testTransposedQuoteEnvelope_isRepairedBeforeThisBranchIsReached() {
+        let reply = "<|call|>{\"name\":\"read_lines\",\"arguments\":{\"end_line\":\"588,"
+            + "\"include_line_numbers\":false,\"path\":\"a.gd\",\"start_line\":\"501\"}}<|end|>"
+        let calls = HarmonyToolCallParser().extractAllToolCalls(from: reply)
+        XCTAssertEqual(calls.map(\.name), [ToolNames.readLines],
+                       "the repair must dispatch this call, leaving `handleNoToolCalls` unreached")
     }
 
     func testTokensOnlyWithoutHarmonyMarker_sendsTokensOnlyRetry() async {
@@ -724,7 +741,10 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
     /// idea how to fix a problem it didn't have, and looped. The new nudge must
     /// identify "missing top-level `name`" specifically and show the inferred
     /// tool in the retry example so the model can self-correct.
-    func testHarmonyMarkerMissingToolName_sendsSpecificNudgeWithInferredTool() async {
+    /// Was `…sendsSpecificNudgeWithInferredTool` until 2026-09-08. The example id used to
+    /// come from schema-blind shape inference; now every id in the text comes from the
+    /// role's own schema (R3.3.5, R3.8.3), so the tool is named because the role HOLDS it.
+    func testHarmonyMarkerMissingToolName_namesATheRoleHoldsInTheExample() async {
         let qwenResponse = "[reasoning]\nI will create the artifact now.\n[/reasoning]\n\n<|call|>{\"arguments\":{\"content\":\"PRD\",\"format\":\"markdown\",\"name\":\"Product Requirements\"}}<|end|>"
         var messages: [ChatMessage] = []
         let stop = await service._testHandleNoToolCalls(
@@ -733,7 +753,8 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
             sawHarmonyMarker: true,
             task: task,
             roleDefinition: nil,
-            conversationMessages: &messages
+            conversationMessages: &messages,
+            allowedToolNames: [ToolNames.createArtifact]
         )
         guard case .continueLoop = stop else {
             XCTFail("Expected .continueLoop, got \(stop)")
@@ -747,7 +768,7 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
         )
         XCTAssertTrue(
             retry.contains("create_artifact"),
-            "Inferred tool name must appear in the retry example, got: \(retry)"
+            "A tool the role holds must appear in the retry example, got: \(retry)"
         )
         XCTAssertFalse(
             retry.contains("missing closing brace"),
@@ -755,10 +776,40 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
         )
     }
 
-    /// Ambiguous argument shape (no `format`, not recognisable as any specific tool):
-    /// the classifier still reports `.missingToolName` but with no inferred tool —
-    /// the nudge uses the generic `TOOL_NAME` placeholder.
-    func testHarmonyMarkerMissingToolName_unknownShape_usesPlaceholder() async {
+    /// The leak this arm shipped until 2026-09-08: `inferToolNameFromShape` is schema-blind
+    /// and resolves `{name, content}` to `create_artifact`, which the PLANNING PHASE
+    /// withholds — so a producing role mid-planning was shown an envelope naming a tool that
+    /// iteration would have rejected. RED before the fix.
+    func testMissingToolName_inferredToolOutsideTheSchema_isNotNamed() async {
+        var messages: [ChatMessage] = []
+        _ = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: "<|call|>{\"arguments\":{\"content\":\"PRD\",\"name\":\"Product Requirements\"}}<|end|>",
+            sawHarmonyMarker: true,
+            task: task,
+            roleDefinition: nil,
+            conversationMessages: &messages,
+            allowedToolNames: [ToolNames.readFile, ToolNames.updateScratchpad]
+        )
+        let retry = messages[0].content ?? ""
+        XCTAssertTrue(retry.contains("missing the top-level `name` field"))
+        XCTAssertFalse(
+            retry.contains(ToolNames.createArtifact),
+            "the inferred tool is outside this role's schema and must not be taught: \(retry)")
+        XCTAssertTrue(
+            retry.contains(ToolNames.readFile),
+            "the illustration must come from the role's own tools: \(retry)")
+    }
+
+    /// Ambiguous argument shape and an empty schema: the classifier still reports
+    /// `.missingToolName`, and the nudge carries its instruction with NO illustration.
+    ///
+    /// Was `…usesPlaceholder` until 2026-09-08, when it asserted the literal `TOOL_NAME`.
+    /// A placeholder is copyable — the same corpus shows a model pasting `{"param":"value"}`
+    /// verbatim into `read_file` and earning `INVALID_ARGS` about a key no schema has — and
+    /// `TOOL_NAME` itself dispatches to `tool_not_found`. Dropping the example costs the
+    /// instruction nothing.
+    func testHarmonyMarkerMissingToolName_emptySchema_carriesNoExample() async {
         var messages: [ChatMessage] = []
         _ = await service._testHandleNoToolCalls(
             stepID: stepID,
@@ -770,10 +821,52 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
         )
         let retry = messages[0].content ?? ""
         XCTAssertTrue(retry.contains("missing the top-level `name` field"))
-        XCTAssertTrue(
-            retry.contains("TOOL_NAME"),
-            "Generic placeholder must appear when no inference succeeded, got: \(retry)"
+        XCTAssertFalse(retry.contains("TOOL_NAME"), "no copyable placeholder id: \(retry)")
+        XCTAssertFalse(retry.contains("<|call|>"), "no illustration without a real id: \(retry)")
+        XCTAssertFalse(retry.contains("\"param\""), "no copyable placeholder args: \(retry)")
+    }
+
+    /// The card is named after what the model actually wrote — the id was there, one level
+    /// too deep, so `unknown_tool` was false. The CODE stays `MISSING_TOOL_NAME` because the
+    /// `jq` audits in `.claude/skills/train-app` match on it.
+    func testToolNameInsideArguments_cardIsNamedAfterTheNestedId() async {
+        var messages: [ChatMessage] = []
+        _ = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent:
+            "<|call|>{\"arguments\":{\"name\":\"git_show\",\"path\":\"a.gd\"}}<|end|>",
+            sawHarmonyMarker: true,
+            task: task,
+            roleDefinition: nil,
+            conversationMessages: &messages
         )
+        let cards = latestToolCalls()
+        XCTAssertEqual(cards.map(\.name), ["git_show"])
+        XCTAssertEqual(cards.first?.isError, true)
+        XCTAssertTrue(cards.first?.resultJSON?.contains("MISSING_TOOL_NAME") == true)
+        XCTAssertTrue(cards.first?.resultJSON?.contains("inside `arguments`") == true)
+    }
+
+    /// The residual shape after the parser learned the nested envelope: the id was written
+    /// inside `arguments` AND names no registered tool. Two faults, and the nudge states
+    /// both without echoing the bad id (R3.8.3).
+    func testToolNameInsideArguments_nudgeStatesBothFaults_andNamesNoForeignTool() async {
+        var messages: [ChatMessage] = []
+        _ = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent:
+            "<|call|>{\"arguments\":{\"name\":\"git_show\",\"path\":\"a.gd\",\"rev\":\"dbce2bb\"}}<|end|>",
+            sawHarmonyMarker: true,
+            task: task,
+            roleDefinition: nil,
+            conversationMessages: &messages,
+            allowedToolNames: [ToolNames.readFile]
+        )
+        let retry = messages[0].content ?? ""
+        XCTAssertTrue(retry.contains("inside `arguments`"), "the position fault: \(retry)")
+        XCTAssertTrue(retry.contains("names no tool"), "the unknown-id fault: \(retry)")
+        XCTAssertFalse(retry.contains("git_show"), "must not teach the bad id: \(retry)")
+        XCTAssertTrue(retry.contains(ToolNames.readFile), "example from the schema: \(retry)")
     }
 
     /// Regression EA190834: UX Designer made up alias names ("CalculatorDesignSpec.md",

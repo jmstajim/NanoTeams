@@ -100,6 +100,12 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
     /// Cumulative token usage across all LLM iterations in this step.
     var tokenUsage: TokenUsage?
 
+    /// How full the context window was at the last measurement — what the composer's
+    /// indicator renders and what an automatic compaction trigger is derived from on
+    /// re-entry. Persisted rather than recomputed because the number the app trusts is
+    /// the SERVER's, and a suspended step has no request in flight to ask again.
+    var contextFill: ContextFill?
+
     /// Full LLM conversation (all prompts and responses sent to/from the model).
     var llmConversation: [LLMMessage]
 
@@ -229,6 +235,7 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         supervisorAnswerPendingDelivery: Bool? = nil,
         supervisorCommentForNext: String? = nil,
         tokenUsage: TokenUsage? = nil,
+        contextFill: ContextFill? = nil,
         llmConversation: [LLMMessage] = [],
         wireTranscript: [ChatMessage] = [],
         revisionComment: String? = nil,
@@ -264,6 +271,7 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
                     attachmentPaths: supervisorAnswerAttachmentPaths)
         self.supervisorCommentForNext = supervisorCommentForNext
         self.tokenUsage = tokenUsage
+        self.contextFill = contextFill
         self.llmConversation = llmConversation
         self.wireTranscript = wireTranscript
         self.revisionComment = revisionComment
@@ -305,6 +313,7 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         case supervisorAnswerPendingDelivery
         case supervisorCommentForNext
         case tokenUsage
+        case contextFill
         case llmConversation
         case wireTranscript
         case revisionComment
@@ -353,6 +362,10 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
                     attachmentPaths: self.supervisorAnswerAttachmentPaths)
         self.supervisorCommentForNext = try c.decodeIfPresent(String.self, forKey: .supervisorCommentForNext)
         self.tokenUsage = try c.decodeIfPresent(TokenUsage.self, forKey: .tokenUsage)
+        // Absent for every step written before the indicator existed. `nil` is the
+        // honest answer there — the indicator hides rather than inventing a fill, and
+        // the first server-reported count after re-entry fills it in.
+        self.contextFill = try c.decodeIfPresent(ContextFill.self, forKey: .contextFill)
         self.llmConversation =
             try c.decodeIfPresent([LLMMessage].self, forKey: .llmConversation) ?? []
         // Absent in every `task.json` written before the transcript existed. An empty
@@ -426,6 +439,7 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         }
         try c.encodeIfPresent(supervisorCommentForNext, forKey: .supervisorCommentForNext)
         try c.encodeIfPresent(tokenUsage, forKey: .tokenUsage)
+        try c.encodeIfPresent(contextFill, forKey: .contextFill)
         try c.encode(llmConversation, forKey: .llmConversation)
         // Skipped when empty so steps that never ran (and every pre-existing task on
         // disk re-encoded after a read) don't grow a `"wireTranscript":[]` key.
@@ -550,6 +564,9 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         supervisorAnswerPendingDelivery = false
         supervisorCommentForNext = nil
         tokenUsage = nil
+        // Cleared with the transcript it measures: a fill left behind would show the
+        // discarded attempt's occupancy against a conversation that no longer exists.
+        contextFill = nil
         llmConversation = []
         // Must be cleared with the display record, not left behind: `restartRole` resets a
         // step to run again from scratch, and a surviving transcript would let a later

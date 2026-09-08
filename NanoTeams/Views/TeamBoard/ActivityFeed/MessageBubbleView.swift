@@ -43,6 +43,14 @@ struct MessageBubbleView: View {
     /// indicator's "Generating" fallback when the thinking preview is
     /// still empty.
     var isStreamingToolCall: Bool = false
+    /// This bubble is a context-compaction epoch's live summary. The epoch writes ONLY the
+    /// thinking preview (`LLMExecutionService.summarizeWithLiveBubble`), so `content` is
+    /// structurally empty for the bubble's whole life and it has exactly two states: the
+    /// status row before the first delta, the animated disclosure row after. Relabels both;
+    /// also decides which window the row opens (`MessageThinkingSection.detailWindow`). The
+    /// bubble is discarded when the epoch ends — it only ever existed to show the write
+    /// happening.
+    var isCompacting: Bool = false
     let isStreaming: Bool
     var isImplicitStreamTarget: Bool = false
     let showHeader: Bool
@@ -226,7 +234,8 @@ struct MessageBubbleView: View {
                             isStreaming: isStreaming,
                             hasMessageContent: hasMessageContent,
                             isStreamingToolCall: isStreamingToolCall
-                        )
+                        ),
+                        isCompacting: isCompacting
                     )
                     // Only the header can precede the top thinking row.
                     .padding(.top, Self.statusRowTopSpacing(hasRowAbove: showHeader))
@@ -283,14 +292,15 @@ struct MessageBubbleView: View {
                 ), let thinking {
                     // Trailing live row: the tool-call envelope is being typed
                     // into the thinking preview after the prose froze at the
-                    // marker. Same tap target as the top section (opens the
-                    // identical `ActivityDetailWindow.thinking` — dedupKey
-                    // focuses one window, never two).
+                    // marker. Same tap target as the top section (same
+                    // `detailWindow` value — dedupKey focuses one window, never
+                    // two). Unreachable for an epoch, which has no prose.
                     MessageThinkingSection(
                         thinking: thinking,
                         messageID: message.id,
                         roleName: roleName,
-                        isStreaming: true
+                        isStreaming: true,
+                        isCompacting: isCompacting
                     )
                     // Always below the content, so always something above it.
                     .padding(.top, Self.statusRowTopSpacing(hasRowAbove: true))
@@ -309,7 +319,8 @@ struct MessageBubbleView: View {
                     hasThinkingContent: hasThinkingContent,
                     processingStatus: processingStatus,
                     hasStreamActivity: hasStreamActivity,
-                    isStreamingToolCall: isStreamingToolCall
+                    isStreamingToolCall: isStreamingToolCall,
+                    isCompacting: isCompacting
                 )
                 let indicatorTop = indicatorHasRow
                     ? Self.statusRowTopSpacing(hasRowAbove: showHeader || hasThinkingContent || hasMessageContent)
@@ -322,7 +333,8 @@ struct MessageBubbleView: View {
                     hasThinkingContent: hasThinkingContent,
                     processingStatus: processingStatus,
                     hasStreamActivity: hasStreamActivity,
-                    isStreamingToolCall: isStreamingToolCall
+                    isStreamingToolCall: isStreamingToolCall,
+                    isCompacting: isCompacting
                 )
                 // Load-bearing: skips this subtree on streaming ticks when
                 // its stored inputs are unchanged (Waiting/Generating/
@@ -388,6 +400,7 @@ extension MessageBubbleView: Equatable {
             && lhs.processingStatus == rhs.processingStatus
             && lhs.hasStreamActivity == rhs.hasStreamActivity
             && lhs.isStreamingToolCall == rhs.isStreamingToolCall
+            && lhs.isCompacting == rhs.isCompacting
             && lhs.isStreaming == rhs.isStreaming
             && lhs.isImplicitStreamTarget == rhs.isImplicitStreamTarget
             && lhs.showHeader == rhs.showHeader

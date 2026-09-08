@@ -367,13 +367,12 @@ extension LLMExecutionService {
                 content: Self.appendingRepairNote(argumentRepairNote, to: contentForConversation),
                 toolCallID: result.providerID)
         )
-        let toolCallContent = """
-        [CALL] \(result.toolName)
-        Arguments: \(result.argumentsJSON)
-        
-        [RESULT]
-        \(result.outputJSON)
-        """
+        // Through the shared producer, not a second literal: `TaskMutationService`'s own doc
+        // says two producers of one wire shape is the drift class, and this was the second.
+        let toolCallContent = TaskMutationService.toolResultComposite(
+            toolName: result.toolName,
+            argumentsJSON: result.argumentsJSON,
+            resultJSON: result.outputJSON)
         await appendLLMMessage(stepID: stepID, taskID: taskID, role: .tool, content: toolCallContent)
 
         // Process side effects (scratchpad, artifacts, error guidance) for ALL results,

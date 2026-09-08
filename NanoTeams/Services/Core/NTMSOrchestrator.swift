@@ -103,6 +103,12 @@ final class NTMSOrchestrator {
     /// incrementally so the shell's `onChange` keys are `Int` compares rather
     /// than whole-index `Dictionary` rebuilds per body pass. See the type.
     let taskFacts = TaskFactsProjection()
+    /// Per-step context occupancy + in-flight compaction epochs. Own object for the reason
+    /// `taskFacts` is: the composer's fill indicator must not re-evaluate at `mutateTask`
+    /// rate to render a number that changes once per REQUEST. No init seam — nothing about
+    /// it is environment-dependent, and adding one would put another optional in the
+    /// constructor `TestOrchestrator.make` exists to keep honest.
+    let contextFill = ContextFillProjection()
     /// Prompt-prefix (KV) cache-miss aggregate. Drives the always-on status-bar count and
     /// decides which misses earn the single-slot banner. Injected like the other observables so
     /// tests get a fresh one.
@@ -192,6 +198,26 @@ final class NTMSOrchestrator {
     var maxLLMRetries: Int {
         get { configuration.maxLLMRetries }
         set { configuration.maxLLMRetries = newValue }
+    }
+
+    // periphery:ignore - protocol conformance (LLMStateDelegate)
+    var autoCompactEnabled: Bool {
+        configuration.autoCompactEnabled
+    }
+
+    // periphery:ignore - protocol conformance (LLMStateDelegate)
+    var autoCompactBudgetPercent: Int {
+        configuration.autoCompactBudgetPercent
+    }
+
+    // periphery:ignore - protocol conformance (LLMStateDelegate)
+    func updateContextFill(stepID: String, taskID: Int, fill: ContextFill) {
+        contextFill.update(stepID: stepID, taskID: taskID, fill: fill)
+    }
+
+    // periphery:ignore - protocol conformance (LLMStateDelegate)
+    func setContextCompacting(stepID: String, taskID: Int, _ isCompacting: Bool) {
+        contextFill.setCompacting(stepID: stepID, taskID: taskID, isCompacting)
     }
 
     var visionLLMConfig: LLMConfig? {
@@ -864,9 +890,19 @@ final class NTMSOrchestrator {
             newSnapshot.loadedTasks[oldTaskID] = oldTask
         }
 
+        // A folder switch invalidates every fill: task ids are folder-local, so a surviving
+        // entry would show folder A's occupancy against folder B's task of the same number.
+        if !sameFolder { contextFill.clear() }
+
         self.snapshot = newSnapshot
         self.activeTaskID = newSnapshot.activeTaskID
         self.activeTask = newSnapshot.activeTask
+        // Seeded at the LOAD boundary, never in `applyTaskUpdate`: that one runs on every
+        // `mutateTask` (a per-event root, #113) and the fill it would re-read changes once
+        // per request. Here a task that is merely loaded — parked, paused, not running —
+        // still has a number for the indicator to show.
+        if let task = newSnapshot.activeTask { contextFill.seed(from: task) }
+        for task in newSnapshot.loadedTasks.values { contextFill.seed(from: task) }
         self.toolDefinitions = newSnapshot.toolDefinitions
         ToolDefinitionRegistry.shared.update(newSnapshot.toolDefinitions)
 
@@ -925,6 +961,8 @@ final class NTMSOrchestrator {
         autovisorNotifiedAttentionKeys = []
         autovisorLoopParkRedelivered = []
         autovisorSeenTaskIDs = []
+        // Same folder-local-id argument as `taskFacts.clear()` above.
+        contextFill.clear()
         snapshot = nil
         activeTaskID = nil
         activeTask = nil

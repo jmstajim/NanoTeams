@@ -30,13 +30,6 @@ nonisolated enum ToolCallShapeRecognizer {
     /// through its own normalizer. Returning the raw value (rather than a
     /// serialized string) keeps this enum free of the serialization concern.
     static func resolve(from dict: [String: Any]) -> (name: String, arguments: Any?)? {
-        // Reserved-name guard applies to every shape below, not just the
-        // bare-identifier path in `CallMarkerStrategy`. Without this,
-        // `{"name":"commentary",...}` would reach dispatch as a tool call.
-        func acceptingName(_ name: String) -> String? {
-            ToolCallParsingHelpers.reservedChannelNames.contains(name.lowercased()) ? nil : name
-        }
-
         // Flat create_artifact emission: `{"content":…,"format":…,"name":"<Artifact>"}`
         // with NO `arguments` wrapper. Here the top-level `name` is the ARTIFACT
         // name (a create_artifact parameter), NOT the tool name — some models
@@ -67,6 +60,94 @@ nonisolated enum ToolCallShapeRecognizer {
             return (name: ToolNames.createArtifact, arguments: dict)
         }
 
+        if let explicit = resolveExplicitName(in: dict) {
+            return explicit
+        }
+
+        // Shape-based fallback: some models emit `{"arguments":{…}}` without a
+        // top-level tool name — the `name` field lives inside `arguments` as a
+        // tool parameter (e.g. artifact name for create_artifact). Infer the
+        // tool from the argument signature when it's unambiguous.
+        if let inferred = inferToolNameFromShape(dict) {
+            return (name: inferred.name, arguments: inferred.arguments)
+        }
+
+        // The tool id written INSIDE the model's own `arguments` wrapper. Last, so every
+        // shape that resolved before this branch existed resolves to the same bytes — only
+        // payloads that used to return nil can reach here.
+        if let nested = toolNameInsideArgumentsWrapper(dict) {
+            return nested
+        }
+
+        return nil
+    }
+
+    /// A whole call envelope written one level too deep — the tool id sits inside
+    /// `arguments`, where it reads as a parameter.
+    ///
+    /// Three shapes from one `ornith-1.0-35b` step (CastleSurvivors, 2026-09-08), all
+    /// dropped, all costing a round trip:
+    ///
+    ///     {"arguments":{"path":"…","name":"read_file"},"type":"tool_call"}
+    ///     {"arguments":{"name":"git_show","path":"…","rev":"dbce2bb"},"type":"tool_call"}
+    ///     {"arguments":{"name":"read_lines","arguments":{"path":"…","start_line":1}}}
+    ///
+    /// R4.4.2 classifies that as S2 format mixing ("a whole envelope inside `arguments`"),
+    /// and R4.3.4 sends a rule broken on 2+ turns of one step to a runtime check rather
+    /// than to the prompt. R3.8.7 says which check: make the parser accept the form the
+    /// model emits.
+    ///
+    /// **One unwrap, no recursion.** The inner dict is handed to `resolveExplicitName`, so
+    /// the rules one level down are the identical ones — including the `function` branch,
+    /// which a `resolve`-recursion would have mishandled (`function` is a reserved envelope
+    /// key, so `synthesizeArgumentsFromTopLevel` would have stripped the arguments). Depth
+    /// is structurally 1: no parameter to thread, no cap to tune.
+    ///
+    /// **Gated on the CANONICAL name — no alias resolution, deliberately.**
+    /// `ToolRegistry.defaultAliases` maps `test` → `run_xcodetests`, `build` →
+    /// `run_xcodebuild`, `exec` → `bash`, so `{"arguments":{"name":"test","path":"scripts/"}}`
+    /// would launch a test run. The alias map is legitimate where intent is established;
+    /// here the payload's own structure is evidence the model was confused about the
+    /// protocol, and guessing an id on top of a provably wrong id POSITION is two guesses
+    /// deep (the same reasoning `BareToolCallSalvage` records for bare words).
+    ///
+    /// The gate is also what keeps a legitimate `create_artifact` — whose `arguments.name`
+    /// is an ARTIFACT title — from dispatching a tool that does not exist, and what makes
+    /// the two-fault nudge for the residual case reachable: `tool_not_found` would name the
+    /// id and stay silent about the position, so the model would fix the id and keep
+    /// misplacing it.
+    private static func toolNameInsideArgumentsWrapper(
+        _ dict: [String: Any]
+    ) -> (name: String, arguments: Any?)? {
+        guard let wrapper = dict["arguments"] ?? dict["args"] ?? dict["parameters"]
+            ?? dict["params"],
+            let inner = wrapper as? [String: Any],
+            let resolved = resolveExplicitName(in: inner),
+            ToolNames.allNames.contains(resolved.name)
+        else { return nil }
+        return resolved
+    }
+
+    /// The keys that may carry the tool id. Single source for `resolveExplicitName` and
+    /// `explicitToolName`; the classifier used to restate this list by hand, in
+    /// `classifyHarmonyCallIssue`'s `hasTopLevelName`.
+    static let toolNameKeys: [String] = ["name", "tool_name", "tool", "function_name"]
+
+    /// The three EXPLICIT-name shapes with their arguments — extracted verbatim from
+    /// `resolve` so the nested-envelope unwrap can run the identical rules one level down.
+    ///
+    /// The grouping is load-bearing and deliberately not flattened into one loop over
+    /// `toolNameKeys`. `name` is tested alone; the remaining three are a `??` chain, so the
+    /// FIRST PRESENT one wins and a reserved value there refuses the whole shape rather
+    /// than falling through to its neighbour. Flattening would quietly change
+    /// `{"tool_name":"commentary","tool":"read_file"}` from "refused" to "read_file".
+    static func resolveExplicitName(
+        in dict: [String: Any]
+    ) -> (name: String, arguments: Any?)? {
+        func acceptingName(_ name: String) -> String? {
+            ToolCallParsingHelpers.reservedChannelNames.contains(name.lowercased()) ? nil : name
+        }
+
         if let name = ToolCallParsingHelpers.stringValue(dict["name"]).flatMap(acceptingName) {
             let args = mergingSpilledSiblings(dict) ?? synthesizeArgumentsFromTopLevel(dict)
             return (name: name, arguments: args)
@@ -81,18 +162,31 @@ nonisolated enum ToolCallShapeRecognizer {
 
         if let fnDictAny = dict["function"] as? [String: Any],
            let fnName = ToolCallParsingHelpers.stringValue(fnDictAny["name"]).flatMap(acceptingName) {
+            // All four wrapper keys, like every other branch. Reading only
+            // `arguments`/`args` here was an asymmetry, not a rule: a model that nests its
+            // call under `function` and names the wrapper `parameters` lost every argument.
             let argsAny = fnDictAny["arguments"] ?? fnDictAny["args"]
+                ?? fnDictAny["parameters"] ?? fnDictAny["params"]
             return (name: fnName, arguments: argsAny)
         }
 
-        // Shape-based fallback: some models emit `{"arguments":{…}}` without a
-        // top-level tool name — the `name` field lives inside `arguments` as a
-        // tool parameter (e.g. artifact name for create_artifact). Infer the
-        // tool from the argument signature when it's unambiguous.
-        if let inferred = inferToolNameFromShape(dict) {
-            return (name: inferred.name, arguments: inferred.arguments)
-        }
+        return nil
+    }
 
+    /// The tool id read from an EXPLICIT key only, for callers that need to know whether the
+    /// payload NAMES anything — the classifier, which must still see `{"name":"commentary"}`
+    /// as name-bearing so it reports a parse failure rather than a missing name.
+    ///
+    /// Deliberately different from `resolveExplicitName` in two ways, because it answers a
+    /// different question: no reserved-channel guard, and no grouping — any recognised key
+    /// counts, which mirrors the OR that `hasTopLevelName` performed before this existed.
+    static func explicitToolName(in dict: [String: Any]) -> String? {
+        for key in toolNameKeys {
+            if let value = ToolCallParsingHelpers.stringValue(dict[key]) { return value }
+        }
+        if let function = dict["function"] as? [String: Any] {
+            return ToolCallParsingHelpers.stringValue(function["name"])
+        }
         return nil
     }
 
@@ -173,6 +267,52 @@ nonisolated enum ToolCallShapeRecognizer {
         guard var inner = wrapper as? [String: Any] else { return wrapper }
         for key in spilledSiblingKeys(from: dict) { inner[key] = dict[key] }
         return inner
+    }
+
+    /// Where the payload put the tool id — a positive fact about its SHAPE, so it is
+    /// `Equatable` and testable without first driving `resolve` to failure.
+    ///
+    /// Exists so `classifyHarmonyCallIssue` stops restating `resolve`'s key precedence by
+    /// hand: the two lists had no shared constant and no test asserting they agreed, which
+    /// is one edit away from a classifier that reports a missing name for a payload the
+    /// parser dispatched.
+    enum ToolNamePosition: Equatable {
+        /// A recognised name key at the top level — including a reserved channel name, which
+        /// is name-BEARING even though it never dispatches.
+        case topLevel(String)
+        /// The id was written inside the `arguments` wrapper, where it reads as a parameter.
+        /// `isRegisteredTool` is what separates "the parser recovered this" from "two faults
+        /// at once: wrong position AND an id that names nothing".
+        case insideArguments(name: String, isRegisteredTool: Bool)
+        /// No id anywhere. `inferredToolName` is the shape guess, when there is one.
+        case absent(inferredToolName: String?)
+    }
+
+    /// Mirrors `resolve`'s precedence exactly — explicit keys, then shape inference, then
+    /// the nested unwrap — so a payload that DISPATCHES can never be described here as one
+    /// that failed to name a tool.
+    static func toolNamePosition(in dict: [String: Any]) -> ToolNamePosition {
+        if let explicit = explicitToolName(in: dict) {
+            return .topLevel(explicit)
+        }
+        if let inferred = inferToolNameFromShape(dict)?.name {
+            return .absent(inferredToolName: inferred)
+        }
+        if let nested = nestedExplicitToolName(in: dict) {
+            return .insideArguments(
+                name: nested, isRegisteredTool: ToolNames.allNames.contains(nested))
+        }
+        return .absent(inferredToolName: nil)
+    }
+
+    /// The explicit id inside the `arguments` wrapper, whatever the model called that
+    /// wrapper. No registry gate — the caller decides what an unregistered id means.
+    private static func nestedExplicitToolName(in dict: [String: Any]) -> String? {
+        guard let wrapper = dict["arguments"] ?? dict["args"] ?? dict["parameters"]
+            ?? dict["params"],
+            let inner = wrapper as? [String: Any]
+        else { return nil }
+        return explicitToolName(in: inner)
     }
 
     /// Fallback tool-name inference when no top-level identifier is present.

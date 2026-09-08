@@ -41,6 +41,30 @@ nonisolated enum TaskMutationService {
         """
     }
 
+    /// The call half of a `toolResultComposite`, or nil when the text is not one.
+    ///
+    /// The composite is self-describing precisely so it can be read back: `providerID` is nil
+    /// in essentially all production traffic, so there is no `tool_call_id` to pair on, and a
+    /// replayed transcript may not contain the assistant turn that made the call at all.
+    /// `ConversationReplay` uses this to re-materialize that turn rather than drop it.
+    ///
+    /// The arguments run to the blank line before `[RESULT]`, not to the first newline: a
+    /// model's raw `argumentsJSON` is not always one line.
+    static func parseToolResultComposite(
+        _ text: String
+    ) -> (toolName: String, argumentsJSON: String)? {
+        guard text.hasPrefix("[CALL] ") else { return nil }
+        let afterCall = text.dropFirst("[CALL] ".count)
+        guard let nameEnd = afterCall.firstIndex(of: "\n") else { return nil }
+        let toolName = String(afterCall[..<nameEnd]).trimmingCharacters(in: .whitespaces)
+        guard !toolName.isEmpty else { return nil }
+        let rest = afterCall[afterCall.index(after: nameEnd)...]
+        guard rest.hasPrefix("Arguments: ") else { return nil }
+        let afterArgs = rest.dropFirst("Arguments: ".count)
+        let end = afterArgs.range(of: "\n\n[RESULT]")?.lowerBound ?? afterArgs.endIndex
+        return (toolName: toolName, argumentsJSON: String(afterArgs[..<end]))
+    }
+
     // MARK: - Step Convenience Methods
 
     /// Appends a message to a step in a task.

@@ -842,6 +842,7 @@ struct TeamActivityFeedView: View {
                 processingStatus: inputs.processingStatus,
                 hasStreamActivity: inputs.hasStreamActivity,
                 isStreamingToolCall: inputs.isStreamingToolCall,
+                isCompacting: inputs.isCompacting,
                 isStreaming: inputs.isStreaming,
                 isImplicitStreamTarget: isImplicitStreamTarget,
                 showHeader: showHeader,

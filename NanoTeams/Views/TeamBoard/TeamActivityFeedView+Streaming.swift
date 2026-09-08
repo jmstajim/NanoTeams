@@ -33,7 +33,11 @@ extension TeamActivityFeedView {
             thinking: String?,
             processingStatus: PromptProcessingStatus?,
             hasStreamActivity: Bool,
-            isStreamingToolCall: Bool
+            isStreamingToolCall: Bool,
+            /// The live bubble belongs to a CONTEXT-COMPACTION epoch, not to the model
+            /// taking a turn. Outranks every other status: while the app is discarding the
+            /// conversation behind it, "Thinking…" is the one thing the row must not say.
+            isCompacting: Bool
         )
         case committed(
             content: String,
@@ -52,35 +56,42 @@ extension TeamActivityFeedView {
         // committed case is asked, and vice versa — never a sentinel.
         var contentForBubble: String {
             switch self {
-            case .streaming(let c, _, _, _, _): return c
+            case .streaming(let c, _, _, _, _, _): return c
             case .committed(let c, _, _, _): return c
             }
         }
 
         var thinkingForBubble: String? {
             switch self {
-            case .streaming(_, let t, _, _, _): return t
+            case .streaming(_, let t, _, _, _, _): return t
             case .committed(_, let t, _, _): return t
             }
         }
 
         var processingStatus: PromptProcessingStatus? {
             switch self {
-            case .streaming(_, _, let p, _, _): return p
+            case .streaming(_, _, let p, _, _, _): return p
             case .committed: return nil
             }
         }
 
         var hasStreamActivity: Bool {
             switch self {
-            case .streaming(_, _, _, let a, _): return a
+            case .streaming(_, _, _, let a, _, _): return a
             case .committed: return false
             }
         }
 
         var isStreamingToolCall: Bool {
             switch self {
-            case .streaming(_, _, _, _, let t): return t
+            case .streaming(_, _, _, _, let t, _): return t
+            case .committed: return false
+            }
+        }
+
+        var isCompacting: Bool {
+            switch self {
+            case .streaming(_, _, _, _, _, let c): return c
             case .committed: return false
             }
         }
@@ -121,7 +132,8 @@ extension TeamActivityFeedView {
             hasStreamActivity: manager.hasReceivedStreamActivity(
                 stepID: stepID, taskID: taskID),
             isStreamingToolCall: manager.isStreamingToolCall(
-                stepID: stepID, taskID: taskID)
+                stepID: stepID, taskID: taskID),
+            isCompacting: manager.isCompacting(stepID: stepID, taskID: taskID)
         )
     }
 
@@ -134,6 +146,7 @@ extension TeamActivityFeedView {
         let processingStatus: PromptProcessingStatus?
         let hasStreamActivity: Bool
         let isStreamingToolCall: Bool
+        let isCompacting: Bool
     }
 
     /// Adaptive `TimelineSchedule`:
@@ -220,7 +233,8 @@ extension TeamActivityFeedView {
                 thinking: streaming.thinking,
                 processingStatus: streaming.processingStatus,
                 hasStreamActivity: streaming.hasStreamActivity,
-                isStreamingToolCall: streaming.isStreamingToolCall
+                isStreamingToolCall: streaming.isStreamingToolCall,
+                isCompacting: streaming.isCompacting
             )
         }
         // Which contexts can carry marker sections is stated on the value

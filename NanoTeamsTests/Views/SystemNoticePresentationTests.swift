@@ -17,7 +17,7 @@ import XCTest
 /// assertion a hand-maintained list would silently stop making.
 final class SystemNoticePresentationTests: XCTestCase {
 
-    /// The six system-authored contexts. Spelled out here rather than read
+    /// The seven system-authored contexts. Spelled out here rather than read
     /// back from the production table — a pin that sources its expectation from
     /// the thing it pins asserts nothing.
     ///
@@ -25,12 +25,18 @@ final class SystemNoticePresentationTests: XCTestCase {
     /// CONTENT — the only record of what the model was shown — so collapsing it to a
     /// one-liner would hide the substance the model then acted on.
     ///
-    /// `.autovisorEvent` is the newest member and the only one that is ALSO a loop-detector
-    /// information boundary (`carriesUnsolicitedInformation`) — system-authored is about who
-    /// wrote the turn, not about whether anyone asked for it.
+    /// `.autovisorEvent` is the only one that is ALSO a loop-detector information boundary
+    /// (`carriesUnsolicitedInformation`) — system-authored is about who wrote the turn, not
+    /// about whether anyone asked for it.
+    ///
+    /// `.compaction` is the newest member and the only one that was never SENT: the summary
+    /// the model wrote rides the wire as a `.user` seed written by `CompactionPolicy`, while
+    /// this context is the human-facing record of the same epoch. Both exist because they
+    /// answer different questions — the model needs its memory, the human needs the
+    /// before/after numbers and a way to read what was kept.
     private static let expectedNoticeContexts: Set<MessageSourceContext> = [
         .retryNudge, .loopCorrection, .serverError, .toolAcknowledgement, .runtimeWarning,
-        .autovisorEvent,
+        .autovisorEvent, .compaction,
     ]
 
     /// The notice kinds that render RED. `.serverError` is a failed LLM call; `.runtimeWarning`
@@ -61,7 +67,7 @@ final class SystemNoticePresentationTests: XCTestCase {
     func testResolve_coversEveryCase_soTheTableIsNotVacuous() {
         // Guards the guard: if `allCases` ever came back short the loop above
         // would pass while checking almost nothing.
-        XCTAssertGreaterThanOrEqual(MessageSourceContext.allCases.count, 15)
+        XCTAssertGreaterThanOrEqual(MessageSourceContext.allCases.count, 16)
         XCTAssertTrue(Self.expectedNoticeContexts.isSubset(of: Set(MessageSourceContext.allCases)))
     }
 
@@ -434,7 +440,7 @@ final class SystemNoticePresentationTests: XCTestCase {
         XCTAssertEqual(preview, "first")
     }
 
-    /// The other five kinds have no entry in `previewSkippedHeaders`, so their previews are
+    /// The other six kinds have no entry in `previewSkippedHeaders`, so their previews are
     /// unchanged — the skip is opt-in per kind, not a new global rule.
     func testResolve_otherKinds_previewsAreUnaffectedByTheSkipTable() {
         let body = MessageSourceContext.autovisorEventNoticeHeader + "\n- Task #1 failed."

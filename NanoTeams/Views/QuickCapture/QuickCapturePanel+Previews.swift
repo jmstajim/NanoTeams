@@ -241,6 +241,7 @@ extension View {
     ) -> some View {
         self
             .environment(store)
+            .environment(store.contextFill)
             .environment(store.configuration)
             .environment(StreamingPreviewManager())
             .environment(DictationService())

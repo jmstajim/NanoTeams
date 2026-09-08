@@ -469,4 +469,189 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
         XCTAssertNil(result,
                      "Step is done (or this isn't the latest bubble) — even latent activity flags must not surface a pill")
     }
+    // MARK: - Compaction outranks everything
+
+    /// Before the first delta the status row IS the epoch's only signal — nothing has landed
+    /// in the disclosure yet — so it outranks every other rule here, including the ones that
+    /// would otherwise resolve to "no status row".
+    func testCompacting_beforeFirstDelta_isTheStatusRow() {
+        for hasContent in [true, false] {
+            for toolCall in [true, false] {
+                for progress in [nil, .indeterminate, .fraction(0.5)] as [PromptProcessingStatus?] {
+                    for activity in [true, false] {
+                        XCTAssertEqual(
+                            MessageBubbleStreamingIndicator.resolveStatusText(
+                                isStreaming: true,
+                                isImplicitStreamTarget: false,
+                                hasMessageContent: hasContent,
+                                hasThinkingContent: false,
+                                processingStatus: progress,
+                                hasStreamActivity: activity,
+                                isStreamingToolCall: toolCall,
+                                isCompacting: true),
+                            "Compacting…",
+                            "content=\(hasContent) toolCall=\(toolCall) "
+                                + "progress=\(String(describing: progress)) activity=\(activity)")
+                    }
+                }
+            }
+        }
+    }
+
+    /// Once the disclosure has text it renders its OWN animated "Compacting…" row
+    /// (`MessageThinkingSection.label`), and a status row saying the same thing would stack a
+    /// second identical row under the first — which is what shipped in `ef8a1cc0`. This is the
+    /// state the epoch is in for all but its first tick.
+    func testCompacting_afterFirstDelta_yieldsTheRowToTheDisclosure() {
+        for toolCall in [true, false] {
+            for progress in [nil, .indeterminate, .fraction(0.5)] as [PromptProcessingStatus?] {
+                for activity in [true, false] {
+                    XCTAssertNil(
+                        MessageBubbleStreamingIndicator.resolveStatusText(
+                            isStreaming: true,
+                            isImplicitStreamTarget: false,
+                            hasMessageContent: false,
+                            hasThinkingContent: true,
+                            processingStatus: progress,
+                            hasStreamActivity: activity,
+                            isStreamingToolCall: toolCall,
+                            isCompacting: true),
+                        "toolCall=\(toolCall) progress=\(String(describing: progress)) "
+                            + "activity=\(activity)")
+                }
+            }
+        }
+    }
+
+    /// The rule yields to an ANIMATING disclosure row, not to a present one — a static row is
+    /// not a live signal. Both arms below are unreachable for a real epoch (which writes no
+    /// prose and raises no tool call); they exist because nothing at this seam states that,
+    /// and the earlier `!hasMessageContent` shape silently produced a zero-animation bubble in
+    /// the first of them.
+    func testCompacting_withProse_followsWhichDisclosureRowIsLive() {
+        XCTAssertNil(
+            MessageBubbleStreamingIndicator.resolveStatusText(
+                isStreaming: true,
+                isImplicitStreamTarget: false,
+                hasMessageContent: true,
+                hasThinkingContent: true,
+                processingStatus: nil,
+                hasStreamActivity: true,
+                isStreamingToolCall: true,
+                isCompacting: true),
+            "the TRAILING disclosure row animates here — it is the live signal")
+
+        XCTAssertEqual(
+            MessageBubbleStreamingIndicator.resolveStatusText(
+                isStreaming: true,
+                isImplicitStreamTarget: false,
+                hasMessageContent: true,
+                hasThinkingContent: true,
+                processingStatus: nil,
+                hasStreamActivity: true,
+                isStreamingToolCall: false,
+                isCompacting: true),
+            "Compacting…",
+            "neither disclosure row animates — yielding would leave zero animation")
+    }
+
+    /// The epoch's content preview is empty for its whole life, so the reservation — which is
+    /// gated ON content — never fires and no blank keeper row appears under the disclosure.
+    func testCompacting_neverReservesABlankSlot() {
+        XCTAssertFalse(
+            MessageBubbleStreamingIndicator.reservesStatusSlot(
+                isStreaming: true,
+                hasMessageContent: false,
+                hasThinkingContent: true,
+                isStreamingToolCall: false))
+    }
+
+    /// The flag is not gated on `isStreaming`: an epoch on a PARKED step has no live stream by
+    /// that definition, and the row still has to say what is happening.
+    func testCompacting_showsEvenWithoutALiveStream() {
+        XCTAssertEqual(
+            MessageBubbleStreamingIndicator.resolveStatusText(
+                isStreaming: false,
+                isImplicitStreamTarget: false,
+                hasMessageContent: false,
+                hasThinkingContent: false,
+                processingStatus: nil,
+                hasStreamActivity: false,
+                isCompacting: true),
+            "Compacting…")
+    }
+
+    /// …and it keeps the wording even with a full disclosure, because with no live stream
+    /// that row is static: nothing else on the bubble is moving.
+    func testCompacting_withoutALiveStream_keepsTheRowEvenWithADisclosure() {
+        XCTAssertEqual(
+            MessageBubbleStreamingIndicator.resolveStatusText(
+                isStreaming: false,
+                isImplicitStreamTarget: false,
+                hasMessageContent: false,
+                hasThinkingContent: true,
+                processingStatus: nil,
+                hasStreamActivity: false,
+                isCompacting: true),
+            "Compacting…")
+    }
+
+    /// The state the epoch actually reaches: no prose, nothing in the disclosure yet.
+    func testCompacting_rendersARow() {
+        XCTAssertTrue(
+            MessageBubbleStreamingIndicator.rendersRow(
+                isStreaming: true,
+                isImplicitStreamTarget: false,
+                hasMessageContent: false,
+                hasThinkingContent: false,
+                processingStatus: nil,
+                hasStreamActivity: true,
+                isStreamingToolCall: false,
+                isCompacting: true))
+    }
+
+    /// Default off: every existing call site keeps its behaviour unchanged.
+    func testCompactingDefaultsToOff() {
+        XCTAssertNil(
+            MessageBubbleStreamingIndicator.resolveStatusText(
+                isStreaming: true,
+                isImplicitStreamTarget: false,
+                hasMessageContent: true,
+                hasThinkingContent: false,
+                processingStatus: nil,
+                hasStreamActivity: false))
+    }
+
+    // MARK: - The thinking row's own label
+
+    /// The two rows describe the SAME stream, so a bubble whose status says "Compacting…"
+    /// while its disclosure says "Thinking…" is telling the user two different stories about
+    /// one thing.
+    func testThinkingSectionLabel_followsTheEpoch() {
+        XCTAssertEqual(
+            MessageThinkingSection.label(isStreaming: true, isCompacting: false), "Thinking…")
+        XCTAssertEqual(
+            MessageThinkingSection.label(isStreaming: false, isCompacting: false), "Thinking")
+        XCTAssertEqual(
+            MessageThinkingSection.label(isStreaming: true, isCompacting: true), "Compacting…")
+        XCTAssertEqual(
+            MessageThinkingSection.label(isStreaming: false, isCompacting: true), "Compacting")
+    }
+
+    /// The row and the window it opens must name the same thing: an epoch's disclosure holds
+    /// the model re-reading its own transcript, and the summary it wrote — not deliberation
+    /// about the task, which is what a window headed "Thinking" claims.
+    func testThinkingSectionWindow_followsTheEpoch() {
+        let id = UUID()
+        let thinking = MessageThinkingSection.detailWindow(
+            isCompacting: false, messageID: id, roleName: "Engineer", text: "t")
+        let compacting = MessageThinkingSection.detailWindow(
+            isCompacting: true, messageID: id, roleName: "Engineer", text: "t")
+
+        guard case .thinking = thinking else { return XCTFail("Expected .thinking") }
+        guard case .compaction = compacting else { return XCTFail("Expected .compaction") }
+        XCTAssertNotEqual(thinking, compacting,
+                          "same message id, separate dedup namespaces — one turn can own both")
+    }
+
 }

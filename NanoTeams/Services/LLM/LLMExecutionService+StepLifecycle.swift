@@ -25,71 +25,18 @@ extension LLMExecutionService {
         guard let workFolderRoot = delegate.workFolderURL else { return }
         guard task.runs[runIndex].steps[stepIndex].status == .running else { return }
 
-        let isDefaultStorage = workFolderRoot == NTMSOrchestrator.defaultStorageURL
-        let globalConfig = delegate.globalLLMConfig
-
-        // Resolve per-role LLM override from team settings
-        let resolvedTeam = resolveTeam(task: task)
         let step = task.runs[runIndex].steps[stepIndex]
-        let roleForMessage = step.role
-        let effectiveID = step.effectiveRoleID
-        let roleDefinition = resolvedTeam?.findRole(byIdentifier: effectiveID)
-        let roleOverride = roleDefinition?.llmOverride
-
-        // Build effective config applying per-role override
-        let effectiveConfig = Self.buildEffectiveConfig(
-            globalConfig: globalConfig,
-            roleOverride: roleOverride
-        )
-
-        let client = clientFactory()
-        let supervisorMode = resolvedTeam?.settings.supervisorMode ?? .manual
-        // Enter stage 1 with the DEFINITION resolved on line 36 (an exact
-        // `$0.id ==` hit) instead of round-tripping `roleForMessage` through
-        // `findRole` again — that reverse lookup returns the FIRST role sharing a
-        // `systemRoleID`, so a role duplicated in the team editor would silently
-        // run with its twin's toolset. Falls back to the `Role` path only when no
-        // definition exists, which is exactly where the fallback IDs belong.
-        // Whether a human is there to approve a held `bash` / computer-use action decides
-        // which of those tools ship at all (`ApprovalGatedAvailability`) — the same answer the
-        // two gates read for this task, so the schema and the gate cannot disagree.
-        let humanPresent = approvalHumanPresent(task: task, supervisorMode: supervisorMode)
-        let stage1 = roleDefinition.map {
-            toolSchemas(forDefinition: $0, team: resolvedTeam, humanPresent: humanPresent)
-        } ?? toolSchemas(for: roleForMessage, team: resolvedTeam, humanPresent: humanPresent)
-        let tools = EffectiveToolset.applyStorageFilters(
-            stage1,
-            storage: isDefaultStorage ? .defaultStorage : .realFolder(root: workFolderRoot)
-        )
-
-        let paths = NTMSPaths(workFolderRoot: workFolderRoot)
-        let runID = task.runs[runIndex].id
-        // For delegated child tasks, log paths nest under the parent's directory tree.
-        let ancestors = delegate.snapshot?.tasksIndex.ancestorIDs(of: task.id) ?? []
-        let networkLogger: NetworkLogger? = delegate.loggingEnabled
-            ? NetworkLogger.forRun(logURL: paths.networkLogJSONL(taskID: task.id, runID: runID, ancestors: ancestors))
-            : nil
-        let toolCallsLogURL: URL? = delegate.loggingEnabled
-            ? paths.toolCallsJSONL(taskID: task.id, runID: runID, ancestors: ancestors)
-            : nil
-        // What this step runs on is recorded by the provider client at its first request
-        // (`NetworkLogger.noteProvenanceIfNeeded`) — per (log, server, model), which is
-        // what makes a `roleOverride` pointing one run at several models visible.
-
-        let bashPolicy = delegate.bashPolicy
-        let (_, runtime) = ToolRegistry.defaultRegistry(
-            workFolderRoot: workFolderRoot, toolCallsLogURL: toolCallsLogURL,
-            networkLogger: networkLogger,
-            isDefaultStorage: isDefaultStorage,
-            searchExploratoryByDefault: delegate.searchExploratoryByDefault,
-            readFileMaxLines: delegate.readFileMaxLines,
-            searchMaxResults: delegate.searchMaxResults,
-            searchContextBefore: delegate.searchContextBefore,
-            searchContextAfter: delegate.searchContextAfter,
-            bashSandboxEnabled: bashPolicy.sandboxEnabled,
-            bashSandboxPermissions: bashPolicy.sandboxPermissions,
-            bashAllowUnsandboxedFallback: bashPolicy.allowUnsandboxedFallback
-        )
+        let stepRuntime = resolveStepRuntime(
+            step: step, task: task, runID: task.runs[runIndex].id,
+            workFolderRoot: workFolderRoot, delegate: delegate)
+        let globalConfig = stepRuntime.globalConfig
+        let effectiveConfig = stepRuntime.effectiveConfig
+        let client = stepRuntime.client
+        let tools = stepRuntime.tools
+        let runtime = stepRuntime.runtime
+        let networkLogger = stepRuntime.networkLogger
+        let supervisorMode = stepRuntime.supervisorMode
+        let roleForMessage = stepRuntime.roleForMessage
 
         let fullConversation = buildChatMessages(
             for: task, stepID: stepID, tools: tools, supervisorMode: supervisorMode)
@@ -268,6 +215,11 @@ extension LLMExecutionService {
                 // on the wire — Θ(Δ) because the walk stops at three qualifying turns, honestly
                 // Θ(N) only on a wire holding fewer, and once per entry either way.
                 self.reseedMessageLoopRing(stepKey: stepKey, from: conversation)
+                // A step that re-enters over its budget must not have to spend a whole
+                // request to rediscover it. The persisted fill is the SERVER's own count from
+                // the request that parked it, so the verdict is derivable now — state that is
+                // derived, not carried, exactly like the planning phase's.
+                self.seedCompactionStateOnEntry(stepID: stepID, taskID: taskID, step: step)
 
                 // No per-role iteration ceiling: the global maxToolIterations is 0
                 // (unbounded) for every step, the Autovisor manager included.
@@ -333,6 +285,28 @@ extension LLMExecutionService {
                         // propagates to the outer catch → `completeStepFailure`, which
                         // produces the error bubble. No "attempt N" retry note is
                         // appended for these. Transient errors fall through to retry.
+                        // The prompt did not FIT. `isRetryable` reads this first and answers
+                        // false — correctly, because a byte-identical resend cannot change the
+                        // answer. What CAN change it is making the conversation smaller, and
+                        // that is a compaction epoch, so this arm sits ahead of the gate. No
+                        // summary is requested: that request carries the same conversation and
+                        // would be refused for the same reason, so the seed is built from what
+                        // the app already holds. One attempt per response — a second refusal
+                        // means the pinned head does not fit on its own, and falls through.
+                        // The refreshed snapshot at the CAPTURED indices, exactly as
+                        // `runOneLLMToolIteration` reads its own `step` — the seed is built
+                        // from the notes the step recorded most recently, and re-resolving by
+                        // id here would be a second, divergent convention in one file.
+                        let refreshed = Self.refreshedTaskSnapshot(task, delegate: delegate)
+                            .runs[runIndex].steps[stepIndex]
+                        if ContextOverflowClassifier.isContextOverflow(error),
+                           await self.compactAfterServerRefusal(
+                               stepID: stepID, taskID: taskID, step: refreshed,
+                               conversationMessages: &conversation)
+                        {
+                            safetyIterations -= 1
+                            continue
+                        }
                         if !LLMRetryPolicy.isRetryable(error) { throw error }
                         // LLM server error — retry instead of killing the step. The
                         // conversation is already the whole request, so the retry needs
@@ -367,6 +341,9 @@ extension LLMExecutionService {
                         continue
                     }
                     llmErrorCount = 0
+                    // A response arrived, so the refusal arc above starts over: the next
+                    // overflow is a new one and deserves its own single attempt.
+                    executionStates[stepKey]?.overflowCompactionsSinceLastResponse = 0
 
                     switch stop {
                     case .completed:
@@ -430,12 +407,118 @@ extension LLMExecutionService {
                     ? ContextBudgetPolicy.overflowFailureMessage(
                         modelName: effectiveConfig.modelName,
                         serverMessage: serverMessage,
-                        provider: effectiveConfig.provider)
+                        provider: effectiveConfig.provider,
+                        compaction: self.compactionOutcomeForFailure(
+                            stepID: stepID, taskID: taskID))
                     : serverMessage
                 await self.completeStepFailure(stepID: stepID, taskID: taskID, errorMessage: message)
             }
         }
 
         executionStates[stepKey]?.runningTask = taskHandle
+    }
+
+    // MARK: - Step runtime resolution
+
+    /// Everything a step's execution resolves from task + team state before it opens its
+    /// task: the effective config, a client, the toolset, and the run's loggers.
+    ///
+    /// Extracted so an out-of-loop context compaction can send its summary request with the
+    /// step's OWN model and the run's own network log, instead of re-deriving a second,
+    /// almost-identical resolution that would drift from this one. What deliberately stays
+    /// in `startStepExecution` is the pair that belongs to STARTING: the fresh-conversation
+    /// prefix-chain drop and `preflightCheck` — the first has to run before the second, and
+    /// a compaction neither starts a conversation nor may silently fall back to the global
+    /// server on a role whose override is unreachable.
+    struct StepRuntime {
+        let globalConfig: LLMConfig
+        let effectiveConfig: LLMConfig
+        let client: any LLMClient
+        let tools: [ToolSchema]
+        let runtime: ToolRuntime
+        let networkLogger: NetworkLogger?
+        let supervisorMode: SupervisorMode
+        let roleForMessage: Role
+    }
+
+    func resolveStepRuntime(
+        step: StepExecution,
+        task: NTMSTask,
+        runID: Int,
+        workFolderRoot: URL,
+        delegate: LLMExecutionDelegate
+    ) -> StepRuntime {
+        let isDefaultStorage = workFolderRoot == NTMSOrchestrator.defaultStorageURL
+        let globalConfig = delegate.globalLLMConfig
+
+        // Resolve per-role LLM override from team settings
+        let resolvedTeam = resolveTeam(task: task)
+        let roleForMessage = step.role
+        let effectiveID = step.effectiveRoleID
+        let roleDefinition = resolvedTeam?.findRole(byIdentifier: effectiveID)
+        let roleOverride = roleDefinition?.llmOverride
+
+        // Build effective config applying per-role override
+        let effectiveConfig = Self.buildEffectiveConfig(
+            globalConfig: globalConfig,
+            roleOverride: roleOverride
+        )
+
+        let client = clientFactory()
+        let supervisorMode = resolvedTeam?.settings.supervisorMode ?? .manual
+        // Enter stage 1 with the DEFINITION resolved on line 36 (an exact
+        // `$0.id ==` hit) instead of round-tripping `roleForMessage` through
+        // `findRole` again — that reverse lookup returns the FIRST role sharing a
+        // `systemRoleID`, so a role duplicated in the team editor would silently
+        // run with its twin's toolset. Falls back to the `Role` path only when no
+        // definition exists, which is exactly where the fallback IDs belong.
+        // Whether a human is there to approve a held `bash` / computer-use action decides
+        // which of those tools ship at all (`ApprovalGatedAvailability`) — the same answer the
+        // two gates read for this task, so the schema and the gate cannot disagree.
+        let humanPresent = approvalHumanPresent(task: task, supervisorMode: supervisorMode)
+        let stage1 = roleDefinition.map {
+            toolSchemas(forDefinition: $0, team: resolvedTeam, humanPresent: humanPresent)
+        } ?? toolSchemas(for: roleForMessage, team: resolvedTeam, humanPresent: humanPresent)
+        let tools = EffectiveToolset.applyStorageFilters(
+            stage1,
+            storage: isDefaultStorage ? .defaultStorage : .realFolder(root: workFolderRoot)
+        )
+
+        let paths = NTMSPaths(workFolderRoot: workFolderRoot)
+        // For delegated child tasks, log paths nest under the parent's directory tree.
+        let ancestors = delegate.snapshot?.tasksIndex.ancestorIDs(of: task.id) ?? []
+        let networkLogger: NetworkLogger? = delegate.loggingEnabled
+            ? NetworkLogger.forRun(logURL: paths.networkLogJSONL(taskID: task.id, runID: runID, ancestors: ancestors))
+            : nil
+        let toolCallsLogURL: URL? = delegate.loggingEnabled
+            ? paths.toolCallsJSONL(taskID: task.id, runID: runID, ancestors: ancestors)
+            : nil
+        // What this step runs on is recorded by the provider client at its first request
+        // (`NetworkLogger.noteProvenanceIfNeeded`) — per (log, server, model), which is
+        // what makes a `roleOverride` pointing one run at several models visible.
+
+        let bashPolicy = delegate.bashPolicy
+        let (_, runtime) = ToolRegistry.defaultRegistry(
+            workFolderRoot: workFolderRoot, toolCallsLogURL: toolCallsLogURL,
+            networkLogger: networkLogger,
+            isDefaultStorage: isDefaultStorage,
+            searchExploratoryByDefault: delegate.searchExploratoryByDefault,
+            readFileMaxLines: delegate.readFileMaxLines,
+            searchMaxResults: delegate.searchMaxResults,
+            searchContextBefore: delegate.searchContextBefore,
+            searchContextAfter: delegate.searchContextAfter,
+            bashSandboxEnabled: bashPolicy.sandboxEnabled,
+            bashSandboxPermissions: bashPolicy.sandboxPermissions,
+            bashAllowUnsandboxedFallback: bashPolicy.allowUnsandboxedFallback
+        )
+        return StepRuntime(
+            globalConfig: globalConfig,
+            effectiveConfig: effectiveConfig,
+            client: client,
+            tools: tools,
+            runtime: runtime,
+            networkLogger: networkLogger,
+            supervisorMode: supervisorMode,
+            roleForMessage: roleForMessage)
     }
 }

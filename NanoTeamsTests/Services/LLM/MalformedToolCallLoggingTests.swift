@@ -247,4 +247,18 @@ final class MalformedToolCallLoggingTests: XCTestCase {
             jsonlLines().isEmpty,
             "Channel-only buffer is not a tool-call attempt → no tool_calls.jsonl record (parity)")
     }
+
+    /// The mirror into `tool_calls.jsonl` + `network_log.jsonl` sits behind `if let runtime`,
+    /// so a caller that omits it still writes the feed card and drops BOTH audit rows — a run
+    /// whose logs disagree with its own feed, silently. The production caller holds a
+    /// non-optional `ToolRuntime`; the `= nil` default served only the DEBUG helper, where the
+    /// drop is stated in one place. Without a default the compiler carries the claim.
+    func testTheRuntimeArgumentHasNoDefault() throws {
+        let path = "NanoTeams/Services/LLM/LLMExecutionService+StepFlowControl.swift"
+        let source = try String(
+            contentsOf: RatchetSourceScan.repoRoot.appendingPathComponent(path), encoding: .utf8)
+        XCTAssertFalse(
+            RatchetSourceScan.strippingLineComments(source).contains("runtime: ToolRuntime? = nil"),
+            "a default re-opens the silent drop: the card is written, both per-run logs are not")
+    }
 }

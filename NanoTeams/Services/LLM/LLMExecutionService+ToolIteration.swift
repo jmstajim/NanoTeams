@@ -60,6 +60,33 @@ extension LLMExecutionService {
             roleDefinition: roleDefinition
         )
 
+        // 2-bis. Consume a compaction epoch this step owes.
+        //
+        // Placed right after the planning phase and BEFORE the queued-message injection, for
+        // two reasons. The phase owns the wire while it is mid-planning — its boundary slices
+        // at the brief, and an epoch that had already folded the brief away would leave the
+        // slice with nothing to cut at — so the epoch waits (`wireIsMidPlanning`). And a
+        // queued Supervisor turn injected first would be folded away by the very epoch that
+        // ran a line later; injected after, it is the newest turn on the compacted wire,
+        // which is where the human expects it.
+        //
+        // Never inside the tool-result batch below: a fold between a call and its results
+        // would hand the model an answer to a question it can no longer see.
+        if let reason = executionStates[TaskStepKey(taskID: task.id, stepID: stepID)]?
+            .compactRequested, !authorization.wireIsMidPlanning
+        {
+            await compactConversationInLoop(
+                stepID: stepID,
+                taskID: task.id,
+                reason: reason,
+                step: step,
+                client: client,
+                config: config,
+                networkLogger: networkLogger,
+                roleForMessage: roleForMessage,
+                conversationMessages: &conversationMessages)
+        }
+
         // 2a. Consume any queued Supervisor message targeted at this role (or the
         // untargeted Team queue). Appends a user turn to `conversationMessages`
         // for this iteration's request.
@@ -145,6 +172,14 @@ extension LLMExecutionService {
         await confirmContextTruncation(
             stepID: stepID, taskID: task.id, config: config,
             appendedTokens: prefixObservation.appendedTokens,
+            serverPromptTokens: streamResult.serverPrefill?.promptTokens
+                ?? streamResult.tokenUsage?.inputTokens)
+
+        // How full is this step now, and has it crossed its budget? Reads the SERVER's own
+        // count — the same number the truncation detector reads, and for the same reason:
+        // the estimator is unusable as an absolute (0.45×–2.58× across languages).
+        await evaluateCompactionTrigger(
+            stepID: stepID, taskID: task.id, client: client, config: config,
             serverPromptTokens: streamResult.serverPrefill?.promptTokens
                 ?? streamResult.tokenUsage?.inputTokens)
 
@@ -509,6 +544,9 @@ extension LLMExecutionService {
         // pre-send `verdict` produce confidently wrong `.exceeded` claims for every later step on
         // this model. One honest banner per step beats a fabricated window.
         executionStates[stepKey]?.didWarnContextOverflow = true
+        // The one automatic trigger that does not need a window: the server has SAID it
+        // stopped keeping up, which is the fact a budget is a proxy for.
+        noteServerTruncationForCompaction(stepID: stepID, taskID: taskID)
         delegate?.setLastErrorMessageForUI(
             ContextBudgetPolicy.truncationMessage(
                 modelName: config.modelName,

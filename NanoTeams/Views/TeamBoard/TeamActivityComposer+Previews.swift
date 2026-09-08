@@ -17,6 +17,7 @@ import SwiftUI
         maxHeight: .infinity
     )
     .environment(store)
+    .environment(store.contextFill)
     .environment(config)
     .environment(dictation)
     .frame(width: 500)
@@ -41,6 +42,7 @@ import SwiftUI
         maxHeight: .infinity
     )
     .environment(store)
+    .environment(store.contextFill)
     .environment(config)
     .environment(dictation)
     .frame(width: 500)

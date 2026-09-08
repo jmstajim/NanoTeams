@@ -16,6 +16,7 @@ import SwiftUI
         isFinalReviewStage: false
     )
     .environment(store)
+    .environment(store.contextFill)
     .environment(config)
     .environment(streaming)
     .environment(engineState)
@@ -74,6 +75,7 @@ import SwiftUI
         isFinalReviewStage: false
     )
     .environment(store)
+    .environment(store.contextFill)
     .environment(config)
     .environment(streaming)
     .environment(engineState)
@@ -132,6 +134,7 @@ import SwiftUI
         isFinalReviewStage: false
     )
     .environment(store)
+    .environment(store.contextFill)
     .environment(config)
     .environment(streaming)
     .environment(engineState)
@@ -189,6 +192,7 @@ import SwiftUI
         isFinalReviewStage: false
     )
     .environment(store)
+    .environment(store.contextFill)
     .environment(config)
     .environment(streaming)
     .environment(engineState)
@@ -230,6 +234,7 @@ import SwiftUI
         isFinalReviewStage: false
     )
     .environment(store)
+    .environment(store.contextFill)
     .environment(config)
     .environment(streaming)
     .environment(engineState)
@@ -265,6 +270,7 @@ import SwiftUI
         isFinalReviewStage: true
     )
     .environment(store)
+    .environment(store.contextFill)
     .environment(config)
     .environment(streaming)
     .environment(engineState)
@@ -317,6 +323,7 @@ import SwiftUI
         isFinalReviewStage: false
     )
     .environment(store)
+    .environment(store.contextFill)
     .environment(config)
     .environment(streaming)
     .environment(engineState)
@@ -368,6 +375,7 @@ import SwiftUI
         filterRoleID: sweRole.id
     )
     .environment(store)
+    .environment(store.contextFill)
     .environment(config)
     .environment(streaming)
     .environment(engineState)
@@ -406,6 +414,7 @@ import SwiftUI
         isFinalReviewStage: false
     )
     .environment(store)
+    .environment(store.contextFill)
     .environment(config)
     .environment(streaming)
     .environment(engineState)
@@ -489,6 +498,7 @@ import SwiftUI
         isFinalReviewStage: false
     )
     .environment(store)
+    .environment(store.contextFill)
     .environment(config)
     .environment(streaming)
     .environment(engineState)
@@ -559,6 +569,7 @@ import SwiftUI
         isFinalReviewStage: false
     )
     .environment(store)
+    .environment(store.contextFill)
     .environment(config)
     .environment(streaming)
     .environment(engineState)
@@ -598,6 +609,7 @@ import SwiftUI
         isFinalReviewStage: false
     )
     .environment(store)
+    .environment(store.contextFill)
     .environment(config)
     .environment(streaming)
     .environment(engineState)
@@ -752,6 +764,7 @@ import SwiftUI
         isFinalReviewStage: false
     )
     .environment(store)
+    .environment(store.contextFill)
     .environment(config)
     .environment(streaming)
     .environment(engineState)

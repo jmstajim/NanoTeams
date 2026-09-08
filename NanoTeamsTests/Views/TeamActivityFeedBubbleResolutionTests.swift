@@ -32,10 +32,10 @@ final class TeamActivityFeedBubbleResolutionTests: XCTestCase {
             thinking: "internal monologue",
             processingStatus: .fraction(0.42),
             hasStreamActivity: true,
-            isStreamingToolCall: false
+            isStreamingToolCall: false, isCompacting: false
         )
         let inputs = TeamActivityFeedView.resolveBubbleInputs(msg: msg, streaming: snap)
-        guard case .streaming(let content, let thinking, let progress, let hasActivity, let toolCall) = inputs else {
+        guard case .streaming(let content, let thinking, let progress, let hasActivity, let toolCall, let compacting) = inputs else {
             return XCTFail("Expected .streaming case, got \(inputs)")
         }
         XCTAssertEqual(content, "live tokens…")
@@ -43,6 +43,7 @@ final class TeamActivityFeedBubbleResolutionTests: XCTestCase {
         XCTAssertEqual(progress, .fraction(0.42))
         XCTAssertTrue(hasActivity)
         XCTAssertFalse(toolCall)
+        XCTAssertFalse(compacting)
     }
 
     /// Streaming branch must NOT inherit attachments from the message body
@@ -67,7 +68,7 @@ final class TeamActivityFeedBubbleResolutionTests: XCTestCase {
             thinking: nil,
             processingStatus: nil,
             hasStreamActivity: true,
-            isStreamingToolCall: false
+            isStreamingToolCall: false, isCompacting: false
         )
         let inputs = TeamActivityFeedView.resolveBubbleInputs(msg: msg, streaming: snap)
         // The discriminated union enforces this at compile time: a
@@ -90,10 +91,10 @@ final class TeamActivityFeedBubbleResolutionTests: XCTestCase {
             thinking: nil,
             processingStatus: nil,
             hasStreamActivity: false,
-            isStreamingToolCall: false
+            isStreamingToolCall: false, isCompacting: false
         )
         let inputs = TeamActivityFeedView.resolveBubbleInputs(msg: msg, streaming: snap)
-        guard case .streaming(let content, _, _, _, _) = inputs else {
+        guard case .streaming(let content, _, _, _, _, _) = inputs else {
             return XCTFail("Expected .streaming")
         }
         XCTAssertEqual(content, "", "nil streaming content must resolve to empty string.")
@@ -111,10 +112,10 @@ final class TeamActivityFeedBubbleResolutionTests: XCTestCase {
             thinking: "reasoning…",
             processingStatus: nil,
             hasStreamActivity: true,
-            isStreamingToolCall: true
+            isStreamingToolCall: true, isCompacting: false
         )
         let inputs = TeamActivityFeedView.resolveBubbleInputs(msg: msg, streaming: snap)
-        guard case .streaming(_, _, _, _, let toolCall) = inputs else {
+        guard case .streaming(_, _, _, _, let toolCall, _) = inputs else {
             return XCTFail("Expected .streaming case")
         }
         XCTAssertTrue(toolCall)
@@ -130,7 +131,8 @@ final class TeamActivityFeedBubbleResolutionTests: XCTestCase {
         let snap = StreamingSnapshot(
             isStreaming: false, content: nil, thinking: nil,
             processingStatus: nil, hasStreamActivity: false,
-            isStreamingToolCall: true  // stale manager state must be discarded
+            isStreamingToolCall: true,  // stale manager state must be discarded
+            isCompacting: true
         )
         let inputs = TeamActivityFeedView.resolveBubbleInputs(msg: msg, streaming: snap)
         guard case .committed = inputs else {
@@ -171,7 +173,7 @@ final class TeamActivityFeedBubbleResolutionTests: XCTestCase {
         let snap = StreamingSnapshot(
             isStreaming: false, content: nil, thinking: nil,
             processingStatus: nil, hasStreamActivity: false,
-            isStreamingToolCall: false
+            isStreamingToolCall: false, isCompacting: false
         )
         let inputs = TeamActivityFeedView.resolveBubbleInputs(msg: msg, streaming: snap)
         guard case .committed(let content, _, let paths, let clips) = inputs else {
@@ -208,7 +210,7 @@ final class TeamActivityFeedBubbleResolutionTests: XCTestCase {
         let snap = StreamingSnapshot(
             isStreaming: false, content: nil, thinking: nil,
             processingStatus: nil, hasStreamActivity: false,
-            isStreamingToolCall: false
+            isStreamingToolCall: false, isCompacting: false
         )
         let inputs = TeamActivityFeedView.resolveBubbleInputs(msg: msg, streaming: snap)
         guard case .committed(let content, _, let paths, let clips) = inputs else {
@@ -232,7 +234,7 @@ final class TeamActivityFeedBubbleResolutionTests: XCTestCase {
         let snap = StreamingSnapshot(
             isStreaming: false, content: nil, thinking: nil,
             processingStatus: nil, hasStreamActivity: false,
-            isStreamingToolCall: false
+            isStreamingToolCall: false, isCompacting: false
         )
         let inputs = TeamActivityFeedView.resolveBubbleInputs(msg: msg, streaming: snap)
         guard case .committed(let content, _, let paths, let clips) = inputs else {
@@ -251,7 +253,7 @@ final class TeamActivityFeedBubbleResolutionTests: XCTestCase {
         let snap = StreamingSnapshot(
             isStreaming: false, content: nil, thinking: nil,
             processingStatus: nil, hasStreamActivity: false,
-            isStreamingToolCall: false
+            isStreamingToolCall: false, isCompacting: false
         )
         let inputs = TeamActivityFeedView.resolveBubbleInputs(msg: msg, streaming: snap)
         guard case .committed(_, let thinking, _, _) = inputs else {

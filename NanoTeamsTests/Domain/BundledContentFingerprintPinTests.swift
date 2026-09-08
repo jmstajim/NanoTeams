@@ -106,6 +106,17 @@ final class BundledContentFingerprintPinTests: XCTestCase {
     //     NanoTeams/Domain/TeamTemplateFactory.swift NanoTeams/Domain/ToolDefinitionRecord.swift \
     //     NanoTeams/Services/Tools/ → empty.
     //   git diff --stat 746b904e..HEAD -- NanoTeams/ → HarmonySentinelNormalizer.swift 1/1, an indent.
+    //
+    // 1.9.12 — bumped WITHOUT moving this value again. The wave is context compaction and
+    // tool-call parsing: binary behaviour, no bundled content at all. Same anchor `746b904e`,
+    // because the anchor belongs to the value, not to the release (#167):
+    //   git diff --stat 746b904e -- <the six folded surfaces above>
+    //     → ToolRegistry.swift +7, ToolRuntime.swift +5/−1, and neither folds:
+    //       `defaultAliases` is not read by `compute`, and `errorDescription` is a RUNTIME
+    //       text — it carries a `RuntimePromptRegistry` row instead.
+    //   git diff 746b904e -- NanoTeams/Services/Tools/ | grep -c 'static let schema' → 0
+    // So the reconcile this bump triggers rewrites nothing in an existing work folder; what
+    // 1.9.12 delivers travels in the binary, and the watermark advance is the whole effect.
     private static let expectedFingerprint = "5882e0ac100e1def"
 
     func testBundledContent_hasNotChangedWithoutAVersionBump() {

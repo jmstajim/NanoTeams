@@ -297,6 +297,46 @@ final class TaskStreamSplitTests: XCTestCase {
         XCTAssertEqual(back.runs[0].steps[0].wireTranscript.map(\.content), ["sys", "repaired"])
     }
 
+    /// The compaction shape, which the repair above does not reach: the replacement is
+    /// strictly SHORTER than what is on disk, and it happens repeatedly over one step's life.
+    ///
+    /// The append-only log diffs positionally and emits `truncate(keep:)` + append for a wire
+    /// that shrank. Three epochs in a row exercise that path three times against a log that
+    /// keeps growing underneath, which is where an off-by-one in `keep` would surface as a
+    /// conversation reloading with a stale tail — invisible, because the result is still a
+    /// well-formed conversation.
+    func testRepeatedCompactionEpochs_reloadExactly() throws {
+        let id = try makeTask()
+        var task = try repository.loadTask(at: root, taskID: id)
+        let head = [
+            ChatMessage(role: .system, content: "sys"),
+            ChatMessage(role: .user, content: "## Supervisor Task\nbuild"),
+        ]
+
+        for epoch in 1...3 {
+            // Grow: the model works for a few turns.
+            task.runs[0].steps[0].wireTranscript += (0..<4).map {
+                ChatMessage(role: $0.isMultiple(of: 2) ? .assistant : .tool,
+                            content: "epoch \(epoch) turn \($0)")
+            }
+            if epoch == 1 { task.runs[0].steps[0].wireTranscript = head + task.runs[0].steps[0].wireTranscript }
+            task.updatedAt = MonotonicClock.shared.now()
+            try repository.updateTaskOnly(at: root, task: task)
+
+            // Fold: head + one seed, which is shorter than what is on disk.
+            task.runs[0].steps[0].wireTranscript =
+                head + [ChatMessage(role: .user, content: "## Context summary\nepoch \(epoch)")]
+            task.updatedAt = MonotonicClock.shared.now()
+            try repository.updateTaskOnly(at: root, task: task)
+
+            let back = try repository.loadTask(at: root, taskID: id)
+            XCTAssertEqual(
+                back.runs[0].steps[0].wireTranscript.map(\.content),
+                ["sys", "## Supervisor Task\nbuild", "## Context summary\nepoch \(epoch)"],
+                "epoch \(epoch): the reloaded wire must be exactly the compacted one")
+        }
+    }
+
     func testStepReset_clearsTheLogOnReload_siblingUntouched() throws {
         let id = try makeTask()
         var task = try repository.loadTask(at: root, taskID: id)
