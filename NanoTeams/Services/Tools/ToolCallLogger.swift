@@ -28,6 +28,14 @@ nonisolated struct ToolCallLogRecord: Codable, Hashable {
     /// replayed conversation, and a value that changes between runs would poison the stable
     /// prompt prefix the KV cache depends on.
     var durationMS: Double?
+    /// Milliseconds the call spent QUEUED behind another build, when it queued at all.
+    ///
+    /// Separate from `durationMS` because that one is suspend-INCLUSIVE (it wraps the whole
+    /// handler body, `await`s and all) while `BuildResult.duration` is not. Without this
+    /// field, `jq 'select(.durationMS > 500)'` — the documented way to find slow tool calls —
+    /// would bill `XcodeBuildGate`'s queue to the compiler and send the reader looking for a
+    /// build problem that does not exist. `nil` when the call did not wait.
+    var queuedMS: Double?
 }
 
 nonisolated final class ToolCallLogger: @unchecked Sendable {

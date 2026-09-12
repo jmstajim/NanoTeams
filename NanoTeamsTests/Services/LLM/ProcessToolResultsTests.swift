@@ -343,7 +343,7 @@ final class ProcessToolResultsTests: XCTestCase {
         XCTAssertEqual(conversation.count, 2)
         guard conversation.count == 2 else { return }
         let guidance = conversation[1].content ?? ""
-        XCTAssertTrue(guidance.contains("do not retry 'write_file'"),
+        XCTAssertTrue(guidance.contains("Do not retry 'write_file'"),
                       "Policy rejections must steer away from the tool, not toward new arguments. Got: \(guidance)")
         XCTAssertFalse(guidance.contains("Fix the arguments and retry."),
                        "Arguments are not the cause of a not-authorized rejection")

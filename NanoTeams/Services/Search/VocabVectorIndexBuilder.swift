@@ -44,55 +44,18 @@ nonisolated struct VocabVectorIndexBuilder {
         let failedCount: Int
     }
 
-    /// Vocabulary filter knobs. Tokens with `posting.count == 1` are pure
-    /// noise (one-off typos, unique identifiers); tokens that appear in more
-    /// than `nearUniversalRatio` of files are stopword-equivalents. Both are
-    /// skipped to keep the vocab to meaningful terms.
-    struct VocabFilter: Sendable {
-        let minPostingCount: Int
-        let nearUniversalRatio: Double
-        /// Skip filter until `fileCount > nearUniversalSkipBelowFileCount`.
-        /// On tiny test corpora (4 files) `nearUniversalRatio` drops almost
-        /// everything — the filter only makes sense on realistic corpora.
-        let nearUniversalSkipBelowFileCount: Int
-
-        static let `default` = VocabFilter(
-            minPostingCount: 2,
-            nearUniversalRatio: 0.8,
-            nearUniversalSkipBelowFileCount: 20
-        )
-
-        func accepts(token _: String, postingCount: Int, fileCount: Int) -> Bool {
-            // On tiny corpora every token appears in exactly one file by
-            // construction; `minPostingCount: 2` would empty the vocab.
-            // Same threshold as the near-universal guard — below it, both
-            // filters are statistically meaningless and the safer default
-            // is to accept everything.
-            if fileCount > nearUniversalSkipBelowFileCount {
-                guard postingCount >= minPostingCount else { return false }
-                if Double(postingCount) > Double(fileCount) * nearUniversalRatio {
-                    return false
-                }
-            }
-            return true
-        }
-    }
-
     // MARK: - Dependencies
 
     let client: any EmbeddingClient
-    let filter: VocabFilter
     let batchRetries: Int
     let retryBackoffSeconds: [Double]
 
     init(
         client: any EmbeddingClient,
-        filter: VocabFilter = .default,
         batchRetries: Int = 2,
         retryBackoffSeconds: [Double] = [0.5, 2.0]
     ) {
         self.client = client
-        self.filter = filter
         self.batchRetries = batchRetries
         self.retryBackoffSeconds = retryBackoffSeconds
     }
@@ -107,8 +70,10 @@ nonisolated struct VocabVectorIndexBuilder {
         progressHandler: @Sendable (BuildProgress) -> Void = { _ in }
     ) async throws -> BuildResult {
 
-        // 1. Filter vocab down to meaningful tokens.
-        let targetVocab = filteredVocab(searchIndex: searchIndex)
+        // 1. The vocabulary IS the target set — already filtered where the frequency was
+        //    known. Until 2026-09-11 the builder re-derived it from `searchIndex.postings`,
+        //    which is the only reason that 6.8 MB map had a second reader.
+        let targetVocab = searchIndex.vocabulary
 
         // 2. Compute diff against the existing index. Force clears the
         //    reused-token set so every target token shows up as added.
@@ -325,20 +290,6 @@ nonisolated struct VocabVectorIndexBuilder {
                 try? await Task.sleep(for: .seconds(delay))
             }
         }
-    }
-
-    // MARK: - Vocab filtering
-
-    private func filteredVocab(searchIndex: SearchIndex) -> Set<String> {
-        let fileCount = searchIndex.files.count
-        var out = Set<String>()
-        out.reserveCapacity(searchIndex.postings.count)
-        for (token, files) in searchIndex.postings {
-            if filter.accepts(token: token, postingCount: files.count, fileCount: fileCount) {
-                out.insert(token)
-            }
-        }
-        return out
     }
 
     // MARK: - Helpers

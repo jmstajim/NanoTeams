@@ -143,11 +143,11 @@ final class ArtifactModelTests: XCTestCase {
     }
 
     func testLLMReadablePath_internalPath_returnsNil() {
-        // Build Diagnostics et al. persist under .nanoteams/internal/, which the sandbox
-        // blocks. A non-nil return is a promise of readability, so internal paths must be nil.
+        // Some artifacts persist under .nanoteams/internal/, which the sandbox blocks.
+        // A non-nil return is a promise of readability, so internal paths must be nil.
         let artifact = Artifact(
-            name: "Build Diagnostics",
-            relativePath: "internal/tasks/7/runs/0/roles/x/build_diagnostics.json"
+            name: "Step Log",
+            relativePath: "internal/tasks/7/runs/0/roles/x/step_log.jsonl"
         )
         XCTAssertNil(
             artifact.llmReadablePath,

@@ -8,7 +8,7 @@ import XCTest
 /// `surfaceHover`) when it is not the selected recipient, `Colors.accent` when it is, and — on
 /// an Answer chip — whatever hex the role carries, which the user can edit in the role editor.
 /// So "does this token read here" has no single answer, and prose cannot hold it: `Colors.warning`
-/// is BYTE-IDENTICAL to `Colors.accent` in 24 of the 36 effective palettes, and `Colors.borderStrong`
+/// is BYTE-IDENTICAL to `Colors.accent` in 36 of the 50 effective palettes, and `Colors.borderStrong`
 /// is byte-identical to `Colors.surfaceElevated` in `umberDark` and `lilacDark` — a track that
 /// simply was not there, in a control whose empty state is a claim ("the window was never probed").
 /// Both were shipped, both read fine in the theme they were written in.
@@ -163,12 +163,12 @@ final class ContextFillBarPaletteTests: XCTestCase {
     /// Monochrome+1 — a neutral ramp, one accent, and terracotta reserved for failure — so in the
     /// BASE palettes (`terminalDark`, `oledDark`, `lightPaper`) every warm token, `gold` included,
     /// IS the accent. There is no third hue to be had there, and `comfortable` and `approaching`
-    /// therefore share a colour in 15 of the 46 theme-and-scheme combinations. The bar's LENGTH
+    /// therefore share a colour in 15 of the 50 theme-and-scheme combinations. The bar's LENGTH
     /// separates them; the themed palettes give them separate hues on top.
     ///
     /// What this pins is that `gold` STRICTLY DOMINATES `Colors.warning`, the semantic token the
     /// bar used until 2026-09-08: it merges with the accent in a subset of the same places, never
-    /// anywhere warning does not, and in fewer of them (15 against 34).
+    /// anywhere warning does not, and in fewer of them (15 against 36).
     ///
     /// RED: move `approaching` back to `Colors.warning` → the subset still holds but the count
     /// stops improving, and the second assertion names it.

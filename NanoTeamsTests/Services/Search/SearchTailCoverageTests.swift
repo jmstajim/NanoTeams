@@ -84,28 +84,18 @@ private final class ESearchConfigProbe: @unchecked Sendable {
 
 // MARK: - Fixtures
 
-/// Search index whose tokens all survive `VocabFilter.default` (the corpus is
-/// below `nearUniversalSkipBelowFileCount`, so the filter accepts everything).
+/// A search index the vector builder embeds in full — the document-frequency filter runs in
+/// `SearchIndexPlanner.build` now, so the vocabulary handed over here is taken at its word.
 private func esearchIndex(tokens: [String], fileCount: Int = 10) -> SearchIndex {
-    var postings: [String: [Int]] = [:]
-    for token in tokens { postings[token] = [0, 1] }
     let files = (0..<fileCount).map {
         IndexedFile(path: "f\($0).swift",
                     mTime: Date(timeIntervalSince1970: 1_700_000_000),
                     size: 100)
     }
-    // swiftlint:disable:next force_try
-    return try! SearchIndex(
+    return SearchIndex(
         generatedAt: Date(timeIntervalSince1970: 1_700_000_000),
-        signature: IndexSignature(
-            fileCount: fileCount,
-            maxMTime: Date(timeIntervalSince1970: 1_700_000_000),
-            totalSize: Int64(fileCount * 100)
-        ),
         files: files,
-        tokens: tokens.sorted(),
-        postings: postings
-    )
+        vocabulary: Set(tokens))
 }
 
 private func esearchConfig(modelName: String = "esearch-model", batchSize: Int = 4) -> EmbeddingConfig {
@@ -238,7 +228,6 @@ final class ESearchCoordinatorTailTests: XCTestCase {
         let c = makeCoordinator(client: ESearchSlowEmbedClient())
         await c.start()
         _ = await c.awaitIndex()
-        await c.stop()
 
         let persistError = await c.service.lastPersistError
         let loadError = await c.service.lastLoadError
@@ -250,6 +239,16 @@ final class ESearchCoordinatorTailTests: XCTestCase {
         XCTAssertEqual(c.lastError, persistError,
                        "the coordinator must surface the persist failure verbatim — got: "
                            + "\(c.lastError ?? "nil")")
+
+        // The closing flush reports the same failure in its own words, and in its OWN slot:
+        // `lastError` is what the settings card renders while the folder is open, and printing
+        // one failure twice in it is not a better report. `saveFailure` is what teardown reads,
+        // because that is the last moment a human can still be told.
+        await c.stop()
+        XCTAssertEqual(c.saveFailure, "Failed to save search index: \(persistError ?? "")",
+                       "got: \(c.saveFailure ?? "nil")")
+        XCTAssertEqual(c.lastError, persistError,
+                       "and the card's aggregate is unchanged by the stop")
     }
 
     /// A corrupt on-disk index is regenerated silently unless the reason is
@@ -441,7 +440,7 @@ final class ESearchIndexServiceTailTests: XCTestCase, @unchecked Sendable {
         let empty = await service.loadOrBuild(force: true)
 
         XCTAssertTrue(empty.files.isEmpty, "a non-directory root has nothing to walk")
-        XCTAssertTrue(empty.tokens.isEmpty)
+        XCTAssertTrue(empty.vocabulary.isEmpty)
         XCTAssertEqual(empty.signature.fileCount, 0)
         XCTAssertEqual(empty.signature.totalSize, 0)
 
@@ -459,7 +458,7 @@ final class ESearchIndexServiceTailTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(rebuilt.files.count, 1,
                        "the empty-root result must not pin the cache — a folder appearing at "
                            + "that path has to invalidate it")
-        XCTAssertFalse(rebuilt.tokens.isEmpty)
+        XCTAssertFalse(rebuilt.vocabulary.isEmpty)
     }
 }
 

@@ -19,6 +19,7 @@ struct ActivityPanelView: View {
     var onCorrectRole: ((String, String) -> Void)? = nil
     var isPaused: Bool = false
     var meetingParticipants: Set<String> = []
+    var queuedRoles: Set<String> = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -28,6 +29,7 @@ struct ActivityPanelView: View {
                     run: run,
                     roleDefinitions: roleDefinitions,
                     isInMeeting: meetingParticipants.contains(roleID),
+                    isQueued: queuedRoles.contains(roleID),
                     isPaused: isPaused,
                     onDeselect: {
                         selectedRoleID = nil

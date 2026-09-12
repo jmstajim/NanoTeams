@@ -270,4 +270,104 @@ final class MessageComposerDefaultsTests: XCTestCase {
             cell.width, cell.height,
             "the composer cell is wider than it is tall — a swapped CGSize reads as a portrait cell")
     }
+
+    // MARK: - Question preview cap and its fade band
+
+    func testQuestionPreviewMaxHeight_tallPane_subtractsTheChrome() {
+        XCTAssertEqual(
+            MessageComposerLayout.questionPreviewMaxHeight(maxHeight: 600),
+            600 - MessageComposerLayout.questionPreviewChrome)
+    }
+
+    func testQuestionPreviewMaxHeight_collapsedPane_clampsToTheFloor() {
+        XCTAssertEqual(
+            MessageComposerLayout.questionPreviewMaxHeight(maxHeight: 100),
+            MessageComposerLayout.minQuestionPreviewHeight)
+        XCTAssertEqual(
+            MessageComposerLayout.questionPreviewMaxHeight(maxHeight: 0),
+            MessageComposerLayout.minQuestionPreviewHeight)
+        XCTAssertEqual(
+            MessageComposerLayout.questionPreviewMaxHeight(maxHeight: -400),
+            MessageComposerLayout.minQuestionPreviewHeight)
+    }
+
+    /// `TeamActivityFeedView` seeds the pane height it measures with `.infinity`, and both
+    /// composer previews pass `maxHeight: .infinity` outright, so the fallback branch runs on
+    /// the first frame of every panel. `.nan` reaches it from a speculative layout pass.
+    func testQuestionPreviewMaxHeight_nonFinitePane_usesTheFallback() {
+        XCTAssertEqual(
+            MessageComposerLayout.questionPreviewMaxHeight(maxHeight: .infinity),
+            MessageComposerLayout.defaultQuestionPreviewHeight)
+        XCTAssertEqual(
+            MessageComposerLayout.questionPreviewMaxHeight(maxHeight: .nan),
+            MessageComposerLayout.defaultQuestionPreviewHeight)
+    }
+
+    /// The cap feeds `.frame(height:)` and `EdgeFade`. A non-finite or non-positive value at
+    /// either would be a frame SwiftUI cannot lay out and a gradient stop that empties the mask.
+    func testQuestionPreviewMaxHeight_isAlwaysFiniteAndPositive() {
+        let panes: [CGFloat] = [-1e6, -1, 0, 1, 80, 119, 120, 121, 600, 1e6, .infinity, -.infinity, .nan]
+        for pane in panes {
+            let cap = MessageComposerLayout.questionPreviewMaxHeight(maxHeight: pane)
+            XCTAssertTrue(cap.isFinite, "pane=\(pane) produced \(cap)")
+            XCTAssertGreaterThanOrEqual(cap, MessageComposerLayout.minQuestionPreviewHeight,
+                                        "pane=\(pane) fell through the floor")
+        }
+    }
+
+    func testQuestionPreviewMaxHeight_isMonotonicInPaneHeight() {
+        let caps = [200, 400, 600, 900].map {
+            MessageComposerLayout.questionPreviewMaxHeight(maxHeight: CGFloat($0))
+        }
+        for (a, b) in zip(caps, caps.dropFirst()) {
+            XCTAssertLessThanOrEqual(a, b, "a taller pane must never yield a shorter preview")
+        }
+    }
+
+    /// The complaint this pair of relations encodes, stated as geometry rather than taste: the
+    /// question preview's scroll content ends with `Spacing.xl` of bottom padding, so a band no
+    /// longer than that lands entirely inside the padding once the reader has scrolled to the
+    /// end — zero characters dimmed. The 12 % fraction this replaced was 58pt against a 480pt
+    /// cap, more than double the padding, so the last lines stayed half-dissolved even with
+    /// nothing left to scroll to.
+    func testQuestionPreviewFadeBand_fitsInsideTheScrollContentBottomPadding() {
+        XCTAssertLessThanOrEqual(
+            EdgeFade.standard, Spacing.xl,
+            """
+            The fade band (\(EdgeFade.standard)pt) now exceeds the question preview's bottom \
+            padding (\(Spacing.xl)pt), so a reader scrolled to the end of a question loses text \
+            to it. Shrink the band or grow the padding together.
+            """)
+    }
+
+    func testQuestionPreviewFadeBand_leavesMostOfTheSmallestPreviewReadable() {
+        let start = EdgeFade.fadeStart(
+            length: MessageComposerLayout.minQuestionPreviewHeight, fade: EdgeFade.standard)
+        XCTAssertGreaterThanOrEqual(
+            start, 0.7,
+            "at the collapsed-pane floor the band must stay a hint, not most of the card")
+    }
+
+    /// The tall pane is where the fraction did its damage: `0.88` meant three and a half lines
+    /// of `Typography.termBase` dimmed at a 900pt pane. A fixed band cannot reach that.
+    func testQuestionPreviewFadeBand_isBoundedInATallPane() {
+        let start = EdgeFade.fadeStart(
+            length: MessageComposerLayout.questionPreviewMaxHeight(maxHeight: 600),
+            fade: EdgeFade.standard)
+        XCTAssertGreaterThan(start, 0.88,
+                             "a tall pane must fade a smaller share than the old literal did")
+    }
+
+    func testQuestionPreviewChrome_exceedsTheFieldChromeItContains() {
+        XCTAssertGreaterThan(
+            MessageComposerLayout.questionPreviewChrome,
+            MessageComposerLayout.paneAnchoredFieldChrome,
+            "the preview's chrome has to leave room for the whole field, not just its own chrome")
+    }
+
+    func testQuestionPreviewFallback_isAtLeastTheFloor() {
+        XCTAssertGreaterThanOrEqual(
+            MessageComposerLayout.defaultQuestionPreviewHeight,
+            MessageComposerLayout.minQuestionPreviewHeight)
+    }
 }

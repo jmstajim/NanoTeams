@@ -24,7 +24,8 @@ final class QuickCaptureBackstopBatchTests: NTMSOrchestratorTestBase, @unchecked
     /// statuses matter for the backstop's `waitingSteps` filter.
     private func setUpTaskWaitingForSupervisor(
         roleIDs: [String],
-        waitingRoleIDs: [String]
+        waitingRoleIDs: [String],
+        inquiry: SupervisorInquiry? = nil
     ) async -> Int {
         await sut.openWorkFolder(tempDir)
         let taskID = await sut.createTask(title: "Test", supervisorTask: "Goal")!
@@ -40,7 +41,8 @@ final class QuickCaptureBackstopBatchTests: NTMSOrchestratorTestBase, @unchecked
                 if waitingRoleIDs.contains(roleID) {
                     step.status = .needsSupervisorInput
                     step.needsSupervisorInput = true
-                    step.supervisorQuestion = "What should I do?"
+                    step.supervisorQuestion = inquiry?.headline ?? "What should I do?"
+                    step.supervisorInquiry = inquiry
                 } else {
                     step.status = .pending
                 }
@@ -140,6 +142,71 @@ final class QuickCaptureBackstopBatchTests: NTMSOrchestratorTestBase, @unchecked
                        "Step must transition to .pending after answer (engine resumes)")
         XCTAssertFalse(step?.needsSupervisorInput ?? true,
                        "needsSupervisorInput flag cleared on answer")
+    }
+
+    // MARK: - Draining onto a parked QUESTIONNAIRE
+
+    /// A two-question form. Q1's options are labels a message could plausibly contain,
+    /// which is the collision under test.
+    private static let buildForm = SupervisorInquiry(
+        headline: "Two things before I build",
+        questions: [
+            SupervisorInquiryQuestion(
+                id: "config", prompt: "Which configuration?", kind: .singleChoice,
+                options: [
+                    SupervisorInquiryOption(id: "debug", label: "Debug"),
+                    SupervisorInquiryOption(id: "release", label: "Release"),
+                ]),
+            SupervisorInquiryQuestion(
+                id: "tests", prompt: "Run the tests too?", kind: .singleChoice,
+                options: [
+                    SupervisorInquiryOption(id: "yes", label: "Yes"),
+                    SupervisorInquiryOption(id: "no", label: "No"),
+                ]),
+        ])
+
+    /// Queued MESSAGES drained onto a step parked on a questionnaire are prose, not decisions.
+    ///
+    /// The queue is a steering channel — the person typed into the composer or the panel with
+    /// no card in front of them — so the drain mints an EMPTY `SupervisorInquirySubmission`
+    /// whenever the step holds an inquiry. Presence is what names the origin, and it routes
+    /// `compose` away from `parse`, the grammar written for a model's `Q2: 1, 3` reply.
+    ///
+    /// RED: pass `submission: nil` (what this path did until 2026-09-10) → `parse` reads
+    /// `1. actually use Release` as question 1 answered with the label `Release`. The asking
+    /// role is told the Supervisor DECIDED on Release; nobody decided anything, and the second
+    /// message never reaches the note.
+    ///
+    /// This is the sharpest case the 2026-09-12 change fixes. The empty submission is still
+    /// load-bearing — it is what routes away from `parse` — but what it RECORDS is now nothing
+    /// rather than a full set of assumptions: until then, a person who typed about something
+    /// else entirely was reported as having endorsed every recommendation in the form.
+    func testBackstopDrain_stepParkedOnAForm_recordsNoDecisionsAndKeepsTheProse() async {
+        let roleID = "coding-assistant"
+        let taskID = await setUpTaskWaitingForSupervisor(
+            roleIDs: [roleID], waitingRoleIDs: [roleID], inquiry: Self.buildForm
+        )
+
+        let controller = QuickCaptureController(formState: QuickCaptureFormState())
+        controller.store = sut
+        controller.formState.appendQueuedMessage(
+            msg("1. actually use Release", target: roleID), for: taskID)
+        controller.formState.appendQueuedMessage(
+            msg("and keep the diff tight", target: roleID), for: taskID)
+
+        controller.tryFlushQueuedMessages()
+        await waitFor {
+            sut.loadedTask(taskID)?.runs.last?.steps.first?.supervisorInquiryAnswer != nil
+        }
+
+        let recorded = sut.loadedTask(taskID)?.runs.last?.steps.first?.supervisorInquiryAnswer
+        XCTAssertNil(recorded?.byQuestionID["config"],
+                     "neither a parsed label nor the recommendation — a queued message decides "
+                         + "nothing")
+        XCTAssertNil(recorded?.byQuestionID["tests"],
+                     "same for every other question in the form")
+        XCTAssertEqual(recorded?.note, "1. actually use Release\nand keep the diff tight",
+                       "both messages survive as the Supervisor's own words, in order")
     }
 
     // MARK: - Durable seen-marker retirement

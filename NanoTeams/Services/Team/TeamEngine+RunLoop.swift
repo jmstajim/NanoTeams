@@ -11,7 +11,7 @@ extension TeamEngine {
         }
 
         while !Task.isCancelled {
-            guard let task = store.activeTask, let run = task.runs.last else {
+            guard store.activeTask?.runs.last != nil else {
                 transition(to: .failed)
                 return
             }
@@ -45,17 +45,7 @@ extension TeamEngine {
             // than on `.working` alone, so a role a previous launch's recovery parked
             // at `.idle` next to a finished step is healed here too instead of being
             // re-run from scratch by `findReadyRoles`.
-            let stepMap = run.stepsByRoleBaseID()
-            if let gate = acceptanceGate() {
-                for (roleID, roleStatus) in run.roleStatuses {
-                    await reconcileRole(
-                        roleID: roleID,
-                        roleStatus: roleStatus,
-                        stepStatus: stepMap[roleID]?.status,
-                        gate: gate
-                    )
-                }
-            }
+            await reconcileRoleStatuses()
 
             // Re-read after reconciliation — role statuses may have changed
             guard let currentRun = store.activeTask?.runs.last else {
@@ -125,6 +115,64 @@ extension TeamEngine {
                 roleStatuses: roleStatuses
             )
 
+            // MARK: Concurrency admission
+            //
+            // Everything from here to the dispatch calls decides WHO may run this pass; the
+            // block below decides WHAT the pass means. The two are kept apart on purpose: the
+            // `readyRoleIDs.isEmpty` analysis below must see the UNTRUNCATED list, or a run
+            // whose only ready role is merely waiting for a slot would read as
+            // "Execution stalled" and fail. Structure, not a proof about a counter — a proof
+            // would rot the first time the occupancy measure changes.
+            let concurrencyLimit = store.maxConcurrentRoles
+            var occupied = occupiedRoleIDs(run: currentRun, roles: teamRoles)
+
+            // Parked roles first: re-entering work already begun outranks starting new work.
+            let parked = parkedRoleIDs(run: currentRun, roles: teamRoles)
+            let admittedParked = RoleAdmissionControl.admit(
+                candidates: parked, occupied: occupied, limit: concurrencyLimit)
+            if !admittedParked.isEmpty {
+                await restartParkedRoles(admittedParked, in: currentRun)
+                occupied.formUnion(admittedParked)
+            }
+
+            let admittedReady = RoleAdmissionControl.admit(
+                candidates: readyRoleIDs, occupied: occupied, limit: concurrencyLimit)
+
+            let startableRevisionIDs = roleStatuses.values.contains(.revisionRequested)
+                ? Self.startableRevisionRoleIDs(roleStatuses: roleStatuses, roles: teamRoles)
+                : []
+            let admittedRevision = RoleAdmissionControl.admit(
+                candidates: startableRevisionIDs,
+                occupied: occupied.union(admittedReady),
+                limit: concurrencyLimit)
+
+            publishQueuedRoles(
+                Set(readyRoleIDs).subtracting(admittedReady)
+                    .union(Set(parked).subtracting(admittedParked))
+                    .union(Set(startableRevisionIDs).subtracting(admittedRevision)))
+
+            let hadCandidates =
+                !readyRoleIDs.isEmpty || !parked.isEmpty || !startableRevisionIDs.isEmpty
+            if hadCandidates, admittedReady.isEmpty, admittedParked.isEmpty, admittedRevision.isEmpty {
+                // Everything that could run is waiting for a slot. This is not an iteration of
+                // work, and counting it as one would walk a deliberately serialized team into
+                // "iteration limit reached" for the crime of being serialized (8 roles × 4 Hz).
+                //
+                // The counter is RESET on progress rather than refunded unconditionally: a
+                // refund would disarm the only watchdog the engine has, so a role whose
+                // execution wedged would hold the loop here forever with nothing to say. The
+                // occupancy set changes exactly when a role starts or finishes — which is the
+                // definition of progress this branch needs, and unlike `run.updatedAt` it is
+                // not written by anything else.
+                if lastSlotWaitOccupancy != occupied {
+                    lastSlotWaitOccupancy = occupied
+                    iterationCount = 0
+                }
+                try? await Task.sleep(for: .milliseconds(250))
+                continue
+            }
+            lastSlotWaitOccupancy = nil
+
             if readyRoleIDs.isEmpty {
                 // Start any revision-requested roles whose upstream dependencies are clear
                 // FIRST — before deciding to wait on a .working role. A revision role can
@@ -137,8 +185,8 @@ extension TeamEngine {
                 // Without starting here, a still-.working requester pins the loop in the wait
                 // branch below and the target's revision never starts (deadlock).
                 if roleStatuses.values.contains(.revisionRequested) {
-                    let startedCount = await startRevisionRoles(roleStatuses: roleStatuses)
-                    if startedCount > 0 {
+                    let started = await startRevisionRoles(roleIDs: admittedRevision)
+                    if !started.isEmpty {
                         try? await Task.sleep(for: .milliseconds(100))
                         continue
                     }
@@ -148,7 +196,11 @@ extension TeamEngine {
                     // way waiting is safe). Only when nothing is working AND nothing is
                     // startable are the remaining revision roles a genuine dependency cycle;
                     // fail loudly rather than busy-loop to the iteration cap.
-                    if !roleStatuses.values.contains(.working) {
+                    // `occupied` and not `.working` alone: the role that asked for the
+                    // changes is flagged `.revisionRequested` while its own step keeps
+                    // running, so it is invisible to a `.working` scan — and calling that a
+                    // dependency cycle would fail a run that is merely still busy.
+                    if !roleStatuses.values.contains(.working), occupied.isEmpty {
                         let blocked = roleStatuses
                             .filter { $0.value == .revisionRequested }
                             .keys.sorted().joined(separator: ", ")
@@ -160,9 +212,36 @@ extension TeamEngine {
                     }
                 }
 
-                // No ready roles - wait for working roles to complete or external event
-                if roleStatuses.values.contains(.working) {
-                    // Wait a bit and check again
+                // No ready roles - wait for working roles to complete or external event.
+                // `|| !occupied.isEmpty` covers the one shape `.working` cannot see: the
+                // change requester, `.revisionRequested` with its own step still running.
+                // Without it the `else` below would call a busy run "Execution stalled".
+                if roleStatuses.values.contains(.working) || !occupied.isEmpty {
+                    // Waiting on a role that is working is not an ITERATION of work, and
+                    // counting it as one puts a hard ceiling on how long a single step may
+                    // take: at 250 ms a pass, `autoIterationLimit` (10 000) is ≈ 41.7 minutes
+                    // of ONE long state, after which the run pauses with "iteration limit
+                    // reached. Press Resume" — and under `.autonomous`, or headless, there is
+                    // nobody to press it. A single engineer driving a build to green can
+                    // exceed that on its own; `XcodeBuildGate` lengthens every wave that
+                    // queues behind another build.
+                    //
+                    // Reset on PROGRESS, exactly as the slot-wait branch above does, and for
+                    // the same reason: an unconditional refund would disarm the engine's only
+                    // watchdog, so a step that genuinely wedged would hold the loop here
+                    // forever with nothing to say. In-flight steps stamp `updatedAt` on every
+                    // mutation — a tool call, a stream commit — so the newest stamp moving is
+                    // the definition of progress this branch needs.
+                    // One pass, no intermediate arrays: this runs four times a second for as
+                    // long as the wait lasts.
+                    var progress: Date?
+                    for step in currentRun.steps where step.status == .running {
+                        if progress.map({ step.updatedAt > $0 }) ?? true { progress = step.updatedAt }
+                    }
+                    if let progress, progress != lastWorkingWaitProgress {
+                        lastWorkingWaitProgress = progress
+                        iterationCount = 0
+                    }
                     try? await Task.sleep(for: .milliseconds(250))
                     continue
                     // No non-chat `.needsAcceptance` arm here, deliberately. The acceptance gate
@@ -202,8 +281,9 @@ extension TeamEngine {
                 }
             }
 
-            // Start ready roles (in parallel)
-            await startRoles(roleIDs: readyRoleIDs)
+            // Start the admitted ready roles (in parallel — see CLAUDE.md #45; how many
+            // that is, is the user's `RoleConcurrencyMode`, never an assumption of at most one)
+            await startRoles(roleIDs: admittedReady)
 
             // Small delay before next iteration
             try? await Task.sleep(for: .milliseconds(100))

@@ -272,7 +272,7 @@ final class IterationTerminalArmsCoverageTests: XCTestCase {
             task: task, client: client, tools: tools, conversation: &conversation,
             observer: { calls, _ in observed.append(calls) })
 
-        guard case .needsSupervisorInput(let question) = stop else {
+        guard case .needsSupervisorInput(let question, _) = stop else {
             return XCTFail("The ceiling escalates when no role definition resolves, got \(stop)")
         }
         // The EXACT string, not `contains("20")`: a substring test also passes for 120 or 205,
@@ -452,6 +452,76 @@ final class IterationTerminalArmsCoverageTests: XCTestCase {
                       "The feed's 'Auto-answered' badge reads this flag — a human never replied")
         XCTAssertFalse(step.needsSupervisorInput,
                        "The step must NOT be parked: there is no human in autonomous mode")
+    }
+
+    /// The only end-to-end path a QUESTIONNAIRE has without a human. `HeadlessRunner` prints
+    /// progress at `.needsSupervisorInput` and keeps polling — it cannot answer — so if this
+    /// path is broken the form is unreachable by any automated run, and the breakage is
+    /// silent: every choice falls back to its recommendation and the asking role is told the
+    /// Supervisor had no opinion, which is exactly what a working default looks like.
+    ///
+    /// Asserts the round trip in both directions: the answerer is SHOWN the options (it can
+    /// only choose what it sees), and its numbered reply is read back as a selection.
+    ///
+    /// RED: pass `inquiry: nil` to `generateAutoSupervisorAnswer` → request 2 carries the
+    /// headline alone; drop the `compose` call → the raw `Q1: 2` is stored as the answer and
+    /// no structure is persisted.
+    func testAutonomousForm_showsTheOptionsAndReadsTheNumberedReplyBack() async throws {
+        let task = seedTask()
+
+        let registry = ToolRegistry()
+        registry.register(name: ToolNames.askSupervisorForm) { context, args in
+            await AskSupervisorFormTool().handle(context: context, args: args)
+        }
+        let runtime = ToolRuntime(registry: registry, logger: nil)
+        let tools = [ToolSchema(name: ToolNames.askSupervisorForm, description: "Ask",
+                                parameters: .object(properties: [:]))]
+
+        // Built rather than spelled out: the handler accepts the `form` argument as JSON
+        // TEXT, and a hand-escaped literal is one backslash away from testing the escaping
+        // instead of the path.
+        let form = try XCTUnwrap(String(data: JSONSerialization.data(withJSONObject: [
+            "questions": [
+                ["prompt": "Which scheme?", "kind": "single_choice",
+                 "options": [["label": "Debug"], ["label": "Release"]]],
+                ["prompt": "Anything else?", "kind": "free_text"],
+            ],
+        ]), encoding: .utf8))
+        let args = try XCTUnwrap(String(
+            data: JSONSerialization.data(
+                withJSONObject: ["headline": "Which build settings?", "form": form]),
+            encoding: .utf8))
+
+        let client = UFCScriptedStreamClient([
+            [ufcToolCallEvent(index: 0, id: "c1", name: ToolNames.askSupervisorForm, args: args)],
+            [StreamEvent(contentDelta: "Q1: 2\nQ2: keep the diff tight")],
+        ])
+
+        var conversation: [ChatMessage] = [ChatMessage(role: .user, content: "go")]
+        let stop = try await runIteration(
+            task: task, client: client, tools: tools, runtime: runtime,
+            supervisorMode: .autonomous, conversation: &conversation)
+
+        guard case .continueLoop = stop else {
+            return XCTFail("An auto-answered form must not park the step, got \(stop)")
+        }
+
+        // Direction 1 — the answerer saw the options and the reply contract.
+        let asked = try XCTUnwrap(client.sentMessages.last?.last?.content)
+        XCTAssertTrue(asked.contains("1. Debug"), asked)
+        XCTAssertTrue(asked.contains("2. Release"), asked)
+        XCTAssertTrue(asked.contains(SupervisorInquiryReply.recommendedTag), asked)
+
+        // Direction 2 — its numbered reply came back as a selection, not as prose.
+        let step = try XCTUnwrap(delegate.taskToMutate?.runs[0].steps[0])
+        let answer = try XCTUnwrap(step.supervisorInquiryAnswer)
+        let scheme = try XCTUnwrap(step.supervisorInquiry?.questions.first?.id)
+        XCTAssertEqual(answer.byQuestionID[scheme]?.selectedOptionIDs.count, 1)
+        XCTAssertEqual(step.supervisorAnswer?.contains("A1. Release"), true, step.supervisorAnswer ?? "")
+        XCTAssertEqual(step.supervisorAnswer?.contains("A2. keep the diff tight"), true,
+                       step.supervisorAnswer ?? "")
+        XCTAssertTrue(step.supervisorAnswerWasAuto)
+        XCTAssertFalse(step.needsSupervisorInput)
     }
 
     // MARK: - 2b. roleName passed to the provider

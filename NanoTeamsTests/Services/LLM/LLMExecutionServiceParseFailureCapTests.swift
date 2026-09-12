@@ -137,7 +137,7 @@ final class LLMExecutionServiceParseFailureCapTests: XCTestCase {
             roleDefinition: nil,
             conversationMessages: &messages
         )
-        guard case .needsSupervisorInput(let question) = stop else {
+        guard case .needsSupervisorInput(let question, _) = stop else {
             XCTFail("Third parse failure must escalate to supervisor, got \(stop)")
             return
         }

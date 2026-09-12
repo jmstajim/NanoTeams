@@ -50,10 +50,10 @@ final class SearchIndexServiceTests: XCTestCase {
         let service = makeService()
         let index = await service.loadOrBuild()
         XCTAssertEqual(index.files.count, 1)
-        XCTAssertTrue(index.tokens.contains("scrollview"))
-        XCTAssertTrue(index.tokens.contains("scroll"))
-        XCTAssertTrue(index.tokens.contains("view"))
-        XCTAssertTrue(index.tokens.contains("makescrollview"))
+        XCTAssertTrue(index.vocabulary.contains("scrollview"))
+        XCTAssertTrue(index.vocabulary.contains("scroll"))
+        XCTAssertTrue(index.vocabulary.contains("view"))
+        XCTAssertTrue(index.vocabulary.contains("makescrollview"))
     }
 
     func testBuild_indexesFilenameStems() async throws {
@@ -62,9 +62,9 @@ final class SearchIndexServiceTests: XCTestCase {
         let service = makeService()
         let index = await service.loadOrBuild()
         XCTAssertEqual(index.files.count, 1)
-        XCTAssertTrue(index.tokens.contains("uniqueidentifier"))
-        XCTAssertTrue(index.tokens.contains("unique"))
-        XCTAssertTrue(index.tokens.contains("identifier"))
+        XCTAssertTrue(index.vocabulary.contains("uniqueidentifier"))
+        XCTAssertTrue(index.vocabulary.contains("unique"))
+        XCTAssertTrue(index.vocabulary.contains("identifier"))
     }
 
     // MARK: - I4: corrupt on-disk index surfaces a load error
@@ -145,7 +145,7 @@ final class SearchIndexServiceTests: XCTestCase {
         let index = await service.loadOrBuild()
         XCTAssertEqual(index.files.count, 1)
         XCTAssertEqual(index.files.first?.path, "A.swift")
-        XCTAssertFalse(index.tokens.contains("secrettype"))
+        XCTAssertFalse(index.vocabulary.contains("secrettype"))
     }
 
     func testBuild_respectsTextSizeCap() async throws {
@@ -157,11 +157,11 @@ final class SearchIndexServiceTests: XCTestCase {
         let index = await service.loadOrBuild()
         XCTAssertEqual(index.files.count, 1)
         // Filename tokens survive
-        XCTAssertTrue(index.tokens.contains("bigfile"))
-        XCTAssertTrue(index.tokens.contains("big"))
-        XCTAssertTrue(index.tokens.contains("file"))
+        XCTAssertTrue(index.vocabulary.contains("bigfile"))
+        XCTAssertTrue(index.vocabulary.contains("big"))
+        XCTAssertTrue(index.vocabulary.contains("file"))
         // Content token should NOT be in vocabulary
-        XCTAssertFalse(index.tokens.contains("hugevocabbody"))
+        XCTAssertFalse(index.vocabulary.contains("hugevocabbody"))
     }
 
     func testBuild_skipsNodeModules() async throws {
@@ -170,8 +170,8 @@ final class SearchIndexServiceTests: XCTestCase {
         let service = makeService()
         let index = await service.loadOrBuild()
         XCTAssertEqual(index.files.count, 1)
-        XCTAssertTrue(index.tokens.contains("apphost"))
-        XCTAssertFalse(index.tokens.contains("insidenodemodules"))
+        XCTAssertTrue(index.vocabulary.contains("apphost"))
+        XCTAssertFalse(index.vocabulary.contains("insidenodemodules"))
     }
 
     func testBuild_indexesAttachmentsUnderNanoteams() async throws {
@@ -184,9 +184,9 @@ final class SearchIndexServiceTests: XCTestCase {
         let service = makeService()
         let index = await service.loadOrBuild()
         XCTAssertEqual(index.files.count, 2, "Both attachment and top-level file must index.")
-        XCTAssertTrue(index.tokens.contains("attachedwidget"),
+        XCTAssertTrue(index.vocabulary.contains("attachedwidget"),
                       "Body tokens from attachment content must be in vocabulary.")
-        XCTAssertTrue(index.tokens.contains("root"))
+        XCTAssertTrue(index.vocabulary.contains("root"))
     }
 
     func testBuild_skipsNanoteamsGitignore() async throws {
@@ -199,100 +199,63 @@ final class SearchIndexServiceTests: XCTestCase {
         let index = await service.loadOrBuild()
         XCTAssertEqual(index.files.count, 1)
         XCTAssertEqual(index.files.first?.path, "App.swift")
-        XCTAssertFalse(index.tokens.contains("gitignore"))
+        XCTAssertFalse(index.vocabulary.contains("gitignore"))
     }
 
-    // MARK: - Postings round-trip
+    // MARK: - Vocabulary
 
-    func testPostings_mapTokenToFileIDs() async throws {
+    func testVocabulary_unionsWordsOfEveryFile() async throws {
         try write("A.swift", content: "scroll")
         try write("B.swift", content: "scroll view")
         try write("C.swift", content: "view")
         let service = makeService()
         let index = await service.loadOrBuild()
-        // All three files should have at least one posting.
         XCTAssertEqual(index.files.count, 3)
-        let scrollIDs = index.postings["scroll"] ?? []
-        let viewIDs = index.postings["view"] ?? []
-        XCTAssertEqual(Set(scrollIDs).count, 2) // A, B
-        XCTAssertEqual(Set(viewIDs).count, 2) // B, C
-        // Sorted ascending
-        XCTAssertEqual(scrollIDs, scrollIDs.sorted())
+        XCTAssertTrue(index.vocabulary.contains("scroll"))
+        XCTAssertTrue(index.vocabulary.contains("view"))
     }
 
-    /// A file's content tokens must belong to THAT file.
-    ///
-    /// The invariant the parallel rebuild rests on, and the one the suite did not have: passes
-    /// are dispatched `concurrency` at a time and arrive in COMPLETION order, so the merge folds
-    /// them back by candidate index. Get that wrong and every posting list still has the right
-    /// SHAPE — the same tokens, the same number of files per token — while pointing at the wrong
-    /// files. Measured: reversing the fold left the whole 93-case index suite green.
-    ///
-    /// The fixture is deliberately ASYMMETRIC (distinct token per file, and sizes spanning two
-    /// orders of magnitude so a big early file finishes after a small later one). A symmetric
-    /// one is what hid this: `A:scroll, B:scroll+view, C:view` reversed is
-    /// `A:view, B:scroll+view, C:scroll`, which has identical per-token counts.
-    ///
-    /// RED: fold the passes in any order but candidate order (`zip(candidates, passes.reversed())`)
-    /// → every `files(containing:)` here names the wrong file.
-    func testPostings_attributeTokensToTheFileTheyCameFrom() async throws {
-        // Sizes vary ~500x so completion order cannot track walk order.
-        let filler = String(repeating: "padding token noise here\n", count: 500)
-        try write("a_first.swift", content: "let alphaonly = 1\n" + filler)
-        try write("b_second.swift", content: "let betaonly = 2\n")
-        try write("c_third.swift", content: "let gammaonly = 3\n" + filler)
-        try write("d_fourth.swift", content: "let deltaonly = 4\n")
-
-        let service = makeService()
-        let index = await service.loadOrBuild()
-
-        XCTAssertEqual(index.files.count, 4, "anti-vacuum: all four must be indexed")
-        for (token, expected) in [("alphaonly", "a_first.swift"), ("betaonly", "b_second.swift"),
-                                  ("gammaonly", "c_third.swift"), ("deltaonly", "d_fourth.swift")] {
-            let owners = await service.files(containing: [token])
-            XCTAssertEqual(owners, [expected],
-                           "'\(token)' must map to \(expected) and nothing else")
-        }
-    }
-
-    func testFilesContaining_unionDedupSorted() async throws {
-        try write("A.swift", content: "scroll")
-        try write("B.swift", content: "scroll view")
-        try write("C.swift", content: "view")
-        let service = makeService()
-        _ = await service.loadOrBuild()
-        let paths = await service.files(containing: ["scroll", "view"])
-        // A + B + C = 3 unique
-        XCTAssertEqual(paths.count, 3)
-        XCTAssertEqual(paths, paths.sorted())
-    }
-
-    func testFilesContaining_emptyLookup_returnsEmpty() async throws {
+    func testVocabulary_absentWord_isAbsent() async throws {
         try write("A.swift", content: "scroll")
         let service = makeService()
-        _ = await service.loadOrBuild()
-        let paths = await service.files(containing: ["doesnotexist"])
-        XCTAssertEqual(paths, [])
+        let index = await service.loadOrBuild()
+        XCTAssertFalse(index.vocabulary.contains("doesnotexist"))
     }
 
-    // MARK: - Signature-based rebuild detection
+    // MARK: - Freshness
 
-    func testSignatureDrift_fileAdded_reportsMismatch() async throws {
+    /// The freshness gate is a per-file roster diff, not the aggregate signature — see
+    /// `SearchIndexPlannerTests` for the cases the aggregate could never express (an in-place
+    /// edit of the same size, a rename that preserves mTime). What belongs HERE is that a
+    /// second `loadOrBuild` over an untouched tree reuses the previous index verbatim.
+    ///
+    /// `generatedAt` is the observation: it comes from `MonotonicClock`, which never repeats a
+    /// value, so equality proves no rebuild happened rather than merely suggesting it.
+    ///
+    /// RED: return a freshly stamped index from the `.reuse` arm → `generatedAt` moves, the
+    /// settings card's "last built" ticks for a build that read nothing, and the churn budget
+    /// creeps toward a full rebuild on an idle folder.
+    func testLoadOrBuild_unchangedTree_reusesTheIndexVerbatim() async throws {
         try write("A.swift", content: "one")
         let service = makeService()
-        let index = await service.loadOrBuild()
-        try write("B.swift", content: "two")
-        let matches = await service.matchesFolder(signature: index.signature)
-        XCTAssertFalse(matches, "A new file should cause signature mismatch.")
+        let first = await service.loadOrBuild()
+        let second = await service.loadOrBuild()
+        XCTAssertEqual(first.generatedAt, second.generatedAt)
+        XCTAssertEqual(first, second)
     }
 
-    func testSignatureDrift_fileSizeChanged_reportsMismatch() async throws {
-        try write("A.swift", content: "one")
+    /// A new file is picked up without a full rebuild, and the previous words survive.
+    func testLoadOrBuild_fileAdded_foldsItIn() async throws {
+        try write("A.swift", content: "alphaword")
         let service = makeService()
-        let index = await service.loadOrBuild()
-        try write("A.swift", content: "one two three four") // same name, larger
-        let matches = await service.matchesFolder(signature: index.signature)
-        XCTAssertFalse(matches, "Size change should cause signature mismatch.")
+        let first = await service.loadOrBuild()
+        XCTAssertTrue(first.vocabulary.contains("alphaword"))
+
+        try write("B.swift", content: "betaword")
+        let second = await service.loadOrBuild()
+        XCTAssertEqual(second.files.count, 2)
+        XCTAssertTrue(second.vocabulary.contains("alphaword"))
+        XCTAssertTrue(second.vocabulary.contains("betaword"))
     }
 
     // MARK: - Round-trip via disk
@@ -305,7 +268,7 @@ final class SearchIndexServiceTests: XCTestCase {
         let service2 = makeService()
         let second = await service2.loadOrBuild()
         XCTAssertEqual(first.files, second.files)
-        XCTAssertEqual(first.tokens, second.tokens)
+        XCTAssertEqual(first.vocabulary, second.vocabulary)
         XCTAssertEqual(first.signature, second.signature)
     }
 
@@ -387,8 +350,8 @@ final class SearchIndexServiceTests: XCTestCase {
         // produce duplicate or extra file entries.
         XCTAssertEqual(index.files.count, 2,
                        "Real files indexed; cycle didn't introduce phantom entries.")
-        XCTAssertTrue(index.tokens.contains("foo"))
-        XCTAssertTrue(index.tokens.contains("bar"))
+        XCTAssertTrue(index.vocabulary.contains("foo"))
+        XCTAssertTrue(index.vocabulary.contains("bar"))
 
         let warnings = await service.lastIndexWarnings
         XCTAssertTrue(warnings.contains { $0.contains("symlink cycle") },
@@ -411,7 +374,7 @@ final class SearchIndexServiceTests: XCTestCase {
         // canonicalize to the same path, so the second visit is skipped as a
         // cycle. We end up with one file entry — correct.
         XCTAssertEqual(index.files.count, 1)
-        XCTAssertTrue(index.tokens.contains("realone"))
+        XCTAssertTrue(index.vocabulary.contains("realone"))
     }
 
     /// A symlink to a FILE is indexed under the link's path, with the TARGET's size and mTime.
@@ -446,18 +409,18 @@ final class SearchIndexServiceTests: XCTestCase {
 
     // MARK: - Per-file I/O failure surfacing
 
-    /// A file the walk can stat but cannot READ contributes its filename tokens and a correct
-    /// roster entry — and says so — rather than vanishing or arriving empty in silence.
+    /// A file the walk can stat but cannot READ is left OUT of the roster, and says so.
     ///
-    /// `chmod 0o000` blocks the read, not the stat, and that distinction is the whole test: the
-    /// entry's mTime and size are real, so the `IndexSignature` stays honest, while the content
-    /// pass fails and must leave a trace. The version this replaces asserted on the ATTRIBUTE
-    /// read instead, and stat does not fail for a 0o000 file — so it took its
-    /// "nothing to assert" branch on every non-root machine, which is every machine.
+    /// `chmod 0o000` blocks the read, not the stat, and that distinction is the whole test —
+    /// which is also why the file must not be stamped (Д6). Readability is not a property of
+    /// mTime: `chmod` does not move it, so a roster row written now would make the file look
+    /// clean forever and restoring its permissions would never bring its content back. Absent
+    /// from the roster, it is dirty on every build, retried every time, and heals by itself.
     ///
-    /// RED: swallow the `catch` in `indexOne` without appending a warning → the warning
-    /// assertion fails while the token assertions stay green, which is the silent half.
-    func testBuild_unreadableFileContents_indexesFilenameTokensAndWarns() async throws {
+    /// RED: stamp it anyway (append the roster row in the `.unreadable` arm of `merge`/`build`)
+    /// → the first assertion fails, and in production the file's content becomes permanently
+    /// unreachable after one `chmod`.
+    func testBuild_unreadableFileContents_isNotStampedAndWarns() async throws {
         try write("A.swift", content: "class Foo {}")
         try write("secretive.swift", content: "class HiddenSymbol {}")
         let secret = tempDir.appendingPathComponent("secretive.swift")
@@ -470,17 +433,46 @@ final class SearchIndexServiceTests: XCTestCase {
         let service = makeService()
         let index = await service.loadOrBuild()
         let warnings = await service.lastIndexWarnings
-        let contentTokens = await service.files(containing: ["hiddensymbol"])
-        let nameTokens = await service.files(containing: ["secretive"])
 
-        XCTAssertTrue(index.files.contains { $0.path == "secretive.swift" },
-                      "the entry must survive: its mTime and size read fine, and dropping it "
-                          + "would move the signature")
-        XCTAssertTrue(contentTokens.isEmpty, "its content could not be read, so it has no "
-            + "content tokens")
-        XCTAssertFalse(nameTokens.isEmpty, "its filename tokens are still indexable")
+        XCTAssertFalse(index.files.contains { $0.path == "secretive.swift" },
+                       "an unread file must not be stamped — a roster row would freeze it clean")
+        XCTAssertFalse(index.vocabulary.contains("hiddensymbol"),
+                       "its content could not be read, so it has no content words")
         XCTAssertTrue(warnings.contains { $0.contains("content read failed") },
                       "the omission must be written down, not silent — got: \(warnings)")
+
+        // …and the warning is re-issued on the NEXT build, because the file is still dirty.
+        let again = await service.loadOrBuild()
+        let warningsAgain = await service.lastIndexWarnings
+        XCTAssertFalse(again.files.contains { $0.path == "secretive.swift" })
+        XCTAssertTrue(warningsAgain.contains { $0.contains("content read failed") },
+                      "a file that is still unreadable must still be reported — got: "
+                          + "\(warningsAgain)")
+    }
+
+    /// The healing half: restore the permissions and the file is indexed, WITHOUT its mTime
+    /// having moved. That is only possible because it was never stamped.
+    func testBuild_unreadableFileMadeReadable_isIndexedWithoutAnMTimeChange() async throws {
+        try write("secretive.swift", content: "class HiddenSymbol {}")
+        let secret = tempDir.appendingPathComponent("secretive.swift")
+        let mTimeBefore = try FileManager.default
+            .attributesOfItem(atPath: secret.path)[.modificationDate] as? Date
+        chmod(secret.path, 0o000)
+        defer { chmod(secret.path, 0o600) }
+        try XCTSkipIf((try? Data(contentsOf: secret)) != nil, "running as root")
+
+        let service = makeService()
+        _ = await service.loadOrBuild()
+        chmod(secret.path, 0o600)
+
+        let healed = await service.loadOrBuild()
+        let mTimeAfter = try FileManager.default
+            .attributesOfItem(atPath: secret.path)[.modificationDate] as? Date
+        XCTAssertEqual(mTimeBefore, mTimeAfter, "anti-vacuum: chmod must not have moved mTime")
+        XCTAssertTrue(healed.files.contains { $0.path == "secretive.swift" })
+        XCTAssertTrue(healed.vocabulary.contains("hiddensymbol"))
+        let warnings = await service.lastIndexWarnings
+        XCTAssertFalse(warnings.contains { $0.contains("content read failed") })
     }
 
     // MARK: - Actor serializes concurrent calls
@@ -493,17 +485,17 @@ final class SearchIndexServiceTests: XCTestCase {
         async let b = service.loadOrBuild()
         let (first, second) = await (a, b)
         XCTAssertEqual(first.files, second.files)
-        XCTAssertEqual(first.tokens, second.tokens)
+        XCTAssertEqual(first.vocabulary, second.vocabulary)
     }
 
     // MARK: - Single-flight
 
     /// Two callers arriving at once must produce ONE walk of the tree, not two.
     ///
-    /// The actor used to buy this for free: `loadOrBuild` was synchronous, so
-    /// `matchesFolder` → `rebuildIndex()` → `cached = fresh` could not be interleaved. Actor
-    /// REENTRANCY is exactly what that reading misses — the moment the rebuild can suspend, a
-    /// second caller wedges in, sees `cached == nil`, and walks the whole tree again.
+    /// The actor used to buy this for free: `loadOrBuild` was synchronous, so the freshness
+    /// check and `cached = fresh` could not be interleaved. Actor REENTRANCY is exactly what
+    /// that reading misses — the moment the rebuild can suspend, a second caller wedges in,
+    /// sees no cache, and walks the whole tree again.
     ///
     /// `generatedAt` is the observation, and it is exact rather than statistical: it comes from
     /// `MonotonicClock`, which guarantees each call a value strictly greater than the last. Two
@@ -540,9 +532,9 @@ final class SearchIndexServiceTests: XCTestCase {
     /// the three conditions into one is how that arm gets covered anyway.
     ///
     /// The folder is deliberately left UNCHANGED between the two calls. A fixture that writes a
-    /// file first proves nothing: the new file moves the `IndexSignature`, `matchesFolder`
-    /// returns false, and the rebuild happens for that reason whether `force` was honoured or
-    /// not. Measured — with `if !force` mutated to `if true`, such a fixture stayed green.
+    /// file first proves nothing: the new file is dirty by the roster diff, so a rebuild happens
+    /// for that reason whether `force` was honoured or not. Measured — with `if !force` mutated
+    /// to `if true`, such a fixture stayed green.
     ///
     /// RED: change `if !force` to `if true` → the forced call returns the cached index and the
     /// two `generatedAt` stamps are equal.
@@ -565,8 +557,8 @@ final class SearchIndexServiceTests: XCTestCase {
     /// the cache rather than re-walked. Otherwise "force" would be indistinguishable from the
     /// default and the test above would pass for the wrong reason.
     ///
-    /// RED: drop the `reuseExistingIndex()` probe from `loadOrBuild` → the second call rebuilds
-    /// and the stamps differ.
+    /// RED: return a freshly stamped index from the planner's `.reuse` arm → the second call
+    /// looks like a rebuild and the stamps differ.
     func testLoadOrBuild_withoutForce_servesAnUnchangedFolderFromTheCache() async throws {
         for i in 0..<20 { try write("f\(i).swift", content: "let token\(i) = \(i)\n") }
         let service = makeService()

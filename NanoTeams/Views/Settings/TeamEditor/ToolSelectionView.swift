@@ -251,6 +251,8 @@ private struct AutoInjectedToolsSection: View {
                 ? "Role produces artifacts"
                 : "produces: \(producedArtifacts.joined(separator: ", "))"
         case ToolNames.askSupervisor:
+            return "Role has no output artifacts, or holds \(ToolNames.askSupervisorForm)"
+        case ToolNames.askSupervisorForm:
             return "Role has no output artifacts"
         case ToolNames.concludeMeeting:
             return "Meeting coordinator — meeting turns only"
@@ -521,7 +523,7 @@ private struct ToolRow: View {
         producedArtifacts: [],
         isVisionConfigured: false,
         approval: ToolApprovalAvailability(bash: .withheld(.switchedOff), computerUse: .withheld(.switchedOff)),
-        autoInjectedTools: [ToolNames.askSupervisor],
+        autoInjectedTools: [ToolNames.askSupervisor, ToolNames.askSupervisorForm],
         delegationHint: ""
     )
     .frame(width: 460, height: 600)
@@ -554,7 +556,7 @@ private struct ToolRow: View {
         producedArtifacts: [],
         isVisionConfigured: false,
         approval: ToolApprovalAvailability(bash: .withheld(.switchedOff), computerUse: .withheld(.switchedOff)),
-        autoInjectedTools: [ToolNames.askSupervisor],
+        autoInjectedTools: [ToolNames.askSupervisor, ToolNames.askSupervisorForm],
         delegationHint: ""
     )
     .frame(width: 460, height: 600)

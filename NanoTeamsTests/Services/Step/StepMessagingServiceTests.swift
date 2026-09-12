@@ -102,7 +102,7 @@ final class StepMessagingServiceTests: XCTestCase {
         XCTAssertFalse(step.needsSupervisorInput)
     }
 
-    /// Human answers (default `isAutoAnswer: false`) must NOT carry the auto flag —
+    /// Human answers (default `origin: .supervisor`) must NOT carry the auto flag —
     /// the feed's "Auto-answered" badge keys on `supervisorAnswerWasAuto`, not the
     /// team's supervisor mode (the pre-flag heuristic mislabeled human replies to
     /// the Autovisor's idle park).
@@ -118,13 +118,13 @@ final class StepMessagingServiceTests: XCTestCase {
     }
 
     /// Automated answer paths (delegating parent role, Autovisor) pass
-    /// `isAutoAnswer: true` — the flag rides to the step for the feed badge.
-    func testAnswerSupervisorQuestion_isAutoAnswer_setsWasAutoFlag() {
+    /// `origin: .automated` — the flag rides to the step for the feed badge.
+    func testAnswerSupervisorQuestion_automatedOrigin_setsWasAutoFlag() {
         var (task, stepID) = createTaskWithStep()
         task.runs[0].steps[0].needsSupervisorInput = true
 
         StepMessagingService.answerSupervisorQuestion(
-            stepID: stepID, answer: "Auto reply", isAutoAnswer: true, in: &task)
+            stepID: stepID, answer: "Auto reply", origin: .automated, in: &task)
 
         XCTAssertTrue(task.runs[0].steps[0].supervisorAnswerWasAuto)
     }

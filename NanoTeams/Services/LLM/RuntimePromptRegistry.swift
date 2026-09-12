@@ -43,6 +43,33 @@ enum RuntimePromptRegistry {
 
     private static let sampleTools: Set<String> = [ToolNames.readFile, ToolNames.createArtifact, ToolNames.askSupervisor]
     private static let sampleArtifacts = ["Engineering Notes"]
+    /// One of each kind, so the sample renders every hint and the recommendation tag.
+    ///
+    /// The `recommendedOptionID` is load-bearing here, not decoration: `recommendedTag` is
+    /// model-facing wire text, and it appears in the rendered questionnaire ONLY for a question
+    /// that carries a recommendation. A sample recommending nothing — which is what this was
+    /// between 2026-09-12 and 2026-09-13, when the tag stopped being `options[0]` — leaves that
+    /// text covered by no registry row at all, so an edit to it would ship without moving
+    /// `RuntimePromptFingerprint` or the provenance line.
+    private static let sampleInquiry = SupervisorInquiry(
+        headline: "Which build settings should I use?",
+        questions: [
+            SupervisorInquiryQuestion(
+                id: "scheme", prompt: "Which scheme should I build?", kind: .singleChoice,
+                options: [
+                    SupervisorInquiryOption(id: "debug", label: "Debug", detail: "what CI uses"),
+                    SupervisorInquiryOption(id: "release", label: "Release"),
+                ],
+                recommendedOptionID: "debug"),
+            SupervisorInquiryQuestion(
+                id: "targets", prompt: "Which targets should I run?", kind: .multiChoice,
+                options: [
+                    SupervisorInquiryOption(id: "unit", label: "Unit"),
+                    SupervisorInquiryOption(id: "ui", label: "UI"),
+                ]),
+            SupervisorInquiryQuestion(
+                id: "notes", prompt: "Anything else I should know?", kind: .freeText),
+        ])
     private static let sampleSchema = ToolSchema(
         name: "sample_tool",
         description: "A sample tool.",
@@ -110,6 +137,36 @@ enum RuntimePromptRegistry {
         add("PromptBuilder.buildConversationMechanicsGuidance/noTagTools") {
             PromptBuilder.buildConversationMechanicsGuidance(hasTagProducingTools: false)
         }
+        // What a questionnaire answer carries beyond the Supervisor's own words: which
+        // questions got no decision, and what the asking role does about them. Nothing is
+        // filled in for a skipped question since 2026-09-12, so the second row is the whole
+        // replacement for the assumption the first one used to report.
+        add("SupervisorInquiryRenderer.unansweredMarker") {
+            SupervisorInquiryRenderer.unansweredMarker
+        }
+        add("SupervisorInquiryRenderer.unansweredDirection") {
+            SupervisorInquiryRenderer.unansweredDirection
+        }
+        // The last thing an automated answerer reads before it replies. Marked and
+        // registered because it SHAPES the reply: the questionnaire tail names what to do
+        // when information is missing, and until 2026-09-12 that rung could be skipped
+        // because an omission was filled in from the recommendation.
+        add("SupervisorAutoAnswerService.answerTail") { SupervisorAutoAnswerService.answerTail }
+        add("SupervisorAutoAnswerService.questionnaireTail") {
+            SupervisorAutoAnswerService.questionnaireTail
+        }
+        // The questionnaire as an AUTOMATED answerer sees it, contract included. It reaches
+        // three different seams — a tool result, a question turn and a user turn — and is one
+        // string so that a change to how a form is asked moves one fingerprint, once.
+        add("SupervisorInquiryReply.questionnaire") {
+            SupervisorInquiryReply.questionnaire(for: sampleInquiry)
+        }
+        // The Supervisor asking a parked role to re-ask its plain question as a form. It rides
+        // the tool result of that role's own `ask_supervisor`, which is the only channel a
+        // parked step has — so its first sentence has to say the question was not answered.
+        add("SupervisorQuestionnaireRequest.directive") {
+            SupervisorQuestionnaireRequest.directive
+        }
         add("PromptBuilder.replayedAskSupervisorEnvelope") {
             PromptBuilder.replayedAskSupervisorEnvelope(question: "Which framework?")
         }
@@ -129,16 +186,59 @@ enum RuntimePromptRegistry {
         add("AppDefaults.globalContext") { AppDefaults.globalContext }
 
         // Nudges and loop recovery — the texts that ride every LATER call of a step.
-        add("LLMExecutionService.noToolCallNudge") { LLMExecutionService.noToolCallNudge(allowedToolNames: sampleTools) }
+        add("LLMExecutionService.noToolCallNudge") {
+            LLMExecutionService.noToolCallNudge(allowedToolNames: sampleTools, questionnaire: false)
+        }
         add("LLMExecutionService.repetitiveNonToolNudge") {
-            LLMExecutionService.repetitiveNonToolNudge(count: 2, allowedToolNames: sampleTools)
+            LLMExecutionService.repetitiveNonToolNudge(
+                count: 2, allowedToolNames: sampleTools, questionnaire: false)
+        }
+        // The arms `sampleTools` never renders: the manager's idle park and a role holding
+        // neither channel. Until 2026-09-11 only the `ask_supervisor` arm rode the
+        // fingerprint, so a rewrite of either sibling would have shipped under a
+        // `runtimePromptVersion` that said nothing moved (REC.9) — the 2026-09-08 lesson, one
+        // builder down.
+        add("LLMExecutionService.noToolCallNudge/waitForEvents") {
+            LLMExecutionService.noToolCallNudge(
+                allowedToolNames: [ToolNames.waitForEvents], questionnaire: false)
+        }
+        add("LLMExecutionService.noToolCallNudge/none") {
+            LLMExecutionService.noToolCallNudge(
+                allowedToolNames: [ToolNames.readFile], questionnaire: false)
+        }
+        add("LLMExecutionService.repetitiveNonToolNudge/askSupervisor") {
+            LLMExecutionService.repetitiveNonToolNudge(
+                count: 2, allowedToolNames: [ToolNames.askSupervisor], questionnaire: false)
+        }
+        add("LLMExecutionService.repetitiveNonToolNudge/waitForEvents") {
+            LLMExecutionService.repetitiveNonToolNudge(
+                count: 2, allowedToolNames: [ToolNames.waitForEvents], questionnaire: false)
+        }
+        // The form arms (2026-09-11): the turn's text carried the questionnaire's shape and
+        // the role holds `ask_supervisor_form`. Rendered here because `sampleTools` holds
+        // neither the form nor a questionnaire, so no other row reaches this text.
+        add("LLMExecutionService.noToolCallNudge/askSupervisorForm") {
+            LLMExecutionService.noToolCallNudge(
+                allowedToolNames: [ToolNames.askSupervisor, ToolNames.askSupervisorForm],
+                questionnaire: true)
+        }
+        add("LLMExecutionService.repetitiveNonToolNudge/askSupervisorForm") {
+            LLMExecutionService.repetitiveNonToolNudge(
+                count: 2,
+                allowedToolNames: [ToolNames.askSupervisor, ToolNames.askSupervisorForm],
+                questionnaire: true)
+        }
+        add("LLMExecutionService.repetitiveNonToolNudge/none") {
+            LLMExecutionService.repetitiveNonToolNudge(
+                count: 2, allowedToolNames: [ToolNames.readFile], questionnaire: false)
         }
         add("LLMExecutionService.missingArtifactsNudge") { LLMExecutionService.missingArtifactsNudge(missing: sampleArtifacts) }
         add("LLMExecutionService.escalationClause") {
-            LLMExecutionService.escalationClause(code: nil, allowedToolNames: sampleTools)
+            LLMExecutionService.escalationClause(code: nil, tool: ToolNames.readFile, allowedToolNames: sampleTools)
         }
         add("LLMExecutionService.escalationClause/approvalUnavailable") {
-            LLMExecutionService.escalationClause(code: ToolErrorCode.approvalUnavailable.rawValue, allowedToolNames: sampleTools)
+            LLMExecutionService.escalationClause(
+                code: ToolErrorCode.approvalUnavailable.rawValue, tool: ToolNames.bash, allowedToolNames: sampleTools)
         }
         // `sampleTools` is non-empty and holds `ask_supervisor`, so the two composers that
         // answer `nil` for other inputs answer here — unwrapped, not defaulted: a nil would be
@@ -227,6 +327,12 @@ enum RuntimePromptRegistry {
         add("ToolCallParsingHelpers.malformedJSONDiagnostic/noObject") {
             ToolCallParsingHelpers.malformedJSONDiagnostic(in: "<|call|>ping<|end|>")!
         }
+        // The one defect this layer names in its OWN words instead of forwarding
+        // Foundation's, so it is versioned like any other model-facing sentence.
+        add("ToolCallParsingHelpers.unterminatedStringDefect") {
+            ToolCallParsingHelpers.unterminatedStringDefect(
+                in: #"{"name":"ask_supervisor_form","arguments":{"headline":"H","form":"{\"questions\": []}}"#)!
+        }
         add("ToolCallParsingHelpers.malformedJSONDiagnostic/unbalanced") {
             ToolCallParsingHelpers.malformedJSONDiagnostic(
                 in: #"<|call|>{"name":"write_file","arguments":{"path":"x"#)!
@@ -238,6 +344,56 @@ enum RuntimePromptRegistry {
         add("ToolCallParsingHelpers.transposedQuoteRepairNote") {
             ToolCallParsingHelpers.transposedQuoteRepairNote
         }
+        add("ToolCallParsingHelpers.reorderedClosersRepairNote") {
+            ToolCallParsingHelpers.reorderedClosersRepairNote
+        }
+        // The `ask_supervisor_form` repairs (2026-09-11): what the model is told when its
+        // form was READ despite typographic quotes, surplus closers, or markers in labels.
+        add("SupervisorFormTextRepair.requotedNote") { SupervisorFormTextRepair.requotedNote(count: 2) }
+        add("SupervisorFormTextRepair.droppedClosersNote") { SupervisorFormTextRepair.droppedClosersNote(count: 1) }
+        add("SupervisorInquiryLabelRepair.enumerationNote") { SupervisorInquiryLabelRepair.enumerationNote(count: 2) }
+        add("SupervisorInquiryLabelRepair.recommendedMarkerNote") { SupervisorInquiryLabelRepair.recommendedMarkerNote(count: 1) }
+        add("SupervisorInquiryHeadlineFallback.note") { SupervisorInquiryHeadlineFallback.note }
+        add("SupervisorInquiryHeadlineFallback.nestedNote") { SupervisorInquiryHeadlineFallback.nestedNote }
+        // The closer rung, and the two sentences a REFUSAL carries (2026-09-11): what was put
+        // back, what was already handled and is therefore NOT the fault, and the one
+        // completeness rule a tolerant parse cannot answer for itself.
+        add("SupervisorFormTextRepair.insertedCloserNote") { SupervisorFormTextRepair.insertedCloserNote }
+        add("SupervisorFormTextRepair.closedTheFormNote") { SupervisorFormTextRepair.closedTheFormNote }
+        add("SupervisorFormTextRepair.handledNotTheFaultNote") {
+            SupervisorFormTextRepair.handledNotTheFaultNote(
+                [SupervisorFormTextRepair.requotedNote(count: 2)])
+        }
+        add("SupervisorInquiryCompleteness.tooFewOptionsNote") {
+            SupervisorInquiryCompleteness.tooFewOptionsNote(questionNumber: 2, options: 1)
+        }
+        // The three states of a form that ran out of text, one row each: their recoveries
+        // differ, so one sample would leave two texts riding provenance unversioned.
+        add("SupervisorFormDecoding.unfinishedNote/owesMoreThanTheFrame") {
+            SupervisorFormDecoding.unfinishedNote(in: #"{"questions":[{"kind":"free_text"}"#)
+        }
+        add("SupervisorFormDecoding.unfinishedNote/unfinishedValue") {
+            SupervisorFormDecoding.unfinishedNote(in: #"{"questions":[{"prompt":"#)
+        }
+        // The two refusals' standing instructions. Model-facing text composed in a handler is
+        // still model-facing text (REC.9): unregistered, an edit to either ships under a
+        // `runtimePromptVersion` asserting nothing moved.
+        add("AskSupervisorTool.questionnaireRequiredMessage") {
+            AskSupervisorTool.questionnaireRequiredMessage
+        }
+        add("AskSupervisorTool.questionnaireRequiredReason") {
+            AskSupervisorTool.questionnaireRequiredReason
+        }
+        add("AskSupervisorFormTool.repairTheFormReason") {
+            AskSupervisorFormTool.repairTheFormReason
+        }
+        // Nothing open and yet no offset: the text ran out before anything was written. The
+        // sample has to be a text that can actually REACH the function — a balanced document
+        // never fails this way, so a row rendering one would fingerprint a sentence no run
+        // can produce.
+        add("SupervisorFormDecoding.unfinishedNote/nothingOpen") {
+            SupervisorFormDecoding.unfinishedNote(in: "")
+        }
         add("ToolRuntimeError.argumentsNotObject") {
             ToolRuntimeError.argumentsNotObject.errorDescription ?? ""
         }
@@ -246,7 +402,10 @@ enum RuntimePromptRegistry {
             ("repetitivePlanning", .repetitivePlanning(count: 3)),
             ("repetitiveTool", .repetitiveTool(tool: ToolNames.readFile, count: 3)),
             ("repetitiveFailure", .repetitiveFailure(tool: ToolNames.readFile, count: 3, errorCode: ToolErrorCode.fileNotFound.rawValue)),
-            ("persistentToolError", .persistentToolError(tool: ToolNames.readFile, count: 3, errorCode: ToolErrorCode.invalidArgs.rawValue)),
+            // Two rows: the INVALID_ARGS directive reads whether the runtime's message held
+            // (the same fault every time) or moved (a converging repair, run 11 of 2026-09-11).
+            ("persistentToolError/held", .persistentToolError(tool: ToolNames.readFile, count: 3, errorCode: ToolErrorCode.invalidArgs.rawValue, messagesIdentical: true)),
+            ("persistentToolError/moving", .persistentToolError(tool: ToolNames.readFile, count: 3, errorCode: ToolErrorCode.invalidArgs.rawValue, messagesIdentical: false)),
         ]
         for (name, detection) in loopDetections {
             add("LLMExecutionService.loopWarningMessage/\(name)") {
@@ -274,6 +433,49 @@ enum RuntimePromptRegistry {
                     for: makeErrorResult(toolName: ToolNames.readFile, args: ["path": "a.txt"], code: code, message: "Sample failure."),
                     allowedToolNames: sampleTools) ?? "(none)"
             }
+        }
+        // The executor's own envelopes, per reason — and the direction each one's code
+        // draws. These codes are not `ToolErrorCode` cases (the loop above never reaches
+        // them), and until the evening of 2026-09-11 neither the four envelopes this wave
+        // rewrote nor the `tool_not_authorized` remedy it changed moved the fingerprint.
+        let sampleCall = StepToolCall(name: ToolNames.runXcodebuild, argumentsJSON: "{}")
+        for reason in LLMExecutionService.ToolUnavailabilityReason.allCases {
+            add("LLMExecutionService.makeUnavailableToolResult/\(reason)") {
+                LLMExecutionService.makeUnavailableToolResult(
+                    call: sampleCall, canonicalName: ToolNames.runXcodebuild,
+                    scope: "for this role", reason: reason).outputJSON
+            }
+        }
+        // `.approverUnavailable` branches on `ToolHandlerRegistry.shellTools`, and every row
+        // above renders with `run_xcodebuild` — so its SHELL arm rode no row and no
+        // fingerprint, and an edit to it would have shipped under an unchanged
+        // `runtimePromptVersion`. Byte-for-byte the defect fixed on 2026-09-13 by giving
+        // `sampleInquiry` a `recommendedOptionID`: a sample that never reaches a branch leaves
+        // that branch's text covered by nothing (DEBTS D-B10).
+        add("LLMExecutionService.makeUnavailableToolResult/approverUnavailable+shell") {
+            let shellCall = StepToolCall(name: ToolNames.bash, argumentsJSON: "{}")
+            return LLMExecutionService.makeUnavailableToolResult(
+                call: shellCall, canonicalName: ToolNames.bash,
+                scope: "for this role", reason: .approverUnavailable).outputJSON
+        }
+        // One direction row per executor CODE (several reasons share `precondition_failed`;
+        // the first reason carrying a code renders it).
+        var seenCodes: Set<String> = []
+        for reason in LLMExecutionService.ToolUnavailabilityReason.allCases
+            where seenCodes.insert(reason.errorCode).inserted {
+            add("ToolErrorNotePolicy.direction/\(reason.errorCode)") {
+                ToolErrorNotePolicy.direction(
+                    for: LLMExecutionService.makeUnavailableToolResult(
+                        call: sampleCall, canonicalName: ToolNames.runXcodebuild,
+                        scope: "for this role", reason: reason),
+                    allowedToolNames: sampleTools) ?? "(none)"
+            }
+        }
+        add("ToolErrorNotePolicy.direction/identical_write_loop") {
+            ToolErrorNotePolicy.direction(
+                for: LLMExecutionService.makeIdenticalWriteLoopResult(
+                    call: StepToolCall(name: ToolNames.writeFile, argumentsJSON: "{}")),
+                allowedToolNames: sampleTools) ?? "(none)"
         }
         add("ToolErrorNotePolicy.requiredArgumentsHint") {
             ToolErrorNotePolicy.requiredArgumentsHint(toolName: ToolNames.readFile, argumentsJSON: "{}")
@@ -318,24 +520,35 @@ enum RuntimePromptRegistry {
                 requestingRole: .codeReviewer, targetRoleDef: sampleRole,
                 changes: "Add the null check", reasoning: "Crash on empty input").context
         }
-        let directives: [(String, Int, Bool, Bool, Bool)] = [
-            ("participant", 2, false, false, false),
-            ("coordinatorOpening", 1, true, false, false),
-            ("coordinatorLast", 6, true, false, false),
-            ("discussionClub", 2, false, true, false),
-            ("vote", 2, false, false, true),
+        let directives: [(String, Int, Bool, Bool, Bool, Bool)] = [
+            ("participant", 2, false, false, false, false),
+            ("coordinatorOpening", 1, true, false, false, false),
+            ("coordinatorLast", 6, true, false, false, false),
+            ("discussionClub", 2, false, true, false, false),
+            ("vote", 2, false, false, true, false),
+            ("voteTarget", 2, false, false, true, true),
         ]
-        for (name, turn, coordinator, club, votes) in directives {
+        for (name, turn, coordinator, club, votes, target) in directives {
             add("MeetingCoordinator.turnDirective/\(name)") {
                 MeetingCoordinator.turnDirective(
                     speakerName: "Software Engineer", turnNumber: turn, maxTurns: 6,
-                    isCoordinator: coordinator, isDiscussionClub: club, votes: votes)
+                    isCoordinator: coordinator, isDiscussionClub: club, votes: votes,
+                    speakerIsTarget: target)
             }
         }
 
         // Side exchanges.
         add("DelegatedSupervisorAnswerService.questionTurnBoundaryPhrase") {
             DelegatedSupervisorAnswerService.questionTurnBoundaryPhrase
+        }
+        // The turn that CARRIES that phrase, and the two sentences that are the exchange's
+        // own contract: which tools are on the wire, and what calling one means. One sample —
+        // the questionnaire variant differs only in the `question` string, and that string
+        // has its own row (`SupervisorInquiryReply.questionnaire`), so a second row here
+        // would version the same bytes twice.
+        add("DelegatedSupervisorAnswerService.questionTurn") {
+            DelegatedSupervisorAnswerService.questionTurn(
+                targetTeamName: "Engineering", question: "Which scheme should I build?")
         }
         add("JudgeReplyChannelPolicy.retryInstruction") { JudgeReplyChannelPolicy.retryInstruction }
         add("BashJudgeService.judgeUserPrompt") { BashJudgeService.judgeUserPrompt(command: "ls", workingDirectory: nil) }

@@ -83,6 +83,8 @@ struct LLMSettingsView: View {
 
                 LLMModelDetailsCard(config: config)
 
+                LLMRoleConcurrencyCard(config: config)
+
                 DownloadedModelsCard()
 
                 LLMErrorHandlingCard(config: config)

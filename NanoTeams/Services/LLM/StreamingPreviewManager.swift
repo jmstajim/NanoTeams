@@ -45,6 +45,40 @@ final class StreamingPreviewManager {
     /// @ObservationIgnored — polled by TimelineView.
     @ObservationIgnored private(set) var processingStatus: [TaskStepKey: PromptProcessingStatus] = [:]
 
+    /// Per-step caption for a tool call that is WAITING rather than working — today the
+    /// only producer is `XcodeBuildGate`, whose queue can hold a role for the length of
+    /// somebody else's build.
+    ///
+    /// A caption rather than a placeholder in `resultJSON`, and that is not a style choice:
+    /// `AutovisorStatus.hasToolInFlight` reads `resultJSON == nil` to mean "a tool is still
+    /// running". Filling it with a placeholder — the one existing precedent, from vision —
+    /// would stop `AutovisorStuckEvaluator` suppressing its "hung" verdict, and past
+    /// `stuckHangSeconds` (180) the queued role would be answered with `manage_role restart`
+    /// and lose its conversation. Any queue longer than three minutes is a real one.
+    ///
+    /// OBSERVED, unlike most per-step state here: it changes only when the build queue
+    /// changes (minutes apart), and its one reader is a leaf label inside the in-flight
+    /// tool-call row (`ToolWaitCaptionLabel`), which must re-evaluate when the queue moves.
+    /// Until the evening of 2026-09-11 it was `@ObservationIgnored` and had no reader at
+    /// all — write-only state, and the card spun identically for a build and for a wait.
+    private(set) var toolWaitCaption: [TaskStepKey: String] = [:]
+    /// The last gate notification applied. The gate numbers its notifications and the
+    /// observer hops each one to the main actor through an unstructured `Task`, which
+    /// carries no ordering guarantee: a hand-off emits up to three sets in a row, and a
+    /// stale `[k]` landing after the `[]` that superseded it would pin a caption on a step
+    /// that stopped waiting. Anything not newer than this is dropped.
+    @ObservationIgnored private var lastToolWaitSeq: UInt64 = 0
+
+    /// Replaces the whole waiting set in one write — the gate reports a SET, and a
+    /// per-key diff here would let a stale key survive a hand-off. `seq` is the gate's
+    /// notification number; an older or repeated one is ignored.
+    func setToolWaitCaptions(_ keys: Set<TaskStepKey>, seq: UInt64, caption: String) {
+        guard seq > lastToolWaitSeq else { return }
+        lastToolWaitSeq = seq
+        guard Set(toolWaitCaption.keys) != keys else { return }
+        toolWaitCaption = Dictionary(uniqueKeysWithValues: keys.map { ($0, caption) })
+    }
+
     /// Per-step flag: `true` once ANY stream delta (thinking, content,
     /// harmony tool-call buffered, OpenAI tool-call delta) has been
     /// observed for the step. Lets the UI distinguish "Waiting" (no
@@ -349,6 +383,7 @@ final class StreamingPreviewManager {
         // would leak into the next stream as a stale "Generating".
         let hadPreview = previews[key] != nil
         if let msgID = streamingMessageIDs[key] { activeMessageIDs.remove(msgID) }
+        toolWaitCaption[key] = nil
         previews[key] = nil
         streamingMessageIDs[key] = nil
         thinkingPreviews[key] = nil
@@ -367,9 +402,10 @@ final class StreamingPreviewManager {
         guard previews[key] != nil || streamingMessageIDs[key] != nil
             || thinkingPreviews[key] != nil || processingStatus[key] != nil
             || hasStreamActivity[key] != nil || streamingToolCall[key] != nil
-            || compacting[key] != nil
+            || compacting[key] != nil || toolWaitCaption[key] != nil
             || lastStreamActivityAt[key] != nil else { return }
         if let msgID = streamingMessageIDs[key] { activeMessageIDs.remove(msgID) }
+        toolWaitCaption[key] = nil
         previews[key] = nil
         streamingMessageIDs[key] = nil
         thinkingPreviews[key] = nil
@@ -386,9 +422,10 @@ final class StreamingPreviewManager {
         guard !previews.isEmpty || !streamingMessageIDs.isEmpty
             || !thinkingPreviews.isEmpty || !processingStatus.isEmpty
             || !hasStreamActivity.isEmpty || !streamingToolCall.isEmpty
-            || !compacting.isEmpty
+            || !compacting.isEmpty || !toolWaitCaption.isEmpty
             || !lastStreamActivityAt.isEmpty else { return }
         previews.removeAll()
+        toolWaitCaption.removeAll()
         streamingMessageIDs.removeAll()
         activeMessageIDs.removeAll()
         thinkingPreviews.removeAll()

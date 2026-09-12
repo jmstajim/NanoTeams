@@ -209,6 +209,7 @@ struct MainLayoutView: View {
             QuickCaptureController.shared.refreshPanelIfVisible()
         }
         .modifier(RunStartPanelRefresh(initializingRunTaskIDs: engineState.initializingRunTaskIDs))
+        .modifier(WaitingQuestionsPanelRefresh(waitingStepIDs: activeTaskWaitingStepIDs))
         .onChange(of: engineState.taskEngineStates) {
             // Refreshes the panel + drives queue flush. The controller owns both concerns
             // so the wiring is testable without mounting the view.
@@ -241,6 +242,23 @@ struct MainLayoutView: View {
     private var activeTaskDerivedStatus: TaskStatus? {
         guard let taskID = store.activeTaskID else { return nil }
         return store.taskFacts.statusByTaskID[taskID]
+    }
+
+    /// The steps of the active task waiting for an answer right now — the panel's rebuild key.
+    ///
+    /// Nothing else fires when a SECOND question parks. `activeTaskDerivedStatus` does not move
+    /// (the task was already waiting), and `activeTaskObservation` keys on
+    /// `activeSupervisorQuestionID`s, which an escalation park does not have — so the panel's
+    /// chip row could stay one chip long while two roles waited, which is the whole state the
+    /// row exists for. The SET rather than a count, because one question answered and another
+    /// parked in the same tick leaves the count unchanged.
+    ///
+    /// The Autovisor is NOT excluded here (unlike `activeTaskObservation`, which serves the
+    /// seen policy): its `wait_for_events` park reaches the panel like any other question, and a
+    /// panel that will not rebuild for it is a panel showing a stale one.
+    private var activeTaskWaitingStepIDs: [String] {
+        guard let taskID = store.activeTaskID, let task = store.loadedTask(taskID) else { return [] }
+        return SupervisorQuestionInbox.waitingStepIDs(in: task)
     }
 
     /// The active task's live question identities, for `SupervisorSeenPolicy`.
@@ -279,7 +297,7 @@ struct MainLayoutView: View {
     /// `.acceptance` banner they have not looked at.
     private func dismissSupervisorInputNotifications(for taskID: Int, questionIDs: Set<UUID>) {
         dismissNotifications(for: taskID) { type in
-            guard case .supervisorInput(_, _, _, let toolCallID) = type,
+            guard case .supervisorInput(_, _, _, let toolCallID, _) = type,
                   let toolCallID else { return false }
             return questionIDs.contains(toolCallID)
         }
@@ -380,6 +398,22 @@ struct MainLayoutView: View {
 /// the queued-message flush. A flush targets a running step, and during a run start there
 /// is none; the transition to `.running` fires that observer on its own, which is where
 /// the flush belongs.
+/// Rebuilds the panel when the SET of questions waiting on the active task changes.
+///
+/// A `ViewModifier` and not an inline `.onChange`: `MainLayoutView` sits at the Swift
+/// type-checker's budget, which is why `RunStartPanelRefresh` beside it exists at all, and
+/// SwiftUI reports the overflow as a timeout on whichever line the solver gave up at
+/// (CLAUDE.md #10).
+private struct WaitingQuestionsPanelRefresh: ViewModifier {
+    let waitingStepIDs: [String]
+
+    func body(content: Content) -> some View {
+        content.onChange(of: waitingStepIDs) {
+            QuickCaptureController.shared.refreshPanelIfVisible()
+        }
+    }
+}
+
 private struct RunStartPanelRefresh: ViewModifier {
     let initializingRunTaskIDs: Set<Int>
 

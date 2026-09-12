@@ -225,62 +225,6 @@ final class XcodeBuildHelpersTests: XCTestCase {
         XCTAssertTrue(XcodeBuildHelpers.hasWarnings(in: output))
     }
 
-    // MARK: - parseBuildCounts Tests
-
-    func testParseBuildCounts_parsesCorrectly() {
-        let output = #"{"ok":true,"errorCount":5,"warningCount":10}"#
-
-        let (errors, warnings) = XcodeBuildHelpers.parseBuildCounts(from: output)
-
-        XCTAssertEqual(errors, 5)
-        XCTAssertEqual(warnings, 10)
-    }
-
-    func testParseBuildCounts_zerosWhenMissing() {
-        let output = #"{"ok":true}"#
-
-        let (errors, warnings) = XcodeBuildHelpers.parseBuildCounts(from: output)
-
-        XCTAssertEqual(errors, 0)
-        XCTAssertEqual(warnings, 0)
-    }
-
-    func testParseBuildCounts_onlyErrors() {
-        let output = #"{"ok":false,"errorCount":3}"#
-
-        let (errors, warnings) = XcodeBuildHelpers.parseBuildCounts(from: output)
-
-        XCTAssertEqual(errors, 3)
-        XCTAssertEqual(warnings, 0)
-    }
-
-    func testParseBuildCounts_onlyWarnings() {
-        let output = #"{"ok":true,"warningCount":7}"#
-
-        let (errors, warnings) = XcodeBuildHelpers.parseBuildCounts(from: output)
-
-        XCTAssertEqual(errors, 0)
-        XCTAssertEqual(warnings, 7)
-    }
-
-    func testParseBuildCounts_invalidJSON() {
-        let output = "not json"
-
-        let (errors, warnings) = XcodeBuildHelpers.parseBuildCounts(from: output)
-
-        XCTAssertEqual(errors, 0)
-        XCTAssertEqual(warnings, 0)
-    }
-
-    func testParseBuildCounts_largeNumbers() {
-        let output = #"{"errorCount":1000,"warningCount":5000}"#
-
-        let (errors, warnings) = XcodeBuildHelpers.parseBuildCounts(from: output)
-
-        XCTAssertEqual(errors, 1000)
-        XCTAssertEqual(warnings, 5000)
-    }
-
     // MARK: - DetectedXcodeProject Tests
 
     func testDetectedXcodeProject_initialization() {

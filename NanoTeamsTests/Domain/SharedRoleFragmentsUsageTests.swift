@@ -44,6 +44,18 @@ final class SharedRoleFragmentsUsageTests: XCTestCase {
         assertContainsFragment("assistant", SystemTemplates.assistantAttachmentsFragment, "assistantAttachmentsFragment")
     }
 
+    /// The Ultra pipeline's one rule, stated once per prompt and in exactly one place in
+    /// the source. Ten near-identical copies would drift on the first rewording, and the
+    /// rule is the wave's whole point — everything else in the team exists to give a role
+    /// something to write instead of an invention.
+    func testEveryUltraRole_referencesTheUnverifiedFragment() {
+        let ultra = try! XCTUnwrap(SystemTemplates.teamRoleIDs["ultra"])
+        XCTAssertEqual(ultra.count, 9, "anti-vacuum: nine non-Supervisor Ultra roles")
+        for roleID in ultra {
+            assertContainsFragment(roleID, SystemTemplates.unverifiedFragment, "unverifiedFragment")
+        }
+    }
+
     func testGroundingRepoFragment_consumers() {
         for roleID in ["codingAssistant", "codingAgent"] {
             assertContainsFragment(roleID, SystemTemplates.groundingRepoFragment, "groundingRepoFragment")
@@ -52,12 +64,6 @@ final class SharedRoleFragmentsUsageTests: XCTestCase {
 
     func testGroundingFolderFragment_consumers() {
         assertContainsFragment("assistant", SystemTemplates.groundingFolderFragment, "groundingFolderFragment")
-    }
-
-    func testNumberedChoiceFragment_consumers() {
-        for roleID in ["assistant", "codingAssistant", "codingAgent"] {
-            assertContainsFragment(roleID, SystemTemplates.numberedChoiceFragment, "numberedChoiceFragment")
-        }
     }
 
     func testCodingResponseStyleFragment_consumers() {
@@ -77,9 +83,9 @@ final class SharedRoleFragmentsUsageTests: XCTestCase {
         let fragments: [(name: String, body: String)] = [
             ("codingAttachmentsFragment", SystemTemplates.codingAttachmentsFragment),
             ("assistantAttachmentsFragment", SystemTemplates.assistantAttachmentsFragment),
+            ("unverifiedFragment", SystemTemplates.unverifiedFragment),
             ("groundingRepoFragment", SystemTemplates.groundingRepoFragment),
             ("groundingFolderFragment", SystemTemplates.groundingFolderFragment),
-            ("numberedChoiceFragment", SystemTemplates.numberedChoiceFragment),
             ("codingResponseStyleFragment", SystemTemplates.codingResponseStyleFragment),
             ("engineeringStandardsFragment", SystemTemplates.engineeringStandardsFragment),
         ]

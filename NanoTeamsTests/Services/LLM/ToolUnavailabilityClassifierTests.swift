@@ -332,13 +332,14 @@ final class ToolUnavailabilityClassifierTests: XCTestCase {
         XCTAssertTrue(clickMessage.contains(ToolNames.uiClick), clickMessage)
     }
 
-    func testClassify_unknownTool_returnsNotInRoleConfig() throws {
+    func testClassify_unknownTool_returnsUnknownToolName() throws {
         try fm.createDirectory(
             at: tempDir.appendingPathComponent(".git"),
             withIntermediateDirectories: true
         )
-        // Genuine hallucination — tool the role never had configured and
-        // doesn't match any precondition-bound category.
+        // Genuine hallucination — no tool of this name exists anywhere in the app, so it
+        // is NOT "not in role config" (which would promise that some role somewhere holds
+        // it, and invite a hunt for the role that does).
         let reason = LLMExecutionService.classifyUnavailability(
             toolName: "imaginary_tool",
             workFolderRoot: tempDir,
@@ -348,7 +349,41 @@ final class ToolUnavailabilityClassifierTests: XCTestCase {
             approval: .available,
             fileManager: fm
         )
-        XCTAssertEqual(reason, .notInRoleConfig)
+        XCTAssertEqual(reason, .unknownToolName)
+    }
+
+    /// The other half of the split: a REAL tool this role was simply not issued. The two
+    /// were one case until 2026-09-11, and their repairs differ — drop the name entirely
+    /// vs. record the gap it leaves as unverified.
+    func testClassify_realToolNotHeld_isNotInRoleConfig_notUnknown() {
+        for tool in [ToolNames.runXcodebuild, ToolNames.runXcodetests, ToolNames.analyzeImage] {
+            XCTAssertEqual(
+                LLMExecutionService.classifyUnavailability(
+                    toolName: tool,
+                    workFolderRoot: tempDir,
+                    isDefaultStorage: false,
+                    isVisionConfigured: true,
+                    selectedScheme: "Foo",
+                    approval: .available,
+                    fileManager: fm),
+                .notInRoleConfig,
+                "\(tool) is a registered tool — the role not holding it is a different fact from the name not existing")
+        }
+    }
+
+    /// A namespaced emission of a real tool canonicalises before the classifier sees it,
+    /// so the split must not mistake `repo_browser.list_files` for an invented name.
+    func testClassify_namespacedRealTool_canonicalises_beforeTheUnknownCheck() {
+        XCTAssertEqual(
+            LLMExecutionService.classifyUnavailability(
+                toolName: ToolRegistry.resolveToolName("repo_browser.list_files"),
+                workFolderRoot: tempDir,
+                isDefaultStorage: false,
+                isVisionConfigured: true,
+                selectedScheme: "Foo",
+                approval: .available,
+                fileManager: fm),
+            .notInRoleConfig)
     }
 
     // MARK: - Envelope builder
@@ -401,7 +436,7 @@ final class ToolUnavailabilityClassifierTests: XCTestCase {
         XCTAssertTrue(envelope.outputJSON.contains("not available for this role"))
     }
 
-    func testEnvelope_notInRoleConfig_omitsToolField() {
+    func testEnvelope_unknownToolName_omitsToolField() {
         // The hallucination envelope drops the `tool` field: echoing the
         // model's invented name back as `"tool":"X"` frames it as a real tool
         // and confuses weaker models (the name is often an artifact name).
@@ -411,14 +446,56 @@ final class ToolUnavailabilityClassifierTests: XCTestCase {
             call: call,
             canonicalName: "Engineering Notes",
             scope: "for this role",
-            reason: .notInRoleConfig
+            reason: .unknownToolName
         )
         XCTAssertFalse(
             envelope.outputJSON.contains("\"tool\":"),
-            "tool_not_authorized envelope must not carry a 'tool' field, got: \(envelope.outputJSON)"
+            "unknown_tool envelope must not carry a 'tool' field, got: \(envelope.outputJSON)"
         )
+        XCTAssertTrue(envelope.outputJSON.contains("\"error\":\"unknown_tool\""))
+        XCTAssertTrue(envelope.outputJSON.contains("No tool named 'Engineering Notes' exists"))
+    }
+
+    /// The refused-but-real envelope names the remedy that MeditationApp task 48 run 1
+    /// lacked: the call did not run, so the fact it would have established is unverified.
+    /// "Proceed without this step" — what the direction said until 2026-09-11 — is what
+    /// the planner read as permission to assert `=== BUILD SUCCESS ===` instead.
+    func testEnvelope_notInRoleConfig_saysItReturnedNothingAndNamesUnverified() {
+        let call = StepToolCall(name: ToolNames.runXcodebuild, argumentsJSON: "{}")
+        let envelope = LLMExecutionService.makeUnavailableToolResult(
+            call: call, canonicalName: ToolNames.runXcodebuild,
+            scope: "for this role", reason: .notInRoleConfig)
+
         XCTAssertTrue(envelope.outputJSON.contains("\"error\":\"tool_not_authorized\""))
-        XCTAssertTrue(envelope.outputJSON.contains("Tool 'Engineering Notes' is not available"))
+        XCTAssertTrue(envelope.outputJSON.contains("is not available for this role"),
+                      "the pinned substring must survive rewording: \(envelope.outputJSON)")
+        XCTAssertTrue(envelope.outputJSON.contains("did not run and returned nothing"), envelope.outputJSON)
+        XCTAssertTrue(envelope.outputJSON.contains("unverified"), envelope.outputJSON)
+
+        let direction = ToolErrorNotePolicy.direction(
+            for: envelope, allowedToolNames: [ToolNames.createArtifact]) ?? ""
+        XCTAssertFalse(direction.isEmpty, "the refused-but-real arm must still carry a direction")
+        XCTAssertFalse(direction.lowercased().contains("proceed without this step"),
+                       "the direction that produced the run-48 fabrication must not come back: \(direction)")
+    }
+
+    /// An invented name gets the OTHER direction: no spelling of it becomes a tool. Under
+    /// one shared code both reasons inherited one remedy, and "record it as unverified"
+    /// is meaningless for a name that names nothing.
+    func testDirection_unknownTool_differsFromTheRefusedButRealOne() throws {
+        let unknown = LLMExecutionService.makeUnavailableToolResult(
+            call: StepToolCall(name: "imaginary_tool", argumentsJSON: "{}"),
+            canonicalName: "imaginary_tool", scope: "for this role", reason: .unknownToolName)
+        let refused = LLMExecutionService.makeUnavailableToolResult(
+            call: StepToolCall(name: ToolNames.runXcodebuild, argumentsJSON: "{}"),
+            canonicalName: ToolNames.runXcodebuild, scope: "for this role", reason: .notInRoleConfig)
+
+        let unknownDirection = try XCTUnwrap(ToolErrorNotePolicy.direction(for: unknown, allowedToolNames: []))
+        let refusedDirection = try XCTUnwrap(ToolErrorNotePolicy.direction(for: refused, allowedToolNames: []))
+        XCTAssertNotEqual(unknownDirection, refusedDirection,
+                          "the split exists precisely because the two repairs differ")
+        XCTAssertTrue(unknownDirection.contains("spelling"), unknownDirection)
+        XCTAssertTrue(refusedDirection.contains("unknown"), refusedDirection)
     }
 
     func testEnvelope_notInRoleConfig_differingCanonicalName_leaksNeither() {
@@ -574,8 +651,8 @@ final class ToolUnavailabilityClassifierTests: XCTestCase {
         XCTAssertEqual(reason, .withheldUntilPlanRecorded)
     }
 
-    /// A tool the role genuinely never had must NOT be promised for later.
-    func testClassify_hallucinatedTool_isStillNotInRoleConfig() {
+    /// A name that is not a tool must NOT be promised for later.
+    func testClassify_hallucinatedTool_isStillNotPromisedForLater() {
         let reason = LLMExecutionService.classifyUnavailability(
             toolName: "run_shell_command",
             workFolderRoot: URL(fileURLWithPath: "/tmp"),
@@ -585,7 +662,90 @@ final class ToolUnavailabilityClassifierTests: XCTestCase {
             approval: .available,
             phaseWithheldToolNames: [ToolNames.writeFile]
         )
-        XCTAssertEqual(reason, .notInRoleConfig)
+        XCTAssertEqual(reason, .unknownToolName)
+    }
+
+    // MARK: - One code per reason, written and read from one place
+
+    /// `errorCode` is the single spelling `makeUnavailableToolResult` writes and
+    /// `ToolErrorNotePolicy.direction` switches on. Every reason's envelope must carry
+    /// exactly its own code as the top-level `error` literal — the shape the policy reads
+    /// first.
+    func testEveryReason_writesItsOwnCodeIntoTheEnvelope() {
+        let call = StepToolCall(name: "x", argumentsJSON: "{}")
+        for reason in LLMExecutionService.ToolUnavailabilityReason.allCases {
+            let envelope = LLMExecutionService.makeUnavailableToolResult(
+                call: call, canonicalName: "x", scope: "for this role", reason: reason)
+            let dict = JSONUtilities.parseJSONDictionary(envelope.outputJSON)
+            XCTAssertEqual(dict?["error"] as? String, reason.errorCode, "\(reason)")
+            XCTAssertTrue(envelope.isError, "\(reason)")
+        }
+        // The three reasons whose remedy differs from their family's carry their own code.
+        let codes = Set(LLMExecutionService.ToolUnavailabilityReason.allCases.map(\.errorCode))
+        XCTAssertEqual(codes, ["unknown_tool", "tool_not_authorized", "precondition_failed",
+                               "approval_unavailable", "plan_required", "work_superseded"])
+    }
+
+    // MARK: - A superseded role's runners
+
+    /// The superseded set outranks the phase: both are derived from the already-filtered
+    /// array, and of the two this is the durable one — `plan_required` would invite a
+    /// retry that lands here again.
+    func testClassify_supersededRunner_outranksThePhase() {
+        let reason = LLMExecutionService.classifyUnavailability(
+            toolName: ToolNames.runXcodebuild,
+            workFolderRoot: URL(fileURLWithPath: "/tmp"),
+            isDefaultStorage: false,
+            isVisionConfigured: true,
+            selectedScheme: nil,   // would be `.xcodeSchemeNotSelected` — and must not be
+            approval: .available,
+            phaseWithheldToolNames: [ToolNames.runXcodebuild],
+            supersededToolNames: [ToolNames.runXcodebuild]
+        )
+        XCTAssertEqual(reason, .workSuperseded)
+    }
+
+    /// The envelope names the runner (a real tool the role holds — the structured field
+    /// stays), says why, and points at the re-run rather than at a substitute; the policy
+    /// appends nothing after it.
+    func testEnvelope_workSuperseded_namesTheReRunAndKeepsTheToolField() {
+        let call = StepToolCall(name: ToolNames.runXcodetests, argumentsJSON: "{}")
+        let envelope = LLMExecutionService.makeUnavailableToolResult(
+            call: call, canonicalName: ToolNames.runXcodetests,
+            scope: "for this role", reason: .workSuperseded)
+        XCTAssertTrue(envelope.isError)
+        XCTAssertTrue(envelope.outputJSON.contains("work_superseded"), envelope.outputJSON)
+        XCTAssertTrue(envelope.outputJSON.contains("re-run"), envelope.outputJSON)
+        XCTAssertTrue(envelope.outputJSON.contains("\"tool\":\"\(ToolNames.runXcodetests)\""), envelope.outputJSON)
+        XCTAssertFalse(envelope.outputJSON.contains("proceed without"), envelope.outputJSON)
+        XCTAssertNil(ToolErrorNotePolicy.direction(for: envelope, allowedToolNames: [ToolNames.readFile]),
+                     "the envelope carries both halves; a direction would restate it")
+    }
+
+    /// The name-shaped split lives in ONE function, read by the classifier's tail and by
+    /// `MeetingToolExecutor`: a registered name the role lacks is `.notInRoleConfig`, a
+    /// name the registry has never heard of is `.unknownToolName`.
+    func testNameShapedReason_splitsByTheRegistry() {
+        XCTAssertEqual(LLMExecutionService.nameShapedReason(canonical: ToolNames.writeFile), .notInRoleConfig)
+        XCTAssertEqual(LLMExecutionService.nameShapedReason(canonical: "submit_vote"), .unknownToolName)
+        XCTAssertEqual(LLMExecutionService.nameShapedReason(canonical: ""), .unknownToolName)
+    }
+
+    /// A differently CASED spelling of a tool the role holds is never "not a tool":
+    /// `resolveToolName` lowercases the whole name at the dispatch boundary, so the
+    /// canonical spelling reaches both the `allowed` set and the registry read. Until the
+    /// evening of 2026-09-11 `Read_File` came back as `Read_File`, missed both, and the
+    /// model was told no variant of the name would ever be a tool — forbidding the one
+    /// retry that would have worked.
+    ///
+    /// RED: lowercase only the alias key in `resolveToolName` → `.unknownToolName`.
+    func testMixedCaseSpellingOfAHeldTool_isNeverUnknown() {
+        let canonical = ToolRegistry.resolveToolName("Read_File")
+        XCTAssertEqual(canonical, ToolNames.readFile)
+        XCTAssertTrue(Set([ToolNames.readFile]).contains(canonical),
+                      "the authorized set is matched exactly, so the spelling must be canonical")
+        XCTAssertEqual(LLMExecutionService.nameShapedReason(canonical: ToolRegistry.resolveToolName("READ_FILE")),
+                       .notInRoleConfig, "a real tool under any casing is never 'unknown'")
     }
 
     /// The envelope keeps the structured `tool` field — unlike the hallucination

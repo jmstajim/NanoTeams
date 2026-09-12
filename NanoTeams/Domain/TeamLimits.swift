@@ -36,6 +36,37 @@ nonisolated struct TeamLimits: Codable, Hashable {
         maxAmendmentsPerStep: 2
     )
 
+    /// Ultra Team's own preset. The `.default` 3 / 3 / 2 was exactly the pipeline's planned
+    /// spend — one firing per checker — so every checker could fire ONCE with no right to a
+    /// second shot: a build still red after the first repair met "Change request limit
+    /// reached" and the run ended red with its repair channel spent. The requirement the
+    /// whole team exists for would have failed on a constant rather than on the model.
+    ///
+    /// Derived, not chosen: each checker must be able to fire twice (found → repaired →
+    /// rechecked → found again). Two checkers hold `request_changes` — the Diff Reviewer and
+    /// the Change Verifier, both targeting the engineer — so four votes, and four amendments
+    /// on the engineer's step. It was three checkers and six votes until 2026-09-12, when the
+    /// Feasibility Critic retired with the team's Swift binding; the budget came down with it
+    /// rather than being left as slack, because an unspent allowance is indistinguishable from
+    /// a chosen one the next time somebody reads this. `maxMeetingsPerRun` matches
+    /// `maxChangeRequestsPerRun` because every vote persists as a meeting and is counted by
+    /// `hasReachedMeetingLimit` — one budget wearing two names, which holds only while no
+    /// Ultra role carries `request_team_meeting`
+    /// (`testUltraMeetingBudgetIsReservedForChangeRequestVotes`).
+    ///
+    /// Still counted and still finite, as REC.7 requires; what changed is that it stops
+    /// biting on the first honest second round.
+    static let ultra = TeamLimits(
+        maxConsultationsPerStep: 5,
+        maxMeetingsPerRun: 4,
+        maxMeetingTurns: 10,
+        maxSameTeammateAsks: 2,
+        autoIterationLimit: 10000,
+        maxMeetingToolIterationsPerTurn: 3,
+        maxChangeRequestsPerRun: 4,
+        maxAmendmentsPerStep: 4
+    )
+
     static let discussionClub = TeamLimits(
         maxConsultationsPerStep: 10,
         maxMeetingsPerRun: 10,

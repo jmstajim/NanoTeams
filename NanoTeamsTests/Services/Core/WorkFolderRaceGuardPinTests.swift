@@ -96,8 +96,8 @@ final class WorkFolderRaceGuardPinTests: XCTestCase {
     /// built for folder A is published after A has been closed. Nothing tears it down (the
     /// switch's own teardown already ran against a nil slot), so its FSEventStream and index
     /// writes keep running against the previous project, default storage acquires an index the
-    /// method's own doc forbids, and `exploratory_search` resolves postings from one folder
-    /// while executing against another.
+    /// method's own doc forbids, and `exploratory_search` matches filenames against one
+    /// folder's roster while executing against another.
     func testCoordinatorInstall_reChecksTheFolderAfterStart() throws {
         let text = try body(
             of: "setUpSearchIndexCoordinatorIfEnabled()", in: workFolderManagementSource())

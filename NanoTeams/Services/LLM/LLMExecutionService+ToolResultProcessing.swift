@@ -85,6 +85,28 @@ extension LLMExecutionService {
         /// INTENT while the model waits for something that already arrived, which invites it to
         /// re-ask a question the merged answer already covered.
         var supervisorToolCallProviderIDs: [String] = []
+        /// Every question of the batch as STRUCTURE, accumulated only when at least one
+        /// `ask_supervisor_form` call arrived.
+        ///
+        /// Empty for a batch of plain asks, and that is the point: chat-mode teams route every
+        /// assistant turn through `ask_supervisor`, so the common path must stay exactly what
+        /// it was. When a form IS present, plain asks in the same batch join it as free-text
+        /// entries rather than being stranded in the merged headline — otherwise the human
+        /// would see a form card while one of the questions lived only in the text above it.
+        var supervisorInquiryQuestions: [SupervisorInquiryQuestion] = []
+        /// Whether a form call arrived. Distinct from `supervisorInquiryQuestions.isEmpty`,
+        /// which a batch of plain asks alongside a form would also make false.
+        var hasSupervisorForm: Bool = false
+
+        /// The structured questionnaire this batch parks on, or `nil` when it parked on plain
+        /// text alone. The headline is the merged `supervisorQuestion`, so both halves of the
+        /// park describe the same thing.
+        var supervisorInquiry: SupervisorInquiry? {
+            guard hasSupervisorForm, let headline = supervisorQuestion,
+                  !supervisorInquiryQuestions.isEmpty
+            else { return nil }
+            return SupervisorInquiry(headline: headline, questions: supervisorInquiryQuestions)
+        }
         /// The batch with every DEFERRED signal's placeholder replaced by what it actually
         /// resolved to.
         ///

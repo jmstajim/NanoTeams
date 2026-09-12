@@ -56,21 +56,75 @@ final class QuickCaptureComposerHandoffCoverageTests: XCTestCase {
     ///
     /// RED: drop the `from != to` clause → the same-task row returns `.reassign` and this fails.
     func testHandoff_isOwedOnlyWhenAChatComposerChangesTask() {
-        let cases: [(String, Int?, QuickCaptureMode, Int?, QuickCapturePresentationPolicy.ChatComposerHandoff)] = [
-            ("bucket owned by A → chat working B", 1, chatWorking(), 2, .reassign(from: 1, to: 2)),
-            ("bucket owned by A → chat working A", 1, chatWorking(), 1, .none),
-            ("bucket owned by A → non-chat working B", 1, chatWorking(false), 2, .none),
-            ("bucket owned by A → overlay", 1, .overlay, 2, .none),
-            ("bucket owned by A → answer for B", 1, anAnswer, 2, .none),
+        let cases: [(String, AnswerDraftKey?, QuickCaptureMode, Int?, QuickCapturePresentationPolicy.ChatComposerHandoff)] = [
+            ("bucket owned by A → chat working B",
+             .taskChat(1), chatWorking(), 2, .reassign(from: .taskChat(1), to: .taskChat(2))),
+            ("bucket owned by A → chat working A", .taskChat(1), chatWorking(), 1, .none),
+            ("bucket owned by A → non-chat working B", .taskChat(1), chatWorking(false), 2, .none),
+            ("bucket owned by A → overlay", .taskChat(1), .overlay, 2, .none),
+            ("bucket owned by A → answer for B", .taskChat(1), anAnswer, 2, .none),
             ("unclaimed bucket → chat working B", nil, chatWorking(), 2, .none),
-            ("no arriving task → chat working", 1, chatWorking(), nil, .none),
+            ("no arriving task → chat working", .taskChat(1), chatWorking(), nil, .none),
+            // A TEAM task's answer branch is a legal owner too: the panel can be answering
+            // role X of task 1 and then re-resolve onto chat task 2. Under a task-id
+            // comparison this row was unrepresentable, and it is the one the key makes
+            // possible to write down.
+            ("bucket owned by task 1's role → chat working 2",
+             .role(TaskStepKey(taskID: 1, stepID: "pm")), chatWorking(), 2,
+             .reassign(from: .role(TaskStepKey(taskID: 1, stepID: "pm")), to: .taskChat(2))),
         ]
         for (label, from, mode, to, expected) in cases {
             XCTAssertEqual(
                 QuickCapturePresentationPolicy.chatComposerHandoff(
-                    liveFieldsOwnerTaskID: from, resolvedMode: mode, newTaskID: to),
+                    liveFieldsOwnerKey: from, resolvedMode: mode, newTaskID: to),
                 expected, label)
         }
+    }
+
+    // MARK: - The hand-off takes the destination's parked draft
+
+    /// The store's contract is that no entry stands under a branch a composer is holding. When
+    /// the fields simply CONTINUE into the destination (same task) and another surface parked a
+    /// reply there meanwhile, the fields take it back — otherwise the same reply exists twice,
+    /// and the chip wears an unsent-draft dot for text the composer is already showing.
+    ///
+    /// RED: drop the `take` inside the `continues` branch → the parked draft stays in the store,
+    /// the live field stays empty, and both assertions fail.
+    @MainActor
+    func testHandoff_intoTheSameTask_takesBackADraftParkedThere() {
+        let state = QuickCaptureFormState()
+        let held = AnswerDraftKey.taskChat(7)
+        let destination = AnswerDraftKey.role(TaskStepKey(taskID: 7, stepID: "pm"))
+        state.claimAnswerFields(for: held)
+        state.answerDraftStore.save(AnswerDraft(text: "half-typed reply"), for: destination)
+
+        state.handOffLiveAnswerFields(to: destination)
+
+        XCTAssertEqual(state.answerText, "half-typed reply")
+        XCTAssertNil(state.answerDraftStore.peek(for: destination),
+                     "no entry may stand under the branch the composer now holds")
+    }
+
+    /// The same move with LIVE content in the fields leaves the parked draft alone: taking it
+    /// would overwrite what the human is typing right now, which no rule about tidiness is
+    /// worth.
+    ///
+    /// RED: drop the `!liveAnswerFieldsHaveContent` guard → the live sentence is replaced by
+    /// the parked one.
+    @MainActor
+    func testHandoff_neverTakesADraftOverLiveContent() {
+        let state = QuickCaptureFormState()
+        let held = AnswerDraftKey.taskChat(7)
+        let destination = AnswerDraftKey.role(TaskStepKey(taskID: 7, stepID: "pm"))
+        state.claimAnswerFields(for: held)
+        state.answerText = "what I am typing"
+        state.answerDraftStore.save(AnswerDraft(text: "parked earlier"), for: destination)
+
+        state.handOffLiveAnswerFields(to: destination)
+
+        XCTAssertEqual(state.answerText, "what I am typing")
+        XCTAssertEqual(state.answerDraftStore.peek(for: destination)?.text, "parked earlier",
+                       "the parked reply stays where it is until the fields are free")
     }
 
     // MARK: - The wiring
@@ -179,7 +233,7 @@ final class QuickCaptureComposerHandoffCoverageTests: XCTestCase {
         XCTAssertTrue(sut.formState.isInAnswerMode, "precondition: B's question took the panel")
         XCTAssertEqual(sut.formState.answerText, "",
                        "B's question gets an empty answer field, not the message meant for A")
-        XCTAssertEqual(sut.formState._testAnswerDrafts[taskA]?.text, "for A only",
+        XCTAssertEqual(sut.formState.answerDraftStore.peek(for: .taskChat(taskA))?.text, "for A only",
                        "and A keeps it")
     }
 

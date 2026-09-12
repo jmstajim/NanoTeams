@@ -25,9 +25,10 @@ nonisolated enum TeamEditorValidation {
     /// errors) with delegation policy (`TeamValidationService.validateDelegationPolicy`
     /// — severity per `ValidationError.isError`), attached-skill resolution
     /// (`validateAttachedSkills`), the meeting-coordinator heal warning
-    /// (`validateMeetingCoordinator`) and the Off-in-chat-mode error
-    /// (`validateSupervisorMode`), each rendered via `displayMessage(in:)`. These
-    /// are the ONLY four `TeamValidationService` members the banner calls — pinned
+    /// (`validateMeetingCoordinator`), the Off-in-chat-mode error
+    /// (`validateSupervisorMode`) and the lone-questionnaire warning
+    /// (`validateSupervisorAskTools`), each rendered via `displayMessage(in:)`. These
+    /// are the ONLY `TeamValidationService` members the banner calls — pinned
     /// by `TeamEditorValidationTests.testBannerCallsExactlyTheLiveValidators`.
     /// - Parameter knownSkillIDs: ids the agent-skill scanner discovered. Empty
     ///   means "no catalogue yet" and skips the attached-skill check entirely —
@@ -53,6 +54,9 @@ nonisolated enum TeamEditorValidation {
             Issue(isError: $0.isError, message: $0.displayMessage(in: team))
         }
         issues += TeamValidationService.validateSupervisorMode(team: team).map {
+            Issue(isError: $0.isError, message: $0.displayMessage(in: team))
+        }
+        issues += TeamValidationService.validateSupervisorAskTools(team: team).map {
             Issue(isError: $0.isError, message: $0.displayMessage(in: team))
         }
         return issues

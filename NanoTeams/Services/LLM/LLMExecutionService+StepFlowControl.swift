@@ -232,8 +232,13 @@ extension LLMExecutionService {
                 return .needsSupervisorInput(question: question)
 
             case .repetitiveNonTool(let count):
+                // Classified from the turn's own text, cleaned of the model-specific
+                // `<|…|>` tokens the ring stores raw, so the ask rung names the channel
+                // the gate would accept rather than the one it would refuse.
                 let retryMessage = Self.repetitiveNonToolNudge(
-                    count: count, allowedToolNames: allowedToolNames)
+                    count: count, allowedToolNames: allowedToolNames,
+                    questionnaire: SupervisorQuestionShape.isQuestionnaire(
+                        ModelTokenCleaner.clean(result.assistantContent)))
                 conversationMessages.append(ChatMessage(role: .user, content: retryMessage))
                 await appendLLMMessage(
                     stepID: stepID, taskID: task.id, role: .user, content: retryMessage,
@@ -349,7 +354,8 @@ extension LLMExecutionService {
                 // without being shown a single valid id — and, before the anchor now
                 // carries the raw buffer, without being shown its own attempt either.
                 retryMessage = NoToolTurnNudges.malformedJSON(
-                    defect: defect, allowedToolNames: allowedToolNames)
+                    defect: defect, allowedToolNames: allowedToolNames,
+                    failingToolName: ToolCallParsingHelpers.intendedToolName(in: envelopeSource))
             case .noCallEnvelope:
                 // Framing without a call: a `<|channel|>` / `<|start|>` envelope whose
                 // recipient is missing or reserved, or whose body is prose. Deliberately
@@ -551,7 +557,7 @@ extension LLMExecutionService {
 
         // Producing role — retry if artifacts missing, complete if all present
         if let roleDef = roleDefinition {
-            let expected = roleDef.dependencies.producesArtifacts.filter { $0 != ArtifactConstants.buildDiagnosticsName }
+            let expected = roleDef.dependencies.producesArtifacts
             if !expected.isEmpty {
                 // Producing role — check artifact completeness
                 if let artifactStop = checkArtifactCompleteness(stepID: stepID, taskID: task.id) {
@@ -592,7 +598,9 @@ extension LLMExecutionService {
         // completion channel, resolved from its schema. Roles never self-terminate
         // here; only artifact completion, the no-tool backstop, or the Supervisor's
         // "Finish Role" ends a step.
-        let retryMessage = Self.noToolCallNudge(allowedToolNames: allowedToolNames)
+        let retryMessage = Self.noToolCallNudge(
+            allowedToolNames: allowedToolNames,
+            questionnaire: SupervisorQuestionShape.isQuestionnaire(cleanedContent))
         conversationMessages.append(ChatMessage(role: .user, content: retryMessage))
         await appendLLMMessage(
             stepID: stepID, taskID: task.id, role: .user, content: retryMessage,

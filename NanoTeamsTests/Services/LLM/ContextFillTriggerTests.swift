@@ -300,6 +300,82 @@ final class ContextFillTriggerTests: XCTestCase {
     }
 }
 
+
+// MARK: - A refused epoch, and who asked for it
+
+extension ContextFillTriggerTests {
+
+    private func headOnlyWire() -> [ChatMessage] {
+        [
+            ChatMessage(role: .system, content: "You are an engineer."),
+            ChatMessage(role: .user, content: "## Supervisor Task\nBuild it."),
+        ]
+    }
+
+    private func step() -> StepExecution {
+        StepExecution(id: stepID, role: .softwareEngineer, title: "work")
+    }
+
+    @discardableResult
+    private func runEpoch(
+        reason: CompactionPolicy.CompactionReason,
+        wire: inout [ChatMessage]
+    ) async -> Bool {
+        await sut._testCompactConversationInLoop(
+            stepID: stepID, taskID: taskID, reason: reason, step: step(),
+            client: ProbeClient(contextLength: 8192), config: config,
+            roleForMessage: .softwareEngineer, conversationMessages: &wire)
+    }
+
+    /// A human's click can land a second before the model's first reply. Latching on it would
+    /// silently disable AUTOMATIC compaction for the rest of the step's entry as a punishment
+    /// for being early — and the latch has no surface, so nobody could see it happen.
+    ///
+    /// RED: keep the unconditional latch → the click both says nothing and turns off the
+    /// mechanism it was asking for.
+    func testAManualEpochWithNothingToFold_answersInsteadOfLatching() async {
+        var wire = headOnlyWire()
+        let did = await runEpoch(reason: .manual, wire: &wire)
+
+        XCTAssertFalse(did)
+        XCTAssertEqual(sut._testAutoCompactExhausted(stepID: stepID, taskID: taskID), false)
+        XCTAssertEqual(delegate.lastInfoMessages.last, CompactionPolicy.nothingToFoldNotice)
+    }
+
+    /// The controlled comparison: the exemption is for the HUMAN, not for the latch. An
+    /// automatic trigger fired on a measurement, so its refusal means the pinned head is
+    /// already past the budget — permanent, and the latch is what stops one LLM call per
+    /// iteration forever.
+    func testAnAutomaticEpochWithNothingToFold_stillLatches() async {
+        var wire = headOnlyWire()
+        let did = await runEpoch(reason: .budgetExceeded, wire: &wire)
+
+        XCTAssertFalse(did)
+        XCTAssertEqual(sut._testAutoCompactExhausted(stepID: stepID, taskID: taskID), true)
+        XCTAssertTrue(delegate.lastInfoMessages.isEmpty, "the automatic arm says nothing")
+    }
+
+    /// Corner case: a refused epoch leaves the wire byte-identical. It is append-only, and
+    /// every prefix-cache hit depends on its head.
+    func testAManualEpochWithNothingToFold_leavesTheWireUntouched() async {
+        var wire = headOnlyWire()
+        await runEpoch(reason: .manual, wire: &wire)
+        XCTAssertEqual(wire, headOnlyWire())
+    }
+
+    /// The same rule in the OTHER function: `applyEpoch` refuses when the summary came back
+    /// empty and there is nothing else to seed with. `ProbeClient` finishes its stream without
+    /// content, the step has no notes, and the folded range holds no Supervisor turn.
+    func testAManualEpochWithNoSeedMaterial_answersInsteadOfLatching() async {
+        var wire = headOnlyWire() + [ChatMessage(role: .assistant, content: "Read it.")]
+        let did = await runEpoch(reason: .manual, wire: &wire)
+
+        XCTAssertFalse(did)
+        XCTAssertEqual(sut._testAutoCompactExhausted(stepID: stepID, taskID: taskID), false)
+        XCTAssertEqual(delegate.lastInfoMessages.last, CompactionPolicy.nothingToSeedNotice)
+    }
+}
+
 // MARK: - Probe client
 
 /// Counts window probes so the once-per-epoch bound is observable.

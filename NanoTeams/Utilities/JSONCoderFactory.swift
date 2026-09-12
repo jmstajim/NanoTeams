@@ -49,6 +49,24 @@ nonisolated enum JSONCoderFactory {
         return encoder
     }
 
+    /// Compact persistence encoder: withoutEscapingSlashes + ISO 8601 dates, and deliberately
+    /// NEITHER `.prettyPrinted` NOR `.sortedKeys`.
+    ///
+    /// Used by: `SearchIndexService` (`search_index.json`) — a regenerable cache, not a record.
+    /// Measured on a real v2 index of this repository: 1 004 311 bytes compact against
+    /// 1 309 222 pretty-printed. (The 9 467 711 / 18 309 989 pair this doc used to quote was the
+    /// v1 index, two thirds of which was the `postings` map deleted on 2026-09-11.) The
+    /// `.sortedKeys` half does not rest on the size at all: sorting tens of thousands of
+    /// vocabulary strings on every save buys byte-for-byte reproducibility that nothing reads.
+    /// Every other persisted file keeps
+    /// `makePersistenceEncoder()`: those are diffed, inspected by hand, and small.
+    static func makeCompactPersistenceEncoder() -> JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.withoutEscapingSlashes]
+        encoder.dateEncodingStrategy = dateEncodingStrategy
+        return encoder
+    }
+
     /// Export encoder: prettyPrinted + sortedKeys + ISO 8601 dates.
     /// Used by: NTMSRepository (diagnostics), TeamImportExportService.
     static func makeExportEncoder() -> JSONEncoder {

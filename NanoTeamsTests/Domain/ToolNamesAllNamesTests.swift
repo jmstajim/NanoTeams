@@ -9,14 +9,15 @@ import XCTest
 final class ToolNamesAllNamesTests: XCTestCase {
 
     func testAllNames_countMatchesToolCount() {
-        // Mirror of DefaultToolSchemasTests.testDefaultToolsCountIs50.
-        XCTAssertEqual(ToolNames.allNames.count, 50)
+        // Mirror of DefaultToolSchemasTests.testDefaultToolsCountIs51.
+        XCTAssertEqual(ToolNames.allNames.count, 51)
     }
 
     func testAllNames_containsRepresentativesFromEachCategory() {
         for name in [
             ToolNames.readFile, ToolNames.gitCommit, ToolNames.runXcodebuild,
-            ToolNames.askSupervisor, ToolNames.updateScratchpad, ToolNames.askTeammate,
+            ToolNames.askSupervisor, ToolNames.askSupervisorForm,
+            ToolNames.updateScratchpad, ToolNames.askTeammate,
             ToolNames.createArtifact, ToolNames.analyzeImage, ToolNames.createTeam,
             ToolNames.delegateToTeam, ToolNames.waitForEvents, ToolNames.screenCapture,
             ToolNames.uiClick,

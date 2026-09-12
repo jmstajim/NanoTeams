@@ -1,66 +1,13 @@
-import SwiftUI
+import Foundation
 #if DEBUG
 import Synchronization
 #endif
-
-// MARK: - Paired Assistant Message
-
-/// Snapshot of the assistant turn that emitted an active `ask_supervisor`.
-/// Shared between `ActivityFeedBuilder.ActiveSupervisorQuestion` (which decides
-/// whether to suppress the bubble in the timeline) and
-/// `TeamActivityActiveQuestion` (the composer's question card).
-///
-/// Pairs `id`, `thinking` and `content` atomically so they can't drift: the
-/// outer `Optional<PairedAssistantMessage>` is the only "paired data is
-/// missing" state. `id` identifies the feed bubble;
-/// `isFullyRenderedByQuestionCard` decides whether that bubble may be dropped;
-/// `thinking` feeds the card's thinking disclosure when it owns the turn.
-///
-/// Both `thinking` and `content` are trim-to-nil at construction: whitespace-
-/// only input collapses to nil so `!= nil` reliably means "there is something
-/// to render." Consumers don't need to re-trim before checking emptiness.
-nonisolated struct PairedAssistantMessage: Equatable {
-    let id: UUID
-    let thinking: String?
-    /// The turn's prose, trim-to-nil. Read only through
-    /// `isFullyRenderedByQuestionCard` — stored rather than reduced to a `Bool`
-    /// so the type stays a faithful snapshot of the turn.
-    let content: String?
-
-    /// Whether the composer's question card fully covers this turn. True when the
-    /// turn carries no prose: the card's question plus this turn's `thinking` is
-    /// then everything there is to render, and the feed may drop the bubble.
-    /// False when the turn carries prose the card does not render (since
-    /// `cfe23f5b` it renders none) — the bubble is that prose's only surface.
-    var isFullyRenderedByQuestionCard: Bool { content == nil }
-
-    /// `content` deliberately has NO default. A `nil` default reads as
-    /// "suppressible", silently reproducing the pre-fix behaviour at any site
-    /// that forgets to pass it — the wrong direction for the defect this type
-    /// now guards against. Both production sites and every test pass it.
-    init(id: UUID, thinking: String?, content: String?) {
-        self.id = id
-        let trimmedThinking = thinking?.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.thinking = (trimmedThinking?.isEmpty == false) ? trimmedThinking : nil
-        let trimmedContent = content?.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.content = (trimmedContent?.isEmpty == false) ? trimmedContent : nil
-    }
-}
 
 // MARK: - Activity Feed Builder
 
 /// Pure transformation layer: converts raw domain data into display-ready timeline items.
 /// Stateless and testable — no environment dependencies.
 nonisolated enum ActivityFeedBuilder {
-
-    // MARK: - Constants
-
-    /// Canonical placeholder surfaced when a step is waiting for supervisor
-    /// input but no question text is recoverable from either `step.toolCalls`
-    /// (no `ask_supervisor` call) or `step.supervisorQuestion` (nil/whitespace).
-    /// Centralized so the chip in the composer and any future log line / UI
-    /// banner stay in sync.
-    static let escalationFallbackQuestion = "Role is waiting for input — original question text lost. Please advise."
 
     // MARK: - Tagged Item
 
@@ -304,7 +251,8 @@ nonisolated enum ActivityFeedBuilder {
         supervisorProjectFolderURL: URL? = nil,
         stepArtifactContentCache: [String: Set<String>],
         debugModeEnabled: Bool,
-        activeQuestions: [ActiveSupervisorQuestion] = [],
+        activeQuestions: [SupervisorQuestionInbox.PendingQuestion] = [],
+        activeQuestionsRenderedElsewhere: Bool = true,
         isStreaming isStreamingQuery: (UUID) -> Bool
     ) -> [TaggedItem] {
         buildTimeline(
@@ -322,6 +270,7 @@ nonisolated enum ActivityFeedBuilder {
             stepArtifactContentCache: stepArtifactContentCache,
             debugModeEnabled: debugModeEnabled,
             activeQuestions: activeQuestions,
+            activeQuestionsRenderedElsewhere: activeQuestionsRenderedElsewhere,
             isStreaming: isStreamingQuery
         ).items
     }
@@ -355,7 +304,8 @@ nonisolated enum ActivityFeedBuilder {
         supervisorProjectFolderURL: URL? = nil,
         stepArtifactContentCache: [String: Set<String>],
         debugModeEnabled: Bool,
-        activeQuestions: [ActiveSupervisorQuestion] = [],
+        activeQuestions: [SupervisorQuestionInbox.PendingQuestion] = [],
+        activeQuestionsRenderedElsewhere: Bool = true,
         askIndex: (Int, StepExecution) -> AskCallIndex = { AskCallIndex(toolCalls: $1.toolCalls) },
         escalationThinking: (TaskStepKey, UUID, () -> String?) -> String? = { _, _, compute in compute() },
         isStreaming isStreamingQuery: (UUID) -> Bool
@@ -403,6 +353,7 @@ nonisolated enum ActivityFeedBuilder {
             stepArtifactContentCache: stepArtifactContentCache,
             debugModeEnabled: debugModeEnabled,
             suppressedMessageIDs: suppressedMessageIDs,
+            activeQuestionsRenderedElsewhere: activeQuestionsRenderedElsewhere,
             askIndex: askIndex,
             escalationThinking: escalationThinking,
             isStreaming: isStreaming
@@ -424,6 +375,7 @@ nonisolated enum ActivityFeedBuilder {
                 stepArtifactContentCache: stepArtifactContentCache,
                 debugModeEnabled: debugModeEnabled,
                 suppressedMessageIDs: suppressedMessageIDs,
+                activeQuestionsRenderedElsewhere: activeQuestionsRenderedElsewhere,
                 askIndex: askIndex,
                 escalationThinking: escalationThinking,
                 isStreaming: isStreaming
@@ -506,17 +458,22 @@ nonisolated enum ActivityFeedBuilder {
     /// Indexed by the step's position in `steps`, never by `step.id`: the id is
     /// the role id and repeats across descendant tasks within one build.
     private struct StepFeedAux {
-        /// Positions of the step's `ask_supervisor` calls (one `toolCalls` pass,
-        /// or none when the caller's cache already describes the array).
-        let askIndex: AskCallIndex
-        /// Positions in `llmConversation` of every `.supervisorAnswer` message,
-        /// in conversation order — the SAME ordered filter both loops used to
-        /// materialize separately, so answer k still pairs with ask k.
+        /// Positions of the step's calls that PARKED it — the ask index (one `toolCalls`
+        /// pass, or none when the caller's cache already describes the array) minus every
+        /// refused ask, read off the live array (`AskCallIndex.parkedPositions(in:)`).
+        let parkedAsks: [Int]
+        /// Positions in `llmConversation` of every message that RESOLVED a park
+        /// (`MessageSourceContext.resolvesSupervisorAsk` — an answer, or the
+        /// `[ Ask as form ]` directive), in conversation order: the SAME ordered
+        /// filter both loops used to materialize separately, so resolution k
+        /// still pairs with park k.
         let answerIndices: [Int]
         /// The settled escalation card, when the step renders one.
         let card: EscalationCard?
         /// `step.hasActiveSupervisorInput`, evaluated once.
-        let isActive: Bool
+        /// The trailing ask card yields to whichever surface owns the live question.
+        /// False when the question is answered, or when nothing else renders it.
+        let ownedElsewhere: Bool
     }
 
     private static func emitItems(
@@ -529,6 +486,7 @@ nonisolated enum ActivityFeedBuilder {
         stepArtifactContentCache: [String: Set<String>],
         debugModeEnabled: Bool,
         suppressedMessageIDs: Set<UUID> = [],
+        activeQuestionsRenderedElsewhere: Bool = true,
         askIndex: (Int, StepExecution) -> AskCallIndex,
         escalationThinking: (TaskStepKey, UUID, () -> String?) -> String?,
         isStreaming: (UUID) -> Bool
@@ -543,12 +501,13 @@ nonisolated enum ActivityFeedBuilder {
             let artifactContents: Set<String> = debugModeEnabled ? [] : (stepArtifactContentCache[step.id] ?? [])
 
             // Pairing-aware `.supervisorAnswer` suppression. The first
-            // `asks.count` answer messages (conversation order — the SAME index
+            // `parkedAsks.count` answer messages (conversation order — the SAME index
             // rule the answered-notification loop below uses, so the two surfaces
-            // can't disagree) pair with `ask_supervisor` tool calls and render
-            // inside their Q&A cards. The escalation card (no ask calls — drift
+            // can't disagree) pair with the calls that PARKED the step — a refused
+            // ask asked nothing (`StepToolCall.isRefusedAsk`) — and render
+            // inside their Q&A cards. The escalation card (no parked ask — drift
             // caps / Autovisor idle park) owns at most the LATEST answer, and only
-            // while its gate holds (`escalationCard(for:askIndex:isActive:)`). Every
+            // while its gate holds (`escalationCard(for:hasParkedAsk:ownedElsewhere:)`). Every
             // OTHER answer is UNPAIRED and falls through to a durable Supervisor
             // bubble — without this, a re-park clearing `step.supervisorAnswer`
             // (single-slot) made the user's answer vanish from the feed entirely,
@@ -566,8 +525,20 @@ nonisolated enum ActivityFeedBuilder {
             // caller's cache already describes the array) and the ONE conversation
             // walk below that emits the bubbles anyway.
             let asks = askIndex(originTaskID, step)
-            let stepIsActive = step.hasActiveSupervisorInput
-            let card = Self.escalationCard(for: step, askIndex: asks, isActive: stepIsActive)
+            // Refusals are read off the LIVE array, never from the cache: a call is appended
+            // before it runs and its `isError` lands with the result.
+            let parkedAsks = asks.parkedPositions(in: step.toolCalls)
+            // Suppression needs BOTH halves: the question is live, AND some other surface
+            // is rendering it. The second half is not a given — the docked composer is
+            // hidden for a closed task, a historical run and a read-only board, and
+            // suppressing there deletes the last question from the record with nothing
+            // left to show it. `activeQuestions` is already emptied for those cases (it
+            // feeds `suppressedMessageIDs`), so the bubble half was gated and the CARD
+            // half was not; this is the missing half of the same gate.
+            let questionOwnedElsewhere =
+                activeQuestionsRenderedElsewhere && step.hasActiveSupervisorInput
+            let card = Self.escalationCard(
+                for: step, hasParkedAsk: !parkedAsks.isEmpty, ownedElsewhere: questionOwnedElsewhere)
             let cardOwnedAnswerID = card?.answerMessage?.id
             var answerIndices: [Int] = []
 
@@ -586,10 +557,14 @@ nonisolated enum ActivityFeedBuilder {
             for (position, msg) in step.llmConversation.enumerated() {
                 // Answer ordinal bookkeeping runs over the FULL conversation, before
                 // the visible-role guard, so it counts exactly what the old
-                // `filter { .supervisorAnswer }` counted.
+                // `filter { .supervisorAnswer }` counted — widened to every context that
+                // RESOLVES a park, because the `[ Ask as form ]` directive unparks the step
+                // without answering it. Counting only answers would leave park k+1 paired
+                // with the directive that closed park k, i.e. the next real answer drawn on
+                // the wrong card.
                 var isPairedAnswer = false
-                if msg.sourceContext == .supervisorAnswer {
-                    isPairedAnswer = answerIndices.count < asks.count
+                if msg.sourceContext?.resolvesSupervisorAsk == true {
+                    isPairedAnswer = answerIndices.count < parkedAsks.count
                     answerIndices.append(position)
                 }
                 guard msg.role != .system && msg.role != .tool else { continue }
@@ -612,6 +587,10 @@ nonisolated enum ActivityFeedBuilder {
                 }
                 if !debugModeEnabled && msg.role == .user {
                     if msg.sourceRole == nil && msg.sourceContext == nil { continue }
+                    // `.supervisorAnswer` by NAME, not `resolvesSupervisorAsk`: a card
+                    // absorbs what the SUPERVISOR said, and the `[ Ask as form ]` directive
+                    // exists to be its own `# system: form request` row — the card for the
+                    // park it resolved is not drawn at all (see the notification loop below).
                     if msg.sourceContext == .supervisorAnswer,
                        isPairedAnswer || msg.id == cardOwnedAnswerID {
                         continue  // rendered inside its ask card / the escalation Q&A card
@@ -662,7 +641,8 @@ nonisolated enum ActivityFeedBuilder {
             }
 
             aux.append(StepFeedAux(
-                askIndex: asks, answerIndices: answerIndices, card: card, isActive: stepIsActive))
+                parkedAsks: parkedAsks, answerIndices: answerIndices, card: card,
+                ownedElsewhere: questionOwnedElsewhere))
         }
 
         // Meeting messages
@@ -684,24 +664,42 @@ nonisolated enum ActivityFeedBuilder {
         // skipped here. `StepExecution.hasActiveSupervisorInput` is the shared predicate.
         for (stepIndex, step) in steps.enumerated() {
             // Everything derived in the first loop, read back by POSITION (the id
-            // repeats across descendants). The INDEX pairing between the ask
+            // repeats across descendants). The INDEX pairing between the PARK
             // positions and the answer positions is load-bearing (see the note
-            // above `asks` in the first loop): answer k pairs with ask k, and
-            // narrowing either array would silently re-pair them.
+            // above `asks` in the first loop): answer k pairs with park k, and
+            // narrowing either array would silently re-pair them — which is exactly
+            // what a refused ask counted as a park did (MeditationApp task 52 run 9,
+            // 2026-09-11: the answer landed on the refused plain ask and every
+            // refused form drew an "asked … (answered)" card).
             let a = aux[stepIndex]
-            let stepIsActive = a.isActive
+            let questionOwnedElsewhere = a.ownedElsewhere
 
             // Built LAZILY — only a step that actually renders an ask card pays
             // the O(k log k) build; steps with no ask calls pay nothing, exactly
             // as the per-call reverse scans this replaces cost nothing there.
             var thinkingResolver: ThinkingResolver?
 
-            for (index, position) in a.askIndex.positions.enumerated() {
+            for (index, position) in a.parkedAsks.enumerated() {
                 let call = step.toolCalls[position]
-                assert(call.name == ToolNames.askSupervisor,
+                assert(call.isSupervisorAsk && !call.isRefusedAsk,
                        "AskCallIndex describes a different array — a `toolCalls` writer broke the closed set")
-                let isLast = index == a.askIndex.positions.count - 1
-                if isLast && stepIsActive { continue }
+                let isLast = index == a.parkedAsks.count - 1
+                if isLast && questionOwnedElsewhere { continue }
+
+                // A park the `[ Ask as form ]` directive resolved draws NO Q&A card. The
+                // `$ ask_supervisor` row plus the `# system: form request` row that follows
+                // it IS the record, and a card here would re-render the directive as the
+                // Supervisor's checkmarked reply — the attribution the context exists to
+                // undo. Read off the RESOLVING MESSAGE, never off the step: the step keeps
+                // only the latest resolution and these cards are per park, so a step field
+                // would blank every earlier answered card on a step that was later sent back
+                // to ask as a form.
+                if index < a.answerIndices.count,
+                   step.llmConversation[a.answerIndices[index]].sourceContext
+                   == .questionnaireRequest
+                {
+                    continue
+                }
 
                 let question: String
                 if let parsed = call.parsedSupervisorQuestion {
@@ -737,6 +735,26 @@ nonisolated enum ActivityFeedBuilder {
                     ? step.llmConversation[a.answerIndices[index]].createdAt
                     : call.createdAt
 
+                // The questionnaire belongs to the TRAILING ask or to no card at all. `step`
+                // stores one — the latest park's — so attaching it to every ask card the way
+                // `wasAutoAnswered` is attached would draw a form over an earlier plain
+                // question the role asked and the Supervisor answered in prose.
+                //
+                // The discriminator is the step HOLDING a questionnaire, deliberately not the
+                // trailing call's NAME. One park can be raised by several calls in one batch:
+                // `accumulateSupervisorQuestion` folds a plain `ask_supervisor` emitted beside
+                // a form into the SAME `SupervisorInquiry` as a free-text question, so the
+                // trailing call is then named `ask_supervisor` while the park it belongs to is
+                // a questionnaire — and a name check drops the whole form from the feed and
+                // the audit log. Every park with no form clears the field
+                // (`setNeedsSupervisorInput` assigns rather than writes conditionally), which
+                // is what makes non-nil mean "this park".
+                let answeredInquiry = isLast
+                    ? step.supervisorInquiry.map {
+                        AnsweredInquiry(inquiry: $0, answer: step.supervisorInquiryAnswer)
+                    }
+                    : nil
+
                 appendSupervisorInputNotification(
                     into: &items,
                     step: step,
@@ -746,6 +764,7 @@ nonisolated enum ActivityFeedBuilder {
                     thinking: thinking,
                     timestamp: answerTimestamp,
                     mergeStructuredAttachmentPaths: isLast,
+                    answeredInquiry: answeredInquiry,
                     originTaskID: originTaskID
                 )
             }
@@ -758,10 +777,10 @@ nonisolated enum ActivityFeedBuilder {
             // synthesized notification, the answered Q&A would vanish from feed
             // history (the inner loop above iterates the ask positions, which are
             // empty for the escalation path). Active state is owned by
-            // `activeSupervisorQuestions` (composer chip), so we only emit
+            // `SupervisorQuestionInbox.pending` (composer chip), so we only emit
             // history once the step is no longer active.
             //
-            // Gate + answer message come from `escalationCard(for:askIndex:isActive:)`
+            // Gate + answer message come from `escalationCard(for:hasParkedAsk:ownedElsewhere:)`
             // — the SAME value the message loop's bubble suppression consulted (via
             // `aux`), so the card and the durable answer bubble can never both
             // render (or both drop). Once a re-park clears `supervisorAnswer`, the
@@ -831,8 +850,8 @@ nonisolated enum ActivityFeedBuilder {
     /// card emission in `emitItems`, so the two surfaces can never double-render
     /// an answer or both drop it.
     ///
-    /// The card fronts a PURE-escalation step's latest answered Q&A: no
-    /// `ask_supervisor` tool calls at all (drift / refusal-loop / parse-failure
+    /// The card fronts a PURE-escalation step's latest answered Q&A: no ask call
+    /// that PARKED it — a refused ask is not one (drift / refusal-loop / parse-failure
     /// caps and the Autovisor idle park write `supervisorQuestion` + the flag
     /// directly), not currently awaiting input, non-empty stored question, and
     /// `supervisorAnswer` still set. The moment a RE-park clears
@@ -847,21 +866,34 @@ nonisolated enum ActivityFeedBuilder {
         /// only for legacy task.json persisted before
         /// `StepMessagingService.answerSupervisorQuestion` started appending the
         /// message (the card then falls back to `step.supervisorAnswer` alone).
+        ///
+        /// By NAME rather than `resolvesSupervisorAsk`, and it stays that way: the other
+        /// resolving context is the `[ Ask as form ]` directive, which cannot reach an
+        /// escalation park at all — `SupervisorQuestionnaireRequest.isAvailable` requires
+        /// the park to be the role's OWN ask, and `requestQuestionnaire` refuses against
+        /// the same policy. A step that never asked has no question to re-ask.
         let answerMessage: LLMMessage?
     }
 
-    /// `askIndex` and `isActive` are the step's own `AskCallIndex` and
-    /// `hasActiveSupervisorInput`, passed in rather than recomputed so one
-    /// build evaluates each exactly once per step (`EscalationCardProbe` counts
-    /// this function's evaluations; `ActivityFeedBuilderTests` pin `== 1`).
+    /// `hasParkedAsk` is whether any of the step's ask calls PARKED it — the ask index minus
+    /// the refused asks, so a step whose every ask was refused and was then parked by a cap
+    /// is the escalation shape it actually is — and `ownedElsewhere` its
+    /// `hasActiveSupervisorInput` ANDed with "another surface renders the live
+    /// question" — both passed in rather than recomputed so one build evaluates each
+    /// exactly once per step (`EscalationCardProbe` counts this function's
+    /// evaluations; `ActivityFeedBuilderTests` pin `== 1`).
+    ///
+    /// It is `ownedElsewhere` and not bare liveness because the card exists to keep the
+    /// answered Q&A in the record: yielding to a composer that is not on screen would
+    /// drop it instead.
     static func escalationCard(
-        for step: StepExecution, askIndex: AskCallIndex, isActive: Bool
+        for step: StepExecution, hasParkedAsk: Bool, ownedElsewhere: Bool
     ) -> EscalationCard? {
         #if DEBUG
         EscalationCardProbe.noteEvaluated()
         #endif
-        guard askIndex.isEmpty,
-              !isActive,
+        guard !hasParkedAsk,
+              !ownedElsewhere,
               let question = step.supervisorQuestion?
               .trimmingCharacters(in: .whitespacesAndNewlines),
               !question.isEmpty,
@@ -904,6 +936,7 @@ nonisolated enum ActivityFeedBuilder {
         thinking: String?,
         timestamp: Date,
         mergeStructuredAttachmentPaths: Bool,
+        answeredInquiry: AnsweredInquiry? = nil,
         originTaskID: Int
     ) {
         let answer: String?
@@ -934,7 +967,8 @@ nonisolated enum ActivityFeedBuilder {
                 answerAttachmentPaths: attachmentPaths,
                 answerClippedTexts: answerClippedTexts,
                 toolCallID: toolCallID, thinking: thinking,
-                wasAutoAnswered: step.supervisorAnswerWasAuto
+                wasAutoAnswered: step.supervisorAnswerWasAuto,
+                inquiry: answeredInquiry
             ),
             createdAt: timestamp,
             originTaskID: originTaskID
@@ -1096,7 +1130,7 @@ nonisolated enum StreamQueryProbe {
     static func reset() { _queries.store(0, ordering: .relaxed) }
 }
 
-/// Counts evaluations of `ActivityFeedBuilder.escalationCard(for:askIndex:isActive:)`.
+/// Counts evaluations of `ActivityFeedBuilder.escalationCard(for:hasParkedAsk:ownedElsewhere:)`.
 ///
 /// Until 2026-09-04 the gate was evaluated TWICE per step per `emitItems` call
 /// — once for the bubble suppression in the first step loop and again for the

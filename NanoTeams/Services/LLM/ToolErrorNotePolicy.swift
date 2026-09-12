@@ -74,6 +74,12 @@ nonisolated enum ToolErrorNotePolicy {
     /// (`LoopRecoveryPolicy.escalationChannel`) or none. Until 2026-09-06 they said "ask
     /// the Supervisor" — to the Autovisor, which holds no `ask_supervisor`, and to a bash
     /// role that may not either — which is an instruction to write prose nobody reads.
+    ///
+    /// Versioned per CODE by `RuntimePromptRegistry`: one row per `ToolErrorCode` and one
+    /// per executor code (`ToolUnavailabilityReason.errorCode`, `identical_write_loop`), so
+    /// rewording any arm moves `runtimePromptVersion`. `RuntimePromptRegistryTests` pins
+    /// that every `case "…"` literal below has its row.
+    /// runtime-prompt
     static func direction(for result: ToolExecutionResult, allowedToolNames: Set<String>) -> String? {
         let escalation = LoopRecoveryPolicy.escalationChannel(in: allowedToolNames)
         let dict = JSONUtilities.parseJSONDictionary(result.outputJSON)
@@ -92,15 +98,35 @@ nonisolated enum ToolErrorNotePolicy {
         // (`TOOL_NOT_AUTHORIZED`) and executor-emitted lowercase literals
         // (`tool_not_authorized`) reach the same branch.
         switch errorCode?.lowercased() {
-        case "tool_not_authorized":
-            // Args aren't the cause — the tool isn't in this role's schema, and the
-            // generic "retry with correct arguments" suffix is what makes weaker
-            // models loop on the same unavailable tool. The envelope already names
-            // the tool and says to use only what the prompt lists; the ANTI-LOOP
-            // instruction is what it does not say, so that is all this adds.
+        case "unknown_tool":
+            // The name is not a tool. The envelope states that fact and points at the
+            // prompt's list; what it does not say is that VARIANTS of the name are not
+            // worth trying either — the loop this arm prevents is a model working through
+            // `runXcodebuild`, `run-xcodebuild`, `xcodebuild` one turn at a time.
             let toolName = (dict?["tool"] as? String) ?? result.toolName
-            return "Pick a different tool, or proceed without this step; "
-                + "do not retry '\(toolName)'."
+            return "Do not retry '\(toolName)' under any spelling — no variant of a name "
+                + "that is not a tool becomes one."
+
+        case "tool_not_authorized":
+            // Args aren't the cause — the tool IS real and simply was not issued to this
+            // role. Until 2026-09-11 this said "Pick a different tool, or proceed without
+            // this step", and MeditationApp task 48 run 1 shows what a planner does with
+            // that permission: it proceeded, and asserted the build result it had just
+            // been refused. A refused call leaves a GAP; the only honest way past it is to
+            // carry the gap forward as a gap. The envelope says to record it as
+            // unverified; the ANTI-LOOP half is what it does not say.
+            let toolName = (dict?["tool"] as? String) ?? result.toolName
+            return "Do not retry '\(toolName)' — no wording of the call will issue it to you. "
+                + "Whatever you wanted it to establish stays unknown, so carry it forward as "
+                + "unknown rather than assuming a result."
+
+        case "work_superseded":
+            // Nothing to add, for the same reason as `plan_required`: the envelope carries
+            // both halves — what is withheld and why, and what to do instead (finish from
+            // what the step already has; the re-run holds the runners again). Not
+            // `precondition_failed`: that direction blames the work folder and offers
+            // "proceed without this step", the permission this family withdraws.
+            return nil
 
         case "plan_required":
             // Nothing to add. The only rejection that is temporal rather than
@@ -116,9 +142,19 @@ nonisolated enum ToolErrorNotePolicy {
             // opened folder), and the envelope names which one. What it does not
             // say is that retrying cannot help, which is the whole recovery.
             let toolName = (dict?["tool"] as? String) ?? result.toolName
+            // It names NO blocker. Six reasons share this code and their blockers differ:
+            // `.computerUseDisabled` and `.bashDisabled` are set by a SESSION POLICY, not by
+            // the work folder, and until 2026-09-13 this sentence diagnosed the work folder
+            // on their behalf — the same false-diagnosis defect `.approverUnavailable`,
+            // `.workSuperseded` and `.withheldUntilPlanRecorded` each minted their own code to
+            // escape (R1.8.5). It also stopped offering "proceed without this step": that
+            // arrived one turn AFTER `.xcodeSchemeNotSelected`'s own "record … as unverified
+            // rather than assuming one", which is task 48 run 1's exact input, one code to the
+            // left. Both halves are pinned by `ExecutorRefusalCensusPinTests`.
             let channel = escalation.map { " If the step cannot proceed without it, call \($0)." } ?? ""
-            return "Do not retry '\(toolName)' — the precondition is set by the work folder, "
-                + "not by your arguments. Pick a different tool or proceed without this step.\(channel)"
+            return "Do not retry '\(toolName)' — the blocker is not your arguments, and no "
+                + "rewording reaches it. Carry what it would have settled forward as unknown "
+                + "rather than assuming a result.\(channel)"
 
         case "bash_denied":
             // The command was blocked by the bash-permission policy because a DECISION
@@ -147,6 +183,13 @@ nonisolated enum ToolErrorNotePolicy {
             // (KNOWN_ISSUES A15). The envelope already says what runs without approval.
             return "Do NOT retry — no one in this run can approve it, and nothing you send "
                 + "changes that. Take a different step."
+
+        case "questionnaire_required":
+            // Nothing to add: the envelope states the defect (a questionnaire sent as prose)
+            // and `next` names the form and the entry per question. The default arm would
+            // append "choose a different approach", which for a role whose only channel is
+            // the ask means prose — the very thing the refusal exists to prevent.
+            return nil
 
         case "cancelled":
             // Nothing to add, and nothing that WOULD be true. The run stopped — the
@@ -231,9 +274,19 @@ nonisolated enum ToolErrorNotePolicy {
                 // arguments costs three round-trips of "Missing required argument: X" —
                 // and the model is never told which of the ones it DID send arrived. The
                 // schema is the authority; `result.argumentsJSON` is what actually landed.
-                direction = "Fix the arguments and retry."
-                    + Self.requiredArgumentsHint(
-                        toolName: result.toolName, argumentsJSON: result.argumentsJSON)
+                let hint = Self.requiredArgumentsHint(
+                    toolName: result.toolName, argumentsJSON: result.argumentsJSON)
+                // Silent when the envelope already carries a `next` and every required
+                // argument arrived: `next.reason` IS the instruction, written for that one
+                // failure, and "Fix the arguments and retry." is the same sentence with the
+                // specifics removed. This note lands AFTER the envelope — merged into the
+                // same user message on Ollama — so a restatement does not sit beside the
+                // instruction, it sits in front of the model as the LAST thing it read
+                // (playbook R1.4.2, the recency slot). Same rule that already silenced
+                // `plan_required` and the two anchor arms: a direction the envelope has
+                // just given is not a direction.
+                if hint.isEmpty, dict?["next"] is [String: Any] { return nil }
+                direction = "Fix the arguments and retry." + hint
             case let c? where c.hasSuffix("_TIMED_OUT") || c == "TIMEOUT":
                 direction = "This may be transient — retry once; if it fails again, choose a different approach."
             case let c? where c.hasSuffix("_DENIED") || c == "tool_not_authorized":
@@ -246,7 +299,8 @@ nonisolated enum ToolErrorNotePolicy {
     }
 
     /// " `edit_file` requires: new_text, old_text, path. Your call carried: new_text."
-    /// — or "" when the tool has no schema here, or declares nothing required.
+    /// — or "" when the tool has no schema here, declares nothing required, or every required
+    /// key arrived (the defect is then inside a value, and the envelope names it).
     ///
     /// A runtime failure envelope, not schema text: it ships once, on the call that
     /// already failed, so the instruction budget that keeps `ToolSchema.description`
@@ -268,6 +322,13 @@ nonisolated enum ToolErrorNotePolicy {
 
         var hint = " `\(toolName)` requires: \(required.sorted().joined(separator: ", "))."
         if let carried = JSONUtilities.parseJSONDictionary(argumentsJSON), !carried.isEmpty {
+            // Every required key arrived: the defect is inside a VALUE — a `form` that is not
+            // JSON, a `depth` out of range — and the envelope beside this note already names
+            // it. Two identical lists would diagnose a missing argument the call does not have
+            // (a note for the wrong failure is a false diagnosis — playbook R3.8.2; the form
+            // repair of 2026-09-11 read "requires: form, headline. Your call carried: form,
+            // headline." three times in a row).
+            if required.allSatisfy({ carried[$0] != nil }) { return "" }
             hint += " Your call carried: \(carried.keys.sorted().joined(separator: ", "))."
         } else {
             hint += " Your call carried no arguments."

@@ -200,6 +200,49 @@ final class TaskFactsProjectionParityTests: NTMSOrchestratorTestBase, @unchecked
         assertParity("status flip on the head row")
     }
 
+    /// The count arrives at the sidebar through NOTHING but the row fingerprint: no
+    /// observer of its own, no revision of its own. `differsIgnoringStamp` compares the
+    /// whole `TaskSummary` minus `updatedAt`, so a new field joins the fingerprint by
+    /// existing — this pins that it did, because the failure mode is silent: the number
+    /// would simply stop moving in a mounted sidebar until something else changed.
+    ///
+    /// The second question parks on a step that is ALREADY waiting on the first, so
+    /// `hasPendingSupervisorInput` does not move and the derived status does not move
+    /// either. The count is the only field that changes.
+    func testSecondQuestionParking_movesRowsRevision_thoughTheFlagDoesNot() async throws {
+        await sut.openWorkFolder(tempDir)
+        guard let id = await sut.createTask(title: "A", supervisorTask: "s") else {
+            return XCTFail("createTask returned nil")
+        }
+        await sut.switchTask(to: id)
+        _ = await sut.mutateTask(taskID: id) { task in
+            task.runs = [Run(id: 0, steps: [
+                StepExecution(id: "one", role: .softwareEngineer, title: "One",
+                              status: .needsSupervisorInput,
+                              needsSupervisorInput: true, supervisorQuestion: "Q1"),
+                StepExecution(id: "two", role: .techLead, title: "Two", status: .running)
+            ])]
+        }
+        let waitingBefore = sut.snapshot?.tasksIndex.tasks
+            .first(where: { $0.id == id })?.hasPendingSupervisorInput
+        XCTAssertEqual(waitingBefore, true, "precondition: already waiting on one question")
+        let rowsRev = sut.taskFacts.rowsRevision
+
+        _ = await sut.mutateTask(taskID: id) { task in
+            task.runs[0].steps[1].status = .needsSupervisorInput
+            task.runs[0].steps[1].needsSupervisorInput = true
+            task.runs[0].steps[1].supervisorQuestion = "Q2"
+        }
+
+        let row = try XCTUnwrap(sut.snapshot?.tasksIndex.tasks.first(where: { $0.id == id }))
+        XCTAssertEqual(row.hasPendingSupervisorInput, true,
+                       "anti-vacuum: the FLAG did not move — that is the point")
+        XCTAssertEqual(row.pendingSupervisorQuestionCount, 2, "…while the count did")
+        XCTAssertGreaterThan(sut.taskFacts.rowsRevision, rowsRev,
+                             "the sidebar's row memo must see a new list, or the badge freezes")
+        assertParity("second question parks")
+    }
+
     /// Whole-index paths bump unconditionally: `removeTask` rebuilds the snapshot through
     /// `apply(_:)` → `replaceAll`, and closing the folder goes through `clear()`.
     ///

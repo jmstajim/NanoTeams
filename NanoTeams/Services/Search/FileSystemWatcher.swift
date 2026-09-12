@@ -41,14 +41,17 @@ typealias FileSystemWatcherFactory = @Sendable (
 /// Thin wrapper over `FSEventStream` for watching a set of paths.
 /// Coalesces bursts via a debounce layer on top of the FSEvents latency.
 ///
-/// Used by `SearchIndexCoordinator` to trigger signature checks when the work
-/// folder changes. The callback is fired no more than once per `debounce`
-/// window even if FSEvents reports a burst of changes.
+/// Used by `SearchIndexCoordinator` to trigger an index refresh when the work folder changes.
+/// The callback is fired no more than once per `debounce` window even if FSEvents reports a
+/// burst of changes.
 nonisolated final class FileSystemWatcher: @unchecked Sendable {
     typealias Handler = @Sendable () -> Void
 
     private let paths: [URL]
     private let excludedPrefixes: [String]
+    /// The watched roots, canonicalised and pre-split. Canonicalised for the same reason
+    /// `excludedPrefixes` is — FSEvents says `/private/var/…` where the caller said `/var/…`.
+    private let canonicalRoots: [WatchRoot]
     private let debounce: TimeInterval
     private let onChange: Handler
 
@@ -62,7 +65,7 @@ nonisolated final class FileSystemWatcher: @unchecked Sendable {
     ///   the batch is dropped before the debounce timer is (re-)armed. Used
     ///   to suppress the self-write storm from `.nanoteams/internal/runs/...`
     ///   during active runs — tool-call and network logs there would
-    ///   otherwise trigger a signature probe every `debounce` seconds.
+    ///   otherwise wake a walk of the whole tree every `debounce` seconds.
     init(
         paths: [URL],
         excludedPrefixes: [URL] = [],
@@ -71,6 +74,7 @@ nonisolated final class FileSystemWatcher: @unchecked Sendable {
     ) {
         self.paths = paths
         self.excludedPrefixes = excludedPrefixes.map { Self.canonicalPath(for: $0) }
+        self.canonicalRoots = paths.map { WatchRoot(canonicalPath: Self.canonicalPath(for: $0)) }
         self.debounce = debounce
         self.onChange = onChange
     }
@@ -136,7 +140,8 @@ nonisolated final class FileSystemWatcher: @unchecked Sendable {
             //
             // - `kFSEventStreamCreateFlagIgnoreSelf` — dropped. Self-writes
             //   land in `.nanoteams/internal/` which is excluded from the
-            //   index walk, so they trigger a no-op signature check. With
+            //   index walk, so they wake a walk that can only conclude
+            //   "nothing changed". With
             //   the flag set, every file emitted by `edit_file`/`write_file`/
             //   `create_artifact` was silently swallowed and the index drifted.
             //
@@ -150,7 +155,7 @@ nonisolated final class FileSystemWatcher: @unchecked Sendable {
             //   the first callback — any `stop()` inside that window
             //   invalidates the stream and the buffered events are dropped.
             //   Real-world latency of ~1 s extra on a single-file change is
-            //   fine here: this signals "re-run a signature probe", not
+            //   fine here: this signals "re-check the folder", not
             //   "render this event to the user".
             //
             // - `kFSEventStreamCreateFlagUseCFTypes` — dropped. Asking
@@ -210,35 +215,108 @@ nonisolated final class FileSystemWatcher: @unchecked Sendable {
 
     // MARK: - Private
 
-    /// FSEvents callback entry point (runs on `queue`). Parses the default
-    /// C-array (`char **`) eventPaths, drops batches that are entirely
-    /// under an excluded prefix, then debounces via `scheduleFire`.
+    /// A watched root, split into path components ONCE.
+    ///
+    /// Not a bare `String`: making an event path relative to a root by `dropFirst(root.count)`
+    /// re-measures the root on every single event, and `String.count` is O(graphemes). The
+    /// callback runs per FSEvents batch during a `git checkout` or an `xcodebuild`, which is
+    /// exactly when the measurement is least affordable.
+    struct WatchRoot: Sendable, Equatable {
+        let components: [String]
+
+        init(canonicalPath: String) {
+            components = canonicalPath.split(separator: "/").map(String.init)
+        }
+    }
+
+    /// Whether one event path is worth waking the index for.
+    ///
+    /// The watcher asks the WALK's own question, because waking the index for a path the walk
+    /// will skip buys a guaranteed-empty rebuild. Before 2026-09-11 the only filter was
+    /// `excludedPrefixes` (in practice `.nanoteams/internal/`), so a `git status` woke a full
+    /// walk of the tree through the debounce window, and an `xcodebuild` kept the indexer busy
+    /// continuously — neither of which can change a single token.
+    ///
+    /// Judged on the path RELATIVE to the watched root: a work folder at
+    /// `~/.cache/projects/wf` is the user's choice, and reading `.cache` out of its absolute
+    /// path would make every event inside it uninteresting — auto-refresh silently off, with
+    /// nothing logged. Static and pure so the rule is testable without an FSEvents stream.
+    static func isInteresting(
+        path: String, roots: [WatchRoot], excludedPrefixes: [String]
+    ) -> Bool {
+        if excludedPrefixes.contains(where: { path.hasPrefix($0) }) { return false }
+        let components = path.split(separator: "/")
+        // The DEEPEST matching root: nested roots would otherwise judge the same event by the
+        // outer one's components, which is the same mistake as judging the absolute path.
+        var depth: Int?
+        for root in roots where root.components.count < components.count {
+            guard components.starts(with: root.components, by: { $0 == $1 }) else { continue }
+            if root.components.count > (depth ?? -1) { depth = root.components.count }
+        }
+        // Under no watched root at all: FSEvents should not deliver one, and we have no rule
+        // to judge it by. Keep it — a spurious walk is cheaper than a missed change.
+        guard let depth else { return true }
+        return !components.dropFirst(depth).contains {
+            WalkSkipRules.shouldSkip(name: String($0))
+        }
+    }
+
+    /// One event, as the policy below needs to see it.
+    struct Event: Equatable {
+        /// `nil` when FSEvents delivered a null path — it does, rarely, and a null is not a
+        /// reason to drop the rest of the batch.
+        let path: String?
+        let isDirectory: Bool
+        /// The kernel dropped events it could not queue.
+        let mustScanSubDirs: Bool
+    }
+
+    /// Whether a batch is worth waking the index for.
+    ///
+    /// Pure, and separate from the callback, because the callback is C interop — an
+    /// `UnsafeMutableRawPointer` of `char *` and a parallel flags array — which no test can
+    /// construct without lying about the memory layout. Splitting them makes the POLICY
+    /// testable line by line and leaves the callback with nothing but the decode.
+    ///
+    /// "Drop only if EVERYTHING is uninteresting" — the same contract the excluded-prefix
+    /// filter has always had, since one real edit among a hundred log writes is still an edit.
+    static func shouldWake(
+        _ events: [Event], roots: [WatchRoot], excludedPrefixes: [String]
+    ) -> Bool {
+        for event in events {
+            // We no longer know WHAT changed — only that something did. A wasted walk is
+            // cheaper than an index that silently stops tracking the folder.
+            if event.mustScanSubDirs { return true }
+            guard let path = event.path else { continue }
+            // Directory-level events are metadata noise here: when a file inside a subtree is
+            // written, FSEvents also fires mtime events on every ancestor directory up to the
+            // watched root (including the root itself), whose path doesn't carry the subtree's
+            // name. Those aren't "real changes" — let file-level events decide.
+            if event.isDirectory { continue }
+            if isInteresting(path: path, roots: roots, excludedPrefixes: excludedPrefixes) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// FSEvents callback entry point (runs on `queue`). Decodes the default C-array
+    /// (`char **`) eventPaths and hands the batch to `shouldWake`.
     fileprivate func handleCallback(
         numEvents: Int,
         eventPaths: UnsafeMutableRawPointer,
         eventFlags: UnsafePointer<FSEventStreamEventFlags>
     ) {
-        if !excludedPrefixes.isEmpty {
-            let paths = eventPaths.assumingMemoryBound(to: UnsafePointer<CChar>?.self)
-            var anyFileIncluded = false
-            let dirFlag = FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsDir)
-            for i in 0..<numEvents {
-                guard let cString = paths[i] else { continue }
-                // Directory-level events are metadata noise here: when a file
-                // inside an excluded subtree is written, FSEvents also fires
-                // mtime events on every ancestor directory up to the watched
-                // root (including the root itself), whose path doesn't carry
-                // the excluded prefix. Those aren't "real changes" — skip
-                // them and let file-level events decide.
-                if (eventFlags[i] & dirFlag) != 0 { continue }
-                let path = String(cString: cString)
-                if !excludedPrefixes.contains(where: { path.hasPrefix($0) }) {
-                    anyFileIncluded = true
-                    break
-                }
-            }
-            if !anyFileIncluded { return }
+        let paths = eventPaths.assumingMemoryBound(to: UnsafePointer<CChar>?.self)
+        let dirFlag = FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsDir)
+        let mustScanFlag = FSEventStreamEventFlags(kFSEventStreamEventFlagMustScanSubDirs)
+        let events = (0..<numEvents).map { i in
+            Event(path: paths[i].map { String(cString: $0) },
+                  isDirectory: (eventFlags[i] & dirFlag) != 0,
+                  mustScanSubDirs: (eventFlags[i] & mustScanFlag) != 0)
         }
+        guard Self.shouldWake(
+            events, roots: canonicalRoots, excludedPrefixes: excludedPrefixes) else { return }
         scheduleFire()
     }
 

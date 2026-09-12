@@ -330,7 +330,7 @@ final class TeamCollaborationFlowTests: XCTestCase {
             TeamMessage(role: .techLead, content: "VOTE: APPROVE"),
         ]
 
-        let result = ChangeRequestService.tallyVotes(meetingMessages: messages)
+        let result = ChangeRequestService.tallyVotes(meetingMessages: messages, coordinator: nil, target: nil)
         XCTAssertEqual(result, .approved)
     }
 
@@ -345,12 +345,12 @@ final class TeamCollaborationFlowTests: XCTestCase {
             TeamMessage(role: .techLead, content: "Good analysis. VOTE: APPROVE"),
         ]
 
-        let result = ChangeRequestService.tallyVotes(meetingMessages: messages)
+        let result = ChangeRequestService.tallyVotes(meetingMessages: messages, coordinator: nil, target: nil)
         XCTAssertEqual(result, .approved)
     }
 
     func testTallyVotes_emptyMessages_returnsNoVotes() {
-        let result = ChangeRequestService.tallyVotes(meetingMessages: [])
+        let result = ChangeRequestService.tallyVotes(meetingMessages: [], coordinator: nil, target: nil)
         XCTAssertEqual(result, .noVotes, "0 approves vs 0 rejects is the absence of a decision")
     }
 
@@ -362,7 +362,7 @@ final class TeamCollaborationFlowTests: XCTestCase {
             TeamMessage(role: .sre, content: "Let me think about it more."),
         ]
 
-        let result = ChangeRequestService.tallyVotes(meetingMessages: messages)
+        let result = ChangeRequestService.tallyVotes(meetingMessages: messages, coordinator: nil, target: nil)
         // 1 approve, 1 reject — tie
         XCTAssertEqual(result, .tied)
     }

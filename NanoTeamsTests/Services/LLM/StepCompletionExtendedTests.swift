@@ -224,17 +224,17 @@ final class StepCompletionExtendedTests: XCTestCase {
         XCTAssertNil(result)
     }
 
-    func testCheckArtifactCompleteness_ExcludesBuildDiagnostics() {
+    /// No expected artifact is excused any more. "Build Diagnostics" was subtracted from
+    /// the completeness check because the ENGINE filled it in; that machinery was removed
+    /// on 2026-09-11, so a declared-but-unsubmitted name keeps the step incomplete like
+    /// any other. RED: reinstate a name-based filter → this returns `.completed`.
+    func testCheckArtifactCompleteness_excusesNoName() {
         var task = createTaskWithExpectedArtifacts(["Build Diagnostics", "Engineering Notes"])
-        // Only Engineering Notes created — Build Diagnostics excluded from check
         task.runs[0].steps[0].artifacts = [Artifact(name: "Engineering Notes")]
         mockDelegate.taskToMutate = task
 
-        let result = service.checkArtifactCompleteness(stepID: task.runs[0].steps[0].id, taskID: task.id)
-        XCTAssertNotNil(result)
-        if case .completed = result {} else {
-            XCTFail("Expected .completed, got \(String(describing: result))")
-        }
+        XCTAssertNil(service.checkArtifactCompleteness(stepID: task.runs[0].steps[0].id, taskID: task.id),
+                     "one of the two declared outputs is missing — the step is not complete")
     }
 
     func testCheckArtifactCompleteness_MultipleArtifactsAllPresent() {

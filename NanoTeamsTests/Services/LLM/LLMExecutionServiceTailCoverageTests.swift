@@ -493,22 +493,18 @@ final class CExecNoToolCallsProducingRoleTests: XCTestCase {
                 + "reworded name is what `resolveArtifactName` then fails to match. got: \(nudge)")
     }
 
-    /// Build diagnostics are a byproduct the runtime writes for itself, never something the
-    /// model submits — so a step listing it among its expected artifacts must still be able to
-    /// finish. This is the arm reached through `handleNoToolCalls`, i.e. exactly when the model
-    /// has stopped acting and the only way out is completion.
+    /// A declared-but-unsubmitted deliverable must NOT let `handleNoToolCalls` complete the
+    /// step. Until 2026-09-11 the name "Build Diagnostics" was subtracted from both
+    /// completeness predicates because the ENGINE wrote that artifact; the machinery was
+    /// removed (its real writer had been dead since `cfbcf550`) and with it the exception.
+    /// This is the arm reached exactly when the model has stopped acting, so an excused
+    /// name here is the difference between a nudge and a silently half-finished step.
     ///
-    /// RED: drop the `.filter { $0 != ArtifactConstants.buildDiagnosticsName }` from
-    /// `StepExecution.isArtifactComplete` -> completeness is never satisfied, the step falls to
-    /// the "Missing deliverables" retry, and the `.completed` assertion fails. (Removing the
-    /// mirror filter in `handleNoToolCalls` does NOT red this test — it only widens a list that
-    /// is already non-empty — which is why the assertion is worded around completion, not
-    /// around the two filters agreeing.)
-    func testProducingRole_buildDiagnosticsNeverBlocksCompletion() async {
+    /// RED: reinstate a name-based filter in `StepExecution.isArtifactComplete` → the step
+    /// completes and the `.retry` assertion fails.
+    func testProducingRole_undeliveredExpectedArtifact_doesNotComplete() async {
         var task = makeTask(artifacts: ["Engineering Notes"])
-        task.runs[0].steps[0].expectedArtifacts = [
-            ArtifactConstants.buildDiagnosticsName, "Engineering Notes",
-        ]
+        task.runs[0].steps[0].expectedArtifacts = ["Build Diagnostics", "Engineering Notes"]
         mockDelegate.taskToMutate = task
         service._testRegisterStepTask(stepID: stepID, taskID: task.id)
 
@@ -516,7 +512,7 @@ final class CExecNoToolCallsProducingRoleTests: XCTestCase {
             id: stepID, name: "Software Engineer", prompt: "p",
             toolIDs: [], usePlanningPhase: false,
             dependencies: RoleDependencies(producesArtifacts: [
-                ArtifactConstants.buildDiagnosticsName, "Engineering Notes",
+                "Build Diagnostics", "Engineering Notes",
             ]),
             systemRoleID: "softwareEngineer"
         )
@@ -531,11 +527,8 @@ final class CExecNoToolCallsProducingRoleTests: XCTestCase {
             conversationMessages: &conversation
         )
 
-        guard case .completed = stop else {
-            XCTFail(
-                "Build diagnostics are a byproduct, not a deliverable — they must not hold a "
-                    + "step open. got: \(stop)")
-            return
+        if case .completed = stop {
+            XCTFail("one declared output is missing — nothing excuses it now, got: \(stop)")
         }
     }
 
@@ -731,9 +724,20 @@ final class CExecFreshTaskFallbackTests: XCTestCase {
             dependencies: RoleDependencies(requiredArtifacts: ["Product Requirements"]),
             systemRoleID: "softwareEngineer"
         )
+        // A third non-Supervisor role: since 2026-09-11 a change-request vote needs a chair
+        // who is neither the requester nor the target, and with only these two the vote is
+        // refused outright. It consumes the SWE's artifact rather than the PM's, so it joins
+        // as the chair and not as another voter.
+        let tpm = TeamRoleDefinition(
+            id: "cexec_tpm", name: "TPM", prompt: "p",
+            toolIDs: [], usePlanningPhase: false,
+            dependencies: RoleDependencies(requiredArtifacts: ["Engineering Notes"]),
+            systemRoleID: "tpm"
+        )
         return Team(
-            name: "CExecFallbackTeam", roles: [pm, swe], artifacts: [],
-            settings: TeamSettings(), graphLayout: TeamGraphLayout()
+            name: "CExecFallbackTeam", roles: [pm, swe, tpm], artifacts: [],
+            settings: TeamSettings(meetingCoordinatorRoleID: "cexec_tpm"),
+            graphLayout: TeamGraphLayout()
         )
     }
 

@@ -140,46 +140,6 @@ final class SearchExecutorTests: XCTestCase {
                        "Round-robin must start with the original query.")
     }
 
-    // MARK: - constrainToFiles
-
-    func testConstrainToFiles_iteratesExactSet() async throws {
-        try write("a.swift", content: "target here\n")
-        try write("b.swift", content: "target here\n")
-        try write("c.swift", content: "target here\n")
-
-        let out = try await SearchExecutor.run(SearchExecutorInput(
-            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
-            queries: ["target"],
-            constrainToFiles: ["a.swift", "c.swift"],
-            internalDir: internalDir
-        ))
-        let paths = Set(out.matches.map(\.path))
-        XCTAssertEqual(paths, ["a.swift", "c.swift"])
-    }
-
-    func testConstrainToFiles_empty_shortCircuits() async throws {
-        try write("a.swift", content: "target\n")
-        let out = try await SearchExecutor.run(SearchExecutorInput(
-            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
-            queries: ["target"],
-            constrainToFiles: [],
-            internalDir: internalDir
-        ))
-        XCTAssertEqual(out.matches.count, 0)
-    }
-
-    func testConstrainToFiles_missingFileSkipped() async throws {
-        try write("a.swift", content: "target\n")
-        let out = try await SearchExecutor.run(SearchExecutorInput(
-            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
-            queries: ["target"],
-            constrainToFiles: ["a.swift", "nonexistent.swift"],
-            internalDir: internalDir
-        ))
-        XCTAssertEqual(out.matches.count, 1)
-        XCTAssertEqual(out.matches[0].path, "a.swift")
-    }
-
     // MARK: - Skip internal
 
     func testInternalDir_neverScanned() async throws {
@@ -454,20 +414,6 @@ final class SearchExecutorTests: XCTestCase {
         XCTAssertEqual(out.filenameMatches.count, 0)
     }
 
-    func testFilenameMatches_constrainToFiles_iteratesExactSet() async throws {
-        try write("a.swift", content: "")
-        try write("b.swift", content: "")
-        try write("c.swift", content: "")
-        let out = try await SearchExecutor.run(SearchExecutorInput(
-            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
-            queries: [".swift"],
-            constrainToFiles: ["a.swift", "c.swift"],
-            internalDir: internalDir
-        ))
-        XCTAssertEqual(Set(out.filenameMatches.map(\.path)), ["a.swift", "c.swift"],
-                       "Constrained walk only visits the listed files for filename matching too.")
-    }
-
     // MARK: - Filename matches: walk-integration corner cases
 
     func testFilenameMatches_skipDirectories_neverContributeFiles() async throws {
@@ -570,19 +516,6 @@ final class SearchExecutorTests: XCTestCase {
         ))
         XCTAssertEqual(out.filenameMatches.count, 1)
         XCTAssertEqual(out.filenameMatches[0].path, ".gitignore")
-    }
-
-    func testFilenameMatches_constrainToFiles_emptyList_emptyOutput() async throws {
-        // The `constrainToFiles: []` early-return path returns an empty
-        // output. No files were "visited", so no filename matches.
-        try write("a.swift", content: "")
-        let out = try await SearchExecutor.run(SearchExecutorInput(
-            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
-            queries: ["a"],
-            constrainToFiles: [],
-            internalDir: internalDir
-        ))
-        XCTAssertTrue(out.filenameMatches.isEmpty)
     }
 
     func testFilenameMatches_regexContentMode_doesNotAffectFilenameMatch() async throws {

@@ -9,12 +9,19 @@ enum LLMConnectionStatus {
     case success
     case failure
 
-    private static let badgeMap: [LLMConnectionStatus: (label: String, glyph: String, color: Color, tint: Color)] = [
-        .success: ("Connected", TerminalGlyph.done, Colors.success, Colors.successTint),
-        .failure: ("Failed", TerminalGlyph.failed, Colors.error, Colors.errorTint),
+    /// Tokens, not resolved colours — a `static let` holding `Colors.x` freezes the theme active
+    /// at first access (CLAUDE.md #249).
+    private static let badgeMap: [LLMConnectionStatus: (label: String, glyph: String,
+                                                        color: KeyPath<ThemePalette, UInt64>,
+                                                        tint: KeyPath<ThemePalette, UInt64>)] = [
+        .success: ("Connected", TerminalGlyph.done, \.success, \.successTint),
+        .failure: ("Failed", TerminalGlyph.failed, \.error, \.errorTint),
     ]
 
-    var badgeMetadata: (label: String, glyph: String, color: Color, tint: Color)? { Self.badgeMap[self] }
+    var badgeMetadata: (label: String, glyph: String, color: Color, tint: Color)? {
+        guard let b = Self.badgeMap[self] else { return nil }
+        return (b.label, b.glyph, Colors.themed(b.color), Colors.themed(b.tint))
+    }
 }
 
 struct LLMConnectionStatusPill: View {

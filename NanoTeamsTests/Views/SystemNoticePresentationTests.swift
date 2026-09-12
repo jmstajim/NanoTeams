@@ -34,9 +34,15 @@ final class SystemNoticePresentationTests: XCTestCase {
     /// this context is the human-facing record of the same epoch. Both exist because they
     /// answer different questions — the model needs its memory, the human needs the
     /// before/after numbers and a way to read what was kept.
+    ///
+    /// `.questionnaireRequest` is the one the human ASKED for — `[ Ask as form ]` — and it is
+    /// here for the same reason `.autovisorEvent` is: it travels a channel that belongs to
+    /// someone else (the answer slot of the role's own ask, the only way to reach a parked
+    /// step) and wearing that channel's attribution it rendered as the Supervisor checkmarking
+    /// "The question was not answered" at the role that had just asked.
     private static let expectedNoticeContexts: Set<MessageSourceContext> = [
         .retryNudge, .loopCorrection, .serverError, .toolAcknowledgement, .runtimeWarning,
-        .autovisorEvent, .compaction,
+        .autovisorEvent, .compaction, .questionnaireRequest,
     ]
 
     /// The notice kinds that render RED. `.serverError` is a failed LLM call; `.runtimeWarning`
@@ -67,7 +73,7 @@ final class SystemNoticePresentationTests: XCTestCase {
     func testResolve_coversEveryCase_soTheTableIsNotVacuous() {
         // Guards the guard: if `allCases` ever came back short the loop above
         // would pass while checking almost nothing.
-        XCTAssertGreaterThanOrEqual(MessageSourceContext.allCases.count, 16)
+        XCTAssertGreaterThanOrEqual(MessageSourceContext.allCases.count, 17)
         XCTAssertTrue(Self.expectedNoticeContexts.isSubset(of: Set(MessageSourceContext.allCases)))
     }
 
@@ -106,6 +112,24 @@ final class SystemNoticePresentationTests: XCTestCase {
         XCTAssertEqual(notice?.rowLabel, "system: warning")
         XCTAssertEqual(notice?.windowTitle, "warning")
         XCTAssertEqual(notice?.isError, true)
+    }
+
+    /// The directive is one run of prose, so the row's preview IS the whole sentence — which
+    /// is what makes the collapsed row self-explanatory without opening the detail window.
+    func testResolve_questionnaireRequest_labels() {
+        let notice = SystemNoticePresentation.resolve(
+            context: .questionnaireRequest,
+            content: SupervisorQuestionnaireRequest.directive)
+
+        XCTAssertEqual(notice?.rowLabel, "system: form request")
+        XCTAssertEqual(notice?.windowTitle, "form request")
+        XCTAssertEqual(notice?.isError, false)
+        let preview = notice?.preview ?? ""
+        XCTAssertTrue(
+            SupervisorQuestionnaireRequest.directive.hasPrefix(
+                preview.replacingOccurrences(of: "…", with: "")),
+            "the row previews the directive itself, cut at the character limit: \(preview)")
+        XCTAssertTrue(preview.hasPrefix("The question was not answered."))
     }
 
     func testResolve_autovisorEvent_labels() {

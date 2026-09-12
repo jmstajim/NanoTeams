@@ -19,6 +19,8 @@ struct TeamGraphView: View {
     var isPaused: Bool = false
     var isEngineRunning: Bool = true
     var meetingParticipants: Set<String> = []
+    /// Roles the engine is holding back for want of a concurrency slot.
+    var queuedRoles: Set<String> = []
     var isTaskInReview: Bool = false
     /// When set (non-nil), every role node renders its label as
     /// `RoleName.\(teamLabelSuffix)` — used by the parent panel to disambiguate
@@ -259,6 +261,7 @@ struct TeamGraphView: View {
                     isPaused: isPaused,
                     isEngineRunning: isEngineRunning,
                     isInMeeting: meetingParticipants.contains(nodePosition.roleID),
+                    isQueued: queuedRoles.contains(nodePosition.roleID),
                     isReviewNode: isTaskInReview && (roleDef?.isSupervisor ?? false),
                     roleTintColor: roleDef?.resolvedTintColor ?? role.tintColor
                 )

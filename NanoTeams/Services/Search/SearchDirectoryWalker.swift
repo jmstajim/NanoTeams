@@ -50,10 +50,13 @@ nonisolated struct SearchDirectoryWalker {
         let rosterCount: Int
     }
 
-    /// Where the walk starts. Mirrors the three drive modes `SearchExecutor.run` supports.
+    /// Where the walk starts. Mirrors the two drive modes `SearchExecutor.run` supports.
+    ///
+    /// A third, `constrainedFile(relativePath:)`, carried an explicit file list with no
+    /// recursion — the exploratory path's posting-intersection narrowing. It went with the
+    /// postings (2026-09-11): the index no longer records WHERE a word is, so there is no list
+    /// to constrain to, and the grep it narrowed was running over the same terms anyway.
     enum Root {
-        /// `constrainToFiles` — an explicit relative-path list, no recursion.
-        case constrainedFile(relativePath: String)
         /// A `paths` entry or the work-folder root: a directory to descend, or a named file.
         case entry(url: URL)
     }
@@ -186,7 +189,6 @@ nonisolated struct SearchDirectoryWalker {
         let root = roots[rootCursor]
         rootCursor += 1
         switch root {
-        case .constrainedFile(let relativePath): admitConstrainedFile(relativePath)
         case .entry(let url): admitRootEntry(url)
         }
     }
@@ -324,17 +326,6 @@ nonisolated struct SearchDirectoryWalker {
         entries.sort { $0.name < $1.name }
 
         stack.append(Frame(relativePath: relativePath, entries: entries))
-    }
-
-    private mutating func admitConstrainedFile(_ relative: String) {
-        let url = workFolderRoot.appendingPathComponent(relative)
-        var isDir: ObjCBool = false
-        guard fileManager.fileExists(atPath: url.path, isDirectory: &isDir) else { return }
-        // Treat .rtfd bundles as single files; otherwise skip directories.
-        if isDir.boolValue && !url.pathExtension.lowercased().hasSuffix("rtfd") { return }
-        guard compiledGlob?.matches(url.lastPathComponent) ?? true else { return }
-        guard admitToRoster(relative) else { return }
-        if !listMode { enqueue(.candidate(url: url, relativePath: relative)) }
     }
 
     private mutating func admitRootEntry(_ dir: URL) {

@@ -27,6 +27,11 @@ struct NanoTeamsApp: App {
     /// True when the process is hosted by XCTest — skip heavy init to avoid crashes on CI.
     private static let isRunningTests = NSClassFromString("XCTestCase") != nil
 
+    /// The app's only AppKit delegate. It exists so ⌘Q can wait for the search index to be
+    /// written — see `AppTerminationDelegate`. SwiftUI instantiates it before `init` runs, so
+    /// `init` can hand it the shutdown step directly.
+    @NSApplicationDelegateAdaptor(AppTerminationDelegate.self) private var appDelegate
+
     @State private var store: NTMSOrchestrator
     @State private var folderAccess = FolderAccessManager()
     @State private var llmStatusMonitor = LLMStatusMonitor()
@@ -81,6 +86,15 @@ struct NanoTeamsApp: App {
         _embeddingModelCatalog = State(initialValue: EmbeddingModelCatalog())
         _benchmarkSweep = State(initialValue: Self.makeBenchmarkSweep(
             store: orchestrator, catalog: catalog))
+
+        // Last, because reading the adaptor's value requires every stored property to be
+        // initialized. Quitting with a folder open is the second of the two ways the index
+        // gets written (the first is closing the folder); without this the session's
+        // incremental vocabulary died with the process and the next launch re-tokenized
+        // everything edited since the last full rebuild.
+        appDelegate.onTerminate = { [weak orchestrator] in
+            await orchestrator?.tearDownSearchIndexCoordinator()
+        }
     }
 
     /// Assembles the benchmark's measuring loop.

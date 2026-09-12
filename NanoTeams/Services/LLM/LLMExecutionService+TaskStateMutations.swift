@@ -129,6 +129,7 @@ extension LLMExecutionService {
 
     func generateAutoSupervisorAnswer(
         question: String,
+        inquiry: SupervisorInquiry? = nil,
         task: NTMSTask,
         runIndex: Int,
         stepIndex: Int,
@@ -141,6 +142,7 @@ extension LLMExecutionService {
         await noteInterleavingCall(label: "supervisor auto-answer", config: config)
         return await SupervisorAutoAnswerService.generateAnswer(
             question: question,
+            inquiry: inquiry,
             task: task,
             runIndex: runIndex,
             stepIndex: stepIndex,
@@ -155,7 +157,19 @@ extension LLMExecutionService {
         )
     }
 
-    func recordAutoSupervisorAnswer(stepID: String, taskID: Int, question: String, answer: String) async {
+    /// - Parameters:
+    ///   - inquiry: the questionnaire this answer settles, when the batch parked on one.
+    ///     Written here rather than by `setNeedsSupervisorInput` because this path never
+    ///     parks — the step answers inside its own tool loop — so nothing else has put the
+    ///     form on the step, and the feed re-renders an answered card from the pair.
+    ///   - inquiryAnswer: the structure `answer` was rendered from. The two are written in
+    ///     one mutation for the reason they exist as a pair: a step whose prose says one
+    ///     thing and whose structure says another is a record no surface can be trusted to
+    ///     re-render.
+    func recordAutoSupervisorAnswer(
+        stepID: String, taskID: Int, question: String, answer: String,
+        inquiry: SupervisorInquiry? = nil, inquiryAnswer: SupervisorInquiryAnswer? = nil
+    ) async {
         guard let delegate, isExecutionLive(stepID: stepID, taskID: taskID) else { return }
         let cleanQuestion = question.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanAnswer = answer.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -178,6 +192,13 @@ extension LLMExecutionService {
             // the defect this flag closes on the parked path.
             task.runs[runIndex].steps[stepIndex].supervisorAnswerPendingDelivery = false
             task.runs[runIndex].steps[stepIndex].needsSupervisorInput = false
+            // Assignment, not a conditional write: a plain ask after a form must CLEAR the
+            // previous round's questionnaire, or the feed keeps rendering a card whose
+            // questions this answer never addressed. Below the delivery flag, not between it
+            // and the answer — those two are one decision, and
+            // `SupervisorAnswerDeliveryPinTests` reads their adjacency as the evidence.
+            task.runs[runIndex].steps[stepIndex].supervisorInquiry = inquiry
+            task.runs[runIndex].steps[stepIndex].supervisorInquiryAnswer = inquiryAnswer
 
             if task.runs[runIndex].steps[stepIndex].status == .needsSupervisorInput {
                 task.runs[runIndex].steps[stepIndex].status = .pending
@@ -199,7 +220,9 @@ extension LLMExecutionService {
     /// transition the engine to "needs Supervisor input" with NO question
     /// rendered — which is strictly worse than the loop they replaced.
     @discardableResult
-    func setNeedsSupervisorInput(stepID: String, taskID: Int, question: String) async -> Bool {
+    func setNeedsSupervisorInput(
+        stepID: String, taskID: Int, question: String, inquiry: SupervisorInquiry? = nil
+    ) async -> Bool {
         // The liveness gate matters doubly here: a post-teardown call would not just
         // mis-write — it would flip a closed/paused task back to `.needsSupervisorInput`
         // and fire the queued-message backstop, which auto-resumes the run.
@@ -213,7 +236,13 @@ extension LLMExecutionService {
             else { return }
 
             task.runs[runIndex].steps[stepIndex].supervisorQuestion = clean.isEmpty ? nil : clean
+            // Written together with the headline so the pair can never describe two different
+            // questions. `nil` on a plain ask CLEARS a previous round's form, which is the
+            // whole reason this is an assignment rather than a conditional write: a role that
+            // asks a form and then asks plainly must not leave the old card standing.
+            task.runs[runIndex].steps[stepIndex].supervisorInquiry = inquiry
             task.runs[runIndex].steps[stepIndex].supervisorAnswer = nil  // Clear stale answer from previous Q&A
+            task.runs[runIndex].steps[stepIndex].supervisorInquiryAnswer = nil
             task.runs[runIndex].steps[stepIndex].supervisorAnswerAttachmentPaths = []
             task.runs[runIndex].steps[stepIndex].supervisorAnswerWasAuto = false
             task.runs[runIndex].steps[stepIndex].supervisorAnswerPendingDelivery = false

@@ -17,6 +17,10 @@ struct RoleNodeRuntimeView: View {
     var isPaused: Bool = false
     var isEngineRunning: Bool = true
     var isInMeeting: Bool = false
+    /// Ready to run, but waiting for a concurrency slot (`RoleConcurrencyMode.single`).
+    /// An engine-pass projection, not a `RoleExecutionStatus` — the role really is
+    /// `.idle`/`.ready`; what this says is why it is still sitting there.
+    var isQueued: Bool = false
     var isReviewNode: Bool = false
     var roleTintColor: Color = Colors.neutral
 
@@ -44,10 +48,14 @@ struct RoleNodeRuntimeView: View {
 
     private var statusDisplayName: String {
         if isReviewNode { return "Review" }
+        if isQueued { return "Queued" }
         return status.displayName(isInMeeting: isInMeeting, isPaused: isPaused)
     }
     private var statusDisplayColor: Color {
         if isReviewNode { return Colors.purple }
+        // The same neutral a not-yet-started role wears: queued is a WAIT, and giving it its
+        // own colour would put a ninth hue on a graph whose eight already carry a meaning.
+        if isQueued { return Colors.neutral }
         return status.displayColor(isInMeeting: isInMeeting, isPaused: isPaused)
     }
 
@@ -82,9 +90,12 @@ struct RoleNodeRuntimeView: View {
                 // when live), paired with the status name.
                 HStack(spacing: 4) {
                     StatusGlyph(
-                        glyph: status.glyph(isInMeeting: isInMeeting, isPaused: isPaused),
+                        glyph: isQueued
+                            ? TerminalGlyph.queued
+                            : status.glyph(isInMeeting: isInMeeting, isPaused: isPaused),
                         color: statusDisplayColor,
-                        animatesWork: isEngineRunning && !isPaused && !isInMeeting && status == .working,
+                        animatesWork: isEngineRunning && !isPaused && !isInMeeting && !isQueued
+                            && status == .working,
                         font: Typography.term2xs
                     )
                     Text(statusDisplayName)
@@ -310,7 +321,7 @@ struct RoleNodeRuntimeView: View {
         RoleNodeRuntimeView(
             roleID: "tl", roleName: "Tech Lead", roleIcon: "wrench.and.screwdriver",
             status: .ready, isSelected: false, position: CGPoint(x: 100, y: 200),
-            onSelect: {}
+            onSelect: {}, isQueued: true
         )
         RoleNodeRuntimeView(
             roleID: "uxd", roleName: "UX Designer", roleIcon: "paintbrush",

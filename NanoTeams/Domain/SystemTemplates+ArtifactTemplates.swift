@@ -43,12 +43,6 @@ nonisolated extension SystemTemplates {
             mimeType: "text/markdown",
             description: "Engineering implementation record covering: (1) what was built and key decisions made, (2) files created or modified with brief explanations, (3) code patterns and conventions used, (4) known limitations or tech debt, (5) testing done. Written as a factual record of what was actually implemented, not a plan."
         ),
-        "Build Diagnostics": SystemArtifactTemplate(
-            name: "Build Diagnostics",
-            icon: "wrench.and.screwdriver",
-            mimeType: "application/json",
-            description: "Build diagnostics report summarizing: (1) overall build/test outcome (pass/fail), (2) compiler errors or warnings with file locations, (3) test failures with test names and error messages, (4) performance or dependency issues if relevant. Structured as JSON for machine readability."
-        ),
         "Code Review Summary": SystemArtifactTemplate(
             name: "Code Review Summary",
             icon: "checkmark",
@@ -105,6 +99,61 @@ nonisolated extension SystemTemplates {
             mimeType: "text/markdown",
             description: "Discussion synthesis covering: (1) topic and key question discussed, (2) main perspectives and arguments from each participant, (3) areas of agreement and disagreement, (4) key insights or conclusions reached, (5) open questions and next steps. Written as a balanced synthesis, not just a transcript — highlight what was learned or decided."
         ),
+        // Ultra Team artifacts
+        "Change Brief": SystemArtifactTemplate(
+            name: "Change Brief",
+            icon: "list.clipboard",
+            mimeType: "text/markdown",
+            description: "The change specified well enough to build from: (1) the KIND of work — defect, new behaviour, refactor, question about the code, or one-file edit — stated first, because everything downstream sizes itself to it, (2) observable behaviour, stated so a test could check it, (3) acceptance criteria, concrete and countable, each with the command, test or file that would settle it, (4) what is out of scope, (5) the files and modules the change touches, by path, (6) the Supervisor's answers recorded verbatim, and any assumption made where an answer is missing."
+        ),
+        "Brief Critique": SystemArtifactTemplate(
+            name: "Brief Critique",
+            icon: "text.magnifyingglass",
+            mimeType: "text/markdown",
+            description: "The brief itself judged, before any design exists: (1) one entry per acceptance criterion with the command, test or file that would settle it — or the criterion marked unsettleable, (2) every claim the brief makes about the state of the build, the tests or the timing, each paired with the tool call that established it or marked unsupported, (3) requirements that are ambiguous enough to be built two ways, (4) what the brief leaves out that the work cannot proceed without."
+        ),
+        "Diff Review": SystemArtifactTemplate(
+            name: "Diff Review",
+            icon: "arrow.triangle.branch",
+            mimeType: "text/markdown",
+            description: "The diff read as the only record of what the repository actually received: (1) every changed file with what changed in it, (2) each change matched to the claim in the implementation notes that covers it, (3) changes no claim covers, (4) claims no change supports, (5) leftovers that belong to nobody — stray files, commented-out code, debug output."
+        ),
+        "Approach A": SystemArtifactTemplate(
+            name: "Approach A",
+            icon: "square.stack.3d.up",
+            mimeType: "text/markdown",
+            description: "The thorough design: (1) the design in prose with the seam and the ownership named, (2) every file to add or change, by path, (3) the invariants preserved and where they are enforced, (4) the tests that prove it, (5) the strongest argument against it. A design record with paths, not the code itself."
+        ),
+        "Approach B": SystemArtifactTemplate(
+            name: "Approach B",
+            icon: "scissors",
+            mimeType: "text/markdown",
+            description: "The minimal design: (1) the design in prose, naming what was deliberately not built, (2) every file to change, by path, (3) the behaviour put at risk by the short path, (4) the tests that prove it, (5) the point at which this approach stops being adequate. A design record with paths, not the code itself."
+        ),
+        "Spec Critique": SystemArtifactTemplate(
+            name: "Spec Critique",
+            icon: "checklist",
+            mimeType: "text/markdown",
+            description: "Both approaches judged against the brief: (1) one entry per acceptance criterion with a verdict for each approach — met, not met, or not established — and the evidence read, (2) requirements neither approach covers, (3) a recommendation naming one approach and the criterion that decided it."
+        ),
+        "Regression Critique": SystemArtifactTemplate(
+            name: "Regression Critique",
+            icon: "exclamationmark.triangle",
+            mimeType: "text/markdown",
+            description: "What each approach breaks: (1) each risk with the file and line that carries it and the sequence that triggers it, (2) the blast radius of each approach, (3) migration or compatibility work implied, (4) a recommendation naming one approach, the risk that decided it, and the conditions to respect while implementing."
+        ),
+        "Implementation Notes": SystemArtifactTemplate(
+            name: "Implementation Notes",
+            icon: "hammer.fill",
+            mimeType: "text/markdown",
+            description: "What was actually built: (1) every file changed, by path, and what changed in each, (2) deviations from the recommended approach with what forced each, (3) the exact commands run and what each returned, (4) anything left unfinished, stated plainly."
+        ),
+        "Verification Report": SystemArtifactTemplate(
+            name: "Verification Report",
+            icon: "checkmark.seal",
+            mimeType: "text/markdown",
+            description: "What the build and the tests established: (1) the exact commands run and the outcome of each, (2) test counts exactly as the output reported them, (3) one entry per acceptance criterion from the brief — met, not met, or not established — with what settled it, (4) each claim from the implementation notes, quoted from its source, with the check that settled it, (5) changes in the diff that no claim covers, (6) claims that could not be checked and why, (7) a closing verdict covering what works, what does not, and what was not established."
+        ),
     ]
 
     // MARK: - Team Role ID Sets
@@ -124,5 +173,10 @@ nonisolated extension SystemTemplates {
         "assistant": ["assistant"],
         "codingAssistant": ["codingAssistant"],
         "codingAgent": ["codingAgent"],
+        "ultra": [
+            "changePlanner", "briefCritic", "solutionArchitect", "pragmaticArchitect",
+            "specCritic", "regressionCritic",
+            "changeEngineer", "diffReviewer", "changeVerifier",
+        ],
     ]
 }

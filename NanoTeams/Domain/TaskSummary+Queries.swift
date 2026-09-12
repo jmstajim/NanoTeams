@@ -81,6 +81,36 @@ nonisolated extension TaskSummary {
     /// sweep must bail on these rather than treat unknown as "answered".
     var supervisorInputStateIsKnown: Bool { hasPendingSupervisorInput != nil }
 
+    /// False only for a legacy index row that predates `pendingSupervisorQuestionCount`.
+    /// Separate from `supervisorInputStateIsKnown` because the two fields arrived in
+    /// different releases, so a row can know the flag and not the count — a state no single
+    /// predicate can describe.
+    var waitingQuestionCountIsKnown: Bool { pendingSupervisorQuestionCount != nil }
+
+    /// True while SOME mirrored supervisor-wait fact on this row predates its field.
+    ///
+    /// The startup sweep pays one blob read for such a row when its status could be hiding an
+    /// unanswered question — `.paused` because recovery parks every waiting step, `.failed`
+    /// because it outranks `.needsSupervisorInput` in `Run.derivedTaskStatus`. The
+    /// convergence write stamps every field at once, so the row drops out of the filter on
+    /// the next open: self-terminating by construction, and it widens rather than forks as
+    /// fields are added.
+    var supervisorWaitFactsPredateAField: Bool {
+        !supervisorInputStateIsKnown || !waitingQuestionCountIsKnown
+    }
+
+    /// Keep the row's OWN supervisor-wait facts in place of the ones just recomputed.
+    ///
+    /// Both fields read the per-step stream arrays (`toolCalls` / `llmConversation`), which a
+    /// RAW read of a split task does not carry — so recomputing them there yields a false
+    /// negative, and writing that over a true row wipes persisted seen-state (#91). They move
+    /// together because they are one fact in two shapes, and a seam that patched one of them
+    /// would leave a row asserting "waiting" beside a count of zero.
+    mutating func preserveSupervisorWaitFacts(from row: TaskSummary) {
+        hasPendingSupervisorInput = row.hasPendingSupervisorInput
+        pendingSupervisorQuestionCount = row.pendingSupervisorQuestionCount
+    }
+
     /// "A role on this task is parked on an acceptance decision."
     ///
     /// The ONLY sanctioned way to read `hasRolesAwaitingAcceptance` affirmatively, and

@@ -163,21 +163,20 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
                        "providerID must thread through to the LLM-visible tool turn.")
     }
 
-    // MARK: - Empty postings short-circuit
+    // MARK: - The word is nowhere in the tree
 
-    func testEmptyPostings_envelopeReportsZeroHitFiles() async throws {
+    /// `hit_files` means ONE thing in every branch now: unique paths among the returned
+    /// matches. It used to mean the posting-intersection count on the success branch and unique
+    /// match paths everywhere else - a number whose meaning depended on a flag elsewhere in the
+    /// same envelope.
+    func testWordNowhereInTheTree_envelopeReportsZeroHitFiles() async throws {
         service._testRegisterStepTask(stepID: "step1", taskID: 1)
         mock.exploratorySearchEnabled = true
-        // Index has no postings for the query.
-        mock.scriptedSearchIndex = try SearchIndex(
+        // The roster holds a file, but nothing in the tree contains the query.
+        mock.scriptedSearchIndex = SearchIndex(
             generatedAt: Date(),
-            signature: IndexSignature(
-                fileCount: 1, maxMTime: Date(), totalSize: 1
-            ),
             files: [IndexedFile(path: "A.swift", mTime: Date(), size: 1)],
-            tokens: ["other"],
-            postings: ["other": [0]]
-        )
+            vocabulary: ["other"])
 
         var convo: [ChatMessage] = []
         await service.appendExploratorySearchResult(
@@ -190,46 +189,45 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
 
         let env = convo.first?.content ?? ""
         XCTAssertTrue(env.contains("\"hit_files\":0"),
-                      "Empty posting intersection must short-circuit with hit_files: 0.")
+                      "no file holds the word, so no path is hit")
         XCTAssertTrue(env.contains("\"matches\":[]"),
                       "No file matches the query terms.")
     }
 
     // MARK: - T1-T4: delegate.expandSearchQuery → envelope round-trip
 
-    /// Builds a minimal search index with three files whose postings contain
-    /// the tokens we'll exercise. Used by T1-T4 to make posting intersection
-    /// a real operation (not a pre-determined short-circuit).
-    private func installScriptedIndex() {
+    /// A three-file corpus - in the index roster AND on disk - whose words are the ones T1-T4
+    /// exercise. Both halves are needed: the roster drives `filename_matches`, the tree drives
+    /// the grep that `hit_files` counts.
+    private func installScriptedIndex() throws {
         mock.exploratorySearchEnabled = true
-        // `try!` is deliberate — the literal invariants above are valid.
-        // swiftlint:disable:next force_try
-        mock.scriptedSearchIndex = try! SearchIndex(
+        mock.scriptedSearchIndex = SearchIndex(
             generatedAt: Date(),
-            signature: IndexSignature(fileCount: 3, maxMTime: Date(), totalSize: 3),
             files: [
                 IndexedFile(path: "UserManager.swift", mTime: Date(), size: 1),
                 IndexedFile(path: "AccountService.swift", mTime: Date(), size: 1),
                 IndexedFile(path: "Widget.swift", mTime: Date(), size: 1),
             ],
-            tokens: ["user", "account", "widget", "scroll"],
-            postings: [
-                "scroll": [],
-                "user": [0],
-                "account": [1],
-                "widget": [2],
-            ]
-        )
+            vocabulary: ["user", "account", "widget"])
+        // ...and the same three files on DISK, because `hit_files` is now what the grep found,
+        // not what an index predicted it would find. The roster and the tree have to agree for
+        // the fixture to mean anything - which is itself the point: the index no longer gates
+        // the result, so a roster that lies about the tree simply produces no hits.
+        for (name, word) in [("UserManager.swift", "user"),
+                             ("AccountService.swift", "account"),
+                             ("Widget.swift", "widget")] {
+            try "let \(word) = 1\n".write(to: tempDir.appendingPathComponent(name),
+                                          atomically: true, encoding: .utf8)
+        }
     }
 
-    func testExpanded_envelopeContainsTermsAndHitFiles() async {
-        // T1: happy path — `.expanded` case → envelope has the expansion
-        // terms AND the posting intersection surfaces the right files.
+    func testExpanded_envelopeContainsTermsAndHitFiles() async throws {
+        // T1: happy path — `.expanded` case → the envelope carries the expansion terms AND
+        // the grep they widened reaches the right file.
         service._testRegisterStepTask(stepID: "step1", taskID: 1)
-        installScriptedIndex()
-        // Scripted expansion: query "scroll" maps to "user" (which IS in
-        // postings → file 0). This confirms the envelope wires expansion
-        // terms into `index.files(containing:)` not just into the JSON.
+        try installScriptedIndex()
+        // Scripted expansion: "scroll" maps to "user", which IS in the tree. This confirms the
+        // expansion terms reach the GREP, not just the JSON.
         mock.scriptedExpansion = .expanded(terms: ["user"])
 
         var convo: [ChatMessage] = []
@@ -246,16 +244,16 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
         XCTAssertFalse(env.contains("\"expansion_error\""),
                        "`.expanded` must not write an `expansion_error` field.")
         XCTAssertTrue(env.contains("\"hit_files\":1"),
-                      "Posting intersection for scroll + user must hit UserManager.swift.")
+                      "grepping [scroll, user] must hit UserManager.swift")
         XCTAssertEqual(mock.expandSearchQueryCallCount, 1,
                        "Delegate must be called exactly once per exploratory_search invocation.")
     }
 
-    func testUnavailable_building_envelopePropagatesReason() async {
+    func testUnavailable_building_envelopePropagatesReason() async throws {
         // T2: vector index still building → chat LLM sees the exact state
         // string so it can "retry later" rather than treat as a hard error.
         service._testRegisterStepTask(stepID: "step1", taskID: 1)
-        installScriptedIndex()
+        try installScriptedIndex()
         mock.scriptedExpansion = .unavailable(reason: "vector_index_building")
 
         var convo: [ChatMessage] = []
@@ -269,15 +267,14 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
         let env = convo.first?.content ?? ""
         XCTAssertTrue(env.contains("\"expansion_error\":\"vector_index_building\""),
                       "Envelope must propagate `unavailableReason` as `expansion_error`.")
-        // Expansion terms empty but posting intersection still runs on the
-        // original query token. `scroll` has no postings → 0 hits.
+        // Expansion terms empty; the grep still runs on the original query.
         XCTAssertTrue(env.contains("\"expanded_terms\":[]"))
     }
 
-    func testUnavailable_modelNotLoaded_envelopePropagatesReason() async {
+    func testUnavailable_modelNotLoaded_envelopePropagatesReason() async throws {
         // T3: embedding model not loaded → canonical string flows through.
         service._testRegisterStepTask(stepID: "step1", taskID: 1)
-        installScriptedIndex()
+        try installScriptedIndex()
         mock.scriptedExpansion = .unavailable(reason: "embedding_model_not_loaded")
 
         var convo: [ChatMessage] = []
@@ -293,12 +290,12 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
                       "Exact canonical string must reach the chat LLM envelope.")
     }
 
-    func testTransientError_envelopeHasBothTermsAndError() async {
+    func testTransientError_envelopeHasBothTermsAndError() async throws {
         // T4: whole-phrase embed failed mid-query, but per-token tier produced
         // results. Envelope must surface BOTH — terms for the partial answer
         // AND error so the LLM can decide whether to retry.
         service._testRegisterStepTask(stepID: "step1", taskID: 1)
-        installScriptedIndex()
+        try installScriptedIndex()
         mock.scriptedExpansion = .transientError(
             terms: ["user", "account"],
             reason: "embedding_http_error"
@@ -320,7 +317,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
         XCTAssertTrue(env.contains("\"account\""))
         // Two hits — UserManager.swift (for "user") + AccountService.swift.
         XCTAssertTrue(env.contains("\"hit_files\":2"),
-                      "Posting intersection must treat `.transientError` terms the same as `.expanded`.")
+                      "the grep must treat `.transientError` terms the same as `.expanded`")
     }
 
     // MARK: - B1: search_error surfaces executor throws
@@ -451,15 +448,18 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
                       "Default storage must surface its own distinct reason. Envelope: \(env)")
     }
 
-    // MARK: - B3: short-circuit preserves `skipped_*` accounting
+    // MARK: - B3: a hitless search still reports `skipped_*` accounting
 
-    /// When the posting intersection is empty, the envelope still runs the
-    /// executor to collect `skipped_files` / `skipped_binary_count` from the
-    /// work-folder walk — otherwise the LLM can't tell "no matches" from
-    /// "matching content lives in unreadable binaries".
+    /// A search that matches nothing still runs the executor, so `skipped_files` /
+    /// `skipped_binary_count` come back from the work-folder walk — otherwise the LLM can't
+    /// tell "no matches" from "matching content lives in unreadable binaries".
+    ///
+    /// This used to guard a short-circuit: an empty posting intersection returned before the
+    /// executor ran. The postings went in 2026-09-11 and with them the branch, so what is
+    /// pinned now is that no LATER short-circuit is introduced on the same reasoning.
     func testShortCircuit_surfacesSkippedBinaryCount() async throws {
         service._testRegisterStepTask(stepID: "step1", taskID: 1)
-        installScriptedIndex()                       // scroll has no postings
+        try installScriptedIndex()                   // nothing on disk holds the query
         mock.scriptedExpansion = .expanded(terms: [])
 
         // Drop a non-UTF-8 binary into the work folder — the executor's
@@ -478,9 +478,10 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
 
         let env = convo.first?.content ?? ""
         XCTAssertTrue(env.contains("\"hit_files\":0"),
-                      "Scroll has no postings — short-circuit fires.")
+                      "nothing in the tree holds the query word")
         XCTAssertTrue(env.contains("\"skipped_binary_count\""),
-                      "Short-circuit branch must still surface skipped_binary_count. Envelope: \(env)")
+                      "a no-hit search must still account for what it could not read. "
+                          + "Envelope: \(env)")
     }
 
     /// `skipped_files` is folded by reason in BOTH envelopes, not just the `search` tool's.
@@ -491,7 +492,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
     /// arguments, so it silently keeps whatever shape it was written with.
     func testShortCircuit_skippedFiles_areFoldedByReasonHereToo() async throws {
         service._testRegisterStepTask(stepID: "step1", taskID: 1)
-        installScriptedIndex()
+        try installScriptedIndex()
         mock.scriptedExpansion = .expanded(terms: [])
 
         for name in ["one.doc", "two.doc"] {
@@ -549,24 +550,19 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
 
     // MARK: - Filename matches in expand pipeline
 
-    /// Success branch: filename matching runs against the FULL index roster,
-    /// not just `hitFiles`. A file whose basename matches the query but
-    /// whose content has no posting intersection must still appear in
-    /// `filename_matches`.
+    /// Filename matching runs against the FULL index roster. A file whose basename matches the
+    /// query but whose content does not must still appear in `filename_matches`.
     func testFilenameMatches_surfacedFromIndexRoster() async throws {
         service._testRegisterStepTask(stepID: "step1", taskID: 1)
         mock.exploratorySearchEnabled = true
-        // Index has a file whose name matches "scroll" but no posting for it.
-        mock.scriptedSearchIndex = try SearchIndex(
+        // A file whose NAME matches "scroll" while nothing holds the word.
+        mock.scriptedSearchIndex = SearchIndex(
             generatedAt: Date(),
-            signature: IndexSignature(fileCount: 2, maxMTime: Date(), totalSize: 2),
             files: [
                 IndexedFile(path: "Views/ScrollContainer.swift", mTime: Date(), size: 1),
                 IndexedFile(path: "Domain/Other.swift", mTime: Date(), size: 1),
             ],
-            tokens: ["other"],
-            postings: ["other": [1]]
-        )
+            vocabulary: ["other"])
         mock.scriptedExpansion = .expanded(terms: [])
 
         var convo: [ChatMessage] = []
@@ -584,7 +580,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
         // Foundation escapes `/` to `\/` in JSON; assert on the basename
         // (uniquely identifying) and the matched_on tag instead.
         XCTAssertTrue(env.contains("ScrollContainer.swift"),
-                      "File matching the query basename must appear regardless of posting hits.")
+                      "A basename match must appear even when no file's CONTENT matches.")
         XCTAssertTrue(env.contains("\"matched_on\":\"basename\""))
     }
 
@@ -593,16 +589,13 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
     func testFilenameMatches_useExpandedTerms() async throws {
         service._testRegisterStepTask(stepID: "step1", taskID: 1)
         mock.exploratorySearchEnabled = true
-        mock.scriptedSearchIndex = try SearchIndex(
+        mock.scriptedSearchIndex = SearchIndex(
             generatedAt: Date(),
-            signature: IndexSignature(fileCount: 2, maxMTime: Date(), totalSize: 2),
             files: [
                 IndexedFile(path: "Models/UserAccount.swift", mTime: Date(), size: 1),
                 IndexedFile(path: "Other.swift", mTime: Date(), size: 1),
             ],
-            tokens: ["user"],
-            postings: ["user": [0]]
-        )
+            vocabulary: ["user"])
         // Original query has no filename hits; expansion adds "account"
         // which DOES match Models/UserAccount.swift's basename.
         mock.scriptedExpansion = .expanded(terms: ["account"])
@@ -622,20 +615,15 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
                       "Expanded vocab term must drive filename matching. Envelope: \(env)")
     }
 
-    /// Empty postings short-circuit branch must still emit filename matches
-    /// computed from the index roster — that's the most common case where
-    /// filename search adds value, since posting intersection produced
-    /// nothing useful.
-    func testFilenameMatches_surfaceEvenWhenPostingsEmpty() async throws {
+    /// Filename matches come from the roster, so they surface even when no file CONTAINS the
+    /// word - which is the most common case where matching by name adds anything.
+    func testFilenameMatches_surfaceEvenWhenContentHasNoMatch() async throws {
         service._testRegisterStepTask(stepID: "step1", taskID: 1)
         mock.exploratorySearchEnabled = true
-        mock.scriptedSearchIndex = try SearchIndex(
+        mock.scriptedSearchIndex = SearchIndex(
             generatedAt: Date(),
-            signature: IndexSignature(fileCount: 1, maxMTime: Date(), totalSize: 1),
             files: [IndexedFile(path: "ScrollView.swift", mTime: Date(), size: 1)],
-            tokens: ["other"],
-            postings: ["other": [0]]   // "scroll" has no postings → empty intersection
-        )
+            vocabulary: ["other"])   // nothing on disk holds the word either
         mock.scriptedExpansion = .expanded(terms: [])
 
         var convo: [ChatMessage] = []
@@ -649,9 +637,9 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
 
         let env = convo.first?.content ?? ""
         XCTAssertTrue(env.contains("\"hit_files\":0"),
-                      "Posting intersection is empty.")
+                      "no file CONTAINS the word")
         XCTAssertTrue(env.contains("ScrollView.swift"),
-                      "Filename match must surface from the index even when postings are empty. Envelope: \(env)")
+                      "the name match must surface anyway. Envelope: \(env)")
     }
 
     /// Disabled / fall-back branches use the plain executor's filename
@@ -708,13 +696,8 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
     func testFilenameMatches_emptyIndex_omitsField() async throws {
         service._testRegisterStepTask(stepID: "step1", taskID: 1)
         mock.exploratorySearchEnabled = true
-        mock.scriptedSearchIndex = try SearchIndex(
-            generatedAt: Date(),
-            signature: IndexSignature(fileCount: 0, maxMTime: Date(), totalSize: 0),
-            files: [],
-            tokens: [],
-            postings: [:]
-        )
+        mock.scriptedSearchIndex = SearchIndex(
+            generatedAt: Date(), files: [], vocabulary: [])
         mock.scriptedExpansion = .expanded(terms: [])
 
         var convo: [ChatMessage] = []
@@ -731,21 +714,17 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
                        "Empty roster must omit filename_matches entirely.")
     }
 
-    /// Both posting hits AND filename hits surface in the same envelope —
-    /// pin that the success branch carries both arrays independently.
+    /// Content hits AND filename hits surface in the same envelope - pin that the success
+    /// branch carries both arrays independently.
     func testFilenameMatches_alongsideContentHits() async throws {
         service._testRegisterStepTask(stepID: "step1", taskID: 1)
         mock.exploratorySearchEnabled = true
-        mock.scriptedSearchIndex = try SearchIndex(
+        mock.scriptedSearchIndex = SearchIndex(
             generatedAt: Date(),
-            signature: IndexSignature(fileCount: 1, maxMTime: Date(), totalSize: 1),
             files: [IndexedFile(path: "Sources/Search.swift", mTime: Date(), size: 1)],
-            tokens: ["search"],
-            postings: ["search": [0]]
-        )
+            vocabulary: ["search"])
         mock.scriptedExpansion = .expanded(terms: [])
-        // Real file on disk so the constrained executor walk produces a
-        // content match too.
+        // Real file on disk so the grep produces a content match too.
         let url = tempDir.appendingPathComponent("Sources/Search.swift")
         try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try "let search = 1\n".write(to: url, atomically: true, encoding: .utf8)
@@ -761,7 +740,7 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
 
         let env = convo.first?.content ?? ""
         XCTAssertTrue(env.contains("\"hit_files\":1"),
-                      "Posting intersection should hit Search.swift.")
+                      "the grep should hit Search.swift")
         XCTAssertTrue(env.contains("\"filename_matches\""),
                       "Filename match should also surface for the same file.")
     }
@@ -776,13 +755,10 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
         // expand pipeline relies on the index being pre-filtered.
         service._testRegisterStepTask(stepID: "step1", taskID: 1)
         mock.exploratorySearchEnabled = true
-        mock.scriptedSearchIndex = try SearchIndex(
+        mock.scriptedSearchIndex = SearchIndex(
             generatedAt: Date(),
-            signature: IndexSignature(fileCount: 1, maxMTime: Date(), totalSize: 1),
             files: [IndexedFile(path: "Sources/Foo.swift", mTime: Date(), size: 1)],
-            tokens: [],
-            postings: [:]
-        )
+            vocabulary: [])
         mock.scriptedExpansion = .expanded(terms: [])
 
         var convo: [ChatMessage] = []
@@ -807,13 +783,8 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
         let files = (0..<100).map {
             IndexedFile(path: "Sources/Foo\($0).swift", mTime: Date(), size: 1)
         }
-        mock.scriptedSearchIndex = try SearchIndex(
-            generatedAt: Date(),
-            signature: IndexSignature(fileCount: 100, maxMTime: Date(), totalSize: 100),
-            files: files,
-            tokens: [],
-            postings: [:]
-        )
+        mock.scriptedSearchIndex = SearchIndex(
+            generatedAt: Date(), files: files, vocabulary: [])
         mock.scriptedExpansion = .expanded(terms: [])
 
         // Build a payload with a tight maxResults cap.
@@ -860,16 +831,13 @@ final class ExploratorySearchProcessorEnvelopeTests: XCTestCase {
     func testFilenameMatches_matchedOnEnumDecodesCorrectly() async throws {
         service._testRegisterStepTask(stepID: "step1", taskID: 1)
         mock.exploratorySearchEnabled = true
-        mock.scriptedSearchIndex = try SearchIndex(
+        mock.scriptedSearchIndex = SearchIndex(
             generatedAt: Date(),
-            signature: IndexSignature(fileCount: 2, maxMTime: Date(), totalSize: 2),
             files: [
                 IndexedFile(path: "Domain/Search.swift", mTime: Date(), size: 1),
                 IndexedFile(path: "Services/Search/Foo.swift", mTime: Date(), size: 1),
             ],
-            tokens: [],
-            postings: [:]
-        )
+            vocabulary: [])
         mock.scriptedExpansion = .expanded(terms: [])
 
         var convo: [ChatMessage] = []

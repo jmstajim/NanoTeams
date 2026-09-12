@@ -29,7 +29,7 @@ extension LLMExecutionService {
         roleDefinition: TeamRoleDefinition?
     ) async -> PlanningPhasePolicy.Authorization {
         let stepKey = TaskStepKey(taskID: taskID, stepID: stepID)
-        let expected = step.expectedArtifacts.filter { $0 != ArtifactConstants.buildDiagnosticsName }
+        let expected = step.expectedArtifacts
         let scratchpadIsNil = step.scratchpad?.trimmingCharacters(in: .whitespacesAndNewlines)
             .isEmpty ?? true
 

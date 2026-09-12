@@ -75,6 +75,13 @@ Code-writing roles can run real terminal commands, including long-running ones y
 ### Computer Use (Screen Control)
 Some jobs need the screen, not just files. A role can take a screenshot and then click, type, and scroll in other Mac apps to get them done. It's **manual by default**: you approve every action with a preview of exactly what will happen. Prefer hands-off? Hand approval to an on-device judge at the strictness you choose, or turn the feature off entirely. Built-in guardrails keep it from ever touching NanoTeams itself or any app you haven't allowed, and macOS asks for screen and accessibility permission the first time.
 
+### Model Benchmark
+Which of your local models is actually fastest on *your* Mac? **Settings → Support → Benchmark** measures it. Run one model, or tick **All models** and let it sweep every model on both Ollama and LM Studio unattended. For each run you get **generation speed** (tok/s), **time to first token**, **prompt prefill** speed, and — where the server separates them — the share of output that was thinking. Every figure is a **median** over several samples, so one thermally unlucky run can't flatter a model, and anything the server didn't report is marked `~` or left blank rather than guessed.
+
+Results build a **leaderboard** ranked by median speed, with each model's best run beside it so you can see the spread, plus a full run history: every sample, the ones that were thrown out and why, thermal state, VRAM, engine build, and the exact request body. It's kept outside your work folder — generation speed is a fact about the machine, not the project.
+
+Two things worth knowing before you start a sweep. It **unloads your models** — both providers draw on the same memory, so everything is cleared, then each model is loaded, warmed up, and sampled alone; switch a server off to leave it untouched. And it takes **minutes per model**. The workload is one fixed prompt (~2,480 tokens in, capped at 512 out) with a fresh nonce each time so nothing is served from the server's prompt cache. Benchmarks never run while a task is running, and never switch your app onto the model being measured.
+
 ### Privacy & Security
 **NanoTeams** never sends your code, files, or prompts off your Mac. Its only outbound call is a once-a-day check for a new version — configurable, and you can turn it off entirely. Everything else runs on-device through Ollama or LM Studio, with no telemetry and no account. File access is sandboxed to your work folder, the terminal and screen-control tools ask before they act, and a macOS sandbox keeps changes inside your folder and away from your credentials.
 
@@ -87,7 +94,7 @@ Some jobs need the screen, not just files. A role can take a screenshot and then
 | **Agent Instructions (CLAUDE.md & co.)** | Auto-picks up `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `.cursorrules`, Copilot and Windsurf rules from your repo. |
 | **Agent Skills ("/" Picker)** | Tap `/` in any message box to pull in skills and slash-commands from Claude Code, Codex, Cursor, Gemini CLI, GitHub Copilot, Windsurf, and OpenCode. |
 | **✦ Improve Prompt** | One tap rewrites a rough draft into a cleaner prompt with your local model, Apple Writing Tools style — undo brings the original back. |
-| **50 Built-in Tools** | Files, terminal, git, Xcode build/test, team collaboration and delegation, team generation, artifacts, image analysis, and screen control. |
+| **51 Built-in Tools** | Files, terminal, git, Xcode build/test, team collaboration and delegation, team generation, artifacts, image analysis, and screen control. |
 | **Documents In & Out** | Reads PDF, DOCX, RTF, XLSX, PPTX, and ODT directly (no manual conversion); exports artifacts to PDF, Word, or RTF. |
 | **Universal Search** | Keyword search across PDFs, Office docs, slides, OpenDocument, HTML, source code, and plain text — one tool call. |
 | **Exploratory Search (Semantic)** | Search your project by meaning, not just keywords — runs entirely on-device; opt-in in Settings. |
@@ -96,10 +103,13 @@ Some jobs need the screen, not just files. A role can take a screenshot and then
 | **Quick Capture** | Two global hotkeys create tasks, answer AI questions, or attach a selection from any app; paste files, screenshots, or text with ⌘V. |
 | **Private Voice Dictation** | On-device, multilingual, offline dictation wherever you write (requires macOS 26+). |
 | **Team Meetings & Change Requests** | Roles consult, hold group meetings with voting, and request changes that redo work with full context. |
+| **Supervisor Questionnaire** | When a role needs several answers at once it asks with a form instead of prose — each question with the answers it thinks likely, a recommendation it can state, and a free-text escape. Leave one alone and it comes back unanswered, and the role is told to decide it itself and record the assumption. |
+| **Automatic Context Compaction** | A long-running role would walk into its context window and be silently truncated. NanoTeams watches the server's own prompt counter and, at the threshold, replaces the conversation with its exact opening plus a summary that keeps every Supervisor turn verbatim. The chip beside the role shows how full it is; clicking it compacts on demand. |
 | **Supervisor Message Queue** | Nudge a working role (or the whole team) without stopping it; a message also resumes a paused or failed run where it left off. |
 | **Scheduled & Recurring Tasks** | Run any task on a schedule — interval, daily, monthly, or once; a timeout auto-pauses a run that overruns. |
 | **Artifact Dependency Pipeline** | Roles pass named deliverables; NanoTeams works out the running order and shows it as a live team graph. |
 | **Custom Teams** | Build your own teams — roles, deliverables, prompts, and wiring — and import/export them as JSON. |
+| **Model Benchmark** | Measure generation speed, time-to-first-token and prompt prefill for any local model, or sweep every model on both providers unattended; results build a leaderboard with full run history. |
 | **Themes** | Multiple built-in color themes (see below). |
 
 <img width="1280" height="1068" alt="NanoTeams: Themes" src="https://github.com/user-attachments/assets/7391d0d4-f482-4ae2-ac42-5952cda4010a" />
@@ -117,6 +127,7 @@ Start with a ready-made team, then customize it or generate your own.
 | **Personal Assistant** | Conversational AI helper for any task |
 | **FAANG Team** | Full product pipeline: PM → UX → Engineering → Code Review → SRE → Release |
 | **Engineering Team** | Lean pipeline: Tech Lead → Engineer → Code Review → Release |
+| **Ultra Team** | Change pipeline on any stack: a brief and its critique, two competing designs, two adversarial critiques, one writer, diff review, and a verified build |
 | **Startup** | One engineer, full autonomy, fast iteration |
 | **Quest Party** | Five specialists build a fantasy world, then the Quest Master runs an interactive adventure where you are the hero |
 | **Discussion Club** | Five distinct personalities debate any topic in a lively multi-agent discussion |
@@ -185,7 +196,7 @@ No, after the initial download of Ollama or LM Studio and a model. **NanoTeams**
 Yes. Turn on the **Autovisor** — an automated Supervisor — and NanoTeams runs the work folder on its own: it creates and schedules tasks, answers the questions roles would normally ask you, reviews finished work, closes it, and remembers what it learned. It wakes when a task needs attention, idles when there's nothing to do, and a sleep timer (3 hours by default, adjustable) stops it after a while. Message it any time to steer it.
 
 ### What are multi-agent teams, and how many are built in?
-A team is a group of AI roles — each with its own instructions, tools, and deliverables — that collaborate through consultations, group meetings, and change requests. NanoTeams ships with 8 built-in teams (Coding Assistant, Coding Agent, Personal Assistant, FAANG, Engineering, Startup, Quest Party, Discussion Club) and 3 role types (producing, chat, observer). You can also describe a task in one line and have a local LLM generate a custom team for it.
+A team is a group of AI roles — each with its own instructions, tools, and deliverables — that collaborate through consultations, group meetings, and change requests. NanoTeams ships with 9 built-in teams (Coding Assistant, Coding Agent, Personal Assistant, FAANG, Engineering, Ultra Team, Startup, Quest Party, Discussion Club) and 3 role types (producing, chat, observer). You can also describe a task in one line and have a local LLM generate a custom team for it.
 
 ### What models does NanoTeams support?
 Any model you can run in Ollama or LM Studio. I train **NanoTeams** on `gpt-oss-20b`, `qwen3.5-9b`, `gemma-4-26b-a4b`, and `qwen3.5-35b-a3b`; see [Recommended Models](#recommended-models). For image analysis, you set one vision model in **Settings → Vision** — it overrides your main model for `analyze_image`, and if you leave its fields empty it falls back to your main LLM. Per role, you can override the main text model, its server, and its provider. Sampling settings stay with the server, so the per-model config you already keep in a modelfile or in LM Studio is what runs. One exception to the provider choice: Exploratory Search embeddings need LM Studio.

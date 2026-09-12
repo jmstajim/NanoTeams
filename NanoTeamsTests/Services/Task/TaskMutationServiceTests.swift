@@ -191,45 +191,6 @@ final class TaskMutationServiceTests: XCTestCase {
         XCTAssertEqual(step?.artifacts.count, 2)
     }
 
-    // MARK: - attachBuildDiagnosticsArtifact Tests
-
-    func testAttachBuildDiagnosticsArtifact_createsNew() throws {
-        var (task, stepID) = try createTaskWithStep()
-
-        TaskMutationService.attachBuildDiagnosticsArtifact(
-            relativePath: "runs/abc/steps/xyz/build_diagnostics.json",
-            stepID: stepID,
-            in: &task
-        )
-
-        let step = task.runs.last?.steps.first { $0.id == stepID }
-        XCTAssertEqual(step?.artifacts.count, 1)
-        XCTAssertEqual(step?.artifacts.first?.name, "Build Diagnostics")
-        XCTAssertEqual(step?.artifacts.first?.relativePath, "runs/abc/steps/xyz/build_diagnostics.json")
-    }
-
-    func testAttachBuildDiagnosticsArtifact_updatesExisting() throws {
-        var (task, stepID) = try createTaskWithStep()
-
-        // Add initial build diagnostics
-        TaskMutationService.attachBuildDiagnosticsArtifact(
-            relativePath: "old/path.json",
-            stepID: stepID,
-            in: &task
-        )
-
-        // Update with new path
-        TaskMutationService.attachBuildDiagnosticsArtifact(
-            relativePath: "new/path.json",
-            stepID: stepID,
-            in: &task
-        )
-
-        let step = task.runs.last?.steps.first { $0.id == stepID }
-        XCTAssertEqual(step?.artifacts.count, 1) // Should not create duplicate
-        XCTAssertEqual(step?.artifacts.first?.relativePath, "new/path.json")
-    }
-
     // MARK: - setSupervisorQuestion Tests
 
     func testSetSupervisorQuestion_setsFields() throws {

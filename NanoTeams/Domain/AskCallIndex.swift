@@ -3,17 +3,20 @@ import Foundation
 import Synchronization
 #endif
 
-/// The positions of a step's `ask_supervisor` tool calls, computed once and
-/// EXTENDED suffix-only as the step appends more calls.
+/// The positions of a step's calls NAMED a parking tool — `ToolNames.supervisorAskTools`,
+/// i.e. `ask_supervisor` and its structured sibling `ask_supervisor_form` — computed
+/// once and EXTENDED suffix-only as the step appends more calls. Which of them actually
+/// PARKED the step is read off the live array by `parkedPositions(in:)` /
+/// `lastParkedPosition(in:)`: a refused ask (`StepToolCall.isRefusedAsk`) is named like
+/// one and asked nobody anything.
 ///
 /// One index answers every question the activity feed used to put to
-/// `step.toolCalls` with a fresh pass each: `count { ask }` (`count`),
-/// `filter { ask }` (`positions.map { toolCalls[$0] }` — ascending by
-/// construction, so element-for-element the same array), `contains { ask }`
-/// (`!isEmpty`) and `lastIndex(where: ask)` (`lastPosition`). The last one is
-/// the load-bearing equivalence: a step that asked, did tool work and was then
+/// `step.toolCalls` with a fresh pass each: `filter { parked }`
+/// (`parkedPositions(in:)` — ascending by construction, so element-for-element the
+/// same array) and `lastIndex(where: parked)` (`lastParkedPosition(in:)`). The last
+/// one is the load-bearing equivalence: a step that asked, did tool work and was then
 /// parked by a cap must still resolve to that EARLIER ask — a "trailing call
-/// only" reading was proposed and refuted, so `positions.last` is exactly
+/// only" reading was proposed and refuted, so it is exactly
 /// `toolCalls.lastIndex(where:)` and `ActivityFeedBuilderTests` pin the shape.
 ///
 /// ## Validation is boundary-only, and that is sound under a CLOSED writer set
@@ -48,7 +51,12 @@ import Synchronization
 /// Purely in-memory: never persisted, never sent anywhere. Foundation-only so
 /// the Domain layer stays free of SwiftUI (CLAUDE.md "Domain layer purity").
 nonisolated struct AskCallIndex: Equatable, Sendable {
-    /// Ascending positions in `toolCalls` whose `name == ToolNames.askSupervisor`.
+    /// Ascending positions in `toolCalls` whose name is in `ToolNames.supervisorAskTools` —
+    /// the closed set of tools whose call parks the step. Membership, not equality: a second
+    /// parking tool that this index did not recognise would be invisible to every consumer,
+    /// and the failure is silent (the step still parks on the flag, but the question loses
+    /// the persisted call identity its Watchtower dismissal is keyed on). A pure function of
+    /// `name` — the cacheable half; whether a call PARKED is not (`parkedPositions(in:)`).
     let positions: [Int]
     /// How many leading elements of `toolCalls` this index describes.
     let describedCount: Int
@@ -76,7 +84,7 @@ nonisolated struct AskCallIndex: Equatable, Sendable {
             #if DEBUG
             AskCallIndexProbe.noteExamined()
             #endif
-            if toolCalls[i].name == ToolNames.askSupervisor {
+            if toolCalls[i].isSupervisorAsk {
                 positions.append(i)
             }
         }
@@ -95,14 +103,28 @@ nonisolated struct AskCallIndex: Equatable, Sendable {
         return toolCalls[describedCount - 1].id == describedLastID
     }
 
-    /// `!toolCalls.contains(where: ask)` over the described array.
-    var isEmpty: Bool { positions.isEmpty }
+    // MARK: - Which of them parked
 
-    /// `toolCalls.count(where: ask)` over the described array.
-    var count: Int { positions.count }
+    /// The indexed calls that PARKED the step — `positions` minus every refused ask
+    /// (`StepToolCall.isRefusedAsk`), read against the CURRENT array.
+    ///
+    /// Deliberately not folded into `positions`. A call is appended before it runs and its
+    /// `isError` lands with the result (`appendToolCalls` → `updateToolCallResult`), so it is
+    /// the one field of an indexed element that changes AFTER a scan — and `isPrefix` cannot
+    /// see a field change: it validates by `(count, last id)`, which is the whole point of the
+    /// cache. A refusal folded into the cached positions would therefore stay a park until
+    /// the next full rescan. Read here, it is O(asks) on the described array and always
+    /// current, while `positions` stays a pure function of `name`, which no writer rewrites.
+    func parkedPositions(in toolCalls: [StepToolCall]) -> [Int] {
+        positions.filter { !toolCalls[$0].isRefusedAsk }
+    }
 
-    /// `toolCalls.lastIndex(where: ask)` over the described array.
-    var lastPosition: Int? { positions.last }
+    /// `parkedPositions(in:).last`, paid for as a walk back over the TRAILING refused asks
+    /// only — the per-tick reader (`SupervisorQuestionInbox`) pays nothing on a step that has
+    /// none, which is every step but the one mid-repair.
+    func lastParkedPosition(in toolCalls: [StepToolCall]) -> Int? {
+        positions.last { !toolCalls[$0].isRefusedAsk }
+    }
 }
 
 #if DEBUG

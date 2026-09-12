@@ -265,9 +265,16 @@ nonisolated extension PromptBuilder {
         case .stepExecution:
             return runtimeToolPipeline(inputs: inputs)
         case .meeting:
+            // The flag, not the stored id. `WirePreviewInputs.isCoordinator` is the sheet's
+            // chair toggle, and `wirePreviewMeetingValues` already honours it — reading
+            // `meetingCoordinatorID` here made the preview contradict ITSELF before it ever
+            // contradicted a vote: the toggle moved the coordinator hint and the tool block
+            // stayed put. The runtime's rule is `speaker == the RESOLVED chair`
+            // (`LLMExecutionService+TeamMeeting`), which since 1.9.18 need not be the stored
+            // coordinator at all, so previewing a stand-in's turn is the point (DEBTS D-B12).
             return MeetingCoordinator.speakerTools(
                 base: runtimeToolPipeline(inputs: inputs),
-                isCoordinator: inputs.team?.meetingCoordinatorID == inputs.role.id)
+                isCoordinator: inputs.isCoordinator)
         }
     }
 
@@ -346,7 +353,8 @@ nonisolated extension PromptBuilder {
         let conversationMechanics = buildConversationMechanicsGuidance(hasTagProducingTools: hasTagProducingTools)
         let workFolderContext = buildWorkFolderContextMessage(
             workFolder: inputs.workFolder,
-            agentInstructions: inputs.agentInstructions
+            agentInstructions: inputs.agentInstructions,
+            toolNames: Set(toolNames)
         ) ?? ""
         let roleGuidance = wirePreviewStepRoleGuidance(role: roleDef, builtIn: role)
 
@@ -418,10 +426,16 @@ nonisolated extension PromptBuilder {
             "speakerName": role.name,
             "roleGuidance": wirePreviewMeetingRoleGuidance(role: role, team: team),
             "meetingTopic": "(example: meeting topic)",
-            "turnNumber": "1",
-            "coordinatorHint": inputs.isCoordinator
-                ? "- As the coordinator, help guide the discussion toward a decision."
-                : "",
+            // Both RETIRED (2026-07) and resolved to "" by the runtime for EVERY speaker —
+            // they were derived from `meeting.turnCount`, so they changed segment 0 on every
+            // turn and the server re-prefilled the whole meeting; both moved into
+            // `MeetingCoordinator.turnDirective`, last on the wire. The preview went on
+            // emitting them, and its byte-identity test justified that by citing
+            // `MeetingStreamingService:142-143` — a line that had stopped saying it. So a
+            // user template still carrying the chip rendered a sentence the wire never sends
+            // (DEBTS D-B12, same wave).
+            "turnNumber": "",
+            "coordinatorHint": "",
             "teamDescription": team?.description ?? "",
             "globalContext": PromptBuilder.formatGlobalContext(inputs.globalContext),
             // Step-execution-only by design — see `wirePreviewConsultationValues`.

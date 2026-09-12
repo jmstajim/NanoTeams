@@ -50,8 +50,8 @@ nonisolated struct Artifact: Codable, Identifiable, Hashable {
     /// A non-nil return is a PROMISE of readability, so it returns nil whenever the file tools
     /// can't serve the payload:
     ///   • no persisted file (`relativePath` nil, empty, or whitespace-only);
-    ///   • an internal artifact such as Build Diagnostics, persisted under
-    ///     `.nanoteams/internal/…` — the sandbox blocks `internal/`; or
+    ///   • an artifact persisted under `.nanoteams/internal/…` — the sandbox blocks
+    ///     `internal/`; or
     ///   • a non-nested path (no `/`) — every persisted artifact lives nested under
     ///     `tasks/…/roles/…`, so a bare name is malformed and `.nanoteams/<bare>` wouldn't exist.
     /// Such artifacts are still listed by name; they just have no readable reference.

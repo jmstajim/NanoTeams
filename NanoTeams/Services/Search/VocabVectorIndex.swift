@@ -40,8 +40,9 @@ nonisolated struct VocabVectorIndex: Sendable {
         let dims: Int
         /// Signature of the token-index snapshot these vectors were computed
         /// against. Copied from `SearchIndex.signature` at build time.
-        /// Purely informational — the diff path (added/gone tokens) compares
-        /// by token identity, not signature.
+        /// Purely informational, and the only doc in the tree that said so before 2026-09-12:
+        /// this field has no reader anywhere. The diff path (added/gone tokens) compares by
+        /// token identity, not signature.
         let indexSignature: IndexSignature
         /// token (lowercase) → row index in the vectors array. Row indices
         /// are a bijection onto 0..<count (validated by init). No holes, no

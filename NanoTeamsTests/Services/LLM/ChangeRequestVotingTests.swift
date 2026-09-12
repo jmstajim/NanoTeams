@@ -19,7 +19,7 @@ final class ChangeRequestVotingTests: XCTestCase {
             TeamMessage(role: .sre, content: "Not sure about this. VOTE: REJECT"),
         ]
 
-        let result = ChangeRequestService.tallyVotes(meetingMessages: messages)
+        let result = ChangeRequestService.tallyVotes(meetingMessages: messages, coordinator: nil, target: nil)
         XCTAssertEqual(result, .approved)
     }
 
@@ -30,7 +30,7 @@ final class ChangeRequestVotingTests: XCTestCase {
             TeamMessage(role: .sre, content: "I think it's good. VOTE: APPROVE"),
         ]
 
-        let result = ChangeRequestService.tallyVotes(meetingMessages: messages)
+        let result = ChangeRequestService.tallyVotes(meetingMessages: messages, coordinator: nil, target: nil)
         XCTAssertEqual(result, .rejected)
     }
 
@@ -40,7 +40,7 @@ final class ChangeRequestVotingTests: XCTestCase {
             TeamMessage(role: .techLead, content: "I reject. VOTE: REJECT"),
         ]
 
-        let result = ChangeRequestService.tallyVotes(meetingMessages: messages)
+        let result = ChangeRequestService.tallyVotes(meetingMessages: messages, coordinator: nil, target: nil)
         XCTAssertEqual(result, .tied)
     }
 
@@ -50,13 +50,13 @@ final class ChangeRequestVotingTests: XCTestCase {
             TeamMessage(role: .techLead, content: "I need more context."),
         ]
 
-        let result = ChangeRequestService.tallyVotes(meetingMessages: messages)
+        let result = ChangeRequestService.tallyVotes(meetingMessages: messages, coordinator: nil, target: nil)
         XCTAssertEqual(result, .noVotes,
                        "a meeting that ran and decided nothing is not a deadlock")
     }
 
     func testTallyVotes_emptyMessages() {
-        XCTAssertEqual(ChangeRequestService.tallyVotes(meetingMessages: []), .noVotes)
+        XCTAssertEqual(ChangeRequestService.tallyVotes(meetingMessages: [], coordinator: nil, target: nil), .noVotes)
     }
 
     func testTallyVotes_caseInsensitive() {
@@ -66,7 +66,7 @@ final class ChangeRequestVotingTests: XCTestCase {
             TeamMessage(role: .sre, content: "VOTE: REJECT"),
         ]
 
-        let result = ChangeRequestService.tallyVotes(meetingMessages: messages)
+        let result = ChangeRequestService.tallyVotes(meetingMessages: messages, coordinator: nil, target: nil)
         XCTAssertEqual(result, .approved)
     }
 
@@ -77,7 +77,7 @@ final class ChangeRequestVotingTests: XCTestCase {
             TeamMessage(role: .sre, content: "VOTE:APPROVE"),
         ]
 
-        let result = ChangeRequestService.tallyVotes(meetingMessages: messages)
+        let result = ChangeRequestService.tallyVotes(meetingMessages: messages, coordinator: nil, target: nil)
         XCTAssertEqual(result, .approved)
     }
 
@@ -87,7 +87,7 @@ final class ChangeRequestVotingTests: XCTestCase {
             TeamMessage(role: .techLead, content: "I have concerns about the approach. VOTE: REJECT. We should reconsider."),
         ]
 
-        let result = ChangeRequestService.tallyVotes(meetingMessages: messages)
+        let result = ChangeRequestService.tallyVotes(meetingMessages: messages, coordinator: nil, target: nil)
         XCTAssertEqual(result, .tied)
     }
 
@@ -97,7 +97,7 @@ final class ChangeRequestVotingTests: XCTestCase {
             TeamMessage(role: .softwareEngineer, content: "VOTE: APPROVE but also VOTE: REJECT"),
         ]
 
-        let result = ChangeRequestService.tallyVotes(meetingMessages: messages)
+        let result = ChangeRequestService.tallyVotes(meetingMessages: messages, coordinator: nil, target: nil)
         // APPROVE branch checked first → 1 approve + 0 reject → approved
         XCTAssertEqual(result, .approved)
     }

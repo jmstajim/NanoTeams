@@ -60,13 +60,14 @@ final class TeamActivityFeedViewModel {
     /// Steps for the active team, filtered by `filterRoleID` when set. Rebuilt via `recomputeSteps`.
     private(set) var cachedAllSteps: [StepExecution] = []
 
-    /// Active supervisor questions extracted from cached steps. Rebuilt via `recomputeSteps`.
-    private(set) var cachedSupervisorQuestions: [ActivityFeedBuilder.ActiveSupervisorQuestion] = []
+    /// Waiting supervisor questions on the displayed run. Rebuilt via `recomputeSteps`.
+    private(set) var cachedSupervisorQuestions: [SupervisorQuestionInbox.PendingQuestion] = []
 
     // MARK: - Per-step runtime caches
 
     /// `AskCallIndex` per step, extended suffix-only on every recompute tick and
-    /// every rebuild. Keyed by `TaskStepKey` — `StepExecution.id` is the role id
+    /// every rebuild — names only; its consumers read refusals off the live array
+    /// (`parkedPositions(in:)`). Keyed by `TaskStepKey` — `StepExecution.id` is the role id
     /// and repeats across the descendants interleaved into one feed (CLAUDE.md
     /// invariant #5), so a bare step id would let a child's index describe the
     /// parent's array. `@ObservationIgnored`: no view reads it. Pruned in
@@ -269,7 +270,7 @@ final class TeamActivityFeedViewModel {
             llmMessageCount: llmMsgCount,
             toolCallCount: toolCallCount,
             changeRequestCount: run?.changeRequests.count ?? 0,
-            // Shared with `emitItems` and `activeSupervisorQuestions` so the
+            // Shared with `emitItems` and `SupervisorQuestionInbox.pending` so the
             // rebuild trigger, the feed skip, and the composer chip all agree
             // on which steps are actively waiting. The naive
             // `needsSupervisorInput && supervisorAnswer == nil` predicate
@@ -328,6 +329,10 @@ final class TeamActivityFeedViewModel {
             stepArtifactContentCache: stepArtifactContentCache,
             debugModeEnabled: debugModeEnabled,
             activeQuestions: activeQuestions,
+            // The other half of the same gate: `activeQuestions` above suppresses the
+            // paired BUBBLE, this suppresses the trailing ask CARD, and both must yield
+            // only to a composer that is actually on screen.
+            activeQuestionsRenderedElsewhere: composerVisible,
             askIndex: { self.askIndex(taskID: $0, step: $1) },
             escalationThinking: { self.escalationThinking(step: $0, answerMessageID: $1, compute: $2) },
             isStreaming: isStreaming
@@ -594,9 +599,9 @@ final class TeamActivityFeedViewModel {
         var walked: Set<Int> = [activeTaskID]
         for descendant in context.descendantTasks { walked.insert(descendant.task.id) }
         pruneRuntimeCaches(walkedTaskIDs: walked)
-        cachedSupervisorQuestions = ActivityFeedBuilder.activeSupervisorQuestions(steps: cachedAllSteps) {
-            self.askIndex(taskID: activeTaskID, step: $0)
-        }
+        cachedSupervisorQuestions = SupervisorQuestionInbox.pending(
+            taskID: activeTaskID, steps: cachedAllSteps
+        ) { self.askIndex(taskID: activeTaskID, step: $0) }
     }
 
     /// Recompute steps, check fingerprint, refresh artifact cache if artifact count changed,

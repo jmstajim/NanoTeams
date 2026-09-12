@@ -442,6 +442,23 @@ extension NTMSOrchestrator {
         // open tasks; restartRole clears `closedAt` before re-running, so it's unaffected.
         guard task.closedAt == nil else { return }
 
+        // The three branches below re-enter steps DIRECTLY, before any engine exists to apply
+        // `RoleAdmissionControl` — which is why the concurrency cap has to be honoured here
+        // too. Without it a Pause on a four-role pass and a Resume under "One at a time"
+        // restarts all four, permanently, on the single most common path the setting has.
+        //
+        // A role whose start is declined keeps its `.working` status next to its `.paused`
+        // step: that is exactly the shape `TeamEngine.parkedRoleIDs` picks up, so the run
+        // loop restarts it as soon as a slot frees. Nothing is dropped, only deferred.
+        var remainingDirectStarts = configuration.roleConcurrencyMode.maxConcurrentRoles
+            .map { max(1, $0) }
+        func claimDirectStart() -> Bool {
+            guard let remaining = remainingDirectStarts else { return true }
+            guard remaining > 0 else { return false }
+            remainingDirectStarts = remaining - 1
+            return true
+        }
+
         // Resuming is a transition back to live, so drop the recovery pause latch —
         // otherwise every all-`.pending` moment of the resumed run renders "Paused".
         // Pre-checked rather than called unconditionally: `mutateTask` returning true
@@ -537,6 +554,7 @@ extension NTMSOrchestrator {
                 // The failure this banner reported is being retried — a stored
                 // dismissal must not survive into the retry's outcome.
                 retireRoleBannerDismissals(taskID: taskID, roleIDs: [roleID])
+                guard claimDirectStart() else { continue }
                 await runStep(stepID: stepID, taskID: taskID)
             }
         }
@@ -618,6 +636,7 @@ extension NTMSOrchestrator {
                     continue
                 }
             }
+            guard claimDirectStart() else { continue }
             await runStep(stepID: step.id, taskID: taskID)
         }
 
@@ -635,14 +654,18 @@ extension NTMSOrchestrator {
 
             if roleStatus == .working {
                 // Normal pause: role still working, restart step
+                guard claimDirectStart() else { continue }
                 await runStep(stepID: step.id, taskID: taskID)
             } else if roleStatus == .idle && (!step.messages.isEmpty || !step.llmConversation.isEmpty) {
-                // Recovery: role was reset to idle (app restart), but step was interrupted
+                // Recovery: role was reset to idle (app restart), but step was interrupted.
+                // The `.working` flip happens even when the start is declined — it is what
+                // makes the role visible to the run loop's parked-role pass.
                 await mutateTask(taskID: taskID) { task in
                     guard let ri = task.runs.indices.last else { return }
                     task.runs[ri].roleStatuses[roleID] = .working
                     task.runs[ri].updatedAt = MonotonicClock.shared.now()
                 }
+                guard claimDirectStart() else { continue }
                 await runStep(stepID: step.id, taskID: taskID)
             }
         }

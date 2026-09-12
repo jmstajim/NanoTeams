@@ -30,7 +30,11 @@ nonisolated enum MeetingsSwitchPresentation {
     static func footer(for availability: MeetingAvailability) -> String {
         switch availability {
         case .available:
-            return "Configure how team members interact during meetings. The coordinator opens every meeting and ends it with the group's decision."
+            // "opens every meeting" is true; "ends it with the group's decision" is not, for
+            // a request_changes VOTE the coordinator is party to — a stand-in takes the chair
+            // there (DEBTS D-B12). This is a TEAM-level statement with no role in hand, so it
+            // states the rule rather than naming who.
+            return "Configure how team members interact during meetings. The coordinator opens every meeting and ends it with the group's decision — except a request_changes vote it is itself the requester or the target of, where another role takes the chair."
         case .switchedOff:
             return "Meetings are off: no role can start one, and request_changes votes are unavailable."
         case .noPartner:

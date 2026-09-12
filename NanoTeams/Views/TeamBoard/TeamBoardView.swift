@@ -328,6 +328,7 @@ struct TeamBoardView: View {
             isPaused: engineState.taskEngineStates[task.id] == .paused,
             isEngineRunning: engineState.taskEngineStates[task.id] == .running,
             meetingParticipants: engineState.activeMeetingParticipants[task.id] ?? [],
+            queuedRoles: engineState.queuedRoleIDs[task.id] ?? [],
             isTaskInReview: ctx.isFinalReviewStage
         )
     }
@@ -354,7 +355,8 @@ struct TeamBoardView: View {
             onRestartRole: restartClosure,
             onCorrectRole: correctClosure,
             isPaused: engineState.taskEngineStates[task.id] == .paused,
-            meetingParticipants: engineState.activeMeetingParticipants[task.id] ?? []
+            meetingParticipants: engineState.activeMeetingParticipants[task.id] ?? [],
+            queuedRoles: engineState.queuedRoleIDs[task.id] ?? []
         )
     }
 

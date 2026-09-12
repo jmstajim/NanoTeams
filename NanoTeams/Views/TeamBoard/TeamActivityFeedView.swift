@@ -163,14 +163,7 @@ struct TeamActivityFeedView: View {
     /// Answer chip per entry in input order. For team tasks `StepExecution.id == roleID`,
     /// so `q.stepID` doubles as the asking-role id (computed via `askingRoleID`).
     private var activeQuestionsForComposer: [TeamActivityActiveQuestion] {
-        viewModel.cachedSupervisorQuestions.map { q in
-            TeamActivityActiveQuestion(
-                stepID: q.stepID,
-                role: q.role,
-                question: q.question,
-                paired: q.paired
-            )
-        }
+        viewModel.cachedSupervisorQuestions.map(TeamActivityActiveQuestion.init(pending:))
     }
 
     private var shouldShowComposer: Bool {
@@ -284,7 +277,6 @@ struct TeamActivityFeedView: View {
                 // queuing for a specific working role.
                 TeamActivityComposer(
                     roleDefinitions: roleDefinitions,
-                    isChatMode: isChatMode,
                     taskID: taskID,
                     workingRoleIDs: workingRoleIDs,
                     failedRoleIDs: failedRoleIDs,
@@ -708,7 +700,7 @@ struct TeamActivityFeedView: View {
         case .llmMessage(let msg, let role, let stepID, let originTaskID):
             messageBubble(msg: msg, role: role, stepID: stepID, originTaskID: originTaskID, showHeader: showHeader)
 
-        case .toolCall(let call, let role, _, let originTaskID):
+        case .toolCall(let call, let role, let stepID, let originTaskID):
             ToolCallItemView(
                 call: call, role: role,
                 roleDefinition: findRoleDefinition(for: role, originTaskID: originTaskID),
@@ -716,7 +708,8 @@ struct TeamActivityFeedView: View {
                 teamRoles: viewModel.roleDefinitionsByTaskID[originTaskID] ?? roleDefinitions,
                 onAvatarTap: showHeader ? avatarTap(for: role, originTaskID: originTaskID) : nil,
                 roleLabelOverride: childRoleLabel(for: role, originTaskID: originTaskID),
-                roleTeamSuffix: childTeamSuffix(for: originTaskID)
+                roleTeamSuffix: childTeamSuffix(for: originTaskID),
+                waitKey: TaskStepKey(taskID: originTaskID, stepID: stepID)
             )
             .equatable()
 

@@ -65,7 +65,9 @@ final class ExploratorySearchRuntimeIntegrationTests: XCTestCase {
         XCTAssertNil(r.signal, "Plain search must not emit any signal.")
         XCTAssertTrue(r.outputJSON.contains("\"matches\""))
         XCTAssertTrue(r.outputJSON.contains("\"query\":\"target\""))
-        XCTAssertTrue(r.outputJSON.contains("\"path\":\"a.swift\""))
+        XCTAssertTrue(r.outputJSON.contains("\"file\":\"a.swift\""),
+                      "content hits are keyed by `file` since the fold; `path` now belongs to "
+                          + "filename_matches alone: \(r.outputJSON)")
     }
 
     // MARK: - Broad search via runtime: signal makes it back
@@ -185,15 +187,20 @@ final class ExploratorySearchRuntimeIntegrationTests: XCTestCase {
         let results = await runtime.executeAll(context: context, toolCalls: [call])
         XCTAssertFalse(results[0].isError)
 
-        // Inspect the parsed `matches` array — `hello42` can legitimately
-        // appear inside `context_before` (AppDefaults is non-zero), but the
-        // anchored `^world\d+$` regex must match `world43` only.
+        // Inspect the parsed `matches` array — `hello42` can legitimately appear among the
+        // group's `lines` as context (AppDefaults is non-zero), but the anchored `^world\d+$`
+        // regex must HIT `world43` only, which is what `hits` records.
         let data = results[0].outputJSON.data(using: .utf8) ?? Data()
         let env = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         let payload = env?["data"] as? [String: Any]
         let matches = payload?["matches"] as? [[String: Any]]
         XCTAssertEqual(matches?.count, 1)
-        XCTAssertEqual(matches?.first?["text"] as? String, "world43")
-        XCTAssertEqual(matches?.first?["line"] as? Int, 2)
+        XCTAssertEqual(matches?.first?["file"] as? String, "a.swift")
+        XCTAssertEqual(matches?.first?["hits"] as? [Int], [2])
+        XCTAssertEqual(payload?["count"] as? Int, 1)
+
+        let hitText = (matches?.first?["lines"] as? [[Any]])?
+            .first { $0.first as? Int == 2 }?.last as? String
+        XCTAssertEqual(hitText, "world43")
     }
 }

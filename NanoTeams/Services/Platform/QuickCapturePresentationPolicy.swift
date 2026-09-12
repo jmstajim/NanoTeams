@@ -83,12 +83,14 @@ nonisolated enum QuickCapturePresentationPolicy {
     /// transition, so on that path nothing moved at all.
     enum ChatComposerHandoff: Equatable, Sendable {
         case none
-        /// Snapshot the live fields as `from`'s answer draft and clear them, then load `to`'s.
-        case reassign(from: Int, to: Int)
+        /// Park the live fields as `from`'s draft and clear them, then take `to`'s.
+        case reassign(from: AnswerDraftKey, to: AnswerDraftKey)
     }
 
-    /// - Parameter liveFieldsOwnerTaskID: which task the live answer bucket currently holds
-    ///   content for (`QuickCaptureFormState.answerFieldsOwnerTaskID`), or nil when unclaimed.
+    /// - Parameter liveFieldsOwnerKey: which conversation branch the live answer bucket
+    ///   currently holds content for (`QuickCaptureFormState.answerFieldsOwnerKey`), or nil when
+    ///   unclaimed. The destination is a chat-mode task by the first guard, so its branch is
+    ///   the task itself (`AnswerDraftKey.taskChat`).
     ///
     /// This used to ask instead whether the surface being REPLACED was the working one — a
     /// proxy that agrees only while the panel goes straight from one chat task to the next.
@@ -103,13 +105,13 @@ nonisolated enum QuickCapturePresentationPolicy {
     /// excluded because `enterAnswerMode` loads the arriving task's draft itself — the capture
     /// there is the caller's business.
     static func chatComposerHandoff(
-        liveFieldsOwnerTaskID: Int?,
+        liveFieldsOwnerKey: AnswerDraftKey?,
         resolvedMode: QuickCaptureMode,
         newTaskID: Int?
     ) -> ChatComposerHandoff {
         guard resolvedMode.liveTaskChatMode == true,
-              let from = liveFieldsOwnerTaskID,
-              let to = newTaskID,
+              let from = liveFieldsOwnerKey,
+              let to = newTaskID.map(AnswerDraftKey.taskChat),
               from != to
         else { return .none }
         return .reassign(from: from, to: to)
@@ -144,14 +146,31 @@ nonisolated enum QuickCapturePresentationPolicy {
             // The new-task surface renders nothing out of `mode` — everything it shows is
             // read live through `formState` or the injected store.
             return "overlay"
-        case .supervisorAnswer(let p):
+        case .supervisorAnswer(let session):
+            let p = session.selected
             return ([
                 "answer",
+                // The ROW, ordered, and then the selection. Both are needed and neither
+                // implies the other: a second role parking a question changes the row while
+                // the selected question is untouched, and tapping another chip changes the
+                // selection while the row is untouched. The panel prints both, so a rebuild
+                // decision blind to either shows a stale one — which for the row means the
+                // chip the user is reaching for is not on screen yet.
+                //
+                // A record separator inside a unit-separated field: joining ids with the same
+                // character the fields use would let a row of two smear into one field of a
+                // different shape.
+                session.stepIDs.joined(separator: "\u{1E}"),
                 p.stepID,
                 String(p.taskID),
                 p.role.baseID,
                 p.roleDefinition?.id ?? "",
                 p.question,
+                // Structural, from the Domain (`SupervisorInquiry.identity`) rather than a fold
+                // spelled here: the card compares the SAME string to decide whether the ticks
+                // in hand answer the form on screen, and two spellings of "which questionnaire
+                // is this" would let the panel rebuild for one and the card for the other.
+                p.inquiry?.identity ?? "",
                 p.messageContent ?? "",
                 p.thinking ?? "",
                 p.isChatMode ? "1" : "0",
@@ -164,6 +183,34 @@ nonisolated enum QuickCapturePresentationPolicy {
             // showing `Initializing…` after the engine came up.
             return (["initializing", isChatMode ? "1" : "0"] as [String]).joined(separator: sep)
         }
+    }
+
+    // MARK: - Aim
+
+    /// Re-points an answer mode at the question the user picked.
+    ///
+    /// Split from `QuickCaptureModeCoordinator` deliberately. That one is a pure map from APP
+    /// state — which questions are waiting — and the answer to "which of them am I looking at"
+    /// is not app state: it is a preference the user expresses by tapping a chip, held in
+    /// `QuickCaptureFormState` and applied here, beside the other two routing decisions the
+    /// panel makes out of a resolved mode.
+    ///
+    /// Every other mode passes through untouched, and so does an aim at a question that is no
+    /// longer waiting — `SupervisorAnswerSession`'s init resolves the preference against the
+    /// row it is given, so a selection left over from an answered round decays to the leading
+    /// question instead of pinning the panel to nothing.
+    ///
+    /// The aim carries its TASK, and an aim naming another task is ignored outright rather than
+    /// resolved. `StepExecution.id` is the role id (invariant #5), so two tasks on one team
+    /// carry byte-identical step ids: a bare id picked on task A would not decay on task B, it
+    /// would match, and the panel would open aimed at a role the Supervisor never picked there.
+    static func aiming(_ mode: QuickCaptureMode, at aim: TaskStepKey?) -> QuickCaptureMode {
+        guard case .supervisorAnswer(let session) = mode else { return mode }
+        let wanted = aim.flatMap { $0.taskID == session.selected.taskID ? $0.stepID : nil }
+        guard let aimed = SupervisorAnswerSession(
+            questions: session.questions, selectedStepID: wanted)
+        else { return mode }
+        return .supervisorAnswer(session: aimed)
     }
 
     /// A mode that renders a composer must have somewhere to send to, and a

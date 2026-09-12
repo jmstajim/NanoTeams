@@ -21,7 +21,8 @@ nonisolated enum ToolAvailabilityRequirement: Hashable, Sendable, CaseIterable {
     /// non-Supervisor role (`Team.hasTeammatePartner == false`) — the one partner rule
     /// both collaboration channels share.
     case teammatePartner
-    /// `ask_supervisor` on a team whose Ask Supervisor mode is Off.
+    /// Either parking tool (`ToolNames.supervisorAskTools`) on a team whose Ask Supervisor
+    /// mode is Off — the mode withholds both, so both rows say so.
     case askSupervisorEnabled
     /// `bash` / `bash_output` while the bash execution mode is Off.
     case bashEnabled
@@ -97,7 +98,11 @@ nonisolated enum ToolAvailabilityRequirement: Hashable, Sendable, CaseIterable {
             }
         }
         if !hasTeammatePartner, toolName == ToolNames.askTeammate { return .teammatePartner }
-        if !askSupervisorEnabled, toolName == ToolNames.askSupervisor { return .askSupervisorEnabled }
+        // The SET, not the one name: Off strips both parking tools (resolution 8b), so a
+        // questionnaire row with no badge would promise a capability the run removes.
+        if !askSupervisorEnabled, ToolNames.supervisorAskTools.contains(toolName) {
+            return .askSupervisorEnabled
+        }
         if toolName == ToolNames.analyzeImage { return .visionModel }
         if ToolHandlerRegistry.computerUseTools.contains(toolName) {
             switch approval.computerUse {
@@ -156,6 +161,12 @@ nonisolated enum RoleToolBadgePolicy {
         /// (that is the step set) and not selectable; listed so the editor and the
         /// row tooltip can say the role has it.
         let meetingOnly: [String]
+        /// What this role can truthfully be told about the gavel, computed over every legal
+        /// `(requester, target)` pair on this roster. `meetingOnly` above answers "does it
+        /// hold `conclude_meeting` in a MEETING"; this answers the question 1.9.18 opened —
+        /// a `request_changes` VOTE the coordinator is party to is chaired by someone else
+        /// (DEBTS D-B12).
+        let chair: MeetingChairPolicy.Standing
 
         var count: Int { effective.count }
         var isEmpty: Bool { effective.isEmpty }
@@ -276,6 +287,13 @@ nonisolated enum RoleToolBadgePolicy {
         // runtime appends (`MeetingCoordinator.speakerTools`), not restated here.
         let isCoordinator = team.map { $0.canHoldMeetings && $0.meetingCoordinatorID == role.id } ?? false
         let meetingOnly = isCoordinator ? MeetingCoordinator.coordinatorOnlyToolNames.sorted() : []
+        // The editor holds no vote, but it is not ignorant: which `(requester, target)` pairs
+        // are legal is a static property of the team GRAPH, and the graph is what it is
+        // editing. So the standing is COMPUTED over every legal pair by the one seat rule,
+        // never guessed and never caveated — R4.4.1 forbids a caveat written instead of a
+        // computation that was available.
+        let chair = team.map { MeetingChairPolicy.voteChairSurvey(in: $0).standing(of: role.id) }
+            ?? MeetingChairPolicy.Standing()
 
         return Model(
             effective: effectiveNames.sorted(),
@@ -283,13 +301,45 @@ nonisolated enum RoleToolBadgePolicy {
             notInstalled: notInstalled.sorted(),
             policyBlocked: policyBlocked.sorted(),
             unavailableHere: unavailable.mapValues { $0.sorted() },
-            meetingOnly: meetingOnly
+            meetingOnly: meetingOnly,
+            chair: chair
         )
     }
 
     /// Multi-line `.help()` body. Names render raw (`read_file`) because that is
     /// what every other tool surface in the app shows and what the model is told.
-    static func tooltip(_ model: Model) -> String {
+    /// The gavel, in words, and only what was computed.
+    ///
+    /// What stays genuinely unknowable in the editor is WHICH legal pair occurs at run time,
+    /// and naming that is a statement of fact rather than a dodge.
+    private static func chairSentence(
+        _ standing: MeetingChairPolicy.Standing, roleNames: [String: String]
+    ) -> String? {
+        var parts: [String] = []
+        if standing.chairsMeetings {
+            parts.append("Chairs every team meeting.")
+            if standing.displacedOnSomeVote {
+                let names = standing.standInIDs.compactMap { roleNames[$0] }.sorted()
+                let who = names.isEmpty ? "another role" : names.joined(separator: " or ")
+                parts.append(
+                    "In a request_changes vote where this role is the requester or the target, "
+                        + "\(who) takes the chair instead.")
+            }
+        } else if standing.canChairSomeVote {
+            parts.append(
+                "Not the meeting coordinator, but takes the chair in a request_changes vote "
+                    + "the coordinator is party to.")
+        }
+        if standing.teamHasUnchairableVotes {
+            parts.append(
+                "Some vote on this roster would leave nobody impartial, and does not run.")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
+    }
+
+    /// - Parameter roleNames: definition id → display name, so the tooltip can NAME the role
+    ///   the feed will show in the chair. Absent, the sentence falls back to "another role".
+    static func tooltip(_ model: Model, roleNames: [String: String] = [:]) -> String {
         var blocks: [String] = []
 
         let noun = model.count == 1 ? "tool" : "tools"
@@ -304,6 +354,9 @@ nonisolated enum RoleToolBadgePolicy {
         }
         if !model.meetingOnly.isEmpty {
             blocks.append("In meeting turns only (coordinator): " + model.meetingOnly.joined(separator: ", "))
+        }
+        if let chair = chairSentence(model.chair, roleNames: roleNames) {
+            blocks.append(chair)
         }
         // Stable order so the tooltip doesn't reshuffle between renders.
         for requirement in ToolAvailabilityRequirement.allCases {

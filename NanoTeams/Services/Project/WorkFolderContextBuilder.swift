@@ -34,18 +34,17 @@ struct WorkFolderContextBuilder {
         let basePath = workFolderRoot.standardizedFileURL.path
         let basePrefix = basePath.hasSuffix("/") ? basePath : (basePath + "/")
 
-        let ignoredDirectories: Set<String> = [
-            ".nanoteams",
-            ".git",
-            ".github",
-            ".swiftpm",
-            "DerivedData",
-            "build",
-            ".build",
-            "Pods",
-            "Carthage",
-            "node_modules"
-        ]
+        // Only the names `WalkSkipRules.shouldSkip` does NOT already cover, and each is here
+        // for a reason that rule deliberately rejects: `.github` and `build` are excluded from
+        // the shared set on purpose (the first feeds `AgentInstructionsScanner`, the second is
+        // a plausible hand-authored directory at any depth), and `.nanoteams` is our own
+        // storage, which search DOES walk because attachments and artifacts live under it.
+        //
+        // Until 2026-09-11 this was a full private copy of the skip list. It was harmless only
+        // by accident — the enumerator's `.skipsHiddenFiles` hid every dot-directory it forgot
+        // — and it had already drifted: no `.xcresult`, no `.artifacts`, no `vendor`.
+        // `WalkSkipRulesTests.testEveryWalkAsksThePredicate` now fails on any such copy.
+        let extraIgnoredDirectories: Set<String> = [".nanoteams", ".github", "build"]
 
         let textExtensions: Set<String> = [
             "md", "markdown", "txt",
@@ -91,7 +90,7 @@ struct WorkFolderContextBuilder {
             let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey])
             if values?.isDirectory == true {
                 let name = url.lastPathComponent
-                if ignoredDirectories.contains(name) {
+                if WalkSkipRules.shouldSkip(name: name) || extraIgnoredDirectories.contains(name) {
                     enumerator.skipDescendants()
                     continue
                 }

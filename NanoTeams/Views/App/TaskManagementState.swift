@@ -136,26 +136,77 @@ import Foundation
         renameText = ""
     }
 
-    func confirmDelete(store: NTMSOrchestrator) async -> Bool {
-        guard let id = taskToDelete else { return false }
-        let wasActive = store.activeTaskID == id
+    // MARK: - Confirming a dialog
+
+    // Both dialogs follow the same seam, and it is a CONTRACT rather than a style:
+    // the payload is snapshotted and the dialog dismissed in ONE synchronous step,
+    // taken inside the button's action, and only the I/O is deferred into a `Task`.
+    //
+    // The reason is the rename alert's binding (`SidebarView.swift:115`), whose
+    // `isPresented` getter reads the payload itself, so its setter must call
+    // `cancelRename()` on every dismissal — the CONFIRM dismissal included. The
+    // button action and that setter both run inside one synchronous main-thread
+    // turn, while `Task.init` only enqueues on the main actor and cannot begin
+    // until that turn's stack unwinds. So a payload read performed after the hop
+    // sees state the dismissal already cleared, and the confirm silently becomes a
+    // no-op indistinguishable from Cancel — which is exactly what the rename did
+    // from `9834e2d8` ("God Object Refactoring", 2026-03-06), when an extracted
+    // method moved the read behind the hop, until 2026-09-13.
+    //
+    // Returning a `Pending…` value is what makes that unrepeatable: the mutation
+    // cannot be reached without having consumed the payload synchronously first.
+    // Same shape as `DownloadedModelsCard` / `DictationSettingsView` /
+    // `BenchmarkResultsCard`, which spell it inline as
+    // `let captured = …; pendingRemoval = nil; Task { … }`.
+
+    /// The task a confirmed deletion is about to remove, plus whether it was the
+    /// ACTIVE one at the moment the button was pressed — the honest answer, since
+    /// `activeTaskID` may have moved by the time the deletion finishes.
+    struct PendingDelete: Equatable {
+        let taskID: Int
+        let wasActive: Bool
+    }
+
+    /// The task a confirmed rename is about to retitle, and the new title.
+    struct PendingRename: Equatable {
+        let taskID: Int
+        let title: String
+    }
+
+    /// Snapshots and dismisses the pending deletion in one synchronous step.
+    func takePendingDelete(store: NTMSOrchestrator) -> PendingDelete? {
+        defer {
+            taskToDelete = nil
+            isShowingDeleteConfirmation = false
+        }
+        guard let id = taskToDelete else { return nil }
+        return PendingDelete(taskID: id, wasActive: store.activeTaskID == id)
+    }
+
+    /// Snapshots and dismisses the pending rename in one synchronous step.
+    ///
+    /// Blankness is judged on the TRIMMED text but the title is stored exactly as
+    /// typed: a name of nothing but spaces would render as an empty sidebar row
+    /// (`SidebarTaskRow` draws a bare `Text(task.title)`, and the app has no
+    /// "Untitled" fallback), and the sibling CREATE seam already refuses one
+    /// (`NTMSOrchestrator.createTask`) — rename must not be able to produce what
+    /// creation cannot. Trailing spaces inside a real name still survive verbatim.
+    func takePendingRename() -> PendingRename? {
+        defer { cancelRename() }
+        guard let id = taskToRename,
+              !renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return nil }
+        return PendingRename(taskID: id, title: renameText)
+    }
+
+    /// Performs a deletion previously taken by `takePendingDelete(store:)`.
+    func applyDelete(_ pending: PendingDelete, store: NTMSOrchestrator) async {
         // Drop any queued chat message before the task is gone — prevents leaking
         // into a reincarnated task ID (sequential IDs don't reuse today, but the
         // queue is task-scoped either way).
-        QuickCaptureController.shared.discardQueuedChatMessage(taskID: id)
-        await store.removeTask(id)
-        forgetTask(taskID: id)
-        taskToDelete = nil
-        return wasActive
-    }
-
-    func confirmRename(store: NTMSOrchestrator) async {
-        guard let id = taskToRename, !renameText.isEmpty else {
-            cancelRename()
-            return
-        }
-        await store.updateTaskTitle(id: id, title: renameText)
-        cancelRename()
+        QuickCaptureController.shared.discardQueuedChatMessage(taskID: pending.taskID)
+        await store.removeTask(pending.taskID)
+        forgetTask(taskID: pending.taskID)
     }
 
     // MARK: - Sidebar rows

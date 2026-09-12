@@ -36,21 +36,43 @@ struct DefaultQuickCaptureModeCoordinator: QuickCaptureModeCoordinator {
         }
 
         // Pending Supervisor question takes priority over running state.
-        if let run = task.runs.last,
-           let step = run.steps.first(where: { $0.needsSupervisorInput && $0.effectiveSupervisorAnswer == nil }),
-           let question = step.supervisorQuestion {
-            let roleDef = activeTeam?.findRole(byIdentifier: step.effectiveRoleID)
-            let lastAssistant = step.llmConversation.last(where: { $0.role == .assistant })
-            return .supervisorAnswer(payload: SupervisorAnswerPayload(
-                stepID: step.id,
+        //
+        // `SupervisorQuestionInbox` and not a local predicate: the local one asked
+        // `needsSupervisorInput && effectiveSupervisorAnswer == nil` — the flag alone, so
+        // it went silent for the render passes between the ask landing in `toolCalls` and
+        // the park writing the flag — read `supervisorQuestion` with no fallback to the
+        // call's own arguments, took `steps.first` rather than the earliest ask (with two
+        // roles waiting, a different question than the composer's leftmost chip, and the
+        // other one unreachable from here), paired with the LAST assistant turn even when
+        // the role kept talking after asking, and had no closed-task gate at all — so the
+        // panel offered an answer field for a finished task and wrote the answer into a
+        // run whose engine had already been torn down.
+        //
+        // ALL of them, not `.first`. Parallel roles park at once (CLAUDE.md #45), and a panel
+        // built from the leading question alone did not merely hide the others — it made them
+        // unreachable, so answering the first was the only route to the second. Which of them
+        // is on screen is not decided here: this function is a pure map from app state, and
+        // the user's pick is a presentation preference the controller applies through
+        // `QuickCapturePresentationPolicy.aiming(_:at:)`.
+        //
+        // The failable init IS the "is anything waiting" gate — an empty session is not a
+        // state the panel has.
+        let waiting = SupervisorQuestionInbox.pending(in: task).map { question in
+            SupervisorAnswerPayload(
+                stepID: question.stepID,
                 taskID: task.id,
-                role: step.role,
-                roleDefinition: roleDef,
-                question: question,
-                messageContent: lastAssistant?.content,
-                thinking: lastAssistant?.thinking,
+                role: question.role,
+                roleDefinition: activeTeam?.findRole(byIdentifier: question.stepID),
+                question: question.headline,
+                inquiry: question.inquiry,
+                askCallID: question.askCallID,
+                messageContent: question.paired?.content,
+                thinking: question.paired?.thinking,
                 isChatMode: task.isChatMode
-            ))
+            )
+        }
+        if let session = SupervisorAnswerSession(questions: waiting, selectedStepID: nil) {
+            return .supervisorAnswer(session: session)
         }
 
         // Task is running — show the working loader. Role displayed in the title

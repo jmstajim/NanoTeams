@@ -75,17 +75,25 @@ extension NTMSOrchestrator {
     }
 
     /// Submits a Supervisor answer. Returns `true` on success, `false` if attachment finalization failed.
-    /// `isAutoAnswer` flags answers produced by an automated supervisor path (a
-    /// delegating parent role, the Autovisor's `answer_task_question`) so the
-    /// activity feed shows the "Auto-answered" badge only for those — human
-    /// call sites use the default `false`.
+    /// `origin` names who is resolving the park (``SupervisorAnswerOrigin``): `.automated`
+    /// flags answers produced by an automated supervisor path (a delegating parent role, the
+    /// Autovisor's `answer_task_question`) so the activity feed shows the "Auto-answered"
+    /// badge only for those; human call sites use the default `.supervisor`.
+    /// - Parameter submission: what a HUMAN's questionnaire card produced — the decisions, and
+    ///   the prose they typed beside the form. Non-nil ONLY when the step is actually parked on
+    ///   a questionnaire and a person answered it; the automated paths reply in prose and leave
+    ///   it nil, and that prose is read back against the questionnaire at the one seam both
+    ///   origins pass through (`StepMessagingService.answerSupervisorQuestion`). Note that
+    ///   `answer` and `submission.note` are different strings by design: the first is the
+    ///   assembled reply the model receives, the second the words the Supervisor typed.
     @discardableResult
     func answerSupervisorQuestion(
         stepID: String,
         taskID: Int,
         answer: String,
         attachments: [StagedAttachment] = [],
-        isAutoAnswer: Bool = false
+        origin: SupervisorAnswerOrigin = .supervisor,
+        submission: SupervisorInquirySubmission? = nil
     ) async -> Bool {
         // Bash approvals are NOT answered here — they are held in-loop by the gate
         // and resolved DIRECTLY via the Allow/Deny buttons (`resolveBashApproval`),
@@ -122,18 +130,19 @@ extension NTMSOrchestrator {
         var answeredBannerKey: WatchtowerDismissKey?
         await mutateTask(taskID: taskID) { task in
             // Identity FIRST, from the very value the answer is applied to: the call below
-            // appends the `.supervisorAnswer` message that turns `activeSupervisorQuestionID`
-            // nil and clears `needsSupervisorInput`, after which the step no longer knows
-            // which banner it showed. Same lookup `StepMessagingService` uses, so the key is
-            // read from the step that receives the answer.
+            // appends the resolving message that turns `activeSupervisorQuestionID` nil and
+            // clears `needsSupervisorInput`, after which the step no longer knows which
+            // banner it showed. Same lookup `StepMessagingService` uses, so the key is read
+            // from the step that receives the answer.
             answeredBannerKey = task.locateStepInLatestRun(stepID: stepID)
-                .flatMap(task.step(at:))?
-                .activeSupervisorInputDismissKey(taskID: taskID)
+                .flatMap(task.step(at:))
+                .flatMap { SupervisorQuestionInbox.dismissKey(forStep: $0, taskID: taskID) }
             applied = StepMessagingService.answerSupervisorQuestion(
                 stepID: stepID,
                 answer: answer,
                 attachmentPaths: finalPaths,
-                isAutoAnswer: isAutoAnswer,
+                origin: origin,
+                submission: submission,
                 in: &task
             )
         }
@@ -182,6 +191,66 @@ extension NTMSOrchestrator {
             taskEngines[taskID]?.notifyExternalEvent()
         }
         return true
+    }
+
+    /// Asks a parked role to re-ask its plain question as a questionnaire.
+    ///
+    /// The Supervisor pressed `[ Ask as form ]` instead of answering. There is exactly one way
+    /// to reach a parked step — the tool result of its own `ask_supervisor` — so this rides the
+    /// same seam an answer does, and the directive's own first sentence tells the role that the
+    /// slot it is reading is not a decision.
+    ///
+    /// The origin is `.questionnaireRequest`, which is what keeps the directive out of the
+    /// Supervisor's voice everywhere it is later read — the feed row, `conversation_log.md`,
+    /// and the run summary other roles are shown. No attachments either: this is a request to
+    /// re-ask, not a reply.
+    ///
+    /// - Parameter note: what the Supervisor had already typed in the answer field, which
+    ///   narrows the form the role is about to write. Empty or blank is the common case.
+    /// - Returns: `false` when nothing is waiting, when the step parked on a questionnaire, or
+    ///   when the park is not the role's own ask. Fail-closed against the SAME policy the
+    ///   button reads, so an API caller cannot reach a state the UI refuses to offer: a
+    ///   directive on a form would go to `SupervisorInquiryReply.compose` and be read back with
+    ///   the grammar written for a model's `Q2: 1, 3` reply, and a directive on an app-raised
+    ///   park would open by telling a role its question went unanswered when it asked none.
+    @discardableResult
+    func requestQuestionnaire(stepID: String, taskID: Int, note: String? = nil) async -> Bool {
+        guard
+            let step = loadedTask(taskID)
+            .flatMap({ task in
+                task.locateStepInLatestRun(stepID: stepID).flatMap(task.step(at:))
+            })
+        else {
+            lastErrorMessage =
+                "This question is no longer active — the role may have been restarted."
+            return false
+        }
+        guard
+            SupervisorQuestionnaireRequest.isAvailable(
+                inquiry: step.supervisorInquiry, askCallID: step.activeSupervisorQuestionID)
+        else {
+            lastErrorMessage = Self.questionnaireRefusal(for: step)
+            return false
+        }
+        return await answerSupervisorQuestion(
+            stepID: stepID,
+            taskID: taskID,
+            answer: SupervisorQuestionnaireRequest.compose(note: note),
+            origin: .questionnaireRequest)
+    }
+
+    /// Why the request was refused, in the Supervisor's terms. Three shapes reach the same
+    /// gate and they are not one message: a form is answered on its card, an app-raised park
+    /// has no question to re-ask, and a resolved one is simply gone.
+    private static func questionnaireRefusal(for step: StepExecution) -> String {
+        guard step.hasActiveSupervisorInput else {
+            return "This question is no longer active — the role may have been restarted."
+        }
+        if step.supervisorInquiry != nil {
+            return "This role already asked with a form — answer the questions on the card."
+        }
+        return "The run paused on its own here — no role asked this, so there is nothing to "
+            + "re-ask. Answer it in your own words."
     }
 
     // MARK: - Step Creation (used by TaskEngineStoreAdapter)

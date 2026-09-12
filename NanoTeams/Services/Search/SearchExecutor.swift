@@ -147,11 +147,6 @@ nonisolated enum SearchExecutor {
             asciiFoldMatchesLocale: asciiFoldMatchesLocale
         )
 
-        // Early-return when an empty `constrainToFiles` is supplied — nothing to scan.
-        if let constrained = input.constrainToFiles, constrained.isEmpty {
-            return .empty
-        }
-
         // MARK: - Walk scope
 
         let fm = input.fileManager
@@ -200,9 +195,7 @@ nonisolated enum SearchExecutor {
         // Where the walk starts. Resolution throws (an absolute or escaping `paths` entry is a
         // sandbox reject), so it stays here rather than inside the walker, which is total.
         var roots: [SearchDirectoryWalker.Root] = []
-        if let constrained = input.constrainToFiles {
-            roots = constrained.map { .constrainedFile(relativePath: $0) }
-        } else if let paths = input.paths, !paths.isEmpty {
+        if let paths = input.paths, !paths.isEmpty {
             for p in paths {
                 roots.append(.entry(url: try input.resolver.resolveFileURL(relativePath: p)))
             }
@@ -319,6 +312,29 @@ nonisolated enum SearchExecutor {
             filenameMatches = []
         }
 
+        // R1.8.7 — an empty result must be STATED. `matches: []` is a fact about the ENVELOPE
+        // that a 7–32B model reads as a fact about the corpus, and the two are not the same: a
+        // glob that admitted no file, a scope of unreadable binaries, and a tree that genuinely
+        // holds no such line all render as the same empty array, and the model answers all three
+        // by re-issuing the call with a different spelling. The sentence rides `meta.warnings` —
+        // the channel the `filename_matches` cap above already uses — so no new field appears in
+        // the envelope and nothing is paid on a search that DID find something.
+        //
+        // List mode is excluded because there an empty `matches` is the normal shape: the result
+        // is `filename_matches`. Pages past the first are excluded because an empty page 3 means
+        // the caller paged off the end, which the absent cursor already says.
+        if !listMode, combined.isEmpty, effectiveOffset == 0 {
+            warnings.append(emptyContentNotice(
+                fileGlob: input.fileGlob,
+                scopedPaths: input.paths,
+                filesRead: results.stats.filesRead,
+                candidates: visitedPaths.count,
+                skippedCount: results.skipped.count,
+                binaryCount: results.skippedBinaryCount,
+                filenameMatchCount: filenameMatches.count
+            ))
+        }
+
         let truncated = listMode ? rosterTruncated : hasMoreContent
 
         // Exact ONLY when nothing was cut anywhere — page boundary, per-query cap, or roster cap.
@@ -347,5 +363,59 @@ nonisolated enum SearchExecutor {
             warnings: warnings + results.documentWarnings,
             stats: results.stats
         )
+    }
+
+    /// The one sentence a content search with no hits gets to say about ITSELF.
+    ///
+    /// Pure and separate from the walk so the wording can be pinned without a work folder. It
+    /// describes the SCOPE that was actually read rather than restating the emptiness, because
+    /// "we read 37 files and none held that line" and "the glob admitted nothing" are different
+    /// facts with different repairs, and the envelope renders them identically.
+    ///
+    /// Field names appear only where they point at something the caller can still read in this
+    /// same envelope (`skipped_files`, `filename_matches`); the levers themselves (`file_glob`,
+    /// `paths`) are named as the arguments the caller passed, not explained — the schema already
+    /// carries their descriptions.
+    static func emptyContentNotice(
+        fileGlob: String?,
+        scopedPaths: [String]?,
+        filesRead: Int,
+        candidates: Int,
+        skippedCount: Int,
+        binaryCount: Int,
+        filenameMatchCount: Int
+    ) -> String {
+        func fileCount(_ n: Int) -> String { n == 1 ? "1 file" : "\(n) files" }
+
+        var scope = ""
+        if let fileGlob { scope += " matching file_glob '\(fileGlob)'" }
+        if let scopedPaths, !scopedPaths.isEmpty {
+            scope += " under \(scopedPaths.joined(separator: ", "))"
+        }
+
+        let head: String
+        if filesRead > 0 {
+            head = "no line matched in \(fileCount(filesRead)) searched\(scope)"
+        } else if candidates > 0 {
+            // Candidates existed but none was readable — the skip clauses below say why.
+            head = "no file could be searched\(scope)"
+        } else if scope.isEmpty {
+            head = "no file was searched: the work folder holds no readable file"
+        } else {
+            head = "no file was searched: nothing\(scope)"
+        }
+
+        var clauses = [head]
+        if skippedCount > 0 {
+            clauses.append("\(fileCount(skippedCount)) could not be read — see skipped_files")
+        }
+        if binaryCount > 0 {
+            clauses.append("\(fileCount(binaryCount)) skipped as binary")
+        }
+        if filenameMatchCount > 0 {
+            clauses.append(
+                "\(fileCount(filenameMatchCount)) matched by name instead — see filename_matches")
+        }
+        return clauses.joined(separator: "; ")
     }
 }

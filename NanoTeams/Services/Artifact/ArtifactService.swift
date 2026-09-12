@@ -72,45 +72,5 @@ nonisolated final class ArtifactService: @unchecked Sendable {
         return nil
     }
 
-    /// Checks if build diagnostics file exists for a step.
-    /// - Parameters:
-    ///   - runID: The run ID.
-    ///   - stepID: The step ID.
-    ///   - workFolderRoot: The project root URL.
-    /// - Returns: The relative path within .nanoteams if exists, nil otherwise.
-    func buildDiagnosticsRelativePath(taskID: Int, runID: Int, roleID: String, workFolderRoot: URL, ancestors: [Int] = []) -> String? {
-        let paths = NTMSPaths(workFolderRoot: workFolderRoot)
-        let jsonURL = paths.buildDiagnosticsJSON(taskID: taskID, runID: runID, roleID: roleID, ancestors: ancestors)
-        guard fileManager.fileExists(atPath: jsonURL.path) else { return nil }
-        return paths.relativePathWithinNanoteams(for: jsonURL)
-    }
-
-    /// Persists an empty/summary build diagnostics artifact for successful builds.
-    /// Called when build completes with no errors (so no diagnostic data file exists).
-    /// - Returns: The relative path within .nanoteams, or nil if persistence failed
-    func persistEmptyBuildDiagnostics(taskID: Int, runID: Int, roleID: String, workFolderRoot: URL, ancestors: [Int] = []) throws -> String? {
-        let paths = NTMSPaths(workFolderRoot: workFolderRoot)
-        let jsonURL = paths.buildDiagnosticsJSON(taskID: taskID, runID: runID, roleID: roleID, ancestors: ancestors)
-
-        // Create directory if needed (restricted permissions — internal data)
-        try fileManager.createDirectory(at: jsonURL.deletingLastPathComponent(), withIntermediateDirectories: true,
-                                        attributes: NTMSRepository.internalDirAttributes)
-
-        // Create summary diagnostics JSON for successful build
-        let summaryDiagnostics: [String: Any] = [
-            "schemaVersion": 1,
-            "createdAt": JSONCoderFactory.iso8601Formatter.string(from: MonotonicClock.shared.now()),
-            "skipped": true,
-            "skipReason": "clean_build",
-            "errorCount": 0,
-            "warningCount": 0,
-            "issues": []
-        ]
-
-        let jsonData = try JSONSerialization.data(withJSONObject: summaryDiagnostics, options: .prettyPrinted)
-        try jsonData.write(to: jsonURL)
-
-        return paths.relativePathWithinNanoteams(for: jsonURL)
-    }
     nonisolated deinit {}
 }

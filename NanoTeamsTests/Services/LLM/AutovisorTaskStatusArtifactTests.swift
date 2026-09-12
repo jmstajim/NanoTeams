@@ -85,20 +85,20 @@ final class AutovisorTaskStatusArtifactTests: XCTestCase {
     }
 
     /// Two artifacts on a SINGLE step: a normal deliverable (readable `.nanoteams/tasks`
-    /// path) and a Build-Diagnostics artifact persisted under `.nanoteams/internal/`
+    /// path) and an artifact persisted under `.nanoteams/internal/`
     /// (which `read_file` rejects via the sandbox). The internal one must OMIT `path` —
     /// a non-nil path is a promise of readability, so we never hand the manager a
     /// reference it can't read. Also exercises the inner per-step artifact loop at
     /// cardinality > 1.
     func testHandleTaskStatus_internalArtifactOmitsPath_andListsAllPerStep() async throws {
         let notesRel = "tasks/7/runs/0/roles/engineering_team_software_engineer/artifact_engineering_notes.md"
-        let diagRel = "internal/tasks/7/runs/0/roles/engineering_team_software_engineer/build_diagnostics.json"
+        let diagRel = "internal/tasks/7/runs/0/roles/engineering_team_software_engineer/step_log.jsonl"
         let step = StepExecution(
             id: "engineering_team_software_engineer", role: .codingAgent, title: "Software Engineer",
             status: .done,
             artifacts: [
                 Artifact(name: "Engineering Notes", relativePath: notesRel),
-                Artifact(name: "Build Diagnostics", relativePath: diagRel)
+                Artifact(name: "Step Log", relativePath: diagRel)
             ]
         )
         let task = NTMSTask(id: 7, title: "T", supervisorTask: "...",
@@ -108,12 +108,12 @@ final class AutovisorTaskStatusArtifactTests: XCTestCase {
         let json = await service.handleTaskStatus(taskID: 7)
         let artifacts = try Self.decodeArtifacts(from: json)
         let notes = artifacts.first { $0.name == "Engineering Notes" }
-        let diag = artifacts.first { $0.name == "Build Diagnostics" }
+        let diag = artifacts.first { $0.name == "Step Log" }
 
         XCTAssertEqual(artifacts.count, 2, "Both artifacts on the step must be listed (inner loop).")
         XCTAssertEqual(notes?.path, ".nanoteams/\(notesRel)",
                        "A normal deliverable keeps its read_file-able path.")
-        XCTAssertNotNil(diag, "Build Diagnostics must still be listed by name.")
+        XCTAssertNotNil(diag, "An internal artifact must still be listed by name.")
         XCTAssertNil(diag?.path,
                      "An internal (.nanoteams/internal/…) artifact must omit path — read_file can't read it.")
     }

@@ -66,6 +66,30 @@ nonisolated enum CompactionPolicy {
         }
     }
 
+    // MARK: - Refusal notices
+
+    /// What a human is told when an epoch has nothing to fold.
+    ///
+    /// ONE sentence for three shapes — the role has no step at all, the persisted wire is
+    /// empty, and the wire exists but is entirely its own pinned head — because from outside
+    /// they are one fact: the conversation has not started. They became reachable together on
+    /// 2026-09-09, when the indicator stopped hiding its button from a role with no
+    /// measurement.
+    static let nothingToFoldNotice = "This role has no conversation to compact yet."
+
+    /// The second refusal a human can reach: the epoch ran and there is nothing to put in the
+    /// seed.
+    static let nothingToSeedNotice =
+        "Nothing to compact: the model produced no summary and this step has no recorded notes."
+
+    /// And the one shape that is NOT "nothing to fold": there is a body, but the open
+    /// `ask_supervisor` that must survive the fold is itself already past half the budget, so
+    /// the epoch would spend a request and leave the conversation too big anyway. Its own
+    /// sentence per rule #225 — one diagnostic text per one shape of refusal.
+    static let retainedParkTooLargeNotice =
+        "Nothing to compact: this role's unanswered question is already too large to fold "
+            + "around. Answering it lets the next fold proceed."
+
     // MARK: - Markers
 
     /// First line of the seed turn. Matched with `hasPrefix` rather than `contains`, unlike
@@ -206,9 +230,15 @@ nonisolated enum CompactionPolicy {
     }
 
     /// Whether an assistant turn is a PARK — a call the step is suspended on.
+    ///
+    /// `supervisorAskTools` rather than one name: folding an epoch across an open park
+    /// drops the assistant turn the pending tool result belongs to, leaving that result an
+    /// orphan on the wire. `wait_for_events` joins them here — for THIS question the
+    /// Autovisor's idle park suspends a step exactly as a question does, which is why the
+    /// closed set is a member of the condition rather than the whole of it.
     private static func carriesOpenPark(_ message: ChatMessage) -> Bool {
         message.toolCalls?.contains {
-            $0.name == ToolNames.askSupervisor || $0.name == ToolNames.waitForEvents
+            ToolNames.supervisorAskTools.contains($0.name) || $0.name == ToolNames.waitForEvents
         } ?? false
     }
 
@@ -241,8 +271,14 @@ nonisolated enum CompactionPolicy {
     ///
     /// Growing without bound is the deliberate price of R3.9.5: a constraint the Supervisor
     /// stated once holds until they say otherwise, and there is no signal in the
-    /// conversation that says which constraints have expired. In practice the block is
-    /// small — it holds what a human typed, not what a model generated.
+    /// conversation that says which constraints have expired.
+    ///
+    /// It is NOT always small, and the questionnaire is why: `supervisorAnswerResponse` matches
+    /// both ask tools, so a form's answer enters as `SupervisorInquiryRenderer.render` wrote it
+    /// — every `Q<n>. <prompt>` the MODEL authored, echoed beside the decision. That is
+    /// deliberate and not removable: `A3. Debug` records nothing without the question above it.
+    /// With no cap on the number of questions since 2026-09-13, the contribution of one
+    /// answered form is bounded only per question (`maxPromptCharacters`).
     static func supervisorRecord(in wire: [ChatMessage], discarded: Range<Int>) -> [String] {
         var entries: [String] = []
         for index in discarded where wire.indices.contains(index) {
@@ -289,12 +325,19 @@ nonisolated enum CompactionPolicy {
         return nil
     }
 
-    /// The `response` field of an `ask_supervisor` result envelope
+    /// The `response` field of a PARKING tool's result envelope
     /// (`buildCollaborationToolResult`), or `nil` for any other tool result.
+    ///
+    /// This is what keeps every Supervisor turn of the folded range VERBATIM, so the set
+    /// membership is load-bearing in the quietest possible way: an envelope whose `tool`
+    /// this predicate does not recognise is not an error and not a warning — the human's
+    /// answer is simply absent from the compacted wire, with an identical return value and
+    /// a clean log. Pinned by `CompactionSupervisorAnswerRecordTests`.
     private static func supervisorAnswerResponse(inToolResult json: String) -> String? {
         guard let data = json.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              object["tool"] as? String == ToolNames.askSupervisor,
+              let tool = object["tool"] as? String,
+              ToolNames.supervisorAskTools.contains(tool),
               let response = object["response"] as? String
         else { return nil }
         return response

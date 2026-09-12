@@ -80,10 +80,9 @@ final class GPlatAnswerModeTransitionTests: XCTestCase {
     /// Task A → task B while both are waiting: the half-typed answer for A must be
     /// filed as A's draft and B must open with an EMPTY answer box.
     ///
-    /// RED: replace `switchAnswerTask(from:to:)` with `updateAnswerPayload(payload)` →
-    /// `supervisorTask` still holds "half-typed-for-A", so the answer the user was
-    /// writing to task A is now sitting in task B's box, one Send away from being
-    /// delivered to the wrong role. The empty-box assertion fails.
+    /// RED: drop the park/take pair from `updateAnswerPayload`'s branch-change arm →
+    /// the answer the user was writing to task A is now sitting in task B's box, one Send
+    /// away from being delivered to the wrong role. The empty-box assertion fails.
     func testRefresh_answerModeTaskSwitch_movesTheDraftInsteadOfLeakingIt() async {
         sut.formState.enterAnswerMode(payload: payload(taskID: 1, question: "A asks?"))
         sut.formState.answerText = "half-typed-for-A"
@@ -103,9 +102,8 @@ final class GPlatAnswerModeTransitionTests: XCTestCase {
     /// The other half of the same contract: the draft parked by the switch must come
     /// back when the user returns to that task.
     ///
-    /// RED: drop the `saveCurrentAnswerDraft(taskID: oldTaskID)` call `switchAnswerTask`
-    /// opens with (or route the arm to `updateAnswerPayload`) → returning to task A
-    /// shows an empty box and the typed answer is gone.
+    /// RED: drop the `parkLiveAnswerFields(under: owner)` call the branch-change arm opens
+    /// with → returning to task A shows an empty box and the typed answer is gone.
     func testRefresh_answerModeSwitchBack_restoresTheParkedDraft() async {
         sut.formState.enterAnswerMode(payload: payload(taskID: 1, question: "A asks?"))
         sut.formState.answerText = "half-typed-for-A"
@@ -127,28 +125,68 @@ final class GPlatAnswerModeTransitionTests: XCTestCase {
                        "returning to task A must restore the draft the switch parked")
     }
 
-    /// Same task, new question — the payload must be refreshed in place and the
+    /// Same task, same role, new question — the payload must be refreshed in place and the
     /// in-progress answer left alone.
     ///
-    /// RED: make the `else` arm a no-op (`{}`) → `pendingAnswer.question` stays
-    /// "first question", which is the exact reported symptom: the panel keeps showing
-    /// the previous question after the role asked a new one.
-    func testRefresh_answerModeSameTask_refreshesPayloadAndKeepsTheTypedAnswer() async {
+    /// RED: make the same-branch arm of `updateAnswerPayload` a no-op (`{}`) →
+    /// `pendingAnswer.question` stays "first question", which is the exact reported symptom:
+    /// the panel keeps showing the previous question after the role asked a new one.
+    func testRefresh_answerModeSameRole_refreshesPayloadAndKeepsTheTypedAnswer() async {
         sut.formState.enterAnswerMode(payload: payload(taskID: 7, question: "first question"))
         sut.formState.answerText = "still typing"
         sut._testIsPanelVisible = true
 
         coordinator.mode = .supervisorAnswer(
-            payload: payload(taskID: 7, question: "second question", stepID: "step-2"))
+            payload: payload(taskID: 7, question: "second question"))
         sut.refreshPanelIfVisible()
 
         XCTAssertEqual(sut.formState.pendingAnswer?.question, "second question",
-                       "a new question on the SAME task must replace the stale payload")
-        XCTAssertEqual(sut.formState.pendingAnswer?.stepID, "step-2")
+                       "a new question from the SAME role must replace the stale payload")
         XCTAssertEqual(sut.formState.answerText, "still typing",
-                       "a same-task payload refresh must not clear what the user is writing")
+                       "a same-branch payload refresh must not clear what the user is writing")
         XCTAssertTrue(sut._testIsInAnswerMode,
                       "the arm must not toggle the mode flag — it is an in-place update")
+    }
+
+    /// Same task, ANOTHER role — the reply must be parked under the role it was written to,
+    /// and the arriving role's box must open empty.
+    ///
+    /// Parallel roles park at once (CLAUDE.md #45) and the panel shows whichever question
+    /// leads, so a role answered from Watchtower or the docked composer hands this panel the
+    /// NEXT role's question under the SAME task id. Until the draft store learned branches,
+    /// the task-id comparison read that as "nothing moved" and left the half-written reply to
+    /// the Product Manager sitting in the Tech Lead's box, one Send away.
+    ///
+    /// RED: key the draft by task id again (or drop the park/take pair from
+    /// `updateAnswerPayload`'s branch-change arm) → "for the PM" is in the TL's composer.
+    func testRefresh_answerModeAnotherRoleSameTask_parksTheReplyInsteadOfHandingItOver() async {
+        sut.formState.enterAnswerMode(
+            payload: payload(taskID: 7, question: "PM asks?", stepID: "pm"))
+        sut.formState.answerText = "for the PM"
+        sut._testIsPanelVisible = true
+
+        coordinator.mode = .supervisorAnswer(
+            payload: payload(taskID: 7, question: "TL asks?", stepID: "tl"))
+        sut.refreshPanelIfVisible()
+
+        XCTAssertEqual(sut.formState.pendingAnswer?.stepID, "tl")
+        XCTAssertEqual(sut.formState.answerText, "",
+                       "the Tech Lead's box opens empty — the PM's reply is not an answer to it")
+        XCTAssertEqual(
+            sut.formState.answerDraftStore
+                .peek(for: .role(TaskStepKey(taskID: 7, stepID: "pm")))?.text,
+            "for the PM",
+            "and it is parked under the PM's branch, waiting")
+
+        // Back to the PM: the reply comes out of the store and into the field.
+        coordinator.mode = .supervisorAnswer(
+            payload: payload(taskID: 7, question: "PM asks again?", stepID: "pm"))
+        sut.refreshPanelIfVisible(explicitTaskNavigation: true)
+
+        XCTAssertEqual(sut.formState.answerText, "for the PM")
+        XCTAssertTrue(
+            sut.formState.answerDraftStore.keys(forTask: 7).isEmpty,
+            "taken, not copied — the store holds nothing under the branch being edited")
     }
 }
 

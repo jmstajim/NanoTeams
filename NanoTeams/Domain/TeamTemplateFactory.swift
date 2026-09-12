@@ -29,6 +29,7 @@ nonisolated enum TeamTemplateFactory {
         TeamTemplateMetadata(id: "assistant", name: "Personal Assistant", icon: "bubble.left.and.text.bubble.right", description: "Interactive assistant for any task"),
         TeamTemplateMetadata(id: "faang", name: "FAANG Team", icon: "building.2", description: "Full product development pipeline"),
         TeamTemplateMetadata(id: "engineering", name: "Engineering Team", icon: "wrench.and.screwdriver", description: "Lean engineering pipeline"),
+        TeamTemplateMetadata(id: "ultra", name: "Ultra Team", icon: "arrow.triangle.branch", description: "Change pipeline: brief critique, two competing designs, two adversarial critiques, diff review, verified build"),
         TeamTemplateMetadata(id: "startup", name: "Startup", icon: "bolt", description: "Minimal team for rapid prototyping"),
         TeamTemplateMetadata(id: "questParty", name: "Quest Party", icon: "scroll", description: "Adventure creation and management"),
         TeamTemplateMetadata(id: "discussionClub", name: "Discussion Club", icon: "bubble.left.and.bubble.right", description: "Meeting-driven discussion"),
@@ -37,7 +38,7 @@ nonisolated enum TeamTemplateFactory {
     // MARK: - Public API
 
     static var allTemplates: [Team] {
-        [codingAssistant(), codingAgent(), assistant(), faang(), engineering(), startup(), questParty(), discussionClub()]
+        [codingAssistant(), codingAgent(), assistant(), faang(), engineering(), ultraTeam(), startup(), questParty(), discussionClub()]
     }
 
     /// Resolves a New Team sheet selection (a `templateMetadata` id) into a brand-new team.
@@ -104,6 +105,92 @@ nonisolated enum TeamTemplateFactory {
         }
     }
 
+    /// Ultra Team — a general CHANGE pipeline that argues before the code and measures after
+    /// it. Not feature-shaped: the first line of the brief names the kind of work (defect, new
+    /// behaviour, refactor, a question about the code, a one-file edit) and the pipeline sizes
+    /// itself to that.
+    ///
+    /// Seven waves, two of them internally parallel:
+    /// brief → brief critique → two independent designs → spec + regression critiques →
+    /// implementation → diff review → verification.
+    ///
+    /// A lens is added when and only when it is settled by a DIFFERENT source of truth — any
+    /// other lens is a second opinion, and one role already holds that job (playbook R3.1.1).
+    /// Before code exists there are three sources: the brief itself (Brief Critic), the brief
+    /// as a requirement on the design (Spec Critic) and the existing code (Regression Critic).
+    /// Security and performance need running code
+    /// and live after the build, where the Diff Reviewer and the Change Verifier already
+    /// stand. "Shape of the code" is not a lens: it is precisely what the two architects
+    /// argue about.
+    ///
+    /// **There were four, and the fourth was the compiler.** It had a wave of its own — the
+    /// Feasibility Critic, which wrote one `FeasibilityProbe.swift` beside a source file of the
+    /// target it was probing, built it, and reported what the compiler said. It retired on
+    /// 2026-09-12 with the rest of the Swift binding, because every part of that contract was a
+    /// fact about Xcode: the file extension, the placement rule, and the deliberate-syntax-error
+    /// control that caught a project with explicit build-file lists compiling the probe into
+    /// nothing. This pipeline has to run on repositories Xcode has never heard of.
+    ///
+    /// The cost is recorded rather than argued away. In MeditationApp task 48 run 1 the spec
+    /// critic ranked a design built on invented `.onOpenIntent` and `.intentLink(_:)` ABOVE an
+    /// honest one, and punished the honest one for saying "Awaiting execution" — it judged with
+    /// no compiler verdict, because nobody in the team had one. What replaces the wave is an
+    /// opportunity rather than an obligation: every role holds `bash` and both runners, and the
+    /// Spec Critic is the one told to settle the `### Unverified` entries its verdict rests on.
+    /// `KNOWN_ISSUES` carries it as an open item, unmeasured.
+    ///
+    /// **Diff review and verification are SEQUENTIAL, not parallel**, and that is forced by
+    /// the meeting machinery rather than chosen: a `request_changes` from the Diff Reviewer
+    /// convenes the CONSUMERS of the engineer's artifact, and
+    /// `MeetingParticipantResolver.filterParticipants` filters by identity, membership,
+    /// Supervisor and `invitableRoles` — never by execution status. A parallel verifier would
+    /// be pulled into that vote in the middle of its own build. One extra stage buys the
+    /// verifier a diff review to check the notes against.
+    ///
+    /// **`coordinatorIndex: 1` — the Change Planner chairs.** The coordinator sits in EVERY
+    /// meeting by construction, so a `request_changes` holder in that seat would judge its
+    /// neighbours' cases as a matter of routine. The planner holds no `request_changes`, is
+    /// `.done` from wave 2 onward, and is a legal `request_changes` target for exactly one
+    /// role — the Change Verifier, which requires the brief and runs at wave 7 when every
+    /// consumer of the brief is already `.done` (`UltraTeamTests` pins the edge). On that
+    /// vote the planner is the target, so `effectiveCoordinator` seats a stand-in chair; the
+    /// same runtime rule closes the hole for user-authored teams, and this index is the
+    /// second layer.
+    ///
+    /// Dependencies come from the role templates unchanged — no `customize` closure — because
+    /// the graph IS the design.
+    ///
+    /// `.manual`, not `.autonomous`: the planner's whole value is pulling missing detail out of
+    /// the human, and an autonomous run would answer it with `SupervisorAutoAnswerService`.
+    /// The ASK channel is bounded by the toolset — only the planner holds `ask_supervisor`, so
+    /// the pipeline asks once, at stage 0, and every later wave runs without asking.
+    ///
+    /// That is one channel, not the human's whole exposure, and it stopped being the only one on
+    /// 2026-09-12 when `bash` joined the toolset floor. Approval cards are the second, and no
+    /// rule here bounds them: at `BashConstants.defaultMode` — `.manual`, the fresh install's —
+    /// every shell command from any of the nine roles waits for a human, `ls` included, because
+    /// Manual asks ABOVE the read-only bypass. `.semiAutomatic` is where ordinary reads stop
+    /// asking. Sized honestly in `KNOWN_ISSUES`; the toolset comment in
+    /// `SystemTemplates+RoleTemplates.swift` carries the same correction beside the rule itself.
+    static func ultraTeam() -> Team {
+        buildTeam(
+            name: "Ultra Team",
+            description: "Change pipeline: a planner who asks for what is missing, a critique of the brief itself, two competing designs, two adversarial critiques of them, one implementation, a diff review, and a verifier that builds and tests it.",
+            templateID: "ultra",
+            roleIDs: ["changePlanner", "briefCritic", "solutionArchitect", "pragmaticArchitect",
+                      "specCritic", "regressionCritic",
+                      "changeEngineer", "diffReviewer", "changeVerifier"],
+            artifactNames: [SystemTemplates.supervisorTaskArtifactName,
+                            "Change Brief", "Brief Critique", "Approach A", "Approach B",
+                            "Spec Critique", "Regression Critique",
+                            "Implementation Notes", "Diff Review", "Verification Report"],
+            coordinatorIndex: 1,
+            supervisorRequires: ["Implementation Notes", "Diff Review", "Verification Report"],
+            limits: .ultra,
+            supervisorMode: .manual
+        )
+    }
+
     static func startup() -> Team {
         buildTeam(
             name: "Startup",
@@ -122,7 +209,7 @@ nonisolated enum TeamTemplateFactory {
                 TN.gitAdd, TN.gitCommit,
                 TN.runXcodebuild, TN.runXcodetests,
                 TN.bash, TN.bashOutput,
-                TN.askSupervisor,
+                TN.askSupervisor, TN.askSupervisorForm,
             ]
             roles[1].dependencies.requiredArtifacts = [SystemTemplates.supervisorTaskArtifactName]
         }
@@ -173,7 +260,7 @@ nonisolated enum TeamTemplateFactory {
                 TN.readFile, TN.readLines, TN.writeFile, TN.editFile, TN.deleteFile,
                 TN.listFiles, TN.search,
                 TN.updateScratchpad,
-                TN.askSupervisor, TN.analyzeImage,
+                TN.askSupervisor, TN.askSupervisorForm, TN.analyzeImage,
                 TN.screenCapture, TN.uiClick, TN.uiType, TN.uiKey, TN.uiScroll,
             ]
             roles[1].dependencies.requiredArtifacts = [SystemTemplates.supervisorTaskArtifactName]
@@ -238,7 +325,7 @@ nonisolated enum TeamTemplateFactory {
                 TN.gitMerge, TN.gitPull, TN.gitStash,
                 TN.runXcodebuild, TN.runXcodetests,
                 TN.bash, TN.bashOutput,
-                TN.askSupervisor, TN.analyzeImage,
+                TN.askSupervisor, TN.askSupervisorForm, TN.analyzeImage,
                 TN.screenCapture, TN.uiClick, TN.uiType, TN.uiKey, TN.uiScroll,
             ]
             roles[1].dependencies.requiredArtifacts = [SystemTemplates.supervisorTaskArtifactName]
@@ -436,7 +523,7 @@ nonisolated enum TeamTemplateFactory {
             toolIDs: [
                 TN.readFile, TN.readLines, TN.listFiles, TN.search,
                 TN.updateScratchpad,
-                TN.askSupervisor,
+                TN.askSupervisor, TN.askSupervisorForm,
             ],
             usePlanningPhase: false,
             dependencies: RoleDependencies(

@@ -435,8 +435,8 @@ nonisolated enum XcodeBuildRunner {
     /// is a single grapheme cluster that does not equal `"\n"`, so the previous
     /// `log.split(separator: "\n")` found no separators at all in a CRLF log:
     /// `lines.count` was 1, `truncated` was false, and the cap silently did not
-    /// apply — an unbounded log went into the conversation and into
-    /// `build_excerpts.txt`. `xcodebuild` itself emits LF, so this was latent,
+    /// apply — an unbounded log went into the conversation. `xcodebuild` itself
+    /// emits LF, so this was latent,
     /// but a cap that quietly stops capping is the failure mode this codebase
     /// treats as worse than the cap itself. `LineScanner` splits on scalars for
     /// the same reason.

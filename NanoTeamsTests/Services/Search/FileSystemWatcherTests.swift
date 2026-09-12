@@ -199,6 +199,160 @@ final class FileSystemWatcherTests: XCTestCase {
         wait(for: [fired], timeout: 5.0)
         watcher.stop()
     }
+
+    // MARK: - Д4: the watcher asks the walk's own question
+
+    /// The watcher used to wake the index for anything outside `.nanoteams/internal/`, and the
+    /// index walk then skipped most of it — so `git status` cost a full walk of the tree that
+    /// found nothing, once per debounce window, and `xcodebuild` kept the indexer busy
+    /// continuously.
+    ///
+    /// These are pure-predicate cases: no FSEvents, no timing, one question per line.
+    ///
+    /// RED: delete the component scan from `isInteresting` → the first four assertions fail.
+    func testIsInteresting_pathsTheWalkSkips_areNotInteresting() {
+        let root = FileSystemWatcher.WatchRoot(canonicalPath: "/w")
+        func interesting(_ path: String) -> Bool {
+            FileSystemWatcher.isInteresting(path: path, roots: [root], excludedPrefixes: [])
+        }
+        XCTAssertFalse(interesting("/w/.git/index"))
+        XCTAssertFalse(interesting("/w/.git/refs/heads/main"))
+        XCTAssertFalse(interesting("/w/node_modules/pkg/index.js"))
+        XCTAssertFalse(interesting("/w/.artifacts/DerivedData-x/Build/x.o"))
+        // The extension half of the rule, not just the name half.
+        XCTAssertFalse(interesting("/w/latest.xcresult/Data/x.bin"))
+        // And the ordinary source file that must always wake it.
+        XCTAssertTrue(interesting("/w/NanoTeams/App/NanoTeamsApp.swift"))
+        XCTAssertTrue(interesting("/w/README.md"))
+    }
+
+    /// The root's OWN ancestors are not ours to judge. A work folder living under
+    /// `~/.cache/projects` or `/tmp/.build/wf` is a legitimate choice by the user, and judging
+    /// the absolute path would make every event inside it uninteresting — the index would then
+    /// never auto-refresh, with nothing logged.
+    ///
+    /// RED: scan the absolute path's components instead of the relative one → both fail.
+    func testIsInteresting_skipNamesAboveTheRoot_areIgnored() {
+        let root = FileSystemWatcher.WatchRoot(canonicalPath: "/Users/me/.cache/projects/wf")
+        XCTAssertTrue(FileSystemWatcher.isInteresting(
+            path: "/Users/me/.cache/projects/wf/main.swift",
+            roots: [root], excludedPrefixes: []))
+        XCTAssertFalse(FileSystemWatcher.isInteresting(
+            path: "/Users/me/.cache/projects/wf/.git/HEAD",
+            roots: [root], excludedPrefixes: []))
+    }
+
+    /// The excluded prefix still wins, and a path under no watched root is never dropped
+    /// silently — FSEvents should not deliver one, and if it does we have no rule to judge it by.
+    func testIsInteresting_excludedPrefixWins_andUnknownRootsAreKept() {
+        let root = FileSystemWatcher.WatchRoot(canonicalPath: "/w")
+        XCTAssertFalse(FileSystemWatcher.isInteresting(
+            path: "/w/.nanoteams/internal/tasks/1/x.json",
+            roots: [root], excludedPrefixes: ["/w/.nanoteams/internal"]))
+        XCTAssertTrue(FileSystemWatcher.isInteresting(
+            path: "/elsewhere/x.swift", roots: [root], excludedPrefixes: []))
+    }
+
+    /// `kFSEventStreamEventFlagMustScanSubDirs` means the kernel dropped events it could not
+    /// queue, so the paths in this batch are not the whole story. Losing a change is worse
+    /// than one wasted walk — it leaves the index quietly out of date with nothing logged.
+    ///
+    /// RED: judge a MustScanSubDirs event by its path like any other → a dropped-event batch
+    /// inside `.git/` is ignored, and every edit that came with it never reaches the index.
+    func testShouldWake_mustScanSubDirs_wakesWhateverThePathSays() {
+        let root = FileSystemWatcher.WatchRoot(canonicalPath: "/w")
+        XCTAssertTrue(FileSystemWatcher.shouldWake(
+            [.init(path: "/w/.git/index", isDirectory: false, mustScanSubDirs: true)],
+            roots: [root], excludedPrefixes: []))
+        // …and even with no path at all, which is how FSEvents reports a pure overflow.
+        XCTAssertTrue(FileSystemWatcher.shouldWake(
+            [.init(path: nil, isDirectory: false, mustScanSubDirs: true)],
+            roots: [root], excludedPrefixes: []))
+    }
+
+    /// The batch contract: drop only if EVERYTHING is uninteresting.
+    func testShouldWake_dropsOnlyWhenEverythingIsUninteresting() {
+        let root = FileSystemWatcher.WatchRoot(canonicalPath: "/w")
+        func wake(_ events: [FileSystemWatcher.Event]) -> Bool {
+            FileSystemWatcher.shouldWake(events, roots: [root], excludedPrefixes: [])
+        }
+        XCTAssertFalse(wake([
+            .init(path: "/w/.git/index", isDirectory: false, mustScanSubDirs: false),
+            .init(path: "/w/node_modules/x.js", isDirectory: false, mustScanSubDirs: false),
+        ]))
+        XCTAssertTrue(wake([
+            .init(path: "/w/.git/index", isDirectory: false, mustScanSubDirs: false),
+            .init(path: "/w/main.swift", isDirectory: false, mustScanSubDirs: false),
+        ]))
+        XCTAssertFalse(wake([]), "an empty batch is nothing to wake for")
+    }
+
+    /// A directory-level event is metadata noise: writing a file fires mtime events on every
+    /// ancestor up to the watched root, whose paths carry none of the subtree's names.
+    ///
+    /// RED: judge directory events like files → every write inside `.git/` also reports the
+    /// root itself, which is interesting, so the `.git` filter never drops anything.
+    func testShouldWake_directoryEvents_doNotDecide() {
+        let root = FileSystemWatcher.WatchRoot(canonicalPath: "/w")
+        XCTAssertFalse(FileSystemWatcher.shouldWake(
+            [.init(path: "/w", isDirectory: true, mustScanSubDirs: false),
+             .init(path: "/w/.git", isDirectory: true, mustScanSubDirs: false)],
+            roots: [root], excludedPrefixes: []))
+    }
+
+    /// FSEvents can deliver a null path. It is not a reason to drop the rest of the batch.
+    func testShouldWake_nullPath_isSkippedNotFatal() {
+        let root = FileSystemWatcher.WatchRoot(canonicalPath: "/w")
+        XCTAssertTrue(FileSystemWatcher.shouldWake(
+            [.init(path: nil, isDirectory: false, mustScanSubDirs: false),
+             .init(path: "/w/main.swift", isDirectory: false, mustScanSubDirs: false)],
+            roots: [root], excludedPrefixes: []))
+    }
+
+    /// A burst of writes confined to `.git/` must not wake the index at all.
+    ///
+    /// The integration half of the pin above: it proves the predicate is actually wired into
+    /// the FSEvents callback and not merely available.
+    ///
+    /// RED: revert `handleCallback` to the `excludedPrefixes`-only filter → this fires.
+    func testGitOnlyBurst_doesNotFire() throws {
+        let git = tempDir.appendingPathComponent(".git", isDirectory: true)
+        try fm.createDirectory(at: git, withIntermediateDirectories: true)
+
+        let counter = CounterBox()
+        let watcher = FileSystemWatcher(
+            paths: [tempDir], debounce: 0.2, onChange: { counter.increment() })
+        watcher.start()
+        Thread.sleep(forTimeInterval: 0.3)
+        for i in 0..<5 {
+            try "x".write(to: git.appendingPathComponent("obj\(i)"),
+                          atomically: true, encoding: .utf8)
+        }
+        // Past the FSEvents 1.0-s buffering window plus the debounce.
+        Thread.sleep(forTimeInterval: 2.0)
+        XCTAssertEqual(counter.value, 0,
+                       "a burst confined to .git/ must not wake the index — the walk skips it")
+        watcher.stop()
+    }
+
+    /// …but `.git/` alongside a real edit still fires. Same "drop only if ALL uninteresting"
+    /// contract the excluded-prefix filter has always had.
+    func testGitPlusSourceEdit_fires() throws {
+        let git = tempDir.appendingPathComponent(".git", isDirectory: true)
+        try fm.createDirectory(at: git, withIntermediateDirectories: true)
+
+        let fired = expectation(description: "handler fires for the source edit")
+        fired.assertForOverFulfill = false
+        let watcher = FileSystemWatcher(
+            paths: [tempDir], debounce: 0.2, onChange: { fired.fulfill() })
+        watcher.start()
+        Thread.sleep(forTimeInterval: 0.3)
+        try "a".write(to: git.appendingPathComponent("HEAD"), atomically: true, encoding: .utf8)
+        try "b".write(to: tempDir.appendingPathComponent("main.swift"),
+                      atomically: true, encoding: .utf8)
+        wait(for: [fired], timeout: 5.0)
+        watcher.stop()
+    }
 }
 
 // MARK: - Counter Helper

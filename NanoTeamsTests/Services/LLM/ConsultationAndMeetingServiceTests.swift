@@ -1048,6 +1048,36 @@ final class AutovisorHandlerEnvelopeTests: XCTestCase {
                        "the manager answers via answer_task_question — it needs the text")
     }
 
+    /// A step parked on a QUESTIONNAIRE surfaces the rendered form, not the headline.
+    ///
+    /// `answer_task_question` takes a free string, so the options the role wrote reach the
+    /// manager only if they are in this field. Without them it answers the headline in prose,
+    /// every choice defaults to its recommendation, and the role is told the Supervisor had no
+    /// opinion — the silent failure the whole reply contract exists to prevent.
+    ///
+    /// RED: surface `step.supervisorQuestion` alone → the payload holds the headline and no
+    /// option, and the last two assertions fail.
+    func testHandleTaskStatus_parkedOnAForm_surfacesTheQuestionnaireNotTheHeadline() async throws {
+        var step = StepExecution(
+            id: "r", role: .softwareEngineer, title: "R", status: .needsSupervisorInput,
+            needsSupervisorInput: true, supervisorQuestion: "Build settings")
+        step.supervisorInquiry = SupervisorInquiry(
+            headline: "Build settings",
+            questions: [SupervisorInquiryQuestion(
+                id: "scheme", prompt: "Which scheme?", kind: .singleChoice,
+                options: [SupervisorInquiryOption(id: "debug", label: "Debug"),
+                          SupervisorInquiryOption(id: "release", label: "Release")])])
+        mockDelegate.taskToMutate = NTMSTask(
+            id: 1, title: "T", supervisorTask: "s", runs: [Run(id: 0, steps: [step])])
+
+        let status = try Self.decodeStatus(await service.handleTaskStatus(taskID: 1))
+
+        let question = status.pending_question ?? ""
+        XCTAssertTrue(question.contains("Which scheme?"), question)
+        XCTAssertTrue(question.contains("Release"),
+                      "the manager cannot choose an option it was never shown: \(question)")
+    }
+
     /// An EMPTY question is not a question: surfacing `""` would tell the manager
     /// to answer something it cannot see.
     func testHandleTaskStatus_emptySupervisorQuestion_isNotSurfaced() async throws {

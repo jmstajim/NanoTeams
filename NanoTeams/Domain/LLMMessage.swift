@@ -167,6 +167,22 @@ nonisolated enum MessageSourceContext: String, Codable, CaseIterable {
     /// (`SystemNoticePresentation`), the shape already used for every other
     /// app-authored bookkeeping row.
     case compaction
+    /// The app's directive sent in PLACE of an answer: the Supervisor pressed
+    /// `[ Ask as form ]`, and the parked role was told to re-ask its question as a
+    /// questionnaire (`SupervisorQuestionnaireRequest.directive`).
+    ///
+    /// It travels the answer channel because that is the only channel a parked step has —
+    /// the tool result of its own `ask_supervisor` — and it RESOLVES the park
+    /// (`resolvesSupervisorAsk`). What it is not is the Supervisor speaking: the words are
+    /// the app's, and wearing `.supervisorAnswer` made the feed draw "The question was not
+    /// answered" as a checkmarked human reply inside the asked card, i.e. the human telling
+    /// the role its own question went unanswered.
+    ///
+    /// So it renders as a one-line system notice instead, and the asked card yields to it
+    /// entirely (`ActivityFeedBuilder` emits no Q&A card for a park this resolved) — the
+    /// `$ ask_supervisor` row plus a `# system: form request` row is the whole record, and
+    /// the second is the one that says what happened.
+    case questionnaireRequest
 
     /// Did this turn PUSH information at the model that no tool call of its own asked for?
     ///
@@ -251,7 +267,34 @@ nonisolated enum MessageSourceContext: String, Codable, CaseIterable {
              .delegatedQuestion, .delegationEscalation,
              .serverError, .loopCorrection, .retryNudge,
              .toolAcknowledgement, .runtimeWarning, .screenDescription,
-             .compaction:
+             .compaction, .questionnaireRequest:
+            return false
+        }
+    }
+
+    /// Does this turn RESOLVE a parked supervisor ask — the durable record that the question
+    /// is no longer owed?
+    ///
+    /// `StepExecution.activeAskCall` reads "answered" as "a turn like this landed AFTER the
+    /// trailing ask", and the feed pairs answer k with park k off the same membership. Both
+    /// asked `== .supervisorAnswer` until the app itself gained a way to resolve a park
+    /// without answering it (`.questionnaireRequest`), and an equality check there left the
+    /// step reading as waiting forever — composer chip, Watchtower inbox and sidebar
+    /// indicator all owed an answer nobody could give twice.
+    ///
+    /// Membership in a SET, then, and not "is it the Supervisor's". Exhaustive on purpose —
+    /// no `default`: a context added later must be classified by whoever adds it, because a
+    /// missed member wedges the park and a spurious one dismisses a live question.
+    var resolvesSupervisorAsk: Bool {
+        switch self {
+        case .supervisorAnswer, .questionnaireRequest:
+            return true
+        case .consultation, .meeting, .changeRequest, .supervisorMessage,
+             .supervisorFeedback,
+             .delegatedQuestion, .delegationEscalation,
+             .serverError, .loopCorrection, .retryNudge,
+             .toolAcknowledgement, .runtimeWarning, .autovisorEvent,
+             .screenDescription, .compaction:
             return false
         }
     }
@@ -277,6 +320,7 @@ nonisolated enum MessageSourceContext: String, Codable, CaseIterable {
         .autovisorEvent: "event",
         .screenDescription: "screen description",
         .compaction: "compaction",
+        .questionnaireRequest: "form request",
     ]
 
     var displayLabel: String { Self.displayLabelMap[self] ?? rawValue }

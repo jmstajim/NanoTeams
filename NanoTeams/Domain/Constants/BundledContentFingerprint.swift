@@ -79,8 +79,18 @@ nonisolated enum BundledContentFingerprint {
                 fold(role.iconBackground)
                 fold(role.usePlanningPhase)
             }
-            // Step 4 adds missing system artifacts — names are the identity.
-            fold(team.artifacts.filter(\.isSystemArtifact).map(\.name))
+            // Step 4 adds missing system artifacts AND refreshes the ones it has. The name is
+            // the identity (`id` is its slug), but the DESCRIPTION is shipped content in its own
+            // right: `PromptBuilder+TeamContext` puts it on the wire beside the role's prompt.
+            // Folding the name alone let a description edit ship with no version bump and reach
+            // nobody — the exact silence this whole value exists to break (2026-09-12).
+            for artifact in team.artifacts.filter(\.isSystemArtifact).sorted(by: { $0.id < $1.id }) {
+                fold(artifact.id)
+                fold(artifact.name)
+                fold(artifact.icon)
+                fold(artifact.mimeType)
+                fold(artifact.description)
+            }
         }
 
         // Step 2 resolves templates through this map for teams whose bundled

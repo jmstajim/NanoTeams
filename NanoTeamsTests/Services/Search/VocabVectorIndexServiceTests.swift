@@ -101,55 +101,24 @@ final class VocabVectorIndexServiceTests: XCTestCase {
         )
     }
 
-    /// Like `makeSearchIndex` but every token has `posting.count == 1`
-    /// (token T appears only in file T-mod-fileCount). Used to exercise the
-    /// empty-after-filter path on a corpus large enough to keep the
-    /// `minPostingCount` filter active.
-    private func makeSparseSearchIndex(tokens: [String], fileCount: Int) -> SearchIndex {
-        var postings: [String: [Int]] = [:]
-        for (i, token) in tokens.enumerated() {
-            postings[token] = [i % fileCount]
-        }
+    /// An index whose filter already ran and rejected everything: a real roster, no words. The
+    /// builder takes the vocabulary at its word now — the document-frequency filter lives in
+    /// `SearchIndexPlanner.build`, where the per-file counts are — so "sparse" is expressed as
+    /// the outcome rather than as postings for the builder to re-derive it from. That is also
+    /// why there is no `tokens:` parameter: one here would advertise an input the body could
+    /// only discard.
+    private func makeSparseSearchIndex(fileCount: Int) -> SearchIndex {
         let files = (0..<fileCount).map {
             IndexedFile(path: "f\($0).swift", mTime: Date(), size: 100)
         }
-        // swiftlint:disable:next force_try
-        return try! SearchIndex(
-            generatedAt: Date(),
-            signature: IndexSignature(
-                fileCount: fileCount,
-                maxMTime: Date(),
-                totalSize: Int64(fileCount * 100)
-            ),
-            files: files,
-            tokens: tokens.sorted(),
-            postings: postings
-        )
+        return SearchIndex(generatedAt: Date(), files: files, vocabulary: [])
     }
 
     private func makeSearchIndex(tokens: [String], fileCount: Int = 10) -> SearchIndex {
-        // Every token appears in 2 files so it survives `minPostingCount: 2`.
-        // `fileCount` governs the "near-universal" filter — 10 files × 0.8
-        // threshold gives 8 as the cap. 2 files per token → well under.
-        var postings: [String: [Int]] = [:]
-        for token in tokens {
-            postings[token] = [0, 1]
-        }
         let files = (0..<fileCount).map {
             IndexedFile(path: "f\($0).swift", mTime: Date(), size: 100)
         }
-        // swiftlint:disable:next force_try
-        return try! SearchIndex(
-            generatedAt: Date(),
-            signature: IndexSignature(
-                fileCount: fileCount,
-                maxMTime: Date(),
-                totalSize: Int64(fileCount * 100)
-            ),
-            files: files,
-            tokens: tokens.sorted(),
-            postings: postings
-        )
+        return SearchIndex(generatedAt: Date(), files: files, vocabulary: Set(tokens))
     }
 
     // MARK: - Rebuild — happy path
@@ -310,28 +279,9 @@ final class VocabVectorIndexServiceTests: XCTestCase {
         }
     }
 
-    // MARK: - VocabFilter — tiny-corpus behavior
-
-    func testVocabFilter_default_acceptsSingletonsBelowSkipThreshold() {
-        // On corpora with `fileCount <= nearUniversalSkipBelowFileCount`,
-        // every token appears in exactly one file by construction (a 4-file
-        // fixture can't have token coverage of 2+). `minPostingCount: 2`
-        // would empty the vocab; the filter must be a no-op below the
-        // threshold so the vector index has any candidates to match.
-        let filter = VocabVectorIndexBuilder.VocabFilter.default
-        XCTAssertTrue(filter.accepts(token: "scroll", postingCount: 1, fileCount: 4))
-        XCTAssertTrue(filter.accepts(token: "view", postingCount: 1, fileCount: 20))
-    }
-
-    func testVocabFilter_default_filtersAtScale() {
-        // Above the skip threshold the filter actively drops noise:
-        // singletons (`< minPostingCount`) and near-universal tokens.
-        let filter = VocabVectorIndexBuilder.VocabFilter.default
-        XCTAssertFalse(filter.accepts(token: "uniqueid", postingCount: 1, fileCount: 100))
-        XCTAssertTrue(filter.accepts(token: "view", postingCount: 5, fileCount: 100))
-        // 90 of 100 files = 0.9 > 0.8 ratio → near-universal, drop.
-        XCTAssertFalse(filter.accepts(token: "import", postingCount: 90, fileCount: 100))
-    }
+    // The document-frequency cases that stood here moved to `SearchIndexPlannerTests` with the
+    // filter itself — `SearchIndexPlanner.VocabularyFilter` — which is applied where the
+    // per-file counts are known; the builder now embeds `SearchIndex.vocabulary` verbatim.
 
     // MARK: - Expand — guards
 
@@ -346,18 +296,14 @@ final class VocabVectorIndexServiceTests: XCTestCase {
     }
 
     func testExpand_emptyIndex_returnsEmptyWithoutEmbeddingCall() async {
-        // Index with `fileCount = 30` (above the near-universal skip
-        // threshold) and every token at posting count 1 → entire vocab
-        // dropped by `VocabFilter.default.minPostingCount`. The persisted
+        // A 30-file corpus whose filter rejected every word, so the persisted
         // index has zero vectors. expand() must short-circuit to `.empty`
         // without firing a phrase embedding call (which would otherwise
         // mis-fire as `vector_index_dim_mismatch` against dims=0).
         let client = MockEmbeddingClient()
         let service = makeService(client: client)
         let cfg = makeConfig()
-        let bigIndex = makeSparseSearchIndex(
-            tokens: ["alpha", "beta", "gamma"], fileCount: 30
-        )
+        let bigIndex = makeSparseSearchIndex(fileCount: 30)
         await service.rebuildIfNeeded(searchIndex: bigIndex, config: cfg, force: false)
         let buildCalls = client.callCount
 

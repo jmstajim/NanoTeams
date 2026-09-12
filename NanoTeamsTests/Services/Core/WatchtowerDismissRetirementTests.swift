@@ -61,7 +61,7 @@ final class WatchtowerDismissRetirementTests: NTMSOrchestratorTestBase, @uncheck
         let all = WatchtowerInboxBuilder.build([.init(task: sut.loadedTask(taskID)!, teamRoles: [])])
         var byStep: [String: WatchtowerDismissKey] = [:]
         for notification in all {
-            if case .supervisorInput(let stepID, _, _, _) = notification.type {
+            if case .supervisorInput(let stepID, _, _, _, _) = notification.type {
                 byStep[stepID] = notification.dismissKey
             }
         }

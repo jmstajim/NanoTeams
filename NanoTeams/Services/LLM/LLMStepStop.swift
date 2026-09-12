@@ -6,9 +6,13 @@ enum LLMStepStop {
     /// The LLM completed its work without requesting more tool calls.
     case completed
 
-    /// The LLM requested Supervisor input via the ask_supervisor tool.
+    /// The LLM requested Supervisor input via `ask_supervisor` or `ask_supervisor_form`.
     /// The step always pauses until the Supervisor answers.
-    case needsSupervisorInput(question: String)
+    ///
+    /// `question` is the headline in both cases — the one string every surface renders.
+    /// `inquiry` is non-nil only when a form was asked, so the plain path stays exactly what
+    /// it was.
+    case needsSupervisorInput(question: String, inquiry: SupervisorInquiry? = nil)
 
     /// Continue the tool loop for another iteration.
     case continueLoop

@@ -911,7 +911,7 @@ final class OrchestratorCoreTailWorkFolderTests: NTMSOrchestratorTestBase, @unch
                        "a human answer must not be badged Auto-answered")
     }
 
-    /// `isAutoAnswer` is what drives the feed's "Auto-answered" badge; it comes
+    /// `origin: .automated` is what drives the feed's "Auto-answered" badge; it comes
     /// only from automated paths (delegating parent, the Autovisor).
     func testAnswerSupervisorQuestion_autoAnswer_isMarkedAsAutomated() async {
         let id = await openAndCreateTask()
@@ -923,7 +923,7 @@ final class OrchestratorCoreTailWorkFolderTests: NTMSOrchestratorTestBase, @unch
         }
 
         let ok = await sut.answerSupervisorQuestion(
-            stepID: "swe", taskID: id, answer: "proceed", isAutoAnswer: true)
+            stepID: "swe", taskID: id, answer: "proceed", origin: .automated)
 
         XCTAssertTrue(ok)
         XCTAssertEqual(step(sut, id, "swe")?.supervisorAnswerWasAuto, true)

@@ -50,9 +50,12 @@ struct TerminalToggleStyle: ToggleStyle {
 
         // `[x]` / `[ ]` — bold mono brackets, signal color when on, tertiary when off.
         // Fixed-width text so the row doesn't shimmer when the inner glyph swaps.
+        // `Typography.choiceMark` rather than the literal this spelled until 2026-09-11: the
+        // choice list draws the same glyphs, and while the size lived in two places the two
+        // primitives had already drifted a point apart.
         private func switchVisual(isOn: Bool) -> some View {
-            Text(isOn ? "[x]" : "[ ]")
-                .font(.system(size: 14, weight: .bold, design: .monospaced))
+            Text(isOn ? TerminalGlyph.checkedBox : TerminalGlyph.uncheckedBox)
+                .font(Typography.choiceMark)
                 .foregroundStyle(isOn ? Colors.accent : Colors.textTertiary)
                 .monospacedDigit()
                 .contentTransition(.identity)
@@ -143,16 +146,76 @@ extension ToggleStyle where Self == TerminalChipToggleStyle {
 /// hover), `danger` (terracotta outline). Replaces `.borderedProminent`/`.bordered`.
 struct TerminalButtonStyle: ButtonStyle {
     enum Variant { case primary, secondary, ghost, danger }
+
+    /// How much room the cell takes. The FORMAT is the variant's — brackets, colour, hover —
+    /// and does not change with it; only type size and the box around it do.
+    ///
+    /// It exists so a button that has to sit inside a dense row (a card header, a chip strip)
+    /// can stay a DS button. The alternative is what happened every previous time: a `.plain`
+    /// button with its own font, padding and hit area at the call site — three decisions the
+    /// style already owns, re-made by hand and drifting per site (see `[ Other… ]` in
+    /// `SupervisorInquiryCard`, and the `.controlSize(.small)` next to a custom style in the
+    /// Watchtower banner, which does nothing at all).
+    ///
+    /// `nonisolated` so the metric table is readable from a unit test rather than by eye
+    /// (`TerminalButtonStyleSizeTests`).
+    nonisolated enum Size {
+        /// Every button that is a row of its own.
+        case regular
+        /// Beside 11pt text, inside a header or a chip strip. 20pt tall: the height of a
+        /// composer-header row, so it drops in without moving the row it joins.
+        case compact
+
+        var labelFont: Font {
+            switch self {
+            case .regular: return Typography.subheadline.weight(.semibold)
+            case .compact: return Typography.captionSemibold
+            }
+        }
+
+        /// Same size as the label at `regular` weight — the brackets are chrome, and a
+        /// bracket heavier than its label reads as a box rather than a cell.
+        var bracketFont: Font {
+            switch self {
+            case .regular: return Typography.subheadline.weight(.regular)
+            case .compact: return Typography.caption
+            }
+        }
+
+        var horizontalPadding: CGFloat {
+            switch self {
+            case .regular: return Spacing.m
+            case .compact: return Spacing.s
+            }
+        }
+
+        var verticalPadding: CGFloat {
+            switch self {
+            case .regular: return Spacing.xs + 1
+            case .compact: return Spacing.xxs
+            }
+        }
+
+        var minHeight: CGFloat {
+            switch self {
+            case .regular: return Spacing.l + Spacing.s
+            case .compact: return Spacing.l
+            }
+        }
+    }
+
     var variant: Variant = .secondary
+    var size: Size = .regular
 
     func makeBody(configuration: Configuration) -> some View {
         // Hover/enabled state must live in a real View, not the style struct.
-        StyleBody(configuration: configuration, variant: variant)
+        StyleBody(configuration: configuration, variant: variant, size: size)
     }
 
     private struct StyleBody: View {
         let configuration: ButtonStyleConfiguration
         let variant: Variant
+        let size: Size
         @Environment(\.isEnabled) private var isEnabled
         @State private var isHovered = false
 
@@ -166,13 +229,13 @@ struct TerminalButtonStyle: ButtonStyle {
             HStack(spacing: 0) {
                 bracket("[\u{00A0}")
                 configuration.label
-                    .font(Typography.subheadline.weight(.semibold))
+                    .font(size.labelFont)
                 bracket("\u{00A0}]")
             }
             .foregroundStyle(foreground)
-            .padding(.horizontal, Spacing.m)
-            .padding(.vertical, Spacing.xs + 1)
-            .frame(minHeight: Spacing.l + Spacing.s)
+            .padding(.horizontal, size.horizontalPadding)
+            .padding(.vertical, size.verticalPadding)
+            .frame(minHeight: size.minHeight)
             .background(
                 RoundedRectangle.squircle(CornerRadius.small).fill(background)
             )
@@ -188,7 +251,7 @@ struct TerminalButtonStyle: ButtonStyle {
         /// Bracket glyph at DS-spec `opacity: 0.55` + regular weight.
         @ViewBuilder private func bracket(_ glyph: String) -> some View {
             Text(glyph)
-                .font(Typography.subheadline.weight(.regular))
+                .font(size.bracketFont)
                 .opacity(0.55)
         }
 
@@ -232,6 +295,10 @@ extension ButtonStyle where Self == TerminalButtonStyle {
     static var terminalPrimary: TerminalButtonStyle { .init(variant: .primary) }
     static var terminalSecondary: TerminalButtonStyle { .init(variant: .secondary) }
     static var terminalGhost: TerminalButtonStyle { .init(variant: .ghost) }
+    /// `.terminalGhost` sized to sit inside a dense row — a card header, a chip strip.
+    static var terminalGhostCompact: TerminalButtonStyle {
+        .init(variant: .ghost, size: .compact)
+    }
     static var terminalDanger: TerminalButtonStyle { .init(variant: .danger) }
 }
 

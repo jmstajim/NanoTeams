@@ -209,7 +209,13 @@ extension LLMExecutionService {
                     stuck: stuckRow
                 ))
                 if step.needsSupervisorInput, let q = step.supervisorQuestion, !q.isEmpty {
-                    pendingQuestion = q
+                    // A questionnaire replaces the headline, contract and all. `answer` on
+                    // `answer_task_question` is a free string, so the only way the manager can
+                    // choose among the options the role wrote is to be shown them here — and
+                    // without that it answers the headline in prose, every choice comes back
+                    // unanswered, and the asking role is told to decide them all itself.
+                    pendingQuestion = step.supervisorInquiry
+                        .map(SupervisorInquiryReply.questionnaire(for:)) ?? q
                 }
                 for art in step.artifacts {
                     // `task_status` hands back a `read_file`-able path (not inlined content)

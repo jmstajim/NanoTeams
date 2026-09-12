@@ -131,10 +131,10 @@ extension NTMSOrchestrator {
             // the same dead question, the commonest case here — never differs from the
             // snapshot, and a banner consumed by a render across the `await` reads back
             // nil. Both degrade to the generic string.
-            // `isAutoAnswer: true` — the Autovisor (an LLM) is the one answering.
+            // `.automated` — the Autovisor (an LLM) is the one answering.
             let before = errorSurfaceCount
             let ok = await answerSupervisorQuestion(
-                stepID: stepID, taskID: taskID, answer: answer, isAutoAnswer: true)
+                stepID: stepID, taskID: taskID, answer: answer, origin: .automated)
             if ok { return .success("Answered task #\(taskID).") }
             let detail = errorSurfaced(since: before)
                 ?? "Failed to deliver answer to task #\(taskID)."

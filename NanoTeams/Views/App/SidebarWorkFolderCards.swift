@@ -29,7 +29,9 @@ extension SidebarView {
                         .lineLimit(1)
                 }
                 Text("Files stored in default storage.")
-                    .font(Typography.term2xs)
+                    // A sentence, so the caption rung — not the 10px tag scale it is allowed
+                    // to wrap at (`MicroTypeNeverWrapsPinTests`).
+                    .font(Typography.termXs)
                     .foregroundStyle(Colors.textTertiary)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)

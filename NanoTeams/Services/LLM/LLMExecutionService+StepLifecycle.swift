@@ -351,11 +351,11 @@ extension LLMExecutionService {
                         await self.persistTokenUsage(stepID: stepID, taskID: taskID, usage: cumulativeUsage)
                         await self.completeStepSuccess(stepID: stepID, taskID: taskID)
                         return
-                    case .needsSupervisorInput(let question):
+                    case .needsSupervisorInput(let question, let inquiry):
                         await self.persistWireTranscript(stepID: stepID, taskID: taskID, messages: conversation)
                         await self.persistTokenUsage(stepID: stepID, taskID: taskID, usage: cumulativeUsage)
                         let persisted = await self.setNeedsSupervisorInput(
-                            stepID: stepID, taskID: taskID, question: question)
+                            stepID: stepID, taskID: taskID, question: question, inquiry: inquiry)
                         // Defense-in-depth: the inner caller (handleNoToolCalls cap branches)
                         // already handles persistence failures; this outer call is the last
                         // line of defense for ask_supervisor and other direct paths. Without
@@ -476,9 +476,16 @@ extension LLMExecutionService {
         // which of those tools ship at all (`ApprovalGatedAvailability`) — the same answer the
         // two gates read for this task, so the schema and the gate cannot disagree.
         let humanPresent = approvalHumanPresent(task: task, supervisorMode: supervisorMode)
+        // An approved change request marks this role `.revisionRequested` without cancelling
+        // its step, so the step plays on knowing its output will be replaced. While that is
+        // true the role must not build: the amendment target is rewriting the same tree.
+        let workSuperseded = RunService.runIndex(in: task, runID: runID)
+            .map { Self.isWorkSuperseded(run: task.runs[$0], roleID: step.effectiveRoleID) } ?? false
         let stage1 = roleDefinition.map {
-            toolSchemas(forDefinition: $0, team: resolvedTeam, humanPresent: humanPresent)
-        } ?? toolSchemas(for: roleForMessage, team: resolvedTeam, humanPresent: humanPresent)
+            toolSchemas(forDefinition: $0, team: resolvedTeam, humanPresent: humanPresent,
+                        workSuperseded: workSuperseded)
+        } ?? toolSchemas(for: roleForMessage, team: resolvedTeam, humanPresent: humanPresent,
+                         workSuperseded: workSuperseded)
         let tools = EffectiveToolset.applyStorageFilters(
             stage1,
             storage: isDefaultStorage ? .defaultStorage : .realFolder(root: workFolderRoot)

@@ -49,7 +49,6 @@ final class PromptFormatConventionsTests: XCTestCase {
         s.append(("assistantAttachmentsFragment", SystemTemplates.assistantAttachmentsFragment))
         s.append(("groundingRepoFragment", SystemTemplates.groundingRepoFragment))
         s.append(("groundingFolderFragment", SystemTemplates.groundingFolderFragment))
-        s.append(("numberedChoiceFragment", SystemTemplates.numberedChoiceFragment))
         s.append(("codingResponseStyleFragment", SystemTemplates.codingResponseStyleFragment))
         s.append(("engineeringStandardsFragment", SystemTemplates.engineeringStandardsFragment))
 

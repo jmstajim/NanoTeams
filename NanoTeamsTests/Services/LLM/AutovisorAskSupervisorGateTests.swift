@@ -65,7 +65,7 @@ final class AutovisorAskSupervisorGateTests: XCTestCase {
 
     // MARK: - Hole 1: ask_supervisor planted in stored toolIDs
 
-    func testManagerTeam_plantedAskSupervisorToolID_isStripped() {
+    func testManagerTeam_plantedSupervisorAskToolIDs_areStripped() {
         // A hand-edited / mid-run-injected teams.json can plant ask_supervisor in
         // the manager's stored toolIDs — the schema seeding (step 2) copies toolIDs
         // verbatim, so only the final defensive strip stands between the plant and
@@ -76,15 +76,18 @@ final class AutovisorAskSupervisorGateTests: XCTestCase {
         guard let idx = team.roles.firstIndex(where: {
             $0.systemRoleID == AutovisorConstants.managerRoleSystemID
         }) else { return XCTFail("manager team must carry the manager role") }
-        team.roles[idx].toolIDs.append(ToolNames.askSupervisor)
+        // BOTH parking tools, because the questionnaire parks the manager exactly as the
+        // plain question does — and the manager is the one role with nobody above it to
+        // clear a park. RED: strip the single name → the form survives on the wire.
+        team.roles[idx].toolIDs.append(contentsOf: ToolNames.supervisorAskTools.sorted())
 
         let managerName = team.roles[idx].name
         let schemas = LLMExecutionService.resolveToolSchemas(for: .custom(id: managerName), team: team, approval: .available)
 
-        XCTAssertFalse(schemas.contains { $0.name == ToolNames.askSupervisor },
-                       "a planted ask_supervisor in the manager's toolIDs must be stripped")
+        XCTAssertTrue(Set(schemas.map(\.name)).isDisjoint(with: ToolNames.supervisorAskTools),
+                      "a planted supervisor-ask tool in the manager's toolIDs must be stripped")
         XCTAssertTrue(schemas.contains { $0.name == ToolNames.listTasks },
-                      "sanity: the strip removes ONLY ask_supervisor, not the management toolset")
+                      "sanity: the strip removes ONLY those, not the management toolset")
     }
 
     // MARK: - Hole 2: role-lookup miss must not fall back to a set granting ask_supervisor
@@ -146,12 +149,12 @@ final class AutovisorAskSupervisorGateTests: XCTestCase {
         guard let idx = team.roles.firstIndex(where: {
             $0.systemRoleID == AutovisorConstants.managerRoleSystemID
         }) else { return XCTFail("manager team must carry the manager role") }
-        team.roles[idx].toolIDs.append(ToolNames.askSupervisor)
+        team.roles[idx].toolIDs.append(contentsOf: ToolNames.supervisorAskTools.sorted())
 
         let schemas = LLMExecutionService.resolveToolSchemas(for: .autovisor, team: team, approval: .available)
 
-        XCTAssertFalse(schemas.contains { $0.name == ToolNames.askSupervisor },
-                       "templateID loss must not re-open the ask_supervisor gate (Hole 3)")
+        XCTAssertTrue(Set(schemas.map(\.name)).isDisjoint(with: ToolNames.supervisorAskTools),
+                      "templateID loss must not re-open the supervisor-ask gate (Hole 3)")
         XCTAssertTrue(schemas.contains { $0.name == ToolNames.listTasks },
                       "sanity: management toolset survives the strip")
     }
@@ -175,8 +178,8 @@ final class AutovisorAskSupervisorGateTests: XCTestCase {
         XCTAssertFalse(allowed.contains(ToolNames.askSupervisor), "precondition: the strip held")
 
         let nudges = [
-            LLMExecutionService.noToolCallNudge(allowedToolNames: allowed),
-            LLMExecutionService.repetitiveNonToolNudge(count: 3, allowedToolNames: allowed),
+            LLMExecutionService.noToolCallNudge(allowedToolNames: allowed, questionnaire: false),
+            LLMExecutionService.repetitiveNonToolNudge(count: 3, allowedToolNames: allowed, questionnaire: false),
             LLMExecutionService.toolNameExamples(allowedToolNames: allowed) ?? "",
             LLMExecutionService.loopWarningMessage(
                 loopDetection: .repetitiveTool(tool: ToolNames.listTasks, count: 3),
@@ -199,7 +202,7 @@ final class AutovisorAskSupervisorGateTests: XCTestCase {
         XCTAssertTrue(allowed.contains(ToolNames.waitForEvents),
                       "precondition: wait_for_events is the manager's pass terminal")
 
-        let nudge = LLMExecutionService.noToolCallNudge(allowedToolNames: allowed)
+        let nudge = LLMExecutionService.noToolCallNudge(allowedToolNames: allowed, questionnaire: false)
         XCTAssertTrue(nudge.contains(ToolNames.waitForEvents), "got: \(nudge)")
     }
 

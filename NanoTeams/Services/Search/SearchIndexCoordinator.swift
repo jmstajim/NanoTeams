@@ -43,6 +43,20 @@ final class SearchIndexCoordinator {
     /// so is destroyed by the very build that proves the index still works.
     private(set) var watcherError: String? = nil
 
+    /// Set by `stop(flush:)` when the CLOSING write failed, and by nothing else.
+    ///
+    /// Its own slot rather than `buildError`, which aggregates every diagnostic about the index
+    /// — walk warnings included. Teardown is the last moment a human can be told a save failed,
+    /// so it must read a slot that means only that: reporting "Index built with 2 warning(s)"
+    /// as a save failure is how a message that is true about the index becomes false about what
+    /// just happened.
+    ///
+    /// Deliberately NOT part of `lastError`. Every caller of `stop(flush: true)` discards the
+    /// coordinator on the next line, so this can never reach the settings card — while a persist
+    /// failure that the BUILD already reported is still sitting in `buildError`, and adding this
+    /// to the aggregate would print the same failure twice in the same string.
+    private(set) var saveFailure: String? = nil
+
     /// What the Advanced settings card shows. Derived rather than stored so neither condition
     /// can clobber the other: they are independent, and whichever wrote last would otherwise win.
     var lastError: String? {
@@ -68,10 +82,10 @@ final class SearchIndexCoordinator {
     /// has no default: production hands in `FileSystemWatcher.live`, tests hand in an inert
     /// or scripted double, and neither is reachable by forgetting an argument.
     @ObservationIgnored private let makeWatcher: FileSystemWatcherFactory
-    /// FSEvents debounce window. Production default 2.0s coalesces bursty
-    /// writes (e.g. `git checkout`, IDE save-all) into a single rebuild.
-    /// Tests override to ~0.05s so they don't pay multi-second waits per
-    /// `rebuild()`/`ensureFresh()` cycle.
+    /// FSEvents debounce window — `AppDefaults.searchIndexWatcherDebounceSeconds` (2.0 s) in
+    /// production, adjustable in Settings → Advanced. Coalesces bursty writes (`git checkout`,
+    /// IDE save-all) into a single rebuild. Tests override to ~0.05s so they don't pay
+    /// multi-second waits per `rebuild()`/`ensureFresh()` cycle.
     @ObservationIgnored private let watcherDebounce: TimeInterval
     /// Token-index walk task. **Cancellable on every FS event** — a stale
     /// walk is cheap to drop and re-run with the latest folder state.
@@ -154,8 +168,8 @@ final class SearchIndexCoordinator {
     /// ON) must not be blocked on a multi-minute embedding build — otherwise
     /// a subsequent toggle OFF gets queued behind it and the user perceives
     /// indexing as "stuck on." `stop()` / `clear()` cancel both the token
-    /// and vector tasks; `awaitIndex()` blocks on the token build only so
-    /// posting-list consumers don't wait minutes for an embedding refresh.
+    /// and vector tasks; `awaitIndex()` blocks on the token build only so index consumers
+    /// don't wait minutes for an embedding refresh.
     func start() async {
         isStopped = false
         if watcher == nil {
@@ -164,8 +178,8 @@ final class SearchIndexCoordinator {
                 // Skip events from `.nanoteams/internal/` — every tool call
                 // during an active run appends to `tool_calls.jsonl` /
                 // `network_log.json` there, and those paths are already
-                // excluded from the index walk, so each one would trigger
-                // a wasted signature probe.
+                // excluded from the index walk, so each one would wake a
+                // walk that can only conclude "nothing changed".
                 [internalDir],
                 watcherDebounce,
                 { [weak self] in
@@ -218,8 +232,13 @@ final class SearchIndexCoordinator {
     /// that successor and any further chain. Empirically the loop runs at
     /// most once after the fix; keeping it eliminates a regression class
     /// where someone re-introduces a flag-read-without-gate path.
-    func stop() async {
+    /// - Parameter flush: whether the in-memory index is written to disk on the way out. This
+    ///   is the CLOSING half of the index lifecycle: a build leaves its result in memory and
+    ///   marks it unsaved, and this is where it lands. `false` for exactly one caller —
+    ///   `clear()`, which is about to delete the file and must not write it first.
+    func stop(flush: Bool = true) async {
         isStopped = true
+        saveFailure = nil
         pendingVectorRefresh = false
         watcher?.stop()
         watcher = nil
@@ -244,22 +263,40 @@ final class SearchIndexCoordinator {
                 currentVectorBuildTask = nil
             }
         }
+
+        // Last, after every build that could still mutate the index has been drained.
+        if flush {
+            await service.flush()
+            // The only place a flush failure can still reach a human: the folder is closing,
+            // so there is no next build to report it. `NTMSOrchestrator.tearDown…` reads
+            // `saveFailure` right after this returns — not the aggregate, which would also
+            // carry the last build's walk warnings and present them as a failed save.
+            //
+            // A successful flush clears `lastPersistError`, so a checkpoint that failed earlier
+            // in the session and then healed reports nothing here; one that never healed still
+            // does, and truthfully — the copy on disk is stale.
+            if let persistError = await service.lastPersistError {
+                saveFailure = "Failed to save search index: \(persistError)"
+            }
+        }
     }
 
     func rebuild() async {
         await runBuild(force: true)
     }
 
-    /// Signature-only freshness check — avoids rebuilding when the disk
-    /// index still matches the folder on (fileCount, maxMTime, totalSize).
+    /// Freshness check: one walk of the folder, a per-file `(mTime, size)` diff against the
+    /// roster, and a content pass over only what moved. NOT a cheap aggregate comparison — the
+    /// `IndexSignature` gate that was one could see neither an in-place edit preserving size nor
+    /// a rename preserving mTime, and went with the postings (2026-09-11).
     func ensureFresh() async {
         await runBuild(force: false)
     }
 
     /// Returns `nil` only if the service can't produce an index (shouldn't
     /// normally happen — the actor always returns *something*). Awaits only
-    /// the token build — callers that need the posting list don't have to
-    /// wait minutes for an embedding refresh to land.
+    /// the token build — the filename matching that reads the roster doesn't
+    /// have to wait minutes for an embedding refresh to land.
     func awaitIndex() async -> SearchIndex? {
         if let task = currentTokenBuildTask {
             _ = await task.value
@@ -271,7 +308,9 @@ final class SearchIndexCoordinator {
     /// resets observable state. Surfaces clear failures so the user knows
     /// their "Clear → Rebuild" didn't actually clear (e.g. locked file).
     func clear() async {
-        await stop()
+        // No flush: writing a megabyte we are about to delete is pure cost, and a persist error
+        // from that write would be reported as the clear's verdict below.
+        await stop(flush: false)
         await service.clear()
         await vectorIndex.clear()
         isBuilding = false
@@ -371,7 +410,7 @@ final class SearchIndexCoordinator {
     private func performTokenBuild(force: Bool) async {
         isBuilding = true
         let idx = await service.loadOrBuild(force: force)
-        tokenCount = idx.tokens.count
+        tokenCount = idx.vocabulary.count
         fileCount = idx.files.count
         lastBuiltAt = idx.generatedAt
         // Surface persistence / load failures AND non-fatal walk warnings so
@@ -386,7 +425,7 @@ final class SearchIndexCoordinator {
         } else if let loadError {
             buildError = loadError
         } else if !warnings.isEmpty {
-            buildError = "Index built with \(warnings.count) walk warning(s). "
+            buildError = "Index built with \(warnings.count) warning(s). "
                 + "Some files may be missing from the index."
         } else {
             buildError = nil

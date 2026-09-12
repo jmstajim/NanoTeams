@@ -70,18 +70,6 @@ nonisolated enum XcodeBuildHelpers {
         return !warnings.isEmpty
     }
 
-    /// Parses build result JSON to extract error and warning counts.
-    /// - Parameter outputJSON: The build result JSON.
-    /// - Returns: A tuple of (errorCount, warningCount).
-    static func parseBuildCounts(from outputJSON: String) -> (errors: Int, warnings: Int) {
-        guard let dict = JSONUtilities.parseJSONDictionary(outputJSON) else {
-            return (0, 0)
-        }
-        let errors = (dict["errorCount"] as? Int) ?? 0
-        let warnings = (dict["warningCount"] as? Int) ?? 0
-        return (errors, warnings)
-    }
-
     // MARK: - Scheme Fetching (for UI)
 
     /// Fetches available schemes for the Xcode project at the given root.

@@ -936,6 +936,13 @@ nonisolated enum ToolCallParsingHelpers {
         // them first means this pass sees the closest thing to well-formed JSON the chain
         // can produce. Nil (nothing of the kind present) leaves `s` alone.
         s = repairUnquotedJSONKeys(s) ?? s
+        // After ALL of them, and it is the only structural one here: it WALKS the text rather
+        // than matching a pattern in it, so every quoting defect above has to be gone first or
+        // the walk reads a broken string boundary as the nesting. Nil leaves `s` alone.
+        if let repaired = JSONStructuralCloserRepair.reorderingTrailingClosers(in: s) {
+            s = repaired
+            notes.append(reorderedClosersRepairNote)
+        }
         return (s, notes)
     }
 
@@ -1077,6 +1084,18 @@ nonisolated enum ToolCallParsingHelpers {
         "a string value in `arguments` was missing its closing quote before the next key; "
             + "it was repaired and the call ran. Close each string value with a quote, then the "
             + "comma"
+
+    /// runtime-prompt
+    ///
+    /// What the model is told when the closers came back in the wrong order. Names the defect
+    /// and the rule that prevents it (R1.8.1) and quotes none of the model's own bytes back
+    /// (R3.8.3) — the position Foundation reports for this one points several levels into the
+    /// document, at the first closer that did not match, which is not where the mistake was
+    /// made.
+    static let reorderedClosersRepairNote =
+        "the closing brackets at the end of `arguments` were the right ones in the wrong order; "
+            + "they were reordered and the call ran. Close containers innermost first, so an "
+            + "object inside an array inside an object ends `}]}`"
 
     /// `gemma-4-26b-a4b` defect: the model backslash-escapes the quotes of an ENTIRE
     /// key:value pair at a property boundary, e.g.
@@ -1311,6 +1330,15 @@ nonisolated enum ToolCallParsingHelpers {
             return nil
         } catch let error as NSError {
             if parseAfterRepair(sanitized) != nil { return nil }
+            // The one defect Foundation names in a way that points AWAY from it: an
+            // unterminated string is reported at the position the string OPENED, and a model
+            // reading "column 125" fixes whatever stands at column 125. Live, twice in one
+            // day: the closing quote of a JSON-document argument was missing at the very END
+            // of the emission, and `ornith-1.5:35b` answered "I accidentally used non-ASCII
+            // curly quotes" and rewrote the quotes instead (MeditationApp task 71 run 5 and
+            // task 74 run 1, 2026-09-12). Same lesson as #295 one layer down: the fault
+            // first, in our words, or the text printed after it becomes the diagnosis.
+            if let unterminated = unterminatedStringDefect(in: sanitized) { return unterminated }
             // `NSDebugDescriptionErrorKey` alone: it is JSONSerialization's English diagnostic
             // ("Unexpected character … around line 1, column 12"). The former
             // `localizedDescription` fallback was the system-language "The data couldn't be
@@ -1321,6 +1349,122 @@ nonisolated enum ToolCallParsingHelpers {
                 .trimmingCharacters(in: .whitespaces) ?? ""
             return detail.isEmpty ? nil : detail
         }
+    }
+
+    /// The tool a malformed call was FOR, when its name survived the defect and names a
+    /// registered tool.
+    ///
+    /// Read off the raw text rather than a parsed dictionary, because by definition there
+    /// isn't one. Gated on the registry so a hallucinated name is never echoed back as though
+    /// the call was nearly right — that lands in `.missingToolName`'s arm, which exists to
+    /// say so.
+    static func intendedToolName(in text: String) -> String? {
+        let text = HarmonySentinelNormalizer.normalize(text)
+        guard case .extracted(let body) = postCallJSON(in: text) else { return nil }
+        guard let range = body.range(of: "\"name\"") else { return nil }
+        let tail = body[range.upperBound...]
+        guard let colon = tail.firstIndex(of: ":") else { return nil }
+        let afterColon = tail[tail.index(after: colon)...]
+        guard let open = afterColon.firstIndex(of: "\"") else { return nil }
+        let valueStart = afterColon.index(after: open)
+        guard let close = afterColon[valueStart...].firstIndex(of: "\"") else { return nil }
+        let name = String(afterColon[valueStart..<close])
+        return ToolHandlerRegistry.schema(named: name) != nil ? name : nil
+    }
+
+    /// Names a JSON DOCUMENT written into a string argument and never closed.
+    ///
+    /// The model reads these words verbatim through the malformed-JSON nudge's
+    /// `parser error:` slot, which is why they are versioned like a nudge.
+    ///
+    /// Narrow on purpose, and the narrowness is the whole design. Ending inside a string is
+    /// not by itself diagnosable: a stray quote in the MIDDLE of an object leaves the walk
+    /// inside a string too, with byte-identical `unclosed` state (same closers, same
+    /// `endsOnCompleteValue`) — and there Foundation's position IS the fault, which is what
+    /// `HarmonyJSONDefectRepairTests` pins. What separates the two is the CONTENT of the open
+    /// string: here it is a complete JSON document the model wrote in full and forgot to close
+    /// (`form`, `team_config`), there it is whatever debris followed the stray quote.
+    ///
+    /// Live evidence, twice in one day: the closing quote of `form` was missing at the very
+    /// end of the emission, Foundation reported the position the string OPENED, and
+    /// `ornith-1.5:35b` answered "I accidentally used non-ASCII curly quotes" and rewrote the
+    /// quotes while the missing closer stayed missing (MeditationApp task 71 run 5 and task 74
+    /// run 1, 2026-09-12). Same lesson as #295 one layer down: the fault first, in our words,
+    /// or the text printed after it becomes the diagnosis.
+    /// runtime-prompt
+    static func unterminatedStringDefect(in text: String) -> String? {
+        guard let unclosed = JSONStructuralCloserRepair.unclosed(in: text),
+              unclosed.endsInsideString,
+              let open = openStringAtEnd(in: text),
+              let unescaped = unescapedJSONStringBody(open.content),
+              holdsAFinishedDocument(unescaped)
+        else { return nil }
+        let subject = open.key.map { "the value of `\($0)`" } ?? "a string argument"
+        return "\(subject) holds a whole JSON document but its closing \" was never written, "
+            + "so everything after it reads as one unfinished string"
+    }
+
+    /// Whether an open string's content is a JSON document the model FINISHED writing.
+    ///
+    /// Two conditions, and both are load-bearing. It must OPEN a container — that is what
+    /// separates a document from the debris after a stray quote (`}}`, which owes nothing and
+    /// would otherwise qualify) and from a prose argument cut off mid-sentence. And it must
+    /// leave nothing open — a document abandoned halfway is a truncated emission, and calling
+    /// that an unwritten closing quote would send the model to the wrong end of it.
+    ///
+    /// Trailing debris after the document is tolerated: the live payloads carry one surplus
+    /// `}` from the frame the model was closing when it lost its place, so requiring an exact
+    /// parse would reject the very shape this names.
+    private static func holdsAFinishedDocument(_ text: String) -> Bool {
+        let trimmed = text.drop { $0.isWhitespace }
+        guard let first = trimmed.first, first == "{" || first == "[" else { return false }
+        return JSONStructuralCloserRepair.unclosed(in: text) == nil
+    }
+
+    /// The string still open at end of text: its content, and the key it is the value of.
+    ///
+    /// One walk, because both answers come from the same pass — the last `"key":` seen before
+    /// the string opened, and where that string's content begins.
+    private static func openStringAtEnd(in text: String) -> (key: String?, content: String)? {
+        var key: String?
+        var lastClosedString: String?
+        /// Whether the last thing seen outside a string was that string's closing quote.
+        /// Whitespace does not clear it — `"form" :` is one pair — but anything else does.
+        var justClosedAString = false
+        var current = ""
+        var contentStart: String.Index?
+        var inString = false
+        var escaped = false
+        var index = text.startIndex
+        while index < text.endIndex {
+            let ch = text[index]
+            if inString {
+                if escaped { escaped = false; current.append(ch) }
+                else if ch == "\\" { escaped = true; current.append(ch) }
+                else if ch == "\"" { inString = false; lastClosedString = current; justClosedAString = true }
+                else { current.append(ch) }
+            } else if ch == "\"" {
+                inString = true
+                current = ""
+                contentStart = text.index(after: index)
+                justClosedAString = false
+            } else if ch == ":" {
+                // A `:` RIGHT AFTER a closed string makes that string the key of what follows.
+                // The adjacency is the whole rule: without it the last string closed anywhere
+                // earlier is taken, and an emission whose keys are unquoted — a live defect,
+                // the one `repairUnquotedJSONKeys` exists for — named the TOOL as the argument
+                // that broke (`{name:"ask_supervisor_form",arguments:{form:"…`, 2026-09-12).
+                // A subject that is merely absent degrades to "a string argument"; a subject
+                // that is WRONG sends the model to fix a key it never wrote.
+                if justClosedAString { key = lastClosedString }
+                justClosedAString = false
+            } else if !ch.isWhitespace {
+                justClosedAString = false
+            }
+            index = text.index(after: index)
+        }
+        guard inString, contentStart != nil else { return nil }
+        return (key: key, content: current)
     }
 
     /// Returns true when the buffer's only envelope-shaped markers are

@@ -260,8 +260,8 @@ final class SearchIndexCoordinatorTests: XCTestCase {
     func testVectorLifecycle_enable_buildsVectorsToDisk() async throws {
         // L1: feature enabled + token index built → vector index also builds
         // and lands on disk (bin + meta).
-        // Two files with overlapping tokens so each token has posting-count
-        // ≥ 2 and survives `VocabFilter.default.minPostingCount`.
+        // Two files with overlapping tokens so each token appears in ≥ 2 files and survives
+        // `SearchIndexPlanner.VocabularyFilter.default.minFileCount`.
         try write("A.swift", content: "class ScrollView { func makeScroll() {} }")
         try write("B.swift", content: "class ScrollView { func renderScroll() {} }")
         let client = RecordingEmbedClient()
@@ -703,6 +703,143 @@ final class SearchIndexCoordinatorTests: XCTestCase {
             try? await Task.sleep(for: .milliseconds(50))
         }
     }
+
+    // MARK: - Closing the folder writes the index
+
+    /// The closing half of the lifecycle. A build leaves its result in memory and marks it
+    /// unsaved; `stop()` is where it lands on disk — which is what makes the NEXT open cheap.
+    ///
+    /// RED: drop the `flush` call from `stop()` → the file keeps the full rebuild's stamp, and
+    /// every increment of the session is lost on close.
+    func testStop_writesTheOutstandingIncrement() async throws {
+        try write("A.swift", content: "let alpha = 1")
+        let c = makeCoordinator()
+        await c.start()
+        _ = await c.awaitIndex()
+        let indexFile = internalDir.appendingPathComponent("search_index.json")
+        let afterBuild = try XCTUnwrap(
+            fm.attributesOfItem(atPath: indexFile.path)[.modificationDate] as? Date)
+
+        try await Task.sleep(for: .milliseconds(20))
+        try write("B.swift", content: "let beta = 2")
+        let incremental = await c.awaitIndex()
+        XCTAssertEqual(incremental?.files.count, 2, "arrange: the increment ran")
+        XCTAssertEqual(
+            try XCTUnwrap(fm.attributesOfItem(atPath: indexFile.path)[.modificationDate] as? Date),
+            afterBuild, "an increment must stay in memory")
+
+        await c.stop()
+        XCTAssertGreaterThan(
+            try XCTUnwrap(fm.attributesOfItem(atPath: indexFile.path)[.modificationDate] as? Date),
+            afterBuild, "closing the folder is what writes it")
+    }
+
+    /// Closing a folder nobody edited must not rewrite a megabyte.
+    func testStop_withNothingOutstanding_doesNotRewrite() async throws {
+        try write("A.swift", content: "let alpha = 1")
+        let c = makeCoordinator()
+        await c.start()
+        _ = await c.awaitIndex()
+        let indexFile = internalDir.appendingPathComponent("search_index.json")
+        let afterBuild = try XCTUnwrap(
+            fm.attributesOfItem(atPath: indexFile.path)[.modificationDate] as? Date)
+
+        try await Task.sleep(for: .milliseconds(20))
+        await c.stop()
+        XCTAssertEqual(
+            try XCTUnwrap(fm.attributesOfItem(atPath: indexFile.path)[.modificationDate] as? Date),
+            afterBuild)
+    }
+
+    /// `clear()` must not write the index it is about to delete.
+    ///
+    /// RED: call `stop()` instead of `stop(flush: false)` in `clear()` → the file is rewritten
+    /// microseconds before `removeItem`, which is pure cost and, on a locked directory, reports
+    /// a persist failure as though the CLEAR had failed.
+    func testClear_doesNotWriteBeforeDeleting() async throws {
+        try write("A.swift", content: "let alpha = 1")
+        let c = makeCoordinator()
+        await c.start()
+        _ = await c.awaitIndex()
+        try write("B.swift", content: "let beta = 2")
+        _ = await c.awaitIndex()
+
+        await c.clear()
+        let indexFile = internalDir.appendingPathComponent("search_index.json")
+        XCTAssertFalse(fm.fileExists(atPath: indexFile.path))
+        XCTAssertNil(c.lastError, "a clean clear reports nothing")
+    }
+
+    /// A failed closing write is the LAST moment a human can learn about it — there is no next
+    /// build to report it, because the folder is closing.
+    ///
+    /// RED: drop the `lastPersistError` read from `stop(flush:)` → the index silently fails to
+    /// save and the next launch quietly pays a full rebuild.
+    func testStop_persistFailure_reachesLastError() async throws {
+        try write("A.swift", content: "let alpha = 1")
+        let c = makeCoordinator()
+        await c.start()
+        _ = await c.awaitIndex()
+
+        try write("B.swift", content: "let beta = 2")
+        _ = await c.awaitIndex()
+
+        chmod(internalDir.path, 0o500)
+        defer { chmod(internalDir.path, 0o700) }
+        try XCTSkipIf(
+            (try? Data("probe".utf8).write(to: internalDir.appendingPathComponent("w.tmp"))) != nil,
+            "this user can write to a 0o500 directory (root?)")
+
+        await c.stop()
+        XCTAssertTrue(c.saveFailure?.contains("Failed to save search index") == true,
+                      "got: \(c.saveFailure ?? "nil")")
+        XCTAssertNil(c.lastError,
+                     "and NOT through the card's aggregate, which nothing renders after a stop: "
+                         + "\(c.lastError ?? "nil")")
+    }
+
+    /// …and a folder whose only trouble is a walk WARNING closes in silence.
+    ///
+    /// `buildError` is the aggregate diagnostic about the index — a persist failure, a corrupt
+    /// load, or "Index built with N warning(s). Some files may be missing from the index." The
+    /// last of those is a standing fact about the folder, true all session and already on the
+    /// Advanced card; raising it at teardown, out of a slot named for a save, says a write
+    /// failed when none did.
+    ///
+    /// RED: have `stop(flush:)` write the failure into `buildError` and let
+    /// `tearDownSearchIndexCoordinator` read the `lastError` aggregate → closing any folder that
+    /// holds one outward symlink pops "Some files may be missing from the index" as a save
+    /// failure.
+    func testStop_withOnlyWalkWarnings_reportsNoSaveFailure() async throws {
+        try write("A.swift", content: "let alpha = 1")
+        let outside = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try fm.createDirectory(at: outside, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: outside) }
+        try fm.createSymbolicLink(at: tempDir.appendingPathComponent("escape"),
+                                  withDestinationURL: outside)
+
+        let c = makeCoordinator()
+        await c.start()
+        _ = await c.awaitIndex()
+        XCTAssertTrue(c.buildError?.contains("warning") == true,
+                      "anti-vacuum — the fixture must actually warn: \(c.buildError ?? "nil")")
+
+        await c.stop()
+
+        XCTAssertNil(c.saveFailure, "nothing failed to save: \(c.saveFailure ?? "nil")")
+    }
+
+    /// `tokenCount` is the settings card's "words" number, and it now counts the vocabulary
+    /// rather than a `tokens[]` array that no longer exists.
+    func testTokenCount_reportsTheVocabularySize() async throws {
+        try write("A.swift", content: "let alphaword = 1")
+        let c = makeCoordinator()
+        await c.start()
+        let index = await c.awaitIndex()
+        XCTAssertEqual(c.tokenCount, index?.vocabulary.count)
+        XCTAssertGreaterThan(c.tokenCount ?? 0, 0, "anti-vacuum")
+    }
+
 }
 
 // MARK: - File-private mock embed clients

@@ -4,6 +4,21 @@ import Foundation
 /// Handles the LLM → tools → LLM loop for meeting participants.
 enum MeetingToolExecutor {
 
+    /// The context for ONE speaker's turn: the meeting's base context (its `stepID` is the
+    /// initiator's step, where the runtime state and the build-gate caption belong) with
+    /// `roleID` rewritten to the speaker's DEFINITION id, so `tool_calls.jsonl` and the
+    /// network log attribute the call to whoever made it. Until the evening of 2026-09-11
+    /// every speaker's call carried the initiator's id — a Diff Reviewer building during a
+    /// verifier-convened vote was logged as the verifier building, `queuedMS` included.
+    /// Falls back to `speaker.baseID` for a fixture with no team.
+    nonisolated static func turnContext(
+        base: ToolExecutionContext, speaker: Role, team: Team?
+    ) -> ToolExecutionContext {
+        var context = base
+        context.roleID = team?.findRole(byIdentifier: speaker.baseID)?.id ?? speaker.baseID
+        return context
+    }
+
     /// Receives the in-flight batch task each time a turn dispatches tool calls
     /// to the cooperative pool. The orchestrator stores the handle so a paused
     /// run can cancel it; passing `nil` signals "no batch in flight, clear any
@@ -60,20 +75,31 @@ enum MeetingToolExecutor {
 
             // Partition into valid vs rejected, using the shared resolver so
             // provider prefixes and aliases are handled uniformly with the main
-            // executor / runtime. Rejected calls get a `tool_not_authorized`
-            // envelope fed back to the follow-up turn — silently dropping them
-            // (the prior behavior) stalled meetings when a participant emitted
-            // only disallowed tools.
+            // executor / runtime. Rejected calls get an error envelope fed back to the
+            // follow-up turn — silently dropping them (the prior behavior) stalled
+            // meetings when a participant emitted only disallowed tools. The envelope is
+            // the executor's name-shaped split (`nameShapedReason`): a name that is not a
+            // tool at all (`unknown_tool` — `submit_vote`, `cast_vote`) and a real tool this
+            // speaker does not hold (`tool_not_authorized`) have different remedies, and
+            // until the evening of 2026-09-11 both read "did not run and returned nothing;
+            // name the fact as unverified", which is meaningless for a name that names
+            // nothing. Meeting turns append no `ToolErrorNotePolicy` direction, so the
+            // envelope is the whole of what a speaker learns.
             var validCalls: [StepToolCall] = []
-            var rejectedResults: [ToolExecutionResult] = []
+            var rejectedResults: [(result: ToolExecutionResult, reason: String)] = []
             for call in currentResult.resolvedToolCalls {
                 let canonical = ToolRegistry.resolveToolName(call.name)
                 if allowedToolNames.contains(canonical) {
                     validCalls.append(call)
                 } else {
-                    rejectedResults.append(LLMExecutionService.makeToolNotAuthorizedResult(
-                        call: call, canonicalName: canonical, scope: "in this meeting"
-                    ))
+                    let reason = LLMExecutionService.nameShapedReason(canonical: canonical)
+                    rejectedResults.append((
+                        LLMExecutionService.makeUnavailableToolResult(
+                            call: call, canonicalName: canonical, scope: "in this meeting",
+                            reason: reason),
+                        reason == .unknownToolName
+                            ? "unknown tool name in this meeting"
+                            : "tool not authorized in this meeting"))
                 }
             }
 
@@ -93,7 +119,7 @@ enum MeetingToolExecutor {
                 // audit would show meeting executions but silently drop meeting
                 // rejections (the same asymmetry the step path avoids via its own
                 // rejection mirror).
-                for r in rejectedResults {
+                for (r, reason) in rejectedResults {
                     runtime.logNonExecutedCall(
                         taskID: toolContext.taskID,
                         runID: toolContext.runID,
@@ -101,7 +127,7 @@ enum MeetingToolExecutor {
                         toolName: r.toolName,
                         argumentsJSON: r.argumentsJSON,
                         resultJSON: r.outputJSON,
-                        errorMessage: "tool not authorized in this meeting"
+                        errorMessage: reason
                     )
                 }
                 return await runtime.executeAll(context: toolContext, toolCalls: validCalls)
@@ -109,7 +135,7 @@ enum MeetingToolExecutor {
             cancellationRegistrar?(batchTask)
             let freshResults = await batchTask.value
             cancellationRegistrar?(nil)
-            let toolResults = freshResults + rejectedResults
+            let toolResults = freshResults + rejectedResults.map(\.result)
 
             // Record tool summaries for both executed and rejected calls
             for result in toolResults {

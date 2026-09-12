@@ -18,6 +18,11 @@ import SwiftUI
 struct SupervisorInputCard: View {
     let question: String
     let answer: String?
+    /// The questionnaire this call asked and what was decided, when it asked one. Present, the
+    /// card renders the DECISIONS — one row per question, the assumption as a badge — instead
+    /// of the `Q1./A1.` paragraph that carries the same content to the model. Absent, the card
+    /// is byte-for-byte the plain `ask_supervisor` card it always was.
+    var inquiry: AnsweredInquiry? = nil
     var answerAttachmentPaths: [String] = []
     var answerClippedTexts: [String] = []
     var workFolderURL: URL? = nil
@@ -43,16 +48,27 @@ struct SupervisorInputCard: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
 
-            if isResolved, let answer {
+            if let inquiry {
+                // Asked as a form, so it is shown as one whether or not it was answered: a
+                // questionnaire left open on a closed run used to render as its headline and
+                // nothing else, which reads as a question with no content.
+                if isResolved, wasAutoAnswered { autoAnsweredLabel }
+                SupervisorInquiryTranscript(
+                    inquiry: inquiry.inquiry,
+                    answer: inquiry.answer ?? SupervisorInquiryAnswer(),
+                    note: inquiry.answer?.note)
+            } else if isResolved, let answer {
                 if wasAutoAnswered {
                     autoAnsweredResult(answer: answer)
                 } else if !answer.isEmpty {
-                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline, spacing: Spacing.xs) {
                         StatusGlyph(glyph: TerminalGlyph.done, color: Colors.success)
                         Text(answer).font(Typography.termBase).foregroundStyle(Colors.textSecondary)
                     }
                 }
+            }
 
+            if isResolved {
                 if !answerAttachmentPaths.isEmpty || !answerClippedTexts.isEmpty {
                     ReadOnlyAttachmentGrid(
                         attachmentPaths: answerAttachmentPaths,
@@ -89,16 +105,21 @@ struct SupervisorInputCard: View {
         )
     }
 
+    /// The "Auto-answered" attribution, on its own so the questionnaire transcript can wear it
+    /// without the prose body underneath that `autoAnsweredResult` pairs it with.
+    /// The design system's badge, not a hand-built SF-symbol row: this label stands directly
+    /// above the questionnaire transcript's own rows, and two attributions about the same
+    /// answer were drawn in two different chromes. (Until 2026-09-12 the rows it sat above
+    /// carried ASSUMED tags of their own, which is what made the clash visible.)
+    private var autoAnsweredLabel: some View {
+        TerminalStatusBadge(
+            glyph: TerminalGlyph.working, label: "auto-answered",
+            color: Colors.info, bordered: false)
+    }
+
     private func autoAnsweredResult(answer: String) -> some View {
         VStack(alignment: .leading, spacing: Spacing.xs) {
-            HStack(spacing: 4) {
-                Image(systemName: "sparkles")
-                    .foregroundStyle(Colors.info)
-                    .font(Typography.caption)
-                Text("Auto-answered")
-                    .font(Typography.captionSemibold)
-                    .foregroundStyle(Colors.info)
-            }
+            autoAnsweredLabel
             Text(answer)
                 .font(Typography.termBase)
                 .foregroundStyle(Colors.textSecondary)
@@ -133,7 +154,7 @@ struct SupervisorInputCard: View {
     }
 }
 
-#Preview {
+#Preview("Plain ask — answered") {
     SupervisorInputCard(
         question: "What should be the priority order for the notification channels?",
         answer: "Push notifications first, then email. SMS can wait for v2.",
@@ -145,5 +166,42 @@ struct SupervisorInputCard: View {
     .padding()
     .frame(width: 300)
     .background(Colors.surfacePrimary)
+    .environment(StoreConfiguration())
+}
+
+/// The questionnaire's answered card, auto-answered — the state where the "auto-answered"
+/// attribution stands directly above the transcript's own rows, an answered one and an
+/// untouched one reading `(not answered)`. Two attributions about the same answer were drawn
+/// in two different chromes until 2026-09-11, and only this pairing shows the seam.
+#Preview("Questionnaire — auto-answered") {
+    SupervisorInputCard(
+        question: "A few decisions before I start on the exporter.",
+        answer: "",
+        inquiry: AnsweredInquiry(
+            inquiry: SupervisorInquiry(
+                headline: "A few decisions before I start on the exporter.",
+                questions: [
+                    SupervisorInquiryQuestion(
+                        id: "scheme", prompt: "Which scheme should I build against?",
+                        kind: .singleChoice,
+                        options: [
+                            SupervisorInquiryOption(id: "debug", label: "NanoTeams (Debug)"),
+                            SupervisorInquiryOption(id: "release", label: "NanoTeams (Release)"),
+                        ]),
+                    SupervisorInquiryQuestion(
+                        id: "notes", prompt: "Anything else I should know?", kind: .freeText),
+                ]),
+            answer: SupervisorInquiryAnswer(byQuestionID: [
+                "scheme": .init(selectedOptionIDs: ["debug"]),
+            ])),
+        thinking: nil,
+        thinkingID: UUID(),
+        roleName: "Software Engineer",
+        isAutoAnswering: false,
+        wasAutoAnswered: true
+    )
+    .padding()
+    .frame(width: 360)
+    .background(Colors.surfaceCard)
     .environment(StoreConfiguration())
 }

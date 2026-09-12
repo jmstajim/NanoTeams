@@ -28,7 +28,7 @@ final class ExploratorySearchDelegateWiringTests: NTMSOrchestratorTestBase, @unc
         // No coordinator on the orchestrator (exploratory search disabled) → the
         // delegate must return a clean `.unavailable` case rather than throw
         // or crash. `+ExploratorySearch.swift` relies on this to fall back to a
-        // plain posting-list search.
+        // plain grep over the work folder.
         XCTAssertNil(sut.searchIndexCoordinator)
         let expansion = await sut.expandSearchQuery(query: "user", tokens: ["user"])
         XCTAssertEqual(expansion, .unavailable(reason: VocabVectorIndexService.reasonMissing))
@@ -59,7 +59,7 @@ final class ExploratorySearchDelegateWiringTests: NTMSOrchestratorTestBase, @unc
 
         let idx = await sut.awaitSearchIndex()
         XCTAssertNotNil(idx)
-        XCTAssertTrue(idx?.tokens.contains("marker") ?? false,
+        XCTAssertTrue(idx?.vocabulary.contains("marker") ?? false,
                       "awaitSearchIndex must return the built index, not a fresh empty one.")
     }
 

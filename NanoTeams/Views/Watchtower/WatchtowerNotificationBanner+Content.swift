@@ -7,8 +7,9 @@ extension WatchtowerNotificationBanner {
     @ViewBuilder
     var notificationContent: some View {
         switch notification {
-        case .supervisorInput(let stepID, let question, _, _):
-            supervisorInputContent(stepID: stepID, question: question)
+        case .supervisorInput(let stepID, let question, _, let toolCallID, let isInquiry):
+            supervisorInputContent(
+                stepID: stepID, question: question, askCallID: toolCallID, isInquiry: isInquiry)
 
         case .acceptance(_, let roleID, _):
             acceptanceContent(roleID: roleID)
@@ -31,7 +32,19 @@ extension WatchtowerNotificationBanner {
         !answerText.isEmpty || !answerAttachments.isEmpty || !answerClippedTexts.isEmpty
     }
 
-    func supervisorInputContent(stepID: String, question: String) -> some View {
+    /// The headline plus a way to answer it.
+    ///
+    /// A questionnaire gets a POINTER instead of the composer, and this is the sanctioned
+    /// shape rather than a shortcut — `bashApprovalContent` two functions down does the same
+    /// thing for the same reason. The answering surface for a form is the card in the task's
+    /// feed (and the Quick Capture panel), which owns the draft the half-filled form lives in;
+    /// a fourth renderer here would be a fourth place for "marked is not chosen" to be got
+    /// wrong, and a prose field beside it would let the Supervisor answer a form in words the
+    /// options were written to replace.
+    @ViewBuilder
+    func supervisorInputContent(
+        stepID: String, question: String, askCallID: UUID?, isInquiry: Bool
+    ) -> some View {
         VStack(alignment: .leading, spacing: Spacing.s) {
             HStack(alignment: .top, spacing: Spacing.xs) {
                 PromptMarker()
@@ -41,18 +54,40 @@ extension WatchtowerNotificationBanner {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            MessageComposer(
-                text: $answerText,
-                attachments: $answerAttachments,
-                clips: $answerClippedTexts,
-                placeholder: "Type your answer...",
-                canSubmit: canSubmitAnswer,
-                isSubmitting: isSubmitting,
-                onSubmit: { submitAnswer(stepID: stepID) },
-                onStageAttachment: { url in onStageAttachment(stepID, url) },
-                onRemoveAttachment: { attachment in onRemoveAttachment(attachment) },
-                skillsProjectRoot: skillsProjectRoot
-            )
+            if isInquiry {
+                Button {
+                    onViewDetails()
+                } label: {
+                    Label("Open Task to Answer", systemImage: "arrow.right.circle")
+                        .font(Typography.subheadlineMedium)
+                }
+                .buttonStyle(.terminalSecondary)
+                .controlSize(.small)
+            } else {
+                // The plain question's counterpart to the form's "Open Task to Answer": the
+                // form is answered where its card lives, a plain question can be sent back to
+                // be asked as one from here — unless the park is not the role's own ask, in
+                // which case there is nothing to re-ask (`isAvailable`).
+                if SupervisorQuestionnaireRequest.isAvailable(
+                    inquiry: nil, askCallID: askCallID)
+                {
+                    QuestionnaireRequestButton {
+                        requestQuestionnaire(stepID: stepID)
+                    }
+                }
+                MessageComposer(
+                    text: $answerText,
+                    attachments: $answerAttachments,
+                    clips: $answerClippedTexts,
+                    placeholder: "Type your answer...",
+                    canSubmit: canSubmitAnswer,
+                    isSubmitting: isSubmitting,
+                    onSubmit: { submitAnswer(stepID: stepID) },
+                    onStageAttachment: { url in onStageAttachment(stepID, url) },
+                    onRemoveAttachment: { attachment in onRemoveAttachment(attachment) },
+                    skillsProjectRoot: skillsProjectRoot
+                )
+            }
         }
     }
 
@@ -196,6 +231,19 @@ extension WatchtowerNotificationBanner {
     /// Calling `onDismiss()` here re-inserted the key the orchestrator had just retired
     /// (`WatchtowerView.dismissNotification`) and re-marked the task read, which left a
     /// text-keyed escalation dismissal standing for the NEXT same-text question.
+    /// Asks the role to re-ask as a form. Anything already typed rides along as the note, so
+    /// the field is cleared on success exactly as a submitted answer clears it.
+    func requestQuestionnaire(stepID: String) {
+        isSubmitting = true
+        Task {
+            let success = await onRequestQuestionnaire(stepID, answerText)
+            await MainActor.run {
+                isSubmitting = false
+                if success { answerText = "" }
+            }
+        }
+    }
+
     func submitAnswer(stepID: String) {
         guard canSubmitAnswer else { return }
 

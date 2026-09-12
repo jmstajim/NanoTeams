@@ -8,8 +8,9 @@ import XCTest
 /// `sanitizePathComponent` is private, but exercised through every public
 /// method that takes a `roleID: String` argument:
 /// - `roleDir(taskID:runID:roleID:)` — LLM-accessible artifact dir
-/// - `internalRoleDir(taskID:runID:roleID:)` — internal build-diagnostics dir
-/// - `buildDiagnosticsJSON(...)` / `buildExcerptsTXT(...)` — derived URLs
+/// - `internalRoleDir(taskID:runID:roleID:)` — internal per-role dir (`step_log.jsonl`);
+///   the build-diagnostics files that once lived under it were removed with the
+///   "Build Diagnostics" artifact on 2026-09-11
 ///
 /// All replacements preserve the original name's readability where possible
 /// (`/` and `..` → `_`, but legitimate dots and digits are kept).
@@ -78,23 +79,6 @@ final class NTMSPathsSanitizationTests: XCTestCase {
         let url = paths.roleDir(taskID: 1, runID: 0, roleID: "a/b/c")
         XCTAssertTrue(url.path.hasSuffix("a_b_c"),
                       "All `/` chars must be replaced with `_`")
-    }
-
-    // MARK: - Build diagnostics paths
-
-    func testBuildDiagnosticsJSON_dotDotRoleID_isSanitized() {
-        let url = paths.buildDiagnosticsJSON(taskID: 1, runID: 0, roleID: "..")
-        XCTAssertFalse(url.path.contains("/../"),
-                       "Build diagnostics file must not use an unsanitized `..` segment")
-        XCTAssertTrue(url.lastPathComponent == "build_diagnostics.json")
-    }
-
-    func testBuildExcerptsTXT_slashRoleID_isSanitized() {
-        let url = paths.buildExcerptsTXT(taskID: 1, runID: 0, roleID: "role/with/slash")
-        // The role-dir segment should be `role_with_slash`, but the file
-        // name stays exactly `build_excerpts.txt`.
-        XCTAssertEqual(url.lastPathComponent, "build_excerpts.txt")
-        XCTAssertTrue(url.path.contains("role_with_slash"))
     }
 
     // MARK: - Safe role IDs pass through untouched

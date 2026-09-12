@@ -128,13 +128,13 @@ final class QuickCaptureStagedFileOwnershipCoverageTests: XCTestCase {
         sut.formState.answerText = "half-written answer"
         sut.formState.answerAttachments = [keptFile]
         sut.formState.exitAnswerMode()
-        XCTAssertNotNil(sut.formState._testAnswerDrafts[7], "precondition: draft saved")
+        XCTAssertNotNil(sut.formState.answerDraftStore.peek(for: .role(TaskStepKey(taskID: 7, stepID: "role_a"))), "precondition: draft saved")
 
         sut.formState.enterAnswerMode(payload: payload(taskID: 8))
         sut.formState.answerAttachments = [try stageOutsideFile("for-task-8.log", draftID: sut.formState.draftID)]
         sut.cancelDraft()
 
-        XCTAssertEqual(sut.formState._testAnswerDrafts[7]?.attachments, [keptFile],
+        XCTAssertEqual(sut.formState.answerDraftStore.peek(for: .role(TaskStepKey(taskID: 7, stepID: "role_a")))?.attachments, [keptFile],
                        "precondition: the draft entry still names the file")
         XCTAssertTrue(FileManager.default.fileExists(atPath: keptFile.url.path),
                       "a draft the user deliberately kept must not lose its files because a DIFFERENT "

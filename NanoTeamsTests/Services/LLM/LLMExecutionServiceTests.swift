@@ -58,7 +58,7 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
     var scriptedSearchIndex: SearchIndex?
     var awaitSearchIndexCallCount: Int = 0
     /// Scripted expansion returned by `expandSearchQuery`. Tests install it
-    /// directly — default is empty (unchanged posting-intersection behaviour).
+    /// directly — default is empty, i.e. the grep runs on the literal query alone.
     var scriptedExpansion: VocabVectorIndexService.ExpansionResult = .empty
     var expandSearchQueryCallCount: Int = 0
 
@@ -662,7 +662,7 @@ final class LLMStepStopTests: XCTestCase {
         let stop = LLMStepStop.needsSupervisorInput(question: "What color?")
 
         switch stop {
-        case .needsSupervisorInput(let question):
+        case .needsSupervisorInput(let question, _):
             XCTAssertEqual(question, "What color?")
         default:
             XCTFail("Expected .needsSupervisorInput")
@@ -960,8 +960,11 @@ final class LLMExecutionServiceToolDefinitionsTests: XCTestCase {
             settings: TeamSettings(meetingCoordinatorRoleID: "ghost-of-deleted-role"),
             graphLayout: TeamGraphLayout()
         )
+        // `.custom(id: NAME)` — the chair is built through `Role.fromDefinition`, the same
+        // constructor the participant resolver uses, so a custom chair already seated among
+        // the participants is recognised instead of being appended (and voting) twice.
         XCTAssertEqual(
-            service.resolveCoordinatorRole(team: team), .custom(id: "alive"),
+            service.resolveCoordinatorRole(team: team), .custom(id: "Alive"),
             "an orphan heals to the default rule's pick, never nil"
         )
     }
@@ -984,7 +987,7 @@ final class LLMExecutionServiceToolDefinitionsTests: XCTestCase {
             settings: TeamSettings(meetingCoordinatorRoleID: "sup"),
             graphLayout: TeamGraphLayout()
         )
-        XCTAssertEqual(service.resolveCoordinatorRole(team: team), .custom(id: "r"))
+        XCTAssertEqual(service.resolveCoordinatorRole(team: team), .custom(id: "R"))
     }
 
     // Defensive: a stored empty string is an orphan too.
@@ -999,7 +1002,7 @@ final class LLMExecutionServiceToolDefinitionsTests: XCTestCase {
             settings: TeamSettings(meetingCoordinatorRoleID: ""),
             graphLayout: TeamGraphLayout()
         )
-        XCTAssertEqual(service.resolveCoordinatorRole(team: team), .custom(id: "r"))
+        XCTAssertEqual(service.resolveCoordinatorRole(team: team), .custom(id: "R"))
     }
 
     // A stored nil is not "Auto" (there is no Auto): the default rule picks.
@@ -1014,7 +1017,7 @@ final class LLMExecutionServiceToolDefinitionsTests: XCTestCase {
             settings: TeamSettings(meetingCoordinatorRoleID: nil),
             graphLayout: TeamGraphLayout()
         )
-        XCTAssertEqual(service.resolveCoordinatorRole(team: team), .custom(id: "r1"))
+        XCTAssertEqual(service.resolveCoordinatorRole(team: team), .custom(id: "R"))
     }
 
     // Nobody to coordinate ⇒ nil; the meeting runtime then falls back to the initiator
@@ -1027,7 +1030,10 @@ final class LLMExecutionServiceToolDefinitionsTests: XCTestCase {
             graphLayout: TeamGraphLayout()
         )
         XCTAssertNil(service.resolveCoordinatorRole(team: team))
-        XCTAssertEqual(service.effectiveCoordinator(team: team, initiator: .productManager), .productManager)
+        XCTAssertEqual(
+            service.effectiveCoordinator(
+                team: team, initiator: .productManager, requesterRoleID: "pm", seat: .speaks, targetRoleID: nil),
+            .chair(.productManager))
     }
 
     // MARK: - effectiveCoordinator (designated ?? initiator)
@@ -1045,9 +1051,14 @@ final class LLMExecutionServiceToolDefinitionsTests: XCTestCase {
             settings: TeamSettings(meetingCoordinatorRoleID: nil),
             graphLayout: TeamGraphLayout()
         )
+        // `.custom(id: "R")` — the NAME. The coordinator is built through
+        // `Role.fromDefinition`, the same constructor the participant resolver uses, so a
+        // custom coordinator already seated among the participants is recognised as the
+        // same role instead of being appended (and voting) twice.
         XCTAssertEqual(
-            service.effectiveCoordinator(team: team, initiator: .productManager),
-            .custom(id: "r"),
+            service.effectiveCoordinator(
+                team: team, initiator: .productManager, requesterRoleID: "pm", seat: .speaks, targetRoleID: nil),
+            .chair(.custom(id: "R")),
             "no stored coordinator: the default rule's pick coordinates, not the initiator"
         )
     }
@@ -1069,10 +1080,11 @@ final class LLMExecutionServiceToolDefinitionsTests: XCTestCase {
             settings: TeamSettings(meetingCoordinatorRoleID: "user-coord"),
             graphLayout: TeamGraphLayout()
         )
-        guard let resolved = service.effectiveCoordinator(team: team, initiator: .productManager) as Role? else {
-            XCTFail("expected a Role"); return
+        guard case .chair(let resolved) = service.effectiveCoordinator(
+            team: team, initiator: .productManager, requesterRoleID: "pm", seat: .speaks, targetRoleID: nil) else {
+            XCTFail("expected a chair"); return
         }
-        XCTAssertEqual(resolved.baseID, "user-coord",
+        XCTAssertEqual(team.findRole(byIdentifier: resolved.baseID)?.id, "user-coord",
                        "Designated coordinator wins over initiator")
     }
 
@@ -1090,8 +1102,9 @@ final class LLMExecutionServiceToolDefinitionsTests: XCTestCase {
             graphLayout: TeamGraphLayout()
         )
         XCTAssertEqual(
-            service.effectiveCoordinator(team: team, initiator: .softwareEngineer),
-            .custom(id: "alive"),
+            service.effectiveCoordinator(
+                team: team, initiator: .softwareEngineer, requesterRoleID: "swe", seat: .speaks, targetRoleID: nil),
+            .chair(.custom(id: "Alive")),
             "an orphan heals to the default rule's pick; the initiator is never promoted"
         )
     }
@@ -1259,7 +1272,7 @@ final class LLMExecutionServiceToolDefinitionsTests: XCTestCase {
             XCTFail("Should resolve to a Role")
             return
         }
-        XCTAssertEqual(resolved.baseID, "user-defined")
+        XCTAssertEqual(team.findRole(byIdentifier: resolved.baseID)?.id, "user-defined")
     }
 
     func testUnavailableToRoles_doesNotContainNormalTools() {

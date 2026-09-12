@@ -17,9 +17,7 @@ struct RoleContextDisclosureSection<Content: View>: View {
                 }
             } label: {
                 HStack(spacing: Spacing.xs) {
-                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .font(Typography.term2xs)
-                        .foregroundStyle(Colors.textTertiary)
+                    DisclosureChevron(isExpanded: isExpanded)
                     Image(systemName: icon)
                         .font(Typography.caption)
                         .foregroundStyle(color)

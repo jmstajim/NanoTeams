@@ -18,7 +18,13 @@ nonisolated struct TeamMeetingService {
         /// `request_changes`: the requester's case IS the topic and it must not vote on its
         /// own request — `handleChangeRequest` excludes it from the voters on purpose. It is
         /// announced to the UI as part of the meeting (its node glows) but never speaks.
-        case presentsOnly
+        ///
+        /// Carries the TARGET's role id because the chair rule needs it: a vote must be
+        /// chaired by somebody who is neither the requester nor the target, and the seat is
+        /// the only thing that knows this meeting is such a vote. Passing it separately
+        /// would let a caller pass the seat and forget the target — which is how the
+        /// requester ended up chairing its own case for the whole of 2026.
+        case presentsOnly(targetRoleID: String)
     }
 
     /// Context required for a team meeting.
@@ -34,13 +40,22 @@ nonisolated struct TeamMeetingService {
         let availableArtifacts: [Artifact]
         let artifactReader: (Artifact) -> String?
         let team: Team?
-        /// The team's coordinator (`Team.meetingCoordinator`, the mandatory one — there
-        /// is no Auto mode); the initiator only when there is no team to resolve
-        /// against. Resolved at the call site via
-        /// `LLMExecutionService.effectiveCoordinator(team:initiator:)` so this stays
-        /// non-optional and the runtime never branches on nil.
+        /// The chair of THIS meeting. For a discussion (`request_team_meeting`) it is the
+        /// team's coordinator (`Team.meetingCoordinator`, the mandatory one — there is no
+        /// Auto mode), or the initiator only when there is no team to resolve against. For
+        /// a `request_changes` vote it may be a STAND-IN: a coordinator that is the
+        /// requester or the target is disqualified and another role holds the gavel.
+        /// Resolved at the call site via
+        /// `LLMExecutionService.effectiveCoordinator(team:initiator:requesterRoleID:seat:targetRoleID:)`
+        /// so this stays non-optional and the runtime never branches on nil — and never
+        /// compare it to `Team.meetingCoordinatorID`, which names the coordinator, not
+        /// the chair.
         let coordinatorRole: Role
         let limits: TeamLimits
+        /// The role a `request_changes` vote is ABOUT — the participant whose directive
+        /// asks for a defence rather than a ballot (`ChangeRequestService.targetInstruction`),
+        /// because `tallyVotes` does not count its vote. `nil` for a discussion meeting.
+        let voteTargetRole: Role?
         /// App-wide instruction appended to the resolved system prompt.
         /// Default `""` keeps existing test call sites compiling.
         let globalContext: String
@@ -60,6 +75,7 @@ nonisolated struct TeamMeetingService {
             team: Team?,
             coordinatorRole: Role,
             limits: TeamLimits,
+            voteTargetRole: Role? = nil,
             globalContext: String = ""
         ) {
             self.initiatedBy = initiatedBy
@@ -69,6 +85,7 @@ nonisolated struct TeamMeetingService {
             self.team = team
             self.coordinatorRole = coordinatorRole
             self.limits = limits
+            self.voteTargetRole = voteTargetRole
             self.globalContext = globalContext
             self.artifactGrounding = PromptBuilder.buildArtifactSection(
                 heading: "Available team artifacts", artifacts: availableArtifacts,

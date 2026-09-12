@@ -514,79 +514,96 @@ final class TeamActivityComposerRoutingTests: XCTestCase {
         ))
     }
 
-    // MARK: - sanitizeSelection — stale chip cleanup
-
-    func testSanitizeSelection_nilStaysNil() {
-        XCTAssertNil(TeamActivityComposer.sanitizeSelection(
-            selected: nil, availableRecipients: [.role(id: "pm")]
+    /// Ticking options and pressing send without typing a word is the ordinary way a
+    /// questionnaire is answered — the card IS the answer field there.
+    ///
+    /// RED: drop `hasInquiryAnswer` from the gate → the Supervisor looks at a filled-in form
+    /// beside a dead send button, with nothing on screen saying what is missing.
+    func testComputeCanSubmit_questionnaireOnly_returnsTrue() {
+        XCTAssertTrue(TeamActivityComposer.computeCanSubmit(
+            text: "", hasAttachments: false, hasClips: false, hasInquiryAnswer: true,
+            effectiveRecipient: .answer(stepID: "pm")
         ))
     }
 
-    func testSanitizeSelection_validSelectionPassesThrough() {
-        let result = TeamActivityComposer.sanitizeSelection(
-            selected: .role(id: "pm"),
-            availableRecipients: [.role(id: "pm"), .role(id: "tl")]
-        )
-        XCTAssertEqual(result, .role(id: "pm"))
-    }
-
-    func testSanitizeSelection_staleAnswerSelectionDropped() {
-        // Scenario: Supervisor selected "Answer PM", answered, activeQuestion went
-        // nil. Without cleanup, `selectedRecipient = .answer("pm")` would persist
-        // and resolver-explicit-wins keeps the placeholder/avatar/submit pointed at
-        // a non-existent question.
-        let result = TeamActivityComposer.sanitizeSelection(
-            selected: .answer(stepID: "pm"),
-            availableRecipients: [.role(id: "pm"), .role(id: "tl")]
-        )
-        XCTAssertNil(result, "Answer chip is no longer in the row → drop the selection")
-    }
-
-    func testSanitizeSelection_staleRoleSelectionDropped() {
-        // Scenario: Supervisor selected role TL, then TL completed and is no longer
-        // in workingRoleIDs. The chip vanished — drop the selection.
-        let result = TeamActivityComposer.sanitizeSelection(
-            selected: .role(id: "tl"),
-            availableRecipients: [.role(id: "pm")]
-        )
-        XCTAssertNil(result)
-    }
-
-    func testSanitizeSelection_emptyAvailableDropsEverything() {
-        XCTAssertNil(TeamActivityComposer.sanitizeSelection(
-            selected: .answer(stepID: "pm"), availableRecipients: []
-        ))
-        XCTAssertNil(TeamActivityComposer.sanitizeSelection(
-            selected: .role(id: "pm"), availableRecipients: []
+    /// …and it is still a content gate, not a bypass: no recipient, no send.
+    func testComputeCanSubmit_questionnaireWithNoRecipient_returnsFalse() {
+        XCTAssertFalse(TeamActivityComposer.computeCanSubmit(
+            text: "", hasAttachments: false, hasClips: false, hasInquiryAnswer: true,
+            effectiveRecipient: nil
         ))
     }
 
-    func testSanitizeSelection_oneOfMultipleAnswerChipsRemoved_droppedSelection() {
-        // Realistic mid-multi-pending scenario: PM, TL, and SWE all asked. Supervisor
-        // explicitly clicked "Answer TL" and started typing. While drafting, TL was
-        // answered through another surface (Watchtower / QuickCapture). The TL Answer
-        // chip vanishes from the row — the explicit selection must drop to nil so the
-        // resolver doesn't silently keep pointing at a non-existent recipient.
-        let result = TeamActivityComposer.sanitizeSelection(
-            selected: .answer(stepID: "tl"),
-            availableRecipients: [
-                .answer(stepID: "pm"), .answer(stepID: "swe"), .role(id: "eng")
-            ]
-        )
-        XCTAssertNil(result, "Selection of an Answer chip that is no longer in the row must drop")
+    /// A `.role` chip queues a chat MESSAGE, and `queueChatMessage` refuses an empty one
+    /// without a word. Counting the ticks there lit a Send button whose every press did
+    /// nothing — and the `.role` branch would have dropped the answer on the way out anyway.
+    ///
+    /// RED: OR `hasInquiryAnswer` in regardless of the recipient's kind → the button is live
+    /// over an empty message field and pressing it is a no-op with no banner.
+    func testComputeCanSubmit_questionnaireForARoleChip_returnsFalse() {
+        XCTAssertFalse(TeamActivityComposer.computeCanSubmit(
+            text: "", hasAttachments: false, hasClips: false, hasInquiryAnswer: true,
+            effectiveRecipient: .role(id: "pm")
+        ))
     }
 
-    func testSanitizeSelection_oneOfMultipleAnswerChipsRemoved_otherSurvivors() {
-        // Sibling case: Supervisor selected "Answer PM" out of {PM, TL, SWE}. SWE was
-        // answered elsewhere; PM's chip is still in the row. Selection must pass through
-        // unchanged — only stale selections are dropped, surviving ones are preserved
-        // so the user's intent stays locked.
-        let result = TeamActivityComposer.sanitizeSelection(
-            selected: .answer(stepID: "pm"),
-            availableRecipients: [.answer(stepID: "pm"), .answer(stepID: "tl")]
-        )
-        XCTAssertEqual(result, .answer(stepID: "pm"),
-                       "Surviving Answer chips must keep their selection — don't auto-fall-through")
+    // MARK: - lockedRecipient — the aim lock
+
+    /// The rule the composer runs on every content change: once there is something to send and
+    /// nothing is explicitly aimed, lock onto whatever the resolver picked.
+    ///
+    /// RED: keep the lock on the first KEYSTROKE (the shape it had) → a questionnaire, which is
+    /// content produced with zero keystrokes, leaves `selectedRecipient` nil, so
+    /// `recipientToPark` has no `prior` and tick-only work is neither parked nor offered back
+    /// when the chip leaves the row.
+    func testLockedRecipient_firstContentWithNoSelection_locksOntoTheAutoPick() {
+        XCTAssertEqual(
+            TeamActivityComposer.lockedRecipient(
+                prior: nil, auto: .answer(stepID: "pm"), hasContent: true),
+            .answer(stepID: "pm"))
+    }
+
+    func testLockedRecipient_emptyComposer_locksNothing() {
+        XCTAssertNil(TeamActivityComposer.lockedRecipient(
+            prior: nil, auto: .answer(stepID: "pm"), hasContent: false))
+    }
+
+    /// Idempotent: it is called from every content observer, and a second call must not move an
+    /// aim the user already committed to.
+    func testLockedRecipient_alreadyLocked_keepsTheExistingAim() {
+        XCTAssertEqual(
+            TeamActivityComposer.lockedRecipient(
+                prior: .role(id: "tl"), auto: .answer(stepID: "pm"), hasContent: true),
+            .role(id: "tl"))
+    }
+
+    func testLockedRecipient_noResolvedRecipient_locksNothing() {
+        XCTAssertNil(TeamActivityComposer.lockedRecipient(
+            prior: nil, auto: nil, hasContent: true))
+    }
+
+    // MARK: - question(for:among:) — which questionnaire is on screen
+
+    func testQuestion_forAnAnswerRecipient_findsItsOwnQuestion() {
+        let questions = [
+            TeamActivityActiveQuestion(stepID: "pm", role: .productManager, question: "A?"),
+            TeamActivityActiveQuestion(stepID: "tl", role: .techLead, question: "B?"),
+        ]
+        XCTAssertEqual(
+            TeamActivityComposer.question(for: .answer(stepID: "tl"), among: questions)?.question,
+            "B?")
+    }
+
+    func testQuestion_forARoleRecipient_isNil() {
+        let questions = [
+            TeamActivityActiveQuestion(stepID: "pm", role: .productManager, question: "A?")
+        ]
+        XCTAssertNil(TeamActivityComposer.question(for: .role(id: "pm"), among: questions),
+                     "a role chip queues a message — there is no question on screen to answer")
+    }
+
+    func testQuestion_forAnAnswerChipWhoseQuestionIsGone_isNil() {
+        XCTAssertNil(TeamActivityComposer.question(for: .answer(stepID: "pm"), among: []))
     }
 
     // MARK: - remapEquivalentRecipient — draft-preserving role↔answer retarget
@@ -598,7 +615,7 @@ final class TeamActivityComposerRoutingTests: XCTestCase {
     }
 
     func testRemap_priorStillPresent_keepsSameShape() {
-        // Same shape still available → no change (matches sanitizeSelection's keep).
+        // Same shape still available → no change.
         XCTAssertEqual(
             TeamActivityComposer.remapEquivalentRecipient(
                 prior: .role(id: "autovisor"),
@@ -633,7 +650,7 @@ final class TeamActivityComposerRoutingTests: XCTestCase {
 
     func testRemap_roleLost_onlyDifferentRoleAvailable_returnsNil() {
         // The prior role is genuinely gone (a different role's chip is present) → nil,
-        // so shouldClearDraftAfterSelectionLoss can discard as before.
+        // so `recipientToPark` names it and the half-typed reply is parked, not lost.
         XCTAssertNil(
             TeamActivityComposer.remapEquivalentRecipient(
                 prior: .role(id: "autovisor"),
@@ -660,38 +677,40 @@ final class TeamActivityComposerRoutingTests: XCTestCase {
             "Remap targets the same role's counterpart, not an unrelated chip")
     }
 
-    /// Integration: the running↔parked flip combined with the discard guard must NOT
-    /// discard the draft (the user-reported "message disappears"). With the remap in
-    /// place, `sanitized` is the counterpart recipient, so `shouldClearDraftAfterSelectionLoss`
-    /// returns false even though the original `.role` chip vanished.
-    func testRemap_runningToParkedFlip_doesNotTriggerDraftDiscard() {
+    /// Integration: the running↔parked flip must NOT park the draft (the user-reported
+    /// "message disappears"). With the remap in place, `sanitized` is the counterpart
+    /// recipient, so `recipientToPark` names nobody even though the original `.role` chip
+    /// vanished — the text stays in the field, aimed at the same role's other chip.
+    func testRemap_runningToParkedFlip_doesNotParkTheDraft() {
         let prior: TeamActivityComposer.Recipient = .role(id: "autovisor")
         let recipients: [TeamActivityComposer.Recipient] = [.answer(stepID: "autovisor")]
         let sanitized = TeamActivityComposer.remapEquivalentRecipient(
             prior: prior, availableRecipients: recipients
         )
         XCTAssertEqual(sanitized, .answer(stepID: "autovisor"))
-        XCTAssertFalse(
-            TeamActivityComposer.shouldClearDraftAfterSelectionLoss(
+        XCTAssertNil(
+            TeamActivityComposer.recipientToPark(
                 prior: prior, sanitized: sanitized, hasContent: true
             ),
-            "Remapped flip keeps the draft — discard must NOT fire when the same role is still reachable")
+            "Remapped flip keeps the draft in the composer — nothing to park")
     }
 
-    /// Integration: a genuine recipient loss (the role is gone, no counterpart) still
-    /// discards — the remap doesn't weaken the existing guard.
-    func testRemap_genuineLoss_stillTriggersDraftDiscard() {
+    /// Integration: a genuine recipient loss (the role is gone, no counterpart) parks the
+    /// draft under that recipient's branch. The remap doesn't weaken the guard; what changed
+    /// is that the work is kept instead of thrown away.
+    func testRemap_genuineLoss_parksTheDraftUnderTheLostRecipient() {
         let prior: TeamActivityComposer.Recipient = .role(id: "autovisor")
         let recipients: [TeamActivityComposer.Recipient] = []   // role finished, nothing left
         let sanitized = TeamActivityComposer.remapEquivalentRecipient(
             prior: prior, availableRecipients: recipients
         )
         XCTAssertNil(sanitized)
-        XCTAssertTrue(
-            TeamActivityComposer.shouldClearDraftAfterSelectionLoss(
+        XCTAssertEqual(
+            TeamActivityComposer.recipientToPark(
                 prior: prior, sanitized: sanitized, hasContent: true
             ),
-            "A genuinely lost recipient with content still discards (guard unchanged)")
+            prior,
+            "A genuinely lost recipient with content parks under its own branch")
     }
 
     func testRemap_answerPriorStillPresent_keepsSameShape() {
@@ -720,49 +739,96 @@ final class TeamActivityComposerRoutingTests: XCTestCase {
             "role-lost remap must pick the same role's .answer counterpart, ignoring unrelated chips")
     }
 
-    // MARK: - shouldClearDraftAfterSelectionLoss — mid-typing retarget guard
+    // MARK: - recipientToPark — mid-typing retarget guard
 
     /// Why this exists: with multiple parallel `ask_supervisor` chips, the user can be
     /// mid-typing into the auto-selected leftmost chip when the underlying question is
     /// answered through another surface (Watchtower, QuickCapture). Without this guard,
     /// `effectiveRecipient` falls through to the next pending question and the drafted
-    /// reply silently retargets to a different role. Returning `true` tells the
-    /// composer to discard the draft + surface a banner.
-    func testShouldClearDraft_explicitSelectionLost_withContent_returnsTrue() {
-        let result = TeamActivityComposer.shouldClearDraftAfterSelectionLoss(
-            prior: .answer(stepID: "pm"),
-            sanitized: nil,
-            hasContent: true
-        )
-        XCTAssertTrue(result,
-                      "User had locked-in selection + content; chip vanished → clear draft to prevent silent retarget")
+    /// reply silently retargets to a different role.
+    ///
+    /// The guard used to answer `Bool` and the composer's answer to a true was to DISCARD —
+    /// throwing away the user's words on an event they did not cause. Now it names the
+    /// recipient whose branch the draft is parked under, and a row above the composer offers
+    /// it back.
+    func testRecipientToPark_explicitSelectionLost_withContent_namesThePriorRecipient() {
+        XCTAssertEqual(
+            TeamActivityComposer.recipientToPark(
+                prior: .answer(stepID: "pm"), sanitized: nil, hasContent: true
+            ),
+            .answer(stepID: "pm"),
+            "Locked-in selection + content, chip vanished → park under the branch it was for")
     }
 
-    func testShouldClearDraft_emptyDraft_returnsFalse() {
+    func testRecipientToPark_emptyDraft_parksNothing() {
         // Nothing to lose if there's no content — let auto-resolution proceed silently.
-        let result = TeamActivityComposer.shouldClearDraftAfterSelectionLoss(
-            prior: .answer(stepID: "pm"), sanitized: nil, hasContent: false
-        )
-        XCTAssertFalse(result)
+        XCTAssertNil(TeamActivityComposer.recipientToPark(
+            prior: .answer(stepID: "pm"), sanitized: nil, hasContent: false))
     }
 
-    func testShouldClearDraft_selectionSurvivesSanitize_returnsFalse() {
-        // The chip is still in the row after sanitize — no draft loss to warn about.
-        let result = TeamActivityComposer.shouldClearDraftAfterSelectionLoss(
-            prior: .answer(stepID: "pm"),
-            sanitized: .answer(stepID: "pm"),
-            hasContent: true
-        )
-        XCTAssertFalse(result)
+    func testRecipientToPark_selectionSurvivesSanitize_parksNothing() {
+        // The chip is still in the row after sanitize — the draft never left the composer.
+        XCTAssertNil(TeamActivityComposer.recipientToPark(
+            prior: .answer(stepID: "pm"), sanitized: .answer(stepID: "pm"), hasContent: true))
     }
 
-    func testShouldClearDraft_neverHadExplicitSelection_returnsFalse() {
+    func testRecipientToPark_neverHadExplicitSelection_parksNothing() {
         // No prior explicit lock means the user never committed to a recipient — the
-        // resolver's first-chip auto-pick is still appropriate; we don't clear pre-typing.
-        let result = TeamActivityComposer.shouldClearDraftAfterSelectionLoss(
-            prior: nil, sanitized: nil, hasContent: true
-        )
-        XCTAssertFalse(result)
+        // resolver's first-chip auto-pick is still appropriate; we don't park pre-typing.
+        XCTAssertNil(TeamActivityComposer.recipientToPark(
+            prior: nil, sanitized: nil, hasContent: true))
+    }
+
+    // MARK: - Recipient.roleID — the two chip shapes name one role
+
+    func testRecipientRoleID_bothShapesNameTheSameRole() {
+        // The fact `remapEquivalentRecipient` retargets on and `AnswerDraftKey.role` keys on.
+        XCTAssertEqual(TeamActivityComposer.Recipient.answer(stepID: "pm").roleID, "pm")
+        XCTAssertEqual(TeamActivityComposer.Recipient.role(id: "pm").roleID, "pm")
+    }
+
+    // MARK: - draftKey — the composer and the panel must name a draft the same way
+
+    func testDraftKey_bothChipShapesNameOneBranch() {
+        // The whole reason `remapEquivalentRecipient` can retarget `.role(X)` ↔ `.answer(X)`
+        // without the draft going anywhere.
+        let fromAnswerChip = TeamActivityComposer.draftKey(
+            taskID: 4, recipient: .answer(stepID: "pm"))
+        let fromRoleChip = TeamActivityComposer.draftKey(taskID: 4, recipient: .role(id: "pm"))
+
+        XCTAssertEqual(fromAnswerChip, AnswerDraftKey.role(TaskStepKey(taskID: 4, stepID: "pm")))
+        XCTAssertEqual(fromAnswerChip, fromRoleChip)
+    }
+
+    func testDraftKey_aChatTeamsRolesKeepSeparateDrafts() {
+        // Chat mode does NOT collapse the composer's chips onto the task. Quest Party is a
+        // chat team with five roles, each with its own step and its own question; one key for
+        // all five means the second parked reply destroys the first.
+        //
+        // RED: route this through a chat-mode collapse again → both keys are `.taskChat(3)`.
+        XCTAssertNotEqual(
+            TeamActivityComposer.draftKey(taskID: 3, recipient: .answer(stepID: "lore")),
+            TeamActivityComposer.draftKey(taskID: 3, recipient: .answer(stepID: "npc")))
+    }
+
+    func testDraftKey_scopesToTheTask_soTwoTasksOnOneTeamDoNotShare() {
+        // `StepExecution.id == roleID` (CLAUDE.md #5): the id string is shared across tasks
+        // on the same team, and only the composite key keeps their drafts apart.
+        XCTAssertNotEqual(
+            TeamActivityComposer.draftKey(taskID: 1, recipient: .role(id: "engineer")),
+            TeamActivityComposer.draftKey(taskID: 2, recipient: .role(id: "engineer")))
+    }
+
+    /// The composer's chip and Quick Capture's question must name ONE branch, or a reply
+    /// parked by one surface is invisible to the other.
+    func testDraftKey_agreesWithTheQuickCapturePanel() {
+        let payload = SupervisorAnswerPayload(
+            stepID: "pm", taskID: 4, role: .productManager, roleDefinition: nil,
+            question: "?", messageContent: nil, thinking: nil, isChatMode: false)
+
+        XCTAssertEqual(
+            TeamActivityComposer.draftKey(taskID: 4, recipient: .answer(stepID: "pm")),
+            QuickCaptureFormState.draftKey(for: payload))
     }
 
     // MARK: - TeamActivityActiveQuestion — invariant
@@ -908,6 +974,10 @@ final class TeamActivityComposerRoutingTests: XCTestCase {
         XCTAssertEqual(state.text, "", "Text must be cleared")
         XCTAssertTrue(state.attachments.isEmpty, "Attachments must be cleared")
         XCTAssertTrue(state.clips.isEmpty, "Clips must be cleared")
+        XCTAssertNil(
+            state.inquiry,
+            "A submitted questionnaire must not stay ticked — the next question the role asks binds the same card, and leaving the answer standing would offer the Supervisor's previous decisions as this one's."
+        )
         XCTAssertNil(
             state.selectedRecipient,
             "selectedRecipient MUST be reset — otherwise the explicit-selection priority in resolveEffectiveRecipient keeps a stale .role lock from a previous queue submit, preventing auto-resolution to a newly-arrived Answer chip when the role asks again."
@@ -1657,6 +1727,144 @@ final class TeamActivityComposerRoutingTests: XCTestCase {
                 failedRoleIDs: [], roleDefinitions: [pm, tl]
             ),
             "Queue a message for PM…")
+    }
+
+    // MARK: - The row's two derived facts
+
+    private typealias C = TeamActivityComposer
+
+    func testAChipWithNoParkedDraftWearsNoDot() {
+        XCTAssertTrue(C.unsentDraftRecipients(
+            among: [.answer(stepID: "pm"), .role(id: "tl")], taskID: 1, parked: []).isEmpty)
+    }
+
+    func testTheDotFollowsTheBranchTheDraftWasParkedUnder() {
+        let dotted = C.unsentDraftRecipients(
+            among: [.answer(stepID: "pm"), .role(id: "tl")],
+            taskID: 1,
+            parked: [.role(TaskStepKey(taskID: 1, stepID: "tl"))])
+        XCTAssertEqual(dotted, [.role(id: "tl")])
+    }
+
+    /// `.role(X)` and `.answer(X)` share ONE draft key by design, so a role's two chip shapes
+    /// wear the same dot. RED: key the dot on the chip instead of the branch → the reply parked
+    /// while the role was asking looks lost the moment the role goes back to work.
+    func testARolesTwoChipShapesWearTheSameDot() {
+        let dotted = C.unsentDraftRecipients(
+            among: [.answer(stepID: "pm"), .role(id: "pm")],
+            taskID: 1,
+            parked: [.role(TaskStepKey(taskID: 1, stepID: "pm"))])
+        XCTAssertEqual(dotted, [.answer(stepID: "pm"), .role(id: "pm")])
+    }
+
+    /// Draft keys carry the task id, and task ids repeat across work folders. A dot sourced
+    /// from another task's parked reply would point at a draft this composer cannot reach.
+    func testAnotherTasksParkedDraftDoesNotDotThisRow() {
+        XCTAssertTrue(C.unsentDraftRecipients(
+            among: [.answer(stepID: "pm")],
+            taskID: 1,
+            parked: [.role(TaskStepKey(taskID: 2, stepID: "pm"))]).isEmpty)
+    }
+
+    /// The chat thread's own branch names no role, so no chip addresses it — its draft is
+    /// offered by the parked-draft row instead.
+    func testTheTaskChatBranchDotsNoChip() {
+        XCTAssertTrue(C.unsentDraftRecipients(
+            among: [.answer(stepID: "pm"), .role(id: "tl")],
+            taskID: 1,
+            parked: [.taskChat(1)]).isEmpty)
+    }
+
+    // MARK: - Where the composer aims after answering
+
+    func testAfterAnsweringTheOnlyQuestionTheAimIsReleased() {
+        XCTAssertNil(C.nextAimAfterAnswer(
+            answeredStepID: "pm", among: [question(stepID: "pm")]))
+    }
+
+    /// RED: clear the selection and let the resolver pick again → it lands on
+    /// `activeQuestions.first`, the question the Supervisor deliberately stepped over.
+    func testTheAimMovesRightRatherThanBackToTheFirstQuestion() {
+        let row = [question(stepID: "a"), question(stepID: "b"), question(stepID: "c")]
+        XCTAssertEqual(C.nextAimAfterAnswer(answeredStepID: "b", among: row), "c")
+    }
+
+    func testAnsweringTheTrailingQuestionWrapsToTheLeftmost() {
+        let row = [question(stepID: "a"), question(stepID: "b")]
+        XCTAssertEqual(C.nextAimAfterAnswer(answeredStepID: "b", among: row), "a")
+    }
+
+    // MARK: - The aim is a preference, never the user's lock
+
+    /// The aim reaches the resolver through the SAME rule Quick Capture uses, so it is honoured
+    /// only while the question it names is still waiting.
+    func testTheAimSelectsItsQuestionWhileThatQuestionIsWaiting() {
+        XCTAssertEqual(
+            C.resolveEffectiveRecipient(
+                selected: nil,
+                aimedStepID: "b",
+                activeQuestions: [question(stepID: "a"), question(stepID: "b")],
+                selectableRoles: [], candidateRoles: []),
+            .answer(stepID: "b"))
+    }
+
+    /// The defect the aim was moved out of `selectedRecipient` for. RED: express the aim as an
+    /// explicit selection → it wins on the resolver's first line forever, nothing releases it
+    /// because the composer is empty, and every later question gets an Answer chip that never
+    /// auto-selects.
+    func testAnAimWhoseQuestionWasAnsweredElsewhereDecaysToTheLeader() {
+        XCTAssertEqual(
+            C.resolveEffectiveRecipient(
+                selected: nil,
+                aimedStepID: "answered_elsewhere",
+                activeQuestions: [question(stepID: "a"), question(stepID: "b")],
+                selectableRoles: [], candidateRoles: []),
+            .answer(stepID: "a"))
+    }
+
+    /// A user's explicit lock still outranks the aim — that ordering is what protects a
+    /// half-typed reply from an event the user did not cause.
+    func testTheUsersLockOutranksTheAim() {
+        XCTAssertEqual(
+            C.resolveEffectiveRecipient(
+                selected: .answer(stepID: "a"),
+                aimedStepID: "b",
+                activeQuestions: [question(stepID: "a"), question(stepID: "b")],
+                selectableRoles: [], candidateRoles: []),
+            .answer(stepID: "a"))
+    }
+
+    /// With no aim the resolver is byte-for-byte what it always was.
+    func testWithNoAimTheLeadingQuestionStillWins() {
+        XCTAssertEqual(
+            C.resolveEffectiveRecipient(
+                selected: nil,
+                activeQuestions: [question(stepID: "a"), question(stepID: "b")],
+                selectableRoles: [], candidateRoles: []),
+            .answer(stepID: "a"))
+    }
+
+    /// An aim cannot conjure a question: with nothing waiting the resolver falls through to the
+    /// role branches exactly as before.
+    func testAnAimOverAnEmptyRowFallsThroughToTheRoles() {
+        let tl = TeamRoleDefinition(
+            id: "tl", name: "TL", prompt: "", toolIDs: [],
+            usePlanningPhase: false, dependencies: RoleDependencies())
+        XCTAssertEqual(
+            C.resolveEffectiveRecipient(
+                selected: nil,
+                aimedStepID: "ghost",
+                activeQuestions: [],
+                selectableRoles: [tl], candidateRoles: [tl]),
+            .role(id: "tl"))
+    }
+
+    /// RED: leave the aim out of `clearedComposerState` → a submit's aim survives the next
+    /// clear (a queued role message, a parked draft) and re-points the composer at a question
+    /// the user has moved on from.
+    func testAClearedComposerHoldsNoAim() {
+        XCTAssertNil(C.clearedComposerState().answerAim)
+        XCTAssertNil(C.clearedComposerState().selectedRecipient)
     }
 
     // MARK: - BashApprovalCardList.sortedRequests (held-command cards)

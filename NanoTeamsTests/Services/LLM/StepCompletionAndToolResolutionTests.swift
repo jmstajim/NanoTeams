@@ -324,12 +324,15 @@ final class StepCompletionAndToolResolutionTests: XCTestCase {
         XCTAssertTrue(currentStep()?.messages.isEmpty ?? false)
     }
 
-    // MARK: - finalizeStepCompletion: build diagnostics
-
-    func testCompleteStepSuccess_roleProducingBuildDiagnostics_persistsAndAttachesTheSummary() async {
+    /// The engine no longer attaches an artifact of its own on completion. The
+    /// "Build Diagnostics" machinery that did was removed on 2026-09-11: its writer had
+    /// been dead since `cfbcf550`, and the stub that replaced it wrote the same
+    /// `errorCount: 0, issues: []` bytes whatever the step had done — including a step
+    /// that never ran a build. Completion now carries exactly what the ROLE submitted.
+    func testCompleteStepSuccess_attachesNoEngineAuthoredArtifact() async {
         let role = makeRole(
             id: "swe", name: "Engineer",
-            produces: [ArtifactConstants.buildDiagnosticsName, "Engineering Notes"])
+            produces: ["Build Diagnostics", "Engineering Notes"])
         let team = makeTeam(roles: [makeSupervisorRole(requires: ["Engineering Notes"]), role])
         installSnapshot(teams: [team])
         installLiveTask(teamID: team.id)
@@ -338,44 +341,8 @@ final class StepCompletionAndToolResolutionTests: XCTestCase {
 
         let step = currentStep()
         XCTAssertEqual(step?.status, .done)
-        let diag = step?.artifacts.first(where: { $0.name == ArtifactConstants.buildDiagnosticsName })
-        XCTAssertNotNil(
-            diag,
-            "A role that produces Build Diagnostics gets a clean-build summary attached on completion")
-        XCTAssertEqual(diag?.mimeType, "application/json")
-        XCTAssertNotNil(diag?.relativePath)
-
-        let jsonURL = NTMSPaths(workFolderRoot: tempDir)
-            .buildDiagnosticsJSON(taskID: 0, runID: 0, roleID: "swe")
-        XCTAssertTrue(
-            fm.fileExists(atPath: jsonURL.path),
-            "The summary file must actually be written, not just referenced")
-    }
-
-    func testCompleteStepSuccess_roleNotProducingBuildDiagnostics_attachesNothing() async {
-        let role = makeRole(id: "swe", name: "Engineer", produces: ["Engineering Notes"])
-        let team = makeTeam(roles: [makeSupervisorRole(requires: ["Engineering Notes"]), role])
-        installSnapshot(teams: [team])
-        installLiveTask(teamID: team.id)
-
-        await service.completeStepSuccess(stepID: "swe", taskID: 0)
-
-        XCTAssertTrue(
-            currentStep()?.artifacts.isEmpty ?? false,
-            "Build Diagnostics must be attached only to roles that declare it as an output")
-        let jsonURL = NTMSPaths(workFolderRoot: tempDir)
-            .buildDiagnosticsJSON(taskID: 0, runID: 0, roleID: "swe")
-        XCTAssertFalse(fm.fileExists(atPath: jsonURL.path))
-    }
-
-    func testCompleteStepSuccess_noSnapshot_skipsDiagnosticsWithoutFailing() async {
-        delegate.snapshot = nil
-        installLiveTask()
-
-        await service.completeStepSuccess(stepID: "swe", taskID: 0)
-
-        XCTAssertEqual(currentStep()?.status, .done)
-        XCTAssertTrue(currentStep()?.artifacts.isEmpty ?? false)
+        XCTAssertTrue(step?.artifacts.isEmpty ?? false,
+                      "declaring a name the engine used to fill in must now attach nothing")
     }
 
     // MARK: - toolSchemas instance shims
@@ -612,24 +579,227 @@ final class StepCompletionAndToolResolutionTests: XCTestCase {
 
     /// Off closes BOTH routes to `ask_supervisor`: the advisory auto-injection (step 4) and
     /// an explicit `toolIDs` entry (step 8b). Manual and autonomous are untouched.
-    func testResolveToolSchemas_askSupervisorOff_withholdsAskSupervisorOnBothRoutes() async {
+    ///
+    /// The questionnaire rides the SAME strip, over `ToolNames.supervisorAskTools` rather than
+    /// the one name: Off means nobody is there to answer, and a form parks a step exactly as a
+    /// plain question does. A strip that named only `ask_supervisor` would leave the one tool
+    /// whose park nobody could clear.
+    ///
+    /// RED: strip only `tn.askSupervisor` at either site → the `planner` row's Off assertion
+    /// fails on `ask_supervisor_form`.
+    func testResolveToolSchemas_askSupervisorOff_withholdsBothAskToolsOnBothRoutes() async {
         let advisory = makeRole(id: "qm", name: "Quest Master", requires: ["Supervisor Task"])
         let explicit = makeRole(
             id: "pm", name: "PM", toolIDs: [ToolNames.readFile, ToolNames.askSupervisor],
             produces: ["PRD"])
-        let off = makeTeam(
-            roles: [makeSupervisorRole(), advisory, explicit],
-            settings: TeamSettings(supervisorMode: .off))
-        let manual = makeTeam(
-            roles: [makeSupervisorRole(), advisory, explicit],
-            settings: TeamSettings(supervisorMode: .manual))
+        let planner = makeRole(
+            id: "planner", name: "Planner",
+            toolIDs: [ToolNames.readFile, ToolNames.askSupervisor, ToolNames.askSupervisorForm],
+            produces: ["Brief"])
+        let roles = [makeSupervisorRole(), advisory, explicit, planner]
+        let off = makeTeam(roles: roles, settings: TeamSettings(supervisorMode: .off))
+        let manual = makeTeam(roles: roles, settings: TeamSettings(supervisorMode: .manual))
 
-        for role in [advisory, explicit] {
+        for role in [advisory, explicit, planner] {
             let offNames = Set(LLMExecutionService.resolveToolSchemas(forDefinition: role, team: off, approval: .available).map(\.name))
             let manualNames = Set(LLMExecutionService.resolveToolSchemas(forDefinition: role, team: manual, approval: .available).map(\.name))
-            XCTAssertFalse(offNames.contains(ToolNames.askSupervisor), "\(role.name): Off withholds ask_supervisor")
+            XCTAssertTrue(offNames.isDisjoint(with: ToolNames.supervisorAskTools),
+                          "\(role.name): Off withholds every tool that parks on the Supervisor")
             XCTAssertTrue(manualNames.contains(ToolNames.askSupervisor), "\(role.name): manual keeps it")
         }
+        let plannerManual = Set(LLMExecutionService.resolveToolSchemas(forDefinition: planner, team: manual, approval: .available).map(\.name))
+        XCTAssertTrue(plannerManual.contains(ToolNames.askSupervisorForm),
+                      "manual keeps the questionnaire the role was granted")
+    }
+
+    // MARK: - resolveToolSchemas: the ask PAIR reaches the schema (steps 4 + 4-bis)
+
+    /// An advisory role that spells NO toolset gets BOTH supervisor-ask tools.
+    ///
+    /// Two steps together: step 4 injects the plain ask for a role nobody wrote a toolset for
+    /// — every custom role the New Team sheet creates as advisory, every generated team's chat
+    /// role — and step 4-bis pairs the questionnaire onto it. While nothing paired, the
+    /// questionnaire was a privilege of roles with a STORED toolset, which inverts what it is
+    /// for: one interruption settling several decisions, and the roles that interrupt on
+    /// nearly every turn are exactly these.
+    ///
+    /// Each ships exactly ONCE — both arms guard on `allowedTools` membership.
+    ///
+    /// RED: drop the plain⇒form arm of step 4-bis → the intersection is one tool and the role
+    /// can only ever ask one question at a time.
+    func testResolveToolSchemas_advisoryRoleWithNoToolset_getsBothAskTools() async {
+        let advisory = makeRole(id: "qm", name: "Quest Master", requires: ["Supervisor Task"])
+        let team = makeTeam(
+            roles: [makeSupervisorRole(), advisory],
+            settings: TeamSettings(supervisorMode: .manual))
+
+        let schemas = LLMExecutionService.resolveToolSchemas(forDefinition: advisory, team: team, approval: .available)
+        let names = schemas.map(\.name)
+
+        XCTAssertEqual(Set(names).intersection(ToolNames.supervisorAskTools), ToolNames.supervisorAskTools,
+                       "a role that may interrupt the human may interrupt them with a questionnaire")
+        for tool in ToolNames.supervisorAskTools {
+            XCTAssertEqual(names.filter { $0 == tool }.count, 1, "\(tool) ships exactly once")
+        }
+    }
+
+    /// The half-stored shape: the role lists the plain ask and not the form. Step 4-bis
+    /// completes the pair and does not duplicate what is already there.
+    ///
+    /// This is every work folder upgraded from before 2026-09-10 whose role is advisory —
+    /// the reconcile rewrites a SYSTEM role's toolset from the bundle, but a custom one keeps
+    /// what the user checked.
+    ///
+    /// RED: append without the membership guard → `ask_supervisor` ships twice and the
+    /// provider sees a duplicate function name.
+    func testResolveToolSchemas_advisoryRoleHoldingOnlyThePlainAsk_gainsTheFormOnce() async {
+        let advisory = makeRole(
+            id: "assistant", name: "Assistant",
+            toolIDs: [ToolNames.readFile, ToolNames.askSupervisor],
+            requires: ["Supervisor Task"])
+        let team = makeTeam(
+            roles: [makeSupervisorRole(), advisory],
+            settings: TeamSettings(supervisorMode: .manual))
+
+        let names = LLMExecutionService.resolveToolSchemas(forDefinition: advisory, team: team, approval: .available).map(\.name)
+
+        XCTAssertEqual(names.filter { $0 == ToolNames.askSupervisor }.count, 1,
+                       "the stored entry is not doubled by the injection")
+        XCTAssertEqual(names.filter { $0 == ToolNames.askSupervisorForm }.count, 1,
+                       "the missing half is filled in")
+    }
+
+    /// The gate is unchanged: a PRODUCING role that lists neither tool still gets neither.
+    /// Step 4 reads `shouldAutoInjectAskSupervisor`, and widening what it injects must not
+    /// widen WHOM it injects for — otherwise the Ultra Team's "one asker" rule dissolves,
+    /// since every role there produces an artifact.
+    ///
+    /// RED: drop the `shouldAutoInjectAskSupervisor` gate → eight more Ultra Team roles can
+    /// stop the pipeline to ask the human something.
+    func testResolveToolSchemas_producingRoleListingNeither_stillGetsNeither() async {
+        let producer = makeRole(id: "arch", name: "Architect", toolIDs: [ToolNames.readFile],
+                                produces: ["Approach A"])
+        let team = makeTeam(
+            roles: [makeSupervisorRole(), producer],
+            settings: TeamSettings(supervisorMode: .manual))
+
+        let names = Set(LLMExecutionService.resolveToolSchemas(forDefinition: producer, team: team, approval: .available).map(\.name))
+
+        XCTAssertTrue(names.isDisjoint(with: ToolNames.supervisorAskTools),
+                      "a producing role asks only if its toolset says so")
+        XCTAssertTrue(names.contains(ToolNames.createArtifact), "sanity: step 5 still ran")
+    }
+
+    // MARK: - resolveToolSchemas: the questionnaire is a companion (step 4-bis)
+
+    /// A role granted only `ask_supervisor_form` gets the plain ask beside it.
+    ///
+    /// The form is a COMPANION, never a replacement, and until now that was advice: nothing
+    /// stopped the role editor from checking the form alone. Three texts then contradict the
+    /// schema at once — `SystemTemplates.stepEnding` tells the role it has no way to ask
+    /// (`canAskSupervisor` reads `ask_supervisor`), `LoopRecoveryPolicy.escalationChannel`
+    /// names no channel, and the teammate-consultation note stays silent — while the schema
+    /// offers a tool that parks the step. Pairing at the resolver makes the invariant
+    /// structural, so those three keep reading one name and stay right.
+    ///
+    /// The lesser capability is the one added: a role that may send a questionnaire may
+    /// certainly ask one question, and auto-injection already grants `ask_supervisor` to
+    /// roles that never listed it (step 4).
+    ///
+    /// RED: drop the pairing → `escalationChannel` over the resolved names returns nil for a
+    /// role whose schema can park the step.
+    func testResolveToolSchemas_formWithoutPlainAsk_getsThePlainAskPairedIn() async {
+        let formOnly = makeRole(
+            id: "planner", name: "Planner",
+            toolIDs: [ToolNames.readFile, ToolNames.askSupervisorForm],
+            produces: ["Brief"])
+        let team = makeTeam(
+            roles: [makeSupervisorRole(), formOnly],
+            settings: TeamSettings(supervisorMode: .manual))
+
+        let names = Set(LLMExecutionService.resolveToolSchemas(forDefinition: formOnly, team: team, approval: .available).map(\.name))
+
+        XCTAssertTrue(names.contains(ToolNames.askSupervisorForm), "the granted tool survives")
+        XCTAssertTrue(names.contains(ToolNames.askSupervisor),
+                      "the form's escalation channel ships beside it")
+        XCTAssertEqual(LoopRecoveryPolicy.escalationChannel(in: names), ToolNames.askSupervisor,
+                       "a role that can park has a channel every correction text can name")
+    }
+
+    /// The mirror arm, and the one the app's OWN generator needs: a PRODUCING role whose
+    /// stored toolset names `ask_supervisor` and nothing else gains the questionnaire.
+    ///
+    /// Step 4 cannot reach this role — `shouldAutoInjectAskSupervisor` requires an empty
+    /// `producesArtifacts`, so every generated pipeline role, every imported team's worker and
+    /// every role hand-ticked in the Tools tab falls outside it. `TeamGenerationService`
+    /// teaches the model exactly one escalation name, so the toolsets it writes are all this
+    /// shape; without the plain⇒form arm they would be the only roles in the app that can
+    /// interrupt the human but never with more than one question.
+    ///
+    /// RED: drop the plain⇒form arm → the form is missing and "every role that holds
+    /// `ask_supervisor` holds the form" is true of bundled templates only.
+    func testResolveToolSchemas_producingRoleHoldingOnlyThePlainAsk_gainsTheForm() async {
+        let producer = makeRole(
+            id: "swe", name: "Software Engineer",
+            toolIDs: [ToolNames.readFile, ToolNames.askSupervisor],
+            produces: ["Engineering Notes"])
+        let team = makeTeam(
+            roles: [makeSupervisorRole(), producer],
+            settings: TeamSettings(supervisorMode: .manual))
+
+        let names = LLMExecutionService.resolveToolSchemas(forDefinition: producer, team: team, approval: .available).map(\.name)
+
+        XCTAssertEqual(names.filter { $0 == ToolNames.askSupervisorForm }.count, 1,
+                       "the questionnaire pairs onto a stored plain ask, producing role or not")
+        XCTAssertEqual(names.filter { $0 == ToolNames.askSupervisor }.count, 1,
+                       "the stored entry is not doubled")
+    }
+
+    /// Pairing never MANUFACTURES an asker. A producing role that holds neither name still
+    /// holds neither after both arms run — the arms complete a pair, they do not open one.
+    ///
+    /// This is what keeps the Ultra Team's "the planner is the only asker" rule intact: its
+    /// eight other roles all produce artifacts and list no ask tool.
+    ///
+    /// RED: pair unconditionally (e.g. inject the form whenever the mode allows) → eight more
+    /// Ultra Team roles can stop the pipeline to ask the human something.
+    func testResolveToolSchemas_producingRoleListingNeither_gainsNeitherFromPairing() async {
+        let producer = makeRole(id: "verifier", name: "Verifier", toolIDs: [ToolNames.readFile],
+                                produces: ["Verification Report"])
+        let team = makeTeam(
+            roles: [makeSupervisorRole(), producer],
+            settings: TeamSettings(supervisorMode: .manual))
+
+        let names = Set(LLMExecutionService.resolveToolSchemas(forDefinition: producer, team: team, approval: .available).map(\.name))
+
+        XCTAssertTrue(names.isDisjoint(with: ToolNames.supervisorAskTools),
+                      "an empty pair stays empty")
+    }
+
+    /// Pairing is subordinate to the mode: a role granted the questionnaire alone ships
+    /// neither tool under Off, so the heal cannot re-open the route the mode closed.
+    ///
+    /// Moving the pairing after the strips was measured and reds NOTHING (mutation
+    /// `s4_pairing_after_the_strips`, 2026-09-10): the Off strip removes the FORM too, so a
+    /// later pairing finds nothing to pair. The order is therefore a readability choice, not
+    /// an invariant, and this test does not pretend to pin it.
+    ///
+    /// RED: strip only `tn.askSupervisor` at 8b → the granted questionnaire ships to a team
+    /// that has nobody to answer it.
+    func testResolveToolSchemas_formWithoutPlainAsk_underOff_shipsNeither() async {
+        let formOnly = makeRole(
+            id: "planner", name: "Planner",
+            toolIDs: [ToolNames.readFile, ToolNames.askSupervisorForm],
+            produces: ["Brief"])
+        let team = makeTeam(
+            roles: [makeSupervisorRole(), formOnly],
+            settings: TeamSettings(supervisorMode: .off))
+
+        let names = Set(LLMExecutionService.resolveToolSchemas(forDefinition: formOnly, team: team, approval: .available).map(\.name))
+
+        XCTAssertTrue(names.isDisjoint(with: ToolNames.supervisorAskTools),
+                      "Off closes the route the pairing would otherwise re-open")
+        XCTAssertTrue(names.contains(ToolNames.readFile), "sanity: the rest of the toolset stands")
     }
 
     // MARK: - resolveToolSchemas: create_artifact auto-injection (step 5)

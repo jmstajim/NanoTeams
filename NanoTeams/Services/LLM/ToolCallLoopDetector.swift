@@ -64,7 +64,17 @@ nonisolated enum LoopDetection: Equatable {
     /// `errorCode` is non-optional: with no code there is nothing tying the failures
     /// together, and a tool failing three times for three unrelated reasons is not this
     /// pattern.
-    case persistentToolError(tool: String, count: Int, errorCode: String)
+    ///
+    /// `messagesIdentical` is a second FACT off the same envelopes: whether every failure in
+    /// the run carried the same `error.message`. The code is what stayed constant; the
+    /// message says whether the RUNTIME saw the same fault each time. MeditationApp task 52
+    /// run 11 (2026-09-11): `ask_supervisor_form` failed three times with `INVALID_ARGS`, each
+    /// message naming a different character — the model was fixing exactly what the previous
+    /// excerpt named, one character from success — and the advice built for a held message
+    /// ("changing the arguments is not working") told it to abandon the form. A moving message
+    /// is a converging repair, not a loop; the advice layer reads the fact, the detector only
+    /// reports it. Two absent messages count as identical.
+    case persistentToolError(tool: String, count: Int, errorCode: String, messagesIdentical: Bool)
 }
 
 /// Stateless loop detection for tool call sequences.
@@ -287,18 +297,32 @@ nonisolated enum ToolCallLoopDetector {
 
         var trailingRun = 0
         var sawDifferingArguments = false
+        var messagesIdentical = true
+        let lastMessage = Self.errorMessage(in: last)
         for call in recentCalls.reversed() {
             guard !call.wasSuccessful else { break }
             guard call.toolName == last.toolName else { break }
             guard Self.errorCode(in: call) == code else { break }
             guard call.informationEpoch == last.informationEpoch else { break }
             if call.argumentsIdentity != last.argumentsIdentity { sawDifferingArguments = true }
+            if Self.errorMessage(in: call) != lastMessage { messagesIdentical = false }
             trailingRun += 1
         }
         guard trailingRun >= DelegationConstants.repetitionMinIdenticalToolCalls else { return nil }
         guard sawDifferingArguments else { return nil }
 
-        return .persistentToolError(tool: last.toolName, count: trailingRun, errorCode: code)
+        return .persistentToolError(
+            tool: last.toolName, count: trailingRun, errorCode: code,
+            messagesIdentical: messagesIdentical)
+    }
+
+    /// The `error.message` beside the code — the runtime's own description of the fault,
+    /// which is what tells a held fault from a moving one.
+    private static func errorMessage(in call: ToolCallTracker.TrackedCall) -> String? {
+        guard let dict = JSONUtilities.parseJSONDictionary(call.resultJSON),
+              let error = dict["error"] as? [String: Any]
+        else { return nil }
+        return error["message"] as? String
     }
 
     /// The typed `error.code` out of a tracked call's result envelope, when it carries one.

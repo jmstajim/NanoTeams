@@ -3,7 +3,7 @@ import Foundation
 /// Classifies a conversation turn as a SYSTEM-AUTHORED notice and derives the
 /// one-line form the activity feed collapses it into.
 ///
-/// Seven `MessageSourceContext` cases are written by the runtime itself rather
+/// Eight `MessageSourceContext` cases are written by the runtime itself rather
 /// than by a human or a model: the retry nudges (every `handleNoToolCalls`
 /// site and the repetition warning), the correction appended after a thinking
 /// loop was discarded, the transient server-error retry note, the
@@ -15,7 +15,12 @@ import Foundation
 /// this table has a sixth row. The seventh is the compaction record, whose
 /// substance — the summary the model wrote — belongs in the detail window rather
 /// than the feed: it is the model's memory, not news for the human, and it is
-/// already on the wire where it is read.
+/// already on the wire where it is read. The eighth is the `[ Ask as form ]`
+/// directive, and it is the one row the human ASKED for: it travels the answer
+/// channel because a parked step has no other, and wearing `.supervisorAnswer`
+/// it rendered as the human checkmarking "The question was not answered" to the
+/// role that had just asked. The asked card yields to this row entirely —
+/// `ActivityFeedBuilder` emits none for a park the directive resolved.
 /// The steering appended after a failed TOOL call used to be a sixth and is not:
 /// it comments on one event the feed already draws as a card, so it is persisted
 /// unattributed and never reaches this table — see `ToolErrorNotePolicy`.
@@ -87,6 +92,7 @@ nonisolated enum SystemNoticePresentation {
         .runtimeWarning: ("warning", true),
         .autovisorEvent: ("event", false),
         .compaction: ("compaction", false),
+        .questionnaireRequest: ("form request", false),
     ]
 
     /// Leading lines a kind's PREVIEW skips — self-describing banners that the row

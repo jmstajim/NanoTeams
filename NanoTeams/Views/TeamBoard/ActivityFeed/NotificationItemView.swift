@@ -38,10 +38,11 @@ struct NotificationItemView: View {
     @ViewBuilder
     private var notificationContent: some View {
         switch type {
-        case .supervisorInput(let question, let answer, let answerAttachmentPaths, let answerClippedTexts, let toolCallID, let thinking, let wasAutoAnswered):
+        case .supervisorInput(let question, let answer, let answerAttachmentPaths, let answerClippedTexts, let toolCallID, let thinking, let wasAutoAnswered, let inquiry):
             SupervisorInputCard(
                 question: question,
                 answer: answer,
+                inquiry: inquiry,
                 answerAttachmentPaths: answerAttachmentPaths,
                 answerClippedTexts: answerClippedTexts,
                 workFolderURL: workFolderURL,

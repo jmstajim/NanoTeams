@@ -19,10 +19,18 @@ import SwiftUI
 ///   never probed. Both draw the track with nothing lit, and they are deliberately the same
 ///   picture: to a reader they make the same statement, "there is no proportion to show yet".
 ///   The empty bar is drawn from the first frame, so a role's first answer changes the chip's
-///   PAINT and not its LAYOUT.
+///   PAINT and not its LAYOUT. Since 2026-09-09 it is also the same CODE: sameness is held by
+///   construction rather than by two branches agreeing. It stopped being held on the day there
+///   were two — the no-measurement branch drew a bar and carried no button, no tooltip and no
+///   `.accessibilityValue`, so the control was silent to both the mouse and VoiceOver in the
+///   state every role is in before it answers in the current run.
 /// - *measured* — at least one eighth is lit, always: `TerminalProgressBar.blocks` never renders
 ///   an empty fill above zero. So a lit bar is never ambiguous, and an unlit one means exactly
 ///   the case above.
+///
+/// **One construction, no branches.** The value, the ink, the tooltip and the spoken value are
+/// all derived from a single `ContextFillPresentation.State`; the body is one `Button` with one
+/// `.help`. There is nowhere here for a state to be drawn and left undescribed.
 ///
 /// A leaf view with its own `@Environment(ContextFillProjection.self)`, per View Conventions
 /// #11: the fill changes once per REQUEST, and reading it from the composer body would tie the
@@ -51,35 +59,16 @@ struct ContextFillIndicator: View {
     private static let cells = 4
 
     var body: some View {
-        let fill = contextFill.fill(stepID: roleID, taskID: taskID)
-        let isCompacting = contextFill.isCompacting(stepID: roleID, taskID: taskID)
-        if let fill {
-            indicator(fill: fill, isCompacting: isCompacting)
-        } else if isCompacting {
-            indicator(fill: ContextFill(promptTokens: 0), isCompacting: true)
-        } else {
-            emptyBar
-        }
-    }
-
-    /// The role has not sent a request yet: nothing to compact and no button — but the bar is
-    /// there, empty, from the first frame. Drawing it only once a measurement exists made the
-    /// chip look like it had a ragged gutter until the role answered, and made the arrival of
-    /// the first fill a new ELEMENT rather than a change of paint.
-    private var emptyBar: some View {
-        inlay(bar(value: 0, tint: .clear, trackTint: trackTint))
-            .accessibilityHidden(true)
-    }
-
-    private func indicator(fill: ContextFill, isCompacting: Bool) -> some View {
-        let tier = ContextFillPresentation.tier(fill)
-        return Button {
+        let state = ContextFillPresentation.state(
+            fill: contextFill.fill(stepID: roleID, taskID: taskID),
+            isCompacting: contextFill.isCompacting(stepID: roleID, taskID: taskID))
+        Button {
             Task { await store.compactRoleContext(taskID: taskID, roleID: roleID) }
         } label: {
             inlay(
                 bar(
-                    value: ContextFillPresentation.fraction(fill) ?? 0,
-                    tint: fillTint(for: tier, isCompacting: isCompacting),
+                    value: ContextFillPresentation.barValue(state),
+                    tint: fillTint(for: state),
                     trackTint: trackTint)
             )
             // AFTER the padding and the frame, so the hit area is the whole inlay rather than
@@ -87,12 +76,19 @@ struct ContextFillIndicator: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(isCompacting)
-        .help(ContextFillPresentation.tooltip(fill, isCompacting: isCompacting))
+        // No `.disabled(isCompacting)`. The "one epoch at a time" rule belongs to the service,
+        // not to the view: `compactRoleContext` refuses a second click on the main actor with no
+        // suspension point between its check and the token it sets, and names the reason in a
+        // banner (`CompactRoleContextTests.testAlreadyCompacting_isRefused`). A copy of that
+        // guard here protected nothing — it read `ContextFillProjection`, a MIRROR the service
+        // raises after taking the token and lowers before releasing it — while costing the
+        // control the one channel it explains itself through, and making the tooltip's
+        // appearance depend on how AppKit treats a disabled button, which nothing in this
+        // repository verifies.
+        .help(ContextFillPresentation.tooltip(state))
         .accessibilityLabel("\(roleName) context")
-        .accessibilityValue(
-            ContextFillPresentation.accessibilityValue(fill, isCompacting: isCompacting))
-        .accessibilityHint("Compacts this role's conversation into a summary")
+        .accessibilityValue(ContextFillPresentation.accessibilityValue(state))
+        .accessibilityHint(ContextFillPresentation.accessibilityHint)
     }
 
     /// The bar's seat in the chip: its own gutters and the chip's full height, so the click
@@ -140,17 +136,27 @@ struct ContextFillIndicator: View {
     ///
     /// ON an accent fill there is no hue left: see `isOnAccent`. The proportion is carried by
     /// the length, and the exact figure by the tooltip.
-    private func fillTint(for tier: ContextFillPresentation.Tier, isCompacting: Bool) -> Color {
+    ///
+    /// Takes the STATE rather than `(tier, isCompacting)`: the `switch` is then exhaustive, and
+    /// a new state cannot reach the screen until its author says here what it is painted in.
+    /// That is the same compiler-led census the presentation uses — and the reason no separate
+    /// "Ink" type is introduced: it would be a clone of `Tier` with one extra case.
+    private func fillTint(for state: ContextFillPresentation.State) -> Color {
+        switch state {
         // A uniform quiet grey — near the track on an unselected chip by design: while the
         // conversation is being rewritten there is no proportion to report.
-        if isCompacting { return Colors.textSecondary }
-        switch tier {
-        // No budget, no proportion — the track is drawn and nothing is lit, which is a
-        // different statement from "the context is empty".
-        case .unknown: return .clear
-        case .comfortable: return isOnAccent ? Colors.textOnAccent : Colors.accent
-        case .approaching: return isOnAccent ? Colors.textOnAccent : Colors.gold
-        case .atBudget: return isOnAccent ? Colors.textOnAccent : Colors.error
+        case .compacting: return Colors.textSecondary
+        // No measurement at all: the track is drawn and nothing is lit. A different statement
+        // from "the context is empty", and only the tooltip tells the two apart.
+        case .unmeasured: return .clear
+        case .measured(let fill):
+            switch ContextFillPresentation.tier(fill) {
+            // No budget, no proportion — same picture as above, different reason.
+            case .unknown: return .clear
+            case .comfortable: return isOnAccent ? Colors.textOnAccent : Colors.accent
+            case .approaching: return isOnAccent ? Colors.textOnAccent : Colors.gold
+            case .atBudget: return isOnAccent ? Colors.textOnAccent : Colors.error
+            }
         }
     }
 }

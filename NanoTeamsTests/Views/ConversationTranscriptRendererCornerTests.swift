@@ -14,7 +14,7 @@ final class ConversationTranscriptRendererCornerTests: XCTestCase {
 
     private func render(
         _ items: [TeamActivityTimelineItem],
-        pending: [ActivityFeedBuilder.ActiveSupervisorQuestion] = [],
+        pending: [SupervisorQuestionInbox.PendingQuestion] = [],
         isChatMode: Bool = false,
         teamRoles: [TeamRoleDefinition] = []
     ) -> String {
@@ -221,11 +221,17 @@ final class ConversationTranscriptRendererCornerTests: XCTestCase {
     // MARK: - Pending corner cases
 
     func testMultiplePendingQuestions_allRendered_oneHeader() {
-        let q1 = ActivityFeedBuilder.ActiveSupervisorQuestion(
-            stepID: "eng", role: .softwareEngineer, question: "PENDING_A", paired: nil, toolCallID: UUID(), askedAt: Date()
+        let q1 = SupervisorQuestionInbox.PendingQuestion(
+            key: TaskStepKey(taskID: 0, stepID: "eng"), role: .softwareEngineer,
+            headline: "PENDING_A", inquiry: nil, paired: nil,
+            askCallID: UUID(), askedAt: Date(
+            )
         )
-        let q2 = ActivityFeedBuilder.ActiveSupervisorQuestion(
-            stepID: "tl", role: .techLead, question: "PENDING_B", paired: nil, toolCallID: UUID(), askedAt: Date()
+        let q2 = SupervisorQuestionInbox.PendingQuestion(
+            key: TaskStepKey(taskID: 0, stepID: "tl"), role: .techLead,
+            headline: "PENDING_B", inquiry: nil, paired: nil,
+            askCallID: UUID(), askedAt: Date(
+            )
         )
         let md = render([], pending: [q1, q2])
         XCTAssertTrue(md.contains("PENDING_A"))
@@ -236,8 +242,11 @@ final class ConversationTranscriptRendererCornerTests: XCTestCase {
     }
 
     func testPendingQuestion_emptyText_rendersEmptyMarker() {
-        let q = ActivityFeedBuilder.ActiveSupervisorQuestion(
-            stepID: "eng", role: .softwareEngineer, question: "   ", paired: nil, toolCallID: UUID(), askedAt: Date()
+        let q = SupervisorQuestionInbox.PendingQuestion(
+            key: TaskStepKey(taskID: 0, stepID: "eng"), role: .softwareEngineer,
+            headline: "   ", inquiry: nil, paired: nil,
+            askCallID: UUID(), askedAt: Date(
+            )
         )
         XCTAssertTrue(render([], pending: [q]).contains("_(empty)_"))
     }

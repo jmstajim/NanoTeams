@@ -28,4 +28,12 @@ struct SidebarTaskItem: Identifiable, Equatable {
     /// the terminal "needs command approval" badge so a BACKGROUND task waiting on a
     /// command is discoverable without opening it.
     var hasPendingBashApproval: Bool = false
+    /// How many Supervisor questions this task is waiting on, when that is worth saying —
+    /// already past `SupervisorAnswerFocus.waitingBadgeCount`, so `nil` covers "one or none"
+    /// and "row predates the field" alike and the row itself holds no threshold.
+    ///
+    /// A COUNT rather than a second boolean because the fact it adds is arithmetic: `hasUnreadInput`
+    /// already says a task is waiting, and with parallel roles (CLAUDE.md #45) the question
+    /// the Supervisor is actually choosing between tasks on is how many.
+    var waitingQuestionCount: Int? = nil
 }

@@ -39,10 +39,19 @@ nonisolated enum AppDefaults {
     static let searchContextMax = 20
 
     /// FSEvents debounce window for the exploratory-search file watcher.
-    /// Coalesces bursty writes (`git checkout`, IDE save-all, build artifact
-    /// fanout) into a single rebuild. Generous default — the user feels a
-    /// stale index for at most this window when new files appear.
-    static let searchIndexWatcherDebounceSeconds: TimeInterval = 10.0
+    /// Coalesces bursty writes (`git checkout`, IDE save-all) into a single rebuild.
+    ///
+    /// 2.0 s since 2026-09-12, from 10.0. The old value was sized for a rebuild that re-read
+    /// and re-tokenized the WHOLE work folder on every event — measured on this repository at
+    /// **4682 ms** — so a short window meant the indexer was never idle. A build now walks the
+    /// tree, diffs it per file, and reads only what moved: **60 ms** for an ordinary one-file
+    /// edit, **56 ms** when nothing changed at all. There is no longer anything to hide behind
+    /// a long window, and 10 s plus FSEvents' own 1 s latency meant an agent could search a
+    /// file it had just written and not find it.
+    ///
+    /// It is a user setting (Settings → Advanced), so this default reaches only installs that
+    /// have never touched the slider.
+    static let searchIndexWatcherDebounceSeconds: TimeInterval = 2.0
     /// Inclusive lower bound. Below ~0.5s the watcher fires faster than
     /// FSEvents' own ~1s buffering so we'd thrash the indexer.
     static let searchIndexWatcherDebounceSecondsMin: TimeInterval = 0.5

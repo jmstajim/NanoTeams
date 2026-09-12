@@ -5,7 +5,7 @@ import XCTest
 /// Tests for `TeamActivityFeedViewModel.computeFingerprint`'s
 /// `supervisorInputCount` field. The fingerprint drives `recomputeAndRebuild`'s
 /// short-circuit — if it falls out of sync with the active-question definition
-/// used by `emitItems` and `activeSupervisorQuestions`, the rebuild won't fire
+/// used by `emitItems` and `SupervisorQuestionInbox.pending`, the rebuild won't fire
 /// when the composer chip flips, and the user sees stale UI.
 ///
 /// (The supervisor-answer attachment / submit guards that previously lived on

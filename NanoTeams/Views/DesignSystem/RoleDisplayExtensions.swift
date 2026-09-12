@@ -6,35 +6,52 @@ import SwiftUI
 // MARK: - Role Display Extensions
 
 extension Role {
-    private static let tintColorMap: [Role: Color] = [
-        .supervisor: Colors.indigo,
-        .productManager: Colors.teal,
-        .uxResearcher: Colors.purple,
-        .uxDesigner: Colors.pink,
-        .techLead: Colors.cyan,
-        .softwareEngineer: Colors.success,
-        .codeReviewer: Colors.info,
-        .sre: Colors.mint,
-        .tpm: Colors.warning,
-        .loreMaster: Colors.brown,
-        .npcCreator: Colors.purple,
-        .encounterArchitect: Colors.error,
-        .rulesArbiter: Colors.yellow,
-        .questMaster: Colors.indigo,
-        .theAgreeable: Colors.teal,
-        .theOpen: Colors.pink,
-        .theConscientious: Colors.cyan,
-        .theExtrovert: Colors.warning,
-        .theNeurotic: Colors.purple,
-        .assistant: Colors.teal,
-        .codingAssistant: Colors.purple,
-        .codingAgent: Colors.purple,
-        .autovisor: Colors.cyan,
+    // Key paths, NOT resolved `Color`s. A `static let` holding `Colors.x` is evaluated ONCE, on
+    // first access, and freezes whatever theme was active at that moment — every later theme
+    // switch leaves it stale until relaunch. Measured 2026-09-09: with the app opened under
+    // `rose` and switched to `cobalt`, `Colors.warning` correctly returned #F2E85C while the
+    // status map still handed out #A29DCE. The same staleness was diagnosed and fixed for the
+    // NSColor accessors in `Colors.swift` (see the note above `nsTextPrimary`); these maps were
+    // missed. Storing the key path keeps the lookup static and moves resolution to call time,
+    // where `Colors.themed` already memoizes per theme.
+    private static let tintColorMap: [Role: KeyPath<ThemePalette, UInt64>] = [
+        .supervisor: \.indigo,
+        .productManager: \.teal,
+        .uxResearcher: \.purple,
+        .uxDesigner: \.pink,
+        .techLead: \.cyan,
+        .softwareEngineer: \.success,
+        .codeReviewer: \.info,
+        .sre: \.mint,
+        .tpm: \.warning,
+        .loreMaster: \.brown,
+        .npcCreator: \.purple,
+        .encounterArchitect: \.error,
+        .rulesArbiter: \.yellow,
+        .questMaster: \.indigo,
+        .theAgreeable: \.teal,
+        .theOpen: \.pink,
+        .theConscientious: \.cyan,
+        .theExtrovert: \.warning,
+        .theNeurotic: \.purple,
+        .assistant: \.teal,
+        .codingAssistant: \.purple,
+        .codingAgent: \.purple,
+        .autovisor: \.cyan,
+        .changePlanner: \.teal,
+        .briefCritic: \.yellow,
+        .solutionArchitect: \.cyan,
+        .pragmaticArchitect: \.indigo,
+        .specCritic: \.warning,
+        .regressionCritic: \.error,
+        .changeEngineer: \.success,
+        .diffReviewer: \.emerald,
+        .changeVerifier: \.mint,
     ]
 
     var tintColor: Color {
         if case .custom = self { return Colors.neutral }
-        return Self.tintColorMap[self] ?? Colors.neutral
+        return Colors.themed(Self.tintColorMap[self] ?? \.neutral)
     }
 }
 
@@ -117,29 +134,29 @@ func roleNameText(roleName: String, teamSuffix: String?, tintColor: Color) -> Te
 // MARK: - RoleCompletionType Display Extensions
 
 extension RoleCompletionType {
-    private static let displayColorMap: [RoleCompletionType: Color] = [
-        .producing: Colors.success,
-        .advisory: Colors.teal,
-        .observer: Colors.textSecondary,
+    private static let displayColorMap: [RoleCompletionType: KeyPath<ThemePalette, UInt64>] = [
+        .producing: \.success,
+        .advisory: \.teal,
+        .observer: \.textSecondary,
     ]
 
-    var displayColor: Color { Self.displayColorMap[self] ?? Colors.textSecondary }
+    var displayColor: Color { Colors.themed(Self.displayColorMap[self] ?? \.textSecondary) }
 }
 
 // MARK: - ChangeRequestStatus Display Extensions
 
 extension ChangeRequestStatus {
-    private static let statusColorMap: [ChangeRequestStatus: Color] = [
-        .pending: Colors.neutral,
-        .approved: Colors.success,
-        .rejected: Colors.error,
-        .escalated: Colors.warning,
-        .supervisorApproved: Colors.success,
-        .supervisorRejected: Colors.error,
-        .failed: Colors.error,
+    private static let statusColorMap: [ChangeRequestStatus: KeyPath<ThemePalette, UInt64>] = [
+        .pending: \.neutral,
+        .approved: \.success,
+        .rejected: \.error,
+        .escalated: \.warning,
+        .supervisorApproved: \.success,
+        .supervisorRejected: \.error,
+        .failed: \.error,
     ]
 
-    var statusColor: Color { Self.statusColorMap[self] ?? Colors.neutral }
+    var statusColor: Color { Colors.themed(Self.statusColorMap[self] ?? \.neutral) }
 
     /// Pre-computed tint fill paired with ``statusColor``, for the status badge behind the
     /// label.
@@ -149,15 +166,15 @@ extension ChangeRequestStatus {
     /// of time and the design system already ships them. `DynamicTintOpacity` is for colours
     /// that arrive as a parameter (`ActivityFeedIconAvatar`'s `color`), and reaching for it
     /// here produced a hand-rolled tint over a theme-ignoring `.secondary`.
-    private static let statusTintColorMap: [ChangeRequestStatus: Color] = [
-        .pending: Colors.neutralTint,
-        .approved: Colors.successTint,
-        .rejected: Colors.errorTint,
-        .escalated: Colors.warningTint,
-        .supervisorApproved: Colors.successTint,
-        .supervisorRejected: Colors.errorTint,
-        .failed: Colors.errorTint,
+    private static let statusTintColorMap: [ChangeRequestStatus: KeyPath<ThemePalette, UInt64>] = [
+        .pending: \.neutralTint,
+        .approved: \.successTint,
+        .rejected: \.errorTint,
+        .escalated: \.warningTint,
+        .supervisorApproved: \.successTint,
+        .supervisorRejected: \.errorTint,
+        .failed: \.errorTint,
     ]
 
-    var statusTintColor: Color { Self.statusTintColorMap[self] ?? Colors.neutralTint }
+    var statusTintColor: Color { Colors.themed(Self.statusTintColorMap[self] ?? \.neutralTint) }
 }

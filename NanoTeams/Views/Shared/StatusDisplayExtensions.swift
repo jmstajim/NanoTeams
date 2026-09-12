@@ -26,18 +26,26 @@ extension StepStatus {
         Self.shortDisplayLabelOverrides[self] ?? displayLabel
     }
 
-    private static let tintColorMap: [StepStatus: Color] = [
-        .pending: Colors.neutral,
-        .running: Colors.info,
-        .paused: Colors.warning,
-        .needsSupervisorInput: Colors.gold,
-        .needsApproval: Colors.purple,
-        .failed: Colors.error,
-        .done: Colors.success,
+    // Key paths, NOT resolved `Color`s. A `static let` holding `Colors.x` is evaluated ONCE, on
+    // first access, and freezes whatever theme was active at that moment — every later theme
+    // switch leaves it stale until relaunch. Measured 2026-09-09: with the app opened under
+    // `rose` and switched to `cobalt`, `Colors.warning` correctly returned #F2E85C while this
+    // map still handed out #A29DCE. The same staleness was diagnosed and fixed for the NSColor
+    // accessors in `Colors.swift` (see the note above `nsTextPrimary`); these maps were missed.
+    // Storing the key path keeps the lookup static and moves resolution to call time, where
+    // `Colors.themed` already memoizes per theme.
+    private static let tintColorMap: [StepStatus: KeyPath<ThemePalette, UInt64>] = [
+        .pending: \.neutral,
+        .running: \.info,
+        .paused: \.warning,
+        .needsSupervisorInput: \.gold,
+        .needsApproval: \.purple,
+        .failed: \.error,
+        .done: \.success,
     ]
 
     var tintColor: Color { // periphery:ignore
-        Self.tintColorMap[self] ?? Colors.neutral
+        Colors.themed(Self.tintColorMap[self] ?? \.neutral)
     }
 
     private static let systemImageNameMap: [StepStatus: String] = [
@@ -58,18 +66,19 @@ extension StepStatus {
 // MARK: - TaskStatus Display Extensions
 
 extension TaskStatus {
-    private static let tintColorMap: [TaskStatus: Color] = [
-        .running: Colors.info,
-        .done: Colors.success,
-        .paused: Colors.warning,
-        .waiting: Colors.neutral,
-        .needsSupervisorInput: Colors.gold,
-        .needsSupervisorAcceptance: Colors.purple,
-        .failed: Colors.error,
+    // Key paths, NOT resolved `Color`s — see the note on `StepStatus.tintColorMap` above.
+    private static let tintColorMap: [TaskStatus: KeyPath<ThemePalette, UInt64>] = [
+        .running: \.info,
+        .done: \.success,
+        .paused: \.warning,
+        .waiting: \.neutral,
+        .needsSupervisorInput: \.gold,
+        .needsSupervisorAcceptance: \.purple,
+        .failed: \.error,
     ]
 
     var tintColor: Color {
-        Self.tintColorMap[self] ?? Colors.neutral
+        Colors.themed(Self.tintColorMap[self] ?? \.neutral)
     }
 
     private static let systemImageNameMap: [TaskStatus: String] = [

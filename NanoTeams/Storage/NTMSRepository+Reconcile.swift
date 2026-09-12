@@ -23,15 +23,21 @@ import Foundation
 //    acceptance mode) therefore reaches only a team created afresh from the template.
 //    Until 2026-09-06 a bump reset every setting; until 2026-09-07 all but three, so a
 //    user's limits and acceptance choices were lost on every update.
-//  * Structural changes are **additive only**: missing system roles and missing
-//    system artifacts are added; existing entries (including roles no longer
-//    present in the bundled template) are never removed.
+//  * Structural changes are **additive for the USER's entries**: missing system roles and
+//    missing system artifacts are added, and nothing the user authored is ever removed.
+//    The one exception is a system role the BUNDLE itself retired
+//    (`SystemTemplates.retiredSystemRoleIDs`, step 4a): leaving it beside its replacement
+//    is not conservatism but duplication — two planners both holding `ask_supervisor`, two
+//    engineers both writing to one tree. The invariant protects user data; it was never a
+//    promise that a template cannot forget anything.
 //  * Tombstones (`team.deletedSystemRoleIDs` / `team.deletedSystemArtifactIDs`)
 //    suppress additive resurrection of roles/artifacts the user explicitly
 //    removed via the editor.
 //  * Teams whose roles are actively executing (any `roleStatus` in
 //    `.working`/`.needsAcceptance`/`.revisionRequested`) are deferred so
-//    mid-run changes to `role.toolIDs` can't break tool-call authorization.
+//    mid-run changes to `role.toolIDs` can't break tool-call authorization — and so
+//    is a team whose retirement (step 4a) would orphan a role an UNCLOSED task still
+//    holds, in any status (`retiredRoleIDsInUse`): the banner names the task to close.
 //    The watermark (`state.lastAppliedAppVersion`) ALWAYS advances — the
 //    outstanding work is carried in `state.pendingReconcileTeamIDs` instead,
 //    which `bootstrapIfNeeded` retries independently of the version compare.
@@ -112,14 +118,32 @@ nonisolated extension NTMSRepository {
                 .flatMap(\.roleIDs)
                 .compactMap { nameByRoleID[$0] }
                 .filter { seen.insert($0).inserted }
-            let first = evidence.first
+            // The retirement reason outranks "busy" in the copy: a busy task resolves
+            // itself, a task holding a retired role needs the user to close it. One pass:
+            // the first entry and the distinct-task count are kept per reason, and the
+            // retirement's pair wins when it exists.
+            var firstAny: RunningRoleEvidence?
+            var firstRetirement: RunningRoleEvidence?
+            var anyTasks = Set<Int>()
+            var retirementTasks = Set<Int>()
+            for item in evidence {
+                if firstAny == nil { firstAny = item }
+                anyTasks.insert(item.taskID)
+                if item.reason == .retiredRoleInUnclosedTask {
+                    if firstRetirement == nil { firstRetirement = item }
+                    retirementTasks.insert(item.taskID)
+                }
+            }
+            let first = firstRetirement ?? firstAny
+            let blockingTaskCount = firstRetirement == nil ? anyTasks.count : retirementTasks.count
             return BundledUpdateReport.DeferredTeam(
                 teamID: team.id,
                 teamName: team.name,
                 roleNames: roleNames,
                 taskID: first?.taskID ?? -1,
                 taskTitle: first?.taskTitle ?? "",
-                otherBlockingTaskCount: max(0, evidence.count - 1)
+                otherBlockingTaskCount: max(0, blockingTaskCount - 1),
+                reason: firstRetirement == nil ? .busy : .retiredRoleInUnclosedTask
             )
         }
 
@@ -324,6 +348,33 @@ nonisolated extension NTMSRepository {
             //    never remove stored entries the user may be using. Respects
             //    tombstones.
             if let bundledTeam = bundledByTemplateID[tid] {
+                // 4a. Retire system roles the BUNDLE dropped. Runs before the additive pass,
+                //     so a renamed role is replaced rather than doubled. `Team.removeRole`
+                //     clears `reportsTo`, `invitableRoles` and `graphLayout` with it, and the
+                //     orphan-artifact prune below then takes the artifacts that lose their
+                //     only producer.
+                let retiredIDs = teams[i].roles
+                    .filter { $0.systemRoleID.map(SystemTemplates.retiredSystemRoleIDs.contains) == true }
+                    .map(\.id)
+                // Whether the chair is about to be deleted — read BEFORE the removals, because
+                // `removeRole` heals the coordinator itself and the healed value would hide the
+                // answer. `defaultCoordinatorID` picks the first non-Supervisor role in STORED
+                // order, and the additive pass below appends new roles at the END — so on a
+                // stored Ultra Team the heal lands on the Solution Architect, a role that IS a
+                // repair target, which is the seat `coordinatorIndex: 1` exists to keep clear.
+                // The carry-over itself has to wait until the replacement role EXISTS, so it
+                // runs after the additive pass.
+                let chairWasRetired = teams[i].settings.meetingCoordinatorRoleID
+                    .flatMap { id in teams[i].roles.first { $0.id == id } }
+                    .flatMap(\.systemRoleID)
+                    .map(SystemTemplates.retiredSystemRoleIDs.contains) == true
+                if !retiredIDs.isEmpty {
+                    // `retireSystemRole`, not `removeRole`: no tombstone. The tombstone is the
+                    // USER's mark, and this is the bundle's decision.
+                    for roleID in retiredIDs { teams[i].retireSystemRole(roleID) }
+                    teamChanged = true
+                }
+
                 let storedSystemRoleIDs = Set(teams[i].roles.compactMap(\.systemRoleID))
                 let tombstonedRoles = Set(teams[i].deletedSystemRoleIDs)
 
@@ -346,12 +397,52 @@ nonisolated extension NTMSRepository {
                     teamChanged = true
                 }
 
-                let storedArtifactIDs = Set(teams[i].artifacts.map(\.id))
                 let tombstonedArtifacts = Set(teams[i].deletedSystemArtifactIDs)
                 for bundledArt in bundledTeam.artifacts where bundledArt.isSystemArtifact {
-                    if storedArtifactIDs.contains(bundledArt.id) { continue }
                     if tombstonedArtifacts.contains(bundledArt.id) { continue }
-                    teams[i].artifacts.append(bundledArt)
+                    guard let a = teams[i].artifacts.firstIndex(where: { $0.id == bundledArt.id })
+                    else {
+                        teams[i].artifacts.append(bundledArt)
+                        teamChanged = true
+                        continue
+                    }
+                    // REFRESH, not merely add. A system artifact's `description` is SHIPPED
+                    // CONTENT: `PromptBuilder+TeamContext` puts it on the wire beside the role's
+                    // prompt, so the two are one contract for one deliverable and an edit to
+                    // either half must reach a stored folder. Until 2026-09-12 this loop skipped
+                    // every artifact it already had, so a description edit reached NO existing
+                    // work folder at any version — the prompt half moved (step 1 rewrites it) and
+                    // the description half stayed, which is worse than neither moving. Same
+                    // ownership rule as step 1: `isSystemArtifact`-gated, so a user's own
+                    // artifacts are untouched, and a user's edit to a SYSTEM one survives until
+                    // the next app upgrade exactly as their edit to a system prompt does.
+                    // `id` is `Artifact.slugify(name)`, so a renamed artifact is a different id
+                    // and arrives through the append branch above; the old one is taken by
+                    // `pruneOrphanSystemArtifacts` below.
+                    let stored = teams[i].artifacts[a]
+                    if stored.name != bundledArt.name
+                        || stored.icon != bundledArt.icon
+                        || stored.mimeType != bundledArt.mimeType
+                        || stored.description != bundledArt.description
+                        || stored.isSystemArtifact != bundledArt.isSystemArtifact
+                    {
+                        teams[i].artifacts[a] = bundledArt
+                        teamChanged = true
+                    }
+                }
+
+                // 4b. The chair the bundle chose, now that its role exists. Inside the one
+                //     settings write reconciliation already allows for the coordinator
+                //     (step 5), and narrower: it fires only when the stored chair was a role
+                //     the BUNDLE retired.
+                if chairWasRetired,
+                   let bundledChairSystemID = bundledTeam.settings.meetingCoordinatorRoleID
+                   .flatMap({ id in bundledTeam.roles.first { $0.id == id } })
+                   .flatMap(\.systemRoleID),
+                   let stored = teams[i].roles.first(where: { $0.systemRoleID == bundledChairSystemID }),
+                   teams[i].settings.meetingCoordinatorRoleID != stored.id
+                {
+                    teams[i].settings.meetingCoordinatorRoleID = stored.id
                     teamChanged = true
                 }
 
@@ -437,6 +528,36 @@ nonisolated extension NTMSRepository {
         let taskID: Int
         let taskTitle: String
         let roleIDs: [String]
+        var reason: BundledUpdateReport.DeferralReason = .busy
+    }
+
+    /// The retired roles (`SystemTemplates.retiredSystemRoleIDs`) an UNCLOSED task's last
+    /// run still references — by a step or by a role status, in any status at all.
+    ///
+    /// A second reason to defer a team, beside `busyRoleIDs`, and deliberately not a
+    /// widening of it: that predicate is "a live tool loop", pinned narrow so a paused or
+    /// finished task can never freeze its team's prompts. This one is "step 4a would delete
+    /// a role this task still holds", and the harm is different in kind. Retiring the
+    /// definition under a task leaves its steps orphaned: a `.paused` step of a role no
+    /// longer on the roster pins the derived status at Paused with nothing to resume
+    /// (`parkedRoleIDs` restarts `.working` roles only, and status recovery demotes the
+    /// parked one to `.idle`), and a `.done` step's ARTIFACTS stay in the run's produced
+    /// pool — `computeProducedArtifactNames` reads every `.done` step regardless of
+    /// roster — so the retired engineer's "Implementation Notes" makes the new Diff
+    /// Reviewer ready in wave 1, on notes the new engineer never wrote, and
+    /// `hasBlockingUpstream` cannot see it because the roster's producer of that artifact
+    /// is a role with no status. The only sanctioned cleanup for a roster change under a
+    /// task destroys the run (`switchTeam`); deferring until the task is closed destroys
+    /// nothing and names the task.
+    nonisolated static func retiredRoleIDsInUse(
+        _ task: NTMSTask, retiredRoleIDs: Set<String>
+    ) -> [String] {
+        guard !retiredRoleIDs.isEmpty, task.closedAt == nil, let run = task.runs.last else {
+            return []
+        }
+        var referenced = Set(run.steps.map(\.effectiveRoleID))
+        referenced.formUnion(run.roleStatuses.keys)
+        return referenced.intersection(retiredRoleIDs).sorted()
     }
 
     enum RunningTeamsScanResult {
@@ -575,18 +696,34 @@ nonisolated extension NTMSRepository {
                     reason: error.localizedDescription
                 )
             }
-            let busyRoleIDs = Self.busyRoleIDs(task)
-            guard !busyRoleIDs.isEmpty else { continue }
-
             // Same order the engine, the LLM services and the deletion guard use.
-            if let teamID = TeamResolution.resolveTeamID(
+            guard let teamID = TeamResolution.resolveTeamID(
                 task: task,
                 teamProvider: { teamsByID[$0] },
                 activeTeam: effectiveActiveTeam
-            ) {
+            ) else { continue }
+
+            let busyRoleIDs = Self.busyRoleIDs(task)
+            if !busyRoleIDs.isEmpty {
                 running[teamID, default: []].append(
                     RunningRoleEvidence(
                         taskID: task.id, taskTitle: task.title, roleIDs: busyRoleIDs
+                    )
+                )
+            }
+            // The second reason, evaluated against the team as STORED — the retired
+            // definitions are still on its roster at scan time, which is what makes them
+            // resolvable to ids here.
+            let retiredIDs = Set(
+                (teamsByID[teamID]?.roles ?? [])
+                    .filter { $0.systemRoleID.map(SystemTemplates.retiredSystemRoleIDs.contains) == true }
+                    .map(\.id))
+            let retiredInUse = Self.retiredRoleIDsInUse(task, retiredRoleIDs: retiredIDs)
+            if !retiredInUse.isEmpty {
+                running[teamID, default: []].append(
+                    RunningRoleEvidence(
+                        taskID: task.id, taskTitle: task.title, roleIDs: retiredInUse,
+                        reason: .retiredRoleInUnclosedTask
                     )
                 )
             }
@@ -707,17 +844,22 @@ nonisolated extension NTMSRepository {
                 var refreshed = task.toSummary()
                 if !task.streamsHydrated {
                     // Raw read of a split task: its stream arrays are empty on
-                    // disk, so the recomputed `hasPendingSupervisorInput` would
-                    // be a false NEGATIVE — and writing `false` over a true row
-                    // wipes persisted seen-state (#91). Keep the row's answer.
+                    // disk, so the recomputed supervisor-wait facts would be a
+                    // false NEGATIVE — and writing `false`/`0` over a true row
+                    // wipes persisted seen-state (#91). Keep the row's answers.
                     //
-                    // This list is per FIELD, not per row: `hasRolesAwaitingAcceptance`
+                    // Which fields those are lives on `preserveSupervisorWaitFacts`, not
+                    // spelled out at each of the two seams: the flag and the count are one
+                    // fact in two shapes, and a seam that patched one would leave a row
+                    // claiming "waiting" beside a count of zero.
+                    //
+                    // The list is per FIELD, not per row: `hasRolesAwaitingAcceptance`
                     // is deliberately absent because it reads `run.roleStatuses` and
                     // `step.effectiveRoleID`, which the split does not strip (it takes
                     // only the four per-step stream arrays), so it recomputes faithfully
                     // here. That is a property of what `splittingStreams` strips and can
                     // change, so it is pinned rather than trusted.
-                    refreshed.hasPendingSupervisorInput = tasksIndex.tasks[i].hasPendingSupervisorInput
+                    refreshed.preserveSupervisorWaitFacts(from: tasksIndex.tasks[i])
                 }
                 if tasksIndex.tasks[i] != refreshed {
                     tasksIndex.tasks[i] = refreshed
@@ -742,7 +884,7 @@ nonisolated extension NTMSRepository {
             // convergence branch above for why `false` must not be recomputed).
             var refreshed = healed.toSummary()
             if !healed.streamsHydrated {
-                refreshed.hasPendingSupervisorInput = tasksIndex.tasks[i].hasPendingSupervisorInput
+                refreshed.preserveSupervisorWaitFacts(from: tasksIndex.tasks[i])
             }
             tasksIndex.tasks[i] = refreshed
             changed = true

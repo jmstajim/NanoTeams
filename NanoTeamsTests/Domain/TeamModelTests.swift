@@ -553,8 +553,8 @@ final class TeamModelTests: XCTestCase {
         let wf = WorkFolderProjection(state: WorkFolderState(name: "Test"), settings: .defaults, teams: Team.defaultTeams)
         let names = wf.teams.map(\.name)
 
-        XCTAssertEqual(wf.teams.count, 8)
-        XCTAssertEqual(names, ["Coding Assistant", "Coding Agent", "Personal Assistant", "FAANG Team", "Engineering Team", "Startup", "Quest Party", "Discussion Club"])
+        XCTAssertEqual(wf.teams.count, 9)
+        XCTAssertEqual(names, ["Coding Assistant", "Coding Agent", "Personal Assistant", "FAANG Team", "Engineering Team", "Ultra Team", "Startup", "Quest Party", "Discussion Club"])
     }
 
     func testFreshWorkFolder_activeTeamIsCodingAssistant() {
@@ -577,7 +577,7 @@ final class TeamModelTests: XCTestCase {
         // mask an accidental reorder.
         let templateIDs = Team.defaultTeams.map(\.templateID)
         XCTAssertEqual(templateIDs.first, "codingAssistant")
-        XCTAssertEqual(templateIDs, ["codingAssistant", "codingAgent", "assistant", "faang", "engineering", "startup", "questParty", "discussionClub"])
+        XCTAssertEqual(templateIDs, ["codingAssistant", "codingAgent", "assistant", "faang", "engineering", "ultra", "startup", "questParty", "discussionClub"])
     }
 
     func testTemplateMetadata_codingAssistantIsFirstRealTemplate() {

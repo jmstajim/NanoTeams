@@ -330,7 +330,10 @@ struct RoleEditorSkillsTab: View {
                         .truncationMode(.head)
                 } else {
                     Text("This skill file is no longer on disk, or its work folder isn't open. It contributes nothing to the prompt.")
-                        .font(Typography.caption2)
+                        // Two sentences explaining a broken row — the caption rung, not the
+                        // 10px tag scale (`MicroTypeNeverWrapsPinTests`). The path line above
+                        // stays at 10: it is an identifier, and it truncates rather than wraps.
+                        .font(Typography.termXs)
                         .foregroundStyle(Colors.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }

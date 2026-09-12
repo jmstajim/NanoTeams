@@ -12,12 +12,13 @@ final class CorrectRoleTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
     private func createTaskWithPausedStep(
         roleID: String,
-        needsSupervisorInput: Bool
+        needsSupervisorInput: Bool,
+        inquiry: SupervisorInquiry? = nil
     ) async -> Int {
         await sut.openWorkFolder(tempDir)
         let taskID = await sut.createTask(title: "Test", supervisorTask: "Goal")!
 
-        let step = StepExecution(
+        var step = StepExecution(
             id: roleID,
             role: .productManager,
             title: "PM Step",
@@ -27,6 +28,7 @@ final class CorrectRoleTests: NTMSOrchestratorTestBase, @unchecked Sendable {
             supervisorQuestion: needsSupervisorInput ? "Which option?" : nil,
             llmConversation: [LLMMessage(role: .assistant, content: "Prior turn")]
         )
+        step.supervisorInquiry = inquiry
         await sut.mutateTask(taskID: taskID) { task in
             var run = Run(id: 0, steps: [step], roleStatuses: [roleID: .working])
             run.updatedAt = MonotonicClock.shared.now()
@@ -34,6 +36,26 @@ final class CorrectRoleTests: NTMSOrchestratorTestBase, @unchecked Sendable {
         }
         return taskID
     }
+
+    /// A two-question form whose FIRST option of Q1 is not what the correction below asks for.
+    /// The prose is written to look like the reply grammar (`1. …`) on purpose — that is the
+    /// collision the origin flag exists to settle.
+    private static let buildForm = SupervisorInquiry(
+        headline: "Two things before I build",
+        questions: [
+            SupervisorInquiryQuestion(
+                id: "config", prompt: "Which configuration?", kind: .singleChoice,
+                options: [
+                    SupervisorInquiryOption(id: "debug", label: "Debug"),
+                    SupervisorInquiryOption(id: "release", label: "Release"),
+                ]),
+            SupervisorInquiryQuestion(
+                id: "tests", prompt: "Run the tests too?", kind: .singleChoice,
+                options: [
+                    SupervisorInquiryOption(id: "yes", label: "Yes"),
+                    SupervisorInquiryOption(id: "no", label: "No"),
+                ]),
+        ])
 
     /// Force the orchestrator's engine-state view to report `.paused` for this task.
     /// Tests can't run a real engine, so we simulate the observable state directly.
@@ -128,6 +150,38 @@ final class CorrectRoleTests: NTMSOrchestratorTestBase, @unchecked Sendable {
                        "Branch A must NOT append a StepMessage — that's Branch B's behavior")
         XCTAssertTrue(step?.supervisorAnswerAttachmentPaths.isEmpty ?? false,
                       "answerSupervisorQuestion clears attachment paths (Branch A passes no attachments)")
+    }
+
+    /// Correct Role over a step parked on a QUESTIONNAIRE records no decision the human
+    /// did not make.
+    ///
+    /// The sheet is a text box: it shows the headline and takes prose, and there is nowhere
+    /// in it to pick an option. So the branch mints an EMPTY `SupervisorInquirySubmission`
+    /// whenever the step holds an inquiry — presence is what names the origin, and it routes
+    /// `compose` away from `parse`, the grammar written for a model's `Q2: 1, 3` reply.
+    ///
+    /// RED: pass `submission: nil` (what this path did until 2026-09-10) → `parse` reads
+    /// `1. Use Release instead` as question 1 answered with the label `Release`, and the
+    /// asking role is told the Supervisor DECIDED on Release — a decision that was invented
+    /// out of a sentence arguing the opposite.
+    func testCorrectRole_parkedOnAForm_recordsNoSelections_onlyTheProse() async {
+        let roleID = "pm-form"
+        let taskID = await createTaskWithPausedStep(
+            roleID: roleID, needsSupervisorInput: true, inquiry: Self.buildForm)
+        markEngineStatePaused(taskID: taskID)
+
+        await sut.correctRole(taskID: taskID, roleID: roleID, comment: "1. Use Release instead")
+
+        let step = sut.activeTask?.runs.last?.steps.first
+        let recorded = step?.supervisorInquiryAnswer
+        XCTAssertNotNil(recorded, "a parked form is answered structurally, not only in prose")
+
+        XCTAssertNil(recorded?.byQuestionID["config"],
+                     "neither a parsed label nor the recommendation — nobody picked anything")
+        XCTAssertNil(recorded?.byQuestionID["tests"],
+                     "every question is unanswered: the sheet offers no way to answer one")
+        XCTAssertEqual(recorded?.note, "1. Use Release instead",
+                       "what the Supervisor typed is carried verbatim, not consumed as a selection")
     }
 
     // MARK: - Silent-Failure Surfacing

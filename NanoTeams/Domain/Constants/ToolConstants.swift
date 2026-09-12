@@ -33,8 +33,11 @@ nonisolated enum ToolConstants {
                             tools: [TN.askTeammate, TN.requestTeamMeeting, TN.requestChanges]),
         ToolCategoryDisplay(id: "memory", name: "Memory", icon: "brain.head.profile",
                             tools: [TN.updateScratchpad]),
+        // Both parking tools. `ask_supervisor_form` is listed here or it cannot be granted
+        // through the Role editor at all — this array, not the handler registry, is what the
+        // Tools tab renders.
         ToolCategoryDisplay(id: "supervisor", name: "Supervisor", icon: "crown",
-                            tools: [TN.askSupervisor]),
+                            tools: [TN.askSupervisor, TN.askSupervisorForm]),
         ToolCategoryDisplay(id: "vision", name: "Vision", icon: "eye",
                             tools: [TN.analyzeImage]),
         // Shell tools are granted by default to the code-writing roles (Software

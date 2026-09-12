@@ -312,10 +312,11 @@ extension NativeLMStudioClient {
 
     /// Builds the `(type[, required][, enum: a|b|c])` middle bit. Arrays render their
     /// item type when known. Nested object properties (`JSONSchemaProperty.properties`)
-    /// are not expanded — no tool in the registry nests deeper than scalar
-    /// parameters (`create_team.team_config` is `JSONSchema.string`, see CLAUDE.md #46).
-    /// If a future tool needs nesting, the description text is the documentation
-    /// surface; we don't need a recursive renderer here.
+    /// are not expanded, and the two tools carrying a nested JSON DOCUMENT
+    /// (`ask_supervisor_form.form`, `create_team.team_config`) hold none: `JSONSchema`
+    /// cannot express an array of objects (CLAUDE.md #46), so they declare a bare `object`
+    /// and their descriptions carry the shape — which is the licence this note always gave.
+    /// A recursive renderer would still have nothing to walk.
     private static func typeAndAttributes(_ prop: JSONSchemaProperty, required: Bool) -> String {
         var pieces: [String] = []
         if prop.type == "array", let items = prop.items {
@@ -324,8 +325,14 @@ extension NativeLMStudioClient {
             pieces.append(prop.type)
         }
         if required { pieces.append("required") }
-        if let enumValues = prop.enumValues, !enumValues.isEmpty {
-            pieces.append("enum: \(enumValues.joined(separator: "|"))")
+        // `items.enumValues` for an array, exactly as `items.description` is read a few lines
+        // above and for the same reason: the constraint lives on the ITEM, and read only off
+        // the property an array of enums would advertise its allowed values nowhere. No tool
+        // in the registry is that shape today — this is the hole closed before something
+        // falls in it, not after (the `items.description` one shipped first).
+        let allowed = prop.enumValues ?? (prop.type == "array" ? prop.items?.enumValues : nil)
+        if let allowed, !allowed.isEmpty {
+            pieces.append("enum: \(allowed.joined(separator: "|"))")
         }
         return pieces.joined(separator: ", ")
     }

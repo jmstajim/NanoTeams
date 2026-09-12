@@ -199,7 +199,7 @@ final class QuickCaptureComposerFieldOwnershipCoverageTests: XCTestCase {
 
         XCTAssertEqual(state.supervisorTask, "Refactor the parser")
         XCTAssertEqual(state.answerText, "", "the answer field is cleared on the way out")
-        XCTAssertEqual(state._testAnswerDrafts[7]?.text, "use SwiftUI",
+        XCTAssertEqual(state.answerDraftStore.peek(for: .role(TaskStepKey(taskID: 7, stepID: "s")))?.text, "use SwiftUI",
                        "and the unsent answer is kept per task, as before")
     }
 
@@ -247,7 +247,7 @@ final class QuickCaptureComposerFieldOwnershipCoverageTests: XCTestCase {
 
         XCTAssertEqual(sut.formState.answerText, "",
                        "B's composer is not where A's message goes, however the panel got here")
-        XCTAssertEqual(sut.formState._testAnswerDrafts[taskA]?.text, "for A only",
+        XCTAssertEqual(sut.formState.answerDraftStore.peek(for: .taskChat(taskA))?.text, "for A only",
                        "and A still has it")
     }
 
@@ -259,11 +259,13 @@ final class QuickCaptureComposerFieldOwnershipCoverageTests: XCTestCase {
     func testTheLiveAnswerBucket_hasNoOwnerOnceItIsEmptied() {
         let state = QuickCaptureFormState()
         state.enterAnswerMode(payload: answerPayload(taskID: 4))
-        XCTAssertEqual(state.answerFieldsOwnerTaskID, 4)
+        XCTAssertEqual(state.answerFieldsOwnerKey,
+                       .role(TaskStepKey(taskID: 4, stepID: "s")),
+                       "the branch is the role that asked, chat mode or not")
 
         state.exitAnswerMode()
 
-        XCTAssertNil(state.answerFieldsOwnerTaskID)
+        XCTAssertNil(state.answerFieldsOwnerKey)
     }
 
     // MARK: - Folder scope

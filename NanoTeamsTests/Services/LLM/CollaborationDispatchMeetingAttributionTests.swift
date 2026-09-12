@@ -3,10 +3,11 @@ import XCTest
 
 /// Heavy-integration pins for the `.teamMeeting` branch of
 /// `LLMExecutionService.appendCollaborationResult` — specifically the
-/// attribution wiring `attributionRole = effectiveCoordinator(team:, initiator: roleForMessage)`.
+/// attribution wiring `attributionRole = effectiveCoordinator(team:initiator:requesterRoleID:seat:targetRoleID:)`
+/// with `.speaks` and `roleForMessage`.
 ///
-/// `effectiveCoordinator(team:initiator:)` itself is unit-tested in
-/// `LLMExecutionServiceTests`. These tests guard the **dispatcher call site**:
+/// `effectiveCoordinator` itself is unit-tested in `LLMExecutionServiceTests` (the
+/// `.speaks` seat) and `ChangeRequestChairTests` (the `.presentsOnly` chair rule). These tests guard the **dispatcher call site**:
 /// if a future refactor swaps `roleForMessage` for the wrong Role argument
 /// (e.g. a meeting speaker instead of the meeting initiator), the helper
 /// unit tests still pass and the LLM-conversation `sourceRole` silently

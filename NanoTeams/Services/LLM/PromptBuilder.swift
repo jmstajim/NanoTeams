@@ -130,7 +130,8 @@ nonisolated struct PromptBuilder {
         let template = context.activeTeam?.systemPromptTemplate ?? SystemTemplates.genericTemplate
         let workFolderContext = buildWorkFolderContextMessage(
             workFolder: context.workFolder,
-            agentInstructions: context.agentInstructions
+            agentInstructions: context.agentInstructions,
+            toolNames: toolNameSet
         ) ?? ""
         let placeholders: [String: String] = [
             "roleName": context.roleDefinition?.name ?? step.role.displayName,
@@ -256,9 +257,14 @@ nonisolated struct PromptBuilder {
             messages.append(ChatMessage(
                 role: .assistant,
                 content: replayedAskSupervisorEnvelope(question: question)))
-            messages.append(ChatMessage(
-                role: .user,
-                content: "\(MessageSourceContext.supervisorAnswerPrefix)\(answer)"))
+            // The marker says a Supervisor spoke. When what unparked the step was the app's
+            // `[ Ask as form ]` directive, nobody did — and the live wire sends that text
+            // bare, inside the ask's tool-result envelope (`+StepLifecycle`), so attaching a
+            // marker here would also make the rebuilt prompt disagree with the one the model
+            // already saw. The text itself stays: the role has to know it was sent back.
+            let prefix = step.lastSupervisorAskResolution == .questionnaireRequest
+                ? "" : MessageSourceContext.supervisorAnswerPrefix
+            messages.append(ChatMessage(role: .user, content: "\(prefix)\(answer)"))
         } else if let question = step.supervisorQuestion, !question.isEmpty {
             messages.append(ChatMessage(
                 role: .user,
@@ -278,7 +284,6 @@ nonisolated struct PromptBuilder {
         // restatement is wire-only (never persisted) and sits in the variant
         // tail, so it costs nothing in prefix-cache stability.
         let expectedForContract = step.expectedArtifacts
-            .filter { $0 != ArtifactConstants.buildDiagnosticsName }
         var closing = messages.count == 1 ? "Start the step." : ""
         if !expectedForContract.isEmpty, step.revisionComment == nil {
             let quoted = expectedForContract.map { "\"\($0)\"" }.joined(separator: ", ")

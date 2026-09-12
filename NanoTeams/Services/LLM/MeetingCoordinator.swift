@@ -96,7 +96,8 @@ enum MeetingCoordinator {
             maxTurns: context.limits.maxMeetingTurns,
             isCoordinator: speaker == context.coordinatorRole,
             isDiscussionClub: context.team?.templateID == "discussionClub",
-            votes: meeting.kind == .changeRequestVote
+            votes: meeting.kind == .changeRequestVote,
+            speakerIsTarget: context.voteTargetRole.map { $0 == speaker } ?? false
         )
     }
 
@@ -114,19 +115,25 @@ enum MeetingCoordinator {
     /// recency slot, which is the better place for an instruction anyway [Liu2024].
     ///
     /// `votes`: a change-request meeting appends `ChangeRequestService.voteInstruction` to
-    /// every directive, so the line `tallyVotes` counts is the last thing each speaker reads.
+    /// every directive, so the line `tallyVotes` counts is the last thing each speaker reads —
+    /// except the TARGET's (`speakerIsTarget`), whose ballot `tallyVotes` does not count and
+    /// which therefore reads `targetInstruction` instead: what it is asked for is its defence.
     nonisolated static func turnDirective(
         speakerName: String,
         turnNumber: Int,
         maxTurns: Int,
         isCoordinator: Bool,
         isDiscussionClub: Bool,
-        votes: Bool = false
+        votes: Bool = false,
+        speakerIsTarget: Bool = false
     ) -> String {
         let base = baseTurnDirective(
             speakerName: speakerName, turnNumber: turnNumber, maxTurns: maxTurns,
             isCoordinator: isCoordinator, isDiscussionClub: isDiscussionClub)
-        return votes ? base + " " + ChangeRequestService.voteInstruction : base
+        guard votes else { return base }
+        return base + " " + (speakerIsTarget
+            ? ChangeRequestService.targetInstruction
+            : ChangeRequestService.voteInstruction)
     }
 
     private nonisolated static func baseTurnDirective(

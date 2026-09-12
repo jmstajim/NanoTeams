@@ -41,7 +41,10 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
     /// (`LLMExecutionService+DelegateToTeam`, `NTMSOrchestrator+TeamGeneration`)
     /// and `StatusRecoveryService`'s abandoned-delegation heal (`resultJSON`/
     /// `isError`) — none writes `name` or `id`, the two fields the index reads.
-    /// Adding a writer — revisit `AskCallIndex.isPrefix`. Both sets are pinned
+    /// `isError` is read too — a refused ask is not a park (`StepToolCall.isRefusedAsk`)
+    /// — but off the LIVE array, never from the cache
+    /// (`AskCallIndex.parkedPositions(in:)`), which is what keeps the field writers
+    /// harmless. Adding a writer — revisit `AskCallIndex.isPrefix`. Both sets are pinned
     /// tree-wide by `AskCallIndexTests.testToolCallsWriterSet_isClosed`
     /// (CLAUDE.md #51): the array/element writers and `&…toolCalls` inout passes
     /// by recorded line, the field writers by written-field set and file set.
@@ -63,7 +66,23 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
     /// Whether the assistant requested Supervisor input.
     var needsSupervisorInput: Bool
     var supervisorQuestion: String?
+    /// The structured questionnaire behind `supervisorQuestion`, when the role asked one.
+    ///
+    /// `nil` for every plain `ask_supervisor` — which is every chat-mode turn — so the common
+    /// path carries nothing new. `supervisorQuestion` remains the headline in both cases, and
+    /// that is what keeps every existing surface (banner, chip label, sidebar preview,
+    /// dismissal key) working without learning about forms.
+    ///
+    /// Stale after an answer, exactly as `supervisorQuestion` is: no surface may read it
+    /// without the `hasActiveSupervisorInput` gate.
+    var supervisorInquiry: SupervisorInquiry?
     var supervisorAnswer: String?
+    /// What the Supervisor decided, per question, when the answer came from a form.
+    ///
+    /// The prose the model receives is rendered from this and stored in `supervisorAnswer`;
+    /// this is the record the activity feed re-renders the answered card from, because prose
+    /// cannot say which of three options was picked without being parsed back.
+    var supervisorInquiryAnswer: SupervisorInquiryAnswer?
 
     /// Work-folder-root-relative file paths attached to the supervisor's answer.
     var supervisorAnswerAttachmentPaths: [String]
@@ -307,7 +326,9 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         case amendments
         case needsSupervisorInput
         case supervisorQuestion
+        case supervisorInquiry
         case supervisorAnswer
+        case supervisorInquiryAnswer
         case supervisorAnswerAttachmentPaths
         case supervisorAnswerWasAuto
         case supervisorAnswerPendingDelivery
@@ -348,7 +369,10 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         self.amendments = try c.decodeIfPresent([StepAmendment].self, forKey: .amendments) ?? []
         self.needsSupervisorInput = try c.decodeIfPresent(Bool.self, forKey: .needsSupervisorInput) ?? false
         self.supervisorQuestion = try c.decodeIfPresent(String.self, forKey: .supervisorQuestion)
+        self.supervisorInquiry = try c.decodeIfPresent(SupervisorInquiry.self, forKey: .supervisorInquiry)
         self.supervisorAnswer = try c.decodeIfPresent(String.self, forKey: .supervisorAnswer)
+        self.supervisorInquiryAnswer = try c.decodeIfPresent(
+            SupervisorInquiryAnswer.self, forKey: .supervisorInquiryAnswer)
         self.supervisorAnswerAttachmentPaths = try c.decodeIfPresent([String].self, forKey: .supervisorAnswerAttachmentPaths) ?? []
         self.supervisorAnswerWasAuto = try c.decodeIfPresent(Bool.self, forKey: .supervisorAnswerWasAuto) ?? false
         // Absent in every `task.json` written before the flag existed. Defaulting to
@@ -420,7 +444,9 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         try c.encode(amendments, forKey: .amendments)
         try c.encode(needsSupervisorInput, forKey: .needsSupervisorInput)
         try c.encodeIfPresent(supervisorQuestion, forKey: .supervisorQuestion)
+        try c.encodeIfPresent(supervisorInquiry, forKey: .supervisorInquiry)
         try c.encodeIfPresent(supervisorAnswer, forKey: .supervisorAnswer)
+        try c.encodeIfPresent(supervisorInquiryAnswer, forKey: .supervisorInquiryAnswer)
         if !supervisorAnswerAttachmentPaths.isEmpty {
             try c.encode(supervisorAnswerAttachmentPaths, forKey: .supervisorAnswerAttachmentPaths)
         }
@@ -526,18 +552,20 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
     /// (`isArtifactComplete`) and the missing-deliverables nudge, so the two cannot
     /// disagree about what is outstanding — until 2026-09-06 the nudge read the role
     /// definition instead and named already-submitted deliverables as missing.
+    ///
+    /// Both used to subtract a "Build Diagnostics" name the engine attached by itself and
+    /// so could never be waited on. That machinery was removed on 2026-09-11 (its writer
+    /// had been dead since `cfbcf550`), and with it the exception: every expected artifact
+    /// is now one a ROLE submits, so there is nothing to filter out.
     var missingArtifactNames: [String] {
         let existing = Set(artifacts.map(\.name))
-        return expectedArtifacts.filter {
-            $0 != ArtifactConstants.buildDiagnosticsName && !existing.contains($0)
-        }
+        return expectedArtifacts.filter { !existing.contains($0) }
     }
 
-    /// Whether all non-diagnostic expected artifacts have been created.
+    /// Whether all expected artifacts have been created.
     /// Returns `false` if there are no expected artifacts (advisory/observer roles).
     var isArtifactComplete: Bool {
-        let expected = expectedArtifacts.filter { $0 != ArtifactConstants.buildDiagnosticsName }
-        guard !expected.isEmpty else { return false }
+        guard !expectedArtifacts.isEmpty else { return false }
         return missingArtifactNames.isEmpty
     }
 
@@ -558,7 +586,9 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         amendments = []
         needsSupervisorInput = false
         supervisorQuestion = nil
+        supervisorInquiry = nil
         supervisorAnswer = nil
+        supervisorInquiryAnswer = nil
         supervisorAnswerAttachmentPaths = []
         supervisorAnswerWasAuto = false
         supervisorAnswerPendingDelivery = false

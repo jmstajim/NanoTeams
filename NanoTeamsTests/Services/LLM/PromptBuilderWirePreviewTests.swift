@@ -461,10 +461,16 @@ final class PromptBuilderWirePreviewTests: XCTestCase {
                        "Meeting preview (non-coordinator, turn 1) must equal runtime system_prompt byte-for-byte")
     }
 
-    /// Byte-identity for the meeting kind, **coordinator role at turn 1**.
-    /// Runtime emits `coordinatorHint = "- As the coordinator, help guide..."`
-    /// for this case (per MeetingStreamingService:142-143). The wire-preview
-    /// must replicate this branching when `inputs.isCoordinator` is set.
+    /// Byte-identity for the meeting kind, **coordinator role**.
+    ///
+    /// `{turnNumber}` and `{coordinatorHint}` are RETIRED (2026-07): the runtime resolves both
+    /// to "" for every speaker, and the hint moved into `MeetingCoordinator.turnDirective`,
+    /// last on the wire. This test's own justification cited `MeetingStreamingService:142-143`
+    /// for a branch that line had stopped describing, and the preview kept emitting the
+    /// sentence — so the pin certified byte-identity against a wire that does not exist.
+    /// Corrected 2026-09-13; the toggle's only remaining consequence is `conclude_meeting` in
+    /// the tool block, which is exactly the wire's only difference between a chair and a
+    /// participant.
     func testMeetingPreview_byteIdenticalToWire_coordinatorAtTurn1() throws {
         let coordinator = faang.roles.first(where: { $0.name == "Tech Lead" })!
         let inputs = makeInputs(role: coordinator, team: faang, isCoordinator: true)
@@ -481,8 +487,8 @@ final class PromptBuilderWirePreviewTests: XCTestCase {
             "speakerName": coordinator.name,
             "roleGuidance": coordinator.resolvedMeetingGuidance,
             "meetingTopic": "(example: meeting topic)",
-            "turnNumber": "1",
-            "coordinatorHint": "- As the coordinator, help guide the discussion toward a decision.",
+            "turnNumber": "",
+            "coordinatorHint": "",
             "teamDescription": faang.description,
             "globalContext": PromptBuilder.formatGlobalContext(inputs.globalContext),
             "toolCalling": PromptBuilder.formatToolCallingBlock(tools: filteredTools),
@@ -494,7 +500,8 @@ final class PromptBuilderWirePreviewTests: XCTestCase {
         )
 
         XCTAssertEqual(preview, expectedWire,
-                       "Meeting preview as coordinator must emit the runtime coordinatorHint")
+                       "the preview must resolve the retired chips exactly as the runtime "
+                           + "does — to nothing")
     }
 
     /// Smoke test — `team: nil` should fall through to `genericTemplate` and

@@ -107,7 +107,7 @@ final class TeamActivityFeedLogicTests: XCTestCase {
         )
         for tagged in items {
             guard case let .notification(_, _, type, _, _) = tagged.item,
-                  case let .supervisorInput(question, answer, _, _, _, _, _) = type
+                  case let .supervisorInput(question, answer, _, _, _, _, _, _) = type
             else { continue }
             result.append((question, answer, tagged.item.createdAt))
         }
@@ -115,8 +115,8 @@ final class TeamActivityFeedLogicTests: XCTestCase {
         // Active question (skipped by `buildTimelineItems`, owned by the
         // docked composer) — synthesize an entry so tests that pinned
         // "active goes last" still work.
-        for q in ActivityFeedBuilder.activeSupervisorQuestions(steps: [step]) {
-            result.append((q.question, nil, Date.distantFuture))
+        for q in SupervisorQuestionInbox.pending(taskID: 1, steps: [step]) {
+            result.append((q.headline, nil, Date.distantFuture))
         }
         return result
     }
@@ -453,7 +453,7 @@ final class TeamActivityFeedLogicTests: XCTestCase {
         XCTAssertEqual(notifs[0].answer, "answer1")
         XCTAssertEqual(notifs[0].timestamp, firstAnswerTime)
 
-        // Second: active, pinned to bottom by the synthesized entry from `activeSupervisorQuestions`
+        // Second: active, pinned to bottom by the synthesized entry from `SupervisorQuestionInbox.pending`
         XCTAssertEqual(notifs[1].question, "Second question")
         XCTAssertNil(notifs[1].answer)
         XCTAssertEqual(notifs[1].timestamp, Date.distantFuture)
@@ -1591,7 +1591,7 @@ final class TeamActivityFeedLogicTests: XCTestCase {
     /// back and forth to force a fresh view rebuild.
     ///
     /// Pinned because the bug is invisible from the activeQuestions side:
-    /// `activeSupervisorQuestions` itself works correctly (companion test
+    /// `SupervisorQuestionInbox.pending` itself works correctly (companion test
     /// `testEscalationPath_emptyAskCalls_flagSet_surfacesStoredQuestion`); the
     /// cache just never gets recomputed.
     func testComputeRunDataVersion_changesWhenNeedsSupervisorInputFlips() {

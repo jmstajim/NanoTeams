@@ -158,45 +158,6 @@ nonisolated enum TaskMutationService {
         task.runs[location.runIndex].steps[location.stepIndex].updatedAt = MonotonicClock.shared.now()
     }
 
-    /// Attaches or updates a build diagnostics artifact on a step.
-    /// - Parameters:
-    ///   - relativePath: The relative path to the build diagnostics file.
-    ///   - stepID: The step ID.
-    ///   - task: The task to mutate.
-    static func attachBuildDiagnosticsArtifact(
-        relativePath: String,
-        stepID: String,
-        in task: inout NTMSTask
-    ) {
-        guard let location = task.locateStepInLatestRun(stepID: stepID) else { return }
-
-        let now = MonotonicClock.shared.now()
-        if let idx = task.runs[location.runIndex].steps[location.stepIndex].artifacts.firstIndex(
-            where: { $0.name.caseInsensitiveCompare(ArtifactConstants.buildDiagnosticsName) == .orderedSame })
-        {
-            task.runs[location.runIndex].steps[location.stepIndex].artifacts[idx].relativePath =
-                relativePath
-            task.runs[location.runIndex].steps[location.stepIndex].artifacts[idx].updatedAt = now
-            task.runs[location.runIndex].steps[location.stepIndex].artifacts[idx].mimeType =
-                "application/json"
-            task.runs[location.runIndex].steps[location.stepIndex].artifacts[idx].name =
-                ArtifactConstants.buildDiagnosticsName
-            task.runs[location.runIndex].steps[location.stepIndex].artifacts[idx].icon =
-                Artifact.defaultIconForName(ArtifactConstants.buildDiagnosticsName)
-        } else {
-            let artifact = Artifact(
-                name: ArtifactConstants.buildDiagnosticsName,
-                icon: Artifact.defaultIconForName(ArtifactConstants.buildDiagnosticsName),
-                mimeType: "application/json",
-                createdAt: now,
-                updatedAt: now,
-                relativePath: relativePath
-            )
-            task.runs[location.runIndex].steps[location.stepIndex].artifacts.append(artifact)
-        }
-        task.runs[location.runIndex].steps[location.stepIndex].updatedAt = now
-    }
-
     /// Sets the Supervisor question for a step.
     /// - Parameters:
     ///   - question: The Supervisor question.

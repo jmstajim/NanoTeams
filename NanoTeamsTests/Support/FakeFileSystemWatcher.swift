@@ -21,7 +21,7 @@ final class FakeFileSystemWatcher: FileSystemWatching, @unchecked Sendable {
 
     /// Arguments the coordinator handed the factory. Kept so a test can assert the coordinator
     /// still excludes `.nanoteams/internal/` — the exclusion that stops every tool-call log write
-    /// during a run from triggering a signature probe.
+    /// during a run from waking a walk of the whole tree.
     let paths: [URL]
     let excludedPrefixes: [URL]
     let debounce: TimeInterval

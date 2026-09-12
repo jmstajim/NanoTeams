@@ -594,9 +594,10 @@ final class SearchExecutorParallelEquivalenceTests: XCTestCase {
     /// The same requirement, one layer up and over a CLASS of sites rather than the two that
     /// exist today.
     ///
-    /// The exploratory pipeline performs two O(index) passes before it greps anything — the
-    /// posting intersection and filename matching over the whole roster — and both used to run
-    /// on the main actor for the same reason the walk did. They have no injectable seam, so
+    /// The exploratory pipeline performs an O(index) pass before it greps anything — filename
+    /// matching over the whole roster — and it used to run on the main actor for the same reason
+    /// the walk did. (There were two until 2026-09-11; the posting intersection went with the
+    /// postings.) It has no injectable seam, so
     /// this reads the source: the calls are allowed only inside the `@concurrent` helper that
     /// exists to carry them off the main actor. A third such pass added next to them, on the
     /// main actor, is what this catches; asserting the attribute is still typed on the two
@@ -604,7 +605,7 @@ final class SearchExecutorParallelEquivalenceTests: XCTestCase {
     ///
     /// RED: move `FilenameMatcher.match(` back to the `@MainActor` body of
     /// `appendExploratorySearchResult` → the call count outside the helper is 1, not 0.
-    func testExploratory_indexWidePassesLiveOnlyInsideTheConcurrentHelper() throws {
+    func testExploratory_indexWidePassLivesOnlyInsideTheConcurrentHelper() throws {
         let source = try String(contentsOf: URL(
             fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -613,23 +614,22 @@ final class SearchExecutorParallelEquivalenceTests: XCTestCase {
                 + "LLMExecutionService+ExploratorySearch.swift")
             .standardizedFileURL, encoding: .utf8)
 
-        let needles = ["FilenameMatcher.match(", "index.files(containing:"]
-        for needle in needles {
-            XCTAssertEqual(
-                source.components(separatedBy: needle).count - 1, 1,
-                "\(needle) must appear exactly once — inside `narrowAndMatchNames`")
-        }
-        // The helper's body is the only legal home, so both needles must sit after its
-        // declaration and before the next `func` at the same depth.
-        let marker = "nonisolated static func narrowAndMatchNames("
+        // One needle now, not two: the posting intersection that was the other one went with
+        // the postings themselves (2026-09-11). Matching file NAMES over the whole roster is
+        // the index-wide pass that remains, and it is still O(roster) with no upper bound.
+        let needle = "FilenameMatcher.match("
+        XCTAssertEqual(
+            source.components(separatedBy: needle).count - 1, 1,
+            "\(needle) must appear exactly once — inside `matchNames`")
+
+        // The helper's body is the only legal home, so the needle must sit after its
+        // declaration.
+        let marker = "nonisolated static func matchNames("
         let split = source.components(separatedBy: marker)
         XCTAssertEqual(split.count, 2, "anti-vacuum: the helper must exist under this name")
         let beforeHelper = split[0]
-        for needle in needles {
-            XCTAssertFalse(beforeHelper.contains(needle),
-                           "\(needle) is called before `narrowAndMatchNames` — i.e. on the "
-                               + "main actor")
-        }
+        XCTAssertFalse(beforeHelper.contains(needle),
+                       "\(needle) is called before `matchNames` — i.e. on the main actor")
         XCTAssertTrue(beforeHelper.hasSuffix("@concurrent\n    "),
                       "the helper must carry `@concurrent`: plain `nonisolated` runs on the "
                           + "CALLER's executor under SE-0461, which is the main actor here")

@@ -3,6 +3,22 @@ import SwiftUI
 // MARK: - Activity Notification Type
 
 /// Notification type for inline activity feed items requiring Supervisor attention
+/// A questionnaire an `ask_supervisor_form` call asked, and what was decided about it.
+///
+/// ONE associated value rather than two, because the pair means nothing apart: an answer with
+/// no questionnaire names questions nobody can look up, and the card renders neither half
+/// alone. `answer` stays optional inside it — a form on a closed or evicted run can be asked
+/// and never answered, and the card shows what was asked rather than nothing at all.
+nonisolated struct AnsweredInquiry: Hashable {
+    let inquiry: SupervisorInquiry
+    let answer: SupervisorInquiryAnswer?
+
+    init(inquiry: SupervisorInquiry, answer: SupervisorInquiryAnswer?) {
+        self.inquiry = inquiry
+        self.answer = answer
+    }
+}
+
 nonisolated enum ActivityNotificationType: Hashable {
     /// Supervisor question notification. Each `ask_supervisor` tool call gets its own notification.
     /// - question: The question text
@@ -19,7 +35,12 @@ nonisolated enum ActivityNotificationType: Hashable {
     ///   stamps it onto every resolved Q&A card on the step, so a step whose
     ///   history mixes auto and human answers shows the latest attribution on all
     ///   of them (per-question fidelity is not stored)
-    case supervisorInput(question: String, answer: String?, answerAttachmentPaths: [String], answerClippedTexts: [String], toolCallID: UUID, thinking: String?, wasAutoAnswered: Bool)
+    /// - inquiry: the questionnaire this call asked plus what was decided, when it asked one.
+    ///   Nil for a plain `ask_supervisor`, and nil for every card on the step but the one whose
+    ///   call IS the form — the step stores one questionnaire (the latest), so stamping it onto
+    ///   the step's older cards the way `wasAutoAnswered` is stamped would show a role asking a
+    ///   form it never asked. `answer` above stays the prose the model was sent either way.
+    case supervisorInput(question: String, answer: String?, answerAttachmentPaths: [String], answerClippedTexts: [String], toolCallID: UUID, thinking: String?, wasAutoAnswered: Bool, inquiry: AnsweredInquiry? = nil)
     case failed(errorMessage: String?)
 
     func icon(isChatMode: Bool) -> String {
@@ -52,7 +73,7 @@ nonisolated enum ActivityNotificationType: Hashable {
 
     func title(for role: Role, isChatMode: Bool = false) -> String {
         switch self {
-        case .supervisorInput(_, let answer, _, _, _, _, _):
+        case .supervisorInput(_, let answer, _, _, _, _, _, _):
             if answer != nil {
                 return "\(role.displayName) asked"
             }
@@ -117,7 +138,7 @@ nonisolated enum TeamActivityTimelineItem: Identifiable {
         case .notification(let stepID, _, let type, let createdAt, let taskID):
             let typeKey: String
             switch type {
-            case .supervisorInput(_, _, _, _, let tcID, _, _): typeKey = "input-\(tcID.uuidString)"
+            case .supervisorInput(_, _, _, _, let tcID, _, _, _): typeKey = "input-\(tcID.uuidString)"
             // Fold the failure timestamp into the id so it stays stable-unique if the
             // same task ever renders multiple runs' `.failed` steps together (they
             // share `stepID` = roleID). A bare "fail" key would collide and trip

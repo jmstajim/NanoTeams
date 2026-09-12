@@ -40,8 +40,14 @@ extension LLMExecutionService {
         return true
     }
 
-    /// Whether an epoch is in flight for this step. Drives the indicator's disabled state,
-    /// so a second click cannot start a second summary against the same wire.
+    /// Whether an epoch is in flight for this step.
+    ///
+    /// The ONE guard against a second summary racing the first for the same wire: the
+    /// indicator no longer disables on it (2026-09-09 — a disabled control cannot explain
+    /// itself, and explaining itself is its job). Safe because both readers are on the main
+    /// actor and `compactSuspendedStep` sets `compactionEpochToken` before its first
+    /// suspension, so there is no window between this check and that write.
+    /// Pinned by `CompactRoleContextTests.testAlreadyCompacting_isRefused`.
     func isCompacting(stepID: String, taskID: Int) -> Bool {
         executionStates[TaskStepKey(taskID: taskID, stepID: stepID)]?.compactionEpochToken != nil
     }
@@ -100,10 +106,13 @@ extension LLMExecutionService {
         let percent = delegate?.autoCompactBudgetPercent ?? AppDefaults.autoCompactBudgetPercent
         let budget = ContextBudgetPolicy.stepBudget(window: window, percent: percent)
 
-        // The fill is published for ANY count we have — including an estimate — because the
-        // indicator's job is to show the slope. The TRIGGER below reads the server count
-        // alone: the estimator spans 0.45×–2.58× against real tokenizers, so compacting on
-        // one would discard a Cyrillic conversation at 45% of its true occupancy.
+        // ANY server count is published, with a window or without: the indicator's job is to
+        // show the slope, and the slope exists whether or not the window probe answered. An
+        // ESTIMATE never arrives here at all (the guard below) — it reaches the projection
+        // only from an epoch (`performSuspendedEpoch`) and from the restore on entry. The
+        // TRIGGER, likewise, reads the server count alone: the estimator spans 0.45×–2.58×
+        // against real tokenizers, so compacting on one would discard a Cyrillic conversation
+        // at 45% of its true occupancy.
         if let serverPromptTokens, serverPromptTokens > 0 {
             publishContextFill(
                 stepID: stepID, taskID: taskID,
@@ -205,7 +214,8 @@ extension LLMExecutionService {
         // Nothing beyond the head: the conversation IS its pinned prefix, and folding it
         // would replace the system prompt with a summary of itself.
         guard CompactionPolicy.plan(for: conversationMessages, retainTail: false) != nil else {
-            executionStates[key]?.autoCompactExhausted = true
+            recordRefusedEpoch(
+                key: key, reason: reason, notice: CompactionPolicy.nothingToFoldNotice)
             return false
         }
 
@@ -256,9 +266,19 @@ extension LLMExecutionService {
         else { return false }
 
         let step = task.runs[runIndex].steps[stepIndex]
+
+        // Emptiness is checked FIRST and answers for itself. It is a fact about the
+        // conversation the user asked about, and it holds in any status — whereas the answer
+        // about status is a fact about the machine. A silent `false` here used to fall through
+        // to `compactRoleContext`'s catch-all, "This role cannot be compacted in its current
+        // state", which blames the STATUS for the absence of a conversation. Reachable far
+        // more often since 2026-09-09: a role with no measurement now has a button.
+        guard !step.wireTranscript.isEmpty else {
+            delegate.setLastInfoMessageForUI(CompactionPolicy.nothingToFoldNotice)
+            return false
+        }
         guard Self.compactableSuspendedStatuses.contains(step.status),
-              !step.supervisorAnswerPendingDelivery,
-              !step.wireTranscript.isEmpty
+              !step.supervisorAnswerPendingDelivery
         else { return false }
 
         let runtime = resolveStepRuntime(
@@ -320,8 +340,15 @@ extension LLMExecutionService {
         guard let plan = CompactionPolicy.plan(
             for: expected, retainTail: true, maxTailTokens: budget.map { $0 / 2 })
         else {
+            // TWO shapes arrive at this nil and they need different sentences (#225): the wire
+            // is entirely its own pinned head, or there is a body but the retained tail is
+            // already past half the budget. Asking again WITHOUT the tail rule is what tells
+            // them apart. The single old text — "this conversation is its own pinned prefix" —
+            // was both jargon and a conflation of two states.
             delegate?.setLastInfoMessageForUI(
-                "Nothing to compact: this conversation is its own pinned prefix.")
+                CompactionPolicy.plan(for: expected, retainTail: false) == nil
+                    ? CompactionPolicy.nothingToFoldNotice
+                    : CompactionPolicy.retainedParkTooLargeNotice)
             return false
         }
 
@@ -339,9 +366,7 @@ extension LLMExecutionService {
         guard CompactionPolicy.hasSeedMaterial(
             summary: outcome.summary, notes: step.scratchpad, record: record)
         else {
-            delegate?.setLastInfoMessageForUI(
-                "Nothing to compact: the model produced no summary and this step has no "
-                    + "recorded notes.")
+            delegate?.setLastInfoMessageForUI(CompactionPolicy.nothingToSeedNotice)
             return false
         }
 
@@ -386,6 +411,28 @@ extension LLMExecutionService {
     /// clear the conversation-scoped latches and baselines, re-seed the message-loop ring
     /// from the array that now exists, and flag the deliberate prefix reset so the cache
     /// detector does not report the epoch as a defect.
+    /// How a REFUSED epoch is recorded — which depends on who asked for it.
+    ///
+    /// The automatic trigger fired on a MEASUREMENT, so its refusal means one pinned head is
+    /// already past the budget: that is permanent, and the latch is what stops the runtime
+    /// spending an LLM call per iteration forever. A human's click means no such thing and can
+    /// land a second before the model's first reply — latching on it would silently disable
+    /// AUTOMATIC compaction for the rest of the step's entry as a punishment for being early.
+    /// The latch has no surface of its own, so this would be invisible. The manual arm
+    /// therefore answers and changes nothing. Reachable since 2026-09-09, when the indicator
+    /// became a control in every state.
+    private func recordRefusedEpoch(
+        key: TaskStepKey,
+        reason: CompactionPolicy.CompactionReason,
+        notice: String
+    ) {
+        guard reason == .manual else {
+            executionStates[key]?.autoCompactExhausted = true
+            return
+        }
+        delegate?.setLastInfoMessageForUI(notice)
+    }
+
     private func applyEpoch(
         stepID: String,
         taskID: Int,
@@ -397,7 +444,8 @@ extension LLMExecutionService {
         let key = TaskStepKey(taskID: taskID, stepID: stepID)
         guard let plan = CompactionPolicy.plan(for: conversationMessages, retainTail: false)
         else {
-            executionStates[key]?.autoCompactExhausted = true
+            recordRefusedEpoch(
+                key: key, reason: reason, notice: CompactionPolicy.nothingToFoldNotice)
             return false
         }
         let discarded = plan.discardedRange(in: conversationMessages)
@@ -405,7 +453,8 @@ extension LLMExecutionService {
             in: conversationMessages, discarded: discarded)
         guard CompactionPolicy.hasSeedMaterial(summary: summary, notes: notes, record: record)
         else {
-            executionStates[key]?.autoCompactExhausted = true
+            recordRefusedEpoch(
+                key: key, reason: reason, notice: CompactionPolicy.nothingToSeedNotice)
             return false
         }
 

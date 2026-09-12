@@ -134,22 +134,33 @@ extension LLMExecutionService {
     /// `approvalHumanPresent(task:supervisorMode:)` — and is what decides whether `bash` and
     /// the computer-use family ship at all (`ApprovalGatedAvailability`). No default: a
     /// caller that has not decided has not resolved a schema.
-    func toolSchemas(for role: Role, team: Team? = nil, humanPresent: Bool) -> [ToolSchema] {
+    ///
+    /// `workSuperseded` says the role's own output is already scheduled to be thrown away:
+    /// an approved change request put it in `.revisionRequested` while its current step was
+    /// still playing out. It costs the two build runners for the remainder of that step —
+    /// see `supersededRunnerStrip` for why. The resolver cannot derive it (it sees the role
+    /// and the team, never the RUN's statuses), so the caller computes it, the same way it
+    /// computes `humanPresent`.
+    func toolSchemas(
+        for role: Role, team: Team? = nil, humanPresent: Bool, workSuperseded: Bool = false
+    ) -> [ToolSchema] {
         guard let env = toolResolutionEnvironment(humanPresent: humanPresent) else { return [] }
         // Schema-build is the earliest and most universal detection point for
         // an orphan-coordinator (`reportOrphanCoordinatorIfNeeded` throttles
         // per team so this is safe to call on every iteration). The meeting
         // entry-point in `+TeamMeeting.swift` calls it too — defense in depth.
         reportOrphanCoordinatorIfNeeded(team: team)
-        return Self.resolveToolSchemas(
-            for: role,
-            team: team,
-            allTeams: env.allTeams,
-            selectedScheme: env.selectedScheme,
-            isVisionConfigured: env.isVisionConfigured,
-            approval: env.approval,
-            autovisorTeamPolicy: env.autovisorTeamPolicy
-        )
+        return Self.supersededRunnerStrip(
+            Self.resolveToolSchemas(
+                for: role,
+                team: team,
+                allTeams: env.allTeams,
+                selectedScheme: env.selectedScheme,
+                isVisionConfigured: env.isVisionConfigured,
+                approval: env.approval,
+                autovisorTeamPolicy: env.autovisorTeamPolicy
+            ),
+            workSuperseded: workSuperseded)
     }
 
     /// Definition-taking sibling. Prefer it wherever the caller already resolved
@@ -157,19 +168,66 @@ extension LLMExecutionService {
     /// duplicated system role to its twin's toolset. See the static
     /// `resolveToolSchemas(forDefinition:…)` for the full rationale.
     func toolSchemas(
-        forDefinition roleDefinition: TeamRoleDefinition, team: Team? = nil, humanPresent: Bool
+        forDefinition roleDefinition: TeamRoleDefinition, team: Team? = nil, humanPresent: Bool,
+        workSuperseded: Bool = false
     ) -> [ToolSchema] {
         guard let env = toolResolutionEnvironment(humanPresent: humanPresent) else { return [] }
         reportOrphanCoordinatorIfNeeded(team: team)
-        return Self.resolveToolSchemas(
-            forDefinition: roleDefinition,
-            team: team,
-            allTeams: env.allTeams,
-            selectedScheme: env.selectedScheme,
-            isVisionConfigured: env.isVisionConfigured,
-            approval: env.approval,
-            autovisorTeamPolicy: env.autovisorTeamPolicy
-        )
+        return Self.supersededRunnerStrip(
+            Self.resolveToolSchemas(
+                forDefinition: roleDefinition,
+                team: team,
+                allTeams: env.allTeams,
+                selectedScheme: env.selectedScheme,
+                isVisionConfigured: env.isVisionConfigured,
+                approval: env.approval,
+                autovisorTeamPolicy: env.autovisorTeamPolicy
+            ),
+            workSuperseded: workSuperseded)
+    }
+
+    /// Withholds `run_xcodebuild` / `run_xcodetests` from a role whose current step is
+    /// already superseded.
+    ///
+    /// `holdDownstreamForRevision` deliberately does NOT cancel the requester of an approved
+    /// change request: it marks it `.revisionRequested` and lets its step finish. Meanwhile
+    /// the TARGET restarts immediately — for the engineer, every upstream is `.done` — and
+    /// starts rewriting the tree. A verifier that then calls `run_xcodetests` to round off
+    /// the report it is about to have replaced builds a half-rewritten tree: the result is
+    /// red for a reason that is nobody's defect, "does not compile" goes into a report that
+    /// the re-run discards anyway, and the engineer's own build waits behind it in the
+    /// build gate. "A build does not write to the tree" is true and beside the point — it
+    /// READS the tree, and the tree has one writer who is writing.
+    ///
+    /// Only the runners: the role must still be able to finish its step and submit its
+    /// artifact, which is what releases the cascade.
+    ///
+    /// Two enforcement points read ONE predicate (`isWorkSuperseded`), the way the approval
+    /// family does: this strip at step ENTRY (a re-entry of an already-superseded step
+    /// ships no runners), and the executor's per-iteration withhold
+    /// (`ToolUnavailabilityReason.workSuperseded`) for the case this was written for —
+    /// the status flips from INSIDE the requester's own loop, after entry resolved the
+    /// schema, and until the evening of 2026-09-11 nothing re-read it, so the runners
+    /// stayed for the whole of the step the approval reply promised they were gone from.
+    nonisolated static func supersededRunnerStrip(
+        _ schemas: [ToolSchema], workSuperseded: Bool
+    ) -> [ToolSchema] {
+        guard workSuperseded else { return schemas }
+        return schemas.filter { !supersededRunners.contains($0.name) }
+    }
+
+    /// The tools a superseded role loses — the two build runners, nothing else.
+    nonisolated static let supersededRunners: Set<String> = [
+        ToolNames.runXcodebuild, ToolNames.runXcodetests,
+    ]
+
+    /// Whether `roleID`'s current output is already scheduled to be thrown away: an
+    /// approved change request marked it `.revisionRequested` while its step still runs
+    /// (`holdDownstreamForRevision` does not cancel the requester). Read from the RUN, not
+    /// from any cached flag, so the entry-time resolver and every later iteration answer
+    /// from the same fact.
+    nonisolated static func isWorkSuperseded(run: Run, roleID: String) -> Bool {
+        run.roleStatuses[roleID] == .revisionRequested
     }
 
     /// The gates' and the resolver's one answer to "is a human there to approve": the
@@ -431,6 +489,12 @@ extension LLMExecutionService {
         // auto-answered in a self-loop. The human steers it by messaging it instead.
         // And EXCEPT a team whose Ask Supervisor mode is Off: no role asks (the
         // explicit-`toolIDs` half of that rule is the strip beside step 8).
+        //
+        // The PLAIN ask alone here; the questionnaire arrives beside it from step 4-bis,
+        // which pairs the two in both directions. One injection site rather than two
+        // (2026-09-10): a role whose toolset NAMES `ask_supervisor` — a generated, imported
+        // or hand-edited PRODUCING role — never reaches this branch at all, so a pair minted
+        // here would have covered only the roles that list nothing.
         let askSupervisorAllowed = team?.settings.supervisorMode != .off
         if let roleDefinition, roleDefinition.shouldAutoInjectAskSupervisor,
            askSupervisorAllowed,
@@ -439,6 +503,47 @@ extension LLMExecutionService {
                 if !allowedTools.contains(where: { $0.name == tn.askSupervisor }) {
                     allowedTools.append(supervisorTool)
                 }
+            }
+        }
+
+        // 4-bis. The two supervisor-ask tools travel as a PAIR, in both directions: a schema
+        // carrying either one gets the other beside it.
+        //
+        // form ⇒ plain ask, because three texts read the plain name and only it —
+        // `SystemTemplates.stepEnding` (via `canAskSupervisor`),
+        // `LoopRecoveryPolicy.escalationChannel`, and the consultation note — so a role
+        // holding the form alone would be told it has no way to ask while its schema offers a
+        // tool that parks the step. Pairing here makes the invariant structural and leaves
+        // those three reading one name; `TeamValidationService.validateSupervisorAskTools`
+        // tells the user their stored toolset is the shape that needed healing.
+        //
+        // plain ask ⇒ form (2026-09-10), because a role that may interrupt the human may
+        // interrupt them with several decisions at once, and the questionnaire is the cheaper
+        // interruption of the two — one park carrying every open question, each with the
+        // answers the role already thinks likely. The bundled templates hand out the pair, but
+        // a toolset the app did not author does not: `TeamGenerationService` teaches the model
+        // one escalation name, an imported team carries whatever its file said, and a role
+        // hand-edited in the Tools tab carries whatever was ticked. Every one of those holds
+        // `ask_supervisor` and would otherwise never see a form, and the ones that hold it
+        // most are PRODUCING roles — which step 4 above skips by construction.
+        //
+        // Placed with the injections rather than after the strips — measured (mutation `s4`,
+        // 2026-09-10) as a readability choice and not an invariant: the strips remove BOTH
+        // names, so a pairing placed below them would find nothing to pair. Keeping it here
+        // leaves those two strips the last word on what ships, which is what their own
+        // comments claim. Order is deterministic (each name appends at most once, in this
+        // fixed sequence): `toolIDs` order reaches segment-0 prompt bytes, and a per-launch
+        // shuffle there would re-prefill the KV cache on every launch.
+        if askSupervisorAllowed {
+            let hasPlainAsk = allowedTools.contains { $0.name == tn.askSupervisor }
+            let hasForm = allowedTools.contains { $0.name == tn.askSupervisorForm }
+            if hasForm, !hasPlainAsk,
+               let plainAsk = allTools.first(where: { $0.name == tn.askSupervisor }) {
+                allowedTools.append(plainAsk)
+            }
+            if hasPlainAsk, !hasForm,
+               let form = allTools.first(where: { $0.name == tn.askSupervisorForm }) {
+                allowedTools.append(form)
             }
         }
 
@@ -518,11 +623,14 @@ extension LLMExecutionService {
             }
         }
 
-        // 8. Autovisor hard gate: the manager IS the top Supervisor — ask_supervisor
-        // must NEVER ship in its schema regardless of origin (planted stored toolIDs,
-        // the roleDefinition-miss fallback, or any future auto-inject step). The
-        // step-4 gate only refuses to ADD the tool; this strip is the structural
-        // guarantee, mirroring the step-3.0 delegation strip. Keyed on BOTH the team
+        // 8. Autovisor hard gate: the manager IS the top Supervisor — no tool that parks on
+        // a Supervisor (`ToolNames.supervisorAskTools`, the questionnaire included: it parks
+        // the step exactly as the plain question does, and the manager is the one role with
+        // nobody above it to clear a park) may EVER ship in its schema, regardless of origin
+        // (planted stored toolIDs, the roleDefinition-miss fallback, or any future
+        // auto-inject step — step 4-bis included). The step-4 gate only refuses to ADD the
+        // tool; this strip is the structural guarantee, mirroring the step-3.0 delegation
+        // strip. Keyed on BOTH the team
         // templateID and the role's builtin id so a stored team that lost its
         // templateID still strips (the builtin `.autovisor` survives via
         // `Role.fromDefinition`'s systemRoleID resolution), and `team == nil` is
@@ -534,15 +642,17 @@ extension LLMExecutionService {
         // the generic custom fallback, but the manager's runtime step role is always
         // the builtin `.autovisor`, and with no team the step fails at the engine.
         if team?.templateID == AutovisorConstants.teamTemplateID || isAutovisorManagerRole {
-            allowedTools.removeAll { $0.name == tn.askSupervisor }
+            allowedTools.removeAll { ToolNames.supervisorAskTools.contains($0.name) }
         }
 
         // 8b. Ask Supervisor mode Off — the explicit-`toolIDs` half of step 4's rule: a
-        // role that lists `ask_supervisor` itself loses it too. Only the tool moves;
+        // role that lists a parking tool itself loses it too, the questionnaire included
+        // (Off means nobody is there to answer, whichever shape the question takes; this is
+        // also what undoes step 4-bis's pairing). Only the tools move;
         // every escalation the APP owns (loop caps, approval cards) still waits for the
         // human, exactly as under `.manual` — see the `SupervisorMode` contract.
         if !askSupervisorAllowed {
-            allowedTools.removeAll { $0.name == tn.askSupervisor }
+            allowedTools.removeAll { ToolNames.supervisorAskTools.contains($0.name) }
         }
 
         return allowedTools

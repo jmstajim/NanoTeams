@@ -38,7 +38,7 @@ final class ToolErrorNotePolicyTests: XCTestCase {
         let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope, allowedToolNames: []))
 
         XCTAssertTrue(
-            direction.contains("do not retry 'list_files'"),
+            direction.contains("Do not retry 'list_files'"),
             "the anti-loop instruction is the one thing the envelope does not say, got: \(direction)")
         XCTAssertFalse(
             direction.contains("with the correct arguments"),
@@ -74,7 +74,7 @@ final class ToolErrorNotePolicyTests: XCTestCase {
         let roleDirection = try XCTUnwrap(ToolErrorNotePolicy.direction(for: role, allowedToolNames: []))
 
         XCTAssertTrue(
-            meetingDirection.contains("do not retry 'write_file'"),
+            meetingDirection.contains("Do not retry 'write_file'"),
             "got: \(meetingDirection)")
         XCTAssertEqual(
             meetingDirection, roleDirection,
@@ -93,7 +93,7 @@ final class ToolErrorNotePolicyTests: XCTestCase {
 
         let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope, allowedToolNames: []))
 
-        XCTAssertTrue(direction.contains("do not retry 'delete_file'"), "got: \(direction)")
+        XCTAssertTrue(direction.contains("Do not retry 'delete_file'"), "got: \(direction)")
     }
 
     // MARK: - plan_required
@@ -118,6 +118,25 @@ final class ToolErrorNotePolicyTests: XCTestCase {
             "the envelope names the tool, the remedy and the retry — there is nothing left to add")
     }
 
+    // MARK: - questionnaire_required
+
+    /// The envelope carries both halves — what was refused and the form to send instead — so
+    /// the policy adds nothing. The default arm would say "choose a different approach",
+    /// which for an ask-only role means prose.
+    func testQuestionnaireRequired_addsNothing_theEnvelopeNamesTheForm() {
+        let result = ToolExecutionResult(
+            toolName: ToolNames.askSupervisor, argumentsJSON: "{}",
+            outputJSON: makeErrorEnvelope(
+                code: .questionnaireRequired, message: "Several questions in a plain ask.",
+                next: NextHint(suggested_cmd: ToolNames.askSupervisorForm, reason: "Send them as a form.")),
+            isError: true)
+
+        XCTAssertNil(
+            ToolErrorNotePolicy.direction(
+                for: result, allowedToolNames: [ToolNames.askSupervisor, ToolNames.askSupervisorForm]),
+            "the envelope names the form and the entry per question — there is nothing left to add")
+    }
+
     // MARK: - precondition_failed
 
     /// The envelope names the missing prerequisite; what it does not say is that retrying
@@ -134,9 +153,17 @@ final class ToolErrorNotePolicyTests: XCTestCase {
         let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope, allowedToolNames: []))
 
         XCTAssertTrue(direction.contains("Do not retry 'git_add'"), "got: \(direction)")
+        // It says retrying is pointless and names NO blocker: six reasons share this code and
+        // their blockers differ, so the sentence that used to claim the work folder set every
+        // one of them was a false diagnosis for `.computerUseDisabled` / `.bashDisabled`
+        // (R1.8.5, DEBTS D-B10). The blocker stays the ENVELOPE's to name.
         XCTAssertTrue(
-            direction.contains("the precondition is set by the work folder, not by your arguments"),
+            direction.contains("the blocker is not your arguments, and no rewording reaches it"),
             "got: \(direction)")
+        XCTAssertFalse(
+            direction.localizedCaseInsensitiveContains("work folder"),
+            "the direction is chosen by CODE and may not diagnose on six reasons' behalf: "
+                + "\(direction)")
         XCTAssertFalse(
             direction.contains("requires a git repository"),
             "the envelope already said which precondition is missing, got: \(direction)")
@@ -404,6 +431,43 @@ final class ToolErrorNotePolicyTests: XCTestCase {
             "the handler's message is the envelope's, got: \(direction)")
     }
 
+    /// An `INVALID_ARGS` envelope that already carries a `next`, with every required argument
+    /// present, gets no note at all: `next.reason` is the instruction, written for that one
+    /// failure, and "Fix the arguments and retry." is the same sentence with the specifics
+    /// taken out. It would land AFTER the envelope — on Ollama merged into the same user
+    /// message — so the LAST thing the model reads before its retry would be the vaguer of
+    /// the two (playbook R1.4.2). Measured: MeditationApp task 67 run 1, where the form was
+    /// one `}` short and the model's next reasoning was "my JSON string contains a Russian
+    /// character".
+    ///
+    /// RED: drop the `dict?["next"]` guard → the note comes back and the recency slot holds
+    /// a content-free restatement again.
+    func testInvalidArgs_withANextAndEveryArgumentPresent_saysNothing() throws {
+        let envelope = ToolExecutionResult(
+            toolName: ToolNames.askSupervisorForm,
+            argumentsJSON: #"{"headline":"H","form":"{"}"#,
+            outputJSON: #"""
+            {"error":{"code":"INVALID_ARGS","message":"Invalid form: the form ends."},"next":{"suggested_cmd":"ask_supervisor_form","reason":"Repair the `form` argument and call again."},"ok":false}
+            """#,
+            isError: true)
+        XCTAssertNil(ToolErrorNotePolicy.direction(for: envelope, allowedToolNames: []))
+    }
+
+    /// The contract list is a fact the envelope cannot know — it comes from the SCHEMA — so a
+    /// `next` does not silence it.
+    func testInvalidArgs_withANextButAMissingArgument_stillNamesTheContract() throws {
+        let envelope = ToolExecutionResult(
+            toolName: ToolNames.askSupervisorForm,
+            argumentsJSON: #"{"headline":"H"}"#,
+            outputJSON: #"""
+            {"error":{"code":"INVALID_ARGS","message":"Missing required argument: form"},"next":{"suggested_cmd":"ask_supervisor_form","reason":"Repair the `form` argument and call again."},"ok":false}
+            """#,
+            isError: true)
+        let direction = try XCTUnwrap(
+            ToolErrorNotePolicy.direction(for: envelope, allowedToolNames: []))
+        XCTAssertTrue(direction.contains("requires:"), direction)
+    }
+
     /// A path shape the sandbox refuses reaches the model as `INVALID_ARGS` since 2026-09-07,
     /// so the direction is the fix-and-retry one. As `PERMISSION_DENIED` it fell into the
     /// `_DENIED` arm and told the model NOT to retry a call whose own message said how to.
@@ -581,7 +645,11 @@ final class ToolErrorNotePolicyTests: XCTestCase {
 
         let neither = try XCTUnwrap(ToolErrorNotePolicy.direction(
             for: Self.gitMissing, allowedToolNames: [ToolNames.readFile]))
-        XCTAssertTrue(neither.hasSuffix("proceed without this step."), neither)
+        // "proceed without this step" is the permission withdrawn on 2026-09-11; it survived
+        // in this arm until 2026-09-13, arriving one turn AFTER `.xcodeSchemeNotSelected` had
+        // said "rather than assuming one".
+        XCTAssertTrue(neither.hasSuffix("rather than assuming a result."), neither)
+        XCTAssertFalse(neither.contains("proceed without this step"), neither)
         XCTAssertFalse(neither.lowercased().contains("supervisor"), neither)
     }
 

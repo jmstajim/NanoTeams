@@ -89,6 +89,14 @@ enum ToolErrorCode: String, Codable, CaseIterable {
     /// of which would land here is withheld from the schema before the model can call it
     /// (`ApprovalGatedAvailability`).
     case approvalUnavailable = "APPROVAL_UNAVAILABLE"
+    /// A plain `ask_supervisor` carrying the questionnaire's shape — several questions, or
+    /// one with its options enumerated (`SupervisorQuestionShape`) — while `ask_supervisor_form`
+    /// is in the batch's schema. An ERROR, not a park: nothing was asked and the Supervisor is
+    /// not waiting, so the model can send the form in one more call. Emitted only when the form
+    /// is available (`ToolExecutionContext.questionnaireAvailable`); a role with the plain ask
+    /// alone keeps the numbered list. `ToolErrorNotePolicy` appends no direction — the
+    /// envelope's `next` names the form and the `questions` entry per question (2026-09-11).
+    case questionnaireRequired = "QUESTIONNAIRE_REQUIRED"
 }
 
 // MARK: - Response Envelope Types
@@ -122,6 +130,115 @@ nonisolated struct SearchMatch: Codable {
     var text: String
     var context_before: [LineRef]?
     var context_after: [LineRef]?
+}
+
+/// One line as the `search` envelope carries it: the pair `[76, "text"]`.
+///
+/// Positional rather than keyed. `LineRef`'s `{"line":76,"text":"…"}` spends 16 bytes of key
+/// text on every line, and one measured page (65 hits over 17 files, context ±1/2) carried 260
+/// of them — 40% of `data.matches` was JSON punctuation restating the same two field names.
+/// The pair says the same two facts in the same order to a reader that has just read `"lines"`.
+///
+/// The number stays an `Int` and never moves inside the string (CLAUDE.md #315). `edit_file`
+/// repairs a pasted `76│` / `76|` / `76⇥` prefix and NOT a `76: ` one
+/// (`FileWriteHandlers.lineNumberPrefixPattern`),
+/// and `read_lines` coerces `start_line` from the value it is given — `coerceInt("76: ")` is nil,
+/// which `end_line` then reads as "to EOF" under a success envelope. `list_files` refused a
+/// marker inside the path string for the same reason: the model copies these tokens verbatim
+/// into the next call.
+nonisolated struct SearchLine: Codable, Equatable {
+    var number: Int
+    var text: String
+
+    init(number: Int, text: String) {
+        self.number = number
+        self.text = text
+    }
+
+    init(from decoder: any Decoder) throws {
+        var container = try decoder.unkeyedContainer()
+        number = try container.decode(Int.self)
+        text = try container.decode(String.self)
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.unkeyedContainer()
+        try container.encode(number)
+        try container.encode(text)
+    }
+}
+
+/// Content matches folded by FILE, which is the shape the tool envelope carries.
+///
+/// One record per hit repeats the path on every hit and the `{line,text}` key pair again on
+/// every context line: on the measured page above the path was written 48 times for 17 files
+/// and the array cost 22 226 of the envelope's 22 807 bytes. Folded, the same facts are 45%
+/// smaller with context and 27% smaller at the default context of 0 — and a tool result lives
+/// in the append-only wire until a compaction epoch, so that is paid on every subsequent
+/// request of the step rather than once.
+///
+/// Encoded keys sort to `file`, `hits`, `lines` (the wire encoder uses `.sortedKeys`), i.e. the
+/// identifier first and the scalars before the array. With 200 lines from one file the path
+/// would otherwise sit thousands of bytes below its own content.
+///
+/// The fold lives at the ENVELOPE boundary, exactly like `SkippedFileGroup` (CLAUDE.md #314):
+/// `SearchExecutorOutput.matches` stays per-hit because that is what the scan produced, and the
+/// exploratory envelope keeps the per-hit shape — there the round-robin order across expanded
+/// terms is the only ranking signal the model sees, and folding by file destroys it.
+nonisolated struct SearchFileGroup: Codable, Equatable {
+    var file: String
+    /// Which numbers in `lines` actually matched the query; the rest is requested context.
+    ///
+    /// A separate array rather than a flag on the line, because one line can be a hit AND the
+    /// context of a neighbouring hit. Merging the windows is what makes the fold lossless, and
+    /// it is only lossless if the hit label survives the merge.
+    var hits: [Int]
+    /// Every line this file contributes — hits and context together, merged by number and
+    /// ordered ascending. Overlapping context windows collapse to one entry per line.
+    var lines: [SearchLine]
+
+    /// Folds per-hit matches by file, in first-appearance (walk) order.
+    ///
+    /// Deterministic by construction — file order is the walk's, line order is numeric — because
+    /// two runs of one query must produce byte-identical envelopes or the prompt prefix moves and
+    /// the server pays a full re-prefill (~4300–6100 ms against ~350 warm). `SkippedFileGroup.group`
+    /// states the same requirement for the same reason.
+    static func group(_ matches: [SearchMatch]) -> [SearchFileGroup] {
+        var order: [String] = []
+        var byFile: [String: Accumulator] = [:]
+        for match in matches {
+            if byFile[match.path] == nil {
+                order.append(match.path)
+                byFile[match.path] = Accumulator()
+            }
+            byFile[match.path]?.absorb(match)
+        }
+        return order.compactMap { path in
+            byFile[path].map {
+                SearchFileGroup(file: path, hits: $0.hits.sorted(), lines: $0.orderedLines())
+            }
+        }
+    }
+
+    /// Per-file merge state. Text keyed by line number so overlapping context windows collapse;
+    /// hit numbers kept in their own set so a line that is both keeps its label.
+    private struct Accumulator {
+        var text: [Int: String] = [:]
+        var hits: Set<Int> = []
+
+        mutating func absorb(_ match: SearchMatch) {
+            for ref in (match.context_before ?? []) + (match.context_after ?? []) {
+                // Context only fills gaps: a hit's own text is the authority for its line.
+                if text[ref.line] == nil { text[ref.line] = ref.text }
+            }
+            text[match.line] = match.text
+            hits.insert(match.line)
+        }
+
+        func orderedLines() -> [SearchLine] {
+            text.keys.sorted().map { SearchLine(number: $0, text: text[$0] ?? "") }
+        }
+    }
 }
 
 /// A file whose name or relative path matched the search query, independent of
@@ -246,6 +363,12 @@ nonisolated struct XcodeProjectRef: Codable {
 
 nonisolated struct AskSupervisorData: Codable {
     var question: String
+    var status: String
+}
+
+nonisolated struct AskSupervisorFormData: Codable {
+    var headline: String
+    var questions: Int
     var status: String
 }
 

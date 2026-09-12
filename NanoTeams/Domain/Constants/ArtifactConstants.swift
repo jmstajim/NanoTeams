@@ -11,9 +11,6 @@ nonisolated enum ArtifactConstants {
     /// Maximum characters of artifact content injected into consultations.
     static let maxConsultationChars = 1500
 
-    /// Name of the auto-generated build diagnostics artifact (excluded from completeness check).
-    static let buildDiagnosticsName = "Build Diagnostics"
-
     /// MIME types available in the artifact editor.
     static let supportedMimeTypes: [String] = [
         "text/markdown", "text/plain", "application/json",

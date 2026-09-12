@@ -15,11 +15,29 @@ final class AskCallIndexTests: XCTestCase {
     }
 
     private func ask() -> StepToolCall { call(TN.askSupervisor) }
+    private func form() -> StepToolCall { call(TN.askSupervisorForm) }
     private func work() -> StepToolCall { call("read_file") }
 
+    /// An ask the runtime refused — the error envelope landed, no park happened.
+    private func refused(_ name: String) -> StepToolCall {
+        StepToolCall(
+            name: name, argumentsJSON: "{}",
+            resultJSON: #"{"ok":false,"error":{"code":"QUESTIONNAIRE_REQUIRED","message":"…"}}"#,
+            isError: true)
+    }
+
     /// The OLD law, spelled independently of the index.
+    ///
+    /// Mirrors MEMBERSHIP in the parking set, not equality with one name: the index tracks
+    /// every tool whose call parks the step, and an oracle that still spelled one name would
+    /// agree with a broken index on every fixture that happens to use only that name — which
+    /// is every fixture below except the ones that deliberately mix.
     private func oraclePositions(_ calls: [StepToolCall]) -> [Int] {
-        calls.indices.filter { calls[$0].name == TN.askSupervisor }
+        calls.indices.filter { ToolNames.supervisorAskTools.contains(calls[$0].name) }
+    }
+
+    private func isAsk(_ call: StepToolCall) -> Bool {
+        ToolNames.supervisorAskTools.contains(call.name)
     }
 
     /// Deterministic LCG (the `ThinkingResolverTests` idiom) — 30 arrays mixing
@@ -41,35 +59,116 @@ final class AskCallIndexTests: XCTestCase {
 
     /// RED: in `init(toolCalls:extending:)` change `== ToolNames.askSupervisor` to
     /// `!=` → positions are the complement and parity fails on the first array;
-    /// make `lastPosition` return `positions.first` → the two-ask arrays disagree.
+    /// make `lastParkedPosition(in:)` return `positions.first` → the two-ask arrays disagree.
     func testPositions_matchFilterOracle_onPseudoRandomSequences() {
         var arraysWithTwoAsks = 0
         for calls in pseudoRandomArrays() {
             let index = AskCallIndex(toolCalls: calls)
             let expected = oraclePositions(calls)
             XCTAssertEqual(index.positions, expected)
-            XCTAssertEqual(index.count, expected.count)
-            XCTAssertEqual(index.isEmpty, !calls.contains { $0.name == TN.askSupervisor })
+            XCTAssertEqual(index.parkedPositions(in: calls), expected,
+                           "no refusals in the fixture, so every named ask parked")
             XCTAssertEqual(
-                index.lastPosition.map { calls[$0].id },
-                calls.last(where: { $0.name == TN.askSupervisor })?.id,
-                "`lastPosition` must be `lastIndex(where: ask)`")
+                index.lastParkedPosition(in: calls).map { calls[$0].id },
+                calls.last(where: isAsk)?.id,
+                "`lastParkedPosition(in:)` must be `lastIndex(where: ask)`")
             if expected.count >= 2 { arraysWithTwoAsks += 1 }
         }
         XCTAssertGreaterThan(arraysWithTwoAsks, 0,
                              "anti-vacuum: the fixture must contain arrays where first ≠ last ask")
     }
 
+    // MARK: - Both parking tools
+
+    /// RED: revert the scan to `== ToolNames.askSupervisor` → the form call is invisible,
+    /// `lastParkedPosition(in:)` is nil, and every consumer falls through to the flag-only escalation
+    /// shape: the question loses the persisted identity its Watchtower dismissal keys on.
+    func testFormCallIsIndexed() {
+        let calls = [work(), form(), work()]
+        let index = AskCallIndex(toolCalls: calls)
+        XCTAssertEqual(index.positions, [1])
+        XCTAssertEqual(index.lastParkedPosition(in: calls), 1)
+        XCTAssertFalse(index.positions.isEmpty)
+    }
+
+    /// A step is free to ask plainly and then send a form (or the reverse) —
+    /// `lastParkedPosition(in:)` must be the LATER of the two regardless of which tool it
+    /// belongs to.
+    func testMixedParkingCalls_lastParkedPositionIsTheLatest() {
+        let askThenForm = [ask(), work(), form()]
+        let formThenAsk = [form(), work(), ask()]
+        XCTAssertEqual(AskCallIndex(toolCalls: askThenForm).positions, [0, 2])
+        XCTAssertEqual(AskCallIndex(toolCalls: askThenForm).lastParkedPosition(in: askThenForm), 2)
+        XCTAssertEqual(AskCallIndex(toolCalls: formThenAsk).lastParkedPosition(in: formThenAsk), 2)
+    }
+
+    /// The suffix extension must recognise a form appended after a validated prefix — a
+    /// rescan would find it either way, so only the EXTENSION path can fail here.
+    func testSuffixExtension_picksUpAnAppendedForm() {
+        let base = [ask(), work()]
+        let first = AskCallIndex(toolCalls: base)
+        let extended = AskCallIndex(toolCalls: base + [form()], extending: first)
+        XCTAssertEqual(extended.positions, [0, 2])
+    }
+
     /// The refuter's shape: an ask, then tool work, then a cap park. "Trailing
     /// call only" answers nil here; `lastIndex(where:)` answers 0.
     ///
-    /// RED: make `lastPosition` return `positions.last` only when it equals
+    /// RED: make `lastParkedPosition(in:)` return its last position only when it equals
     /// `describedCount - 1` (trailing-only) → nil.
-    func testLastPosition_findsAnEarlierAsk_afterToolWork() {
+    func testLastParkedPosition_findsAnEarlierAsk_afterToolWork() {
         let calls = [ask(), work(), work()]
         let index = AskCallIndex(toolCalls: calls)
-        XCTAssertEqual(index.lastPosition, 0)
+        XCTAssertEqual(index.lastParkedPosition(in: calls), 0)
         XCTAssertEqual(index.positions, [0])
+    }
+
+    // MARK: - A refused ask is indexed by name and excluded as a park
+
+    /// The index is cached and validated by `(count, last id)`, and a call is appended BEFORE
+    /// it runs — its `isError` lands with the result, after a scan may already have seen it.
+    /// So the refusal is not folded into `positions` (it would go stale in the cache) but read
+    /// off the CURRENT array by `parkedPositions(in:)`.
+    ///
+    /// RED: fold `isError != true` into the scan → the fixture's fourth call is classified
+    /// as parked and stays so after the refusal lands; drop the filter from
+    /// `parkedPositions(in:)` → the refused calls pair with answers they never asked for.
+    func testRefusedAsk_isIndexedByName_butNotAsAPark() {
+        var calls = [work(), ask(), refused(TN.askSupervisor), refused(TN.askSupervisorForm), form()]
+        let index = AskCallIndex(toolCalls: calls)
+        XCTAssertEqual(index.positions, [1, 2, 3, 4], "by name, every ask is a candidate")
+        XCTAssertEqual(index.parkedPositions(in: calls), [1, 4])
+        XCTAssertEqual(index.lastParkedPosition(in: calls), 4)
+
+        // The refusal lands after the scan: same index, new answer.
+        calls[4].isError = true
+        XCTAssertEqual(index.parkedPositions(in: calls), [1])
+        XCTAssertEqual(index.lastParkedPosition(in: calls), 1)
+    }
+
+    /// A trailing run of refused asks is walked over, and a step whose every ask was refused
+    /// has no park at all — the escalation shape, for every consumer.
+    func testLastParkedPosition_skipsATrailingRefusedRun_andIsNilWhenEveryAskWasRefused() {
+        let calls = [ask(), refused(TN.askSupervisorForm), refused(TN.askSupervisor)]
+        XCTAssertEqual(AskCallIndex(toolCalls: calls).lastParkedPosition(in: calls), 0)
+
+        let allRefused = [work(), refused(TN.askSupervisor), refused(TN.askSupervisorForm)]
+        let index = AskCallIndex(toolCalls: allRefused)
+        XCTAssertEqual(index.positions, [1, 2], "by name the asks are there")
+        XCTAssertTrue(index.parkedPositions(in: allRefused).isEmpty)
+        XCTAssertNil(index.lastParkedPosition(in: allRefused))
+    }
+
+    /// `nil` — no result yet, or a record older than the field — and `false` both count: the
+    /// in-flight ask IS the question the composer owns, and a pre-field record never refused.
+    func testNilAndFalseIsError_bothCountAsParked() {
+        var pending = ask()
+        pending.isError = nil
+        var succeeded = form()
+        succeeded.isError = false
+        let calls = [pending, succeeded]
+        XCTAssertEqual(AskCallIndex(toolCalls: calls).parkedPositions(in: calls), [0, 1])
+        XCTAssertEqual(AskCallIndex(toolCalls: calls).lastParkedPosition(in: calls), 1)
     }
 
     // MARK: - Extending
@@ -113,7 +212,7 @@ final class AskCallIndexTests: XCTestCase {
         let empty = AskCallIndex(toolCalls: [])
         XCTAssertEqual(empty.describedCount, 0)
         XCTAssertNil(empty.describedLastID)
-        XCTAssertNil(empty.lastPosition)
+        XCTAssertNil(empty.lastParkedPosition(in: []))
 
         let calls = [work(), ask(), work()]
         AskCallIndexProbe.reset()
@@ -205,6 +304,11 @@ final class AskCallIndexTests: XCTestCase {
             "control: the field is captured")
         XCTAssertNil(matches(fieldWrite, "if toolCalls[i].name == ToolNames.askSupervisor {"),
                      "control: a comparison is not a write")
+        // The shape the scan itself now has, since the predicate became set membership.
+        // Spelled here so the control tracks the live source rather than a retired line.
+        XCTAssertNil(
+            matches(fieldWrite, "if toolCalls[i].isSupervisorAsk {"),
+            "control: a membership read is not a write")
 
         var found: Set<String> = []
         var fieldWrites: [(file: String, field: String)] = []

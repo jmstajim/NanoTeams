@@ -153,12 +153,13 @@ final class QuickCaptureFolderScopeCoverageTests: NTMSOrchestratorTestBase, @unc
             return XCTFail("task creation failed")
         }
         formState.answerText = "use the client's staging token"
-        formState.captureLiveComposerAsAnswerDraft(taskID: taskID)
-        XCTAssertNotNil(formState._testAnswerDrafts[taskID], "precondition")
+        formState.claimAnswerFields(for: .taskChat(taskID))
+        formState.handOffLiveAnswerFields(to: .taskChat(taskID + 1))
+        XCTAssertNotNil(formState.answerDraftStore.peek(for: .taskChat(taskID)), "precondition")
 
         await sut.openWorkFolder(folderB)
 
-        XCTAssertNil(formState._testAnswerDrafts[taskID],
+        XCTAssertNil(formState.answerDraftStore.peek(for: .taskChat(taskID)),
                      "A draft written against folder A's task must not pre-fill the answer composer "
                          + "for the same-numbered task of folder B.")
     }

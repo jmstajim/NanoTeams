@@ -78,6 +78,23 @@ final class StaleStatusSweepTests: NTMSOrchestratorTestBase, @unchecked Sendable
         sut.snapshot?.tasksIndex.tasks.first(where: { $0.id == taskID })?.hasPendingSupervisorInput
     }
 
+    private func diskIndexQuestionCount(_ taskID: Int, root: URL? = nil) -> Int? {
+        let p = NTMSPaths(workFolderRoot: root ?? tempDir)
+        let index = try? jsonStore.read(TasksIndex.self, from: p.tasksIndexJSON)
+        return index?.tasks.first(where: { $0.id == taskID })?.pendingSupervisorQuestionCount
+    }
+
+    private func diskIndexUpdatedAt(_ taskID: Int, root: URL? = nil) -> Date? {
+        let p = NTMSPaths(workFolderRoot: root ?? tempDir)
+        let index = try? jsonStore.read(TasksIndex.self, from: p.tasksIndexJSON)
+        return index?.tasks.first(where: { $0.id == taskID })?.updatedAt
+    }
+
+    private func memIndexQuestionCount(_ taskID: Int) -> Int? {
+        sut.snapshot?.tasksIndex.tasks
+            .first(where: { $0.id == taskID })?.pendingSupervisorQuestionCount
+    }
+
     /// Rewrites the on-disk index row for `taskID` to the pre-field legacy shape
     /// (`hasPendingSupervisorInput` key absent). Synthesized `encode(to:)` uses
     /// `encodeIfPresent`, so a nil field round-trips as a genuinely absent key.
@@ -89,6 +106,22 @@ final class StaleStatusSweepTests: NTMSOrchestratorTestBase, @unchecked Sendable
         }
         index.tasks[i].hasPendingSupervisorInput = nil
         try jsonStore.write(index, to: path)
+    }
+
+    /// The SECOND legacy shape, and the interesting one: a row upgraded far enough to
+    /// know `hasPendingSupervisorInput` but written before the count existed. No single
+    /// "is it known" predicate describes it, which is why the sweep's filter asks
+    /// `supervisorWaitFactsPredateAField`.
+    private func stripQuestionCountFromDiskIndex(_ taskID: Int) throws {
+        let path = paths.tasksIndexJSON
+        var index = try jsonStore.read(TasksIndex.self, from: path)
+        guard let i = index.tasks.firstIndex(where: { $0.id == taskID }) else {
+            return XCTFail("index row for task \(taskID) missing")
+        }
+        index.tasks[i].pendingSupervisorQuestionCount = nil
+        try jsonStore.write(index, to: path)
+        XCTAssertNotNil(index.tasks[i].hasPendingSupervisorInput,
+                        "premise: the flag is KNOWN — only the count predates its field")
     }
 
     private func diskTask(_ taskID: Int, ancestors: [Int] = [], root: URL? = nil) -> NTMSTask? {
@@ -261,6 +294,113 @@ final class StaleStatusSweepTests: NTMSOrchestratorTestBase, @unchecked Sendable
         XCTAssertEqual(memIndexWaiting(a), true)
         XCTAssertEqual(diskIndexStatus(a), .paused, "backfill must not disturb the parked status")
         XCTAssertNil(sut.snapshot?.loadedTasks[a], "backfill pass must still evict")
+    }
+
+    /// The count's own backfill, and the reason the filter asks about EVERY mirrored
+    /// wait fact rather than one of them.
+    ///
+    /// This row already knows `hasPendingSupervisorInput`, so the pre-existing
+    /// `!supervisorInputStateIsKnown` clause does not select it, and `.paused` matches
+    /// neither `.running` nor `.needsSupervisorInput`. Without the widening the count
+    /// stays `nil` until the user opens the task — which is precisely the task they were
+    /// supposed to be able to TRIAGE from the sidebar without opening.
+    ///
+    /// RED: narrow the filter's second clause back to `!$0.supervisorInputStateIsKnown`
+    /// → the count is never stamped, and `testSweep_legacyPausedRow_...` stays green.
+    func testSweep_rowKnowingTheFlagButNotTheCount_isBackfilled() async throws {
+        await sut.openWorkFolder(tempDir)
+        let a = await sut.createTask(title: "A", supervisorTask: "a")!
+        await sut.mutateTask(taskID: a) { task in
+            task.setStoredChatMode(false)
+            // TWO parallel roles parked at once (CLAUDE.md #45) — the shape a Bool cannot
+            // describe, and the only shape where the backfilled number differs from what
+            // the flag alone already implies.
+            var run = Run(id: 0, roleStatuses: ["one": .working, "two": .working])
+            run.steps = [
+                StepExecution(id: "one", role: .softwareEngineer, title: "One",
+                              status: .needsSupervisorInput,
+                              needsSupervisorInput: true, supervisorQuestion: "Which DB?"),
+                StepExecution(id: "two", role: .techLead, title: "Two",
+                              status: .needsSupervisorInput,
+                              needsSupervisorInput: true, supervisorQuestion: "Which region?")
+            ]
+            task.runs = [run]
+        }
+        _ = await sut.createTask(title: "B", supervisorTask: "b")!
+
+        // First restart parks both steps; the second meets the half-legacy row.
+        restartOrchestrator()
+        await sut.openWorkFolder(tempDir)
+        XCTAssertEqual(diskIndexStatus(a), .paused, "precondition: parked by the sweep")
+        try stripQuestionCountFromDiskIndex(a)
+
+        restartOrchestrator()
+        await sut.openWorkFolder(tempDir)
+
+        XCTAssertEqual(diskIndexQuestionCount(a), 2,
+                       "a row that knows the flag and not the count must still be backfilled")
+        XCTAssertEqual(memIndexQuestionCount(a), 2,
+                       "disk alone is not convergence — the sidebar reads snapshot.tasksIndex")
+        XCTAssertEqual(diskIndexWaiting(a), true, "the flag it already knew stays true")
+        XCTAssertEqual(diskIndexStatus(a), .paused, "backfill must not disturb the parked status")
+    }
+
+    /// The backfill must not REORDER the sidebar.
+    ///
+    /// `TasksIndex` is maintained in descending-`updatedAt` order and the sidebar renders
+    /// that order verbatim, so a convergence write that re-stamped the row would shuffle
+    /// every paused task to the top on the one launch after the upgrade — a visible
+    /// scramble of the user's list, caused by a field they cannot see. The write is
+    /// supposed to carry `updatedAt` off disk unchanged; this is what says so out loud.
+    ///
+    /// RED: stamp `MonotonicClock.shared.now()` into `toSummary()`'s `updatedAt` → the
+    /// backfilled row's stamp no longer equals the one read before the strip.
+    func testSweep_backfill_doesNotRestampTheRow() async throws {
+        await sut.openWorkFolder(tempDir)
+        let a = await sut.createTask(title: "A", supervisorTask: "a")!
+        await sut.mutateTask(taskID: a) { task in
+            task.setStoredChatMode(false)
+            var run = Run(id: 0, roleStatuses: ["one": .working])
+            run.steps = [
+                StepExecution(id: "one", role: .softwareEngineer, title: "One",
+                              status: .needsSupervisorInput,
+                              needsSupervisorInput: true, supervisorQuestion: "Which DB?")
+            ]
+            task.runs = [run]
+        }
+        _ = await sut.createTask(title: "B", supervisorTask: "b")!
+
+        restartOrchestrator()
+        await sut.openWorkFolder(tempDir)
+        let stampBefore = try XCTUnwrap(diskIndexUpdatedAt(a))
+        try stripQuestionCountFromDiskIndex(a)
+
+        restartOrchestrator()
+        await sut.openWorkFolder(tempDir)
+
+        XCTAssertEqual(diskIndexQuestionCount(a), 1,
+                       "anti-vacuum: the backfill must actually have written this row")
+        XCTAssertEqual(diskIndexUpdatedAt(a), stampBefore,
+                       "the convergence write carries updatedAt off disk unchanged — the index "
+                           + "is ordered by it and the sidebar renders that order")
+    }
+
+    /// Self-termination: once stamped, the row must stop selecting itself, or every
+    /// launch pays a blob read per paused task forever.
+    func testSweep_backfilledRow_dropsOutOfTheFilterOnTheNextOpen() async throws {
+        await sut.openWorkFolder(tempDir)
+        let a = await sut.createTask(title: "A", supervisorTask: "a")!
+        await plantStaleSteps(taskID: a, workerStatus: .running)
+        _ = await sut.createTask(title: "B", supervisorTask: "b")!
+
+        restartOrchestrator()
+        await sut.openWorkFolder(tempDir)
+        let converged = try XCTUnwrap(
+            sut.snapshot?.tasksIndex.tasks.first(where: { $0.id == a }))
+        XCTAssertFalse(converged.supervisorWaitFactsPredateAField,
+                       "the convergence write must stamp EVERY mirrored wait fact at once")
+        XCTAssertEqual(converged.pendingSupervisorQuestionCount, 0)
+        XCTAssertEqual(converged.hasPendingSupervisorInput, false)
     }
 
     /// The probe branch of the backfill (task already loaded, recovery a no-op):

@@ -51,11 +51,18 @@ enum DelegatedSupervisorAnswerService {
             return false
         }
         guard let askingStep = childRun.steps.first(where: { $0.needsSupervisorInput && $0.supervisorQuestion != nil }),
-              let question = askingStep.supervisorQuestion?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !question.isEmpty
+              let headline = askingStep.supervisorQuestion?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !headline.isEmpty
         else {
             return false
         }
+        // The parent role answers in prose and `answerSupervisorQuestion` reads it back
+        // against the child's questionnaire, so the questionnaire — options, recommendation
+        // and reply contract — is what has to reach the parent. Routing the headline alone
+        // would hand the child a form every question of which came back unanswered, while
+        // the parent believed it had answered.
+        let question = askingStep.supervisorInquiry
+            .map(SupervisorInquiryReply.questionnaire(for:)) ?? headline
 
         // 2. Ask the parent role (potentially recursing up the chain on escalation).
         // The recursive helper returns the final plain-text answer from whichever
@@ -112,23 +119,9 @@ enum DelegatedSupervisorAnswerService {
 
         // 3. Build messages for the side exchange: the parent's full
         //    `llmConversation` as the seed, plus the new question turn.
-        // Escalation is detected ONLY via an `ask_supervisor` tool call (see the
-        // toolCalls check below) — the instruction must demand that channel, not
-        // prose ("say so" made a compliant model refuse in text, which was then
-        // delivered to the child as the Supervisor's final answer). The seeded
-        // system prompt advertises the role's full toolset, so the turn also
-        // narrows availability to the single schema this call actually offers.
         let questionTurn = ChatMessage(
             role: .user,
-            content: """
-            Delegated team "\(targetTeamName)" asks:
-            \(question)
-            
-            \(Self.questionTurnBoundaryPhrase) \
-            Answer briefly in plain text. Only the ask_supervisor tool is available in this \
-            exchange. If the question is outside your scope, do not answer — call \
-            ask_supervisor with the question instead.
-            """
+            content: Self.questionTurn(targetTeamName: targetTeamName, question: question)
         )
 
         // Seed with the role's accumulated llmConversation. `tool`-role messages
@@ -167,7 +160,7 @@ enum DelegatedSupervisorAnswerService {
             let stream = client.streamChat(
                 config: effectiveConfig,
                 messages: messagesToSend,
-                tools: [AskSupervisorTool.schema],
+                tools: ToolHandlerRegistry.supervisorAskSchemas,
                 logger: logger,
                 stepID: roleID,
                 roleName: roleDef?.name ?? step.role.displayName
@@ -232,8 +225,11 @@ enum DelegatedSupervisorAnswerService {
         )
 
         // Plain text answer or escalation?
-        if let escalation = captured.toolCalls.first(where: { $0.name == ToolNames.askSupervisor }) {
-            let escalatedQuestion = extractQuestion(from: escalation.argumentsJSON) ?? question
+        // The FIRST parking call in emission order, by membership in the closed set — the
+        // same ascending-position rule `AskCallIndex.parkedPositions` reads, so the two seams
+        // cannot disagree about which call parked.
+        if let escalation = captured.toolCalls.first(where: \.isSupervisorAsk) {
+            let escalatedQuestion = SupervisorAskPayload.question(for: escalation) ?? question
 
             // Recurse to the role's own supervisor in the chain (if any).
             if let grandparentTID = task.parentTaskID,
@@ -290,7 +286,7 @@ enum DelegatedSupervisorAnswerService {
         response: (content: String, toolCalls: [StepToolCall]),
         delegate: any LLMStateDelegate
     ) async {
-        let isEscalation = response.toolCalls.contains(where: { $0.name == ToolNames.askSupervisor })
+        let isEscalation = response.toolCalls.contains(where: \.isSupervisorAsk)
         let questionContext: MessageSourceContext = isEscalation ? .delegationEscalation : .delegatedQuestion
         let questionMessage = LLMMessage(
             role: .user,
@@ -331,15 +327,33 @@ enum DelegatedSupervisorAnswerService {
         return seed + [questionTurn]
     }
 
-    /// Best-effort extraction of the question text from an `ask_supervisor`
-    /// tool call's arguments JSON. Falls back to `nil` so the caller can use
-    /// the original question as the escalation payload.
-    private static func extractQuestion(from argumentsJSON: String) -> String? {
-        guard let data = argumentsJSON.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let q = obj["question"] as? String
-        else { return nil }
-        return q
+    /// runtime-prompt
+    ///
+    /// The question turn of the delegated Supervisor exchange.
+    ///
+    /// Named and registered rather than composed inline because its last two sentences ARE
+    /// the exchange's contract — which tools are on the wire, and what calling one means —
+    /// and until 2026-09-13 they were a literal no fingerprint covered, while the sentence
+    /// itself was untrue: it said `ask_supervisor` was the only tool available, and the
+    /// role's own step prompt has named `ask_supervisor_form` beside it since 1.9.20
+    /// (`SystemTemplates.advisoryStepEnding`). Offering half the pair while the prompt named
+    /// both is what made a form call match no branch at all (DEBTS D-B14).
+    ///
+    /// The pair is named as ONE escalation channel, not two choices: calling either is the
+    /// same act — this role declining to decide and passing the question up — and the form is
+    /// how that act is spelled when the question has several sides. The SHAPE only; the
+    /// form's own schema says how to fill it in, and restating that here is the repetition
+    /// R4.3.2 refuses.
+    static func questionTurn(targetTeamName: String, question: String) -> String {
+        """
+        Delegated team "\(targetTeamName)" asks:
+        \(question)
+        
+        \(questionTurnBoundaryPhrase) \
+        Answer briefly in plain text. If the question is outside your scope, do not answer — \
+        call ask_supervisor, or ask_supervisor_form when the question has several sides, and \
+        it passes to your own Supervisor instead of being answered here.
+        """
     }
 
     /// Resolves the team for a task using the shared `TeamResolution.resolve`

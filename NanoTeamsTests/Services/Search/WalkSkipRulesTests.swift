@@ -55,6 +55,25 @@ final class WalkSkipRulesTests: XCTestCase {
         }
     }
 
+    /// `.artifacts` — the coverage ratchet's own output tree, and by a wide margin the biggest
+    /// thing the walk enumerates in this repository.
+    ///
+    /// Measured 2026-09-11: the work-folder walk saw **46 872 entries / 4295 MB**; with
+    /// `.artifacts` skipped it sees **2163 / 52.9 MB**. Everything inside is generated
+    /// (`DerivedData-*`, `*.xcresult`, profdata), and the two rules that would otherwise have
+    /// caught it cannot: `DerivedData-<tag>` is not the bare name `DerivedData`, and the
+    /// enclosing directory is not a bundle extension.
+    ///
+    /// RED: drop `.artifacts` from `skipped` → the first assertion fails and every index
+    /// rebuild re-reads 4 GB.
+    func testSkipRules_includesTheArtifactsTree() {
+        XCTAssertTrue(WalkSkipRules.shouldSkip(name: ".artifacts"))
+        // The dot is the whole safety margin: `artifacts` without it is a plausible
+        // hand-authored directory (this repo's own `.nanoteams/tasks/*/artifacts/` included).
+        XCTAssertFalse(WalkSkipRules.shouldSkip(name: "artifacts"))
+        XCTAssertFalse(WalkSkipRules.shouldSkip(name: "Artifacts"))
+    }
+
     /// The negative half, and the one that matters most.
     ///
     /// Matching is by BARE NAME AT ANY DEPTH, so adding `build` would also skip `src/build/`,
@@ -134,8 +153,18 @@ final class WalkSkipRulesTests: XCTestCase {
     /// extension half. `list_files` was the specimen — it held a COPY of the set, one layer
     /// further from a grep for the rule than the direct callers (CLAUDE.md #120).
     ///
-    /// RED: change any walk back to `WalkSkipRules.skipped.contains(name)` → the offending file
-    /// is named here.
+    /// Two offender shapes, because the narrow version of this pin (one literal,
+    /// `WalkSkipRules.skipped.contains(`) saw neither of the ways the rule actually diverged:
+    /// 1. **Reading the set at all** — any spelling, not just `.contains(`. A walk that asks
+    ///    `skipped` gets the name half and misses `skippedBundleExtensions`, and one that asks
+    ///    only the extensions misses the names.
+    /// 2. **A private copy of the list.** `WorkFolderContextBuilder` held one for months; it was
+    ///    harmless only because `.skipsHiddenFiles` happened to hide what it forgot. `node_modules`
+    ///    is the marker: it appears in no other legitimate context as a string literal, and no
+    ///    copy of these rules is plausible without it.
+    ///
+    /// RED: change any walk back to `WalkSkipRules.skipped.contains(name)`, or paste the name
+    /// list into a new scanner → the offending file is named here.
     func testEveryWalkAsksThePredicate() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()
@@ -144,21 +173,35 @@ final class WalkSkipRulesTests: XCTestCase {
         let enumerator = try XCTUnwrap(
             FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil))
 
-        var offenders: [String] = []
+        // `skipped` NOT followed by a letter — so `skippedInsideNanoteamsDir`, which is a
+        // separate parent-dependent rule the predicate deliberately does not carry, is allowed.
+        let readsTheSet = "WalkSkipRules\\.skipped(?![A-Za-z])"
+        let readsTheExtensions = "WalkSkipRules\\.skippedBundleExtensions"
+
+        var setReaders: [String] = []
+        var privateCopies: [String] = []
         var scanned = 0
         for case let url as URL in enumerator where url.pathExtension == "swift" {
             guard let source = try? String(contentsOf: url, encoding: .utf8) else { continue }
             scanned += 1
             // The declaration site is allowed to name its own property; nobody else is.
             guard url.lastPathComponent != "WalkSkipRules.swift" else { continue }
-            if source.contains("WalkSkipRules.skipped.contains(") {
-                offenders.append(url.lastPathComponent)
+            if source.range(of: readsTheSet, options: .regularExpression) != nil
+                || source.range(of: readsTheExtensions, options: .regularExpression) != nil {
+                setReaders.append(url.lastPathComponent)
+            }
+            if source.contains("\"node_modules\"") {
+                privateCopies.append(url.lastPathComponent)
             }
         }
         XCTAssertGreaterThan(scanned, 100,
                              "anti-vacuum: the scan must have read the production tree")
-        XCTAssertEqual(offenders, [],
+        XCTAssertEqual(setReaders, [],
                        "these walks interrogate the name SET directly and therefore miss the "
                            + "extension rule; call `WalkSkipRules.shouldSkip(name:)` instead")
+        XCTAssertEqual(privateCopies, [],
+                       "these files carry their own copy of the skip list, which drifts silently "
+                           + "from `WalkSkipRules`; call `WalkSkipRules.shouldSkip(name:)` and "
+                           + "keep only the names that are genuinely extra")
     }
 }

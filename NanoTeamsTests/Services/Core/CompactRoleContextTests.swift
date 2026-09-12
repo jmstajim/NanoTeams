@@ -60,7 +60,54 @@ final class CompactRoleContextTests: NTMSOrchestratorTestBase, @unchecked Sendab
         sut.lastInfoMessage = nil
         let did = await sut.compactRoleContext(taskID: taskID, roleID: "nobody")
         XCTAssertFalse(did)
-        XCTAssertNotNil(sut.lastInfoMessage)
+        // Equality, not just non-nil: three different paths reach "the conversation has not
+        // started", and they must not drift into three different explanations of one fact.
+        XCTAssertEqual(sut.lastInfoMessage, CompactionPolicy.nothingToFoldNotice)
+    }
+
+    /// THE FUNCTIONAL HALF of the tooltip defect: a step with no measurement is compactable,
+    /// and the silent branch was hiding a working operation from precisely the conversations
+    /// that need it most — the ones written before the app began measuring, which are both the
+    /// longest and, by construction, unmeasured.
+    func testAnUnmeasuredStep_isStillCompactable() async {
+        await seedStep(status: .needsSupervisorInput, wire: foldableWire())
+        // The premise: this is exactly the state that draws the pale, empty bar.
+        XCTAssertNil(sut.contextFill.fill(stepID: roleID, taskID: taskID))
+
+        let did = await sut.compactRoleContext(taskID: taskID, roleID: roleID)
+
+        XCTAssertTrue(did)
+        let wire = sut.loadedTask(taskID)?.runs.last?.steps.first?.wireTranscript ?? []
+        XCTAssertTrue(wire.contains { CompactionPolicy.isCompactionSeed($0) })
+    }
+
+    /// An empty wire is a fact about the CONVERSATION and answers for itself. It used to fall
+    /// through to the catch-all "cannot be compacted in its current state", which blames the
+    /// status for the absence of a conversation.
+    func testEmptyWire_saysTheConversationHasNotStarted() async {
+        await seedStep(status: .needsSupervisorInput, wire: [])
+        sut.lastInfoMessage = nil
+
+        let did = await sut.compactRoleContext(taskID: taskID, roleID: roleID)
+
+        XCTAssertFalse(did)
+        XCTAssertEqual(sut.lastInfoMessage, CompactionPolicy.nothingToFoldNotice)
+    }
+
+    /// A wire that is entirely its own pinned head states the same fact and gets the same
+    /// sentence — previously "this conversation is its own pinned prefix", which is jargon for
+    /// a state the reader has no way to act on.
+    func testHeadOnlyWire_saysTheConversationHasNotStarted() async {
+        await seedStep(status: .needsSupervisorInput, wire: [
+            ChatMessage(role: .system, content: "You are an engineer."),
+            ChatMessage(role: .user, content: "## Supervisor Task\nBuild it."),
+        ])
+        sut.lastInfoMessage = nil
+
+        let did = await sut.compactRoleContext(taskID: taskID, roleID: roleID)
+
+        XCTAssertFalse(did)
+        XCTAssertEqual(sut.lastInfoMessage, CompactionPolicy.nothingToFoldNotice)
     }
 
     /// A RUNNING step is armed rather than compacted on the spot: replacing the wire is only

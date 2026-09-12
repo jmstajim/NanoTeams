@@ -160,6 +160,35 @@ final class CreateTeamToolTests: XCTestCase {
         XCTAssertNil(results[0].signal)
     }
 
+    /// Present, but neither an object nor a string. Reporting "Missing" about an argument the
+    /// model just sent it hunting for a phantom omission instead of fixing the type — the same
+    /// branch `ask_supervisor_form` grew for `form` on the same day (2026-09-12).
+    ///
+    /// RED: delete the `invalidValue` arm → this falls through to `missingRequired` and the
+    /// envelope says the argument is absent while its value sits in the call.
+    func testCreateTeam_teamConfigOfTheWrongType_saysWrongTypeNotMissing() async throws {
+        let call = StepToolCall(name: ToolNames.createTeam, argumentsJSON: #"{"team_config": 42}"#)
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertEqual(results.count, 1)
+        XCTAssertTrue(results[0].isError)
+        XCTAssertNil(results[0].signal)
+        let output = results[0].outputJSON
+        XCTAssertTrue(output.contains("number"), "the received type is named: \(output)")
+        XCTAssertFalse(output.contains("Missing required"), output)
+    }
+
+    /// An ARRAY is the other live spelling of the same slip — a model that wrote the roles
+    /// list where the configuration object belongs.
+    func testCreateTeam_teamConfigAsAnArray_saysWrongTypeToo() async throws {
+        let call = StepToolCall(
+            name: ToolNames.createTeam, argumentsJSON: #"{"team_config": [{"name":"Engineer"}]}"#)
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertTrue(results[0].isError)
+        XCTAssertTrue(results[0].outputJSON.contains("array"), results[0].outputJSON)
+    }
+
     func testCreateTeam_invalidJSON_returnsError() async {
         let call = StepToolCall(
             name: ToolNames.createTeam,

@@ -403,16 +403,6 @@ nonisolated struct GeneratedTeamConfig: Codable, Hashable {
     }
 }
 
-/// Decodes a `T` per array element, swallowing per-element failures. Lets us
-/// drop malformed array entries (e.g. an artifact with `name: null` from a
-/// truncated LLM stream) without rejecting the entire payload.
-nonisolated private struct Failable<T: Decodable>: Decodable {
-    let value: T?
-    init(from decoder: Decoder) throws {
-        value = try? T(from: decoder)
-    }
-}
-
 nonisolated private extension AcceptanceMode {
     /// Case-insensitive lookup so the LLM can return `finalOnly`, `FinalOnly`, or `finalonly`.
     static func fromLooseString(_ raw: String) -> AcceptanceMode? {

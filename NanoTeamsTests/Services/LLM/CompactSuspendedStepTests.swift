@@ -112,7 +112,9 @@ final class CompactSuspendedStepTests: XCTestCase {
     }
 
     /// The composer indicator must be raised for the whole epoch and lowered on the way out,
-    /// or a click leaves a permanently disabled control.
+    /// or the bar keeps drawing a compaction that has finished. It no longer DISABLES the
+    /// control (2026-09-09): the second-click guard is the service's, and a mark stuck raised
+    /// would leave the bar grey and the tooltip saying "Compacting…" forever.
     func testParkedStep_raisesAndLowersTheCompactingMark() async {
         seedTask()
         _ = await sut.compactSuspendedStep(stepID: stepID, taskID: taskID)
@@ -173,20 +175,57 @@ final class CompactSuspendedStepTests: XCTestCase {
         XCTAssertEqual(storedStep?.wireTranscript, parkedWire())
     }
 
-    /// A step persisted before `wireTranscript` existed has nothing faithful to compact.
+    /// A step persisted before `wireTranscript` existed has nothing faithful to compact — and
+    /// says so. RED before 2026-09-09: the refusal was silent, and the click fell through to
+    /// the caller's catch-all, which blames the step's STATUS for the absence of a
+    /// conversation.
     func testEmptyTranscript_isRefused() async {
         seedTask(wire: [])
         let did = await sut.compactSuspendedStep(stepID: stepID, taskID: taskID)
         XCTAssertFalse(did)
+        XCTAssertEqual(delegate.lastInfoMessages.last, CompactionPolicy.nothingToFoldNotice)
     }
 
     /// Head-only: the conversation IS its pinned prefix. Refused with a banner rather than
     /// silently, because a click that does nothing is what the indicator exists to prevent.
+    /// Same SENTENCE as the empty wire — from outside they are one fact, "the conversation has
+    /// not started" — where the old text said "this conversation is its own pinned prefix".
     func testHeadOnlyTranscript_isRefusedWithABanner() async {
         seedTask(wire: Array(parkedWire()[..<2]))
         let did = await sut.compactSuspendedStep(stepID: stepID, taskID: taskID)
         XCTAssertFalse(did)
-        XCTAssertFalse(delegate.lastInfoMessages.isEmpty)
+        XCTAssertEqual(delegate.lastInfoMessages.last, CompactionPolicy.nothingToFoldNotice)
+    }
+
+    /// The one refusal that is NOT "nothing to fold" — and therefore must not borrow its
+    /// sentence (#225). There IS a body to fold, but the open `ask_supervisor` that has to
+    /// survive the fold is itself past half the budget, so the epoch would spend an LLM call
+    /// and leave the conversation too big anyway. The user's move is to answer the question,
+    /// and only a sentence of its own can say that.
+    ///
+    /// RED: one text for both shapes → this reads "This role has no conversation to compact
+    /// yet." about a conversation that plainly has one.
+    func testARetainedParkTooLargeToFold_getsItsOwnSentence() async {
+        // 25% of 8192 is a 2048-token budget, so the tail rule refuses anything above ~1024
+        // tokens. Pinned here rather than inherited from `AppDefaults`, which has moved.
+        delegate.autoCompactBudgetPercent = 25
+        var wire = parkedWire()
+        wire[4] = ChatMessage(
+            role: .assistant, content: "",
+            toolCalls: [ChatToolCall(
+                id: "c1", name: ToolNames.askSupervisor,
+                argumentsJSON: "{\"question\":\"\(String(repeating: "a", count: 20_000))\"}")])
+        seedTask(wire: wire)
+
+        let did = await sut.compactSuspendedStep(stepID: stepID, taskID: taskID)
+
+        XCTAssertFalse(did)
+        XCTAssertEqual(
+            delegate.lastInfoMessages.last, CompactionPolicy.retainedParkTooLargeNotice)
+        // The premise that makes this the OTHER shape: without the tail rule there is plenty
+        // to fold, so the refusal is about the park and not about an empty conversation.
+        XCTAssertNotNil(CompactionPolicy.plan(for: wire, retainTail: false))
+        XCTAssertEqual(storedStep?.wireTranscript, wire, "and nothing written")
     }
 
     /// The model came back with nothing usable, the step has no notes, and the folded range

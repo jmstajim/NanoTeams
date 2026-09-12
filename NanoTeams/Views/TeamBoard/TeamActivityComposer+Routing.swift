@@ -24,8 +24,11 @@ extension TeamActivityComposer {
     /// Priority order matches the chip row's left-to-right order, so "the first chip
     /// is always selected" holds when there is no explicit pick:
     /// 1. Explicit selection wins.
-    /// 2. If any question is pending → `.answer(stepID:)` for the FIRST pending question
-    ///    (Answer chips are leftmost in the row, in input order).
+    /// 2. If any question is pending → `.answer(stepID:)` for the AIMED one, which with no
+    ///    aim is the FIRST (Answer chips are leftmost in the row, in input order). The aim is
+    ///    `SupervisorAnswerFocus.resolve` — the same rule Quick Capture applies to its own
+    ///    pick, so both surfaces honour a preference only while that question is still
+    ///    waiting and fall back to the leader the instant it stops.
     /// 3. Otherwise the first selectable (working) role — matches the next chip in the row.
     /// 4. Otherwise the first `.failed` role — the retry target (named; chip emitted).
     /// 5. Otherwise, when `allowsRoleFallback` (chat / resumable-by-send state), the first
@@ -37,6 +40,7 @@ extension TeamActivityComposer {
     ///    row collapses, `canSubmit` is false (composer inert instead of naming a role).
     static func resolveEffectiveRecipient(
         selected: Recipient?,
+        aimedStepID: String? = nil,
         activeQuestions: [TeamActivityActiveQuestion],
         selectableRoles: [TeamRoleDefinition],
         failedRoles: [TeamRoleDefinition] = [],
@@ -44,7 +48,11 @@ extension TeamActivityComposer {
         allowsRoleFallback: Bool = false
     ) -> Recipient? {
         if let explicit = selected { return explicit }
-        if let q = activeQuestions.first { return .answer(stepID: q.stepID) }
+        if let aimed = SupervisorAnswerFocus.resolve(
+            preferred: aimedStepID, among: activeQuestions.map(\.stepID)
+        ) {
+            return .answer(stepID: aimed)
+        }
         if let first = selectableRoles.first { return .role(id: first.id) }
         if let first = failedRoles.first { return .role(id: first.id) }
         if allowsRoleFallback, let first = candidateRoles.first { return .role(id: first.id) }
@@ -56,18 +64,6 @@ extension TeamActivityComposer {
     /// resume, or an idle team between chat turns, where the resolved recipient is just
     /// `candidateRoles.first` — return `nil` so the message is queued untargeted and
     /// consumed by whichever role resumes, rather than mis-targeted to an arbitrary role.
-    /// The role id a chip addresses.
-    ///
-    /// Both cases carry one: `.answer` names the step that asked, and a step id IS the role
-    /// id (`StepExecution.effectiveRoleID`). So the fill indicator can key on either chip
-    /// without the composer re-deriving the mapping per chip.
-    static func roleID(for recipient: Recipient) -> String {
-        switch recipient {
-        case .answer(let stepID): stepID
-        case .role(let id): id
-        }
-    }
-
     static func queueTarget(roleID: String, workingRoleIDs: Set<String>) -> String? {
         workingRoleIDs.contains(roleID) ? roleID : nil
     }
@@ -119,78 +115,86 @@ extension TeamActivityComposer {
     }
 
     /// Pure submit-gate. The composer can submit when there is content (text,
-    /// attachment, or clip) AND there is a recipient to deliver to. `nil` recipient
-    /// means no chip is selectable (no question, no working role, no candidate) —
-    /// submission is blocked.
+    /// attachment, clip, or a questionnaire with something ticked) AND there is a recipient
+    /// to deliver to. `nil` recipient means no chip is selectable (no question, no working
+    /// role, no candidate) — submission is blocked.
+    ///
+    /// A ticked questionnaire with no prose beside it is a complete answer — the card IS the
+    /// answer field there — so gating on text alone would leave the Supervisor looking at a
+    /// filled-in form beside a dead send button.
     static func computeCanSubmit(
         text: String,
         hasAttachments: Bool,
         hasClips: Bool,
+        hasInquiryAnswer: Bool = false,
         effectiveRecipient: Recipient?
     ) -> Bool {
-        guard effectiveRecipient != nil else { return false }
+        guard let effectiveRecipient else { return false }
+        // A questionnaire is content for the ONE recipient that can carry one. A `.role` chip
+        // queues a chat MESSAGE, and `queueChatMessage` refuses an empty one without a word —
+        // so counting the ticks there lit a Send button whose every press did nothing, and the
+        // `.role` branch would have dropped the answer on the way out anyway.
+        let answersAQuestion: Bool
+        if case .answer = effectiveRecipient { answersAQuestion = true } else { answersAQuestion = false }
         let hasContent = !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || hasAttachments
             || hasClips
+            || (hasInquiryAnswer && answersAQuestion)
         return hasContent
     }
 
-    /// Drops a stale chip selection: if the previously-selected chip is no longer
-    /// in the available chip row (e.g. Answer chip after answering, role chip after
-    /// the role finishes), return `nil` so the resolver's auto-resolution kicks back
-    /// in. Returns the input unchanged when it's still valid (or already nil).
-    static func sanitizeSelection(
-        selected: Recipient?,
-        availableRecipients: [Recipient]
-    ) -> Recipient? {
-        guard let sel = selected else { return nil }
-        return availableRecipients.contains(sel) ? sel : nil
-    }
-
     /// Retargets a lost selection to the SAME underlying role under its other chip
-    /// shape before the draft is discarded. For team tasks `StepExecution.id == roleID`,
+    /// shape before the draft leaves the composer. For team tasks `StepExecution.id == roleID`,
     /// so `.role(id: X)` and `.answer(stepID: X)` address the same role/conversation —
     /// a role flipping working↔asking (the Autovisor's frequent running↔parked idle
     /// cycle) swaps one chip shape for the other, which would otherwise invalidate the
-    /// explicit selection and wipe the in-progress draft (the "my message disappears"
-    /// bug). Returns the still-present `prior`, else the same role's counterpart-shape
-    /// recipient if present, else `nil` (genuinely gone — `shouldClearDraftAfterSelectionLoss`
-    /// then decides). Superset of `sanitizeSelection`: identical when no counterpart exists.
+    /// explicit selection and take the in-progress draft out of the field (the "my message
+    /// disappears" bug). Returns the still-present `prior`, else the same role's
+    /// counterpart-shape recipient if present, else `nil` (genuinely gone — `recipientToPark`
+    /// then decides). It subsumes the plain stale-selection drop this file used to spell
+    /// beside it — with no counterpart in the row the two are the same function, and the
+    /// simple one lost its last caller when the chip row's hover moved into
+    /// `RecipientChipRow`, where a hover naming a departed chip matches nothing and needs no
+    /// cleaning at all.
+    ///
+    /// The two shapes agreeing here and `AnswerDraftKey.role` keying on the same role id are
+    /// one fact, not two: a reply and a queued message travel one branch of conversation.
     static func remapEquivalentRecipient(
         prior: Recipient?,
         availableRecipients: [Recipient]
     ) -> Recipient? {
         guard let prior else { return nil }
         if availableRecipients.contains(prior) { return prior }
-        let roleID: String
-        switch prior {
-        case .role(let id): roleID = id
-        case .answer(let stepID): roleID = stepID
-        }
-        return availableRecipients.first { candidate in
-            switch candidate {
-            case .role(let id): return id == roleID
-            case .answer(let stepID): return stepID == roleID
-            }
-        }
+        return availableRecipients.first { $0.roleID == prior.roleID }
     }
 
-    /// Whether to discard the draft (text + attachments + clips) after the user's
-    /// explicit recipient selection lost its chip. Triggers only when there was a
-    /// real explicit lock AND a draft AND the lock is now invalid — implicit
-    /// auto-selection (no `selected`) lets `resolveEffectiveRecipient` fall through
-    /// silently because the user never committed to a specific role.
-    static func shouldClearDraftAfterSelectionLoss(
+    /// The recipient whose half-written reply must be PARKED, because its chip left the row
+    /// while the user was writing to it.
+    ///
+    /// Same three inputs the discard guard read and the same predicate — what changed is the
+    /// verb. Discarding was the only option a composer with no draft store had, and it threw
+    /// away work on an event the user did not cause and could not predict: a parallel role
+    /// finishing, or the question being answered from Watchtower or Quick Capture. Now the
+    /// text goes to `SupervisorAnswerDraftStore` under the lost recipient's branch and comes
+    /// back as a row above the composer with "Return" and "Discard".
+    ///
+    /// Nil when the user never committed to a recipient (`prior == nil`): the resolver's
+    /// first-chip auto-pick is still appropriate and there is nothing to protect. Nil with no
+    /// content: an empty draft is not worth a row (`SupervisorAnswerDraftStore.save` would
+    /// drop it anyway, but not offering it is cheaper than parking and un-parking it).
+    static func recipientToPark(
         prior: Recipient?,
         sanitized: Recipient?,
         hasContent: Bool
-    ) -> Bool {
-        prior != nil && sanitized == nil && hasContent
+    ) -> Recipient? {
+        guard let prior, sanitized == nil, hasContent else { return nil }
+        return prior
     }
 
     /// Post-submit reset contract. Pinned by
     /// `TeamActivityComposerRoutingTests.testClearedComposerState_*`:
-    /// resets `selectedRecipient` to nil along with text/attachments/clips.
+    /// resets `selectedRecipient` AND the soft answer aim to nil along with
+    /// text/attachments/clips/questionnaire.
     /// Without the recipient reset, a `.role` lock from a previous queue submit
     /// survives and the explicit-selection priority in
     /// `resolveEffectiveRecipient` keeps the stale chip dominant — even when
@@ -202,9 +206,93 @@ extension TeamActivityComposer {
         text: String,
         attachments: [StagedAttachment],
         clips: [String],
-        selectedRecipient: Recipient?
+        inquiry: SupervisorInquiryDraft?,
+        selectedRecipient: Recipient?,
+        answerAim: String?
     ) {
-        ("", [], [], nil)
+        ("", [], [], nil, nil, nil)
+    }
+
+    /// The pending question the composer is aimed at, or nil when it is aimed at a role.
+    ///
+    /// `nonisolated static` so the pairing of a resolved recipient with its question — which is
+    /// what decides WHICH questionnaire is on screen, and therefore which answers count as
+    /// content and which are someone else's — is reachable from a test rather than spelled
+    /// inside a view body.
+    static func question(
+        for recipient: Recipient?, among questions: [TeamActivityActiveQuestion]
+    ) -> TeamActivityActiveQuestion? {
+        guard case .answer(let stepID) = recipient else { return nil }
+        return questions.first { $0.stepID == stepID }
+    }
+
+    // MARK: - The aim lock
+
+    /// The recipient the composer is locked to once it stops being empty.
+    ///
+    /// Locking on the first CONTENT, not the first character. The rule exists because an
+    /// unlocked composer re-resolves to `activeQuestions.first` on every pass, so an event the
+    /// user did not cause — a parallel role parking (CLAUDE.md #45), the leading question
+    /// answered from another surface — silently re-aims what they are writing. A questionnaire
+    /// is content that can be produced with zero keystrokes, and a keystroke-only lock left
+    /// exactly that content unaimed: `recipientToPark` needs a `prior` to park, so tick-only
+    /// work was neither parked nor offered back.
+    ///
+    /// Idempotent by construction: once `prior` is non-nil this returns it unchanged, so it can
+    /// be called from every content observer without racing them against each other.
+    static func lockedRecipient(
+        prior: Recipient?, auto: Recipient?, hasContent: Bool
+    ) -> Recipient? {
+        guard prior == nil, hasContent, let auto else { return prior }
+        return auto
+    }
+
+    // MARK: - The row's two derived facts
+
+    /// The chips holding an unsent reply nobody is editing — the dots.
+    ///
+    /// Derived once per body pass from the store's key list rather than asked per chip: a
+    /// `contains` inside the `ForEach` is a linear scan per pill, and the set is the same
+    /// answer for all of them.
+    ///
+    /// `.role(X)` and `.answer(X)` share ONE draft key by design, so a role's two chip shapes
+    /// wear the same dot. That is not a rounding error: the reply parked when the role was
+    /// asking IS the message waiting for it now that it is working, and a dot on one shape but
+    /// not the other would say the draft evaporated when the chip changed clothes.
+    static func unsentDraftRecipients(
+        among recipients: [Recipient], taskID: Int, parked: [AnswerDraftKey]
+    ) -> Set<Recipient> {
+        guard !parked.isEmpty else { return [] }
+        let keys = Set(parked)
+        var dotted: Set<Recipient> = []
+        for recipient in recipients where keys.contains(draftKey(taskID: taskID, recipient: recipient)) {
+            dotted.insert(recipient)
+        }
+        return dotted
+    }
+
+    /// Where the composer aims after answering `answeredStepID` — a step id, deliberately
+    /// NOT a `selectedRecipient`.
+    ///
+    /// The aim has to be expressed as a soft preference, because `selectedRecipient` means
+    /// something else: it is the USER'S lock, it wins over every later question by
+    /// construction (`resolveEffectiveRecipient`'s first line), and nothing releases it on
+    /// grounds of an empty composer. Written there, an app-made aim outlived its question —
+    /// answer that role's question from Quick Capture, let the role resume, and
+    /// `remapEquivalentRecipient` retargets the lock to that role's `.role` chip, after which
+    /// every later question got an Answer chip that never auto-selected and a Send button that
+    /// queued a message to a role nobody had asked. As a preference it simply stops matching.
+    ///
+    /// Aiming RIGHT and not at the leader is the other half: clearing the selection lands on
+    /// `activeQuestions.first`, the question the Supervisor deliberately stepped over on their
+    /// way to this one — and lands there through a list that still contains the question just
+    /// answered, because the mutation removing it has not landed yet.
+    ///
+    /// Nil when nothing else is waiting: the resolver is free to pick whatever chip remains.
+    static func nextAimAfterAnswer(
+        answeredStepID: String, among questions: [TeamActivityActiveQuestion]
+    ) -> String? {
+        SupervisorAnswerFocus.next(after: answeredStepID, among: questions.map(\.stepID))
     }
 
     /// Phase-ordered runner for the `.answer` branch of `handleSubmit`.
@@ -372,7 +460,8 @@ extension TeamActivityComposer {
         failedRoleIDs: Set<String>,
         activeQuestions: [TeamActivityActiveQuestion],
         allowsRoleFallback: Bool,
-        selected: Recipient?
+        selected: Recipient?,
+        aimedStepID: String? = nil
     ) -> Routing {
         let askingRoleIDs = Set(activeQuestions.map(\.askingRoleID))
         let selectable = computeSelectableRoles(
@@ -392,6 +481,7 @@ extension TeamActivityComposer {
             ),
             effectiveRecipient: resolveEffectiveRecipient(
                 selected: selected,
+                aimedStepID: aimedStepID,
                 activeQuestions: activeQuestions,
                 selectableRoles: selectable,
                 failedRoles: failed,

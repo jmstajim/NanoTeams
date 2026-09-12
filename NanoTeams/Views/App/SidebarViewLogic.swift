@@ -71,7 +71,14 @@ enum SidebarViewLogic {
                 isEngineRunning: engineStates[task.id] == .running,
                 isInitializing: initializingTaskIDs.contains(task.id),
                 isRecurring: task.nextRecurrenceFireAt != nil,
-                hasPendingBashApproval: bashApprovalTaskIDs.contains(task.id)
+                hasPendingBashApproval: bashApprovalTaskIDs.contains(task.id),
+                // The threshold is decided HERE, not in the row: it is the same "silent
+                // below two" the composer's `N WAITING` badge obeys, and one rule spelled
+                // in two places is two rules waiting to disagree. Deliberately NOT gated on
+                // `seenSupervisorInputTaskIDs` — "seen" is about the dot, which asks whether
+                // the user has looked; a count of what is still owed stays true after they have.
+                waitingQuestionCount:
+                SupervisorAnswerFocus.waitingBadgeCount(task.pendingSupervisorQuestionCount)
             )
         }
     }

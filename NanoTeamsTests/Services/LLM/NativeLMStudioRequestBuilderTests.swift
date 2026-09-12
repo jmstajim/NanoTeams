@@ -376,6 +376,31 @@ final class NativeLMStudioRequestBuilderTests: XCTestCase {
                        "Harmony body must appear exactly once (no auto-append duplication). Got \(occurrences) occurrences in:\n\(prompt)")
     }
 
+    /// An ARRAY of enums advertises its allowed values, because the constraint lives on the
+    /// ITEM and reading `enumValues` only off the property would print the array with no
+    /// values at all. Schemas never reach a provider as JSON Schema — no request type has a
+    /// `tools` field, they are rendered into the system prompt as prose (CLAUDE.md #308) — so
+    /// this line IS the contract, not a redundant copy of one.
+    ///
+    /// RED: drop the `prop.items?.enumValues` fallback → the rendered line reads
+    /// `- kinds (array) — …` and the model is told nothing about what may go in it.
+    func testBuildToolSchemaBody_anArrayOfEnums_printsTheAllowedValues() {
+        let schema = ToolSchema(
+            name: "pick_kinds",
+            description: "Pick question kinds",
+            parameters: .object(
+                properties: [
+                    "kinds": JSONSchema.array(
+                        items: JSONSchemaProperty(
+                            type: "string", description: nil, properties: nil, required: nil,
+                            items: nil, enumValues: ["free_text", "single_choice"]),
+                        description: "Which kinds")
+                ],
+                required: ["kinds"]))
+        let body = NativeLMStudioClient.buildToolSchemaBody(tools: [schema])
+        XCTAssertTrue(body.contains("enum: free_text|single_choice"), body)
+    }
+
     /// Regression-pin for the 2026-05 removal of `tailOperationalReminder` from
     /// `buildToolSchemaBody`. Pre-rewrite the Harmony block ended with a per-role
     /// operational reminder ("Submit deliverables via `create_artifact`" or

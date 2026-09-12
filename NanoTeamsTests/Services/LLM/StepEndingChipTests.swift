@@ -43,6 +43,11 @@ final class StepEndingChipTests: XCTestCase {
         XCTAssertFalse(SystemTemplates.producingStepEnding.contains("create_artifact"),
                        "the tool is named by the closing user turn and the schema, not the reminder")
         XCTAssertTrue(SystemTemplates.advisoryStepEnding.contains("`ask_supervisor`"))
+        XCTAssertTrue(SystemTemplates.advisoryStepEnding.contains("`ask_supervisor_form`"),
+                      "the recency slot names the questionnaire beside the plain ask (2026-09-11): "
+                          + "several questions, or a choice with its options, go as the form")
+        XCTAssertFalse(SystemTemplates.advisoryStepEnding.contains("invisible"),
+                       "one imperative, no rationale inside it (R1.2.3)")
         XCTAssertFalse(SystemTemplates.plainReplyStepEnding.contains("ask_supervisor"),
                        "Off: the role has no ask_supervisor to be told about")
     }

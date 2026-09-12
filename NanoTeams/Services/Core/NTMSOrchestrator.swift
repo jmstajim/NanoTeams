@@ -718,6 +718,22 @@ final class NTMSOrchestrator {
         self.embeddingLifecycle.onWarning = { [weak self] message in
             self?.lastInfoMessage = message
         }
+        // The build gate is a process-global with no view of the UI, and the roles it holds
+        // in its queue are otherwise indistinguishable from roles that are building: the
+        // tool-call card spins on `resultJSON == nil` either way. One registration here
+        // rather than threading a sink down through the registry, the handler dependencies
+        // and both Xcode handlers — there is exactly one renderer of this fact.
+        // Each hop is an unstructured `Task` and two of them carry no ordering guarantee;
+        // the gate's sequence number is what lets the manager drop a set that arrives late.
+        let previews = self.streamingPreviewManager
+        Task {
+            await XcodeBuildGate.shared.setObserver { keys, seq in
+                Task { @MainActor in
+                    previews.setToolWaitCaptions(
+                        keys, seq: seq, caption: "Waiting for another build to finish")
+                }
+            }
+        }
     }
 
     // MARK: - UI Helpers
@@ -739,9 +755,11 @@ final class NTMSOrchestrator {
     /// replay, so the intent would be dropped. Every *existing* panel→app notification
     /// is received by `MainLayoutView`, which is always mounted; that is what makes the
     /// notification idiom look safer here than it is. `MainLayoutView` is also not a
-    /// usable relay: it is a `WindowGroup` root, and the main window can be closed
-    /// (no `NSApplicationDelegateAdaptor` anywhere, ⌘W unclaimed) while the panel keeps
-    /// working off its process-level Carbon hotkey.
+    /// usable relay: it is a `WindowGroup` root, and the main window can be closed (⌘W
+    /// unclaimed) while the panel keeps working off its process-level Carbon hotkey. There IS an
+    /// `NSApplicationDelegateAdaptor` since 2026-09-11 (`AppTerminationDelegate`), and the app
+    /// survives the last window closing only because that delegate does not implement
+    /// `applicationShouldTerminateAfterLastWindowClosed`.
     ///
     /// This works because the orchestrator is the SAME instance in both places — the app
     /// root hands it to `QuickCaptureController.setup` and to the Settings `Window`'s

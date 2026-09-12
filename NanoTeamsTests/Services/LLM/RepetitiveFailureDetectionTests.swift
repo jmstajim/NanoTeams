@@ -214,17 +214,17 @@ final class RepetitiveFailureDetectionTests: XCTestCase {
             XCTAssertFalse(same.contains("ask_supervisor"), "\(code): \(same)")
             XCTAssertFalse(same.contains("If you are blocked"), "\(code): \(same)")
             let reworded = LLMExecutionService.loopWarningMessage(
-                loopDetection: .persistentToolError(tool: "bash", count: 3, errorCode: code), allowedToolNames: held)
+                loopDetection: .persistentToolError(tool: "bash", count: 3, errorCode: code, messagesIdentical: true), allowedToolNames: held)
             XCTAssertFalse(reworded.contains("ask_supervisor"), "\(code): \(reworded)")
             XCTAssertTrue(reworded.contains("take a different step"), reworded)
         }
         let other = LLMExecutionService.loopWarningMessage(
-            loopDetection: .persistentToolError(tool: "bash", count: 3, errorCode: "BASH_DENIED"), allowedToolNames: held)
+            loopDetection: .persistentToolError(tool: "bash", count: 3, errorCode: "BASH_DENIED", messagesIdentical: true), allowedToolNames: held)
         XCTAssertTrue(other.hasSuffix("If you are blocked, call ask_supervisor."), "a decision may be revisited: \(other)")
-        XCTAssertEqual(LLMExecutionService.escalationClause(code: nil, allowedToolNames: held),
+        XCTAssertEqual(LLMExecutionService.escalationClause(code: nil, tool: "bash", allowedToolNames: held),
                        " If you are blocked, call ask_supervisor.")
-        XCTAssertEqual(LLMExecutionService.escalationClause(code: "APPROVAL_UNAVAILABLE", allowedToolNames: held), "")
-        XCTAssertEqual(LLMExecutionService.escalationClause(code: "BASH_DENIED", allowedToolNames: []), "")
+        XCTAssertEqual(LLMExecutionService.escalationClause(code: "APPROVAL_UNAVAILABLE", tool: "bash", allowedToolNames: held), "")
+        XCTAssertEqual(LLMExecutionService.escalationClause(code: "BASH_DENIED", tool: "bash", allowedToolNames: []), "")
     }
 
     /// A change of error code is a change of CONDITION and may be said once more; a
@@ -264,7 +264,7 @@ final class RepetitiveFailureDetectionTests: XCTestCase {
                 result: anchorNotFound)
         }
 
-        guard case .persistentToolError(let tool, let count, let code)? =
+        guard case .persistentToolError(let tool, let count, let code, _)? =
             ToolCallLoopDetector.detectLoopPattern(in: calls)
         else {
             return XCTFail("three same-error failures must be reported")
@@ -340,7 +340,7 @@ final class RepetitiveFailureDetectionTests: XCTestCase {
             call("edit_file", args: "2", ok: false, result: anchorNotFound),
             call("edit_file", args: "3", ok: false, result: anchorNotFound),
         ]
-        guard case .persistentToolError(_, let count, _)? =
+        guard case .persistentToolError(_, let count, _, _)? =
             ToolCallLoopDetector.detectLoopPattern(in: calls)
         else {
             return XCTFail("the trailing three must still fire")
@@ -385,7 +385,7 @@ final class RepetitiveFailureDetectionTests: XCTestCase {
     func testMessage_doesNotTellTheModelToChangeTheArgumentsAgain() {
         let message = LLMExecutionService.loopWarningMessage(
             loopDetection: .persistentToolError(
-                tool: "edit_file", count: 3, errorCode: "ANCHOR_NOT_FOUND"),
+                tool: "edit_file", count: 3, errorCode: "ANCHOR_NOT_FOUND", messagesIdentical: true),
             allowedToolNames: ["edit_file", "read_file"])
 
         XCTAssertTrue(message.contains("ANCHOR_NOT_FOUND"), message)
@@ -403,11 +403,11 @@ final class RepetitiveFailureDetectionTests: XCTestCase {
     func testMessage_namesReadFileOnlyWhenTheRoleHasIt() {
         let withRead = LLMExecutionService.loopWarningMessage(
             loopDetection: .persistentToolError(
-                tool: "edit_file", count: 3, errorCode: "ANCHOR_NOT_FOUND"),
+                tool: "edit_file", count: 3, errorCode: "ANCHOR_NOT_FOUND", messagesIdentical: true),
             allowedToolNames: ["edit_file", "read_file"])
         let withoutRead = LLMExecutionService.loopWarningMessage(
             loopDetection: .persistentToolError(
-                tool: "edit_file", count: 3, errorCode: "ANCHOR_NOT_FOUND"),
+                tool: "edit_file", count: 3, errorCode: "ANCHOR_NOT_FOUND", messagesIdentical: true),
             allowedToolNames: ["edit_file"])
 
         XCTAssertTrue(withRead.contains("read_file"), withRead)
@@ -477,8 +477,130 @@ final class RepetitiveFailureDetectionTests: XCTestCase {
             .repetitiveFailure(tool: "edit_file", count: 3, errorCode: "ANCHOR_NOT_FOUND"),
             epoch: 0)
         let varied = LLMExecutionService.loopWarningSignature(
-            .persistentToolError(tool: "edit_file", count: 3, errorCode: "ANCHOR_NOT_FOUND"),
+            .persistentToolError(tool: "edit_file", count: 3, errorCode: "ANCHOR_NOT_FOUND", messagesIdentical: true),
             epoch: 0)
         XCTAssertNotEqual(identical, varied)
+    }
+
+    // MARK: - Whether the messages held (2026-09-11)
+
+    /// MeditationApp task 52, run 11: `ask_supervisor_form` failed three times with
+    /// `INVALID_ARGS`, each message naming a DIFFERENT character — the model was fixing what
+    /// the previous excerpt named, one character from success — and the nudge built for a
+    /// held message told it that changing the arguments was not working. Whether the
+    /// runtime's message moved is a FACT read off the same envelopes as the code.
+    ///
+    /// RED: drop the message comparison in `detectPersistentToolError` → always `true`.
+    func testDetection_reportsMovingMessages() {
+        let calls = [150, 1102, 1141].map { at in
+            call("ask_supervisor_form", args: "attempt-\(at)", ok: false,
+                 result: #"{"ok":false,"error":{"code":"INVALID_ARGS","message":"Invalid form: stopped at character \#(at)"}}"#)
+        }
+        guard case .persistentToolError(let tool, let count, let code, let identical)? =
+            ToolCallLoopDetector.detectLoopPattern(in: calls)
+        else { return XCTFail("three same-code failures must be reported") }
+        XCTAssertEqual(tool, "ask_supervisor_form")
+        XCTAssertEqual(count, 3)
+        XCTAssertEqual(code, "INVALID_ARGS")
+        XCTAssertFalse(identical, "three different messages")
+    }
+
+    /// The measured anchor case (task 28): one `old_text`, three indentations of `new_text`,
+    /// the SAME message each time — held.
+    func testDetection_reportsWhetherTheMessagesHeld() {
+        let held = #"{"ok":false,"error":{"code":"ANCHOR_NOT_FOUND","message":"old_text not found"}}"#
+        let calls = [18, 19, 20].map { depth in
+            call("edit_file", args: "indent-\(depth)", ok: false, result: held)
+        }
+        guard case .persistentToolError(_, _, _, let identical)? =
+            ToolCallLoopDetector.detectLoopPattern(in: calls)
+        else { return XCTFail("the anchor case must still fire") }
+        XCTAssertTrue(identical)
+    }
+
+    /// Two envelopes with no message at all describe the same (absent) fault.
+    func testDetection_countsAbsentMessagesAsIdentical() {
+        let bare = #"{"ok":false,"error":{"code":"INVALID_ARGS"}}"#
+        let calls = ["a", "b", "c"].map { call("edit_file", args: $0, ok: false, result: bare) }
+        guard case .persistentToolError(_, _, _, let identical)? =
+            ToolCallLoopDetector.detectLoopPattern(in: calls)
+        else { return XCTFail() }
+        XCTAssertTrue(identical)
+    }
+
+    /// A moving `INVALID_ARGS` message is a converging repair: the advice names the message
+    /// as the thing to follow, and never claims the arguments are not the problem.
+    ///
+    /// RED: ignore the fact in `loopWarningMessage` → "Changing the arguments is not working".
+    func testMessage_forMovingMessages_saysFixWhatTheLatestNames() {
+        let message = LLMExecutionService.loopWarningMessage(
+            loopDetection: .persistentToolError(
+                tool: "ask_supervisor_form", count: 3, errorCode: "INVALID_ARGS", messagesIdentical: false),
+            allowedToolNames: ["ask_supervisor", "ask_supervisor_form", "read_file"])
+        XCTAssertTrue(message.contains("despite different arguments"), message)
+        XCTAssertTrue(message.contains("fix exactly what the latest one names"), message)
+        XCTAssertFalse(message.contains("Changing the arguments is not working"), message)
+        XCTAssertFalse(message.contains("take a different step"), message)
+    }
+
+    func testMessage_forHeldMessages_keepsTodaysDirective() {
+        let message = LLMExecutionService.loopWarningMessage(
+            loopDetection: .persistentToolError(
+                tool: "read_file", count: 3, errorCode: "INVALID_ARGS", messagesIdentical: true),
+            allowedToolNames: ["read_file", "ask_supervisor"])
+        XCTAssertTrue(message.contains("Changing the arguments is not working"), message)
+        XCTAssertTrue(message.contains("take a different step"), message)
+    }
+
+    /// Only `INVALID_ARGS` reads the fact: for every other code the message names no place,
+    /// so a moving message says nothing the advice could use.
+    func testMessage_forAnotherCode_ignoresTheFact() {
+        let held = LLMExecutionService.loopWarningMessage(
+            loopDetection: .persistentToolError(
+                tool: "edit_file", count: 3, errorCode: "ANCHOR_NOT_FOUND", messagesIdentical: true),
+            allowedToolNames: ["edit_file", "read_file"])
+        let moving = LLMExecutionService.loopWarningMessage(
+            loopDetection: .persistentToolError(
+                tool: "edit_file", count: 3, errorCode: "ANCHOR_NOT_FOUND", messagesIdentical: false),
+            allowedToolNames: ["edit_file", "read_file"])
+        XCTAssertEqual(held, moving)
+    }
+
+    /// A series that moved and then stalled is a NEW condition — held after moving — and
+    /// earns the inverse directive once; the warn-once gate keys on the fact.
+    ///
+    /// RED: leave the fact out of the signature → the second condition is swallowed.
+    func testSignature_differsWhenTheMessagesStopMoving() {
+        let moving = LLMExecutionService.loopWarningSignature(
+            .persistentToolError(tool: "ask_supervisor_form", count: 3, errorCode: "INVALID_ARGS", messagesIdentical: false),
+            epoch: 0)
+        let held = LLMExecutionService.loopWarningSignature(
+            .persistentToolError(tool: "ask_supervisor_form", count: 4, errorCode: "INVALID_ARGS", messagesIdentical: true),
+            epoch: 0)
+        XCTAssertNotEqual(moving, held)
+    }
+
+    /// Both failure arms end on "If you are blocked, call ask_supervisor" — and when the tool
+    /// that keeps failing IS a supervisor ask, that channel is the questionnaire's shape sent
+    /// to the plain ask, which the gate refuses with `next` pointing back at the form: a ring
+    /// (run 11). For a failing ask tool neither arm names a channel; for any other tool both do.
+    ///
+    /// RED: append `escalationClause` regardless of the failing tool → the ring.
+    func testAdvice_forAFailingSupervisorAsk_namesNoChannel() {
+        let held: Set<String> = ["ask_supervisor", "ask_supervisor_form", "read_file"]
+        for tool in ToolNames.supervisorAskTools {
+            let varied = LLMExecutionService.loopWarningMessage(
+                loopDetection: .persistentToolError(tool: tool, count: 3, errorCode: "INVALID_ARGS", messagesIdentical: false),
+                allowedToolNames: held)
+            XCTAssertFalse(varied.contains("If you are blocked"), "\(tool): \(varied)")
+            let same = LLMExecutionService.loopWarningMessage(
+                loopDetection: .repetitiveFailure(tool: tool, count: 3, errorCode: "INVALID_ARGS"),
+                allowedToolNames: held)
+            XCTAssertFalse(same.contains("If you are blocked"), "\(tool): \(same)")
+        }
+        let other = LLMExecutionService.loopWarningMessage(
+            loopDetection: .persistentToolError(tool: "edit_file", count: 3, errorCode: "INVALID_ARGS", messagesIdentical: false),
+            allowedToolNames: held)
+        XCTAssertTrue(other.hasSuffix("If you are blocked, call ask_supervisor."), other)
     }
 }

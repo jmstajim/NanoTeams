@@ -614,18 +614,23 @@ nonisolated struct SearchTool: ToolHandler {
                 contextAfter: contextAfter,
                 maxResults: maxResults,
                 offset: offset,
-                constrainToFiles: nil,
                 internalDir: internalDir
             ))
 
             struct SearchData: Codable {
                 var query: String
-                var matches: [SearchMatch]
-                /// Results on this page that `offset` advances over — `matches` normally, or
+                /// Content hits folded by file — see `SearchFileGroup` for why the envelope
+                /// carries a different shape from the executor's per-hit `SearchMatch`.
+                var matches: [SearchFileGroup]
+                /// Results on this page that `offset` advances over — content hits normally, or
                 /// `filename_matches` in list mode (no `query`), where the file roster IS the
-                /// result. Sourced from `output.pageCount`, never `matches.count`: in list mode
-                /// there are no content matches, so `matches.count` is 0 and "advance `offset`
-                /// by `count`" would re-request the same page forever.
+                /// result.
+                ///
+                /// Sourced from `output.pageCount`, never `matches.count`, and since the fold by
+                /// file the two differ in BOTH modes: `matches` counts FILES while this counts
+                /// HITS, and in list mode there are no content matches at all, so `matches.count`
+                /// is 0 and "advance `offset` by `count`" would re-request the same page forever.
+                /// What ties them on a content page is `matches.flatMap(\.hits).count == count`.
                 var count: Int
                 /// Echoed so a paging caller can see which slice it got back.
                 var offset: Int?
@@ -652,7 +657,7 @@ nonisolated struct SearchTool: ToolHandler {
                 toolName: Self.name, args: canonicalArgs,
                 data: SearchData(
                     query: query,
-                    matches: output.matches,
+                    matches: SearchFileGroup.group(output.matches),
                     count: output.pageCount,
                     offset: offset > 0 ? offset : nil,
                     has_more: output.truncated ? true : nil,

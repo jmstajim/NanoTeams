@@ -54,7 +54,7 @@ final class ExploratorySearchUserScenarioTests: NTMSOrchestratorTestBase, @unche
         // Give the initial ensure-fresh pass a moment.
         let index = await sut.searchIndexCoordinator?.awaitIndex()
         XCTAssertNotNil(index)
-        XCTAssertTrue(index?.tokens.contains("scrollview") ?? false)
+        XCTAssertTrue(index?.vocabulary.contains("scrollview") ?? false)
 
         let indexFile = tempDir
             .appendingPathComponent(".nanoteams/internal/search_index.json")
@@ -319,7 +319,7 @@ final class ExploratorySearchUserScenarioTests: NTMSOrchestratorTestBase, @unche
         await sut.searchIndexCoordinator?.rebuild()
         let secondIdx = await sut.searchIndexCoordinator?.awaitIndex()
         XCTAssertEqual(secondIdx?.files.count, 2)
-        XCTAssertTrue(secondIdx?.tokens.contains("gamma") ?? false)
+        XCTAssertTrue(secondIdx?.vocabulary.contains("gamma") ?? false)
     }
 
     // MARK: - Schema stability

@@ -289,9 +289,9 @@ final class ChangeRequestHandlerFlowTests: XCTestCase {
 
     /// The voting meeting seats the requester as presenter only: its case is the topic
     /// (`ChangeRequestService.buildVotingContext`), it is not a participant and casts no
-    /// ballot. With three turns the coordinator (the PM, by the default rule) opens, the
-    /// empty rotation hands the second turn back to it, and it closes — the SWE never
-    /// appears in the transcript `tallyVotes` counts.
+    /// ballot. The room is the target plus the consumers of its artifact, with the chair
+    /// appended — and since 2026-09-11 the chair is a role that is neither the requester nor
+    /// the target, so the SWE cannot re-enter through that door either.
     ///
     /// RED: pass `.speaks` from `handleChangeRequest` → the SWE is seated at index 0 and
     /// takes turn 1, voting on its own request.
@@ -306,10 +306,85 @@ final class ChangeRequestHandlerFlowTests: XCTestCase {
             return XCTFail("the voting meeting was not recorded")
         }
         XCTAssertEqual(meeting.initiatedBy, .softwareEngineer)
-        XCTAssertEqual(meeting.participants, [.productManager], "the requester is not in the room")
+        XCTAssertEqual(meeting.participants, [.productManager, .uxDesigner, .uxResearcher, .tpm],
+                       "the target, the consumers of its artifact, and the impartial chair — "
+                           + "and not the requester")
         XCTAssertFalse(meeting.messages.contains { $0.role == .softwareEngineer },
                        "the requester never speaks, so it can never vote; got \(meeting.messages.map(\.role))")
         XCTAssertEqual(meeting.messages.count, 3, "premise: the meeting ran its three turns")
+        // The chair `handleChangeRequest` resolved to refuse-or-run the vote and the chair
+        // `handleTeamMeeting` seated are ONE resolution: same pure function, same arguments.
+        // `handleChangeRequest` cites this pin.
+        let seated = service.effectiveCoordinator(
+            team: service.resolveTeam(task: mockDelegate.taskToMutate!), initiator: .softwareEngineer,
+            requesterRoleID: requesterStepID,
+            seat: .presentsOnly(targetRoleID: targetRoleID), targetRoleID: targetRoleID)
+        XCTAssertEqual(seated, .chair(meeting.participants.last!))
+        XCTAssertEqual(meeting.messages.last?.role, meeting.participants.last,
+                       "the chair takes the last turn — the one that concludes")
+    }
+
+    /// The bundled shape this rule was written for: the requester is the target's ONLY
+    /// consumer (Engineering Code Reviewer → Software Engineer, and five more), so the room
+    /// is the target plus the chair. The target rejects its own repair; the chair approves.
+    /// Until the evening of 2026-09-11 the target's ballot was the whole electorate, one
+    /// ballot cannot tie, and the chair's ballot was never read: `.rejected`, by the defendant.
+    ///
+    /// RED: count the target's ballot in `tallyVotes` → the request is rejected.
+    func testHandler_singleConsumerEdge_theTargetCannotVetoItself() async {
+        var team = makeTeam(limits: TeamLimits(maxMeetingTurns: 3))
+        for role in team.roles where [secondVoterRoleID, thirdVoterRoleID].contains(role.id) {
+            team.removeRole(role.id)
+        }
+        install(team: team, task: makeTask())
+        // Turn 1 the chair opens, turn 2 the target (the only other participant), turn 3
+        // the chair closes: the chair's LAST message carrying a token is its ballot.
+        let client = ScriptedVoteLLMClient(votes: [
+            "Opening. Let us hear the Product Manager.",
+            "The requirements are complete as written.\nVOTE: REJECT",
+            "The reviewer's point stands.\nVOTE: APPROVE",
+        ])
+
+        let reply = await submitChangeRequest(client: client)
+
+        guard let latestRun = mockDelegate.taskToMutate?.runs.last,
+              let meeting = latestRun.meetings.last else {
+            return XCTFail("the voting meeting was not recorded")
+        }
+        XCTAssertEqual(meeting.participants, [.productManager, .tpm],
+                       "premise: the defendant and the chair, nobody else")
+        XCTAssertTrue(meeting.messages.contains { $0.role == .productManager && $0.content.contains("VOTE: REJECT") },
+                      "premise: the target did cast a rejecting ballot")
+        XCTAssertTrue(reply.succeeded, "got: \(reply.text)")
+        XCTAssertTrue(reply.text.uppercased().contains("APPROVED"), "got: \(reply.text)")
+        XCTAssertEqual(latestRun.changeRequests[0].status, .approved)
+        XCTAssertEqual(latestRun.roleStatuses[targetRoleID], .revisionRequested,
+                       "the chair's ballot decided; the defendant's did not count")
+    }
+
+    /// A team whose only non-Supervisor roles are the requester and the target has nobody to
+    /// hold the gavel. Before the rule the TARGET chaired its own case and this branch was
+    /// unreachable; the requester now learns it instead of watching that happen.
+    ///
+    /// RED: drop the `.noImpartialChair` guard from `handleChangeRequest` → a vote runs with
+    /// the target in the chair and `reply.succeeded` is true.
+    func testHandler_teamWithNoThirdParty_refusesTheVoteAndSaysWhy() async {
+        var team = makeTeam()
+        for role in team.roles
+            where [chairRoleID, secondVoterRoleID, thirdVoterRoleID].contains(role.id) {
+            team.removeRole(role.id)
+        }
+        install(team: team, task: makeTask())
+
+        let reply = await submitChangeRequest(client: ScriptedVoteLLMClient(vote: "VOTE: APPROVE"))
+
+        XCTAssertFalse(reply.succeeded, "got: \(reply.text)")
+        XCTAssertTrue(reply.text.contains("neither the requester nor the target"), reply.text)
+        XCTAssertNil(mockDelegate.taskToMutate?.runs.last?.meetings.last,
+                     "no meeting may run — the refusal comes before it")
+        XCTAssertEqual(mockDelegate.taskToMutate?.runs.last?.changeRequests.last?.status, .rejected,
+                       "the request is still RECORDED, as rejected — a refusal that leaves no "
+                           + "trace is a refusal nobody can audit")
     }
 
     /// A voting meeting that RAN and decided nothing must not carry the change.
@@ -357,10 +432,19 @@ final class ChangeRequestHandlerFlowTests: XCTestCase {
     /// auto-approve is a defensible coin flip — and it stays reachable after `.noVotes`
     /// split off, which is the half this pins.
     func testHandler_tiedVote_autoApproves_andAmends() async {
-        install(team: makeTeam(limits: TeamLimits(maxMeetingTurns: 2)), task: makeTask())
+        // Five turns: the chair opens, the target and the two consumers of its artifact
+        // speak in rotation, then the chair closes. The chair ABSTAINS throughout — `.tied`
+        // narrowed on 2026-09-11 to "the electorate is even AND the chair cast no ballot",
+        // because a chair that votes is an arbiter and would simply decide it. The TARGET
+        // votes REJECT here on purpose: its ballot is not counted (it defends, the consumers
+        // vote), so 1-1 among the consumers is still a tie. Counting it would make this 1-2.
+        install(team: makeTeam(limits: TeamLimits(maxMeetingTurns: 5)), task: makeTask())
         let client = ScriptedVoteLLMClient(votes: [
+            "Let the room decide.",
+            "The requirements are right as they are.\nVOTE: REJECT",
             "Worth doing.\nVOTE: APPROVE",
             "I disagree.\nVOTE: REJECT",
+            "Closing.",
         ])
 
         let reply = await submitChangeRequest(client: client)
@@ -369,10 +453,15 @@ final class ChangeRequestHandlerFlowTests: XCTestCase {
             return XCTFail("the task lost its run")
         }
         let messages = latestRun.meetings.last?.messages ?? []
-        let approves = messages.filter { $0.content.uppercased().contains("VOTE: APPROVE") }.count
-        let rejects = messages.filter { $0.content.uppercased().contains("VOTE: REJECT") }.count
-        XCTAssertEqual(approves, rejects, "premise: the ballots must actually tie")
+        let consumers: Set<Role> = [.uxDesigner, .uxResearcher]
+        let approves = messages.filter { consumers.contains($0.role) && $0.content.uppercased().contains("VOTE: APPROVE") }.count
+        let rejects = messages.filter { consumers.contains($0.role) && $0.content.uppercased().contains("VOTE: REJECT") }.count
+        XCTAssertEqual(approves, rejects, "premise: the consumers' ballots must actually tie")
         XCTAssertGreaterThan(approves, 0, "premise: a tie needs votes on both sides, or it is .noVotes")
+        XCTAssertTrue(messages.contains { $0.role == .productManager && $0.content.contains("VOTE: REJECT") },
+                      "premise: the target cast a rejecting ballot that must not be counted")
+        XCTAssertFalse(messages.contains { $0.role == .tpm && $0.content.uppercased().contains("VOTE:") },
+                       "premise: the chair abstained")
 
         XCTAssertTrue(reply.succeeded, "got: \(reply.text)")
         XCTAssertTrue(reply.text.uppercased().contains("TIED VOTE"),
@@ -549,6 +638,10 @@ final class ChangeRequestHandlerFlowTests: XCTestCase {
         return NTMSTask(id: taskID, title: "T", supervisorTask: "Build it", runs: [run])
     }
 
+    private let chairRoleID = "team_tpm"
+    private let secondVoterRoleID = "team_uxd"
+    private let thirdVoterRoleID = "team_uxr"
+
     private func makeTeam(
         includeSupervisor: Bool = false,
         limits: TeamLimits = .default
@@ -565,14 +658,47 @@ final class ChangeRequestHandlerFlowTests: XCTestCase {
             usePlanningPhase: false,
             dependencies: RoleDependencies(producesArtifacts: ["Product Requirements"]),
             systemRoleID: "productManager"))
+        // The requester REQUIRES the target's artifact. That edge is now a precondition of
+        // `request_changes` (2026-09-11): a repair may only be sent to a role whose work the
+        // requester actually read. The fixture used to leave `dependencies` empty, which
+        // made it an illustration of the case the rule forbids.
         roles.append(TeamRoleDefinition(
             id: requesterStepID, name: "Software Engineer", prompt: "p",
             toolIDs: [ToolNames.requestChanges], usePlanningPhase: false,
-            dependencies: RoleDependencies(),
+            dependencies: RoleDependencies(requiredArtifacts: ["Product Requirements"]),
             systemRoleID: "softwareEngineer"))
+        // Two more non-Supervisor roles, both forced by the 2026-09-11 vote rules.
+        //
+        // The CHAIR must be neither the requester nor the target; with only the original two,
+        // the target chaired its own case and the "no impartial chair" branch was
+        // unreachable. It consumes the ENGINEER's artifact, not the PM's, so it joins as the
+        // chair rather than as a downstream voter.
+        roles.append(TeamRoleDefinition(
+            id: chairRoleID, name: "TPM", prompt: "p", toolIDs: [], usePlanningPhase: false,
+            dependencies: RoleDependencies(requiredArtifacts: ["Engineering Notes"],
+                                           producesArtifacts: ["Release Notes"]),
+            systemRoleID: "tpm"))
+        // And TWO consumers of the target's artifact, because the electorate is the room
+        // minus the chair minus the TARGET (a defendant does not vote on its own case) and
+        // the chair's ballot only breaks a tie among the electorate: with one consumer a tie
+        // cannot exist, and the `.tied` arm would be untestable. Both are convened by the
+        // vote because they require what the target produces.
+        roles.append(TeamRoleDefinition(
+            id: secondVoterRoleID, name: "UX Designer", prompt: "p", toolIDs: [],
+            usePlanningPhase: false,
+            dependencies: RoleDependencies(requiredArtifacts: ["Product Requirements"],
+                                           producesArtifacts: ["Design Spec"]),
+            systemRoleID: "uxDesigner"))
+        roles.append(TeamRoleDefinition(
+            id: thirdVoterRoleID, name: "UX Researcher", prompt: "p", toolIDs: [],
+            usePlanningPhase: false,
+            dependencies: RoleDependencies(requiredArtifacts: ["Product Requirements"],
+                                           producesArtifacts: ["Research Report"]),
+            systemRoleID: "uxResearcher"))
         return Team(
             name: "CR Tail Team", roles: roles, artifacts: [],
-            settings: TeamSettings(limits: limits), graphLayout: TeamGraphLayout())
+            settings: TeamSettings(meetingCoordinatorRoleID: chairRoleID, limits: limits),
+            graphLayout: TeamGraphLayout())
     }
 }
 

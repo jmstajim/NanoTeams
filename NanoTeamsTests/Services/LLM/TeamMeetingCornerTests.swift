@@ -44,6 +44,34 @@ final class TeamMeetingCornerTests: XCTestCase {
         try await super.tearDown()
     }
 
+    // MARK: - A vote with nobody left to chair
+
+    /// `handleChangeRequest` refuses such a vote before it starts, so this arm is the runtime's
+    /// second answer to the same question — reached only if the two ever disagree about who may
+    /// chair. It says so rather than seating whoever is nearest, because the alternative was
+    /// the defect: the target chairing its own case.
+    ///
+    /// RED: fall back to the team's coordinator when `effectiveCoordinator` returns
+    /// `.noImpartialChair` → a meeting runs and this expectation of failure flips.
+    func testPresentsOnlyVote_withNoImpartialChair_refusesInsteadOfSeatingTheTarget() async {
+        seedDefault(maxTurns: 3)
+
+        let reply = await service.handleTeamMeeting(
+            stepID: stepID, topic: "t", participantIDs: ["team_pm"], context: nil,
+            kind: .changeRequestVote,
+            initiatingRole: initiator,
+            initiatorSeat: .presentsOnly(targetRoleID: "team_pm"),
+            task: mockDelegate.taskToMutate!,
+            runIndex: 0, stepIndex: 0,
+            client: ThrowingMeetingClient(error: LLMClientError.badHTTPStatus(500, "never called")),
+            config: stubConfig())
+
+        XCTAssertFalse(reply.succeeded)
+        XCTAssertTrue(reply.text.contains("no impartial chair"), "got: \(reply.text)")
+        XCTAssertNil(mockDelegate.taskToMutate?.runs.first?.meetings.first,
+                     "nothing may be recorded — the meeting never opened")
+    }
+
     // MARK: - Failure arms
 
     /// A stream that throws mid-turn must CANCEL the meeting and say why. Leaving

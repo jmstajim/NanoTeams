@@ -86,7 +86,9 @@ final class RepoBrowserNamespaceRejectionTests: XCTestCase {
     /// lookup lowercases internally. Pin both behaviors together so a future
     /// change can't accidentally make matching case-sensitive.
     func testResolveToolName_uppercasedPrefix_stillStripsAndAliases() {
-        XCTAssertEqual(ToolRegistry.resolveToolName("REPO_BROWSER.LIST_FILES"), "LIST_FILES")
+        // The whole name is lowercased since the evening of 2026-09-11 (it used to keep
+        // `LIST_FILES`, which then missed the exact `allowed` set and read as "not a tool").
+        XCTAssertEqual(ToolRegistry.resolveToolName("REPO_BROWSER.LIST_FILES"), "list_files")
         // After strip the suffix `LS` lowercases for alias lookup → `list_files`.
         XCTAssertEqual(ToolRegistry.resolveToolName("REPO_BROWSER.LS"), "list_files")
     }

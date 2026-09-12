@@ -37,6 +37,12 @@ final class CompactionPolicyTests: XCTestCase {
             argumentsJSON: #"{"question":"Which API?"}"#)
     }
 
+    private func askSupervisorFormCall(id: String = "c1") -> ChatToolCall {
+        ChatToolCall(
+            id: id, name: ToolNames.askSupervisorForm,
+            argumentsJSON: #"{"headline":"Three questions","form":"{}"}"#)
+    }
+
     /// `[system, task, assistant, tool, assistant]` — the ordinary mid-step shape.
     private func standardWire() -> [ChatMessage] {
         [
@@ -309,6 +315,49 @@ final class CompactionPolicyTests: XCTestCase {
                 #"{"ok":true,"response":"Use SwiftData.","tool":"ask_supervisor"}"#, id: "c1"),
         ]
         XCTAssertEqual(recordedFrom(wire), ["Use SwiftData."])
+    }
+
+    /// The form's answer rides the SAME collaboration envelope, stamped with its own tool
+    /// name. Nothing about the failure is loud: the predicate simply declines the envelope,
+    /// `supervisorRecord` returns one fewer entry, and the human's answers to a questionnaire
+    /// are absent from the compacted wire with a clean log and an identical return type.
+    ///
+    /// RED: narrow `supervisorAnswerResponse` back to `== ToolNames.askSupervisor` → this
+    /// returns `[]` while every other compaction test stays green.
+    func testSupervisorRecord_readsAnAnsweredFormEnvelope() {
+        let wire = standardWire() + [
+            assistant("", calls: [askSupervisorFormCall()]),
+            toolResult(
+                #"{"ok":true,"response":"Q1. Scheme?\nA1. Debug","tool":"ask_supervisor_form"}"#,
+                id: "c1"),
+        ]
+        XCTAssertEqual(recordedFrom(wire), ["Q1. Scheme?\nA1. Debug"])
+    }
+
+    /// A step suspended on a form is suspended exactly as one suspended on a plain question,
+    /// so `retainTail` must keep that turn: re-entry resolves the park by finding the pending
+    /// result by `toolCallID`, and a folded-away park leaves the answer nothing to attach to.
+    ///
+    /// The two assertions are one controlled comparison — the plain park is the control, and
+    /// it is what makes the form's `tailStart` mean "recognised as a park" rather than
+    /// "happens to be the last assistant".
+    ///
+    /// RED: narrow `carriesOpenPark` back to `== ToolNames.askSupervisor` → the form case
+    /// falls into the "nothing structural to preserve" branch and returns `tailStart: nil`,
+    /// while the plain case stays green.
+    func testPlan_retainsAnOpenFormPark_asItDoesAPlainOne() {
+        func planTail(parkCall: ChatToolCall) -> Int? {
+            let wire = standardWire() + [
+                assistant("", calls: [parkCall]),
+                toolResult(#"{"ok":true,"data":{"status":"pending"}}"#, id: "c1"),
+            ]
+            return CompactionPolicy.plan(for: wire, retainTail: true)?.tailStart
+        }
+        let plainTail = planTail(parkCall: askSupervisorCall())
+        XCTAssertNotNil(plainTail, "control: a plain park is retained")
+        XCTAssertEqual(
+            planTail(parkCall: askSupervisorFormCall()), plainTail,
+            "a form park must be retained exactly as a plain one")
     }
 
     func testSupervisorRecord_ignoresOtherToolResults() {

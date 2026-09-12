@@ -71,6 +71,88 @@ final class TaskSummaryPendingSupervisorInputTests: XCTestCase {
         XCTAssertNil(TaskSummary(id: 1, title: "T", status: .running).hasPendingSupervisorInput)
     }
 
+    // MARK: - The count mirror
+
+    func testLegacyRow_knowsTheFlagButNotTheCount() throws {
+        let json = Data("""
+        {"id":7,"title":"Upgraded once","status":"paused","isChatMode":true,
+         "hasPendingSupervisorInput":true}
+        """.utf8)
+        let summary = try JSONDecoder().decode(TaskSummary.self, from: json)
+        XCTAssertTrue(summary.supervisorInputStateIsKnown)
+        XCTAssertNil(summary.pendingSupervisorQuestionCount,
+                     "a row can predate the second field while knowing the first")
+        XCTAssertFalse(summary.waitingQuestionCountIsKnown)
+        XCTAssertTrue(summary.supervisorWaitFactsPredateAField,
+                      "…and the sweep's backfill filter must still select it")
+    }
+
+    func testCountRoundTrip_preservesUnknownDistinctFromZero() throws {
+        for value in [nil, 0, 1, 4] as [Int?] {
+            var summary = TaskSummary(id: 1, title: "T", status: .paused)
+            summary.pendingSupervisorQuestionCount = value
+            let data = try JSONEncoder().encode(summary)
+            let decoded = try JSONDecoder().decode(TaskSummary.self, from: data)
+            XCTAssertEqual(decoded.pendingSupervisorQuestionCount, value)
+        }
+    }
+
+    func testDefaultInit_countIsUnknown() {
+        let fresh = TaskSummary(id: 1, title: "T", status: .running)
+        XCTAssertNil(fresh.pendingSupervisorQuestionCount)
+        XCTAssertFalse(fresh.waitingQuestionCountIsKnown)
+        XCTAssertTrue(fresh.supervisorWaitFactsPredateAField)
+    }
+
+    func testFullyStampedRow_predatesNothing() {
+        var row = TaskSummary(id: 1, title: "T", status: .paused)
+        row.hasPendingSupervisorInput = false
+        row.pendingSupervisorQuestionCount = 0
+        XCTAssertFalse(row.supervisorWaitFactsPredateAField,
+                       "self-terminating: a converged row must drop out of the backfill filter")
+    }
+
+    func testToSummary_countsEveryParallelQuestion() {
+        var run = Run(id: 0, teamID: "t")
+        run.steps = [
+            waitingStep(id: "a", status: .needsSupervisorInput),
+            waitingStep(id: "b", status: .needsSupervisorInput),
+            StepExecution(id: "c", role: .softwareEngineer, title: "s", status: .running)
+        ]
+        let summary = NTMSTask(id: 1, title: "T", supervisorTask: "s", runs: [run]).toSummary()
+        XCTAssertEqual(summary.pendingSupervisorQuestionCount, 2)
+        XCTAssertTrue(summary.isWaitingForSupervisor)
+    }
+
+    /// `preserveSupervisorWaitFacts` moves BOTH fields or the row starts contradicting
+    /// itself. RED: drop either assignment from `preserveSupervisorWaitFacts` → the
+    /// assertion for the field it stopped carrying reads the recomputed value instead.
+    func testPreserveSupervisorWaitFacts_movesBothFieldsTogether() {
+        var row = TaskSummary(id: 1, title: "T", status: .paused)
+        row.hasPendingSupervisorInput = true
+        row.pendingSupervisorQuestionCount = 3
+
+        var recomputed = TaskSummary(id: 1, title: "T", status: .paused)
+        recomputed.hasPendingSupervisorInput = false
+        recomputed.pendingSupervisorQuestionCount = 0
+        recomputed.preserveSupervisorWaitFacts(from: row)
+
+        XCTAssertEqual(recomputed.hasPendingSupervisorInput, true)
+        XCTAssertEqual(recomputed.pendingSupervisorQuestionCount, 3)
+    }
+
+    func testPreserveSupervisorWaitFacts_carriesUnknownAsUnknown() {
+        let legacy = TaskSummary(id: 1, title: "T", status: .paused)
+        var recomputed = TaskSummary(id: 1, title: "T", status: .paused)
+        recomputed.hasPendingSupervisorInput = false
+        recomputed.pendingSupervisorQuestionCount = 0
+        recomputed.preserveSupervisorWaitFacts(from: legacy)
+
+        XCTAssertNil(recomputed.hasPendingSupervisorInput,
+                     "the row's answer is 'don't know', and a patch must not upgrade that to 'no'")
+        XCTAssertNil(recomputed.pendingSupervisorQuestionCount)
+    }
+
     // MARK: - SupervisorWaitState projection
 
     func testWaitStateProjection_mapsAllThreeCases() {

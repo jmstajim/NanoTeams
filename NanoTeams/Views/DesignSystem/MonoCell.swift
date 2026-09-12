@@ -34,15 +34,22 @@ import SwiftUI
 /// reference glyph ever stops being covered by SF Mono.
 struct MonoCell<Content: View>: View {
     private let font: Font
+    private let reference: String
     private let content: Content
 
-    init(font: Font, @ViewBuilder content: () -> Content) {
+    /// `reference` is the string whose metrics define the box — one cell by default.
+    /// Pass a wider one for a column that holds a fixed-width GROUP of cells: the choice
+    /// list's `(•)` / `[x]` marks are three cells and used to sit in a hand-measured
+    /// `.frame(width: 26)`, a number that stops being right the moment the mark's font does.
+    init(font: Font, reference: String = TerminalGlyph.cellReference,
+         @ViewBuilder content: () -> Content) {
         self.font = font
+        self.reference = reference
         self.content = content()
     }
 
     var body: some View {
-        Text(TerminalGlyph.cellReference)
+        Text(reference)
             .font(font)
             .hidden()
             // Load-bearing. `.overlay` proposes the BASE's size to its content,
@@ -58,8 +65,8 @@ extension MonoCell where Content == EmptyView {
     /// font, because it is the same cell. Used to hold a column or a row open
     /// while its content is absent, so the arrival or departure of a marker is
     /// a paint change rather than a layout change.
-    init(font: Font) {
-        self.init(font: font) { EmptyView() }
+    init(font: Font, reference: String = TerminalGlyph.cellReference) {
+        self.init(font: font, reference: reference) { EmptyView() }
     }
 }
 

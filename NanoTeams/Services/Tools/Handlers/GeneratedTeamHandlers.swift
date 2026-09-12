@@ -9,9 +9,11 @@ nonisolated struct CreateTeamTool: ToolHandler {
     static let name = TN.createTeam
     // The JSONSchema model only nests 2 deep (object → property → leaf), so the
     // recursive shape (team → roles → produces_artifacts) cannot be expressed
-    // structurally. We declare team_config as a string and document the schema in
-    // the description; the handler accepts both string and parsed-object forms
-    // for providers that loosen the schema.
+    // structurally — it is documented in the description instead. The parameter is
+    // declared `object` (2026-09-12, with `ask_supervisor_form`'s): what the renderer
+    // prints is the only type signal the model gets, no provider is sent a real JSON
+    // Schema, and `string` asked it to hand-escape a whole document into one value. The
+    // handler still accepts the string form.
     static let schema = ToolSchema(
         name: TN.createTeam,
         description: """
@@ -21,7 +23,7 @@ nonisolated struct CreateTeamTool: ToolHandler {
         """,
         parameters: JS.object(
             properties: [
-                "team_config": JS.string("Complete team configuration as a JSON object: name, description, supervisor_mode, acceptance_mode, roles[], artifacts[], supervisor_requires[]."),
+                "team_config": JS.object("Complete team configuration, sent as an object: name, description, supervisor_mode, acceptance_mode, roles[], artifacts[], supervisor_requires[]."),
             ],
             required: ["team_config"]
         )
@@ -99,6 +101,13 @@ nonisolated struct CreateTeamTool: ToolHandler {
             } else if let configString = args["team_config"] as? String,
                       let data = configString.data(using: .utf8) {
                 jsonData = data
+            } else if let present = args["team_config"] {
+                // Present but neither shape. "Missing" about an argument the model just
+                // sent it hunting for a phantom omission instead of fixing the type.
+                throw ToolArgumentError.invalidValue(
+                    key: "team_config",
+                    detail: "must be the team configuration object; received "
+                        + "\(ToolArgumentError.jsonTypeName(of: present)).")
             } else {
                 // Through the shared argument error, so this reads exactly like every
                 // other missing argument — and so the policy's `INVALID_ARGS` arm can

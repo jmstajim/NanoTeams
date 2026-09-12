@@ -131,6 +131,64 @@ final class MeetingToolCallLoggingTests: XCTestCase {
         XCTAssertEqual(jsonlLines().count, 2)
     }
 
+    /// A rejected meeting call carries the executor's name-shaped split: a name that is
+    /// not a tool (`submit_vote`) is `unknown_tool`, a real tool the speaker does not hold
+    /// (`write_file`) is `tool_not_authorized` — different remedies, and until the evening
+    /// of 2026-09-11 both read "did not run and returned nothing; name the fact as
+    /// unverified", meaningless for a name that names nothing. The log line says which.
+    ///
+    /// RED: hand every rejection `makeToolNotAuthorizedResult` → both are `tool_not_authorized`.
+    func testMeetingTurn_inventedName_isRejectedAsUnknownTool_notAsUnauthorized() async throws {
+        try await runTurn(
+            emitted: [
+                StepToolCall(name: "submit_vote", argumentsJSON: #"{"vote":"approve"}"#),
+                StepToolCall(name: "write_file", argumentsJSON: #"{"path":"a","content":"1"}"#),
+            ],
+            allowed: ["list_files"])
+
+        let lines = jsonlLines()
+        XCTAssertEqual(lines.count, 2)
+        guard let invented = lines.first(where: { $0.contains("submit_vote") }),
+              let unheld = lines.first(where: { $0.contains("write_file") }) else {
+            return XCTFail("both rejections must be logged: \(lines)")
+        }
+        XCTAssertTrue(invented.contains("unknown_tool"), invented)
+        XCTAssertTrue(invented.contains("unknown tool name in this meeting"), invented)
+        XCTAssertFalse(invented.contains("tool_not_authorized"), invented)
+        XCTAssertTrue(unheld.contains("tool_not_authorized"), unheld)
+        XCTAssertTrue(unheld.contains("tool not authorized in this meeting"), unheld)
+        XCTAssertTrue(unheld.contains("in this meeting"), "the scope survives the split: \(unheld)")
+    }
+
+    /// A speaker's tool call is logged as the SPEAKER's, keyed to the INITIATOR's step: the
+    /// base context's `stepID` (where the runtime state and the build-gate caption live)
+    /// stays, its `roleID` (the log's attribution) is rewritten per turn. Until the evening
+    /// of 2026-09-11 both were the initiator's, so a Diff Reviewer building mid-vote was
+    /// logged as the verifier building — `queuedMS` included.
+    ///
+    /// RED: return `base` unchanged from `turnContext` → the speaker's id is lost.
+    func testTurnContext_attributesTheCallToTheSpeaker_andKeepsTheInitiatorsStepKey() {
+        let speaker = TeamRoleDefinition(
+            id: "diff-reviewer-uuid", name: "Diff Reviewer", prompt: "", toolIDs: [],
+            usePlanningPhase: false, dependencies: RoleDependencies(), systemRoleID: "diffReviewer")
+        let team = Team(name: "T", roles: [speaker], artifacts: [], settings: .default,
+                        graphLayout: TeamGraphLayout())
+        let base = ToolExecutionContext(
+            workFolderRoot: tempDir, taskID: 7, runID: 0, roleID: "verifier-uuid", stepID: "verifier-uuid")
+
+        let turn = MeetingToolExecutor.turnContext(base: base, speaker: .diffReviewer, team: team)
+        XCTAssertEqual(turn.roleID, "diff-reviewer-uuid", "the log names who called")
+        XCTAssertEqual(turn.stepKey, base.stepKey, "the runtime state stays on the initiator's step")
+        XCTAssertEqual(turn.stepID, "verifier-uuid")
+
+        // No team to resolve against: the speaker's baseID is the best available name.
+        let bare = MeetingToolExecutor.turnContext(base: base, speaker: .diffReviewer, team: nil)
+        XCTAssertEqual(bare.roleID, Role.diffReviewer.baseID)
+        // A step-shaped context keys on its own role: `stepID` defaults to `roleID`.
+        let step = ToolExecutionContext(workFolderRoot: tempDir, taskID: 7, runID: 0, roleID: "swe")
+        XCTAssertEqual(step.stepKey, TaskStepKey(taskID: 7, stepID: "swe"))
+    }
+
     /// Edge: a turn with NO tool calls emitted — the loop body never runs, so neither
     /// log gets a record and nothing crashes.
     func testMeetingTurn_noToolCalls_logsNothing() async throws {

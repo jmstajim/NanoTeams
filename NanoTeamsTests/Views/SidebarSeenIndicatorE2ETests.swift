@@ -13,7 +13,7 @@ import XCTest
 /// 2. Calling the same method twice is idempotent (not duplicated).
 /// 3. Different taskIDs are tracked independently.
 /// 4. Deleting a task removes it from the seen set via
-///    `TaskManagementState.confirmDelete`.
+///    `TaskManagementState.applyDelete`.
 /// 5. The seen set is ephemeral — fresh `TaskManagementState` starts empty.
 /// 6. `filteredTasks` with the running filter still includes a seen task
 ///    (the indicator is about the dot, not about filtering).

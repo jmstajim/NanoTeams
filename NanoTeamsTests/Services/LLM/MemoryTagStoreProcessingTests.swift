@@ -70,6 +70,13 @@ final class MemoryTagStoreProcessingTests: XCTestCase {
         // XcodeIssuePathRelativizationTests); the line suffix is what this asserts.
         XCTAssertTrue(summary.contains("main.swift:12"), "error location missing: \(summary)")
         XCTAssertTrue(summary.contains("Util.swift:9"), "warning location missing: \(summary)")
+        // Errors take the budget FIRST. With room for both nothing is discarded, but the
+        // order is imposed rather than inherited — `parseIssues` appends in log order.
+        let lines = summary.components(separatedBy: "\n")
+        let errorIndex = try XCTUnwrap(lines.firstIndex { $0.hasPrefix("[E]") })
+        let warningIndex = try XCTUnwrap(lines.firstIndex { $0.hasPrefix("[W]") })
+        XCTAssertLessThan(errorIndex, warningIndex,
+                          "the error must precede the warning regardless of log order: \(summary)")
     }
 
     /// `swiftlint_warning.log` parses to a single warning. With `success: true`
@@ -99,14 +106,27 @@ final class MemoryTagStoreProcessingTests: XCTestCase {
     /// cannot parse (linker errors, an unopenable project, `(at: file:line:col)`
     /// trailing-location form, pure noise). The summary must still say FAILED —
     /// a zero-issue parse must never be reported as a success.
-    func testExtractBuildSummary_realUnparseableFailureFixtures_stillReportFailed() throws {
+    /// These four real logs carry no `file:line:col:` line at all, so `parseIssues` returns
+    /// nothing and both counts are zero. Until 2026-09-11 the summary was then the header
+    /// alone and the model's only available move was to run the identical build again —
+    /// which `run_xcodebuild` counts as a PRODUCTIVE turn, so the non-productive ceiling
+    /// never caught it either. The log the failure actually printed is in the envelope and
+    /// now ships with it.
+    func testExtractBuildSummary_realUnparseableFailureFixtures_shipTheLogTheyPrinted() throws {
         for name in ["linker_duplicate_symbol", "noise", "swift_error_at", "xcodebuild_error"] {
-            let issues = try issuesFromFixture(name)
+            let (issues, log) = try issuesAndLogFromFixture(name)
             XCTAssertEqual(issues.count, 0, "\(name): the issue regex is not expected to match")
 
-            let summary = sut.extractBuildSummary(from: buildEnvelope(from: issues, success: false))
-            XCTAssertEqual(summary, "BUILD FAILED: 0 error(s), 0 warning(s)",
-                           "\(name) must not read as a success")
+            let summary = sut.extractBuildSummary(
+                from: buildEnvelope(from: issues, success: false, logOverride: log))
+            XCTAssertTrue(summary.hasPrefix("BUILD FAILED: 0 error(s), 0 warning(s)"),
+                          "\(name) must not read as a success: \(summary)")
+            XCTAssertTrue(summary.contains("no file:line diagnostics were parsed"),
+                          "\(name) must say why the raw log is attached: \(summary)")
+            let lastLogLine = try XCTUnwrap(
+                log.split(separator: "\n", omittingEmptySubsequences: true).last.map(String.init))
+            XCTAssertTrue(summary.contains(lastLogLine.trimmingCharacters(in: .whitespaces)),
+                          "\(name): the log tail must reach the model, got: \(summary)")
         }
     }
 
@@ -221,10 +241,12 @@ final class MemoryTagStoreProcessingTests: XCTestCase {
         XCTAssertFalse(summary.contains("A.swift:"), summary)
     }
 
-    /// Severity is matched by a lowercased `w` prefix, so anything else — a
-    /// missing severity, `note`, an unexpected token — is rendered as an error.
-    /// That is the safe direction: an unclassified issue must not be downgraded
-    /// to a warning and read as ignorable.
+    /// Severity is matched explicitly, and the DEFAULT for a missing or unrecognised
+    /// token stays `[E]` — the safe direction: an unclassified issue must not be
+    /// downgraded to something ignorable. `note` is not unclassified, though: it is a
+    /// known severity that `error_count` does not count, so it gets its own `[N]`.
+    /// Rendering it `[E]` inflated the error list, and once errors became the filter for
+    /// the line budget it would have smuggled notes in beside the real errors.
     func testExtractBuildSummary_severityDiscriminator_defaultsToError() {
         let envelope = buildEnvelope(
             from: [
@@ -237,7 +259,9 @@ final class MemoryTagStoreProcessingTests: XCTestCase {
         let summary = sut.extractBuildSummary(from: envelope)
 
         XCTAssertTrue(summary.contains("[E] no-severity"), summary)
-        XCTAssertTrue(summary.contains("[E] a-note"), summary)
+        XCTAssertTrue(summary.contains("[N] a-note"),
+                      "a known `note` severity is neither an error nor a warning: \(summary)")
+        XCTAssertFalse(summary.contains("[E] a-note"), summary)
         XCTAssertTrue(summary.contains("[W] shouty-warning"), "matching is case-insensitive: \(summary)")
         XCTAssertTrue(summary.contains("[W] plain-warning"), summary)
     }
@@ -248,12 +272,80 @@ final class MemoryTagStoreProcessingTests: XCTestCase {
         }
         let summary = sut.extractBuildSummary(from: buildEnvelope(from: many, success: false))
 
-        XCTAssertEqual(summary.components(separatedBy: "\n").count, 11,
-                       "1 header + at most 10 issues")
+        XCTAssertEqual(summary.components(separatedBy: "\n").count, 12,
+                       "1 header + 10 issues + 1 line saying how many were dropped")
         XCTAssertTrue(summary.contains("[E] E-09"), summary)
         XCTAssertFalse(summary.contains("[E] E-10"), "the 11th issue must be dropped: \(summary)")
+        XCTAssertTrue(summary.contains("… and 2 more"),
+                      "silent truncation reads as 'that is all of them' and stops the model "
+                          + "after ten fixes: \(summary)")
         XCTAssertTrue(summary.hasPrefix("BUILD FAILED: 12 error(s)"),
                       "the header still reports the TRUE count, not the capped one")
+    }
+
+    // MARK: - The two defects the wire renderer carried until 2026-09-11
+
+    /// Issues arrive in LOG order. Twelve warnings ahead of the one error filled the whole
+    /// ten-line budget with `[W]`, and the model read `BUILD FAILED: 1 error(s)` without
+    /// ever being told which symbol failed. Errors outrank warnings for the budget.
+    func testExtractBuildSummary_warningsBeforeTheError_theErrorStillShips() {
+        var issues = (0..<12).map {
+            issue(severity: "warning", message: "W-\(String(format: "%02d", $0))", file: "A.swift", line: $0)
+        }
+        issues.append(issue(severity: "error", message: "cannot find 'intentLink' in scope",
+                            file: "Widget.swift", line: 42))
+
+        let summary = sut.extractBuildSummary(from: buildEnvelope(from: issues, success: false))
+
+        let lines = summary.components(separatedBy: "\n")
+        XCTAssertTrue(summary.hasPrefix("BUILD FAILED: 1 error(s), 12 warning(s)"), summary)
+        XCTAssertEqual(lines[1], "[E] cannot find 'intentLink' in scope — Widget.swift:42",
+                       "the only error must be the FIRST detail line however far down the log "
+                           + "it sat — it is the one fact the engineer cannot proceed without: \(summary)")
+        XCTAssertEqual(lines.count, 12, "1 header + 10 details + the dropped-count line: \(summary)")
+        XCTAssertTrue(summary.contains("… and 3 more"),
+                      "13 issues, 10 rendered: \(summary)")
+    }
+
+    /// Warnings and notes are not suppressed outright — with nothing counted as an error
+    /// they are the best evidence there is, and they ship.
+    func testExtractBuildSummary_noErrors_warningsAndNotesStillShip() {
+        let summary = sut.extractBuildSummary(from: buildEnvelope(
+            from: [issue(severity: "warning", message: "unused var", file: "A.swift", line: 3),
+                   issue(severity: "note", message: "declared here", file: "B.swift", line: 9)],
+            success: false))
+
+        XCTAssertTrue(summary.contains("[W] unused var"), summary)
+        XCTAssertTrue(summary.contains("[N] declared here"), summary)
+    }
+
+    /// A link failure, a `Multiple commands produce`, or a process killed by the timeout
+    /// produces no `file:line:col:` line, so `parseIssues` returns nothing and both counts
+    /// are zero. The header alone — `BUILD FAILED: 0 error(s), 0 warning(s)` — is what the
+    /// model used to get, and its only move was to run the identical build again. The log
+    /// tail is already in the envelope and is already bounded; it ships.
+    func testExtractBuildSummary_failureWithNoParsedIssues_shipsTheLogTail() {
+        let envelope = buildEnvelope(
+            from: [], success: false,
+            logOverride: "ld: symbol(s) not found for architecture arm64\nclang: error: linker command failed")
+        let summary = sut.extractBuildSummary(from: envelope)
+
+        XCTAssertTrue(summary.hasPrefix("BUILD FAILED: 0 error(s), 0 warning(s)"), summary)
+        XCTAssertTrue(summary.contains("ld: symbol(s) not found"),
+                      "a failed build must never reach the model with nothing actionable: \(summary)")
+        XCTAssertTrue(summary.contains("no file:line diagnostics were parsed"),
+                      "the tail must say why it is here, or it reads as noise: \(summary)")
+    }
+
+    /// The other side of the same rule: when there IS an `[E]` line the log stays off the
+    /// wire. The errors are the diagnostic, and thirty more lines of build chatter is
+    /// context spent for nothing.
+    func testExtractBuildSummary_withErrors_doesNotShipTheLogTail() {
+        let envelope = buildEnvelope(
+            from: [issue(severity: "error", message: "boom", file: "A.swift", line: 1)],
+            success: false, logOverride: "SHOULD-NOT-APPEAR")
+        XCTAssertFalse(sut.extractBuildSummary(from: envelope).contains("SHOULD-NOT-APPEAR"),
+                       "the log is the fallback, not an addition")
     }
 
     /// `issues` present but not an array of objects: the cast fails and the
@@ -366,9 +458,26 @@ final class MemoryTagStoreProcessingTests: XCTestCase {
             success: false, passed: 0, failed: 12, skipped: 0, failures: failures)
         let summary = sut.extractTestSummary(from: json)
 
-        XCTAssertEqual(summary.components(separatedBy: "\n").count, 11, "1 header + at most 10")
+        XCTAssertEqual(summary.components(separatedBy: "\n").count, 12,
+                       "1 header + 10 failures + 1 line saying how many were dropped")
         XCTAssertTrue(summary.contains("[F] F-09"), summary)
         XCTAssertFalse(summary.contains("[F] F-10"), summary)
+        XCTAssertTrue(summary.contains("… and 2 more"), summary)
+    }
+
+    /// The build summary's rule, applied to the twin: a suite whose TARGET failed to build
+    /// reports `0 passed, 0 failed` with no parsed failure, and the header alone tells the
+    /// model nothing. This is the exact shape MeditationApp task 48 run 1 showed its
+    /// verifier.
+    func testExtractTestSummary_failedWithNoParsedFailures_shipsTheLogTail() throws {
+        let json = try rawTestEnvelope(
+            success: false, passed: 0, failed: 0, skipped: 0, failures: [],
+            log: "** TEST FAILED **\nThe following build commands failed:\n\tSwiftCompile normal arm64")
+        let summary = sut.extractTestSummary(from: json)
+
+        XCTAssertTrue(summary.hasPrefix("TESTS FAILED: 0 passed, 0 failed, 0 skipped"), summary)
+        XCTAssertTrue(summary.contains("SwiftCompile normal arm64"),
+                      "0/0/0 with no failure list means the target did not build — say so: \(summary)")
     }
 
     // MARK: - Git processing
@@ -632,6 +741,22 @@ final class MemoryTagStoreProcessingTests: XCTestCase {
     /// Skips (rather than fails) when the fixture is absent: CI builds from a
     /// public mirror that carries build sources only, so a missing non-build
     /// asset must not turn into a red test.
+    /// The parsed issues AND the raw log — the log is half the envelope and the summary
+    /// now reads it, so a fixture test that synthesised a fake log would prove nothing.
+    private func issuesAndLogFromFixture(_ name: String) throws -> (issues: [XcodeIssue], log: String) {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()   // LLM/
+            .deletingLastPathComponent()   // Services/
+            .deletingLastPathComponent()   // NanoTeamsTests/
+            .appendingPathComponent("Fixtures/XcodebuildLogs/\(name).log")
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw XCTSkip("fixture \(name).log is not present in this checkout")
+        }
+        let log = try String(contentsOf: url, encoding: .utf8)
+        return (XcodeBuildRunner.parseIssues(
+            from: log, workFolderRoot: URL(fileURLWithPath: "/Users/me/Proj")), log)
+    }
+
     private func issuesFromFixture(_ name: String) throws -> [XcodeIssue] {
         let url = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()   // LLM/
@@ -654,7 +779,8 @@ final class MemoryTagStoreProcessingTests: XCTestCase {
         from issues: [XcodeIssue],
         success: Bool,
         errorOverride: Int? = nil,
-        warningOverride: Int? = nil
+        warningOverride: Int? = nil,
+        logOverride: String? = nil
     ) -> String {
         makeSuccessEnvelope(data: XcodeBuildRunner.BuildResult(
             success: success,
@@ -663,7 +789,7 @@ final class MemoryTagStoreProcessingTests: XCTestCase {
             error_count: errorOverride ?? issues.filter { $0.severity == "error" }.count,
             warning_count: warningOverride ?? issues.filter { $0.severity == "warning" }.count,
             issues: issues,
-            log: success ? "" : "** BUILD FAILED **"))
+            log: logOverride ?? (success ? "" : "** BUILD FAILED **")))
     }
 
     private func issue(severity: String?, message: String, file: String?, line: Int?) -> XcodeIssue {
@@ -690,12 +816,14 @@ final class MemoryTagStoreProcessingTests: XCTestCase {
     /// carry heterogeneous value types that `TestResult`'s `[[String: String]]`
     /// cannot express.
     private func rawTestEnvelope(
-        success: Bool, passed: Int, failed: Int, skipped: Int, failures: [[String: Any]]
+        success: Bool, passed: Int, failed: Int, skipped: Int, failures: [[String: Any]],
+        log: String = ""
     ) throws -> String {
         let data = try JSONSerialization.data(withJSONObject: failures)
         let json = String(decoding: data, as: UTF8.self)
         return "{\"ok\":true,\"data\":{\"success\":\(success),\"passed\":\(passed),"
-            + "\"failed\":\(failed),\"skipped\":\(skipped),\"failures\":\(json)}}"
+            + "\"failed\":\(failed),\"skipped\":\(skipped),\"failures\":\(json),"
+            + "\"log\":\(sut.jsonEscape(log))}}"
     }
 
     private func readLinesResult(

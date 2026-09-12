@@ -40,6 +40,19 @@ nonisolated enum Typography {
     /// 34px bold — hero numerals
     static let term3xl: Font = term(34, .bold)
 
+    // MARK: - Control glyphs
+
+    /// 14px bold — the selection mark a control draws: `[x]`/`[ ]` on a switch,
+    /// `(•)`/`( )` and `[x]`/`[ ]` on a choice list.
+    ///
+    /// Off the cell scale on purpose: it is the design's `Switch.jsx .nt-switch__box`
+    /// spec (`--nt-fs-md` at `--nt-fw-bold`), one step above body text so the mark
+    /// reads before the label beside it. Named because two primitives draw the same
+    /// glyphs — `TerminalToggleStyle` spelled the size as a literal and
+    /// `TerminalChoiceList` reached for 13px `termBase`, so one dictionary had two
+    /// sizes inside the design system itself.
+    static let choiceMark: Font = term(14, .bold)
+
     // MARK: - Back-compat semantic names (now mono)
 
     /// Subheadline — 13px regular mono

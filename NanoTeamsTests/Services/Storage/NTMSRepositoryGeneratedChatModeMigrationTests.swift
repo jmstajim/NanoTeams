@@ -316,7 +316,9 @@ final class NTMSRepositoryGeneratedChatModeMigrationTests: XCTestCase {
     /// existing answer forward, not overwrite persisted seen-state with `false`.
     ///
     /// RED: drop the `!task.streamsHydrated` preservation in the convergence
-    /// branch → the row's `true` becomes `false`.
+    /// branch → the row's `true` becomes `false` and its count collapses to `0`.
+    /// Dropping ONE line of `preserveSupervisorWaitFacts` is also RED, on the other
+    /// assertion — which is why that helper exists rather than two spelled-out patches.
     func testConvergence_splitTaskRow_preservesPendingSupervisorFlag() throws {
         _ = try repository.openOrCreateWorkFolder(at: tempDir)
         let victim = try repository.createTask(
@@ -333,14 +335,17 @@ final class NTMSRepositoryGeneratedChatModeMigrationTests: XCTestCase {
                         "anti-vacuum: the convergence write must actually have run")
         XCTAssertEqual(row.hasPendingSupervisorInput, true,
                        "converging a raw-read split task must keep the row's answer (#91)")
+        XCTAssertEqual(row.pendingSupervisorQuestionCount, 2,
+                       "…and the count with it — recomputing it here is the same false zero, "
+                           + "and a row saying `waiting` beside `0` contradicts itself")
     }
 
     /// The HEAL branch is the second, independent writer of the same row —
     /// pinned separately (#60): a split task that genuinely carries the
     /// placeholder chat-mode lie is healed WITHOUT losing the supervisor flag.
     ///
-    /// RED: drop the preservation in the heal branch → `true` becomes `false`
-    /// while the convergence pin above stays green.
+    /// RED: drop the preservation in the heal branch → `true` becomes `false` and the
+    /// count collapses to `0`, while the convergence pin above stays green.
     func testHeal_splitTaskRow_preservesPendingSupervisorFlag() throws {
         let taskID = try seedGeneratedTeamTask(withRun: true)
         // A separate ACTIVE task: the open's active-task load hydrates and
@@ -360,6 +365,9 @@ final class NTMSRepositoryGeneratedChatModeMigrationTests: XCTestCase {
         XCTAssertEqual(row.isChatMode, false)
         XCTAssertEqual(row.hasPendingSupervisorInput, true,
                        "healing a raw-read split task must keep the row's answer (#91)")
+        XCTAssertEqual(row.pendingSupervisorQuestionCount, 2,
+                       "the heal is the SECOND writer of this row and must preserve both "
+                           + "fields independently of the convergence branch (#60)")
     }
 
     // MARK: - Fixtures
@@ -397,22 +405,29 @@ final class NTMSRepositoryGeneratedChatModeMigrationTests: XCTestCase {
                        "precondition: the blob decodes as a raw split task")
     }
 
-    /// Stamps the seen-state flag onto the index row byte-directly — the
-    /// persisted `true` the sweep must not recompute away.
-    private func setRowPendingSupervisorInput(taskID: Int, value: Bool) throws {
+    /// Stamps the seen-state facts onto the index row byte-directly — the persisted
+    /// answers the sweep must not recompute away. BOTH fields, because they are one
+    /// fact in two shapes: a seam that carried the flag and dropped the count would
+    /// leave the row claiming "waiting" beside a count of zero.
+    private func setRowPendingSupervisorInput(
+        taskID: Int, value: Bool, count: Int = 2
+    ) throws {
         let data = try Data(contentsOf: paths().tasksIndexJSON)
         var root = try XCTUnwrap(
             try JSONSerialization.jsonObject(with: data) as? [String: Any])
         var rows = try XCTUnwrap(root["tasks"] as? [[String: Any]])
         for i in rows.indices where (rows[i]["id"] as? Int) == taskID {
             rows[i]["hasPendingSupervisorInput"] = value
+            rows[i]["pendingSupervisorQuestionCount"] = count
         }
         root["tasks"] = rows
         try JSONSerialization.data(withJSONObject: root)
             .write(to: paths().tasksIndexJSON)
-        XCTAssertEqual(
-            try loadIndex().tasks.first(where: { $0.id == taskID })?.hasPendingSupervisorInput,
-            value, "precondition: the flag is on disk")
+        let reread = try loadIndex().tasks.first(where: { $0.id == taskID })
+        XCTAssertEqual(reread?.hasPendingSupervisorInput, value,
+                       "precondition: the flag is on disk")
+        XCTAssertEqual(reread?.pendingSupervisorQuestionCount, count,
+                       "precondition: the count is on disk")
     }
 
     /// Rewrites one index row to the byte-shape a pre-2026-08-21 build produced:

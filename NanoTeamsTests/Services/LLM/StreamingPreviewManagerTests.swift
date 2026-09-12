@@ -879,4 +879,84 @@ final class StreamingPreviewManagerTests: XCTestCase {
         XCTAssertFalse(manager.isCompacting(stepID: "engineer", taskID: 0))
     }
 
+    // MARK: - Tool wait captions
+
+    /// The queue behind `XcodeBuildGate` is otherwise invisible: the tool-call card spins on
+    /// `resultJSON == nil` whether the tool is building or merely waiting to. A placeholder in
+    /// `resultJSON` — the one existing precedent — is forbidden here, because
+    /// `AutovisorStatus.hasToolInFlight` reads that field and filling it would stop the stuck
+    /// evaluator suppressing its "hung" verdict.
+    ///
+    /// RED: make `setToolWaitCaptions` merge instead of replace → the stale key survives the
+    /// hand-over and the second assertion fails.
+    func testToolWaitCaptions_replaceTheWholeSet_soAStaleKeyCannotSurvive() {
+        let first = TaskStepKey(taskID: 1, stepID: "a")
+        let second = TaskStepKey(taskID: 2, stepID: "b")
+
+        manager.setToolWaitCaptions([first, second], seq: 1, caption: "Waiting")
+        XCTAssertEqual(Set(manager.toolWaitCaption.keys), [first, second])
+        XCTAssertEqual(manager.toolWaitCaption[first], "Waiting")
+
+        manager.setToolWaitCaptions([second], seq: 2, caption: "Waiting")
+        XCTAssertEqual(Set(manager.toolWaitCaption.keys), [second],
+                       "the gate reports a SET; a per-key merge would strand the served role")
+
+        manager.setToolWaitCaptions([], seq: 3, caption: "Waiting")
+        XCTAssertTrue(manager.toolWaitCaption.isEmpty)
+    }
+
+    /// The observer hops every gate notification to the main actor through an unstructured
+    /// `Task`, and two hops carry no ordering guarantee: a hand-off emits `[k]`, `[]` in a
+    /// row and the `[]` may land first. The gate numbers its notifications; a set that is
+    /// not newer than the last applied is dropped, so the stale `[k]` cannot pin a caption on
+    /// a step that stopped waiting.
+    ///
+    /// RED: ignore `seq` → the late `[key]` is applied and the caption sticks.
+    func testToolWaitCaptions_aStaleNotification_isDropped() {
+        let key = TaskStepKey(taskID: 1, stepID: "a")
+        manager.setToolWaitCaptions([], seq: 2, caption: "Waiting")
+        manager.setToolWaitCaptions([key], seq: 1, caption: "Waiting")
+        XCTAssertTrue(manager.toolWaitCaption.isEmpty, "seq 1 arrived after seq 2 and is stale")
+
+        manager.setToolWaitCaptions([key], seq: 2, caption: "Waiting")
+        XCTAssertTrue(manager.toolWaitCaption.isEmpty, "a repeated number is not newer either")
+
+        manager.setToolWaitCaptions([key], seq: 3, caption: "Waiting")
+        XCTAssertEqual(manager.toolWaitCaption[key], "Waiting")
+    }
+
+    /// The caption has a READER. It was `@ObservationIgnored` write-only state for one
+    /// build: the gate fed it and nothing rendered it, so the card spun identically for a
+    /// build and for a wait. The in-flight tool-call row's leaf label is that reader.
+    func testToolWaitCaption_isReadByTheToolCallCard() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let card = try String(
+            contentsOf: root.appendingPathComponent("NanoTeams/Views/TeamBoard/ActivityFeed/ToolCallItemView.swift"),
+            encoding: .utf8)
+        XCTAssertTrue(card.contains("previews.toolWaitCaption[key]"),
+                      "the card must read the caption for its step key")
+        let manager = try String(
+            contentsOf: root.appendingPathComponent("NanoTeams/Services/LLM/StreamingPreviewManager.swift"),
+            encoding: .utf8)
+        let declaration = manager.components(separatedBy: "\n")
+            .first { $0.contains("var toolWaitCaption:") } ?? ""
+        XCTAssertFalse(declaration.contains("@ObservationIgnored"),
+                       "a rendered property must be observed, or the label never updates: \(declaration)")
+    }
+
+    /// Cleared with the rest of the per-step state, or a finished step keeps a caption
+    /// nothing will ever remove.
+    func testToolWaitCaption_isClearedWithTheStep() {
+        let key = TaskStepKey(taskID: 7, stepID: "step")
+        manager.setToolWaitCaptions([key], seq: 1, caption: "Waiting")
+        manager.clear(stepID: "step", taskID: 7)
+        XCTAssertNil(manager.toolWaitCaption[key])
+
+        manager.setToolWaitCaptions([key], seq: 2, caption: "Waiting")
+        manager.clearAll()
+        XCTAssertTrue(manager.toolWaitCaption.isEmpty)
+    }
+
 }

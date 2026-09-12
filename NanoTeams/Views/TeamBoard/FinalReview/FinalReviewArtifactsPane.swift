@@ -88,7 +88,7 @@ private struct SelectableArtifactReviewRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.xxs) {
-            HStack(spacing: Spacing.xs + 2) {
+            HStack(spacing: Spacing.xsPlus) {
                 StatusGlyph(
                     glyph: item.isReady ? TerminalGlyph.done : TerminalGlyph.idle,
                     color: item.isReady ? Colors.success : Colors.textTertiary

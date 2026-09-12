@@ -146,7 +146,7 @@ final class NilFallbackToolErrorGuidanceTests: XCTestCase {
         let guidance = try XCTUnwrap(ToolErrorNotePolicy.direction(for: envelope, allowedToolNames: []))
 
         XCTAssertTrue(
-            guidance.contains("do not retry 'read_lines'"),
+            guidance.contains("Do not retry 'read_lines'"),
             "the anti-loop instruction must name the tool from the result, got: \(guidance)"
         )
         XCTAssertFalse(
@@ -165,7 +165,7 @@ final class NilFallbackToolErrorGuidanceTests: XCTestCase {
     /// RED: delete the `precondition_failed` case → the guidance loses "Do not retry
     /// 'git_add'" and gains the argument-blaming default direction →
     /// `guidance.contains("Do not retry 'git_add'")` fails.
-    func testPreconditionFailed_namesTheWorkFolderBlockerAndForbidsRetry() async throws {
+    func testPreconditionFailed_forbidsRetryWithoutNamingAnyBlocker() async throws {
         let call = StepToolCall(name: "git_add", argumentsJSON: #"{"paths":["a.swift"]}"#)
         let envelope = LLMExecutionService.makeUnavailableToolResult(
             call: call,
@@ -185,9 +185,18 @@ final class NilFallbackToolErrorGuidanceTests: XCTestCase {
             guidance.contains("Do not retry 'git_add'"),
             "a work-folder precondition cannot be fixed from inside the role, got: \(guidance)"
         )
+        // The direction says WHY retrying is pointless and names no blocker — the envelope
+        // above already named this one, and six reasons share this code with different
+        // blockers (R1.8.5, DEBTS D-B10). The old assertion, and this test's old NAME, pinned
+        // the claim as a feature.
         XCTAssertTrue(
-            guidance.contains("the precondition is set by the work folder, not by your arguments"),
+            guidance.contains("the blocker is not your arguments, and no rewording reaches it"),
             "the direction must say WHY retrying is pointless, got: \(guidance)"
+        )
+        XCTAssertFalse(
+            guidance.localizedCaseInsensitiveContains("work folder"),
+            "a shared direction may not diagnose the work folder for a session-policy "
+                + "blocker, got: \(guidance)"
         )
         // The default arm's ACTUAL wording for this envelope, not "Fix the arguments and retry."
         // That string is emitted only under `case "INVALID_ARGS"`, and the code there is read as

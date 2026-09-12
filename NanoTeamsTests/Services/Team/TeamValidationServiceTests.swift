@@ -88,6 +88,51 @@ final class TeamValidationServiceTests: XCTestCase {
         XCTAssertEqual(TeamValidationService.validateSupervisorMode(team: team(coordID: "w", mode: .manual, chatMode: true)), [])
     }
 
+    // MARK: - validateSupervisorAskTools
+
+    private func teamWithToolIDs(_ toolIDs: [String]) -> Team {
+        var t = team(coordID: "w", chatMode: false)
+        guard let i = t.roles.firstIndex(where: { $0.id == "w" }) else { return t }
+        t.roles[i].toolIDs = toolIDs
+        return t
+    }
+
+    /// A role granted the questionnaire and not the plain ask is flagged — a WARNING, because
+    /// the resolver pairs the two before the schema ships (step 4-bis) and the run is fine. The
+    /// banner says so anyway: the stored toolset does not match what runs, and the next person
+    /// to read the Tools tab would otherwise conclude the role cannot ask at all.
+    ///
+    /// RED: return `[]` from `validateSupervisorAskTools` → the first assertion fails.
+    func testValidateSupervisorAskTools_formWithoutThePlainAsk_warnsNamingTheRole() {
+        let issues = TeamValidationService.validateSupervisorAskTools(
+            team: teamWithToolIDs([ToolNames.readFile, ToolNames.askSupervisorForm]))
+
+        XCTAssertEqual(issues, [.supervisorFormWithoutPlainAsk(roleID: "w")])
+        XCTAssertFalse(issues[0].isError, "the resolver pairs them — warn, do not block")
+        let message = issues[0].displayMessage(in: teamWithToolIDs([ToolNames.askSupervisorForm]))
+        XCTAssertTrue(message.contains("Worker"), "the role is named, not its id")
+        XCTAssertTrue(message.contains(ToolNames.askSupervisor),
+                      "the message names the tool to add")
+    }
+
+    /// Both, the plain ask alone, and neither are all legitimate shapes: the form is a
+    /// companion, so only its solitude is worth a word.
+    ///
+    /// RED: flag on `!toolIDs.contains(askSupervisorForm)` instead → the "plain ask alone"
+    /// row fails, which is the shape almost every bundled role has.
+    func testValidateSupervisorAskTools_everyOtherShape_isClean() {
+        for toolIDs in [
+            [ToolNames.askSupervisor, ToolNames.askSupervisorForm],
+            [ToolNames.askSupervisor],
+            [ToolNames.readFile],
+            [],
+        ] {
+            XCTAssertEqual(
+                TeamValidationService.validateSupervisorAskTools(team: teamWithToolIDs(toolIDs)), [],
+                "\(toolIDs) is a legitimate toolset")
+        }
+    }
+
     func testDisplayMessages_nameTheRoleAndTheRemedy() {
         let t = team(coordID: "ghost", chatMode: true)
         let healed = ValidationError.meetingCoordinatorHealed(from: "ghost", to: "w").displayMessage(in: t)

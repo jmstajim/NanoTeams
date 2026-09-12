@@ -380,6 +380,22 @@ nonisolated enum TeamConfigParser {
            let parsed = JSONUtilities.parseJSONDictionary(injected) {
             return parsed
         }
+        // The config's OWN closing brace, when that is the only one missing. The EOF salvage
+        // in `scanBalancedObject` counts BRACES only, so `{"roles":[{…}]` — everything closed
+        // but the document — is padded there into `{"roles":[{…}}` and fails; this rung reads
+        // the same walk `repairStructuralCloserDrop` uses and appends the bracket that was
+        // actually opened. Last in the chain because it is the widest guess, and adopted only
+        // if it then parses. Same shape, same seam, same scan as `ask_supervisor_form`'s
+        // fourth rung (2026-09-11) — a JSON document inside a `String` argument loses its
+        // last bracket the same way whichever tool carries it.
+        if let closed = repairUnclosedTopLevel(s),
+           let parsed = JSONUtilities.parseJSONDictionary(closed) {
+            return parsed
+        }
+        if let closed = repairUnclosedTopLevel(repaired),
+           let parsed = JSONUtilities.parseJSONDictionary(closed) {
+            return parsed
+        }
         // No trailing-comma repair here on purpose. `JSONSerialization` accepts trailing
         // commas (pinned by `TeamConfigParserTests.testJSONSerialization_toleratesTrailingCommas`)
         // and `decodeFromConfigDict` re-serialises the dictionary before the strict
@@ -424,18 +440,14 @@ nonisolated enum TeamConfigParser {
     /// COUNT then balances but POSITION is wrong, which defeats the `{`-only
     /// `scanBalancedObject` (it reaches depth 0 on a structurally-invalid span).
     ///
-    /// Walks `s` string/escape-aware with a `{`/`[` stack and, at the FIRST
-    /// structural mismatch, inserts the one correct missing closer:
-    ///   - `]` while an object is open → the object lost its `}`
-    ///     (Type A: `…["x"]]` → `…["x"]}]`)
-    ///   - `}` while an array is open  → the array lost its `]`
-    ///     (subsumes `repairMissingArrayClose`: `…["x"}]` → `…["x"]}]`)
-    ///   - `:` while an array is open  → the array lost its `]` before a stray
-    ///     key (Type B: `…{…},"artifacts":…` → `…{…}],"artifacts":…`)
-    /// then trims the compensating trailing closer via `scanBalancedObject` and
-    /// returns the candidate ONLY if it now parses. Returns `nil` when the input
-    /// is already well-formed (no mismatch) or when a single insertion doesn't
-    /// recover it (more than one drop — deliberately out of scope).
+    /// The scan itself is `JSONStructuralCloserRepair`, shared with the
+    /// `ask_supervisor_form` seam since 2026-09-11: both carry a JSON document
+    /// inside a `String` tool argument (CLAUDE.md #46), and both met the same
+    /// defect. What stays here is the ADOPTION test — trim the compensating
+    /// trailing closer via `scanBalancedObject`, and return the candidate ONLY
+    /// if it now parses as a dictionary. Returns `nil` when the input is already
+    /// well-formed (no mismatch) or when a single insertion doesn't recover it
+    /// (more than one drop — deliberately out of scope).
     ///
     /// Observed on `qwen3.5-35b-a3b`, which drops exactly one closer at the roles
     /// boundary on ~45% of corpus cases (3 unhandled variants beyond the `"}]`
@@ -443,59 +455,26 @@ nonisolated enum TeamConfigParser {
     /// `repairMissingArrayClose` in the chain, so R4's pinned behavior is
     /// untouched — this is additive coverage for the two new variants.
     static func repairStructuralCloserDrop(_ s: String) -> String? {
-        let chars = Array(s)
-        var stack: [Character] = []
-        var inString = false
-        var isEscaped = false
-        var arrayCommaIndex: Int?     // most recent `,` while an array is top-of-stack
-        var lastStringOpenIndex: Int? // start of the most recently opened top-level string
-        var insertAt: Int?
-        var closer: Character = "}"
-        var i = 0
-        while i < chars.count {
-            let c = chars[i]
-            if isEscaped { isEscaped = false; i += 1; continue }
-            if inString {
-                if c == "\\" { isEscaped = true }
-                else if c == "\"" { inString = false }
-                i += 1
-                continue
-            }
-            switch c {
-            case "\"":
-                inString = true
-                lastStringOpenIndex = i
-            case "{", "[":
-                stack.append(c)
-                arrayCommaIndex = nil
-            case "}":
-                if stack.last == "{" { stack.removeLast(); arrayCommaIndex = nil }
-                else if stack.last == "[" { insertAt = i; closer = "]" }
-            // else: excess `}` (trailing junk) — not our drop, ignore.
-            case "]":
-                if stack.last == "[" { stack.removeLast(); arrayCommaIndex = nil }
-                else if stack.last == "{" { insertAt = i; closer = "}" }
-            // else: excess `]` — ignore.
-            case ":":
-                if stack.last == "[" {
-                    // A key:value inside an array is impossible — the array's `]`
-                    // was dropped before the preceding key. Close it before the
-                    // separating `,` (or, absent one, before the key itself).
-                    insertAt = arrayCommaIndex ?? lastStringOpenIndex
-                    closer = "]"
-                }
-            case ",":
-                if stack.last == "[" { arrayCommaIndex = i }
-            default:
-                break
-            }
-            if insertAt != nil { break }
-            i += 1
+        guard let candidate = JSONStructuralCloserRepair.insertingDroppedCloser(in: s) else {
+            return nil
         }
-        guard let at = insertAt, at <= chars.count else { return nil }
-        let candidate = String(chars[0..<at]) + String(closer) + String(chars[at...])
         let trimmed = scanBalancedObject(in: candidate) ?? candidate
         return JSONUtilities.parseJSONDictionary(trimmed) != nil ? trimmed : nil
+    }
+
+    /// Recovers a config whose own final bracket is the ONLY one missing: everything the
+    /// model opened inside the document was closed, so nothing is missing from the content.
+    ///
+    /// Bounded at one by construction — `JSONStructuralCloserRepair` refuses a tail with more
+    /// than the document open, because that is an emission the model abandoned rather than a
+    /// bracket it miscounted, and padding it would produce a team missing roles it never
+    /// wrote (CLAUDE.md #293). Returns `nil` when the input is already balanced, when it
+    /// breaks off mid-value, or when the candidate does not parse.
+    static func repairUnclosedTopLevel(_ s: String) -> String? {
+        guard let candidate = JSONStructuralCloserRepair.closingTheTopLevelContainer(in: s) else {
+            return nil
+        }
+        return JSONUtilities.parseJSONDictionary(candidate) != nil ? candidate : nil
     }
 
     /// Escapes `"` characters that appear inside string values but shouldn't

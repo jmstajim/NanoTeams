@@ -82,24 +82,54 @@ final class SearchExecutorBenchTests: XCTestCase {
                           queries: ["zzz_no_such_token_anywhere"],
                           scanConcurrency: SearchExecutor.defaultScanConcurrency)
 
-        // The INDEX walk, which feeds exploratory search and re-runs on every FS event. Its
-        // signature probe additionally runs on every `loadOrBuild`, cache hit included, so both
-        // are measured: `matchesFolder` is what a warm exploratory search actually pays.
+        // The INDEX, which feeds exploratory search and re-runs on every FS event. The four
+        // rows are the whole cost model of "only new and changed files":
+        //
+        //   full rebuild  - what a version bump or an exhausted churn budget costs, and what
+        //                   EVERY event used to cost;
+        //   reuse         - walk + per-file diff over an untouched tree; the floor an FS event
+        //                   now pays;
+        //   increment     - the same, plus reading exactly one changed file;
+        //   flush         - the write, paid once at closing time instead of per event.
+        //
+        // The debounce window is chosen against the increment row: it has to be long enough to
+        // coalesce a burst, and there is no reason for it to be longer than that.
         let indexService = SearchIndexService(
             workFolderRoot: root, internalDir: internalDir, fileManager: .default)
         _ = await indexService.loadOrBuild(force: true)
         var started = ContinuousClock.now
         let rebuilt = await indexService.loadOrBuild(force: true)
         report += String(
-            format: "%-26@ %8.1f ms | files=%d tokens=%d\n",
-            "index rebuild" as NSString, (ContinuousClock.now - started).milliseconds,
-            rebuilt.files.count, rebuilt.tokens.count)
+            format: "%-26@ %8.1f ms | files=%d words=%d\n",
+            "index full rebuild" as NSString, (ContinuousClock.now - started).milliseconds,
+            rebuilt.files.count, rebuilt.vocabulary.count)
 
         started = ContinuousClock.now
         _ = await indexService.loadOrBuild(force: false)
         report += String(
-            format: "%-26@ %8.1f ms | (signature probe only — every warm search pays this)\n",
-            "index cache hit" as NSString, (ContinuousClock.now - started).milliseconds)
+            format: "%-26@ %8.1f ms | (walk + per-file diff, nothing read)\n",
+            "index reuse" as NSString, (ContinuousClock.now - started).milliseconds)
+
+        // One real file touched, then restored — the shape of an ordinary edit.
+        let touched = root.appendingPathComponent("README.md")
+        if let original = try? Data(contentsOf: touched) {
+            defer { try? original.write(to: touched) }
+            try (String(data: original, encoding: .utf8) ?? "")
+                .appending("\n<!-- bench -->\n")
+                .write(to: touched, atomically: true, encoding: .utf8)
+            started = ContinuousClock.now
+            _ = await indexService.loadOrBuild(force: false)
+            report += String(
+                format: "%-26@ %8.1f ms | (walk + diff + ONE file read)\n",
+                "index increment (1 file)" as NSString,
+                (ContinuousClock.now - started).milliseconds)
+        }
+
+        started = ContinuousClock.now
+        await indexService.flush()
+        report += String(
+            format: "%-26@ %8.1f ms | (the write, paid at closing time)\n",
+            "index flush" as NSString, (ContinuousClock.now - started).milliseconds)
 
         try report.write(to: reportURL, atomically: true, encoding: .utf8)
     }

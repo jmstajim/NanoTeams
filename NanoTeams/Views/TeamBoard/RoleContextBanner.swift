@@ -9,6 +9,9 @@ struct RoleContextBanner: View {
     let run: Run?
     let roleDefinitions: [TeamRoleDefinition]
     var isInMeeting: Bool = false
+    /// Ready to run, but waiting for a concurrency slot — kept in step with the graph node
+    /// so the two surfaces never describe the same role differently.
+    var isQueued: Bool = false
     var isPaused: Bool = false
     let onDeselect: () -> Void
     var onRestart: ((String, String) -> Void)? = nil
@@ -162,8 +165,12 @@ struct RoleContextBanner: View {
 
                 RoleStatusPill(
                     roleDefinition: roleDef,
-                    statusName: status.displayName(isInMeeting: isInMeeting, isPaused: isPaused),
-                    statusColor: status.displayColor(isInMeeting: isInMeeting, isPaused: isPaused)
+                    statusName: isQueued
+                        ? "Queued"
+                        : status.displayName(isInMeeting: isInMeeting, isPaused: isPaused),
+                    statusColor: isQueued
+                        ? Colors.neutral
+                        : status.displayColor(isInMeeting: isInMeeting, isPaused: isPaused)
                 )
             }
 

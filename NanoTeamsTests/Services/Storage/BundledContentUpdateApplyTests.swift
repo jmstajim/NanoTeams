@@ -472,3 +472,547 @@ final class BundledContentUpdateApplyTests: XCTestCase {
         XCTAssertFalse(second.toolsTouched)
     }
 }
+
+// MARK: - Retiring a system role the bundle dropped
+
+/// Renaming a bundled system role has never been possible in this project, because
+/// reconciliation is additive by contract: "existing entries (including roles no longer
+/// present in the bundled template) are never removed". That invariant protects the USER's
+/// roles; applied to a role the BUNDLE retired, it produces a chimera rather than caution.
+///
+/// Ultra Team's three renames (2026-09-11) are the first case. Without step 4a a stored copy
+/// ends with THIRTEEN roles — the seven stored (four shared ids the additive pass matches
+/// and never doubles, plus three under retired ids) and the six the bundle appends: two
+/// planners, both holding `ask_supervisor` — ONE ASKER broken, the human interrupted twice —
+/// and two engineers, both holding `write_file`/`edit_file`/`delete_file` on one shared
+/// tree, which is ONE WRITER broken and the silent-corruption failure mode the pin exists
+/// for. The ONE WRITER pin stays GREEN through all of it: it asserts over
+/// `TeamTemplateFactory.ultraTeam()`, the fresh template, never over disk.
+///
+/// These tests are written against a stored team built from the PREVIOUS roster, so they
+/// fail on 13 roles rather than merely describing 10.
+final class RetiredSystemRoleReconcileTests: XCTestCase {
+
+    private var sut: NTMSRepository!
+    private var tempDir: URL!
+    private var paths: NTMSPaths!
+
+    override func setUp() async throws {
+        try await super.setUp()
+        MonotonicClock.shared.reset()
+        tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retired-role-\(UUID().uuidString)", isDirectory: true)
+            .resolvingSymlinksInPath()
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        paths = NTMSPaths(workFolderRoot: tempDir)
+        sut = NTMSRepository()
+    }
+
+    override func tearDown() async throws {
+        if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
+        sut = nil
+        tempDir = nil
+        paths = nil
+        try await super.tearDown()
+    }
+
+    // MARK: - Fixture: an Ultra Team as it stood before the rename
+
+    /// The bundled team with the three renamed roles put back under their OLD system ids,
+    /// their old toolsets and the old artifact name — i.e. exactly what is on disk in a work
+    /// folder that ran the previous build.
+    private func storedPreRenameUltra() throws -> Team {
+        var team = try XCTUnwrap(Team.defaultTeams.first { $0.templateID == "ultra" })
+        // Drop the new roles that replaced them, so the stored team has no knowledge of them.
+        for systemID in ["changePlanner", "changeEngineer", "changeVerifier",
+                         "briefCritic", "diffReviewer"] {
+            if let role = team.roles.first(where: { $0.systemRoleID == systemID }) {
+                team.removeRole(role.id)
+            }
+        }
+        // `isSystemRole: true`, as a role seeded from the bundle is on disk — it is what
+        // makes the editor's `removeRole` record a tombstone for it, which the tombstone
+        // test below depends on.
+        func legacy(_ systemID: String, _ name: String, tools: [String],
+                    requires: [String], produces: [String]) -> TeamRoleDefinition {
+            TeamRoleDefinition(
+                id: "legacy_\(systemID)", name: name, prompt: "old prompt", toolIDs: tools,
+                usePlanningPhase: systemID == "featureEngineer",
+                dependencies: RoleDependencies(requiredArtifacts: requires,
+                                               producesArtifacts: produces),
+                isSystemRole: true, systemRoleID: systemID)
+        }
+        team.roles.append(legacy(
+            "featurePlanner", "Feature Planner",
+            tools: [ToolNames.readFile, ToolNames.askSupervisor, ToolNames.askSupervisorForm],
+            requires: [SystemTemplates.supervisorTaskArtifactName], produces: ["Feature Brief"]))
+        team.roles.append(legacy(
+            "featureEngineer", "Feature Engineer",
+            tools: [ToolNames.writeFile, ToolNames.editFile, ToolNames.deleteFile],
+            requires: ["Feature Brief"], produces: ["Implementation Notes"]))
+        team.roles.append(legacy(
+            "buildVerifier", "Build Verifier",
+            tools: [ToolNames.runXcodebuild, ToolNames.runXcodetests],
+            requires: ["Feature Brief", "Implementation Notes"], produces: ["Verification Report"]))
+        // The artifacts the new roles produce did not exist before the rename either.
+        let newArtifacts: Set<String> = ["Change Brief", "Brief Critique", "Diff Review"]
+        team.artifacts.removeAll { newArtifacts.contains($0.name) }
+        team.artifacts.append(TeamArtifact(
+            id: "feature_brief", name: "Feature Brief", icon: "list.clipboard",
+            mimeType: "text/markdown", description: "legacy", isSystemArtifact: true))
+        team.settings.meetingCoordinatorRoleID = "legacy_buildVerifier"
+        // `removeRole` records a tombstone, and a tombstone means "the USER deleted this" —
+        // which would suppress the additive pass. A folder written by the previous build
+        // never knew these roles, so it carries no tombstone for them.
+        team.deletedSystemRoleIDs = []
+        team.deletedSystemArtifactIDs = []
+        return team
+    }
+
+    @discardableResult
+    private func reconcile(
+        _ teams: inout [Team], tasksIndex: TasksIndex = TasksIndex()
+    ) -> NTMSRepository.BundledReconcileResult {
+        var tools: [ToolDefinitionRecord] = []
+        return sut.applyBundledContentUpdates(
+            teams: &teams, tools: &tools, tasksIndex: tasksIndex,
+            activeTeamID: nil, paths: paths)
+    }
+
+    /// Writes one task under `paths` and returns the index the scan reads. The task is
+    /// pinned to the team by `preferredTeamID` and `run.teamID`, the order the engine and
+    /// the reconcile scan resolve by.
+    private func seedTask(
+        id: Int = 1,
+        team: Team,
+        steps: [StepExecution],
+        roleStatuses: [String: RoleExecutionStatus],
+        closedAt: Date? = nil
+    ) throws -> TasksIndex {
+        let task = NTMSTask(
+            id: id, title: "Old-shape run", supervisorTask: "fixture",
+            status: closedAt == nil ? .paused : .done,
+            runs: [Run(id: 0, steps: steps, roleStatuses: roleStatuses, teamID: team.id)],
+            closedAt: closedAt, preferredTeamID: team.id)
+        try FileManager.default.createDirectory(
+            at: paths.internalTaskDir(taskID: id), withIntermediateDirectories: true)
+        try AtomicJSONStore().write(task, to: paths.taskJSON(taskID: id))
+        return TasksIndex(
+            schemaVersion: 1,
+            tasks: [TaskSummary(id: id, title: task.title, status: task.status)],
+            nextTaskID: id + 1)
+    }
+
+    // MARK: - Tests
+
+    /// RED without step 4a: 13 roles, and both invariant assertions below fail.
+    func testStoredUltraTeam_endsWithTheNewRoster_notAChimera() throws {
+        var teams = [try storedPreRenameUltra()]
+        XCTAssertEqual(teams[0].nonSupervisorRoles.count, 7,
+                       "premise: the fixture is the OLD roster — four unrenamed roles plus the "
+                           + "three under their retired ids")
+        reconcile(&teams)
+
+        let ultra = teams[0]
+        XCTAssertEqual(ultra.nonSupervisorRoles.count, 9, "the new roster, not both rosters")
+        let systemIDs = Set(ultra.nonSupervisorRoles.compactMap(\.systemRoleID))
+        for retired in SystemTemplates.retiredSystemRoleIDs {
+            XCTAssertFalse(systemIDs.contains(retired), "\(retired) survived the rename")
+        }
+    }
+
+    // MARK: - Fixture: an Ultra Team as it stood at 1.9.20, with the Feasibility Critic
+
+    /// The bundled team with the retired role put BACK, holding the toolset and the edges it
+    /// carried at 1.9.20 — i.e. what a work folder opened on the previous build has on disk.
+    private func storedUltraWithFeasibilityCritic() throws -> Team {
+        var team = try XCTUnwrap(Team.defaultTeams.first { $0.templateID == "ultra" })
+        team.artifacts.append(TeamArtifact(
+            id: "feasibility_report", name: "Feasibility Report",
+            icon: "wrench.and.screwdriver", mimeType: "text/markdown",
+            description: "legacy", isSystemArtifact: true))
+        team.roles.append(TeamRoleDefinition(
+            id: "legacy_feasibilityCritic", name: "Feasibility Critic",
+            prompt: "old prompt",
+            toolIDs: [ToolNames.readFile, ToolNames.runXcodebuild,
+                      ToolNames.writeFile, ToolNames.deleteFile, ToolNames.requestChanges],
+            usePlanningPhase: false,
+            dependencies: RoleDependencies(
+                requiredArtifacts: ["Approach A", "Approach B"],
+                producesArtifacts: ["Feasibility Report"]),
+            isSystemRole: true, systemRoleID: "feasibilityCritic"))
+        // The three roles that consumed its report still name it, as they did on disk.
+        for systemID in ["specCritic", "regressionCritic", "changeEngineer"] {
+            guard let i = team.roles.firstIndex(where: { $0.systemRoleID == systemID }) else {
+                throw XCTSkip("roster changed")
+            }
+            team.roles[i].dependencies.requiredArtifacts.append("Feasibility Report")
+        }
+        // A folder written by the previous build carries no tombstone for a role it was given.
+        team.deletedSystemRoleIDs = []
+        team.deletedSystemArtifactIDs = []
+        return team
+    }
+
+    /// **A system artifact's DESCRIPTION is shipped content, and until 2026-09-12 it reached no
+    /// existing work folder at any version.** Step 4 skipped every artifact it already had, so
+    /// the two halves of one deliverable's contract drifted apart: step 1 rewrote the role's
+    /// prompt from the bundle, the description beside it on the wire
+    /// (`PromptBuilder+TeamContext`) stayed whatever the folder was created with. The failure is
+    /// silent in the worst way — the prompt half visibly updates, so the folder looks current.
+    ///
+    /// RED: restore the `if storedArtifactIDs.contains(bundledArt.id) { continue }` skip → the
+    /// stale description survives the reconcile.
+    func testStoredSystemArtifact_getsItsDescriptionRefreshedFromTheBundle() throws {
+        var team = try XCTUnwrap(Team.defaultTeams.first { $0.templateID == "ultra" })
+        let i = try XCTUnwrap(team.artifacts.firstIndex { $0.name == "Verification Report" })
+        let bundledDescription = team.artifacts[i].description
+        team.artifacts[i].description = "stale text from an older build"
+        team.artifacts[i].icon = "questionmark"
+        var teams = [team]
+
+        reconcile(&teams)
+
+        let after = try XCTUnwrap(teams[0].artifacts.first { $0.name == "Verification Report" })
+        XCTAssertEqual(after.description, bundledDescription,
+                       "the description rides the wire beside the prompt; both halves must move")
+        XCTAssertEqual(after.icon, "checkmark.seal")
+    }
+
+    /// The ownership half of the same loop: it is `isSystemArtifact`-gated, so a user's own
+    /// artifact is not rewritten by a version bump — the rule step 1 already follows for roles.
+    func testUserArtifact_isNotRewrittenByTheRefresh() throws {
+        var team = try XCTUnwrap(Team.defaultTeams.first { $0.templateID == "ultra" })
+        team.artifacts.append(TeamArtifact(
+            id: "my_notes", name: "My Notes", icon: "pencil",
+            mimeType: "text/markdown", description: "mine", isSystemArtifact: false))
+        var teams = [team]
+
+        reconcile(&teams)
+
+        let mine = try XCTUnwrap(teams[0].artifacts.first { $0.id == "my_notes" })
+        XCTAssertEqual(mine.description, "mine")
+        XCTAssertEqual(mine.icon, "pencil")
+    }
+
+    /// A tombstoned system artifact stays deleted through the refresh, not just through the add.
+    func testTombstonedSystemArtifact_isNotResurrectedByTheRefresh() throws {
+        var team = try XCTUnwrap(Team.defaultTeams.first { $0.templateID == "ultra" })
+        let id = try XCTUnwrap(team.artifacts.first { $0.name == "Diff Review" }?.id)
+        team.artifacts.removeAll { $0.id == id }
+        team.deletedSystemArtifactIDs = [id]
+        var teams = [team]
+
+        reconcile(&teams)
+
+        XCTAssertFalse(teams[0].artifacts.contains { $0.id == id },
+                       "the tombstone is the user's mark and outranks the bundle")
+    }
+
+    /// **The 1.9.21 retirement, asserted where it actually fails.** Reconciliation is additive
+    /// by design, so removing the Feasibility Critic from the bundle does NOTHING to a stored
+    /// folder on its own: the role stays, holding `write_file` + `delete_file` on the tree the
+    /// engineer writes — a second writer, which is the silent-corruption failure ONE WRITER
+    /// exists to prevent — while every pin over the fresh template stays green. Step 4a is what
+    /// removes it, and its input is `retiredSystemRoleIDs`.
+    ///
+    /// RED: drop `"feasibilityCritic"` from that set → 10 roles, two writers, and the artifact
+    /// still required by three of them.
+    func testStoredUltraTeam_dropsTheRetiredFeasibilityCritic() throws {
+        var teams = [try storedUltraWithFeasibilityCritic()]
+        XCTAssertEqual(teams[0].nonSupervisorRoles.count, 10, "premise: the 1.9.20 roster")
+        reconcile(&teams)
+
+        let ultra = teams[0]
+        XCTAssertEqual(ultra.nonSupervisorRoles.count, 9)
+        XCTAssertFalse(ultra.nonSupervisorRoles.contains { $0.systemRoleID == "feasibilityCritic" })
+
+        let writers = ultra.nonSupervisorRoles.filter { $0.toolIDs.contains(ToolNames.writeFile) }
+        XCTAssertEqual(writers.compactMap(\.systemRoleID), ["changeEngineer"],
+                       "a surviving probe writer is a second writer on one tree")
+    }
+
+    /// The graph-consistency half. An artifact left in three `requiredArtifacts` after its only
+    /// producer is gone blocks those roles forever, and the run dies with "Execution stalled:
+    /// roles […] blocked. Check artifact dependencies in Team Editor" — the app blaming the user
+    /// for our omission.
+    ///
+    /// It is a GUARD, not a discriminator, and the mutation run says so: with
+    /// `"feasibilityCritic"` removed from `retiredSystemRoleIDs` this test still passes, because
+    /// step 4 rewrites a system role's dependencies from the bundle and the producer survives to
+    /// keep the artifact defined. What it catches is the other way round — an edge or an artifact
+    /// removed from the bundle without its partner.
+    func testStoredUltraTeam_leavesNoRoleWaitingOnTheRetiredArtifact() throws {
+        var teams = [try storedUltraWithFeasibilityCritic()]
+        reconcile(&teams)
+
+        let defined = Set(teams[0].artifacts.map(\.name))
+        for role in teams[0].nonSupervisorRoles {
+            XCTAssertFalse(role.dependencies.requiredArtifacts.contains("Feasibility Report"),
+                           "\(role.name) waits on an artifact nobody produces")
+            for name in role.dependencies.requiredArtifacts {
+                XCTAssertTrue(defined.contains(name),
+                              "\(role.name) requires '\(name)', which the team does not define")
+            }
+        }
+    }
+
+    /// The chair is read by `Team.meetingCoordinatorID`, and step 4a runs before the additive
+    /// pass: a retirement that removed the seated chair would heal to "the first role holding
+    /// `request_team_meeting`, else the first non-Supervisor role" and silently reseat the
+    /// pipeline. The retired role was not the chair — this asserts that it stayed that way. Like
+    /// the test above it is a guard: it does not go red on the retirement alone.
+    func testStoredUltraTeam_keepsThePlannerInTheChair() throws {
+        var teams = [try storedUltraWithFeasibilityCritic()]
+        reconcile(&teams)
+
+        let chairID = try XCTUnwrap(teams[0].meetingCoordinatorID)
+        let chair = try XCTUnwrap(teams[0].roles.first { $0.id == chairID })
+        XCTAssertEqual(chair.systemRoleID, "changePlanner")
+        XCTAssertFalse(chair.toolIDs.contains(ToolNames.requestChanges))
+    }
+
+    /// The two invariants the chimera breaks, asserted over the STORED team rather than over
+    /// the fresh template — which is precisely the gap the existing pins leave.
+    func testStoredUltraTeam_keepsOneWriterAndOneAsker() throws {
+        var teams = [try storedPreRenameUltra()]
+        reconcile(&teams)
+
+        let writers = teams[0].nonSupervisorRoles.filter {
+            $0.toolIDs.contains(ToolNames.editFile)
+        }
+        XCTAssertEqual(writers.count, 1, "two engineers on one tree: \(writers.map(\.name))")
+
+        let askers = teams[0].nonSupervisorRoles.filter {
+            !Set($0.toolIDs).isDisjoint(with: ToolNames.supervisorAskTools)
+        }
+        XCTAssertEqual(askers.count, 1, "the human would be interrupted twice: \(askers.map(\.name))")
+    }
+
+    /// The retired roles' artifact loses its only producer and is taken by the existing
+    /// orphan prune — no separate machinery, and no ghost in the artifact picker.
+    func testTheRetiredRolesArtifactIsPruned() throws {
+        var teams = [try storedPreRenameUltra()]
+        reconcile(&teams)
+        XCTAssertFalse(teams[0].artifacts.contains { $0.name == "Feature Brief" },
+                       "an artifact nobody produces is a selectable ghost in the team editor")
+        XCTAssertTrue(teams[0].artifacts.contains { $0.name == "Change Brief" })
+    }
+
+    /// `Team.removeRole` heals the coordinator itself, and its rule is "first non-Supervisor
+    /// role in STORED order" — while reconciliation appends new roles at the END. On a stored
+    /// Ultra Team that lands the chair on the Solution Architect, a role that IS a repair
+    /// target, which is the seat `coordinatorIndex: 1` exists to keep clear. The retirement
+    /// step carries the BUNDLE's own choice across instead, matched by `systemRoleID`.
+    ///
+    /// RED: delete the step-4b carry-over → the chair heals to `solutionArchitect` and the
+    /// `systemRoleID == "changePlanner"` assertion fails. (Asserting merely that the chair
+    /// CHANGED would pass under that mutation, which is why this asserts who it became.)
+    func testTheChairIsCarriedAcross_notLeftToTheHealRule() throws {
+        var teams = [try storedPreRenameUltra()]
+        reconcile(&teams)
+
+        let chairID = try XCTUnwrap(teams[0].settings.meetingCoordinatorRoleID)
+        let chair = try XCTUnwrap(teams[0].roles.first { $0.id == chairID })
+        XCTAssertEqual(chair.systemRoleID, "changePlanner",
+                       "the chair must be the planner — not whoever the default rule lands on")
+    }
+
+    // MARK: - Corner cases
+
+    /// Matching is by `systemRoleID`, so a role the user RENAMED in the editor is still the
+    /// same system role and is still retired.
+    func testARoleTheUserRenamed_isStillRetired() throws {
+        var team = try storedPreRenameUltra()
+        let index = try XCTUnwrap(team.roles.firstIndex { $0.systemRoleID == "featureEngineer" })
+        team.roles[index].name = "My Implementer"
+        var teams = [team]
+        reconcile(&teams)
+        XCTAssertFalse(teams[0].roles.contains { $0.name == "My Implementer" })
+    }
+
+    /// A retired role the user had ALREADY deleted leaves nothing to remove — and the
+    /// user's tombstone is the ONLY one on the team afterwards: retirement records none.
+    /// (`touched` is true regardless — the additive pass appends the six new roles — so the
+    /// assertion that means something is on the tombstones and the roster delta.)
+    func testATombstonedRetiredRole_leavesNothingToDo() throws {
+        var team = try storedPreRenameUltra()
+        for role in team.roles where role.systemRoleID == "buildVerifier" {
+            team.removeRole(role.id)   // the USER's door — records the tombstone
+        }
+        team.settings.meetingCoordinatorRoleID = "legacy_featurePlanner"
+        XCTAssertEqual(team.deletedSystemRoleIDs, ["buildVerifier"], "premise: the user's tombstone")
+        XCTAssertEqual(team.nonSupervisorRoles.count, 6, "premise: four shared + two retired ids")
+        var teams = [team]
+        reconcile(&teams)
+        XCTAssertFalse(teams[0].roles.contains { $0.systemRoleID == "buildVerifier" })
+        XCTAssertEqual(teams[0].deletedSystemRoleIDs, ["buildVerifier"],
+                       "the two retirements this pass DID make left no tombstone beside the user's")
+        XCTAssertEqual(teams[0].nonSupervisorRoles.count, 9, "four shared + five appended")
+    }
+
+    /// Retirement is the bundle's decision and must not be recorded under user-deletion
+    /// semantics: `deletedSystemRoleIDs` documents "the user removed this via the editor",
+    /// and a later bundle that revives one of these ids would be refused on this folder
+    /// alone — with the editor's Restore, which erases every real tombstone too, as the
+    /// only way out.
+    ///
+    /// RED: retire through `Team.removeRole` → three tombstones the user never made.
+    func testRetirementLeavesNoUserTombstone() throws {
+        var teams = [try storedPreRenameUltra()]
+        reconcile(&teams)
+        XCTAssertEqual(teams[0].deletedSystemRoleIDs, [])
+        XCTAssertEqual(teams[0].deletedSystemArtifactIDs, [])
+    }
+
+    /// Step 4b carries the bundle's chair across only when the STORED chair was retired. A
+    /// chair the user picked among the surviving roles is the user's and stays.
+    func testAUserPickedChairThatIsNotRetired_survivesStep4b() throws {
+        var team = try storedPreRenameUltra()
+        let architect = try XCTUnwrap(team.roles.first { $0.systemRoleID == "solutionArchitect" })
+        team.settings.meetingCoordinatorRoleID = architect.id
+        var teams = [team]
+        reconcile(&teams)
+        XCTAssertEqual(teams[0].settings.meetingCoordinatorRoleID, architect.id,
+                       "a user's choice among live roles is never overwritten by the bundle's")
+    }
+
+    /// The retired roles' artifact survives the orphan prune while a USER role still reads
+    /// it — the prune spares anything a role references, and a user's role is a reference.
+    func testAUserRoleThatReadsTheRetiredArtifact_keepsIt() throws {
+        var team = try storedPreRenameUltra()
+        team.roles.append(TeamRoleDefinition(
+            id: "user_auditor", name: "Brief Auditor", prompt: "mine", toolIDs: [ToolNames.readFile],
+            usePlanningPhase: false,
+            dependencies: RoleDependencies(requiredArtifacts: ["Feature Brief"],
+                                           producesArtifacts: ["Audit"])))
+        var teams = [team]
+        reconcile(&teams)
+        XCTAssertTrue(teams[0].artifacts.contains { $0.name == "Feature Brief" },
+                      "an artifact a user's role requires is not an orphan")
+        XCTAssertTrue(teams[0].roles.contains { $0.id == "user_auditor" })
+    }
+
+    // MARK: - An unclosed task still holding a retired role defers the retirement
+
+    /// Retiring a role from under an UNCLOSED task orphans that task's steps. A `.paused`
+    /// step of a role no longer on the roster pins the derived status at Paused with
+    /// nothing to resume — `parkedRoleIDs` restarts `.working` roles only, and status
+    /// recovery has already demoted the parked one to `.idle` — so the task reads Paused
+    /// until closed and its review card never appears. The pass defers the team instead,
+    /// exactly as it defers a busy one, and the banner names the task to close.
+    ///
+    /// RED: drop `retiredRoleIDsInUse` from the scan → 10 roles and nothing deferred.
+    func testAnUnclosedTaskHoldingARetiredRole_defersTheRetirement() throws {
+        let team = try storedPreRenameUltra()
+        let index = try seedTask(
+            team: team,
+            steps: [StepExecution(id: "legacy_featureEngineer", role: .changeEngineer,
+                                  title: "Feature Engineer", status: .paused)],
+            roleStatuses: ["legacy_featureEngineer": .idle])
+        var teams = [team]
+        let result = reconcile(&teams, tasksIndex: index)
+
+        XCTAssertEqual(teams[0].nonSupervisorRoles.count, 7, "the old roster stays whole")
+        XCTAssertEqual(result.deferredTeamIDs, [team.id])
+        let deferred = try XCTUnwrap(result.report.deferred.first)
+        XCTAssertEqual(deferred.reason, .retiredRoleInUnclosedTask)
+        XCTAssertEqual(deferred.roleNames, ["Feature Engineer"])
+        XCTAssertEqual(deferred.taskID, 1)
+        let banner = try XCTUnwrap(result.report.bannerMessage)
+        XCTAssertTrue(banner.contains("retires"), banner)
+        XCTAssertTrue(banner.contains("Close that task"), banner)
+    }
+
+    /// The other half of the same defect, and the worse one: a `.done` step of the retired
+    /// engineer keeps its ARTIFACTS in the run's produced pool (`computeProducedArtifactNames`
+    /// reads every `.done` step regardless of roster), so after a retirement the new Diff
+    /// Reviewer would be ready in wave 1 on "Implementation Notes" the new engineer never
+    /// wrote — and `hasBlockingUpstream` could not see it, because the roster's producer of
+    /// that artifact is a role with no status. A done step is a reference too.
+    func testAnUnclosedTaskWithTheRetiredEngineersDoneStep_defersToo() throws {
+        let team = try storedPreRenameUltra()
+        let index = try seedTask(
+            team: team,
+            steps: [StepExecution(
+                id: "legacy_featureEngineer", role: .changeEngineer, title: "Feature Engineer",
+                status: .done, completedAt: MonotonicClock.shared.now(),
+                artifacts: [Artifact(name: "Implementation Notes", mimeType: "text/markdown",
+                                     relativePath: "notes.md")])],
+            roleStatuses: ["legacy_featureEngineer": .done])
+        var teams = [team]
+        let result = reconcile(&teams, tasksIndex: index)
+        XCTAssertEqual(teams[0].nonSupervisorRoles.count, 7)
+        XCTAssertEqual(result.report.deferred.first?.reason, .retiredRoleInUnclosedTask)
+    }
+
+    /// A role status alone — no step yet — is a reference as well.
+    func testARoleStatusAloneForARetiredRole_defersToo() throws {
+        let team = try storedPreRenameUltra()
+        let index = try seedTask(
+            team: team, steps: [], roleStatuses: ["legacy_buildVerifier": .ready])
+        var teams = [team]
+        let result = reconcile(&teams, tasksIndex: index)
+        XCTAssertEqual(result.report.deferred.first?.roleNames, ["Build Verifier"])
+    }
+
+    /// A CLOSED task cannot run again: its steps stay as history under raw slugs and the
+    /// retirement proceeds. This is the way out the banner names.
+    func testAClosedTaskHoldingARetiredRole_doesNotBlockTheRetirement() throws {
+        let team = try storedPreRenameUltra()
+        let index = try seedTask(
+            team: team,
+            steps: [StepExecution(id: "legacy_featureEngineer", role: .changeEngineer,
+                                  title: "Feature Engineer", status: .paused)],
+            roleStatuses: ["legacy_featureEngineer": .idle],
+            closedAt: MonotonicClock.shared.now())
+        var teams = [team]
+        let result = reconcile(&teams, tasksIndex: index)
+        XCTAssertEqual(teams[0].nonSupervisorRoles.count, 9)
+        XCTAssertTrue(result.report.deferred.isEmpty)
+    }
+
+    /// A retired role that is LIVE (`.working` with a `.running` step) is deferred by the
+    /// busy rule as well; the retirement reason wins the copy, because a busy task ends on
+    /// its own and this one does not.
+    func testAWorkingRetiredRole_isDeferred_andTheRetirementReasonNamesIt() throws {
+        let team = try storedPreRenameUltra()
+        let index = try seedTask(
+            team: team,
+            steps: [StepExecution(id: "legacy_featureEngineer", role: .changeEngineer,
+                                  title: "Feature Engineer", status: .running)],
+            roleStatuses: ["legacy_featureEngineer": .working])
+        var teams = [team]
+        let result = reconcile(&teams, tasksIndex: index)
+        XCTAssertEqual(teams[0].nonSupervisorRoles.count, 7)
+        XCTAssertEqual(result.report.deferred.count, 1)
+        XCTAssertEqual(result.report.deferred.first?.reason, .retiredRoleInUnclosedTask)
+        XCTAssertEqual(result.report.deferred.first?.otherBlockingTaskCount, 0,
+                       "one task under two reasons is one task, not two")
+    }
+
+    /// A task that references only SURVIVING roles does not hold the retirement up — the
+    /// second reason is about retired ids, not about tasks in general (the paused-task
+    /// rule of the busy scan stays as narrow as it is pinned).
+    func testAnUnclosedTaskHoldingOnlySurvivingRoles_doesNotDefer() throws {
+        let team = try storedPreRenameUltra()
+        let architect = try XCTUnwrap(team.roles.first { $0.systemRoleID == "solutionArchitect" })
+        let index = try seedTask(
+            team: team,
+            steps: [StepExecution(id: architect.id, role: .solutionArchitect,
+                                  title: "Architect", status: .paused)],
+            roleStatuses: [architect.id: .idle])
+        var teams = [team]
+        let result = reconcile(&teams, tasksIndex: index)
+        XCTAssertEqual(teams[0].nonSupervisorRoles.count, 9)
+        XCTAssertTrue(result.report.deferred.isEmpty)
+    }
+
+    /// A folder with no Ultra Team at all: the roster finds nothing and the pass is clean.
+    func testAFolderWithoutUltraTeam_isUntouchedByTheRoster() throws {
+        var teams = [try XCTUnwrap(Team.defaultTeams.first { $0.templateID == "faang" })]
+        let before = teams[0].roles.map(\.id)
+        reconcile(&teams)
+        XCTAssertEqual(teams[0].roles.map(\.id), before)
+    }
+}

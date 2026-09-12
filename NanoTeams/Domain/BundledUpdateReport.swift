@@ -24,6 +24,18 @@ import Foundation
 /// would read as eight independent problems.
 nonisolated struct BundledUpdateReport: Hashable {
 
+    /// Why a team's update was skipped. Two reasons with two resolutions: a busy role
+    /// resolves itself when its tool loop ends; a retired role held by an unclosed task
+    /// needs the user to CLOSE that task, and the copy must say so.
+    nonisolated enum DeferralReason: Hashable {
+        /// A role of the team holds a live tool loop (`busyRoleIDs`).
+        case busy
+        /// The bundle retires a system role (`SystemTemplates.retiredSystemRoleIDs`) that an
+        /// unclosed task's last run still references — deleting it from the roster would
+        /// orphan that task's steps (`retiredRoleIDsInUse`).
+        case retiredRoleInUnclosedTask
+    }
+
     /// One team whose bundled update was skipped this open.
     nonisolated struct DeferredTeam: Hashable, Identifiable {
         let teamID: NTMSID
@@ -37,6 +49,7 @@ nonisolated struct BundledUpdateReport: Hashable {
         /// Blocking tasks beyond `taskID`. Surfaced rather than dropped so the
         /// message can't imply resolving one task is enough.
         let otherBlockingTaskCount: Int
+        let reason: DeferralReason
 
         var id: NTMSID { teamID }
 
@@ -46,7 +59,8 @@ nonisolated struct BundledUpdateReport: Hashable {
             roleNames: [String],
             taskID: Int,
             taskTitle: String,
-            otherBlockingTaskCount: Int = 0
+            otherBlockingTaskCount: Int = 0,
+            reason: DeferralReason = .busy
         ) {
             self.teamID = teamID
             self.teamName = teamName
@@ -54,6 +68,7 @@ nonisolated struct BundledUpdateReport: Hashable {
             self.taskID = taskID
             self.taskTitle = taskTitle
             self.otherBlockingTaskCount = otherBlockingTaskCount
+            self.reason = reason
         }
     }
 
@@ -117,7 +132,16 @@ nonisolated struct BundledUpdateReport: Hashable {
             let where_ = blockingTaskCount == 1
                 ? "task #\(team.taskID)"
                 : "\(blockingTaskCount) tasks"
-            return "\(team.teamName) kept its old prompts — \(who) is mid-run in \(where_). \(tail)"
+            switch team.reason {
+            case .busy:
+                return "\(team.teamName) kept its old prompts — \(who) is mid-run in \(where_). \(tail)"
+            case .retiredRoleInUnclosedTask:
+                // The user must ACT: a busy task ends on its own, an unclosed task holding
+                // a retired role does not.
+                let holds = blockingTaskCount == 1 ? "still holds" : "still hold"
+                return "\(team.teamName) kept its old roster — \(where_) \(holds) \(who), a role this "
+                    + "version retires. Close \(blockingTaskCount == 1 ? "that task" : "those tasks"), then reopen this folder."
+            }
         }
 
         let names = deferred.map(\.teamName)

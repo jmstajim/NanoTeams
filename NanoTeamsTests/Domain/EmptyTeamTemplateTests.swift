@@ -94,12 +94,14 @@ final class EmptyTeamTemplateTests: XCTestCase {
         XCTAssertEqual(teammate.toolIDs, [
             TN.readFile, TN.readLines, TN.listFiles, TN.search,
             TN.updateScratchpad,
-            TN.askSupervisor,
+            TN.askSupervisor, TN.askSupervisorForm,
         ])
-        // `ask_supervisor` auto-injects only for NON-producing roles
-        // (`shouldAutoInjectAskSupervisor`), so a producing role that omits it is mute.
+        // The supervisor-ask tools auto-inject only for NON-producing roles
+        // (`shouldAutoInjectAskSupervisor`), so a producing role that omits them is mute.
+        // Both are stored for the same reason, and in the templates' fixed order.
         XCTAssertFalse(teammate.shouldAutoInjectAskSupervisor)
-        XCTAssertTrue(teammate.toolIDs.contains(TN.askSupervisor))
+        XCTAssertEqual(Set(teammate.toolIDs).intersection(TN.supervisorAskTools),
+                       TN.supervisorAskTools)
         // `create_artifact` is auto-injected for any role with producesArtifacts —
         // storing it would double-register the tool.
         XCTAssertFalse(teammate.toolIDs.contains(TN.createArtifact))

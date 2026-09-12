@@ -30,6 +30,21 @@ nonisolated extension SystemTemplates {
     - Image (.png/.jpg/.gif/.webp/.bmp) → `analyze_image` if it's in your tool list; otherwise note the path and continue.
     """
 
+    /// The one rule the Ultra pipeline is built around, stated exactly once per prompt
+    /// (playbook R4.3.2 — state each enforced rule once, in plain text; A6.19 forbids the
+    /// repetition and the shouting that usually follows it).
+    ///
+    /// A prompt sentence has no enforcement power of its own (R3.1.5), which is why the
+    /// matching force lives in the refusal envelope: a tool that did not run now answers
+    /// "it returned nothing — name the fact you wanted as unverified" instead of the
+    /// "proceed without this step" that produced `=== BUILD SUCCESS ===` in MeditationApp
+    /// task 48 run 1, eleven minutes before the first line of code existed.
+    ///
+    /// Used by: every Ultra Team role.
+    static let unverifiedFragment = """
+    Write a fact only when a tool result in this step returned it. An API you have not read in this repository is unverified however familiar it looks. Record each one under the heading `### Unverified` with the command or file that would settle it.
+    """
+
     /// Generic attachment processing rule for non-coding assistants
     /// (documents/notes-flavoured, no source-code references).
     /// Used by: assistant.
@@ -58,12 +73,6 @@ nonisolated extension SystemTemplates {
     - Quote file paths in the reply (e.g. `notes/plan.md`) so the user can verify.
     - For questions clearly NOT about this folder (e.g. "capital of France"), say "(general — not from this folder)".
     - Bare greetings and very short replies don't need exploration.
-    """
-
-    /// Numbered-choice convention so the Supervisor can answer with one digit.
-    /// Used by: assistant, codingAssistant, codingAgent.
-    static let numberedChoiceFragment = """
-    When offering a choice, use a numbered list (`1.`, `2.`, …) so the Supervisor can answer with just the number. Mark the preferred option `(recommended)`.
     """
 
     /// Concise / paths / line-numbers / no-empty-question response style for

@@ -103,7 +103,7 @@ final class ExploratorySearchTrainerTests: XCTestCase {
         var totalHits = 0
         var recallBuckets: [Double] = []
         for c in result.cases {
-            totalHits += c.posting.hitFiles.count
+            totalHits += c.grep.hitFiles.count
             if let r = c.expansion.recall { recallBuckets.append(r) }
             switch c.expansion.outcome {
             case .success: success += 1

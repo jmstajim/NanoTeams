@@ -3,13 +3,21 @@ import Foundation
 /// Extension for handling `exploratory: true` signals emitted by `SearchTool`.
 /// Pipeline:
 /// 1. Read feature gates from the delegate.
-/// 2. Await the token search index (or fall back to plain search on failure).
+/// 2. Await the search index (or fall back to plain search on failure).
 /// 3. Call `delegate.expandSearchQuery(...)` to get semantic expansion terms
 ///    via the local vector index (per-token vectors + one whole-phrase
 ///    `/v1/embeddings` call).
-/// 4. Intersect posting lists to narrow the grep scope.
-/// 5. Run `SearchExecutor` over [original] + expanded terms.
+/// 4. Match the index's file NAMES against the same term list.
+/// 5. Run `SearchExecutor` over [original] + expanded terms, across the whole tree.
 /// 6. Overwrite the interim "exploring" envelope with the final result.
+///
+/// Step 4 used to be a posting intersection that narrowed step 5's walk to the files the index
+/// said held those words. It was dropped with the postings themselves (2026-09-11): the grep
+/// was going to run over `[query] + expanded` either way, and narrowing it to an index
+/// allow-list made the index a GATE — a file it cannot read (outside the extension allow-list,
+/// over 1 MB, a `.pbxproj`) could never be returned even when the word is right there in it.
+/// Recall went up, not down. Measured cost of the unconstrained grep: 301 ms parallel over this
+/// work folder.
 extension LLMExecutionService {
 
     func appendExploratorySearchResult(
@@ -53,8 +61,7 @@ extension LLMExecutionService {
                 workFolderRoot: workFolderRoot,
                 resolver: resolver,
                 internalDir: internalDir,
-                payload: payload,
-                constrainToFiles: nil
+                payload: payload
             )
             await finalizeEnvelope(
                 envelope: ExploratorySearchEnvelope.make(
@@ -86,8 +93,7 @@ extension LLMExecutionService {
                 workFolderRoot: workFolderRoot,
                 resolver: resolver,
                 internalDir: internalDir,
-                payload: payload,
-                constrainToFiles: nil
+                payload: payload
             )
             let expansionReason = delegate.hasRealWorkFolder
                 ? "index_unavailable"
@@ -117,8 +123,8 @@ extension LLMExecutionService {
         // (zero network) + whole-phrase embedding (one /v1/embeddings call)
         // surface related vocab tokens. Unlike the old LLM-based expansion,
         // failures here are mostly `unavailableReason` (index missing /
-        // building / model not loaded), with the original token still
-        // producing useful results via plain posting intersection.
+        // building / model not loaded), with the original query still
+        // producing useful results via the plain grep.
         let queryTokens = TokenExtractor.extractTokens(from: payload.query)
         let expansion = await delegate.expandSearchQuery(
             query: payload.query,
@@ -132,86 +138,37 @@ extension LLMExecutionService {
         // `expansion_error` field in priority order.
         let expansionError: String? = expansion.errorReason ?? expansion.unavailableReason
 
-        // Single source of truth for "everything the search asked about"
-        // — literal query plus its tokens plus expansion terms. Both
-        // posting intersection and filename matching consume the same list
-        // so they can never disagree on what was searched. Original query
-        // first so `FilenameMatcher`'s ordered iteration attributes hits
-        // to the literal term when it matches.
+        // Single source of truth for "everything the search asked about" — literal query plus
+        // its tokens plus expansion terms. Filename matching consumes this list and the grep
+        // consumes `[query] + expanded`, so the two can never disagree on what was searched.
+        // Original query first so `FilenameMatcher`'s ordered iteration attributes hits to the
+        // literal term when it matches.
         let unionTerms = Self.unionSearchTerms(
             query: payload.query, tokens: queryTokens, expanded: expanded
         )
 
-        // Both index-wide passes, off the main actor — see `narrowAndMatchNames`.
-        let narrowed = await Self.narrowAndMatchNames(
+        // Off the main actor — see `matchNames`.
+        let indexFilenameMatches = await Self.matchNames(
             index: index, unionTerms: unionTerms, limit: payload.maxResults)
-        let hitFiles = narrowed.hitFiles
-        let indexFilenameMatches = narrowed.filenameMatches
-
-        // If the posting intersection returned nothing, short-circuit.
-        // We still run the executor against the original query scope so that
-        // unreadable-file accounting (`skipped_files` / `skipped_binary_count`)
-        // reaches the LLM — otherwise the LLM can't tell "no hits" from
-        // "those files were unreadable". Constraining to an empty set returns
-        // fast (executor early-exits), so the cost is just the walk.
-        if hitFiles.isEmpty {
-            let plain = await runPlainExecutor(
-                workFolderRoot: workFolderRoot,
-                resolver: resolver,
-                internalDir: internalDir,
-                payload: payload,
-                constrainToFiles: nil
-            )
-            await finalizeEnvelope(
-                envelope: ExploratorySearchEnvelope.make(
-                    payload: payload,
-                    expanded: expanded,
-                    output: SearchExecutorOutput(
-                        matches: [],  // posting intersection was empty — no matches
-                        skipped: plain.output.skipped,
-                        skippedBinaryCount: plain.output.skippedBinaryCount,
-                        truncated: false
-                    ),
-                    hitFilesCount: 0,
-                    filenameMatches: indexFilenameMatches,
-                    expansionError: expansionError,
-                    searchError: plain.searchError,
-                    exploratoryDisabled: false
-                ),
-                result: result,
-                toolCallID: toolCallID,
-                stepID: stepID,
-                taskID: taskID,
-                conversationMessages: &conversationMessages,
-                tracker: tracker
-            )
-            return
-        }
 
         let plain = await runPlainExecutor(
             workFolderRoot: workFolderRoot,
             resolver: resolver,
             internalDir: internalDir,
             payload: payload,
-            constrainToFiles: hitFiles,
             extraQueries: expanded
         )
 
-        // `hit_files` semantics intentionally vary by branch:
-        // - Success (here): posting-intersection count, i.e. "candidate
-        //   files the broad query touched" — useful for the LLM to judge
-        //   scope even when the grep budget truncates returned matches.
-        // - Disabled / fall-back / empty-postings: unique paths in the
-        //   returned matches, since no posting intersection ran.
-        // Keeping both under one field name because the caller that cares
-        // about distinguishing them can inspect `exploratory_disabled`
-        // and `expansion_error`.
+        // `hit_files` means ONE thing in every branch now: unique paths among the returned
+        // matches. It used to mean the posting-intersection count here and unique match paths
+        // everywhere else, so the number changed meaning depending on a flag elsewhere in the
+        // same envelope — and the model was told to read it as "how wide is this".
         await finalizeEnvelope(
             envelope: ExploratorySearchEnvelope.make(
                 payload: payload,
                 expanded: expanded,
                 output: plain.output,
-                hitFilesCount: hitFiles.count,
+                hitFilesCount: uniqueFiles(plain.output.matches),
                 filenameMatches: indexFilenameMatches,
                 expansionError: expansionError,
                 searchError: plain.searchError,
@@ -228,48 +185,43 @@ extension LLMExecutionService {
 
     // MARK: - Private Helpers
 
-    /// Single source of truth for the term list passed to BOTH posting
-    /// intersection and filename matching. Keeping this in one helper
-    /// guarantees the two consumers can never silently disagree on what
-    /// the search asked about — a real bug we hit before the helper
-    /// existed (different orderings, easy to drift).
+    /// The term list FILENAME MATCHING is run against — and only that.
+    ///
+    /// It fed the posting intersection too until 2026-09-11, which is what made "one helper, two
+    /// consumers" worth saying. The grep has never seen this list: it is handed
+    /// `[query] + expanded`, deliberately without the query's own tokens, so a multi-word query
+    /// matches file NAMES token-wise and file CONTENT phrase-wise. Widening the grep is a recall
+    /// decision the trainer measures, not a tidy-up (DEBTS D-44).
     static func unionSearchTerms(
         query: String, tokens: Set<String>, expanded: [String]
     ) -> [String] {
         // Original query first so `FilenameMatcher`'s ordered iteration
         // attributes basename hits to the literal term when possible.
-        // Tokens follow as fallback for multi-word queries that aren't
-        // a posting key on their own. Expansion last (lowest priority).
+        // Tokens follow as fallback for multi-word queries, which are not a
+        // single vocabulary entry. Expansion last (lowest priority).
         [query] + Array(tokens) + expanded
     }
 
-    /// The two index-wide computations the exploratory path performs before it greps anything:
-    /// the posting intersection that narrows the walk, and filename matching over the FULL
-    /// roster.
+    /// The one index-wide computation the exploratory path performs: matching the search terms
+    /// against the file NAMES in the index roster.
     ///
-    /// - Posting intersection is a union over the postings of every search term. The literal
-    ///   query is rarely a posting key on its own (multi-word queries never are), so without the
-    ///   query's TOKENS the union for "team meeting service" against a corpus holding `team`,
-    ///   `meeting` and `service` postings returns zero candidate files.
-    /// - Filename matching runs over the whole roster rather than just `hitFiles`, so a file
-    ///   whose NAME matches an expanded vocab term still surfaces even when its content
-    ///   intersected no posting list. The index builder already applied `WalkSkipRules` and the
-    ///   internal-dir exclusion, so these paths are sandbox-clean.
+    /// This is why the path still awaits the index at all — the grep produces its own
+    /// filename matches only for files it walks into, while this answers "is there a file
+    /// CALLED something like this" over the whole roster, which is what a model exploring an
+    /// unfamiliar tree actually asks. The walk already applied `WalkSkipRules` and the
+    /// internal-dir exclusion, so these paths are sandbox-clean.
     ///
     /// `@concurrent` rather than plain `nonisolated`: under `SWIFT_APPROACHABLE_CONCURRENCY` a
     /// `nonisolated async` function runs on the CALLER's executor (SE-0461), and every caller
-    /// here is `@MainActor`. Both passes are O(index) with no upper bound — the roster on this
-    /// work folder is several thousand paths — so leaving them with the caller freezes the UI
-    /// for the length of a search nobody asked the main thread to do.
+    /// here is `@MainActor`. The pass is O(roster) with no upper bound — several thousand paths
+    /// on this work folder — so leaving it with the caller freezes the UI for the length of a
+    /// search nobody asked the main thread to do.
     @concurrent
-    nonisolated static func narrowAndMatchNames(
+    nonisolated static func matchNames(
         index: SearchIndex, unionTerms: [String], limit: Int
-    ) async -> (hitFiles: [String], filenameMatches: [FilenameMatch]) {
-        (
-            hitFiles: index.files(containing: unionTerms),
-            filenameMatches: FilenameMatcher.match(
-                candidates: index.files.map(\.path), queries: unionTerms, limit: limit)
-        )
+    ) async -> [FilenameMatch] {
+        FilenameMatcher.match(
+            candidates: index.files.map(\.path), queries: unionTerms, limit: limit)
     }
 
     /// Outcome of a plain-executor pass. When `SearchExecutor.run` throws
@@ -287,7 +239,6 @@ extension LLMExecutionService {
         resolver: SandboxPathResolver,
         internalDir: URL,
         payload: ExploratorySearchPayload,
-        constrainToFiles: [String]?,
         extraQueries: [String] = []
     ) async -> PlainExecutorResult {
         let queries = [payload.query] + extraQueries
@@ -304,7 +255,6 @@ extension LLMExecutionService {
                 contextAfter: payload.contextAfter,
                 maxResults: payload.maxResults,
                 offset: payload.offset,
-                constrainToFiles: constrainToFiles,
                 internalDir: internalDir
             ))
             return PlainExecutorResult(output: output, searchError: nil)

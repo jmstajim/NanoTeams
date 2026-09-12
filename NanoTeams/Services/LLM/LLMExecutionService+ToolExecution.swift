@@ -74,6 +74,7 @@ extension LLMExecutionService {
         gateRefusals: [GateRefusal],
         allowedToolNames: Set<String>,
         phaseWithheldToolNames: Set<String> = [],
+        supersededToolNames: Set<String> = [],
         isPlanningPhase: Bool = false,
         runtime: ToolRuntime,
         tracker: ToolCallTracker,
@@ -94,7 +95,10 @@ extension LLMExecutionService {
             runID: task.runs[runIndex].id,
             roleID: roleID,
             expectedArtifacts: expectedArtifacts,
-            isPlanningPhase: isPlanningPhase
+            isPlanningPhase: isPlanningPhase,
+            // The same set the batch is authorized against below: the plain ask refuses a
+            // questionnaire only when the form is there to receive it.
+            questionnaireAvailable: allowedToolNames.contains(ToolNames.askSupervisorForm)
         )
 
         var results: [ToolExecutionResult] = []
@@ -150,7 +154,8 @@ extension LLMExecutionService {
                     selectedScheme: scheme,
                     xcodeSchemeKnown: snapshot != nil,
                     approval: approval,
-                    phaseWithheldToolNames: phaseWithheldToolNames
+                    phaseWithheldToolNames: phaseWithheldToolNames,
+                    supersededToolNames: supersededToolNames
                 )
                 let rejected = Self.makeUnavailableToolResult(
                     call: call, canonicalName: name, scope: "for this role", reason: reason
@@ -235,16 +240,30 @@ extension LLMExecutionService {
     // MARK: - Unavailability classification
 
     /// Why a tool call landed outside the role's allowed set this iteration.
-    /// `notInRoleConfig` is the original `tool_not_authorized` case (model
-    /// hallucinated a tool the role was never configured with). The other
-    /// cases distinguish work-folder preconditions that filter tools at
+    /// The other cases distinguish work-folder preconditions that filter tools at
     /// schema-build time, so the rejection envelope can name the actual
     /// blocker instead of falsely blaming role config.
+    ///
+    /// `unknownToolName` and `notInRoleConfig` were ONE case until 2026-09-11, and
+    /// conflating them is an R1.8.5 violation with a measured cost: they have different
+    /// repairs. A name that is not a tool at all has no repair in the world — the model
+    /// must drop it. A real tool the role was not issued has no repair in the CALL, but
+    /// it does have one in the model's own OUTPUT: name the fact you wanted from it as
+    /// unverified and carry on. MeditationApp task 48 run 1 is what the merged case cost:
+    /// the planner asked for `run_xcodebuild`, was told to "proceed without this step",
+    /// and wrote `=== BUILD SUCCESS ===` into the brief 0.4 s later.
     /// `nonisolated` + `CaseIterable` so `PromptFormatConventionsTests` can sweep every
     /// rejection message. Bare, the enum would inherit the app target's `@MainActor`
     /// default isolation and its synthesized `allCases` would be unreachable from a
     /// nonisolated `XCTestCase` (same trap as `AcceptanceService.AcceptRoute`).
     nonisolated enum ToolUnavailabilityReason: CaseIterable {
+        /// No tool of this name exists in the application — the model invented it (often
+        /// an artifact name, a file name, or a phrase lifted from its own prompt). Nothing
+        /// can make the call work, so the repair is to drop the name entirely.
+        case unknownToolName
+        /// The name IS a registered tool; this role was not issued it. The call cannot be
+        /// repaired, but the GAP it leaves can be: say in your own output what you wanted
+        /// to learn and that it is unverified.
         case notInRoleConfig
         case workFolderClosed       // default-storage mode, no real project folder
         case gitRepoMissing         // work folder has no `.git` directory
@@ -265,6 +284,148 @@ extension LLMExecutionService {
         /// tells the model to stop, which is factually wrong here, since after
         /// recording its plan the model SHOULD repeat the exact same call.
         case withheldUntilPlanRecorded
+        /// The role holds this runner and every precondition is met — but an approved
+        /// `request_changes` has put THIS role in `.revisionRequested` while its step plays
+        /// on, and the target is rewriting the very tree a build would read. Withheld per
+        /// ITERATION at the executor, like the planning phase, because the status flips
+        /// from inside the role's own tool loop (`holdDownstreamForRevision`) after the
+        /// schema was resolved at entry — and the wire must stay byte-identical for the
+        /// rest of the step (the catalog is rendered into the prompt, so narrowing the
+        /// `tools` array mid-step would re-prefill every remaining request). Own code:
+        /// `precondition_failed`'s direction blames the work folder and offers "proceed
+        /// without this step" — the permission this whole family exists to withdraw.
+        case workSuperseded
+
+        /// The executor's lowercase error code for this reason — the ONE spelling both
+        /// `makeUnavailableToolResult` (which writes it) and `ToolErrorNotePolicy.direction`
+        /// (which chooses the remedy by it) read, and what `RuntimePromptRegistry` iterates
+        /// so every envelope AND every direction rides the runtime fingerprint. Until the
+        /// evening of 2026-09-11 the codes were literals in two switches and in neither
+        /// registry loop: the wave's central model-facing rewrite shipped under an
+        /// unchanged `runtimePromptVersion` (DEBTS D-B11, closed).
+        ///
+        /// `notInRoleConfig` keeps the legacy `tool_not_authorized` (regression-pinned by
+        /// `RepoBrowserNamespaceRejectionTests` / `ToolErrorGuidanceTests`); the
+        /// precondition family shares `precondition_failed`; the three reasons whose
+        /// remedy differs from their family's carry their own.
+        var errorCode: String {
+            switch self {
+            case .unknownToolName: return "unknown_tool"
+            case .notInRoleConfig: return "tool_not_authorized"
+            case .workFolderClosed, .gitRepoMissing, .visionNotConfigured,
+                 .xcodeSchemeNotSelected, .computerUseDisabled, .bashDisabled:
+                return "precondition_failed"
+            case .approverUnavailable: return "approval_unavailable"
+            case .withheldUntilPlanRecorded: return "plan_required"
+            case .workSuperseded: return "work_superseded"
+            }
+        }
+
+        /// What this refusal tells the model to DO — declared by the reason, not inferred
+        /// from its wording.
+        ///
+        /// R1.8.1 asks every refusal to carry a repair. The HANDLER tree's repair is "change
+        /// this argument and resend", and `ErrorRepairCensusPinTests.repairVerb` was measured
+        /// against exactly that. This family has no argument to change, so running that
+        /// predicate here is 60 % noise: of five reds it raises, two are real. A contract the
+        /// reason STATES is the derivation that fits — the switch is compiler-exhaustive, so
+        /// a twelfth reason cannot join without saying what it asks the model to do, and the
+        /// pin then reads the promise rather than guessing at a verb (DEBTS D-B10).
+        var disposition: RefusalDisposition {
+            switch self {
+            case .unknownToolName: return .dropTheName
+            case .withheldUntilPlanRecorded: return .retryAfter(ToolNames.updateScratchpad)
+            default: return .terminalCarryForward
+            }
+        }
+
+        /// The thing that is actually in the way — read by the pin that forbids a DIRECTION
+        /// from naming a blocker its reason does not have. Six reasons share
+        /// `precondition_failed`, and its one appended direction claimed the work folder set
+        /// every one of them; for a session policy (`.computerUseDisabled`, `.bashDisabled`)
+        /// that is a false diagnosis, and a false diagnosis sends the model to perturb the
+        /// wrong thing (R1.8.5).
+        var blocker: Blocker {
+            switch self {
+            case .unknownToolName, .notInRoleConfig: return .theRoster
+            case .workFolderClosed, .gitRepoMissing, .visionNotConfigured,
+                 .xcodeSchemeNotSelected:
+                return .theWorkFolder
+            case .computerUseDisabled, .bashDisabled: return .sessionPolicy
+            case .approverUnavailable: return .noHumanInTheRun
+            case .withheldUntilPlanRecorded, .workSuperseded: return .thisStepSoFar
+            }
+        }
+    }
+
+    /// What a refusal asks the model to do next. Three contracts, and only one is a retry.
+    nonisolated enum RefusalDisposition: Equatable {
+        /// Nothing can make the call work and nothing takes its place: whatever it would have
+        /// settled stays unknown, and saying so is the only honest way past it.
+        case terminalCarryForward
+        /// The name is not a tool at all. No variant of it becomes one.
+        case dropTheName
+        /// The one temporal arm: do the named thing, then repeat the identical call.
+        case retryAfter(String)
+
+        /// The phrases that SPELL this contract. Closed and short on purpose — widening the
+        /// list so a new message passes is how a measured detector goes hollow, which is why
+        /// `testTheContractCheckStillRefusesAMessageThatStatesNoContract` plants a wording
+        /// that must not pass.
+        ///
+        /// `proceed without this step` is deliberately ABSENT and separately forbidden: it is
+        /// the permission withdrawn on 2026-09-11 after a planner read it as licence to
+        /// assert the build result it had just been refused.
+        var sanctionedClauses: [String] {
+            switch self {
+            case .dropTheName:
+                return ["is not a tool"]
+            case .retryAfter(let tool):
+                return ["then call"] + [tool]
+            case .terminalCarryForward:
+                return [
+                    "as unverified",
+                    "continue with the tools you hold",
+                    "continue without",
+                    "Continue without",
+                    "Finish this step from what you already have",
+                ]
+            }
+        }
+    }
+
+    /// What stands between the model and the call. Named so a shared DIRECTION cannot claim
+    /// one blocker on behalf of reasons that have another.
+    nonisolated enum Blocker: String, CaseIterable {
+        case theRoster
+        case theWorkFolder
+        case sessionPolicy
+        case noHumanInTheRun
+        case thisStepSoFar
+
+        /// Nouns that assert THIS blocker. A direction shared by several reasons may carry
+        /// none of them.
+        var nouns: [String] {
+            switch self {
+            case .theRoster: return ["your system prompt", "issued to you"]
+            case .theWorkFolder: return ["work folder", ".git directory", "vision model", "Xcode scheme"]
+            case .sessionPolicy: return ["turned off for this session", "disabled by policy"]
+            case .noHumanInTheRun: return ["approval", "has none"]
+            case .thisStepSoFar: return ["plan is recorded", "remainder of this step"]
+            }
+        }
+    }
+
+    /// The name-shaped split, in ONE place: a canonical name outside a speaker's toolset is
+    /// either not a tool at all (`.unknownToolName` — nothing can make the call work) or a
+    /// real tool this role was not issued (`.notInRoleConfig` — the gap it leaves is what
+    /// gets recorded). `allSchemas` is the one registry both the resolver and the executor
+    /// read, so "not in it" is the same fact the schema builder acted on. Read by the
+    /// classifier's tail and by `MeetingToolExecutor`, which until the evening of
+    /// 2026-09-11 handed every rejected meeting call `.notInRoleConfig` — and so told a
+    /// participant that `submit_vote` "did not run and returned nothing".
+    nonisolated static func nameShapedReason(canonical: String) -> ToolUnavailabilityReason {
+        ToolHandlerRegistry.schema(named: canonical) == nil ? .unknownToolName : .notInRoleConfig
     }
 
     /// Maps a rejected tool name to the most-specific precondition that
@@ -288,6 +449,7 @@ extension LLMExecutionService {
         xcodeSchemeKnown: Bool = true,
         approval: ToolApprovalAvailability,
         phaseWithheldToolNames: Set<String> = [],
+        supersededToolNames: Set<String> = [],
         fileManager: FileManager = .default
     ) -> ToolUnavailabilityReason {
         let registry = ToolHandlerRegistry.self
@@ -316,7 +478,12 @@ extension LLMExecutionService {
             case .available: break
             }
         }
-        // Checked FIRST among the rest, and without an ordering hazard: this set is derived
+        // A superseded role's runners, ahead of the phase: both sets are derived from the
+        // already-precondition-filtered tool array, so membership proves every other reason
+        // is inapplicable — and of the two, this one is the durable blocker for the rest of
+        // the step, while `plan_required` invites a retry that would only land here again.
+        if supersededToolNames.contains(toolName) { return .workSuperseded }
+        // Checked next, and without an ordering hazard: this set is derived
         // from the already-precondition-filtered tool array, so membership
         // proves every other reason is inapplicable.
         if phaseWithheldToolNames.contains(toolName) { return .withheldUntilPlanRecorded }
@@ -337,7 +504,14 @@ extension LLMExecutionService {
             && (selectedScheme == nil || selectedScheme?.isEmpty == true) {
             return .xcodeSchemeNotSelected
         }
-        return .notInRoleConfig
+        // Last: split the residue by whether the name is a tool at all
+        // (`nameShapedReason`). Nothing above this line can reach a name that is not a
+        // tool — every precondition set is derived from the registry — so the order is
+        // free of hazard. `toolName` reaches here canonical (`ToolRegistry.resolveToolName`
+        // at the call site, which lowercases), so a namespaced, aliased or differently
+        // cased emission of a REAL tool resolves before this and is correctly
+        // `.notInRoleConfig`, never "no such tool".
+        return nameShapedReason(canonical: toolName)
     }
 
     /// Builds a tool-unavailable error envelope with cause-specific code and
@@ -348,39 +522,56 @@ extension LLMExecutionService {
     /// retrying instead of looping on "use only tools listed in your prompt".
     /// The envelope shape also bifurcates: `notInRoleConfig` omits the structured
     /// `tool` field (see the body for why); precondition cases keep it.
+    ///
+    /// The code is `reason.errorCode` — the DIRECTION is chosen by code, not by reason
+    /// (`ToolErrorNotePolicy.direction`), which is why `unknownToolName` has its own: under
+    /// `tool_not_authorized` it would inherit the sibling's remedy, "record it as
+    /// unverified", meaningless for a name that names nothing.
+    /// runtime-prompt
     nonisolated static func makeUnavailableToolResult(
         call: StepToolCall,
         canonicalName: String,
         scope: String,
         reason: ToolUnavailabilityReason
     ) -> ToolExecutionResult {
-        let errorCode: String
+        let errorCode = reason.errorCode
         let msg: String
         switch reason {
+        case .unknownToolName:
+            msg = "No tool named '\(call.name)' exists in this application. The name is not a tool — check your system prompt's tool list and call one of those instead."
         case .notInRoleConfig:
-            errorCode = "tool_not_authorized"
-            msg = "Tool '\(call.name)' is not available \(scope). Use only tools listed in your system prompt."
+            // The substring `is not available \(scope)` is load-bearing and pinned
+            // (`ToolUnavailabilityClassifierTests`, `RepoBrowserNamespaceRejectionTests`).
+            // What follows it changed on 2026-09-11: the old text ended at "use only tools
+            // listed in your system prompt", and the direction added "proceed without this
+            // step" — which a planner read as permission to assert the missing fact. The
+            // tool did not run; the honest remedy is to say so in the output.
+            msg = "Tool '\(call.name)' is not available \(scope), so it did not run and returned nothing. Name the fact you wanted from it as unverified in your own output, and continue with the tools you hold."
         case .workFolderClosed:
-            errorCode = "precondition_failed"
-            msg = "Tool '\(call.name)' requires an opened work folder. The current session uses default storage — file writes, git, and xcode tools are unavailable until the user opens a project folder."
+            // The old text stated the fault and handed the model nothing: the only action it
+            // named — "until the user opens a project folder" — belongs to a party the model
+            // cannot reach, which is the same shape `.gitRepoMissing`'s comment below rejects
+            // for "ask the supervisor" (R3.8.6: prose nobody reads). `default storage` is
+            // load-bearing and pinned (`ToolUnavailabilityClassifierTests`).
+            msg = "Tool '\(call.name)' requires an opened work folder. This session uses default storage, so no file write, git or xcode tool can run at all — name what you wanted them to settle as unverified in your own output, and continue with the tools you hold."
         case .gitRepoMissing:
-            errorCode = "precondition_failed"
             // The envelope states the FACT and the alternative; the escalation channel, if
             // the role holds one, is `ToolErrorNotePolicy.direction`'s to add — it knows the
             // schema, this builder does not, and "ask the supervisor" to a role without
             // `ask_supervisor` is prose nobody reads (R3.8.6).
-            msg = "Tool '\(call.name)' requires a git repository. The work folder has no .git directory — skip git operations."
+            msg = "Tool '\(call.name)' requires a git repository. The work folder has no .git directory — skip git operations and record anything you wanted them to settle as unverified."
         case .visionNotConfigured:
-            errorCode = "precondition_failed"
-            msg = "Tool '\(call.name)' requires a configured vision model. None is configured for this work folder — proceed without image analysis."
+            // "proceed without image analysis" was the retired permission still shipping. The
+            // 2026-09-11 wave stripped "proceed without this step" from `.notInRoleConfig`
+            // because a planner read it as licence to assert the missing fact; vision's whole
+            // job is establishing a fact about an image, so the invitation is sharper here
+            // than anywhere else. `vision model` is pinned.
+            msg = "Tool '\(call.name)' requires a configured vision model. None is configured for this work folder — name what you wanted to learn from the image as unverified in your own output, and continue without it."
         case .xcodeSchemeNotSelected:
-            errorCode = "precondition_failed"
-            msg = "Tool '\(call.name)' requires a selected Xcode scheme. No scheme is configured for this work folder."
+            msg = "Tool '\(call.name)' requires a selected Xcode scheme. No scheme is configured for this work folder — record the build or test result you wanted as unverified rather than assuming one."
         case .computerUseDisabled:
-            errorCode = "precondition_failed"
             msg = "Tool '\(call.name)' requires Computer Use, which is turned off for this session. Continue without screen control."
         case .bashDisabled:
-            errorCode = "precondition_failed"
             // Names the POLICY, not the Settings pane: the model cannot open one. Mirrors the
             // wording rule `BashPermissionService`'s own mode-off denial follows.
             msg = "Tool '\(call.name)' requires the bash tool, which is disabled by policy (execution mode: Off). No command can run in this session — continue without a shell."
@@ -390,16 +581,16 @@ extension LLMExecutionService {
             // `precondition_failed` would blame "the work folder" (false: the blocker is the
             // run's lack of a human) and offer `ask_supervisor` (the answerer that cannot
             // approve) — the exact ring KNOWN_ISSUES A15 describes, one envelope to the left.
-            errorCode = "approval_unavailable"
             msg = ToolHandlerRegistry.shellTools.contains(canonicalName)
                 ? "Tool '\(call.name)' is withheld in this run: every command would need a human's approval, and this run has none. Continue without a shell."
                 : "Tool '\(call.name)' is withheld in this run: this action would need a human's approval, and this run has none. Continue without it."
+        case .workSuperseded:
+            msg = "Tool '\(call.name)' is withheld for the remainder of this step: an approved change request is rewriting the tree a build would read, and this step's output will be superseded by your own re-run, which holds the runners again. Finish this step from what you already have, without further builds."
         case .withheldUntilPlanRecorded:
             // Distinct code so `ToolErrorNotePolicy.direction` can steer toward the
             // retry. `precondition_failed` would tell the model the blocker is
             // the work folder — false, and non-retryable.
-            errorCode = "plan_required"
-            msg = "Tool '\(call.name)' becomes available once your plan is recorded. Call update_scratchpad with your findings and your numbered plan, then call '\(call.name)' again."
+            msg = "Tool '\(call.name)' becomes available once your plan is recorded. Call update_scratchpad with your findings and your numbered plan, then call '\(call.name)' again. Only your recorded notes cross into the next phase — file contents you have read do not, so put anything you must reproduce verbatim into the notes before you record them."
         }
         // Omit the structured `tool` field for the genuine-hallucination case:
         // the rejected name is frequently an artifact name (or other non-tool
@@ -413,8 +604,16 @@ extension LLMExecutionService {
         // `canonicalName`, and its sibling `makeIdenticalWriteLoopResult` escaped neither.
         // `makeExecutorErrorEnvelope` keeps this shape (the top-level `error` literal the
         // policy's bespoke arms switch on) and makes the escaping total.
+        // Both name-shaped reasons omit it, for the same reason and with different force:
+        // `unknownToolName` names nothing at all, and `notInRoleConfig` names something
+        // this role may not call — in both, a structured `"tool":"X"` frames X as a
+        // callable handle it is not. The precondition reasons keep it (there it names a
+        // real blocked tool downstream tooling relies on).
         var extra: [String: String] = [:]
-        if case .notInRoleConfig = reason {} else { extra["tool"] = canonicalName }
+        switch reason {
+        case .unknownToolName, .notInRoleConfig: break
+        default: extra["tool"] = canonicalName
+        }
         return ToolExecutionResult.synthetic(
             for: call,
             outputJSON: makeExecutorErrorEnvelope(error: errorCode, message: msg, extra: extra),

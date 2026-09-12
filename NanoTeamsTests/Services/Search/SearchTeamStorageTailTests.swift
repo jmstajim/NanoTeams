@@ -51,49 +51,35 @@ private final class TailEmbedClient: EmbeddingClient, @unchecked Sendable {
 
 // MARK: - Index fixtures
 
-/// Search index whose every token appears in 2 of `fileCount` files, so it
-/// survives `VocabFilter.default` (`minPostingCount: 2`, near-universal cap).
+/// A search index the vector builder will embed in full.
+///
+/// The document-frequency filter no longer lives in the builder — it is applied in
+/// `SearchIndexPlanner.build`, where the per-file counts are known — so a fixture handed
+/// straight to `VocabVectorIndexBuilder` is taken at its word. What used to be arranged here
+/// (postings of exactly 2 so the document-frequency filter kept them) is now simply the
+/// vocabulary itself.
 private func makeTailSearchIndex(tokens: [String], fileCount: Int = 10) -> SearchIndex {
-    var postings: [String: [Int]] = [:]
-    for token in tokens { postings[token] = [0, 1] }
     let files = (0..<fileCount).map {
         IndexedFile(path: "f\($0).swift", mTime: Date(timeIntervalSince1970: 1_700_000_000), size: 100)
     }
-    // swiftlint:disable:next force_try
-    return try! SearchIndex(
+    return SearchIndex(
         generatedAt: Date(timeIntervalSince1970: 1_700_000_000),
-        signature: IndexSignature(
-            fileCount: fileCount,
-            maxMTime: Date(timeIntervalSince1970: 1_700_000_000),
-            totalSize: Int64(fileCount * 100)
-        ),
         files: files,
-        tokens: tokens.sorted(),
-        postings: postings
-    )
+        vocabulary: Set(tokens))
 }
 
-/// Every token appears in exactly ONE file on a corpus large enough
-/// (`fileCount > nearUniversalSkipBelowFileCount`) that `minPostingCount: 2`
-/// stays active — so the filtered vocab comes out EMPTY.
+/// An index whose vocabulary is EMPTY on a non-empty roster — what a real corpus looks like
+/// after the filter has rejected everything (every word a singleton above the skip threshold).
+/// `tokens` names what was rejected, so the call sites still read as a corpus.
 private func makeTailSparseSearchIndex(tokens: [String], fileCount: Int = 30) -> SearchIndex {
-    var postings: [String: [Int]] = [:]
-    for (i, token) in tokens.enumerated() { postings[token] = [i % fileCount] }
+    _ = tokens
     let files = (0..<fileCount).map {
         IndexedFile(path: "s\($0).swift", mTime: Date(timeIntervalSince1970: 1_700_000_000), size: 100)
     }
-    // swiftlint:disable:next force_try
-    return try! SearchIndex(
+    return SearchIndex(
         generatedAt: Date(timeIntervalSince1970: 1_700_000_000),
-        signature: IndexSignature(
-            fileCount: fileCount,
-            maxMTime: Date(timeIntervalSince1970: 1_700_000_000),
-            totalSize: Int64(fileCount * 100)
-        ),
         files: files,
-        tokens: tokens.sorted(),
-        postings: postings
-    )
+        vocabulary: [])
 }
 
 private func makeTailEmbeddingConfig(batchSize: Int = 2) -> EmbeddingConfig {
@@ -293,32 +279,26 @@ final class SearchTeamStorageSearchTailTests: XCTestCase {
     }
 
     // ------------------------------------------------------------------
-    // MARK: - SearchIndexService: query wrappers with no index at all
+    // MARK: - SearchIndexService: no index on disk
     // ------------------------------------------------------------------
 
-    /// `files(containing:)` short-circuits on `cached ?? loadFromDisk()`. With
-    /// neither, it must return empty rather than triggering a build — a query is
-    /// not a build request, and building here would make an exploratory-search
-    /// lookup pay a full walk on a folder the user never indexed.
-    func testQuery_noCacheNoDiskIndex_returnsEmptyWithoutBuilding() async throws {
+    /// A build over a folder with no index on disk produces one and persists it — the FIRST
+    /// build is always a full rebuild, and a full rebuild checkpoints.
+    ///
+    /// This replaces two tests that asserted `files(containing:)` did NOT build. That question
+    /// died with the postings: there is no query entry point on the service any more, because
+    /// the index answers "which words exist", and WHERE they are is the grep's job.
+    func testFirstBuild_withNoDiskIndex_buildsAndCheckpoints() async throws {
         try write("A.swift", content: "class ScrollViewController {}")
         let service = makeSearchIndexService()
 
-        let hits = await service.files(containing: ["scroll"])
-        XCTAssertTrue(hits.isEmpty,
-                      "No cache and no on-disk index must yield [], not a lazy rebuild.")
+        let index = await service.loadOrBuild()
+        XCTAssertTrue(index.vocabulary.contains("scroll"))
 
         let indexFile = internalDir.appendingPathComponent("search_index.json")
-        XCTAssertFalse(fm.fileExists(atPath: indexFile.path),
-                       "A query must not persist an index as a side effect.")
-    }
-
-    func testFilesContaining_noCacheNoDiskIndex_returnsEmpty() async throws {
-        try write("A.swift", content: "class Foo {}")
-        let service = makeSearchIndexService()
-
-        let files = await service.files(containing: ["foo"])
-        XCTAssertTrue(files.isEmpty)
+        XCTAssertTrue(fm.fileExists(atPath: indexFile.path),
+                      "a full rebuild checkpoints — losing seconds of tokenization to a crash "
+                          + "is the one loss worth a write")
     }
 
     // ------------------------------------------------------------------
@@ -666,8 +646,7 @@ final class SearchTeamStorageSearchTailTests: XCTestCase {
     func testExpand_readyButEmptyIndex_returnsEmptyRatherThanDimMismatch() async {
         let client = TailEmbedClient()
         let service = makeVectorService(client: client)
-        // Sparse corpus: every token has postingCount 1 on 30 files, so
-        // `VocabFilter.default` rejects all of them and the vocab is empty.
+        // A corpus whose filter rejected every word: 30 files, empty vocabulary.
         await service.rebuildIfNeeded(
             searchIndex: makeTailSparseSearchIndex(tokens: ["aa", "bb", "cc"]),
             config: makeTailEmbeddingConfig(), force: false
@@ -963,24 +942,10 @@ final class SearchTeamStorageSearchTailTests: XCTestCase {
         XCTAssertGreaterThan(client.callCount, callsAfterFirst)
     }
 
-    /// `VocabFilter.default` deliberately accepts everything below the
-    /// skip-threshold file count — on a tiny corpus `minPostingCount: 2` would
-    /// otherwise empty the vocab entirely.
-    func testVocabFilter_belowSkipThreshold_acceptsSingletons() {
-        let filter = VocabVectorIndexBuilder.VocabFilter.default
-        XCTAssertTrue(filter.accepts(token: "x", postingCount: 1, fileCount: 4))
-        XCTAssertTrue(filter.accepts(token: "x", postingCount: 1,
-                                     fileCount: filter.nearUniversalSkipBelowFileCount))
-    }
-
-    func testVocabFilter_aboveSkipThreshold_rejectsSingletonsAndStopwords() {
-        let filter = VocabVectorIndexBuilder.VocabFilter.default
-        XCTAssertFalse(filter.accepts(token: "x", postingCount: 1, fileCount: 100),
-                       "postingCount 1 is noise on a real corpus.")
-        XCTAssertFalse(filter.accepts(token: "the", postingCount: 95, fileCount: 100),
-                       "A near-universal token is a stopword-equivalent.")
-        XCTAssertTrue(filter.accepts(token: "scroll", postingCount: 10, fileCount: 100))
-    }
+    // The two document-frequency cases that stood here moved with the filter itself, into
+    // `SearchIndexPlannerTests` — it is `SearchIndexPlanner.VocabularyFilter` now, applied in
+    // `build` where the per-file counts are known, rather than re-derived from postings by the
+    // vector builder.
 
     // ------------------------------------------------------------------
     // MARK: - SearchFileScanner (through SearchExecutor.run)
@@ -1626,8 +1591,8 @@ final class SearchTeamStorageTeamTailTests: XCTestCase {
         let team = makeTailTeam(roles: [supervisor, worker])
         seed(team: team, roleStatuses: ["w": .revisionRequested])
 
-        let started = await sut.startRevisionRoles(roleStatuses: ["w": .revisionRequested])
-        XCTAssertEqual(started, 1, "An unblocked revision role is startable.")
+        let started = await sut.startRevisionRoles(roleIDs: ["w"])
+        XCTAssertEqual(started, ["w"], "An unblocked revision role is startable.")
 
         for _ in 0..<50 where mockStore.setLastErrorMessageCalls.isEmpty {
             try? await Task.sleep(for: .milliseconds(20))
@@ -1649,7 +1614,7 @@ final class SearchTeamStorageTeamTailTests: XCTestCase {
         mockStore.findOrCreateStepResults = ["w": "w"]
         mockStore.stepStatusResults = ["w": .done]
 
-        _ = await sut.startRevisionRoles(roleStatuses: ["w": .revisionRequested])
+        _ = await sut.startRevisionRoles(roleIDs: ["w"])
 
         for _ in 0..<50 where mockStore.runStepCalls.isEmpty {
             try? await Task.sleep(for: .milliseconds(20))

@@ -2,9 +2,12 @@ import SwiftUI
 
 // MARK: - Theme Settings View
 
-/// Dedicated Settings tab that owns the single unified theme picker
-/// (System / Light / Dark / OLED / Arctic / Indigo / Umber / Lilac / Marine /
-/// Steel / Plum / Forest / Amber / Amethyst / Neon).
+/// Dedicated Settings tab that owns the single unified theme picker.
+///
+/// The grid is `ForEach(Theme.allCases)` and each tile's swatch is drawn from the
+/// theme's own palette, so a theme added to the enum appears here with no edit.
+/// This comment therefore does NOT list them: the list it used to carry was four
+/// themes out of date by the time anyone read it.
 ///
 /// Selecting a theme writes to `UserDefaultsKeys.activeTheme`; the
 /// `@AppStorage(activeTheme)` at the app root forces a tree rebuild so

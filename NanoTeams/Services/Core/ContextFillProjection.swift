@@ -21,8 +21,10 @@ final class ContextFillProjection {
     /// hides rather than inventing a number.
     private(set) var fillByStep: [TaskStepKey: ContextFill] = [:]
 
-    /// Steps with a compaction epoch in flight. The indicator shows it and refuses a second
-    /// click, so one wire cannot be summarised twice concurrently.
+    /// Steps with a compaction epoch in flight. The indicator SHOWS it (a flat grey at the last
+    /// measured length); what refuses a second click is the service —
+    /// `compactRoleContext` reads `LLMExecutionService.isCompacting`, not this projection,
+    /// because a mirror can only be equal to the fact or behind it.
     private(set) var compactingKeys: Set<TaskStepKey> = []
 
     /// Records a fill, skipping the write when nothing changed — an identical assignment

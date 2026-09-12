@@ -22,7 +22,7 @@ extension NTMSOrchestrator {
         guard let step = loadedTask(taskID)?.runs.last?.steps
             .first(where: { $0.effectiveRoleID == roleID })
         else {
-            lastInfoMessage = "This role has no conversation to compact yet."
+            lastInfoMessage = CompactionPolicy.nothingToFoldNotice
             return false
         }
 

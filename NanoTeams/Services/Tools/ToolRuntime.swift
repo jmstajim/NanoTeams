@@ -203,6 +203,19 @@ nonisolated final class ToolRuntime: @unchecked Sendable {
         do {
             let rawParsedArgs = try parseAndNormalizeArguments(rawArgs)
             let args = unwrapReentrantEnvelope(rawParsedArgs, expectedToolName: name)
+
+            // The two supervisor-ask tools are told apart by their arguments when the name
+            // and the payload disagree — an alias correction that needs the args, so it lands
+            // here rather than in `resolveToolName`. Re-resolved BEFORE the schema check, or
+            // the payload would be validated against the shape it was misnamed as.
+            var name = name
+            var handler = handler
+            if let corrected = SupervisorAskRouting.correctedName(
+                for: name, argumentKeys: Set(args.keys)),
+                let correctedHandler = registry.handler(for: corrected) {
+                name = corrected
+                handler = correctedHandler
+            }
             // A provided argument the shared coercion cannot honour is answered here, as the
             // argument fault it is, instead of reaching the handler as "absent" and running the
             // wrong branch under a success envelope (`search {"paths": 5}` walked the whole
@@ -383,7 +396,9 @@ nonisolated extension ToolCallLogRecord {
             argumentsJSON: argumentsJSON,
             resultJSON: result.outputJSON,
             errorMessage: errorMessage,
-            durationMS: durationMS
+            durationMS: durationMS,
+            // Carried by the RESULT, not measured here: only the handler knows it queued.
+            queuedMS: result.queuedMS
         )
     }
 }

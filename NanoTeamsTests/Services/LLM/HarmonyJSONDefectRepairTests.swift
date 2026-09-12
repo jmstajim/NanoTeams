@@ -1239,6 +1239,51 @@ final class HarmonyJSONDefectRepairTests: XCTestCase {
         XCTAssertEqual(args?["path"] as? String, "scripts/core/building_gallery.gd")
     }
 
+    // MARK: - Closers in the wrong order
+
+    /// The questionnaire, closed with the right brackets in the wrong order — the defect that
+    /// replaced hand-escaping once `form` became an object. Balanced by count, so no closer is
+    /// missing and none is spare: Foundation refuses at the first closer that does not match
+    /// and reports a column several levels inside the document.
+    ///
+    /// RED: drop the `reorderingTrailingClosers` step from `appliedRepairs` → this call is not
+    /// dispatched and the questionnaire is lost. Measured 8 of 11 undispatched emissions over
+    /// 20 runs (`ornith-1.5:35b`, MeditationApp task 75, 2026-09-12).
+    func testParseToolCallFromJSON_transposedClosers_dispatchesTheQuestionnaire() throws {
+        let call = try XCTUnwrap(
+            ToolCallParsingHelpers.parseToolCallFromJSON(Self.transposedCloserPayload))
+        XCTAssertEqual(call.name, ToolNames.askSupervisorForm)
+        let args = try XCTUnwrap(JSONUtilities.parseJSONDictionary(call.argumentsJSON))
+        XCTAssertEqual(args["headline"] as? String, "How are things")
+        let form = try XCTUnwrap(args["form"] as? [String: Any])
+        let questions = try XCTUnwrap(form["questions"] as? [[String: Any]])
+        XCTAssertEqual(questions.count, 1)
+        let options = try XCTUnwrap(questions[0]["options"] as? [[String: Any]])
+        XCTAssertEqual(options.map { $0["label"] as? String }, ["Keep going", "Stop"])
+    }
+
+    /// The repair is not silent: the model is told what was wrong with its brackets, because
+    /// the parser error it would otherwise read points at the wrong end of the document.
+    func testParseToolCallFromJSON_transposedClosers_reportsTheRepairToTheModel() {
+        let call = ToolCallParsingHelpers.parseToolCallFromJSON(Self.transposedCloserPayload)
+        let note = call?.argumentRepairNote ?? ""
+        XCTAssertFalse(note.isEmpty, "the model must be told its JSON was repaired")
+        XCTAssertTrue(note.contains("order"), "the note must name the defect: \(note)")
+    }
+
+    /// Anti-vacuum for both: the payload really is rejected by a strict parse, so the two
+    /// tests above measure the repair rather than a payload that never needed it.
+    func testTransposedCloserPayload_isRejectedByAStrictParse() {
+        XCTAssertNil(JSONUtilities.parseJSONDictionary(Self.transposedCloserPayload))
+    }
+
+    /// Seven closers owed as `}]}]}}}`, written as `}]}}]}}`.
+    private static let transposedCloserPayload =
+        #"{"name":"ask_supervisor_form","arguments":{"headline":"How are things","form":"#
+            + #"{"questions":[{"prompt":"What next?","kind":"single_choice","options":"#
+            + #"[{"label":"Keep going"},{"label":"Stop""#
+            + "}]}}]}}"
+
     // MARK: - …its corners
 
     /// `"588, "path"` — the model put the space where JSON allows it, on the far side of the

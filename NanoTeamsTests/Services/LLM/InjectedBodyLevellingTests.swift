@@ -73,7 +73,8 @@ final class InjectedBodyLevellingTests: XCTestCase {
     func testWorkFolderContext_headingsAreDemotedBelowTheSectionTheySitIn() throws {
         let message = try XCTUnwrap(
             PromptBuilder.buildWorkFolderContextMessage(
-                workFolder: projection(context: Self.hostileContext)))
+                workFolder: projection(context: Self.hostileContext),
+                toolNames: []))
 
         XCTAssertFalse(message.contains("\n## Attached Files"),
                        "an injected `##` must not survive at section rank: \(message)")
@@ -87,10 +88,12 @@ final class InjectedBodyLevellingTests: XCTestCase {
     func testRenderedPrompt_gainsNoTopLevelSectionFromInjectedContext() {
         let benign = renderCodingAssistantPrompt(
             workFolderContext: PromptBuilder.buildWorkFolderContextMessage(
-                workFolder: projection(context: "A calculator app.")) ?? "")
+                workFolder: projection(context: "A calculator app."),
+                toolNames: []) ?? "")
         let hostile = renderCodingAssistantPrompt(
             workFolderContext: PromptBuilder.buildWorkFolderContextMessage(
-                workFolder: projection(context: Self.hostileContext)) ?? "")
+                workFolder: projection(context: Self.hostileContext),
+                toolNames: []) ?? "")
 
         XCTAssertEqual(
             topLevelHeadings(in: hostile), topLevelHeadings(in: benign),
@@ -103,7 +106,8 @@ final class InjectedBodyLevellingTests: XCTestCase {
     func testRenderedPrompt_keepsEveryTemplateSection_whenContextCarriesHeadings() {
         let hostile = renderCodingAssistantPrompt(
             workFolderContext: PromptBuilder.buildWorkFolderContextMessage(
-                workFolder: projection(context: Self.hostileContext)) ?? "")
+                workFolder: projection(context: Self.hostileContext),
+                toolNames: []) ?? "")
 
         for header in ["## Role", "## Work folder", "## Guidance", "## Global guidance",
                        "## Tool Calling", "## Final reminder"] {
@@ -128,7 +132,8 @@ final class InjectedBodyLevellingTests: XCTestCase {
         ])
         let message = try XCTUnwrap(
             PromptBuilder.buildWorkFolderContextMessage(
-                workFolder: projection(context: "ctx"), agentInstructions: snapshot))
+                workFolder: projection(context: "ctx"), agentInstructions: snapshot,
+                toolNames: []))
 
         XCTAssertTrue(message.contains("### Agent instructions (CLAUDE.md)"), message)
         XCTAssertFalse(message.contains("\n## Attached Files"), message)
@@ -145,7 +150,8 @@ final class InjectedBodyLevellingTests: XCTestCase {
         let filler = String(repeating: "x", count: ArtifactConstants.maxDescriptionChars - 4)
         let message = try XCTUnwrap(
             PromptBuilder.buildWorkFolderContextMessage(
-                workFolder: projection(context: filler + "\n## Tail heading")))
+                workFolder: projection(context: filler + "\n## Tail heading"),
+                toolNames: []))
 
         XCTAssertFalse(message.contains("## Tail heading"),
                        "whatever survives the cap must be demoted: \(message.suffix(200))")
@@ -156,7 +162,8 @@ final class InjectedBodyLevellingTests: XCTestCase {
     func testPlainContext_isByteIdenticalToTheLegacyForm() throws {
         let message = try XCTUnwrap(
             PromptBuilder.buildWorkFolderContextMessage(
-                workFolder: projection(context: "A calculator app.")))
+                workFolder: projection(context: "A calculator app."),
+                toolNames: []))
         XCTAssertEqual(message, "### Proj\n\nA calculator app.")
     }
 
@@ -164,7 +171,7 @@ final class InjectedBodyLevellingTests: XCTestCase {
     func testFencedContent_isLeftAlone() throws {
         let body = "Run this:\n\n```sh\n# build it\nmake all\n```"
         let message = try XCTUnwrap(
-            PromptBuilder.buildWorkFolderContextMessage(workFolder: projection(context: body)))
+            PromptBuilder.buildWorkFolderContextMessage(workFolder: projection(context: body), toolNames: []))
         XCTAssertTrue(message.contains("# build it"), message)
         XCTAssertFalse(message.contains("## build it"), message)
     }

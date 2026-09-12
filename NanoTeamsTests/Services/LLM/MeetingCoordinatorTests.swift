@@ -16,6 +16,7 @@ final class MeetingCoordinatorTests: XCTestCase {
         // tool a meeting turn keeps (see `speakerTools`).
         XCTAssertFalse(excluded.contains(TN.concludeMeeting))
         XCTAssertTrue(excluded.contains(TN.askSupervisor))
+        XCTAssertTrue(excluded.contains(TN.askSupervisorForm))
         XCTAssertTrue(excluded.contains(TN.requestChanges))
         XCTAssertTrue(excluded.contains(TN.createArtifact))
         XCTAssertTrue(excluded.contains(TN.analyzeImage))
@@ -46,7 +47,7 @@ final class MeetingCoordinatorTests: XCTestCase {
         XCTAssertTrue(excluded.contains(TN.uiScroll))
         // 29 until 2026-09-06; `conclude_meeting` left the set when it became the
         // coordinator's real meeting tool (granted by `speakerTools`, not stripped).
-        XCTAssertEqual(excluded.count, 28)
+        XCTAssertEqual(excluded.count, 29)
     }
 
     // MARK: - filterMeetingTools

@@ -477,9 +477,11 @@ final class AutovisorWakeDecisionTests: XCTestCase {
     }
 
     func testCompose_emptyTitle_stillNamesTask() {
-        // Auto-derived titles can't be empty and rename paths reject empty input,
-        // but a whitespace-only UI rename gets through (confirmRename doesn't trim) —
-        // the bullet must still carry the actionable task id.
+        // No live path can produce a blank title any more: creation derives one and
+        // refuses an empty result, the Autovisor's `rename` verb trims and rejects,
+        // and since 2026-09-13 `takePendingRename` judges blankness on the trimmed
+        // text too. This stays a defensive pin — a title read back from older data
+        // on disk still must not cost the bullet its actionable task id.
         let notice = NTMSOrchestrator.composeAutovisorEventNotice(
             [.init(taskID: 12, title: "", trigger: .failed)]
         )

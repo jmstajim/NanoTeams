@@ -6,6 +6,33 @@ nonisolated enum SupervisorAutoAnswerService {
     /// The default fallback answer when generation fails.
     static let fallbackAnswer = "Proceed with the most reasonable assumption and document the decision."
 
+    /// runtime-prompt
+    ///
+    /// The tail of the user turn for a PLAIN question. It is the last thing the model reads,
+    /// so it cannot contradict the question above it.
+    static let answerTail =
+        "Answer as the Supervisor: one concise, actionable decision. If information is "
+            + "missing, make a reasonable assumption and state it."
+
+    /// runtime-prompt
+    ///
+    /// The tail for a QUESTIONNAIRE. It echoes the shape `SupervisorInquiryReply.replyContract`
+    /// already set two lines above it in the same turn and states no second rule — the
+    /// completeness imperative lives there, and a second "answer every question" here is the
+    /// restatement R4.3.2 refuses.
+    ///
+    /// What changed on 2026-09-12 is the fallback rung, twice. Omitting a question used to be
+    /// answered from the recommendation, so an answerer with nothing to go on could safely
+    /// skip; now it decides nothing, and the rung names what to do instead on the same line as
+    /// the prohibition. And the rung no longer points at a recommendation unconditionally:
+    /// only an option the asking role actually named wears `(recommended)`, most questions
+    /// carry none, and a fallback aimed at something the model cannot see is the failure
+    /// R3.8.6 names.
+    static let questionnaireTail =
+        "Answer as the Supervisor, one line for every question in the shape above. If "
+            + "information is missing, take the option marked (recommended) where there is one and "
+            + "otherwise decide yourself, saying why — never leave a question out."
+
     /// System prompt — role skeleton: identity, single responsibility, inputs,
     /// injection boundary, output contract. The boundary line marks quoted
     /// pipeline content as data: the context blob is assembled from upstream
@@ -39,6 +66,7 @@ nonisolated enum SupervisorAutoAnswerService {
 
     static func generateAnswer(
         question: String,
+        inquiry: SupervisorInquiry? = nil,
         task: NTMSTask,
         runIndex: Int,
         stepIndex: Int,
@@ -84,9 +112,16 @@ nonisolated enum SupervisorAutoAnswerService {
         if !context.isEmpty {
             user += "\n\(context)\n"
         }
-        user += "\n## Question\n\(question)\n"
-        user += "\nAnswer as the Supervisor: one concise, actionable decision. "
-            + "If information is missing, make a reasonable assumption and state it."
+        // A questionnaire replaces the merged headline here, and carries the reply contract
+        // with it (`SupervisorInquiryReply.questionnaire`) — the whole point of asking a form
+        // is that the answerer chooses among the options the role wrote, and it cannot choose
+        // what it was never shown.
+        user += "\n## Question\n\(inquiry.map(SupervisorInquiryReply.questionnaire(for:)) ?? question)\n"
+        // The tail is the LAST thing the model reads, so it cannot contradict the contract
+        // above it: "one concise decision" against a form would be an instruction to answer
+        // three questions with one sentence, and the parser would then read the sentence as
+        // an answer to none of them.
+        user += "\n" + (inquiry == nil ? Self.answerTail : Self.questionnaireTail)
 
         let messages: [ChatMessage] = [
             ChatMessage(role: .system, content: systemPrompt),

@@ -50,6 +50,7 @@ nonisolated enum ToolHandlerRegistry {
 
         // Supervisor
         AskSupervisorTool.self,
+        AskSupervisorFormTool.self,
 
         // Memory
         UpdateScratchpadTool.self,
@@ -106,6 +107,19 @@ nonisolated enum ToolHandlerRegistry {
 
     /// All tool schemas in display order. Available without a work folder.
     static let allSchemas: [ToolSchema] = allTypes.map { $0.schema }
+
+    /// The parking pair's schemas — the ONE place a seam that issues BOTH tools reads.
+    ///
+    /// Derived from `ToolNames.supervisorAskTools` like every other site that cares about
+    /// parking, so a third parking tool reaches such a seam by construction rather than by
+    /// somebody remembering. The one seam that spelled half the pair as a literal was the
+    /// delegated Supervisor exchange, and the cost was a form call that matched no escalation
+    /// branch and delivered `"(no answer provided)"` to a child team as the Supervisor's
+    /// decision (DEBTS D-B14).
+    ///
+    /// Order follows `allTypes`, so the wire is stable across launches.
+    static let supervisorAskSchemas: [ToolSchema] =
+        allSchemas.filter { ToolNames.supervisorAskTools.contains($0.name) }
 
     /// The bundled schema of one tool, by canonical name — what `ToolRuntime` checks a
     /// call's argument TYPES against before dispatch.
@@ -191,6 +205,13 @@ nonisolated enum ToolHandlerRegistry {
 
     /// Mutating Git tools (add/commit/pull/stash/checkout/merge/branch).
     static let gitWriteTools: Set<String> = names(in: .gitWrite)
+
+    /// Every tool that can change the work folder's tree or index: the file writers, the
+    /// mutating Git tools and the shell (which can run anything). ONE home for "who can
+    /// mutate the repository", read by the ONE WRITER pins — a pin that listed three file
+    /// tools by hand stayed green for a role gaining `git_stash` or `bash`.
+    static let repositoryMutatingTools: Set<String> =
+        fileWriteTools.union(gitWriteTools).union(shellTools)
 
     /// Xcode build/test tools.
     static let xcodeTools: Set<String> = names(in: .xcode)

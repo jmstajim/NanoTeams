@@ -293,6 +293,45 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
         }
     }
 
+    /// A child parked on a QUESTIONNAIRE hands the parent the rendered form, not the headline.
+    ///
+    /// The parent answers in prose and `answerSupervisorQuestion` reads that prose back against
+    /// the child's questionnaire — so if only the headline travels, the parent answers a
+    /// one-line summary, every choice defaults to its recommendation, and the child is told the
+    /// Supervisor had no opinion while the parent believes it answered.
+    ///
+    /// RED: route `askingStep.supervisorQuestion` alone (drop the `.map(questionnaire(for:))`)
+    /// → the prompt carries no options and the second assertion fails.
+    func testChildParkedOnAForm_showsTheParentTheQuestionnaire() async {
+        let delegate = MultiTaskDelegateStub()
+        let parentTeam = makeParentTeam()
+        delegate.workFolderProjection = makeProjection(teams: [parentTeam])
+        delegate.tasks[1] = makeParentTask(seedConversation: [
+            LLMMessage(role: .system, content: "You are PM."),
+        ])
+        var child = makeChildTask(question: "Build settings")
+        child.runs[0].steps[0].supervisorInquiry = SupervisorInquiry(
+            headline: "Build settings",
+            questions: [SupervisorInquiryQuestion(
+                id: "scheme", prompt: "Which scheme?", kind: .singleChoice,
+                options: [SupervisorInquiryOption(id: "debug", label: "Debug"),
+                          SupervisorInquiryOption(id: "release", label: "Release")])])
+        delegate.tasks[2] = child
+
+        let client = ScriptedLLMClient()
+        client.script = [.init(content: "Q1: 1", toolCalls: [])]
+
+        _ = await DelegatedSupervisorAnswerService.handleChildQuestion(
+            childTID: 2, parentTaskID: 1, parentRoleID: "pm", parentTeam: parentTeam,
+            targetTeamName: "Engineering", client: client,
+            globalConfig: delegate.globalLLMConfig, delegate: delegate)
+
+        let prompt = client.captures.first?.messages.last?.content ?? ""
+        XCTAssertTrue(prompt.contains("Build settings"), prompt)
+        XCTAssertTrue(prompt.contains("Release"),
+                      "the options are the whole reason the parent can answer at all: \(prompt)")
+    }
+
     // MARK: - First Question: Seeded Chain
 
     func testFirstQuestion_seedsChainWithFullParentConversation() async {
@@ -696,7 +735,11 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
     /// escalation AS a tool call — the prior wording "If outside your scope, say so
     /// and the system will escalate" made a compliant model refuse in prose, which
     /// was then delivered to the child as the Supervisor's final answer.
-    func testQuestionTurn_instructsToolCallEscalation_andSingleToolAvailability() async {
+    /// RED: restore "Only the ask_supervisor tool is available in this exchange." → the
+    /// second assertion fails, because the wire offers the pair and the sentence says it does
+    /// not. That sentence stood from the exchange's first day and went false on 1.9.20, when
+    /// the advisory step ending began naming `ask_supervisor_form` beside the plain ask.
+    func testQuestionTurn_namesTheParkingPairAsOneEscalationChannel() async {
         let delegate = MultiTaskDelegateStub()
         let parentTeam = makeParentTeam()
         delegate.workFolderProjection = makeProjection(teams: [parentTeam])
@@ -717,9 +760,11 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
                       "escalation must be instructed as an ask_supervisor tool call — got:\n\(turn)")
         XCTAssertFalse(turn.contains("say so"),
                        "prose escalation instruction contradicts the tool-call-only detection")
-        XCTAssertTrue(turn.localizedCaseInsensitiveContains("only"),
-                      "turn must state ask_supervisor is the only tool available in this exchange "
-                          + "(the seeded system prompt advertises the role's full toolset)")
+        XCTAssertTrue(turn.contains(ToolNames.askSupervisorForm),
+                      "the wire carries the PAIR, so the turn must name the pair — a turn that "
+                          + "claims one tool while two are offered is false on its face:\n\(turn)")
+        XCTAssertFalse(turn.localizedCaseInsensitiveContains("only the ask_supervisor"),
+                       "the retired single-tool claim:\n\(turn)")
         XCTAssertFalse(turn.contains("«"), "guillemets are a one-off delimiter — use plain quotes")
     }
 
@@ -889,5 +934,212 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
         XCTAssertEqual(delegate.tasks[1]?.runs[0].steps[0].ancillaryQuestion, "Escalate me")
         XCTAssertFalse(delegate.lastInfoMessages.isEmpty,
                        "the user still gets the informational abort banner")
+    }
+}
+
+// MARK: - The parking PAIR is what the exchange offers (DEBTS D-B14)
+
+/// The delegated exchange hands the parent role a toolset and reads one turn back. Until
+/// 2026-09-13 that toolset was the literal `[AskSupervisorTool.schema]` and the escalation
+/// branch matched `== ToolNames.askSupervisor`, while the parent's own step prompt has named
+/// `ask_supervisor_form` beside it since 1.9.20. A form call therefore matched no branch, fell
+/// through to the answer branch with empty content, and the child team received the literal
+/// `"(no answer provided)"` as the Supervisor's decision — silently, with no handler in the
+/// exchange to raise `tool_not_authorized` or `QUESTIONNAIRE_REQUIRED`.
+extension DelegatedSupervisorAnswerServiceTests {
+
+    /// A two-question form, as a model writes it under the tool's own worked example.
+    fileprivate static let formArgumentsJSON = """
+    {"headline": "Deployment target", "form": {"questions": [\
+    {"prompt": "Which minimum target?", "kind": "single_choice", "options": \
+    [{"label": "iOS 17"}, {"label": "iOS 18"}]}, \
+    {"prompt": "Anything else I should know?", "kind": "free_text"}]}}
+    """
+
+    /// RED: put `tools: [AskSupervisorTool.schema]` back at `DelegatedSupervisorAnswerService`
+    /// line 177 → (a) fails. Put `first(where: { $0.name == ToolNames.askSupervisor })` back at
+    /// line 242 → (d) fails on the literal `"(no answer provided)"`, the string a whole child
+    /// team then acts on as the Supervisor's decision. Route the headline instead of the
+    /// questionnaire → (c) fails. Drop the `isSupervisorAsk` swap at line 300 → (e) fails.
+    func testParentCallingTheForm_escalatesWithTheWholeQuestionnaire() async {
+        let delegate = MultiTaskDelegateStub()
+        let parentTeam = makeParentTeam()
+        delegate.workFolderProjection = makeProjection(teams: [parentTeam])
+        delegate.tasks[0] = makeParentTask(
+            id: 0, seedConversation: [LLMMessage(role: .system, content: "Top PM")])
+        delegate.tasks[1] = makeParentTask(id: 1, parentTaskID: 0, parentRoleID: "pm")
+        delegate.tasks[2] = makeChildTask(
+            question: "Need clarification", parentTaskID: 1, parentRoleID: "pm")
+
+        let client = ScriptedLLMClient()
+        client.script = [
+            .init(content: "", toolCalls: [(
+                name: ToolNames.askSupervisorForm,
+                argumentsJSON: Self.formArgumentsJSON)]),
+            .init(content: "Target iOS 18.", toolCalls: []),
+        ]
+
+        let success = await DelegatedSupervisorAnswerService.handleChildQuestion(
+            childTID: 2, parentTaskID: 1, parentRoleID: "pm", parentTeam: parentTeam,
+            targetTeamName: "Engineering", client: client,
+            globalConfig: delegate.globalLLMConfig, delegate: delegate)
+
+        // (a) Compared against the SET, never against two literals: a third parking tool then
+        // reaches this seam by construction rather than by somebody remembering.
+        XCTAssertEqual(
+            Set(client.captures.first?.tools.map(\.name) ?? []),
+            ToolNames.supervisorAskTools,
+            "the exchange must offer the parking PAIR — the role's own prompt names both")
+
+        // (b) The recursion happened at all.
+        XCTAssertTrue(success)
+        XCTAssertEqual(client.captures.count, 2,
+                       "parent escalates with the form, grandparent answers")
+
+        // (c) The grandparent is shown the whole questionnaire, not the headline: the option
+        // labels are the entire reason it can decide.
+        let escalated = client.captures.last?.messages.last?.content ?? ""
+        XCTAssertTrue(escalated.contains("Which minimum target?"), escalated)
+        XCTAssertTrue(escalated.contains("iOS 18"), escalated)
+
+        // (d) The defect, named out loud.
+        XCTAssertEqual(delegate.answerSupervisorCalls.count, 1)
+        let answer = delegate.answerSupervisorCalls.first?.answer ?? ""
+        XCTAssertEqual(answer, "Target iOS 18.")
+        XCTAssertNotEqual(
+            answer, "(no answer provided)",
+            "a form call read as an empty ANSWER delivers this string to the child team as the "
+                + "Supervisor's decision")
+
+        // (e) The parent's step records it as an escalation, like any other parking call.
+        let parentConv = delegate.tasks[1]!.runs[0].steps[0].llmConversation
+        XCTAssertTrue(parentConv.contains { $0.sourceContext == .delegationEscalation })
+    }
+
+    /// RED: restore `extractQuestion`, which reads only `question` → it returns nil for a form,
+    /// `?? question` records the CHILD's words on the PARENT's step, and the last assertion
+    /// fails on a diagnostics record that misattributes who asked what.
+    func testParentCallingTheForm_atTopOfChain_recordsTheQuestionnaireAsTheAncillaryQuestion() async {
+        let delegate = MultiTaskDelegateStub()
+        let parentTeam = makeParentTeam()
+        delegate.workFolderProjection = makeProjection(teams: [parentTeam])
+        delegate.tasks[1] = makeParentTask(
+            seedConversation: [LLMMessage(role: .system, content: "PM")])
+        delegate.tasks[2] = makeChildTask(question: "Cannot answer this from PM context")
+
+        let client = ScriptedLLMClient()
+        client.script = [.init(content: "", toolCalls: [(
+            name: ToolNames.askSupervisorForm, argumentsJSON: Self.formArgumentsJSON)])]
+
+        let success = await DelegatedSupervisorAnswerService.handleChildQuestion(
+            childTID: 2, parentTaskID: 1, parentRoleID: "pm", parentTeam: parentTeam,
+            targetTeamName: "Engineering", client: client,
+            globalConfig: delegate.globalLLMConfig, delegate: delegate)
+
+        XCTAssertFalse(success)
+        XCTAssertTrue(delegate.answerSupervisorCalls.isEmpty)
+        XCTAssertFalse(delegate.lastInfoMessages.isEmpty)
+        let recorded = delegate.tasks[1]?.runs[0].steps[0].ancillaryQuestion ?? ""
+        XCTAssertTrue(recorded.contains("iOS 18"),
+                      "the parent's own question is the questionnaire it wrote: \(recorded)")
+        XCTAssertFalse(recorded.contains("Cannot answer this from PM context"),
+                       "the CHILD's question is not what the parent asked: \(recorded)")
+    }
+
+    /// RED: drop the ladder and read `headline` with a plain `JSONSerialization` → the `«»`
+    /// spelling the tool seam READS is refused here, the escalated turn carries no question
+    /// text, and the assertion fails — the two seams disagree about what the model asked.
+    func testAFormTheToolSeamWouldRepair_isReadHereToo() async {
+        let delegate = MultiTaskDelegateStub()
+        let parentTeam = makeParentTeam()
+        delegate.workFolderProjection = makeProjection(teams: [parentTeam])
+        delegate.tasks[0] = makeParentTask(
+            id: 0, seedConversation: [LLMMessage(role: .system, content: "Top PM")])
+        delegate.tasks[1] = makeParentTask(id: 1, parentTaskID: 0, parentRoleID: "pm")
+        delegate.tasks[2] = makeChildTask(
+            question: "Need clarification", parentTaskID: 1, parentRoleID: "pm")
+
+        // `form` as a STRING, with the model's own « » around two values and the document's
+        // final brace missing — rungs 2 and 4 of the tool seam's ladder.
+        let repairable = """
+        {"headline": "Deployment target", "form": "{\\"questions\\": \
+        [{\\"prompt\\": «Which minimum target?», \\"kind\\": \\"single_choice\\", \
+        \\"options\\": [{\\"label\\": «iOS 17»}, {\\"label\\": \\"iOS 18\\"}]}]"}
+        """
+        let client = ScriptedLLMClient()
+        client.script = [
+            .init(content: "", toolCalls: [(
+                name: ToolNames.askSupervisorForm, argumentsJSON: repairable)]),
+            .init(content: "Target iOS 18.", toolCalls: []),
+        ]
+
+        _ = await DelegatedSupervisorAnswerService.handleChildQuestion(
+            childTID: 2, parentTaskID: 1, parentRoleID: "pm", parentTeam: parentTeam,
+            targetTeamName: "Engineering", client: client,
+            globalConfig: delegate.globalLLMConfig, delegate: delegate)
+
+        let escalated = client.captures.last?.messages.last?.content ?? ""
+        XCTAssertTrue(escalated.contains("Which minimum target?"), escalated)
+    }
+
+    /// RED: fall back to the raw `argumentsJSON` when the ladder fails → the grandparent is
+    /// shown a tool-call blob instead of a question.
+    func testAFormNothingCouldRead_fallsBackWithoutLeakingTheBlob() async {
+        let delegate = MultiTaskDelegateStub()
+        let parentTeam = makeParentTeam()
+        delegate.workFolderProjection = makeProjection(teams: [parentTeam])
+        delegate.tasks[1] = makeParentTask(
+            seedConversation: [LLMMessage(role: .system, content: "PM")])
+        delegate.tasks[2] = makeChildTask(question: "Cannot answer this from PM context")
+
+        // Not JSON at any rung, and no headline to fall back to either.
+        let unreadable = "{\"form\": \"not a questionnaire at all ((( \"}"
+        let client = ScriptedLLMClient()
+        client.script = [.init(content: "", toolCalls: [(
+            name: ToolNames.askSupervisorForm, argumentsJSON: unreadable)])]
+
+        _ = await DelegatedSupervisorAnswerService.handleChildQuestion(
+            childTID: 2, parentTaskID: 1, parentRoleID: "pm", parentTeam: parentTeam,
+            targetTeamName: "Engineering", client: client,
+            globalConfig: delegate.globalLLMConfig, delegate: delegate)
+
+        let recorded = delegate.tasks[1]?.runs[0].steps[0].ancillaryQuestion ?? ""
+        XCTAssertFalse(recorded.contains("not a questionnaire"),
+                       "the arguments blob is not a question: \(recorded)")
+        XCTAssertEqual(recorded, "Cannot answer this from PM context",
+                       "rung 3 keeps whatever the caller was already asking")
+    }
+
+    /// RED: take the LAST parking call instead of the first → the two seams disagree about
+    /// which call parked, and `AskCallIndex.parkedPositions` reads ascending position.
+    func testFormAndPlainAskInOneBatch_escalatesOnceOnTheFirst() async {
+        let delegate = MultiTaskDelegateStub()
+        let parentTeam = makeParentTeam()
+        delegate.workFolderProjection = makeProjection(teams: [parentTeam])
+        delegate.tasks[0] = makeParentTask(
+            id: 0, seedConversation: [LLMMessage(role: .system, content: "Top PM")])
+        delegate.tasks[1] = makeParentTask(id: 1, parentTaskID: 0, parentRoleID: "pm")
+        delegate.tasks[2] = makeChildTask(
+            question: "Need clarification", parentTaskID: 1, parentRoleID: "pm")
+
+        let client = ScriptedLLMClient()
+        client.script = [
+            .init(content: "", toolCalls: [
+                (name: ToolNames.askSupervisorForm, argumentsJSON: Self.formArgumentsJSON),
+                (name: ToolNames.askSupervisor,
+                 argumentsJSON: "{\"question\": \"and also, which CI lane?\"}"),
+            ]),
+            .init(content: "Target iOS 18.", toolCalls: []),
+        ]
+
+        _ = await DelegatedSupervisorAnswerService.handleChildQuestion(
+            childTID: 2, parentTaskID: 1, parentRoleID: "pm", parentTeam: parentTeam,
+            targetTeamName: "Engineering", client: client,
+            globalConfig: delegate.globalLLMConfig, delegate: delegate)
+
+        XCTAssertEqual(client.captures.count, 2, "exactly one escalation, not two")
+        let escalated = client.captures.last?.messages.last?.content ?? ""
+        XCTAssertTrue(escalated.contains("Which minimum target?"),
+                      "the FIRST parking call in emission order is the ask: \(escalated)")
     }
 }

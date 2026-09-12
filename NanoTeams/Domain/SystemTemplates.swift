@@ -110,13 +110,18 @@ nonisolated enum SystemTemplates {
     /// step ends, resolved per role at prompt-build time. A template serving both
     /// completion types (`questPartyTemplate`, `genericTemplate`) used to carry a literal
     /// or an `if`-clause the model re-judged every turn (R4.4.1); a producing role ends
-    /// on `create_artifact`, an advisory role on its `ask_supervisor` reply, and an
-    /// advisory role in a team whose Ask Supervisor mode is Off has no tool to end on
-    /// at all — three sentences, one chip.
+    /// on `create_artifact`, an advisory role on its `ask_supervisor` reply — with the
+    /// questionnaire named beside it, because the recency slot is where a rule the model
+    /// must apply on its LAST turn belongs (R3.8.5; until 2026-09-11 the form was named
+    /// once, mid-prompt, in `choiceFragment`, and the last sentence the model read named
+    /// only the plain ask) — and an advisory role in a team whose Ask Supervisor mode is
+    /// Off has no tool to end on at all — three sentences, one chip. No "plain text is
+    /// invisible" clause: a rationale inside the imperative (R1.2.3), and untrue for the
+    /// human, who reads the feed.
     static let producingStepEnding =
         "Submit each deliverable exactly once — that is how the step ends."
     static let advisoryStepEnding =
-        "Reply by calling `ask_supervisor` with your full response in its `question` field — plain text outside tool calls is invisible."
+        "Reply by calling `ask_supervisor` with your full response in its `question` field. Several questions, or a choice with its options, go as `ask_supervisor_form`."
     static let plainReplyStepEnding =
         "Reply in plain text — the Supervisor reads your replies in the feed and ends the step."
 
@@ -209,6 +214,7 @@ nonisolated enum SystemTemplates {
         "assistant":     TeamTemplateConfig(system: assistantTemplate,     consultation: genericConsultationTemplate,       meeting: genericMeetingTemplate),
         "codingAssistant": TeamTemplateConfig(system: codingAssistantTemplate, consultation: genericConsultationTemplate,   meeting: genericMeetingTemplate),
         "codingAgent":   TeamTemplateConfig(system: codingAssistantTemplate, consultation: genericConsultationTemplate,   meeting: genericMeetingTemplate),
+        "ultra":         TeamTemplateConfig(system: softwareTemplate,      consultation: softwareConsultationTemplate,      meeting: softwareMeetingTemplate),
         "generated":     TeamTemplateConfig(system: genericTemplate,       consultation: genericConsultationTemplate,       meeting: genericMeetingTemplate),
         "autovisor": TeamTemplateConfig(system: autovisorTemplate,     consultation: genericConsultationTemplate,       meeting: genericMeetingTemplate),
     ]

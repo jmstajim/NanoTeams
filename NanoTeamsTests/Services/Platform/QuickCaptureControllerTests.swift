@@ -66,7 +66,8 @@ final class QuickCaptureModeTests: XCTestCase {
         )
         let mode = QuickCaptureMode.supervisorAnswer(payload: payload)
 
-        if case .supervisorAnswer(let p) = mode {
+        if case .supervisorAnswer(let pSession) = mode {
+            let p = pSession.selected
             XCTAssertEqual(p.question, "Test?")
         } else {
             XCTFail("Expected .supervisorAnswer")
@@ -100,7 +101,7 @@ final class QuickCaptureControllerStateTests: XCTestCase {
         sut._testUseIsolatedStorage(storage)
         sut._testReset()
         if sut._testIsInAnswerMode { sut._testExitAnswerMode() }
-        sut.formState._testClearAnswerDrafts()
+        sut.formState.answerDraftStore.discardAll()
         sut.formState.supervisorTask = ""
         sut.formState.title = ""
         sut.formState.attachments = []
@@ -207,9 +208,15 @@ final class QuickCaptureModeResolutionTests: NTMSOrchestratorTestBase, @unchecke
     }
 
     /// Creates a task with a run containing a step that needs supervisor input.
+    /// - Parameter answered: settles the step the way EVERY production writer of
+    ///   `supervisorAnswer` settles it — the answer written and the waiting flag cleared in
+    ///   the same closure. Passing an answer while leaving the flag up would build a state
+    ///   no engine path produces (pinned by
+    ///   `SupervisorQuestionInboxTests.testEveryWriterOfSupervisorAnswer_settlesTheWaitingFlagInTheSameClosure`).
     private func createTaskWithQuestionStep(
         answer: String? = nil,
-        attachmentPaths: [String] = []
+        attachmentPaths: [String] = [],
+        answered: Bool = false
     ) async -> (taskID: Int, stepID: String)? {
         await sut.openWorkFolder(tempDir)
         guard let taskID = await sut.createTask(title: "T", supervisorTask: "G") else {
@@ -226,11 +233,11 @@ final class QuickCaptureModeResolutionTests: NTMSOrchestratorTestBase, @unchecke
                 dependencies: RoleDependencies()
             ))
             step.id = stepID
-            step.needsSupervisorInput = true
+            step.needsSupervisorInput = !answered
             step.supervisorQuestion = "What should I do?"
             step.supervisorAnswer = answer
             step.supervisorAnswerAttachmentPaths = attachmentPaths
-            step.status = .needsSupervisorInput
+            step.status = answered ? .running : .needsSupervisorInput
             run.steps.append(step)
             task.runs.append(run)
         }
@@ -261,7 +268,8 @@ final class QuickCaptureModeResolutionTests: NTMSOrchestratorTestBase, @unchecke
         controller.isTaskSelected = true
 
         let mode = controller._testResolveMode()
-        if case .supervisorAnswer(let payload) = mode {
+        if case .supervisorAnswer(let payloadSession) = mode {
+            let payload = payloadSession.selected
             XCTAssertEqual(payload.stepID, stepID)
             XCTAssertEqual(payload.question, "What should I do?")
             XCTAssertEqual(payload.taskID, taskID)
@@ -270,27 +278,39 @@ final class QuickCaptureModeResolutionTests: NTMSOrchestratorTestBase, @unchecke
         }
     }
 
+    /// An answered question leaves no answer field behind.
+    ///
+    /// This used to fabricate the answer WITHOUT clearing the flag, and passed because the
+    /// panel carried its own `effectiveSupervisorAnswer == nil` conjunct. That conjunct
+    /// filtered a state no writer produces, and while it stood, the panel also went silent
+    /// in the window where an ask has landed and the park has not run — the two are the
+    /// same predicate seen from either side. The fixture now settles the step the way the
+    /// engine does, which is what makes this test about the panel rather than about a
+    /// filter that guarded nothing.
     func testResolveMode_answeredQuestion_skipsAnswerMode() async {
-        guard let _ = await createTaskWithQuestionStep(answer: "Do this") else { return }
+        guard let _ = await createTaskWithQuestionStep(answer: "Do this", answered: true)
+        else { return }
         controller.isTaskSelected = true
 
         let mode = controller._testResolveMode()
         if case .supervisorAnswer = mode {
-            XCTFail("Should not return .supervisorAnswer for already-answered question")
+            XCTFail("Should not return .supervisorAnswer for an already-answered question")
         }
     }
 
-    func testResolveMode_usesEffectiveSupervisorAnswer() async {
-        // supervisorAnswer=nil but has attachment paths → effectiveSupervisorAnswer is non-nil → skip
+    /// Attachments-only answer: `supervisorAnswer` stays nil, the attachment paths carry the
+    /// reply, and the writer clears the flag exactly the same way.
+    func testResolveMode_attachmentsOnlyAnswer_skipsAnswerMode() async {
         guard let _ = await createTaskWithQuestionStep(
             answer: nil,
-            attachmentPaths: ["attachments/file.txt"]
+            attachmentPaths: ["attachments/file.txt"],
+            answered: true
         ) else { return }
         controller.isTaskSelected = true
 
         let mode = controller._testResolveMode()
         if case .supervisorAnswer = mode {
-            XCTFail("Should not return .supervisorAnswer when effectiveSupervisorAnswer is non-nil (has attachments)")
+            XCTFail("Should not return .supervisorAnswer for a question answered with files")
         }
     }
 
@@ -676,7 +696,7 @@ final class QuickCaptureAnswerModeTests: XCTestCase {
         sut._testUseIsolatedStorage(storage)
         sut._testReset()
         if sut._testIsInAnswerMode { sut._testExitAnswerMode() }
-        sut.formState._testClearAnswerDrafts()
+        sut.formState.answerDraftStore.discardAll()
         sut.formState.supervisorTask = ""
         sut.formState.title = ""
         sut.formState.attachments = []
@@ -1045,7 +1065,7 @@ final class QuickCaptureChatWorkingComposerTests: NTMSOrchestratorTestBase, @unc
         controller._testReset()
         controller.store = sut
         if controller._testIsInAnswerMode { controller._testExitAnswerMode() }
-        controller.formState._testClearAnswerDrafts()
+        controller.formState.answerDraftStore.discardAll()
         controller.formState.supervisorTask = ""
         controller.formState.title = ""
         controller.formState.attachments = []
@@ -1058,7 +1078,7 @@ final class QuickCaptureChatWorkingComposerTests: NTMSOrchestratorTestBase, @unc
 
     override func tearDown() async throws {
         if controller._testIsInAnswerMode { controller._testExitAnswerMode() }
-        controller.formState._testClearAnswerDrafts()
+        controller.formState.answerDraftStore.discardAll()
         controller.formState.supervisorTask = ""
         controller.formState.answerAttachments = []
         controller.formState.answerClippedTexts = []
@@ -1207,8 +1227,8 @@ final class QuickCaptureChatWorkingComposerTests: NTMSOrchestratorTestBase, @unc
         controller.refreshPanelIfVisible()
 
         XCTAssertTrue(controller._testIsInAnswerMode)
-        XCTAssertNil(controller.formState._testAnswerDrafts[taskID],
-                     "Non-chat task transition must NOT capture live composer into answerDrafts (payload.isChatMode gate)")
+        XCTAssertTrue(controller.formState.answerDraftStore.keys(forTask: taskID).isEmpty,
+                      "Non-chat task transition must NOT park the live composer as a draft")
     }
 
     /// After capturing the chat-working composer into the answer draft, the draft is the source
@@ -1223,9 +1243,12 @@ final class QuickCaptureChatWorkingComposerTests: NTMSOrchestratorTestBase, @unc
         controller.refreshPanelIfVisible()
 
         XCTAssertTrue(controller._testIsInAnswerMode)
-        XCTAssertEqual(controller.formState._testAnswerDrafts[taskID]?.text, "queued msg")
-        // And the composer still shows the user's content (loaded from the draft).
+        // Take-and-return: the capture parked it, `enterAnswerMode` TOOK it back, so the
+        // content is in the live field and nowhere else. Under the read-and-copy store it
+        // stood in both, and "does this branch have an unfinished reply?" had two answers.
         XCTAssertEqual(controller.formState.answerText, "queued msg")
+        XCTAssertTrue(controller.formState.answerDraftStore.keys(forTask: taskID).isEmpty,
+                      "the store holds nothing under a branch a composer is editing")
     }
 
     /// End-to-end regression for the user-reported bug: typed in chat-working,
@@ -1241,7 +1264,7 @@ final class QuickCaptureChatWorkingComposerTests: NTMSOrchestratorTestBase, @unc
         XCTAssertEqual(controller.formState.answerText, "фвы")
 
         // Simulate the post-`answerSupervisorQuestion` cleanup that `submitAnswer` does:
-        controller.formState.discardAnswerDraft(taskID: taskID)
+        controller.formState.discardAnswerDraft(for: .taskChat(taskID))
         controller.formState.answerText = ""
         controller.formState.answerAttachments = []
         controller.formState.answerClippedTexts = []
@@ -1274,8 +1297,8 @@ final class QuickCaptureChatWorkingComposerTests: NTMSOrchestratorTestBase, @unc
         controller.refreshPanelIfVisible()
 
         XCTAssertTrue(controller._testIsInAnswerMode)
-        XCTAssertNil(controller.formState._testAnswerDrafts[taskID],
-                     "Initial transition with currentVisualMode==.newTask must NOT capture live fields")
+        XCTAssertTrue(controller.formState.answerDraftStore.keys(forTask: taskID).isEmpty,
+                      "Initial transition with currentVisualMode==.newTask must NOT park live fields")
     }
 
     // MARK: - Helpers for full round-trip simulation
@@ -1284,7 +1307,7 @@ final class QuickCaptureChatWorkingComposerTests: NTMSOrchestratorTestBase, @unc
     /// mode (lines 300-309 of QuickCaptureController.swift) without going through the
     /// real orchestrator's `answerSupervisorQuestion` async flow.
     private func simulatePostSubmitInChatKeepOpen(taskID: Int) {
-        controller.formState.discardAnswerDraft(taskID: taskID)
+        controller.formState.discardAnswerDraft(for: .taskChat(taskID))
         controller.formState.answerText = ""
         controller.formState.answerAttachments = []
         controller.formState.answerClippedTexts = []
@@ -1324,8 +1347,8 @@ final class QuickCaptureChatWorkingComposerTests: NTMSOrchestratorTestBase, @unc
         await simulateEngineResume(taskID: taskID)
         XCTAssertEqual(controller.formState.answerText, "",
                        "Composer empty after submit + engine resume")
-        XCTAssertNil(controller.formState._testAnswerDrafts[taskID],
-                     "Draft discarded on submit — no leftover for next round")
+        XCTAssertTrue(controller.formState.answerDraftStore.keys(forTask: taskID).isEmpty,
+                      "Draft discarded on submit — no leftover for next round")
 
         // ROUND 2: type "msg2", LLM asks again — only "msg2" appears (no echo of msg1)
         controller.formState.answerText = "msg2"
@@ -1362,36 +1385,63 @@ final class QuickCaptureChatWorkingComposerTests: NTMSOrchestratorTestBase, @unc
     }
 
     /// User typed in chat-working, transitioned to answer, then **cancelled** the
-    /// answer (X / Esc). After cancel the panel dismisses and the saved per-task
-    /// draft is discarded — reopening the panel must show empty composer.
-    func testCancelInAnswerMode_afterChatWorking_discardsDraft() async throws {
+    /// answer (X / Esc). The cancel must destroy THAT branch's draft and nothing else.
+    ///
+    /// The "and nothing else" half is what gives this test teeth. Under take-and-return the
+    /// cancelled branch's draft is in the live FIELDS, not the store, so a cancel that
+    /// discarded nothing at all would still leave `keys(forTask:)` looking right — the
+    /// assertion passed for every possible implementation of `discardAnswerDraft`. A second,
+    /// unrelated parked branch makes the two outcomes distinguishable again.
+    ///
+    /// RED: make `SupervisorAnswerDraftStore.discard` a no-op → the neighbour survives (still
+    /// true) but so does the branch just cancelled, and the first assertion fails. Make it
+    /// `discardAll()` → the neighbour is gone and the second fails.
+    func testCancelInAnswerMode_afterChatWorking_discardsOnlyThatBranchesDraft() async throws {
         guard let taskID = await setUpChatWorkingPanel() else { return }
 
         controller.formState.answerText = "draft to cancel"
         await addSupervisorQuestionStep(taskID: taskID)
         controller.refreshPanelIfVisible()
         XCTAssertTrue(controller._testIsInAnswerMode)
-        XCTAssertNotNil(controller.formState._testAnswerDrafts[taskID],
-                        "After branch-1 capture, the draft entry should exist")
+        XCTAssertEqual(controller.formState.answerText, "draft to cancel",
+                       "the hand-off left the content in the composer, not in the store")
 
-        // Mimic `cancelDraft` in answer mode (lines 501-516 of QuickCaptureController.swift):
-        // discards the per-task draft and clears live fields.
-        controller.formState.discardAnswerDraft(taskID: taskID)
+        // A neighbour the cancel has no business touching: another role of the same task,
+        // parked from the docked composer.
+        let neighbour = AnswerDraftKey.role(TaskStepKey(taskID: taskID, stepID: "someone-else"))
+        controller.formState.answerDraftStore.save(
+            AnswerDraft(text: "not yours to throw away"), for: neighbour)
+        // And the cancelled branch's own draft, as `dismissPanel` would have parked it.
+        controller.formState.answerDraftStore.save(
+            AnswerDraft(text: "draft to cancel"), for: .taskChat(taskID))
+
+        // Mimic `cancelDraft` in answer mode: discards this branch's draft and clears the
+        // live fields.
+        controller.formState.discardAnswerDraft(for: .taskChat(taskID))
         controller.formState.answerText = ""
         controller.formState.answerAttachments = []
         controller.formState.answerClippedTexts = []
         controller._testExitAnswerMode()
 
-        XCTAssertNil(controller.formState._testAnswerDrafts[taskID],
-                     "Cancel must discard the per-task draft entirely")
+        XCTAssertNil(controller.formState.answerDraftStore.peek(for: .taskChat(taskID)),
+                     "Cancel must discard this branch's draft entirely")
+        XCTAssertEqual(controller.formState.answerDraftStore.peek(for: neighbour)?.text,
+                       "not yours to throw away",
+                       "and must not reach into another role's unsent reply")
         XCTAssertEqual(controller.formState.answerText, "",
                        "Cancel + exit must leave the composer empty")
     }
 
-    /// Empty composer in chat-working transitioning to answer must NOT create a phantom
-    /// draft entry. Pre-existing `saveCurrentAnswerDraft` empty-removal contract — verified
-    /// at the controller level.
-    func testEmptyChatWorking_thenTransition_noPhantomDraft() async throws {
+    /// An empty chat-working composer arriving at a question leaves the composer empty and the
+    /// store untouched.
+    ///
+    /// It no longer pins the empty-REMOVAL contract, and the comment that used to claim it did
+    /// was wrong after take-and-return: the hand-off does not park content that belongs where
+    /// the composer is going, so nothing is written and no `save` arm is exercised. That
+    /// contract is pinned where it can still fail —
+    /// `SupervisorAnswerDraftStoreTests.testSave_emptyDraft_removesTheEntryRatherThanStoringABlank`
+    /// and `QuickCaptureFormStateTests.testHandOff_emptyContent_leavesNoPhantomDraft`.
+    func testEmptyChatWorking_thenTransition_leavesComposerAndStoreEmpty() async throws {
         guard let taskID = await setUpChatWorkingPanel() else { return }
 
         XCTAssertEqual(controller.formState.answerText, "")
@@ -1402,8 +1452,8 @@ final class QuickCaptureChatWorkingComposerTests: NTMSOrchestratorTestBase, @unc
         controller.refreshPanelIfVisible()
 
         XCTAssertTrue(controller._testIsInAnswerMode)
-        XCTAssertNil(controller.formState._testAnswerDrafts[taskID],
-                     "Empty composer must not create a phantom draft on transition")
+        XCTAssertTrue(controller.formState.answerDraftStore.keys(forTask: taskID).isEmpty,
+                      "Empty composer must not create a phantom draft on transition")
         XCTAssertEqual(controller.formState.answerText, "",
                        "Composer stays empty when nothing was typed")
     }
@@ -1493,13 +1543,14 @@ final class QuickCaptureChatWorkingComposerTests: NTMSOrchestratorTestBase, @unc
         // Type msgA in task A's chat-working
         controller.formState.answerText = "msgA"
 
-        // Trigger A's question — branch 1 captures into answerDrafts[A]
+        // Trigger A's question — branch 1 parks A's content, then answer mode takes it back
         await addSupervisorQuestionStep(taskID: taskA, stepID: "qA")
         controller.refreshPanelIfVisible()
         XCTAssertEqual(controller.formState.answerText, "msgA")
-        XCTAssertEqual(controller.formState._testAnswerDrafts[taskA]?.text, "msgA")
-        XCTAssertNil(controller.formState._testAnswerDrafts[taskB],
-                     "Task B's draft must remain absent — capture is per-task")
+        XCTAssertTrue(controller.formState.answerDraftStore.keys(forTask: taskA).isEmpty,
+                      "A's content is in the composer, taken back out of the store")
+        XCTAssertTrue(controller.formState.answerDraftStore.keys(forTask: taskB).isEmpty,
+                      "Task B's draft must remain absent — the park is per-branch")
     }
 }
 

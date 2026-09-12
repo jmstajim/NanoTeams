@@ -135,9 +135,9 @@ final class TaskManagementStatePersistenceTests: XCTestCase {
         XCTAssertFalse(config.isTaskSeen(workFolderID: folderB, taskID: 7))
     }
 
-    // MARK: - confirmDelete persistence
+    // MARK: - Delete persistence
 
-    /// `confirmDelete` calls `unmarkSupervisorInputSeen` so the persisted entry
+    /// `applyDelete` calls `unmarkSupervisorInputSeen` so the persisted entry
     /// for the deleted task is also wiped (otherwise the entry would linger in
     /// UserDefaults indefinitely, and if a future task ever reuses that ID it
     /// would mis-attribute the stale seen flag).

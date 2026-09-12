@@ -19,7 +19,7 @@ import XCTest
 ///   vanished from the UI entirely ("пропало сообщение после отправки
 ///   сообщения автовизору").
 /// - Answers paired with real `ask_supervisor` tool calls (the first
-///   `asks.count` — `StepFeedAux.askIndex.count` — `.supervisorAnswer` messages
+///   `parkedAsks.count` — `StepFeedAux.parkedAsks.count` — `.supervisorAnswer` messages
 ///   in conversation order, the SAME index rule the answered-notification loop
 ///   uses) keep rendering inside their ask cards only: zero change to the
 ///   normal path.
@@ -117,7 +117,7 @@ final class ActivityFeedBuilderEscalationAnswerTests: XCTestCase {
         in items: [ActivityFeedBuilder.TaggedItem]
     ) -> [(question: String, answer: String?)] {
         items.compactMap {
-            if case let .notification(_, _, .supervisorInput(question, answer, _, _, _, _, _), _, _) = $0.item {
+            if case let .notification(_, _, .supervisorInput(question, answer, _, _, _, _, _, _), _, _) = $0.item {
                 return (question, answer)
             }
             return nil

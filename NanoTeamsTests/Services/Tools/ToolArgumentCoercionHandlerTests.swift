@@ -104,8 +104,25 @@ final class ToolArgumentCoercionHandlerTests: XCTestCase {
         payload(json)?["matches"] as? [[String: Any]] ?? []
     }
 
+    /// Every hit on the page. The envelope folds matches by FILE, so the array length counts
+    /// files — the number of RESULTS lives in each group's `hits` (and in `data.count`).
+    private func searchHits(_ json: String) -> [Int] {
+        searchMatches(json).flatMap { ($0["hits"] as? [Int]) ?? [] }
+    }
+
+    /// One file group's lines as `(number, text)` pairs, in envelope order. Hits and requested
+    /// context share the list; `hits` is what separates them.
+    private func searchLines(_ group: [String: Any]) -> [(number: Int, text: String)] {
+        (group["lines"] as? [[Any]] ?? []).compactMap { pair in
+            guard let number = pair.first as? Int, let text = pair.last as? String else {
+                return nil
+            }
+            return (number, text)
+        }
+    }
+
     private func searchMatchPaths(_ json: String) -> [String] {
-        searchMatches(json).compactMap { $0["path"] as? String }.sorted()
+        searchMatches(json).compactMap { $0["file"] as? String }.sorted()
     }
 
     /// Builds `tree/lvl1/lvl2/deep.txt` — three nesting levels, one entry per
@@ -172,9 +189,9 @@ final class ToolArgumentCoercionHandlerTests: XCTestCase {
         XCTAssertFalse(uncapped.isError, "got: \(uncapped.outputJSON)")
         XCTAssertFalse(capped.isError, "got: \(capped.outputJSON)")
 
-        XCTAssertEqual(searchMatches(uncapped.outputJSON).count, 6,
+        XCTAssertEqual(searchHits(uncapped.outputJSON).count, 6,
                        "sanity: all six needles are findable without a cap")
-        XCTAssertEqual(searchMatches(capped.outputJSON).count, 2,
+        XCTAssertEqual(searchHits(capped.outputJSON).count, 2,
                        "max_results:\"2\" must cap the result list; a rejected string falls back "
                            + "to the default cap and returns everything")
     }
@@ -192,7 +209,8 @@ final class ToolArgumentCoercionHandlerTests: XCTestCase {
         guard let match = searchMatches(r.outputJSON).first else {
             return XCTFail("expected one match; got: \(r.outputJSON)")
         }
-        let before = match["context_before"] as? [[String: Any]] ?? []
+        let hit = (match["hits"] as? [Int])?.first ?? 0
+        let before = searchLines(match).filter { $0.number < hit }
         XCTAssertEqual(before.count, 4,
                        "context_before:\"4\" must emit four preceding lines (default is "
                            + "\(AppDefaults.searchContextBefore)); got \(before.count)")
@@ -216,11 +234,13 @@ final class ToolArgumentCoercionHandlerTests: XCTestCase {
         guard let match = searchMatches(r.outputJSON).first else {
             return XCTFail("expected one match; got: \(r.outputJSON)")
         }
-        XCTAssertNotNil(match["context_before"],
-                        "control: an explicit context_before must be populated")
-        XCTAssertNil(match["context_after"],
-                     "context_after:\"0\" must suppress trailing context entirely; a rejected "
-                         + "zero would fall back to a non-zero default")
+        let hit = (match["hits"] as? [Int])?.first ?? 0
+        let returned = searchLines(match)
+        XCTAssertEqual(returned.filter { $0.number < hit }.count, 2,
+                       "control: an explicit context_before must be populated")
+        XCTAssertEqual(returned.filter { $0.number > hit }.count, 0,
+                       "context_after:\"0\" must suppress trailing context entirely; a rejected "
+                           + "zero would fall back to a non-zero default")
     }
 
     // MARK: - search: paths scoping

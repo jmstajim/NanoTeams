@@ -13,12 +13,16 @@ import XCTest
 /// Pinned behavior:
 /// 1. Enter answer mode for Task A → fresh empty draft.
 /// 2. Type text → saved as draft.
-/// 3. Switch to Task B via `switchAnswerTask` → A's draft is persisted,
+/// 3. Switch to Task B via `updateAnswerPayload` → A's draft is parked,
 ///    B starts fresh.
 /// 4. Type text on B → saved as B's draft.
 /// 5. Switch back to A → A's draft is restored bit-for-bit.
 /// 6. Exit answer mode → draft persists (next enter restores it).
 /// 7. Successful submit → `discardAnswerDraft` removes it for good.
+///
+/// The drafts are keyed by BRANCH since the store learned `AnswerDraftKey`; these payloads are
+/// team-mode (`isChatMode: false`) on one role, so branch and task move together and every
+/// scenario below reads the same as when the map was keyed by task id.
 /// 8. Non-destructive re-entry: entering answer mode while already in
 ///    answer mode for the SAME task does NOT clobber the user's
 ///    supervisorTask (task draft) — only the payload updates.
@@ -53,6 +57,10 @@ final class EndToEndAnswerDraftPersistenceTests: XCTestCase {
         )
     }
 
+    private func key(_ taskID: Int) -> AnswerDraftKey {
+        QuickCaptureFormState.draftKey(for: payload(taskID: taskID))
+    }
+
     // MARK: - Scenario 1: Fresh draft on first entry
 
     func testEnterAnswerMode_freshTask_emptyInitialFields() {
@@ -70,19 +78,19 @@ final class EndToEndAnswerDraftPersistenceTests: XCTestCase {
 
     // MARK: - Scenario 2: Draft preserved across task switch
 
-    func testSwitchAnswerTask_preservesTaskADraft_startsTaskBFresh() {
+    func testSwitchAnswerBranch_preservesTaskADraft_startsTaskBFresh() {
         // Task A: type an answer
         formState.enterAnswerMode(payload: payload(taskID: 1))
         formState.answerText = "Answer for task A — half done"
 
         // Switch to Task B
-        formState.switchAnswerTask(from: 1, to: payload(taskID: 2))
+        formState.updateAnswerPayload(payload(taskID: 2))
 
         XCTAssertEqual(formState.answerText, "",
                        "Task B starts with a fresh draft")
 
         // Switch back to Task A
-        formState.switchAnswerTask(from: 2, to: payload(taskID: 1))
+        formState.updateAnswerPayload(payload(taskID: 1))
 
         XCTAssertEqual(formState.answerText, "Answer for task A — half done",
                        "Task A's draft is restored bit-for-bit after return")
@@ -90,16 +98,16 @@ final class EndToEndAnswerDraftPersistenceTests: XCTestCase {
 
     // MARK: - Scenario 3: Drafts for both tasks survive round-trip
 
-    func testSwitchAnswerTask_roundTrip_bothDraftsPreserved() {
+    func testSwitchAnswerBranch_roundTrip_bothDraftsPreserved() {
         formState.enterAnswerMode(payload: payload(taskID: 1))
         formState.answerText = "A draft"
-        formState.switchAnswerTask(from: 1, to: payload(taskID: 2))
+        formState.updateAnswerPayload(payload(taskID: 2))
         formState.answerText = "B draft"
-        formState.switchAnswerTask(from: 2, to: payload(taskID: 1))
+        formState.updateAnswerPayload(payload(taskID: 1))
 
         XCTAssertEqual(formState.answerText, "A draft")
 
-        formState.switchAnswerTask(from: 1, to: payload(taskID: 2))
+        formState.updateAnswerPayload(payload(taskID: 2))
         XCTAssertEqual(formState.answerText, "B draft",
                        "Task B draft preserved across A-B-A cycle")
     }
@@ -127,7 +135,7 @@ final class EndToEndAnswerDraftPersistenceTests: XCTestCase {
         formState.exitAnswerMode()
 
         // Simulate successful submit
-        formState.discardAnswerDraft(taskID: 7)
+        formState.discardAnswerDraft(for: key(7))
 
         formState.enterAnswerMode(payload: payload(taskID: 7))
         XCTAssertEqual(formState.answerText, "",
@@ -172,35 +180,35 @@ final class EndToEndAnswerDraftPersistenceTests: XCTestCase {
 
     /// User is in answer mode on Task A, user switches to a different task
     /// (Task B) which ALSO needs a supervisor answer. The second
-    /// `enterAnswerMode` call with a different taskID must trigger
-    /// `switchAnswerTask` — A's draft saved, B loaded.
+    /// `enterAnswerMode` call with a different taskID must hand the fields over —
+    /// A's draft parked, B taken.
     func testEnterAnswerMode_differentTaskID_triggersSwitch_draftsIsolated() {
         formState.enterAnswerMode(payload: payload(taskID: 1))
         formState.answerText = "Draft for 1"
 
-        // Second enter with different taskID — state machine delegates to switchAnswerTask
+        // Second enter with different taskID — state machine delegates to updateAnswerPayload
         formState.enterAnswerMode(payload: payload(taskID: 2))
 
         XCTAssertEqual(formState.answerText, "",
                        "Task 2 starts fresh")
 
-        formState.switchAnswerTask(from: 2, to: payload(taskID: 1))
+        formState.updateAnswerPayload(payload(taskID: 1))
         XCTAssertEqual(formState.answerText, "Draft for 1",
                        "Task 1's draft was preserved during the implicit switch")
     }
 
     // MARK: - Scenario 9: Clips preserved per task
 
-    func testSwitchAnswerTask_clipsIsolatedPerTask() {
+    func testSwitchAnswerBranch_clipsIsolatedPerTask() {
         formState.enterAnswerMode(payload: payload(taskID: 1))
         formState.answerClippedTexts = [Clip].minting(["clip A1", "clip A2"])
 
-        formState.switchAnswerTask(from: 1, to: payload(taskID: 2))
+        formState.updateAnswerPayload(payload(taskID: 2))
         XCTAssertTrue(formState.answerClippedTexts.isEmpty,
                       "Task 2 starts with no clips")
 
         formState.answerClippedTexts = [Clip].minting(["clip B1"])
-        formState.switchAnswerTask(from: 2, to: payload(taskID: 1))
+        formState.updateAnswerPayload(payload(taskID: 1))
 
         XCTAssertEqual(formState.answerClippedTexts.texts, ["clip A1", "clip A2"],
                        "Task 1's clips preserved during the switch")
@@ -224,14 +232,15 @@ final class EndToEndAnswerDraftPersistenceTests: XCTestCase {
         formState.answerAttachments = [attachment]
         formState.answerClippedTexts = [Clip].minting(["clip-1", "clip-2"])
 
-        formState.captureLiveComposerAsAnswerDraft(taskID: 77)
+        formState.claimAnswerFields(for: .taskChat(77))
+        formState.handOffLiveAnswerFields(to: .taskChat(78))
 
         // Simulate the post-`exitAnswerMode` cleared state
         formState.answerText = ""
         formState.answerAttachments = []
         formState.answerClippedTexts = []
 
-        formState.restoreAnswerDraftToLiveFields(taskID: 77)
+        formState.restoreAnswerDraftToLiveFields(for: .taskChat(77))
 
         XCTAssertEqual(formState.answerText, "queued composition")
         XCTAssertEqual(formState.answerAttachments, [attachment])

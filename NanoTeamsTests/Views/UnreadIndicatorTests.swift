@@ -86,9 +86,13 @@ final class UnreadIndicatorTests: XCTestCase {
     func testConfirmDelete_removesFromSeenSet() async {
         sut.markSupervisorInputSeen(taskID: taskA)
         sut.taskToDelete = taskA
-        // confirmDelete calls store.removeTask which needs a real store,
+        // `applyDelete` calls store.removeTask which needs a real store,
         // but the seen set removal happens regardless
-        _ = await sut.confirmDelete(store: TestOrchestrator.make())
+        let store = TestOrchestrator.make()
+        guard let pending = sut.takePendingDelete(store: store) else {
+            return XCTFail("A pending delete must be taken synchronously")
+        }
+        await sut.applyDelete(pending, store: store)
         XCTAssertFalse(sut.seenSupervisorInputTaskIDs.contains(taskA))
     }
 

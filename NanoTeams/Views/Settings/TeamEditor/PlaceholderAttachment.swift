@@ -21,12 +21,21 @@ nonisolated final class PlaceholderAttachment: NSTextAttachment {
     // `setAttributedString` + NSTextView relayout on every SwiftUI body
     // invocation, including scroll-driven re-renders. Caching here makes
     // the foreground-color attribute a stable singleton so `isEqual` fires.
-    private static let dynamicColors: [String: NSColor] = [
-        "role":      Colors.nsThemed(\.accent),
-        "context":   Colors.nsThemed(\.success),
-        "tools":     Colors.nsThemed(\.warning),
-        "artifacts": Colors.nsThemed(\.artifact),
-    ]
+    // Key paths, resolved on each lookup. A `static let` of NSColor would have defeated the very
+    // property this cache exists for: `nsThemed` ALREADY memoizes per theme, so it returns the
+    // same instance within a theme (which is what `isEqual` needs) AND a fresh one after a theme
+    // switch (which a `static let` cannot — CLAUDE.md #249, and the note above `nsTextPrimary`).
+    private static func dynamicColor(_ key: String) -> NSColor? {
+        let token: KeyPath<ThemePalette, UInt64>
+        switch key {
+        case "role": token = \.accent
+        case "context": token = \.success
+        case "tools": token = \.warning
+        case "artifacts": token = \.artifact
+        default: return nil
+        }
+        return Colors.nsThemed(token)
+    }
 
     // Cache pre-rasterized chip bitmaps by `(label, category)`. The
     // previous implementation used the handler-based
@@ -169,7 +178,7 @@ nonisolated final class PlaceholderAttachment: NSTextAttachment {
     }
 
     static func color(for category: String) -> NSColor {
-        dynamicColors[category] ?? Colors.nsTextSecondary
+        Self.dynamicColor(category) ?? Colors.nsTextSecondary
     }
     nonisolated deinit {}
 }

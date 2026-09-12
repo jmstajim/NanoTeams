@@ -81,9 +81,15 @@ final class CoordinatorResolutionConsistencyTests: XCTestCase {
         }?.id
     }
 
+    /// Resolved back to the role-definition id, which is what the other three readers
+    /// return. `Role.baseID` is a REPRESENTATION — `.custom(id: name)` for a user-authored
+    /// role since the chair and the participant resolver were unified on
+    /// `Role.fromDefinition` — and comparing representations across readers that legitimately
+    /// hold different ones is what `findRole(byIdentifier:)` exists to avoid.
     private func runtimeResolves(team: Team) -> String? {
         let service = LLMExecutionService(repository: NTMSRepository())
-        return service.resolveCoordinatorRole(team: team)?.baseID
+        guard let role = service.resolveCoordinatorRole(team: team) else { return nil }
+        return team.findRole(byIdentifier: role.baseID)?.id
     }
 
     private func assertAllAgree(

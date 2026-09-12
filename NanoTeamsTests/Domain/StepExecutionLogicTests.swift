@@ -396,20 +396,11 @@ final class StepExecutionLogicTests: XCTestCase {
         XCTAssertFalse(step.isArtifactComplete)
     }
 
-    func testIsArtifactComplete_onlyBuildDiagnostics_returnsFalse() {
-        let step = StepExecution(
-            id: "test_step",
-            role: .softwareEngineer, title: "Eng",
-            expectedArtifacts: ["Build Diagnostics"]
-        )
-        XCTAssertFalse(step.isArtifactComplete)
-    }
-
     func testIsArtifactComplete_missingArtifacts_returnsFalse() {
         let step = StepExecution(
             id: "test_step",
             role: .softwareEngineer, title: "Eng",
-            expectedArtifacts: ["Engineering Notes", "Build Diagnostics"]
+            expectedArtifacts: ["Engineering Notes", "Code Review Summary"]
         )
         XCTAssertFalse(step.isArtifactComplete)
     }
@@ -418,10 +409,27 @@ final class StepExecutionLogicTests: XCTestCase {
         var step = StepExecution(
             id: "test_step",
             role: .softwareEngineer, title: "Eng",
-            expectedArtifacts: ["Engineering Notes", "Build Diagnostics"]
+            expectedArtifacts: ["Engineering Notes"]
         )
         step.artifacts = [Artifact(name: "Engineering Notes")]
         XCTAssertTrue(step.isArtifactComplete)
+    }
+
+    /// There is no longer an expected artifact the engine excuses on the role's behalf.
+    /// "Build Diagnostics" used to be subtracted from both predicates, so a step could
+    /// read as complete while one of its declared outputs had never been submitted; the
+    /// machinery behind that name was removed on 2026-09-11 and the exception with it.
+    /// RED: reinstate any name-based filter in `missingArtifactNames` → this fails.
+    func testIsArtifactComplete_noNameIsExcusedFromTheContract() {
+        var step = StepExecution(
+            id: "test_step",
+            role: .softwareEngineer, title: "Eng",
+            expectedArtifacts: ["Engineering Notes", "Build Diagnostics"]
+        )
+        step.artifacts = [Artifact(name: "Engineering Notes")]
+        XCTAssertFalse(step.isArtifactComplete,
+                       "an undelivered expected artifact keeps the step incomplete, whatever it is named")
+        XCTAssertEqual(step.missingArtifactNames, ["Build Diagnostics"])
     }
 
     func testIsArtifactComplete_multipleExpected_partiallyPresent_returnsFalse() {
@@ -454,12 +462,12 @@ final class StepExecutionLogicTests: XCTestCase {
             id: "test_step",
             role: .softwareEngineer,
             title: "Engineer",
-            expectedArtifacts: ["Engineering Notes", "Build Diagnostics"]
+            expectedArtifacts: ["Engineering Notes", "Code Review Summary"]
         )
 
         XCTAssertEqual(step.expectedArtifacts.count, 2)
         XCTAssertTrue(step.expectedArtifacts.contains("Engineering Notes"))
-        XCTAssertTrue(step.expectedArtifacts.contains("Build Diagnostics"))
+        XCTAssertTrue(step.expectedArtifacts.contains("Code Review Summary"))
     }
 
     func testStepWithExpectedArtifactNames() {
@@ -467,12 +475,12 @@ final class StepExecutionLogicTests: XCTestCase {
             id: "test_step",
             role: .softwareEngineer,
             title: "Engineer",
-            expectedArtifacts: ["Engineering Notes", "Build Diagnostics"]
+            expectedArtifacts: ["Engineering Notes", "Code Review Summary"]
         )
 
         XCTAssertEqual(step.expectedArtifacts.count, 2)
         XCTAssertTrue(step.expectedArtifacts.contains("Engineering Notes"))
-        XCTAssertTrue(step.expectedArtifacts.contains("Build Diagnostics"))
+        XCTAssertTrue(step.expectedArtifacts.contains("Code Review Summary"))
     }
 
     // MARK: - Timestamps Tests

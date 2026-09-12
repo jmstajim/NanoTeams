@@ -292,6 +292,9 @@ nonisolated enum ToolCallSummarizer {
 
             // MARK: Supervisor / collaboration
             TN.askSupervisor: { clip(extractString($0, "question")) },
+            // Its own row on `headline`: the form has no `question` key, and the shared
+            // fallback renders an empty card row rather than saying so.
+            TN.askSupervisorForm: { clip(extractString($0, "headline")) },
             TN.concludeMeeting: { clip(extractString($0, "decision")) },
 
             // MARK: Git — read

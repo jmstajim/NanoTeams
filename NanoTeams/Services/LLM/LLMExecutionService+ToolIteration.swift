@@ -59,6 +59,17 @@ extension LLMExecutionService {
             conversationMessages: &conversationMessages,
             roleDefinition: roleDefinition
         )
+        // 2-ter. A superseded role's runners, per iteration and by the same mechanism as the
+        // phase: an AUTHORIZATION narrowed at the executor, never a narrowed wire. The
+        // status flips from inside this role's own loop (an approved `request_changes`
+        // marks the requester `.revisionRequested` without cancelling it), so entry-time
+        // resolution cannot see it; read from the snapshot refreshed above, which is the
+        // one fact `resolveStepRuntime`'s entry strip also reads.
+        let supersededToolNames: Set<String> =
+            Self.isWorkSuperseded(run: task.runs[runIndex], roleID: step.effectiveRoleID)
+                ? Set(tools.map(\.name)).intersection(Self.supersededRunners)
+                : []
+        let allowedToolNames = authorization.allowed.subtracting(supersededToolNames)
 
         // 2-bis. Consume a compaction epoch this step owes.
         //
@@ -211,7 +222,7 @@ extension LLMExecutionService {
             return await handleStreamLoopBreak(
                 stepID: stepID, signal: loopSignal, task: task,
                 roleForMessage: roleForMessage, supervisorMode: supervisorMode,
-                allowedToolNames: authorization.allowed,
+                allowedToolNames: allowedToolNames,
                 conversationMessages: &conversationMessages)
         }
         resetThinkingLoopBreakCount(stepID: stepID, taskID: task.id)
@@ -235,7 +246,7 @@ extension LLMExecutionService {
                 // Same set `executeToolCalls` authorizes against below (narrowed
                 // during the planning phase), so a nudge can only name a tool this
                 // iteration would actually accept.
-                allowedToolNames: authorization.allowed,
+                allowedToolNames: allowedToolNames,
                 // Computed once by `applyPlanningPhase` from the scans it already paid for;
                 // the two later consumers must not rescan the wire (CLAUDE.md #106).
                 wireIsMidPlanning: authorization.wireIsMidPlanning,
@@ -256,7 +267,13 @@ extension LLMExecutionService {
         // `ask_supervisor` is treated the same as a no-tool-call turn for the purposes
         // of the advisory no-tool backstop (incremented in `handleNoToolCalls`).
         let toolNamesThisTurn = Set(streamResult.resolvedToolCalls.map(\.name))
-        let isAskSupervisorOnly = toolNamesThisTurn == [ToolNames.askSupervisor]
+        // Subset of the parking set, not equality with one name — and non-empty, because an
+        // empty set is a subset of everything and would book every no-tool turn twice.
+        // `ask_supervisor_form` is non-productive for the same reason its plain sibling is:
+        // under autonomous mode it gets auto-answered, so a role could ping itself with
+        // questionnaires forever and never trip the backstop.
+        let isAskSupervisorOnly = !toolNamesThisTurn.isEmpty
+            && toolNamesThisTurn.isSubset(of: ToolNames.supervisorAskTools)
         if isAskSupervisorOnly {
             // Non-productive turn: ask_supervisor gets auto-answered in autonomous mode,
             // so the model can ping itself in a loop with it forever. Treat it as a
@@ -269,7 +286,6 @@ extension LLMExecutionService {
         }
         // The no-tool counter is deliberately NOT reset here — see step 6a below.
         // Emitting a call is not acting, and the results aren't known yet.
-        let allowedToolNames = authorization.allowed
 
         // 5a. Bash permission gate (pre-pass): intercept shell commands that must
         // be denied or judged (Auto) BEFORE they reach `executeToolCalls`. Returns
@@ -319,6 +335,7 @@ extension LLMExecutionService {
             gateRefusals: gateRefusals,
             allowedToolNames: allowedToolNames,
             phaseWithheldToolNames: authorization.withheldByPhase,
+            supersededToolNames: supersededToolNames,
             isPlanningPhase: authorization.isPlanningPhase,
             runtime: runtime,
             tracker: tracker,
@@ -409,7 +426,7 @@ extension LLMExecutionService {
         }
 
         if outcome.shouldStopForSupervisor, let q = outcome.supervisorQuestion {
-            return .needsSupervisorInput(question: q)
+            return .needsSupervisorInput(question: q, inquiry: outcome.supervisorInquiry)
         }
 
         // 7. Check if all expected artifacts have been created → auto-complete

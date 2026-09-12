@@ -11,6 +11,9 @@ final class MockTeamEngineStore: TeamEngineStore {
     var activeTask: NTMSTask?
     var teamSettings: TeamSettings = .default
     var activeTeam: Team?
+    /// `nil` = the app imposes no limit, which is the shipping default and therefore what
+    /// every suite that does not care about concurrency should exercise.
+    var maxConcurrentRoles: Int?
 
     // MARK: - Call Tracking
 

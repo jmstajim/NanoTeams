@@ -53,23 +53,36 @@ nonisolated enum DelegationConstants {
     static let repetitionMinSubstringChars = 8
 
     /// Max substring length (chars) for within-message detection. Reasoning models
-    /// loop on whole *paragraphs* — and even on multi-paragraph *cycles*: seven real
-    /// production loops (Autovisor / Coding Assistant thinking buffers) repeated
-    /// ~233–1244-char blocks, all silently missed by the prior 200-char cap. The
-    /// largest (1244) was a 12-item template cycle (a varying token cycling through a
-    /// fixed list). The production path uses the tail-anchored `detectTailLoop`
-    /// (O(maxLen²), uniformly cheap), so 1500 covers the observed range with ~1.2×
-    /// headroom over the worst (1244) without any perf-vs-coverage tension. (Cycles
-    /// longer than 1500 — 15+ varying items — still escape the exact-period detector;
+    /// loop on whole *paragraphs* — and even on multi-paragraph *cycles*: eight real
+    /// production loops (Autovisor / Coding Assistant / the Ultra role that became the Change Verifier — thinking
+    /// buffers) repeated ~233–2635-char blocks, all silently missed by the prior
+    /// 200-char cap. The eighth (measured period **2635** — a two-block alternating
+    /// cycle of 1654 + 981 chars, MeditationApp task 48 run 1) is why this is 3000 and
+    /// not the earlier 1500: the verifier looped for nineteen minutes and 343 KB while
+    /// the detector watched every one of its ~859 probes and could not fire, because
+    /// its period sat ABOVE the cap. The production path uses the tail-anchored
+    /// `detectTailLoop` (O(maxLen²), uniformly cheap), so 3000 covers the observed
+    /// range with ~1.14× headroom over the worst (2635) without any perf-vs-coverage
+    /// tension. (Cycles longer than 3000 still escape the exact-period detector;
     /// that's its ceiling.) See `RealWorldThinkingLoopDetectionTests`.
-    static let repetitionMaxSubstringChars = 1500
+    ///
+    /// PAIRED with `repetitionTailWindowChars` — raising one without the other only
+    /// moves the blind spot: a period the cap admits but the window cannot hold four
+    /// times over is still undetectable. See the window's own note for the binding.
+    static let repetitionMaxSubstringChars = 3000
 
-    /// Tail window (chars) the within-message scan inspects. Must hold the binding
-    /// `period * requiredReps` across the tiers (`500 * 8 = 4000` for large blocks,
-    /// `1500 * 4 = 6000` for very-large cycles) plus phase slack so the required
-    /// consecutive reps fit regardless of where the window boundary lands. The prior
-    /// 2000 window couldn't hold even 5 reps of a ~440-char block, so loops never fired.
-    static let repetitionTailWindowChars = 9000
+    /// Tail window (chars) the within-message scan inspects. Derived, not chosen: the
+    /// window must hold the THRESHOLD number of reps of the LARGEST admissible period,
+    /// or the cap admits periods the scan can never confirm —
+    /// `repetitionTailWindowChars >= repetitionVeryLargeBlockMinRepeats *
+    /// repetitionMaxSubstringChars + slack` (4 × 3000 = 12 000, + 1000 phase slack so
+    /// the required consecutive reps fit regardless of where the window boundary
+    /// lands). The other tiers fit under the same roof (`500 * 8 = 4000` for large
+    /// blocks). The prior 2000 window couldn't hold even 5 reps of a ~440-char block,
+    /// so loops never fired; the 9000 that replaced it held only 3.4 reps of the
+    /// measured 2635-char production period — short of the 4 the very-large tier
+    /// requires — which is the second half of why the run-48 loop was invisible.
+    static let repetitionTailWindowChars = 13000
 
     /// Substring-length threshold separating the "short phrase" regime from the
     /// "paragraph block" regime. At or below this, a repeat needs only
@@ -92,13 +105,14 @@ nonisolated enum DelegationConstants {
     /// regime. A block this big repeated even a few times is unambiguously a loop — no
     /// legitimate scaffold stamps a >500-char block verbatim (the observed false
     /// positives all sat ≤ 488 chars). Requiring the full `repetitionLargeBlockMinRepeats`
-    /// here would also need an impractically large tail window (8 × 1244 ≈ 10K), and
-    /// would make the model loop ~10K chars before firing.
+    /// here would also need an impractically large tail window (8 × 2635 ≈ 21K), and
+    /// would make the model loop ~21K chars before firing.
     static let repetitionVeryLargeSubstringChars = 500
 
     /// Required consecutive reps for a *very large* block (> `repetitionVeryLargeSubstringChars`).
-    /// 4 verbatim reps of a 500–1500-char block is loop-grade with no realistic
-    /// false-positive, and `1500 * 4 = 6000` fits the 9000 tail window.
+    /// 4 verbatim reps of a 500–3000-char block is loop-grade with no realistic
+    /// false-positive, and `3000 * 4 = 12000` fits the 13000 tail window — that
+    /// inequality is the rule the window is sized by, not a coincidence.
     static let repetitionVeryLargeBlockMinRepeats = 4
 
     /// Min CONSECUTIVE identical tool calls before a repetition detector fires. Both

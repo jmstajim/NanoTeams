@@ -227,37 +227,6 @@ final class SearchExecutorEdgeCasesTests: XCTestCase {
         XCTAssertEqual(out.matches[0].path, "src/ok.swift")
     }
 
-    // MARK: - constrainToFiles with path outside work folder is ignored
-
-    func testConstrainToFiles_parentTraversal_skipped() async throws {
-        try write("a.swift", content: "target\n")
-        let out = try await SearchExecutor.run(SearchExecutorInput(
-            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
-            queries: ["target"],
-            constrainToFiles: ["../../../etc/hosts", "a.swift"],
-            internalDir: internalDir
-        ))
-        // The traversal path doesn't exist under tempDir → skipped silently.
-        // Only a.swift contributes.
-        XCTAssertEqual(out.matches.count, 1)
-        XCTAssertEqual(out.matches[0].path, "a.swift")
-    }
-
-    func testConstrainToFiles_withDirectory_skipsNonRTFD() async throws {
-        // A real directory in constrainToFiles should be skipped (not scanned).
-        let dir = tempDir.appendingPathComponent("mydir")
-        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
-        try write("a.swift", content: "target\n")
-        let out = try await SearchExecutor.run(SearchExecutorInput(
-            workFolderRoot: tempDir, resolver: resolver, fileManager: fm,
-            queries: ["target"],
-            constrainToFiles: ["mydir", "a.swift"],
-            internalDir: internalDir
-        ))
-        XCTAssertEqual(out.matches.count, 1)
-        XCTAssertEqual(out.matches[0].path, "a.swift")
-    }
-
     // MARK: - fileGlob edge cases
 
     func testFileGlob_noMatches_returnsEmpty() async throws {

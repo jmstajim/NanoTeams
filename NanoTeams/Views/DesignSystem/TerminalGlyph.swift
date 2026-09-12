@@ -23,6 +23,24 @@ nonisolated enum TerminalGlyph {
     static let meeting   = "◆"
     static let skipped   = "·"
     static let paused    = "‖"
+    /// Ready, but waiting for a concurrency slot — see `RoleConcurrencyMode`.
+    static let queued    = "…"
+
+    // MARK: - Choice marks
+    //
+    // The design's Switch spec is `[x]` / `[ ]` (`components/forms/Switch.jsx`), and these
+    // are the same two characters `TerminalToggleStyle` draws — named here so a list of
+    // choices and a single switch cannot drift apart. They had, three times over: the tree
+    // grew `checkmark.circle`/`circle` (tool picker), `checkmark.square`/`square` (dictation
+    // languages) and `checkmark.circle.fill`/`circle` (benchmark sweep), all SF Symbols, none
+    // of them this. A vocabulary spelled at each call site is a vocabulary that forks.
+    //
+    // Round marks for a SINGLE choice, square for a multiple one — the one distinction a
+    // terminal UI can make without color, and the one every text-mode installer has made.
+    static let checkedBox   = "[x]"
+    static let uncheckedBox = "[ ]"
+    static let checkedRadio   = "(•)"
+    static let uncheckedRadio = "( )"
 
     static let prompt    = "›"
     static let cursor    = "█"

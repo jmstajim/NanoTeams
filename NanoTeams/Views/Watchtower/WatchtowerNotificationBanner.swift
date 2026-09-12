@@ -14,6 +14,8 @@ struct WatchtowerNotificationBanner: View {
     let onAcceptRole: (String) async -> Bool
     let onAcceptTask: (Int) async -> Bool
     let onSubmitAnswer: (String, String, [StagedAttachment], [String]) async -> Bool
+    /// Step id and the note already typed in the answer field.
+    let onRequestQuestionnaire: (String, String) async -> Bool
     let onStageAttachment: (String, URL) -> StagedAttachment?
     let onRemoveAttachment: (StagedAttachment) -> Void
 
@@ -158,6 +160,7 @@ private struct DismissButton: View {
             onAcceptRole: { _ in true },
             onAcceptTask: { _ in true },
             onSubmitAnswer: { _, _, _, _ in true },
+            onRequestQuestionnaire: { _, _ in true },
             onStageAttachment: { _, _ in nil },
             onRemoveAttachment: { _ in }
         )
@@ -173,6 +176,7 @@ private struct DismissButton: View {
             onAcceptRole: { _ in true },
             onAcceptTask: { _ in true },
             onSubmitAnswer: { _, _, _, _ in true },
+            onRequestQuestionnaire: { _, _ in true },
             onStageAttachment: { _, _ in nil },
             onRemoveAttachment: { _ in }
         )
@@ -188,6 +192,7 @@ private struct DismissButton: View {
             onAcceptRole: { _ in true },
             onAcceptTask: { _ in true },
             onSubmitAnswer: { _, _, _, _ in true },
+            onRequestQuestionnaire: { _, _ in true },
             onStageAttachment: { _, _ in nil },
             onRemoveAttachment: { _ in }
         )
@@ -202,6 +207,7 @@ private struct DismissButton: View {
             onAcceptRole: { _ in true },
             onAcceptTask: { _ in true },
             onSubmitAnswer: { _, _, _, _ in true },
+            onRequestQuestionnaire: { _, _ in true },
             onStageAttachment: { _, _ in nil },
             onRemoveAttachment: { _ in }
         )

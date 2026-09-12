@@ -255,6 +255,47 @@ nonisolated func makeSupervisorQuestionResult(
     )
 }
 
+/// The `ask_supervisor_form` twin of `makeSupervisorQuestionResult`.
+///
+/// The pending envelope reports the HEADLINE and the question count, not the whole form: the
+/// model just wrote the form, and echoing it back doubles the largest payload of the turn on
+/// a wire that is resent whole on every request.
+nonisolated func makeSupervisorFormResult(
+    toolName: String,
+    args: [String: Any],
+    inquiry: SupervisorInquiry,
+    droppedQuestions: Int = 0,
+    repairs: [String] = []
+) -> ToolExecutionResult {
+    // A dropped question is the one failure the model cannot see: it believes it asked, and
+    // no answer will ever come back for it. Per-element tolerance is still right — nine good
+    // questions are worth nine — but it has to be reported, not merely survived.
+    //
+    // `repairs` are the same kind of fact: what the runtime READ that the model did not
+    // write — typographic quotes taken as JSON quotes, a surplus closer ignored, a marker
+    // stripped off a label (`SupervisorFormTextRepair`, `SupervisorInquiryLabelRepair`).
+    // Every rewrite is reported (playbook REC.5); they ride ahead of the dropped-question
+    // line because they describe the text the count was taken over.
+    var warnings = repairs
+    if droppedQuestions > 0 {
+        warnings.append("\(droppedQuestions) question(s) were malformed and are not being asked. "
+            + "Each needs a `prompt` and a `kind`; a choice also needs `options`.")
+    }
+    return ToolExecutionResult(
+        toolName: toolName,
+        argumentsJSON: encodeArgsToJSON(args),
+        outputJSON: makeSuccessEnvelope(
+            data: AskSupervisorFormData(
+                headline: inquiry.headline,
+                questions: inquiry.questions.count,
+                status: "pending"),
+            meta: ToolResultMeta(warnings: warnings)
+        ),
+        isError: false,
+        signal: .supervisorForm(headline: inquiry.headline, inquiry: inquiry)
+    )
+}
+
 // MARK: - Synthetic results (built without executing the tool)
 
 nonisolated extension ToolExecutionResult {

@@ -38,6 +38,42 @@ final class QuickCaptureFormStateTests: XCTestCase {
         )
     }
 
+    /// A two-question form, and a payload asking it.
+    private var sampleInquiry: SupervisorInquiry {
+        SupervisorInquiry(
+            headline: "Q?",
+            questions: [
+                SupervisorInquiryQuestion(
+                    id: "scheme", prompt: "Which scheme?", kind: .singleChoice,
+                    options: [
+                        SupervisorInquiryOption(id: "debug", label: "Debug"),
+                        SupervisorInquiryOption(id: "release", label: "Release"),
+                    ])
+            ])
+    }
+
+    private func makeFormPayload(taskID: Int = 0) -> SupervisorAnswerPayload {
+        SupervisorAnswerPayload(
+            stepID: "step_\(taskID)", taskID: taskID, role: .softwareEngineer,
+            roleDefinition: nil, question: "Q?", inquiry: sampleInquiry,
+            messageContent: nil, thinking: nil, isChatMode: false)
+    }
+
+    /// A draft holding one decision, given to `sampleInquiry`.
+    private func filledForm(_ optionID: String = "debug") -> SupervisorInquiryDraft {
+        SupervisorInquiryDraft(
+            inquiry: sampleInquiry,
+            answer: SupervisorInquiryAnswer(byQuestionID: [
+                "scheme": .init(selectedOptionIDs: [optionID])
+            ]))
+    }
+
+    /// The branch a `makePayload(taskID:)` question belongs to. These payloads are team-mode
+    /// on one role per task, so branch and task move together here.
+    private func key(_ taskID: Int) -> AnswerDraftKey {
+        QuickCaptureFormState.draftKey(for: makePayload(taskID: taskID))
+    }
+
     // MARK: - Batch pop (popQueuedMessages)
 
     private func queuedMsg(
@@ -189,6 +225,78 @@ final class QuickCaptureFormStateTests: XCTestCase {
         XCTAssertTrue(sut.canSubmit(mode: mode))
     }
 
+    /// Ticking options and pressing send without typing a word is how a questionnaire is
+    /// ordinarily answered — the card IS the answer field there.
+    ///
+    /// RED: leave `hasAnsweredInquiry` out of the answer branch → the panel shows a filled-in
+    /// form beside a dead send button, and nothing on screen says what is missing.
+    func testCanSubmit_supervisorAnswer_acceptsAFilledFormWithNoProse() {
+        let mode = QuickCaptureMode.supervisorAnswer(payload: makeFormPayload())
+        XCTAssertFalse(sut.canSubmit(mode: mode))
+
+        sut.answerInquiry = filledForm()
+        XCTAssertTrue(sut.canSubmit(mode: mode))
+    }
+
+    /// Opening the "other" field mints an entry that holds nothing. It must not light the send
+    /// button, or a click on "Other…" would offer to submit a blank answer.
+    func testCanSubmit_supervisorAnswer_refusesAnOpenButBlankField() {
+        let mode = QuickCaptureMode.supervisorAnswer(payload: makeFormPayload())
+        sut.answerInquiry = SupervisorInquiryDraft(
+            inquiry: sampleInquiry,
+            answer: SupervisorInquiryAnswer(byQuestionID: ["scheme": .init(freeText: "")]))
+        XCTAssertFalse(sut.canSubmit(mode: mode))
+    }
+
+    /// The bucket follows the panel across branches that continue one conversation, so the
+    /// ticks in hand can belong to a form the role has since replaced with a plain question.
+    ///
+    /// RED: drop the identity check from `hasAnsweredInquiry` → Send lights over a plain
+    /// question with no prose behind it, `submitAnswer` sends an empty answer, and the step is
+    /// unparked having been told nothing.
+    func testCanSubmit_supervisorAnswer_ignoresAFormTheQuestionIsNotAsking() {
+        sut.answerInquiry = filledForm()
+        XCTAssertFalse(sut.canSubmit(mode: .supervisorAnswer(payload: makePayload())),
+                       "this payload asks a plain question — those ticks answer nothing here")
+
+        let otherForm = SupervisorInquiry(
+            headline: "Q?",
+            questions: [SupervisorInquiryQuestion(
+                id: "scheme", prompt: "Which scheme, really?", kind: .singleChoice,
+                options: [SupervisorInquiryOption(id: "debug", label: "Debug")])])
+        let otherPayload = SupervisorAnswerPayload(
+            stepID: "step_0", taskID: 0, role: .softwareEngineer, roleDefinition: nil,
+            question: "Q?", inquiry: otherForm, messageContent: nil, thinking: nil,
+            isChatMode: false)
+        XCTAssertFalse(sut.canSubmit(mode: .supervisorAnswer(payload: otherPayload)),
+                       "same question id, different questionnaire — still not an answer to it")
+    }
+
+    /// The chat-working composer binds the same bucket and queues a MESSAGE. A questionnaire
+    /// is not one, so it must not enable that send button.
+    func testCanSubmit_chatWorking_ignoresAQuestionnaire() {
+        sut.answerInquiry = filledForm()
+        XCTAssertFalse(sut.canSubmit(mode: .taskWorking(roleName: "SWE", isChatMode: true)))
+    }
+
+    /// The answer bucket has FOUR members and they empty together. Three controller sites
+    /// spelled the set by hand and each was one field behind the moment it grew a fourth.
+    ///
+    /// RED: leave any one field out of `clearAnswerFields` → whatever stays behind is parked by
+    /// the `exitAnswerMode` that follows, under the branch whose question was just consumed.
+    func testClearAnswerFields_emptiesEveryMemberOfTheBucket() {
+        sut.answerText = "prose"
+        sut.answerClippedTexts = [Clip].minting(["clip"])
+        sut.answerInquiry = filledForm()
+
+        sut.clearAnswerFields()
+
+        XCTAssertEqual(sut.answerText, "")
+        XCTAssertTrue(sut.answerAttachments.isEmpty)
+        XCTAssertTrue(sut.answerClippedTexts.isEmpty)
+        XCTAssertNil(sut.answerInquiry)
+    }
+
     // MARK: - hasTaskDraftContent
 
     func testHasTaskDraftContent_falseWhenEmpty() {
@@ -217,9 +325,8 @@ final class QuickCaptureFormStateTests: XCTestCase {
         sut.exitAnswerMode()
 
         // Draft saved
-        let drafts = sut._testAnswerDrafts
-        XCTAssertEqual(drafts[1]?.text, "my answer")
-        XCTAssertEqual(drafts[1]?.clippedTexts, ["clip A"])
+        XCTAssertEqual(sut.answerDraftStore.peek(for: key(1))?.text, "my answer")
+        XCTAssertEqual(sut.answerDraftStore.peek(for: key(1))?.clippedTexts, ["clip A"])
 
         // Re-enter same task — draft restored
         sut.enterAnswerMode(payload: payload)
@@ -227,7 +334,7 @@ final class QuickCaptureFormStateTests: XCTestCase {
         XCTAssertEqual(sut.answerClippedTexts.texts, ["clip A"])
     }
 
-    func testSwitchAnswerTask_preservesBothDrafts() {
+    func testSwitchAnswerBranch_preservesBothDrafts() {
         let payloadA = makePayload(taskID: 10, question: "Q for A")
         let payloadB = makePayload(taskID: 20, question: "Q for B")
 
@@ -236,7 +343,7 @@ final class QuickCaptureFormStateTests: XCTestCase {
         sut.answerClippedTexts = [Clip].minting(["clip A"])
 
         // Switch to task B
-        sut.switchAnswerTask(from: 10, to: payloadB)
+        sut.updateAnswerPayload(payloadB)
         XCTAssertEqual(sut.answerText, "")
         XCTAssertTrue(sut.answerClippedTexts.isEmpty)
 
@@ -245,12 +352,12 @@ final class QuickCaptureFormStateTests: XCTestCase {
         sut.answerClippedTexts = [Clip].minting(["clip B"])
 
         // Switch back to task A
-        sut.switchAnswerTask(from: 20, to: payloadA)
+        sut.updateAnswerPayload(payloadA)
         XCTAssertEqual(sut.answerText, "answer A")
         XCTAssertEqual(sut.answerClippedTexts.texts, ["clip A"])
 
         // Switch back to B — still there
-        sut.switchAnswerTask(from: 10, to: payloadB)
+        sut.updateAnswerPayload(payloadB)
         XCTAssertEqual(sut.answerText, "answer B")
         XCTAssertEqual(sut.answerClippedTexts.texts, ["clip B"])
     }
@@ -273,8 +380,8 @@ final class QuickCaptureFormStateTests: XCTestCase {
 
         sut.exitAnswerMode()
 
-        XCTAssertEqual(sut._testAnswerDrafts[5]?.text, "draft text")
-        XCTAssertEqual(sut._testAnswerDrafts[5]?.clippedTexts, ["clip"])
+        XCTAssertEqual(sut.answerDraftStore.peek(for: key(5))?.text, "draft text")
+        XCTAssertEqual(sut.answerDraftStore.peek(for: key(5))?.clippedTexts, ["clip"])
     }
 
     func testDiscardAnswerDraft_removesDraft() {
@@ -283,10 +390,10 @@ final class QuickCaptureFormStateTests: XCTestCase {
         sut.answerText = "will be discarded"
         sut.exitAnswerMode()
 
-        XCTAssertNotNil(sut._testAnswerDrafts[7])
+        XCTAssertNotNil(sut.answerDraftStore.peek(for: key(7)))
 
-        sut.discardAnswerDraft(taskID: 7)
-        XCTAssertNil(sut._testAnswerDrafts[7])
+        sut.discardAnswerDraft(for: key(7))
+        XCTAssertNil(sut.answerDraftStore.peek(for: key(7)))
     }
 
     func testExitAnswerMode_emptyDraft_notSaved() {
@@ -295,7 +402,7 @@ final class QuickCaptureFormStateTests: XCTestCase {
         // Don't type anything, leave empty
         sut.exitAnswerMode()
 
-        XCTAssertNil(sut._testAnswerDrafts[3])
+        XCTAssertNil(sut.answerDraftStore.peek(for: key(3)))
     }
 
     func testDismissAndReopen_preservesDraft() {
@@ -315,14 +422,14 @@ final class QuickCaptureFormStateTests: XCTestCase {
         XCTAssertEqual(sut.answerClippedTexts.texts, ["code snippet"])
     }
 
-    func testSwitchAnswerTask_newTaskWithNoDraft_startsFresh() {
+    func testSwitchAnswerBranch_newTaskWithNoDraft_startsFresh() {
         let payloadA = makePayload(taskID: 1, question: "Q1")
         let payloadB = makePayload(taskID: 2, question: "Q2")
 
         sut.enterAnswerMode(payload: payloadA)
         sut.answerText = "answer for A"
 
-        sut.switchAnswerTask(from: 1, to: payloadB)
+        sut.updateAnswerPayload(payloadB)
 
         // New task has no draft — starts fresh
         XCTAssertEqual(sut.answerText, "")
@@ -341,7 +448,7 @@ final class QuickCaptureFormStateTests: XCTestCase {
         sut.answerText = "answer A"
         sut.answerClippedTexts = [Clip].minting(["clip A"])
 
-        // Re-enter with different taskID (without explicit switchAnswerTask)
+        // Re-enter with a different taskID — the guard routes it to `updateAnswerPayload`
         sut.enterAnswerMode(payload: payloadB)
 
         // Must NOT show stale data from task A
@@ -350,8 +457,8 @@ final class QuickCaptureFormStateTests: XCTestCase {
         XCTAssertEqual(sut.pendingAnswer?.taskID, 20)
 
         // Task A draft must be preserved
-        XCTAssertEqual(sut._testAnswerDrafts[10]?.text, "answer A")
-        XCTAssertEqual(sut._testAnswerDrafts[10]?.clippedTexts, ["clip A"])
+        XCTAssertEqual(sut.answerDraftStore.peek(for: key(10))?.text, "answer A")
+        XCTAssertEqual(sut.answerDraftStore.peek(for: key(10))?.clippedTexts, ["clip A"])
     }
 
     func testEnterAnswerMode_reentry_sameTaskID_keepsState() {
@@ -380,7 +487,7 @@ final class QuickCaptureFormStateTests: XCTestCase {
         sut.answerClippedTexts = [Clip].minting(["clip"])
 
         // Simulate controller's post-submit cleanup
-        sut.discardAnswerDraft(taskID: 42)
+        sut.discardAnswerDraft(for: key(42))
         sut.answerText = ""
         sut.answerAttachments = []
         sut.answerClippedTexts = []
@@ -401,7 +508,7 @@ final class QuickCaptureFormStateTests: XCTestCase {
         sut.answerClippedTexts = [Clip].minting(["snippet"])
 
         // Simulate controller's cancelDraft cleanup
-        sut.discardAnswerDraft(taskID: 7)
+        sut.discardAnswerDraft(for: key(7))
         sut.answerText = ""
         sut.answerAttachments = []
         sut.answerClippedTexts = []
@@ -446,35 +553,148 @@ final class QuickCaptureFormStateTests: XCTestCase {
         return try StagedAttachment(url: url, stagedRelativePath: "draft/\(name)")
     }
 
-    func testCaptureLiveComposerAsAnswerDraft_persistsTextAttachmentsAndClips() throws {
+    /// The hand-off parks what does NOT belong where the composer is going — all FOUR
+    /// members of the bucket, the questionnaire included.
+    ///
+    /// RED: drop `inquiry` from `parkLiveAnswerFields` (or from `AnswerDraft`) → the
+    /// half-filled form is gone the first time the panel changes branch, which is what the
+    /// store's doc comment promises it survives.
+    func testHandOff_toAnotherTask_parksEveryMemberOfTheBucket() throws {
         let attachment = try makeStagedAttachment(name: "spec.txt")
+        sut.claimAnswerFields(for: .taskChat(42))
         sut.answerText = "queued message"
         sut.answerAttachments = [attachment]
         sut.answerClippedTexts = [Clip].minting(["clip-1"])
+        sut.answerInquiry = filledForm()
 
-        sut.captureLiveComposerAsAnswerDraft(taskID: 42)
+        sut.handOffLiveAnswerFields(to: .taskChat(43))
 
-        let draft = sut._testAnswerDrafts[42]
+        let draft = sut.answerDraftStore.peek(for: .taskChat(42))
         XCTAssertEqual(draft?.text, "queued message")
         XCTAssertEqual(draft?.attachments, [attachment])
         XCTAssertEqual(draft?.clippedTexts, ["clip-1"])
+        XCTAssertEqual(draft?.inquiry?.answer.byQuestionID["scheme"]?.selectedOptionIDs, ["debug"])
+        XCTAssertNil(sut.answerInquiry, "and the arriving branch starts with a clean form")
     }
 
-    func testCaptureLiveComposerAsAnswerDraft_emptyContent_removesDraft() throws {
+    /// The other half: a parked form comes BACK with its prose.
+    ///
+    /// RED: drop `answerInquiry = draft?.inquiry` from `loadLiveAnswerFields`
+    /// → the prose comes back and the questionnaire does not, so the last assertion fails.
+    func testHandOff_backAgain_takesTheFormWithTheProse() {
+        sut.claimAnswerFields(for: .taskChat(42))
+        sut.answerText = "half a sentence"
+        sut.answerInquiry = filledForm()
+
+        sut.handOffLiveAnswerFields(to: .taskChat(43))
+        sut.handOffLiveAnswerFields(to: .taskChat(42))
+
+        XCTAssertEqual(sut.answerText, "half a sentence")
+        XCTAssertEqual(sut.answerInquiry?.answer.byQuestionID["scheme"]?.selectedOptionIDs,
+                       ["debug"])
+        XCTAssertNil(sut.answerDraftStore.peek(for: .taskChat(42)),
+                     "taken, not copied")
+    }
+
+    /// A chat task's thread and the question that thread asks are ONE conversation, so the
+    /// live fields follow instead of round-tripping through the store.
+    ///
+    /// RED: make `AnswerDraftKey.continues(into:)` return false for the chat↔role pair → the
+    /// text is parked under `.taskChat` and the answer box opens empty, which is exactly the
+    /// "my message disappears" report the hand-off machinery exists to close.
+    func testHandOff_chatThreadToItsOwnRolesQuestion_movesNothing() {
+        sut.claimAnswerFields(for: .taskChat(42))
+        sut.answerText = "was writing to the assistant"
+
+        sut.handOffLiveAnswerFields(to: .role(TaskStepKey(taskID: 42, stepID: "assistant")))
+
+        XCTAssertEqual(sut.answerText, "was writing to the assistant")
+        XCTAssertTrue(sut.answerDraftStore.keys(forTask: 42).isEmpty,
+                      "nothing was parked — the fields were re-labelled, not moved")
+        XCTAssertEqual(sut.answerFieldsOwnerKey,
+                       .role(TaskStepKey(taskID: 42, stepID: "assistant")))
+    }
+
+    /// Two roles of ONE chat task are two conversations. Quest Party has five.
+    ///
+    /// RED: collapse a chat task's recipients onto `.taskChat(t)` again → the Lore Master's
+    /// reply is still in the box when the NPC Creator's question arrives.
+    func testHandOff_betweenTwoRolesOfOneChatTask_parksTheFirstReply() {
+        let lore = AnswerDraftKey.role(TaskStepKey(taskID: 3, stepID: "lore"))
+        let npc = AnswerDraftKey.role(TaskStepKey(taskID: 3, stepID: "npc"))
+        sut.claimAnswerFields(for: lore)
+        sut.answerText = "for the Lore Master"
+
+        sut.handOffLiveAnswerFields(to: npc)
+
+        XCTAssertEqual(sut.answerText, "", "the NPC Creator's box opens empty")
+        XCTAssertEqual(sut.answerDraftStore.peek(for: lore)?.text, "for the Lore Master")
+    }
+
+    // MARK: - The unclaimed arrival — the one hand-off with nothing to compare against
+
+    /// `dismissPanel` in answer mode parks under the ROLE that was asking. Reopening onto the
+    /// task's chat composer must still put the text back on screen: the thread and the question
+    /// asked in it are one conversation, and there is exactly one candidate.
+    func testUnclaimedArrival_withOneParkedBranch_takesIt() {
+        let assistant = AnswerDraftKey.role(TaskStepKey(taskID: 3, stepID: "assistant"))
+        sut.answerDraftStore.save(AnswerDraft(text: "half an answer"), for: assistant)
+
+        sut.restoreAnswerDraftToLiveFields(for: .taskChat(3))
+
+        XCTAssertEqual(sut.answerText, "half an answer")
+        XCTAssertTrue(sut.answerDraftStore.keys(forTask: 3).isEmpty, "taken, not copied")
+        XCTAssertEqual(sut.answerFieldsOwnerKey, .taskChat(3))
+    }
+
+    /// Two roles of one task each holding an unsent reply is a real state (CLAUDE.md #45), and
+    /// the chat thread continues BOTH of their conversations. Taking one would be a guess
+    /// settled by sort order; both stay parked and the docked composer's rows offer them by
+    /// name.
+    ///
+    /// RED: take `candidates.first` instead of requiring exactly one → the chat box opens
+    /// holding the Lore Master's reply because "lore" sorts before "npc".
+    func testUnclaimedArrival_withTwoParkedBranches_takesNeither() {
+        let lore = AnswerDraftKey.role(TaskStepKey(taskID: 3, stepID: "lore"))
+        let npc = AnswerDraftKey.role(TaskStepKey(taskID: 3, stepID: "npc"))
+        sut.answerDraftStore.save(AnswerDraft(text: "for the Lore Master"), for: lore)
+        sut.answerDraftStore.save(AnswerDraft(text: "for the NPC"), for: npc)
+
+        sut.restoreAnswerDraftToLiveFields(for: .taskChat(3))
+
+        XCTAssertEqual(sut.answerText, "", "neither reply is guessed into the box")
+        XCTAssertEqual(sut.answerDraftStore.keys(forTask: 3).count, 2, "both stay parked")
+        XCTAssertEqual(sut.answerFieldsOwnerKey, .taskChat(3),
+                       "the bucket is claimed either way — the claim is not the load")
+    }
+
+    /// Another task's parked reply is not a candidate, however lonely this task's chat thread.
+    func testUnclaimedArrival_ignoresAnotherTasksParkedDraft() {
+        sut.answerDraftStore.save(AnswerDraft(text: "belongs to task 9"), for: .taskChat(9))
+
+        sut.restoreAnswerDraftToLiveFields(for: .taskChat(3))
+
+        XCTAssertEqual(sut.answerText, "")
+        XCTAssertEqual(sut.answerDraftStore.peek(for: .taskChat(9))?.text, "belongs to task 9")
+    }
+
+    func testHandOff_emptyContent_leavesNoPhantomDraft() throws {
         let attachment = try makeStagedAttachment(name: "stale.txt")
-        // Pre-seed a draft via the existing path
+        // Pre-seed a draft by parking a real one.
+        sut.claimAnswerFields(for: .taskChat(99))
         sut.answerText = "stale"
         sut.answerAttachments = [attachment]
-        sut.captureLiveComposerAsAnswerDraft(taskID: 99)
-        XCTAssertNotNil(sut._testAnswerDrafts[99])
+        sut.handOffLiveAnswerFields(to: .taskChat(100))
+        XCTAssertNotNil(sut.answerDraftStore.peek(for: .taskChat(99)))
 
-        // Clear live fields then capture again — empty content removes the entry
+        // Come back, empty the fields, leave again — an empty park removes the entry.
+        sut.handOffLiveAnswerFields(to: .taskChat(99))
         sut.answerText = "   "
         sut.answerAttachments = []
         sut.answerClippedTexts = []
-        sut.captureLiveComposerAsAnswerDraft(taskID: 99)
+        sut.handOffLiveAnswerFields(to: .taskChat(100))
 
-        XCTAssertNil(sut._testAnswerDrafts[99])
+        XCTAssertNil(sut.answerDraftStore.peek(for: .taskChat(99)))
     }
 
     func testRestoreAnswerDraftToLiveFields_loadsSavedDraft() throws {
@@ -482,25 +702,34 @@ final class QuickCaptureFormStateTests: XCTestCase {
         sut.answerText = "msg"
         sut.answerAttachments = [attachment]
         sut.answerClippedTexts = [Clip].minting(["c1", "c2"])
-        sut.captureLiveComposerAsAnswerDraft(taskID: 7)
+        sut.answerDraftStore.save(
+            AnswerDraft(text: "msg", attachments: [attachment], clippedTexts: ["c1", "c2"]),
+            for: .taskChat(7))
 
         // Simulate the post-`exitAnswerMode` cleared state
         sut.answerText = ""
         sut.answerAttachments = []
         sut.answerClippedTexts = []
 
-        sut.restoreAnswerDraftToLiveFields(taskID: 7)
+        sut.restoreAnswerDraftToLiveFields(for: .taskChat(7))
 
         XCTAssertEqual(sut.answerText, "msg")
         XCTAssertEqual(sut.answerAttachments, [attachment])
         XCTAssertEqual(sut.answerClippedTexts.texts, ["c1", "c2"])
+        // TAKEN, not read. Leaving the entry behind puts the same reply in the live fields
+        // AND in the store — and the store is what the docked composer's parked-draft rows
+        // render, so the user would be offered back the text already in front of them.
+        //
+        // RED: `peek` instead of `take` in `restoreAnswerDraftToLiveFields`.
+        XCTAssertNil(sut.answerDraftStore.peek(for: .taskChat(7)),
+                     "the store holds nothing under a branch the live fields are holding")
     }
 
     func testRestoreAnswerDraftToLiveFields_noDraft_isNoOp() {
         sut.answerText = "live"
         sut.answerClippedTexts = [Clip].minting(["c"])
 
-        sut.restoreAnswerDraftToLiveFields(taskID: 1234)
+        sut.restoreAnswerDraftToLiveFields(for: .taskChat(1234))
 
         // Live fields untouched — no draft existed for that taskID
         XCTAssertEqual(sut.answerText, "live")

@@ -4,8 +4,8 @@ import XCTest
 /// Coverage for `TeamEditorValidation.issues(team:allTeams:)` — the pure builder
 /// behind the Team Editor's validation banner. Pins the severity mapping
 /// (structural → error, delegation → forwarded severity) and the scope: structural
-/// checks plus exactly the two live `TeamValidationService` validators, pinned at the
-/// source because after 2026-09-04 there is no other validator left to exclude.
+/// checks plus exactly the live `TeamValidationService` validators (`liveValidators`),
+/// pinned at the source because after 2026-09-04 there is no other validator left to exclude.
 final class TeamEditorValidationTests: XCTestCase {
 
     private static let editorPath = "NanoTeams/Views/Settings/TeamEditor/TeamEditorView.swift"
@@ -13,6 +13,7 @@ final class TeamEditorValidationTests: XCTestCase {
     private static let liveValidators = [
         "validateDelegationPolicy", "validateAttachedSkills",
         "validateMeetingCoordinator", "validateSupervisorMode",
+        "validateSupervisorAskTools",
     ]
 
     /// Comment-stripped source (CLAUDE.md #89): `issues`' own doc comment names both members.
@@ -105,20 +106,20 @@ final class TeamEditorValidationTests: XCTestCase {
                       "unknownDelegationTeam / noDelegationTargets are warnings — severity must be forwarded, not forced to error.")
     }
 
-    // MARK: - Scope: the banner calls exactly the two live validators (source pin)
+    // MARK: - Scope: the banner calls exactly the live validators (source pin)
 
     /// A structural fact pinned at the source: `TeamEditorValidation.issues` reaches
-    /// `TeamValidationService` through `validateDelegationPolicy` and `validateAttachedSkills`
-    /// and nothing else. Until 2026-09-04 a behavioural test proved the scope by building a
-    /// dependency error the banner did NOT surface; the validator that produced that error was
-    /// deleted as dead code, so the fact is structural now and is pinned as such — a third
-    /// member wired in here is a decision about the banner, not a drive-by.
+    /// `TeamValidationService` through the `liveValidators` list and nothing else. Until
+    /// 2026-09-04 a behavioural test proved the scope by building a dependency error the banner
+    /// did NOT surface; the validator that produced that error was deleted as dead code, so the
+    /// fact is structural now and is pinned as such — one more member wired in here is a
+    /// decision about the banner, not a drive-by.
     ///
     /// RED: add `issues += TeamValidationService.validateDelegationPolicy(team: team, allTeams: allTeams).map { … }`
-    /// a second time (or any third member) inside `issues(team:allTeams:knownSkillIDs:)` → the
+    /// a second time (or any unlisted member) inside `issues(team:allTeams:knownSkillIDs:)` → the
     /// member list gains an entry and the equality fails naming it. Both sides are sorted: the
-    /// law is "exactly these two members, each once" — the order of the two `issues +=` lines
-    /// is not part of it, so swapping them stays green.
+    /// law is "exactly these members, each once" — the order of the `issues +=` lines is not
+    /// part of it, so swapping them stays green.
     func testBannerCallsExactlyTheLiveValidators() throws {
         let code = try strippedSource(Self.editorPath)
         guard let body = RatchetSourceScan.functionBody(after: "static func issues(", in: code)
@@ -128,13 +129,13 @@ final class TeamEditorValidationTests: XCTestCase {
                        "the banner's `TeamValidationService` surface is exactly the live validators")
     }
 
-    /// Anti-vacuum for the pin above (CLAUDE.md #104): both needles are still DECLARED on the
-    /// service under the names searched for, and they are the only validators it declares — a
-    /// rename or a third `validate…` entry reddens THIS file and says which needle to re-aim.
+    /// Anti-vacuum for the pin above (CLAUDE.md #104): every needle is still DECLARED on the
+    /// service under the name searched for, and they are the only validators it declares — a
+    /// rename or one more `validate…` entry reddens THIS file and says which needle to re-aim.
     ///
     /// RED: rename `validateAttachedSkills` in `TeamValidationService.swift` → the second
-    /// `contains` fails; add a third `static func validate…` there → the count assertion fails.
-    func testTheTwoLiveValidatorsAreTheOnlyOnesDeclared() throws {
+    /// `contains` fails; add one more `static func validate…` there → the count assertion fails.
+    func testTheLiveValidatorsAreTheOnlyOnesDeclared() throws {
         let service = try strippedSource(Self.servicePath)
         for name in Self.liveValidators {
             XCTAssertTrue(service.contains("static func \(name)("),

@@ -42,9 +42,7 @@ extension QuickCaptureController {
             targetRoleID: targetRoleID
         )
         guard queued else { return }
-        formState.answerText = ""
-        formState.answerAttachments = []
-        formState.answerClippedTexts = []
+        formState.clearAnswerFields()
         // The queued message now names files under `.nanoteams/staged/<draftID>/`, and it
         // outlives this composer. Rotate, exactly as `clearTaskDraft()` does on the task
         // path, so the batch owns that directory and the live composer starts a fresh one
@@ -519,9 +517,11 @@ extension QuickCaptureController {
         // through `answerSupervisorQuestion`, which routes via the `ask_supervisor`
         // tool-result path; LLM attribution is intrinsic.
         var bodies: [String] = []
+        var typed: [String] = []
         var combinedAttachments: [StagedAttachment] = []
         var failedFiles: [String] = []
         for msg in popped {
+            typed.append(msg.text)
             let built = AnswerTextBuilder.build(
                 text: msg.text,
                 clips: msg.clippedTexts,
@@ -539,6 +539,19 @@ extension QuickCaptureController {
         // `message_task`) — any human content in the batch makes it a human answer.
         let allAutomated = popped.allSatisfy(\.isFromAutomatedSupervisor)
 
+        // Minted whenever the step is parked on a questionnaire, and with an EMPTY answer:
+        // these are messages, not decisions. Its presence is what says a person (or the
+        // Autovisor's `message_task`, which writes prose too) authored this, and without it
+        // `SupervisorInquiryReply.compose` reads the text back with `parse` — the grammar
+        // written for a model's `Q2: 1, 3` reply, under which a message opening "1. Use
+        // Release instead" SELECTS option 1 of question 1. The note is what was typed;
+        // `combinedAnswer` additionally carries the clip and attached-file sections.
+        let submission = step.supervisorInquiry.map { _ in
+            SupervisorInquirySubmission(
+                answer: SupervisorInquiryAnswer(),
+                note: typed.joined(separator: "\n"))
+        }
+
         // answerSupervisorQuestion auto-resumes the run — do NOT call resumeRun separately.
         let errorsBefore = store.errorSurfaceCount
         let delivered = await store.answerSupervisorQuestion(
@@ -546,7 +559,8 @@ extension QuickCaptureController {
             taskID: taskID,
             answer: combinedAnswer,
             attachments: combinedAttachments,
-            isAutoAnswer: allAutomated
+            origin: allAutomated ? .automated : .supervisor,
+            submission: submission
         )
         if delivered, !failedFiles.isEmpty {
             // Same report the two sibling submit paths (`createTask`, `submitAnswer`) make from

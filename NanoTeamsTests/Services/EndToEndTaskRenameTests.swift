@@ -7,8 +7,10 @@ import XCTest
 /// confirms/cancels.
 ///
 /// This covers the full `TaskManagementState.requestRename` +
-/// `confirmRename` / `cancelRename` contract as it integrates with the
-/// orchestrator's `updateTaskTitle`.
+/// `takePendingRename` / `cancelRename` contract as it integrates with the
+/// orchestrator's `updateTaskTitle`. Every confirm below is spelled the way the
+/// alert's button spells it — snapshot synchronously, then await the mutation —
+/// so the suite exercises production's composition rather than a shortcut past it.
 ///
 /// Pinned behavior:
 /// 1. Request rename seeds `renameText` with the current title.
@@ -74,7 +76,9 @@ final class EndToEndTaskRenameTests: NTMSOrchestratorTestBase, @unchecked Sendab
         tms.requestRename(taskID: id, currentName: "Original")
         tms.renameText = "Renamed Title"
 
-        await tms.confirmRename(store: sut)
+        if let pending = tms.takePendingRename() {
+            await sut.updateTaskTitle(id: pending.taskID, title: pending.title)
+        }
 
         XCTAssertNil(tms.taskToRename, "State cleared after confirm")
         XCTAssertEqual(tms.renameText, "")
@@ -84,13 +88,52 @@ final class EndToEndTaskRenameTests: NTMSOrchestratorTestBase, @unchecked Sendab
                        "Task title reflects the confirmed rename")
     }
 
+    /// Pin: the PRODUCTION ordering, which no other test in this file reproduces.
+    ///
+    /// `SidebarView`'s rename alert binds `isPresented` to a getter over the
+    /// payload itself (`taskToRename != nil`), so its setter calls
+    /// `cancelRename()` on every dismissal — the confirm dismissal included.
+    /// The button action and that setter both run inside ONE synchronous
+    /// main-thread turn; a `Task { }` body cannot start until that turn's stack
+    /// unwinds. So any read of `taskToRename` / `renameText` performed after an
+    /// actor hop sees state the dismissal has already cleared, and the rename
+    /// silently becomes a no-op indistinguishable from Cancel.
+    ///
+    /// Broken from `9834e2d8` ("God Object Refactoring", 2026-03-06), which
+    /// moved the `if let id = taskToRename` out of the button action and into
+    /// the confirm method — i.e. behind the hop. Nothing in the suite could see it:
+    /// no test constructs `SidebarView`, so the binding's setter — the only
+    /// production caller of `cancelRename()` between request and confirm — is
+    /// unreachable from here. This test stands in for it.
+    func testConfirmRename_survivesAlertDismissalClearingState() async {
+        await sut.openWorkFolder(tempDir)
+        let id = await sut.createTask(title: "Original", supervisorTask: "x")!
+
+        tms.requestRename(taskID: id, currentName: "Original")
+        tms.renameText = "Renamed"
+
+        guard let pending = tms.takePendingRename() else {
+            return XCTFail("Confirm must snapshot the pending rename synchronously")
+        }
+        // The alert's `isPresented` setter, firing before any enqueued work runs.
+        tms.cancelRename()
+
+        await sut.updateTaskTitle(id: pending.taskID, title: pending.title)
+
+        await sut.switchTask(to: id)
+        XCTAssertEqual(sut.activeTask?.title, "Renamed",
+                       "The rename must survive the alert's dismissal clearing the payload")
+    }
+
     func testConfirmRename_persistsToDisk_surviveRestart() async {
         await sut.openWorkFolder(tempDir)
         let id = await sut.createTask(title: "Original", supervisorTask: "x")!
 
         tms.requestRename(taskID: id, currentName: "Original")
         tms.renameText = "Persists"
-        await tms.confirmRename(store: sut)
+        if let pending = tms.takePendingRename() {
+            await sut.updateTaskTitle(id: pending.taskID, title: pending.title)
+        }
 
         // Simulate app restart
         sut = TestOrchestrator.make()
@@ -110,13 +153,74 @@ final class EndToEndTaskRenameTests: NTMSOrchestratorTestBase, @unchecked Sendab
         tms.requestRename(taskID: id, currentName: "KeepMe")
         tms.renameText = ""
 
-        await tms.confirmRename(store: sut)
+        if let pending = tms.takePendingRename() {
+            await sut.updateTaskTitle(id: pending.taskID, title: pending.title)
+        }
 
         XCTAssertNil(tms.taskToRename, "State cleared (via cancelRename fallback)")
 
         await sut.switchTask(to: id)
         XCTAssertEqual(sut.activeTask?.title, "KeepMe",
                        "Empty rename must not clobber the existing title")
+    }
+
+    // MARK: - Corner cases of the synchronous take
+
+    /// Blankness is judged on the TRIMMED text: a title of nothing but spaces would
+    /// render as an empty sidebar row (`SidebarTaskRow` draws a bare `Text`, and the
+    /// app has no "Untitled" fallback), and neither sibling write path can produce
+    /// one — creation derives a title and refuses an empty result, the Autovisor's
+    /// `rename` verb trims and rejects. Rename must not be able to produce what the
+    /// others cannot.
+    func testTakePendingRename_whitespaceOnly_refused_titleUnchanged() async {
+        await sut.openWorkFolder(tempDir)
+        let id = await sut.createTask(title: "KeepMe", supervisorTask: "x")!
+
+        tms.requestRename(taskID: id, currentName: "KeepMe")
+        tms.renameText = "   \n  "
+
+        XCTAssertNil(tms.takePendingRename(),
+                     "A title that is blank once trimmed is not a rename the user meant")
+        XCTAssertNil(tms.taskToRename, "The refusal still dismisses the dialog")
+        XCTAssertEqual(tms.renameText, "")
+
+        await sut.switchTask(to: id)
+        XCTAssertEqual(sut.activeTask?.title, "KeepMe")
+    }
+
+    /// The take CONSUMES the payload, so a second call yields nothing — which is
+    /// what makes the alert's own `set(false)` → `cancelRename()` a harmless no-op
+    /// after a confirm.
+    func testTakePendingRename_isIdempotentAfterConsuming() async {
+        await sut.openWorkFolder(tempDir)
+        let id = await sut.createTask(title: "Original", supervisorTask: "x")!
+
+        tms.requestRename(taskID: id, currentName: "Original")
+        tms.renameText = "Renamed"
+
+        XCTAssertEqual(tms.takePendingRename(),
+                       TaskManagementState.PendingRename(taskID: id, title: "Renamed"))
+        XCTAssertNil(tms.takePendingRename(), "The payload is consumed, not merely read")
+    }
+
+    /// Renaming to the SAME string still persists and still restamps: `MonotonicClock`
+    /// is strictly increasing, so `TasksIndex.upsert` reports `moved` and the row
+    /// travels to slot 0. Pins that a no-change rename is not silently dropped.
+    func testTakePendingRename_sameTitle_stillPersistsAndRestamps() async {
+        await sut.openWorkFolder(tempDir)
+        let idA = await sut.createTask(title: "A", supervisorTask: "x")!
+        _ = await sut.createTask(title: "B", supervisorTask: "y")!
+        XCTAssertEqual(sut.snapshot?.tasksIndex.tasks.first?.title, "B",
+                       "Setup: the newest task heads the index")
+
+        tms.requestRename(taskID: idA, currentName: "A")
+        tms.renameText = "A"
+        if let pending = tms.takePendingRename() {
+            await sut.updateTaskTitle(id: pending.taskID, title: pending.title)
+        }
+
+        XCTAssertEqual(sut.snapshot?.tasksIndex.tasks.first?.id, idA,
+                       "The restamp moves the renamed row to the head even with an identical title")
     }
 
     // MARK: - Scenario 5: Siblings untouched
@@ -128,7 +232,9 @@ final class EndToEndTaskRenameTests: NTMSOrchestratorTestBase, @unchecked Sendab
 
         tms.requestRename(taskID: idA, currentName: "A original")
         tms.renameText = "A renamed"
-        await tms.confirmRename(store: sut)
+        if let pending = tms.takePendingRename() {
+            await sut.updateTaskTitle(id: pending.taskID, title: pending.title)
+        }
 
         await sut.switchTask(to: idB)
         XCTAssertEqual(sut.activeTask?.title, "B original",
@@ -146,7 +252,9 @@ final class EndToEndTaskRenameTests: NTMSOrchestratorTestBase, @unchecked Sendab
 
         tms.requestRename(taskID: id, currentName: "Original")
         tms.renameText = "Fresh Name"
-        await tms.confirmRename(store: sut)
+        if let pending = tms.takePendingRename() {
+            await sut.updateTaskTitle(id: pending.taskID, title: pending.title)
+        }
 
         let summary = sut.snapshot?.tasksIndex.tasks.first { $0.id == id }
         XCTAssertEqual(summary?.title, "Fresh Name",
@@ -164,7 +272,9 @@ final class EndToEndTaskRenameTests: NTMSOrchestratorTestBase, @unchecked Sendab
 
         tms.requestRename(taskID: id, currentName: "Original")
         tms.renameText = "With trailing space "
-        await tms.confirmRename(store: sut)
+        if let pending = tms.takePendingRename() {
+            await sut.updateTaskTitle(id: pending.taskID, title: pending.title)
+        }
 
         await sut.switchTask(to: id)
         XCTAssertEqual(sut.activeTask?.title, "With trailing space ",
@@ -213,7 +323,9 @@ final class EndToEndTaskRenameTests: NTMSOrchestratorTestBase, @unchecked Sendab
 
         tms.requestRename(taskID: idA, currentName: "Original")
         tms.renameText = "Renamed"
-        await tms.confirmRename(store: sut)
+        if let pending = tms.takePendingRename() {
+            await sut.updateTaskTitle(id: pending.taskID, title: pending.title)
+        }
 
         XCTAssertNil(sut.lastErrorMessage,
                      "No error banner should surface — pre-fix this was 'Cannot persist task N: task not loaded.'")
@@ -264,7 +376,9 @@ final class EndToEndTaskRenameTests: NTMSOrchestratorTestBase, @unchecked Sendab
 
         tms.requestRename(taskID: idA, currentName: "Original")
         tms.renameText = "Renamed"
-        await tms.confirmRename(store: sut)
+        if let pending = tms.takePendingRename() {
+            await sut.updateTaskTitle(id: pending.taskID, title: pending.title)
+        }
 
         XCTAssertNil(sut.lastErrorMessage)
         let reloaded = try sut.repository.loadTask(at: tempDir, taskID: idA)
@@ -303,7 +417,9 @@ final class EndToEndTaskRenameTests: NTMSOrchestratorTestBase, @unchecked Sendab
 
         tms.requestRename(taskID: idA, currentName: "Chat A")
         tms.renameText = "Renamed Chat"
-        await tms.confirmRename(store: sut)
+        if let pending = tms.takePendingRename() {
+            await sut.updateTaskTitle(id: pending.taskID, title: pending.title)
+        }
 
         XCTAssertNil(sut.lastErrorMessage)
         let reloaded = try sut.repository.loadTask(at: tempDir, taskID: idA)
@@ -347,7 +463,9 @@ final class EndToEndTaskRenameTests: NTMSOrchestratorTestBase, @unchecked Sendab
 
         tms.requestRename(taskID: idA, currentName: "Original")
         tms.renameText = "Renamed"
-        await tms.confirmRename(store: sut)
+        if let pending = tms.takePendingRename() {
+            await sut.updateTaskTitle(id: pending.taskID, title: pending.title)
+        }
 
         XCTAssertNotNil(sut.lastErrorMessage, "Disk error must surface to the user")
         XCTAssertFalse(

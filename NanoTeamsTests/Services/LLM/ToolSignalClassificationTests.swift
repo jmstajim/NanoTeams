@@ -20,6 +20,9 @@ final class ToolSignalClassificationTests: XCTestCase {
     /// the deliberate act the scan demands — it should be accompanied by a reason.
     private static let deliberatelyRegular: Set<String> = [
         "supervisorQuestion",   // handled by the step-stop machinery, not a result finalizer
+        "supervisorForm",       // same park-and-exit path as its plain sibling: the dispatcher
+        // folds it into the outcome and the step returns, so there is no deferred handler to
+        // reach and nothing to reflect back onto the card
         "artifact",             // persisted by processCreateArtifactResult on the regular path
         "teamCreation",         // team installation is owned by runTeamGeneration
         "exploratorySearch",    // rewritten by its own finalizer (see shouldRecordInTrackerPreFinalize)

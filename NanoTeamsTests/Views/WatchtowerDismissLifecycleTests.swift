@@ -68,7 +68,7 @@ final class WatchtowerDismissLifecycleTests: XCTestCase {
 
         let notifications = run.allWatchtowerNotifications(task: task, teamRoles: [])
         XCTAssertEqual(notifications.count, 1)
-        if case .supervisorInput(let stepID, let question, _, _) = notifications.first {
+        if case .supervisorInput(let stepID, let question, _, _, _) = notifications.first {
             XCTAssertEqual(stepID, "step_1")
             XCTAssertEqual(question, "What next?")
         } else {
@@ -275,7 +275,7 @@ final class WatchtowerDismissLifecycleTests: XCTestCase {
         let notifications = run.allWatchtowerNotifications(task: makeTask(runs: [run]), teamRoles: [])
 
         XCTAssertEqual(notifications.count, 1, "Q2 must surface even with stale supervisorAnswer from A1")
-        guard case .supervisorInput(let stepID, let question, _, _) = notifications.first else {
+        guard case .supervisorInput(let stepID, let question, _, _, _) = notifications.first else {
             return XCTFail("Expected .supervisorInput")
         }
         XCTAssertEqual(stepID, "step_1")
@@ -391,7 +391,7 @@ final class WatchtowerDismissLifecycleTests: XCTestCase {
 
     /// Companion to the predicate agreement above, one level down: the banner and the
     /// answer-time retirement must never disagree on WHICH key. `Run.allWatchtowerNotifications`
-    /// builds the key the view dismisses; `StepExecution.activeSupervisorInputDismissKey`
+    /// builds the key the view dismisses; `SupervisorQuestionInbox.dismissKey(forStep:taskID:)`
     /// is what `answerSupervisorQuestion` retires. Every question shape, including the
     /// one where they are easiest to get wrong — a flag-only escalation on a step whose
     /// earlier ask was already answered, where the trailing call's id is a stale identity.
@@ -422,19 +422,19 @@ final class WatchtowerDismissLifecycleTests: XCTestCase {
             let run = makeRun(steps: [shape.step])
             let all = WatchtowerInboxBuilder.build([.init(task: makeTask(runs: [run]), teamRoles: [])])
             XCTAssertEqual(all.count, 1, "shape \(shape.label): exactly one banner")
-            XCTAssertNotNil(shape.step.activeSupervisorInputDismissKey(taskID: 1),
+            XCTAssertNotNil(SupervisorQuestionInbox.dismissKey(forStep: shape.step, taskID: 1),
                             "anti-vacuum, shape \(shape.label): the retirement side must produce a key")
-            XCTAssertEqual(all.first?.dismissKey, shape.step.activeSupervisorInputDismissKey(taskID: 1),
+            XCTAssertEqual(all.first?.dismissKey, SupervisorQuestionInbox.dismissKey(forStep: shape.step, taskID: 1),
                            "shape \(shape.label): banner key and retirement key must agree")
         }
         XCTAssertEqual(
-            shapes[2].step.activeSupervisorInputDismissKey(taskID: 1)?.typeID, "s::Stalled",
+            SupervisorQuestionInbox.dismissKey(forStep: shapes[2].step, taskID: 1)?.typeID, "s::Stalled",
             "shape 3 is the text identity — the answered Q1's UUID would be a stale one")
 
         let quiet = makeStep(id: "s", needsSupervisorInput: false, question: nil, answer: "A")
         let none = WatchtowerInboxBuilder.build([.init(task: makeTask(runs: [makeRun(steps: [quiet])]), teamRoles: [])])
         XCTAssertTrue(none.isEmpty, "a step that is not waiting produces no banner")
-        XCTAssertNil(quiet.activeSupervisorInputDismissKey(taskID: 1), "…and no key to retire")
+        XCTAssertNil(SupervisorQuestionInbox.dismissKey(forStep: quiet, taskID: 1), "…and no key to retire")
     }
 
     /// Gap-window invariant: after the user answers via
@@ -607,6 +607,55 @@ final class WatchtowerDismissLifecycleTests: XCTestCase {
         let visible = r2Notifications.filter { !isDismissed($0) }
         XCTAssertEqual(visible.count, 1,
                        "round 2 must surface even though round 1 with the same text was dismissed")
+    }
+
+    /// The window between round N+1's ask landing in `toolCalls` and the park writing the
+    /// flag — two `mutateTask` publishes wide, so it renders.
+    ///
+    /// The banner used to read `supervisorQuestion ?? parsed-args`, and `??` short-circuits
+    /// on a non-nil left side. `answerSupervisorQuestion` never clears `supervisorQuestion`,
+    /// so here the left side is round N's ALREADY-ANSWERED text and the banner showed it —
+    /// the very lag the fallback was written for, and the one shape it could not reach.
+    /// The composer had the flag gate; the Watchtower did not.
+    ///
+    /// RED: in `SupervisorQuestionInbox` drop the `step.needsSupervisorInput` condition in
+    /// front of the stored-text arm → the banner says "Q1?" again.
+    func testBanner_inTheLagWindow_showsTheNewQuestionNotTheAnsweredOne() {
+        let q1 = makeAskCall(question: "Q1?")
+        let a1 = makeAnswerMessage(text: "A1")
+        let q2 = makeAskCall(question: "Q2?")
+        let step = StepExecution(
+            id: "s", role: .softwareEngineer, title: "T", status: .running,
+            toolCalls: [q1, a1.matchingToolCallStub, q2],
+            needsSupervisorInput: false,      // the park has not run yet
+            supervisorQuestion: "Q1?",        // …so this is still round N's, and answered
+            supervisorAnswer: "A1",
+            llmConversation: [a1.message]
+        )
+        let run = makeRun(steps: [step])
+        let notifications = run.allWatchtowerNotifications(task: makeTask(runs: [run]), teamRoles: [])
+        guard case .supervisorInput(_, let question, _, let toolCallID, _) = notifications.first else {
+            return XCTFail("expected one supervisorInput banner, got \(notifications)")
+        }
+        XCTAssertEqual(question, "Q2?")
+        XCTAssertEqual(toolCallID, q2.id, "and it is keyed on the ask that is actually open")
+    }
+
+    /// The banner and every other surface read ONE producer, so a question with no
+    /// recoverable text can no longer be silently skipped here while the composer shows a
+    /// chip for it. The old loop dropped the notification whenever the text chain returned
+    /// nil, which left the step waiting with nothing on screen to answer.
+    ///
+    /// RED: restore `if let question = step.supervisorQuestionText` around the append →
+    /// no banner, and the step waits forever.
+    func testBanner_waitingStepWithNoRecoverableText_stillGetsABanner() {
+        let step = makeStep(id: "s", needsSupervisorInput: true, question: nil)
+        let run = makeRun(steps: [step])
+        let notifications = run.allWatchtowerNotifications(task: makeTask(runs: [run]), teamRoles: [])
+        guard case .supervisorInput(_, let question, _, _, _) = notifications.first else {
+            return XCTFail("expected one supervisorInput banner, got \(notifications)")
+        }
+        XCTAssertEqual(question, SupervisorQuestionInbox.escalationFallbackQuestion)
     }
 
     // MARK: - Helpers

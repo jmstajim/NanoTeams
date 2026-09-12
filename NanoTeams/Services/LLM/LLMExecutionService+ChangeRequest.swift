@@ -73,12 +73,36 @@ extension LLMExecutionService {
         // Determine meeting participants: target + downstream consumers of target's artifacts
         let targetArtifacts = Set(targetRoleDef.dependencies.producesArtifacts)
         let resolvedTargetID = targetRoleDef.id
+        // The requester is excluded by its DEFINITION id (`stepID`): until 2026-09-11 this
+        // compared `roleDef.id` — a uuid — with `requestingRole.baseID`, a systemRoleID or a
+        // display name, so the guard never matched and the requester rode into the list to
+        // be dropped only by `filterParticipants`' `Role`-equality check.
         let downstreamRoleIDs = (team?.roles ?? []).compactMap { roleDef -> String? in
             guard !roleDef.isSupervisor,
-                  roleDef.id != requestingRole.baseID,
+                  roleDef.id != stepID,
                   roleDef.id != resolvedTargetID,
                   !Set(roleDef.dependencies.requiredArtifacts).isDisjoint(with: targetArtifacts) else { return nil }
             return roleDef.id
+        }
+
+        // Who chairs this vote, decided BEFORE the meeting is attempted: a team whose only
+        // non-Supervisor roles are the requester and the target has nobody to hold the gavel,
+        // and the requester must learn that instead of watching its own case be chaired by
+        // itself or by the role it is complaining about. Resolved from the same pure
+        // function `handleTeamMeeting` will use for the meeting itself, with the same
+        // arguments — `ChangeRequestAndAutovisorTailTests`'s presents-only test drives the
+        // whole vote and pins that the chair seated there is the one resolved here.
+        let seat = TeamMeetingService.InitiatorSeat.presentsOnly(targetRoleID: resolvedTargetID)
+        guard case .chair(let chair) = effectiveCoordinator(
+            team: team, initiator: requestingRole, requesterRoleID: stepID,
+            seat: seat, targetRoleID: resolvedTargetID)
+        else {
+            changeRequest.status = .rejected
+            await recordChangeRequest(taskID: tid, changeRequest: changeRequest)
+            return .failed(
+                "A change-request vote needs a chair who is neither the requester nor the "
+                    + "target; this team has none. Raise the point with \(targetRoleDef.name) "
+                    + "directly, or record it as an unresolved concern in your own output.")
         }
 
         var participantIDs = [resolvedTargetID] + downstreamRoleIDs
@@ -115,7 +139,7 @@ extension LLMExecutionService {
             context: voting.context,
             kind: .changeRequestVote,
             initiatingRole: requestingRole,
-            initiatorSeat: .presentsOnly,
+            initiatorSeat: seat,
             task: task,
             runIndex: runIndex,
             stepIndex: stepIndex,
@@ -137,8 +161,13 @@ extension LLMExecutionService {
 
         let meetingMessages = meeting?.messages ?? []
 
-        // Tally votes
-        let voteResult = ChangeRequestService.tallyVotes(meetingMessages: meetingMessages)
+        // Tally votes. The chair is passed so its ballot is weighed as an arbiter's — it
+        // speaks 6 of 10 turns in a three-seat vote, so counting it like any other voter let
+        // seating order decide every close call. The target is passed so its ballot is NOT
+        // weighed: it defends, the consumers vote, the chair arbitrates.
+        let voteResult = ChangeRequestService.tallyVotes(
+            meetingMessages: meetingMessages, coordinator: chair,
+            target: Role.fromDefinition(targetRoleDef))
 
         // Handle decision
         switch voteResult {
@@ -160,7 +189,16 @@ extension LLMExecutionService {
             if case .failed = amendmentResult {
                 return .failed("Change request APPROVED by team vote, but \(amendmentResult.text)")
             }
-            return .ok("Change request APPROVED by team vote. \(amendmentResult.text)")
+            // Say what the approval costs the requester, because the engine has already
+            // acted on it: this step is superseded (it will re-run once the target is done),
+            // and its build runners are withheld for the remainder of it — the target is
+            // rewriting the very tree a build would read.
+            return .ok(
+                "Change request APPROVED by team vote. \(amendmentResult.text) "
+                    + "Your current output will be superseded by your own re-run once "
+                    + "\(targetRoleDef.name) finishes, and the build runners are withheld "
+                    + "until then — the tree is being rewritten. Finish this step with what "
+                    + "you already have.")
 
         case .rejected:
             changeRequest.status = .rejected

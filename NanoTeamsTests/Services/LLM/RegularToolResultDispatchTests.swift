@@ -300,7 +300,7 @@ final class RegularToolResultDispatchTests: XCTestCase {
                       "The executor's scope-specific message reaches the model in the tool turn. got: \(conversation[0].content ?? "")")
 
         let guidance = conversation[1].content ?? ""
-        XCTAssertTrue(guidance.contains("do not retry 'git_commit'"),
+        XCTAssertTrue(guidance.contains("Do not retry 'git_commit'"),
                       "An unauthorised tool is a schema fact, not an argument bug — the model must be told to stop. got: \(guidance)")
         XCTAssertFalse(guidance.contains("is not available for this role"),
                        "the direction must not restate the turn before it. got: \(guidance)")

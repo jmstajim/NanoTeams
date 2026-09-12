@@ -22,6 +22,34 @@ final class SupervisorQuestionMergeTests: XCTestCase {
         return outcome
     }
 
+    /// Drives the REAL form merge beside the plain one, in the order the batch delivered them.
+    private func applyBatch(
+        _ items: [(question: String?, form: SupervisorInquiry?, providerID: String)]
+    ) -> LLMExecutionService.ToolResultsOutcome {
+        var outcome = LLMExecutionService.ToolResultsOutcome()
+        for item in items {
+            if let form = item.form {
+                LLMExecutionService.accumulateSupervisorForm(
+                    headline: form.headline, inquiry: form,
+                    providerID: item.providerID, into: &outcome)
+            } else if let question = item.question {
+                LLMExecutionService.accumulateSupervisorQuestion(
+                    question, providerID: item.providerID, into: &outcome)
+            }
+        }
+        return outcome
+    }
+
+    private func inquiry(
+        _ headline: String, _ questions: [(id: String, prompt: String)]
+    ) -> SupervisorInquiry {
+        SupervisorInquiry(
+            headline: headline,
+            questions: questions.map {
+                SupervisorInquiryQuestion(id: $0.id, prompt: $0.prompt, kind: .freeText)
+            })
+    }
+
     // MARK: - Single question
 
     func testSingleQuestion_storesQuestionAndStops() {
@@ -190,6 +218,110 @@ final class SupervisorQuestionMergeTests: XCTestCase {
     }
 
     // MARK: - Default outcome state
+
+    // MARK: - A batch mixing plain asks with a questionnaire
+
+    /// Plain asks alone allocate NO structure. The common path is every chat-mode turn, and a
+    /// questionnaire built for a batch that never carried one is memory nobody reads — the
+    /// surfaces render `supervisorQuestion`, which is unchanged.
+    ///
+    /// RED: drop the `outcome.hasSupervisorForm` guard in `accumulateSupervisorQuestion` → the
+    /// second assertion finds two questions on a batch with no form in it.
+    func testPlainAsksAlone_buildNoQuestionnaire() {
+        let outcome = applySignals([("Q1", "tc-1"), ("Q2", "tc-2")])
+
+        XCTAssertEqual(outcome.supervisorQuestion, "Q1\n\nQ2")
+        XCTAssertTrue(outcome.supervisorInquiryQuestions.isEmpty)
+        XCTAssertFalse(outcome.hasSupervisorForm)
+    }
+
+    /// Two plain asks, THEN a form: the earlier questions are stranded inside the merged
+    /// headline text with no entry of their own, so the form promotes them — in the order they
+    /// were asked, ahead of its own.
+    ///
+    /// RED: delete the promotion block in `accumulateSupervisorForm` → the card shows the form's
+    /// question alone and the two the model actually asked first are answerable nowhere.
+    func testPlainAsksThenForm_promotesTheEarlierOnesInOrder() {
+        let outcome = applyBatch([
+            (question: "How wide?", form: nil, providerID: "tc-1"),
+            (question: "How tall?", form: nil, providerID: "tc-2"),
+            (question: nil, form: inquiry("Layout", [(id: "scheme", prompt: "Which scheme?")]),
+             providerID: "tc-3"),
+        ])
+
+        XCTAssertTrue(outcome.hasSupervisorForm)
+        XCTAssertEqual(outcome.supervisorInquiryQuestions.map(\.prompt),
+                       ["How wide?", "How tall?", "Which scheme?"])
+        XCTAssertEqual(outcome.supervisorInquiryQuestions.map(\.id), ["ask_1", "ask_2", "scheme"])
+        XCTAssertEqual(outcome.supervisorQuestion, "How wide?\n\nHow tall?\n\nLayout")
+        XCTAssertEqual(outcome.supervisorToolCallProviderIDs, ["tc-1", "tc-2", "tc-3"])
+    }
+
+    /// A form, THEN a plain ask: the ask joins the questionnaire at the end rather than living
+    /// only in the headline string.
+    ///
+    /// RED: drop the append in `accumulateSupervisorQuestion` → the trailing question is in the
+    /// text and in no card.
+    func testFormThenPlainAsk_appendsItToTheQuestionnaire() {
+        let outcome = applyBatch([
+            (question: nil, form: inquiry("Layout", [(id: "scheme", prompt: "Which scheme?")]),
+             providerID: "tc-1"),
+            (question: "Anything else?", form: nil, providerID: "tc-2"),
+        ])
+
+        XCTAssertEqual(outcome.supervisorInquiryQuestions.map(\.prompt),
+                       ["Which scheme?", "Anything else?"])
+        XCTAssertEqual(outcome.supervisorInquiryQuestions.map(\.id), ["scheme", "ask_2"])
+    }
+
+    /// Two IDENTICAL plain asks are two questions. The synthesized id is positional for exactly
+    /// this reason: a text-derived id would collide and silently merge the two answers.
+    ///
+    /// RED: derive the id from the prompt text → both ids read `ask_which_one` and the second
+    /// answer overwrites the first.
+    func testTwoIdenticalPlainAsks_getDistinctPositionalIDs() {
+        let outcome = applyBatch([
+            (question: nil, form: inquiry("Pick", [(id: "a", prompt: "A?")]), providerID: "tc-1"),
+            (question: "Which one?", form: nil, providerID: "tc-2"),
+            (question: "Which one?", form: nil, providerID: "tc-3"),
+        ])
+
+        XCTAssertEqual(outcome.supervisorInquiryQuestions.map(\.id), ["a", "ask_2", "ask_3"])
+        XCTAssertEqual(outcome.supervisorInquiryQuestions.count, 3, "identical text, two questions")
+    }
+
+    /// Two forms in one batch are each internally unique and can still collide with each other.
+    /// The second one's colliding id is renamed, and the answers stay apart.
+    ///
+    /// RED: return `questions` unchanged from the dedupe → both entries carry `scheme`, and the
+    /// answer map (`byQuestionID`) holds one of the two.
+    func testTwoFormsInOneBatch_collidingIDsAreRenamed() {
+        let outcome = applyBatch([
+            (question: nil, form: inquiry("First", [(id: "scheme", prompt: "Which scheme?")]),
+             providerID: "tc-1"),
+            (question: nil, form: inquiry("Second", [(id: "scheme", prompt: "Which target?")]),
+             providerID: "tc-2"),
+        ])
+
+        XCTAssertEqual(outcome.supervisorInquiryQuestions.map(\.id), ["scheme", "scheme_2"])
+        XCTAssertEqual(outcome.supervisorInquiryQuestions.map(\.prompt),
+                       ["Which scheme?", "Which target?"])
+        XCTAssertEqual(outcome.supervisorQuestion, "First\n\nSecond")
+    }
+
+    /// A third collision walks past the taken suffix rather than reusing it.
+    ///
+    /// RED: stop the suffix search at 2 (`let id = "\(question.id)_2"`) → the third entry
+    /// collides with the second and the map loses one answer again.
+    func testThreeFormsSharingAnID_eachGetsItsOwn() {
+        let outcome = applyBatch([
+            (question: nil, form: inquiry("A", [(id: "q", prompt: "P1")]), providerID: "tc-1"),
+            (question: nil, form: inquiry("B", [(id: "q", prompt: "P2")]), providerID: "tc-2"),
+            (question: nil, form: inquiry("C", [(id: "q", prompt: "P3")]), providerID: "tc-3"),
+        ])
+
+        XCTAssertEqual(outcome.supervisorInquiryQuestions.map(\.id), ["q", "q_2", "q_3"])
+    }
 
     func testDefaultOutcome_allNilAndFalse() {
         let outcome = LLMExecutionService.ToolResultsOutcome()

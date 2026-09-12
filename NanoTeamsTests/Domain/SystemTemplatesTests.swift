@@ -190,11 +190,11 @@ final class SystemTemplatesTests: XCTestCase {
             TN.gitMerge, TN.gitPull, TN.gitStash,
             TN.runXcodebuild, TN.runXcodetests,
             TN.bash, TN.bashOutput,
-            TN.askSupervisor, TN.analyzeImage,
+            TN.askSupervisor, TN.askSupervisorForm, TN.analyzeImage,
             TN.screenCapture, TN.uiClick, TN.uiType, TN.uiKey, TN.uiScroll,
         ]
         XCTAssertEqual(Set(role.toolIDs), expected,
-                       "Coding Assistant factory must seed the full coding kit — git, xcode, shell, files, vision, computer use, supervisor")
+                       "Coding Assistant factory must seed the full coding kit — git, xcode, shell, files, vision, computer use, both supervisor-ask tools")
     }
 
     // MARK: - Default System Template
@@ -532,8 +532,8 @@ final class SystemTemplatesTests: XCTestCase {
 
     func testRoleTemplatesCount() {
         XCTAssertEqual(
-            SystemTemplates.roles.count, 23,
-            "Should have 23 built-in role templates (incl. Autovisor)"
+            SystemTemplates.roles.count, 32,
+            "Should have 32 built-in role templates (incl. Autovisor and the Ultra Team pipeline)"
         )
     }
 
@@ -541,8 +541,8 @@ final class SystemTemplatesTests: XCTestCase {
 
     func testArtifactTemplatesCount() {
         XCTAssertEqual(
-            SystemTemplates.artifacts.count, 16,
-            "Should have 16 built-in artifact templates"
+            SystemTemplates.artifacts.count, 24,
+            "Should have 24 built-in artifact templates"
         )
     }
 

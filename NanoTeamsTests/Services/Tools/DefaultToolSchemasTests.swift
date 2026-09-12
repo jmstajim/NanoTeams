@@ -61,7 +61,8 @@ final class DefaultToolSchemasTests: XCTestCase {
     }
 
     func testSupervisorToolsCount() {
-        XCTAssertEqual(count(in: .supervisor), 1)
+        // ask_supervisor + ask_supervisor_form — the two tools whose call parks the step.
+        XCTAssertEqual(count(in: .supervisor), 2)
     }
 
     func testMemoryToolsCount() {
@@ -90,12 +91,12 @@ final class DefaultToolSchemasTests: XCTestCase {
 
     // MARK: - Total Count
 
-    func testDefaultToolsCountIs50() {
-        // 45 prior + 5 computer-use tools (screen_capture, ui_click, ui_type,
-        // ui_key, ui_scroll — default-OFF per role, gated by the computer-use
-        // permission layer). Update whenever a tool is added / removed from
+    func testDefaultToolsCountIs51() {
+        // 45 + 5 computer-use tools (screen_capture, ui_click, ui_type, ui_key, ui_scroll —
+        // default-OFF per role, gated by the computer-use permission layer)
+        // + ask_supervisor_form. Update whenever a tool is added / removed from
         // `ToolHandlerRegistry.allTypes`.
-        XCTAssertEqual(tools.count, 50)
+        XCTAssertEqual(tools.count, 51)
     }
 
     /// Shell tools stay usable with no work folder open (unlike write/git/xcode) but

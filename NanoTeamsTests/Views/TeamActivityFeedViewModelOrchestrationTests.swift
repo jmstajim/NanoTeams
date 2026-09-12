@@ -965,7 +965,7 @@ final class TeamActivityFeedViewModelOrchestrationTests: XCTestCase {
         in items: [ActivityFeedBuilder.TaggedItem]
     ) -> (thinking: String?, createdAt: Date)? {
         for tagged in items {
-            if case let .notification(_, _, .supervisorInput(_, _, _, _, _, thinking, _), createdAt, _) = tagged.item {
+            if case let .notification(_, _, .supervisorInput(_, _, _, _, _, thinking, _, _), createdAt, _) = tagged.item {
                 return (thinking, createdAt)
             }
         }

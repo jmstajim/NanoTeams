@@ -70,6 +70,22 @@ final class ToolFailureFeedbackTests: XCTestCase {
         XCTAssertTrue(hint.contains("no arguments"), hint)
     }
 
+    /// The clause exists to name what did NOT arrive. When every required key arrived the
+    /// failure is inside a VALUE — a `form` that is not JSON, a `depth` out of range — and
+    /// "requires: form, headline. Your call carried: form, headline." diagnoses a defect the
+    /// call does not have, beside an envelope that already names the real one (a note for
+    /// the wrong failure is a false diagnosis — playbook R3.8.2; MeditationApp task 52 run 9,
+    /// 2026-09-11, three times in a row).
+    ///
+    /// RED: drop the coverage check → the two identical lists ship on every value error.
+    func testInvalidArgs_whenEveryRequiredArgumentArrived_addsNoClause() {
+        XCTAssertEqual(
+            ToolErrorNotePolicy.requiredArgumentsHint(
+                toolName: ToolNames.askSupervisorForm,
+                argumentsJSON: #"{"headline":"H","form":"{not json"}"#),
+            "")
+    }
+
     /// A tool with no required parameters must not get an empty "requires: ." clause.
     /// RED: drop the `required.isEmpty` guard → an argument-less tool gets the dangling
     /// clause `requires: .` appended to every failure.

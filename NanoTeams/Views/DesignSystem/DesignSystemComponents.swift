@@ -470,6 +470,41 @@ struct SettingsItemHeader: View {
     }
 }
 
+// MARK: - Disclosure Chevron
+
+/// The triangle that says "this section opens" — glyph, size, colour, rotation and Reduce
+/// Motion, decided once.
+///
+/// Five sites drew it by hand in THREE idioms: two swapped `chevron.right` for `chevron.down`
+/// (a swap cannot animate, so those two snapped while the content beside them slid), two
+/// rotated at `caption2.weight(.semibold)`, one rotated at plain `term2xs`. Nobody sees more
+/// than one at a time, which is exactly the shape a component fixes and a review comment does
+/// not (CLAUDE.md #51).
+///
+/// Rotation is the form kept: it is the one that animates, and the animation is what tells the
+/// reader the row they clicked is the row that opened. `Animations.quick` is applied HERE rather
+/// than inherited from the host's `withAnimation`, so the chevron honours Reduce Motion even at
+/// a call site that forgot to — which four of the five had.
+///
+/// Decorative by construction: every host's button already carries the label the chevron is
+/// about, so the glyph is hidden from the accessibility tree instead of reading as "chevron
+/// down" after it.
+struct DisclosureChevron: View {
+    let isExpanded: Bool
+    /// Ink. Defaults to the tertiary ramp; the composer's Thinking row tints it to the asking
+    /// role at `DynamicTintOpacity.stroke`, which is a deliberate exception and not a drift.
+    var color: Color = Colors.textTertiary
+
+    var body: some View {
+        Image(systemName: "chevron.right")
+            .font(Typography.term2xs.weight(.semibold))
+            .foregroundStyle(color)
+            .rotationEffect(.degrees(isExpanded ? 90 : 0))
+            .animationWithReduceMotion(Animations.quick, value: isExpanded)
+            .accessibilityHidden(true)
+    }
+}
+
 // MARK: - Settings Disclosure Row
 
 /// Collapsed-by-default disclosure section for settings cards: full-width
@@ -488,9 +523,7 @@ struct SettingsDisclosureRow<Content: View>: View {
                 withAnimation(Animations.quick) { isExpanded.toggle() }
             } label: {
                 HStack(spacing: Spacing.xs) {
-                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .font(Typography.caption2.weight(.semibold))
-                        .foregroundStyle(Colors.textTertiary)
+                    DisclosureChevron(isExpanded: isExpanded)
                     Image(systemName: icon)
                         .font(Typography.caption)
                         .foregroundStyle(Colors.textSecondary)

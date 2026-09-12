@@ -122,16 +122,6 @@ nonisolated struct NTMSPaths: Hashable {
             .appendingPathComponent("step_log.jsonl", isDirectory: false)
     }
 
-    func buildDiagnosticsJSON(taskID: Int, runID: Int, roleID: String, ancestors: [Int] = []) -> URL {
-        internalRoleDir(taskID: taskID, runID: runID, roleID: roleID, ancestors: ancestors)
-            .appendingPathComponent("build_diagnostics.json", isDirectory: false)
-    }
-
-    func buildExcerptsTXT(taskID: Int, runID: Int, roleID: String, ancestors: [Int] = []) -> URL {
-        internalRoleDir(taskID: taskID, runID: runID, roleID: roleID, ancestors: ancestors)
-            .appendingPathComponent("build_excerpts.txt", isDirectory: false)
-    }
-
     // MARK: - LLM-Accessible Paths (tasks/attachments and runs/artifacts)
 
     var tasksDir: URL { nanoteamsDir.appendingPathComponent("tasks", isDirectory: true) }

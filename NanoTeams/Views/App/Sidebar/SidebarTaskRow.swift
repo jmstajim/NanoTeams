@@ -108,6 +108,20 @@ struct SidebarTaskRow: View {
                             .foregroundStyle(Colors.warning)
                             .accessibilityLabel("Awaiting command approval")
                     }
+                    // Same glyph, colour and badge chrome as the composer's `N WAITING`, so
+                    // the number a Supervisor reads in the sidebar and the one they meet
+                    // above the chip row after clicking are visibly the same fact. The row
+                    // applies no threshold of its own: `waitingQuestionCount` is nil unless
+                    // the count is worth showing.
+                    if let waitingQuestionCount = task.waitingQuestionCount {
+                        TerminalStatusBadge(
+                            glyph: TerminalGlyph.review,
+                            label: "\(waitingQuestionCount)",
+                            color: Colors.warning,
+                            bordered: false
+                        )
+                        .accessibilityLabel("\(waitingQuestionCount) questions waiting")
+                    }
                 }
                 statusMetadataRow
             }
@@ -172,6 +186,12 @@ private extension Date {
         )
         SidebarTaskRow(
             task: SidebarTaskItem(id: 0, title: "Design API endpoints", status: .needsSupervisorInput),
+            updatedAt: Date()
+        )
+        SidebarTaskRow(
+            task: SidebarTaskItem(
+                id: 0, title: "Three roles waiting", status: .running,
+                isEngineRunning: true, waitingQuestionCount: 3),
             updatedAt: Date()
         )
         SidebarTaskRow(

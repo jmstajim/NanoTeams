@@ -5,27 +5,18 @@ import Synchronization
 #endif
 import UniformTypeIdentifiers
 
-// MARK: - Supervisor Answer Payload
-
-/// Data needed to render the QuickCapture overlay in supervisor-answer mode.
-struct SupervisorAnswerPayload {
-    let stepID: String
-    let taskID: Int
-    let role: Role
-    let roleDefinition: TeamRoleDefinition?
-    let question: String
-    let messageContent: String?
-    let thinking: String?
-    let isChatMode: Bool
-}
-
 // MARK: - Quick Capture Mode
 
 enum QuickCaptureMode {
     /// Floating overlay panel (compact)
     case overlay
-    /// Supervisor answer input — overlay shows LLM question + answer field
-    case supervisorAnswer(payload: SupervisorAnswerPayload)
+    /// Supervisor answer input — the overlay shows the questions waiting on this task, the
+    /// selected one's content, and the answer field.
+    ///
+    /// A SESSION and not a payload since 2026-09-10: with parallel roles (CLAUDE.md #45) a task
+    /// routinely parks two questions at once, and a panel carrying one of them had no route to
+    /// the others — answering the first was the only way to uncover the second.
+    case supervisorAnswer(session: SupervisorAnswerSession)
     /// Task is running (LLM working) — overlay shows a loader
     case taskWorking(roleName: String, isChatMode: Bool)
     /// The task's run start is claimed but has not reached `engine.start()` yet — the
@@ -41,6 +32,24 @@ enum QuickCaptureMode {
     /// Everything a live-task mode does with the composer it does here identically —
     /// ask through `liveTaskChatMode`, never by destructuring one of the two.
     case taskInitializing(isChatMode: Bool)
+
+    /// A single waiting question, as a session of one.
+    ///
+    /// Kept as a named spelling rather than making every caller say
+    /// `.supervisorAnswer(session: SupervisorAnswerSession(single:))`: a surface that genuinely
+    /// has one payload — a preview, a test describing one question, a caller that already
+    /// picked — is describing a real session, not working around the case's shape. Pattern
+    /// matches bind the SESSION, so nothing that needs to know about the row can reach for this
+    /// by accident.
+    static func supervisorAnswer(payload: SupervisorAnswerPayload) -> QuickCaptureMode {
+        .supervisorAnswer(session: SupervisorAnswerSession(single: payload))
+    }
+
+    /// The questions this mode is answering, or nil for the modes that answer none.
+    nonisolated var answerSession: SupervisorAnswerSession? {
+        if case .supervisorAnswer(let session) = self { return session }
+        return nil
+    }
 
     /// The chat-mode flag of the two modes that watch a LIVE task, or `nil` for the
     /// modes that watch none.
@@ -121,6 +130,14 @@ struct QuickCaptureFormView: View {
     @Bindable var formState: QuickCaptureFormState
     let onSubmit: @MainActor @Sendable () -> Void
     let onCancel: @MainActor @Sendable () -> Void
+    /// The user tapped another waiting question's chip.
+    ///
+    /// Required, like `onSubmit` and `onCancel` beside it. A default would make a DROPPED wire
+    /// compile and behave as a row of chips that do nothing — the panel's only route to the
+    /// other waiting questions, silently inert.
+    let onSelectQuestion: @MainActor @Sendable (String) -> Void
+    /// Sends the shown question back to be asked as a form, instead of answering it.
+    let onRequestQuestionnaire: @MainActor @Sendable () -> Void
 
     @Environment(NTMSOrchestrator.self) private var store
     @Environment(StreamingPreviewManager.self) private var streamingManager
@@ -163,10 +180,11 @@ struct QuickCaptureFormView: View {
 
     // MARK: - Mode Derivations
 
-    private var answerPayload: SupervisorAnswerPayload? {
-        if case .supervisorAnswer(let payload) = mode { return payload }
-        return nil
-    }
+    private var answerSession: SupervisorAnswerSession? { mode.answerSession }
+
+    /// The question on screen. Every row below it reads this and not the session, so the
+    /// question card, the header and the composer did not have to learn that a row exists.
+    private var answerPayload: SupervisorAnswerPayload? { answerSession?.selected }
 
     /// The overlay is watching a live task — running, or its run start in flight.
     private var isWorkingMode: Bool { mode.liveTaskChatMode != nil }
@@ -297,8 +315,21 @@ struct QuickCaptureFormView: View {
 
     private var answerModeBody: some View {
         Group {
+            // Only from two. One chip beside a header that already names the role is a control
+            // with nothing to switch to, and the panel is narrow (its content rect starts at
+            // 260pt and the user resizes it from there). It also cannot carry a
+            // dot: the selected question's draft is always the one in the fields — the
+            // hand-off takes it on the way in — so with a single question there is never a
+            // parked reply on this task for the row to point at.
+            if let session = answerSession, session.questions.count > 1 {
+                RecipientChipRow(
+                    chips: questionChips(session),
+                    selection: session.selected.stepID,
+                    badge: SupervisorAnswerFocus.waitingBadge(count: session.questions.count),
+                    onSelect: { onSelectQuestion($0) })
+            }
             if let payload = answerPayload {
-                questionText(payload.question)
+                askedContent(payload)
             }
             // No `Spacer` here on purpose. The composer hugs the question
             // directly so there is no "black band" between them at any panel
@@ -802,29 +833,68 @@ struct QuickCaptureFormView: View {
         return nil
     }
 
-    // MARK: - Question Text
+    // MARK: - Question Chips
 
-    private func questionText(_ text: String) -> some View {
-        // Chat-like layout: question fills whatever the VStack leaves between
-        // header and composer and scrolls internally when content is taller.
-        //
-        // No `minHeight` floor: composer's `.layoutPriority(1)` in
-        // `answerModeBody` already guarantees the composer's visibility, and a
-        // floor here would re-introduce overflow at minSize whenever the
-        // composer's natural height plus the floor exceeds the panel
-        // (complaint #6). The question is the give-first piece per R4.
-        //
-        // No `measuredFormHeight`-derived cap, no `onGeometryChange` on the
-        // Text — those create a measurement feedback loop and make the panel
-        // "breathe". `maxHeight: .infinity` lets the ScrollView absorb
-        // whatever the VStack hands it.
+    /// One pill per question waiting on this task, in the inbox's order.
+    ///
+    /// The dot is read from the draft store rather than tracked here: an entry exists exactly
+    /// when NO composer holds that branch's content (take-and-return), which is the same fact
+    /// the docked composer's parked rows render. The two surfaces cannot disagree about which
+    /// question is holding an unfinished reply because neither of them decides it.
+    private func questionChips(_ session: SupervisorAnswerSession) -> [RecipientChip<String>] {
+        let parked = Set(formState.answerDraftStore.keys(forTask: session.selected.taskID))
+        return session.questions.map { payload in
+            RecipientChip(
+                id: payload.stepID,
+                label: payload.roleDefinition?.name ?? payload.role.displayName,
+                icon: payload.roleDefinition?.icon ?? "person",
+                tint: payload.roleDefinition?.resolvedTintColor ?? Colors.accent,
+                hasUnsentDraft: parked.contains(QuickCaptureFormState.draftKey(for: payload)))
+        }
+    }
+
+    // MARK: - Asked Content
+
+    /// What the role asked: the question, plus the questionnaire when it asked one.
+    ///
+    /// Both inside ONE scroll area, and that area has no height floor and no measured cap.
+    /// Neither is an oversight: the composer's `.layoutPriority(1)` in `answerModeBody`
+    /// already guarantees the field's visibility, so a floor here would re-introduce overflow
+    /// at minimum panel size (complaint #6) — the asked content is the give-first piece per
+    /// R4. And a `measuredFormHeight`-derived cap with an `onGeometryChange` on the content
+    /// would close a measurement loop and make the panel breathe. `maxHeight: .infinity` lets
+    /// the ScrollView absorb whatever the VStack hands it, questionnaire included.
+    ///
+    /// The card's answer binds to `formState`, never to this view's state: the panel re-hosts
+    /// its `NSHostingView` whenever the resolved mode changes identity, and a half-filled form
+    /// in `@State` would blank itself mid-fill.
+    private func askedContent(_ payload: SupervisorAnswerPayload) -> some View {
         ScrollView {
-            Text(text)
-                .font(Typography.termBase)
-                .foregroundStyle(Colors.textPrimary)
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            // The same gap the composer leaves between a question's headline and its form —
+            // read from the card rather than spelled again, since the two hosts had drifted
+            // 4pt apart on a rhythm the card itself sets at 12 between its questions.
+            VStack(alignment: .leading, spacing: SupervisorInquiryCard.headlineGap) {
+                Text(payload.question)
+                    .font(Typography.termBase)
+                    .foregroundStyle(Colors.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                if let inquiry = payload.inquiry {
+                    SupervisorInquiryCard(inquiry: inquiry, draft: $formState.answerInquiry)
+                } else if SupervisorQuestionnaireRequest.isAvailable(
+                    inquiry: payload.inquiry, askCallID: payload.askCallID)
+                {
+                    // Same slot the form's card occupies: options to pick from when the role
+                    // asked for them, the button that asks for them when it did not. It stays
+                    // in the body here rather than moving to the panel header the way the
+                    // composer's does — the panel's content rect starts at 260pt, where the
+                    // header is already the role's name plus a close control.
+                    QuestionnaireRequestButton(action: onRequestQuestionnaire)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxHeight: .infinity)
     }

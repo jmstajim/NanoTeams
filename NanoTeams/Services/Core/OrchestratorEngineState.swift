@@ -14,6 +14,19 @@ final class OrchestratorEngineState {
     /// Role IDs currently in a meeting, keyed by task ID (for UI badge/glow).
     private(set) var activeMeetingParticipants: [Int: Set<String>] = [:]
 
+    /// Role IDs whose inputs are ready but which are waiting for a concurrency slot, keyed
+    /// by task ID (rendered as the "Queued" pill on the role node and its banner).
+    ///
+    /// An EPHEMERAL projection, exactly like `activeMeetingParticipants` above and for the
+    /// same reason: "queued" is a fact about the engine's current dispatch pass, not about
+    /// the run. A `RoleExecutionStatus` case would be persisted into `task.json`, where a
+    /// build without that case could no longer decode the run at all.
+    ///
+    /// Keyed by task ID because `StepExecution.id == roleID` (invariant #5): two tasks on
+    /// one team share every role id, so a flat set would leak one task's queue into another's
+    /// graph.
+    private(set) var queuedRoleIDs: [Int: Set<String>] = [:]
+
     /// Tasks whose run start is in flight: between `claimRunStart` and the moment
     /// `launchRun` hands off to `engine.start()`.
     ///
@@ -68,6 +81,7 @@ final class OrchestratorEngineState {
     func removeAllEngines() {
         taskEngineStates.removeAll()
         activeMeetingParticipants.removeAll()
+        queuedRoleIDs.removeAll()
         // Nothing survives the work-folder boundary — the same contract
         // `stopAllEngines` states for engines and pending launches. A claim left
         // behind would keep a spinner alive for a task id that now names a
@@ -103,6 +117,27 @@ final class OrchestratorEngineState {
 
     func clearMeetingParticipants(for taskID: Int) {
         activeMeetingParticipants[taskID] = nil
+    }
+
+    // MARK: - Queued Roles
+
+    /// Publishes the waiting-for-a-slot set for one task.
+    ///
+    /// Writes only on a real change: the engine asks four times a second while a role waits,
+    /// and an unconditional write would be four observation ticks a second through every
+    /// graph node for a value that did not move (CLAUDE.md #106).
+    func setQueuedRoles(_ roleIDs: Set<String>, for taskID: Int) {
+        if roleIDs.isEmpty {
+            guard queuedRoleIDs[taskID] != nil else { return }
+            queuedRoleIDs[taskID] = nil
+            return
+        }
+        guard queuedRoleIDs[taskID] != roleIDs else { return }
+        queuedRoleIDs[taskID] = roleIDs
+    }
+
+    func clearQueuedRoles(for taskID: Int) {
+        setQueuedRoles([], for: taskID)
     }
     nonisolated deinit {}
 }

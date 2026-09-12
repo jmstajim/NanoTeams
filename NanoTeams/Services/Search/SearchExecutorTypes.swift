@@ -1,8 +1,9 @@
 import Foundation
 
-/// Input bundle for a grep pass — used by both the plain `SearchTool` handler
-/// and the exploratory-search processor (which constrains the walk to a posting-hit
-/// set before invoking the executor).
+/// Input bundle for a grep pass — used unchanged by the plain `SearchTool` handler and by the
+/// exploratory-search processor, which differs only in appending its expansion terms to
+/// `queries`. Neither narrows the walk: the posting-hit constraint that did went with the
+/// postings (2026-09-11).
 ///
 /// `Sendable` because `SearchExecutor.run` is `@concurrent` — the input crosses an executor
 /// boundary on every call. That is a statement about this value, not a formality: it is read by
@@ -27,10 +28,6 @@ nonisolated struct SearchExecutorInput: Sendable {
     /// so pages can be requested in any order and page N+1 re-scans from the start. At ~55 ms a
     /// scan that is cheaper than any cache with an invalidation story.
     let offset: Int
-    /// When non-nil, the executor iterates exactly this set of relative file
-    /// paths instead of walking the directory tree. Used by exploratory search after
-    /// posting-list intersection narrows the candidate files.
-    let constrainToFiles: [String]?
     /// Optional restriction to a set of internal paths that should never be
     /// scanned (e.g. `.nanoteams/internal/`).
     let internalDir: URL?
@@ -54,7 +51,6 @@ nonisolated struct SearchExecutorInput: Sendable {
         contextAfter: Int = 0,
         maxResults: Int = 20,
         offset: Int = 0,
-        constrainToFiles: [String]? = nil,
         internalDir: URL? = nil,
         scanConcurrency: Int? = nil
     ) {
@@ -69,7 +65,6 @@ nonisolated struct SearchExecutorInput: Sendable {
         self.contextAfter = contextAfter
         self.maxResults = maxResults
         self.offset = offset
-        self.constrainToFiles = constrainToFiles
         self.internalDir = internalDir
         self.scanConcurrency = scanConcurrency
     }

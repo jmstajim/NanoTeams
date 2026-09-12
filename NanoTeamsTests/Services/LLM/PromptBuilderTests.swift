@@ -147,7 +147,7 @@ final class PromptBuilderTests: XCTestCase {
             teams: []
         )
 
-        let result = PromptBuilder.buildWorkFolderContextMessage(workFolder: wf)
+        let result = PromptBuilder.buildWorkFolderContextMessage(workFolder: wf, toolNames: [])
 
         XCTAssertNotNil(result)
         XCTAssertTrue(result!.contains("MyApp"), "Should include work folder name (bold)")
@@ -157,7 +157,7 @@ final class PromptBuilderTests: XCTestCase {
     }
 
     func testBuildWorkFolderContextMessage_nilProject_returnsNil() {
-        let result = PromptBuilder.buildWorkFolderContextMessage(workFolder: nil)
+        let result = PromptBuilder.buildWorkFolderContextMessage(workFolder: nil, toolNames: [])
 
         XCTAssertNil(result)
     }
@@ -169,9 +169,64 @@ final class PromptBuilderTests: XCTestCase {
             teams: []
         )
 
-        let result = PromptBuilder.buildWorkFolderContextMessage(workFolder: wf)
+        let result = PromptBuilder.buildWorkFolderContextMessage(workFolder: wf, toolNames: [])
 
         XCTAssertNil(result, "Should return nil when work folder has no context")
+    }
+
+    // MARK: - Which of these commands are yours to run (E7.7.6)
+
+    /// The first link in the MeditationApp task 48 causal chain. The work folder's own
+    /// `CLAUDE.md` said "run the project's build command yourself"; the context builder took
+    /// no role, so that order reached all seven roles, including the five holding no runner.
+    /// The planner, refused `run_xcodebuild`, wrote `=== BUILD SUCCESS ===` into the brief
+    /// 0.4 s later — and five roles downstream treated it as measured fact.
+    ///
+    /// RED: drop `toolNames` from `runnableCommandsSection` → both roles get the same line.
+    func testWorkFolderContext_roleWithoutRunners_isToldWhatIsNotItsToRun() {
+        let result = PromptBuilder.buildWorkFolderContextMessage(
+            workFolder: wf(context: "Ctx"),
+            agentInstructions: snap(main: ("CLAUDE.md", "Run the project's build command yourself.")),
+            toolNames: [ToolNames.readFile, ToolNames.createArtifact])
+
+        let text = try! XCTUnwrap(result)
+        XCTAssertTrue(text.contains("yours to run"), text)
+        XCTAssertTrue(text.contains("unverified"), text)
+        XCTAssertFalse(text.contains("`\(ToolNames.runXcodebuild)`"),
+                       "R5.2.4: an engine-authored turn names only tools the role actually holds")
+        XCTAssertFalse(text.contains("`\(ToolNames.bash)`"), text)
+    }
+
+    func testWorkFolderContext_roleWithRunners_isToldItCanRunThem() {
+        let result = PromptBuilder.buildWorkFolderContextMessage(
+            workFolder: wf(context: "Ctx"),
+            agentInstructions: snap(main: ("CLAUDE.md", "Run the project's build command yourself.")),
+            toolNames: [ToolNames.runXcodebuild, ToolNames.runXcodetests, ToolNames.readFile])
+
+        let text = try! XCTUnwrap(result)
+        XCTAssertTrue(text.contains("you can run"), text)
+        XCTAssertTrue(text.contains("`\(ToolNames.runXcodebuild)`"), text)
+        XCTAssertTrue(text.contains("`\(ToolNames.runXcodetests)`"), text)
+        XCTAssertFalse(text.contains("You hold no tool"), text)
+    }
+
+    func testWorkFolderContext_bashRole_namesTheShellToolAndNothingElse() {
+        let result = PromptBuilder.buildWorkFolderContextMessage(
+            workFolder: wf(context: "Ctx"),
+            agentInstructions: snap(main: ("CLAUDE.md", "Run the project's build command yourself.")),
+            toolNames: [ToolNames.bash, ToolNames.readFile])
+
+        let text = try! XCTUnwrap(result)
+        XCTAssertTrue(text.contains("`\(ToolNames.bash)`"), text)
+        XCTAssertFalse(text.contains("`\(ToolNames.runXcodebuild)`"), text)
+    }
+
+    /// No injected instructions, no line: there are no third-party orders to reconcile, and
+    /// a folder without a `CLAUDE.md` must see zero prompt diff from this change.
+    func testWorkFolderContext_noInstructionFiles_addsNoCapabilityLine() {
+        let result = PromptBuilder.buildWorkFolderContextMessage(
+            workFolder: wf(context: "Ctx"), toolNames: [])
+        XCTAssertFalse((result ?? "").contains("yours to run"), result ?? "(nil)")
     }
 
     // MARK: - buildWorkFolderContextMessage + agent instructions
@@ -210,7 +265,8 @@ final class PromptBuilderTests: XCTestCase {
         let result = PromptBuilder.buildWorkFolderContextMessage(
             workFolder: wf(context: "Ctx line"),
             agentInstructions: snap(main: ("CLAUDE.md", "Main body"),
-                                    listed: ["docs/AGENTS.md", "z/GEMINI.md"]))
+                                    listed: ["docs/AGENTS.md", "z/GEMINI.md"]),
+            toolNames: [])
 
         XCTAssertEqual(result, """
         ### MyApp
@@ -226,6 +282,10 @@ final class PromptBuilderTests: XCTestCase {
         Read with read_file when relevant:
         - docs/AGENTS.md
         - z/GEMINI.md
+        
+        ### Which of these commands are yours to run
+        
+        The instructions above may ask for commands to be run. None of them is yours to run — you hold no tool that runs one. State what such a command would have settled as unverified, and never state its result.
         """)
     }
 
@@ -234,7 +294,8 @@ final class PromptBuilderTests: XCTestCase {
             workFolder: wf(context: ""),
             agentInstructions: snap(main: ("CLAUDE.md", "Main body"),
                                     listed: ["mockup.png"],
-                                    manualTexts: [("docs/style.md", "Use tabs.")]))
+                                    manualTexts: [("docs/style.md", "Use tabs.")]),
+            toolNames: [])
 
         XCTAssertEqual(result, """
         ### MyApp
@@ -251,13 +312,18 @@ final class PromptBuilderTests: XCTestCase {
         
         Read with read_file when relevant:
         - mockup.png
+        
+        ### Which of these commands are yours to run
+        
+        The instructions above may ask for commands to be run. None of them is yours to run — you hold no tool that runs one. State what such a command would have settled as unverified, and never state its result.
         """)
     }
 
     func testBuildWFC_emptyContextWithMain_rendersMainSection() {
         let result = PromptBuilder.buildWorkFolderContextMessage(
             workFolder: wf(context: ""),
-            agentInstructions: snap(main: ("CLAUDE.md", "Main body")))
+            agentInstructions: snap(main: ("CLAUDE.md", "Main body")),
+            toolNames: [])
 
         XCTAssertEqual(result, """
         ### MyApp
@@ -265,13 +331,18 @@ final class PromptBuilderTests: XCTestCase {
         ### Agent instructions (CLAUDE.md)
         
         Main body
+        
+        ### Which of these commands are yours to run
+        
+        The instructions above may ask for commands to be run. None of them is yours to run — you hold no tool that runs one. State what such a command would have settled as unverified, and never state its result.
         """)
     }
 
     func testBuildWFC_othersOnly_rendersOthersSection() {
         let result = PromptBuilder.buildWorkFolderContextMessage(
             workFolder: wf(context: ""),
-            agentInstructions: snap(listed: ["CLAUDE.md"]))
+            agentInstructions: snap(listed: ["CLAUDE.md"]),
+            toolNames: [])
 
         XCTAssertEqual(result, """
         ### MyApp
@@ -288,7 +359,8 @@ final class PromptBuilderTests: XCTestCase {
         let bigMain = String(repeating: "m", count: 5000)
         let result = PromptBuilder.buildWorkFolderContextMessage(
             workFolder: wf(context: bigContext),
-            agentInstructions: snap(main: ("CLAUDE.md", bigMain)))
+            agentInstructions: snap(main: ("CLAUDE.md", bigMain)),
+            toolNames: [])
 
         XCTAssertNotNil(result)
         XCTAssertTrue(result!.contains(bigMain), "main content must NOT be capped")
@@ -299,9 +371,11 @@ final class PromptBuilderTests: XCTestCase {
 
     func testBuildWFC_nilSnapshot_byteIdenticalToLegacy() {
         let withNil = PromptBuilder.buildWorkFolderContextMessage(
-            workFolder: wf(context: "Hello"), agentInstructions: nil)
+            workFolder: wf(context: "Hello"), agentInstructions: nil,
+            toolNames: [])
         let withEmpty = PromptBuilder.buildWorkFolderContextMessage(
-            workFolder: wf(context: "Hello"), agentInstructions: .empty)
+            workFolder: wf(context: "Hello"), agentInstructions: .empty,
+            toolNames: [])
 
         XCTAssertEqual(withNil, "### MyApp\n\nHello")
         XCTAssertEqual(withEmpty, withNil, "empty snapshot == nil snapshot")
@@ -309,7 +383,8 @@ final class PromptBuilderTests: XCTestCase {
 
     func testBuildWFC_emptyEverything_returnsNil() {
         let result = PromptBuilder.buildWorkFolderContextMessage(
-            workFolder: wf(context: ""), agentInstructions: .empty)
+            workFolder: wf(context: ""), agentInstructions: .empty,
+            toolNames: [])
         XCTAssertNil(result)
     }
 
@@ -321,7 +396,8 @@ final class PromptBuilderTests: XCTestCase {
         ]
         let result = PromptBuilder.buildWorkFolderContextMessage(
             workFolder: wf(context: "Ctx"),
-            agentInstructions: AgentInstructionsSnapshot(items: items))
+            agentInstructions: AgentInstructionsSnapshot(items: items),
+            toolNames: [])
         XCTAssertEqual(result, """
         ### MyApp
         
@@ -344,7 +420,8 @@ final class PromptBuilderTests: XCTestCase {
         ]
         let result = PromptBuilder.buildWorkFolderContextMessage(
             workFolder: wf(context: "Ctx"),
-            agentInstructions: AgentInstructionsSnapshot(items: items))
+            agentInstructions: AgentInstructionsSnapshot(items: items),
+            toolNames: [])
         XCTAssertEqual(result, "### MyApp\n\nCtx")
     }
 
@@ -543,8 +620,8 @@ final class PromptBuilderTests: XCTestCase {
             title: "Engineering",
             status: .done,
             artifacts: [Artifact(
-                name: "Build Diagnostics",
-                relativePath: "internal/tasks/1/runs/0/roles/swe/build_diagnostics.json"
+                name: "Step Log",
+                relativePath: "internal/tasks/1/runs/0/roles/swe/step_log.jsonl"
             )]
         )
         let next = StepExecution(id: "cr_step", role: .codeReviewer, title: "Review Step")
@@ -555,7 +632,7 @@ final class PromptBuilderTests: XCTestCase {
             upToStepIndex: 1,
             artifactReader: { _ in nil }
         )
-        XCTAssertTrue(result.contains("Build Diagnostics"), "Artifact is still listed by name. Got: \(result)")
+        XCTAssertTrue(result.contains("Step Log"), "Artifact is still listed by name. Got: \(result)")
         XCTAssertFalse(
             result.contains("(path:"),
             "Internal artifacts are sandbox-blocked — no (path: …) reference. Got: \(result)"

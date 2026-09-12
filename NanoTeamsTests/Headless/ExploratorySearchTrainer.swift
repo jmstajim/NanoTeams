@@ -123,6 +123,11 @@ final class ExploratorySearchTrainer: @unchecked Sendable {
             fileManager: fileManager
         )
         let index = await service.loadOrBuild()
+        // Every case constructs its own service over the same folder and relies on the disk
+        // copy to make the second case cheap. The index lives in memory now and is written at
+        // closing time, so the trainer has to close it explicitly - otherwise each case pays a
+        // full walk and the timings measure the harness rather than the pipeline.
+        await service.flush()
 
         // 3. Build the vector index.
         let vectorStart = Date()
@@ -177,12 +182,17 @@ final class ExploratorySearchTrainer: @unchecked Sendable {
         case .success(let terms): expandedTerms = terms
         default: expandedTerms = []
         }
-        // Mirror production: posting union over query tokens + literal
-        // query string + expansion terms. Without query tokens, multi-word
-        // queries can't surface their own files (the literal phrase is
-        // never a posting key).
+        // Mirror production: the grep runs over the literal query plus the expansion terms,
+        // across the whole tree. The query's own TOKENS are added here and not in production
+        // because production's grep is a substring scan over the literal phrase, while what
+        // this measures is "which files could the pipeline reach at all".
         let combinedTerms = Array(queryTokens) + [kase.query] + expandedTerms
-        let hitFiles = await service.files(containing: combinedTerms)
+        let contentHitFiles = await Self.grepHitFiles(
+            terms: combinedTerms, workFolderRoot: workFolderRoot, internalDir: internalDir)
+        let nameHitFiles = Self.nameHitFiles(
+            terms: combinedTerms, index: index, limit: 200)
+        // The envelope carries BOTH lists, so recall is scored against their union.
+        let hitFiles = Array(Set(contentHitFiles).union(nameHitFiles)).sorted()
 
         let expansionRecall = Self.recall(
             expected: kase.expectedExpansionTerms,
@@ -194,7 +204,7 @@ final class ExploratorySearchTrainer: @unchecked Sendable {
         )
         let vocabularyRecall = Self.recall(
             expected: kase.expectedVocabulary,
-            actual: index.tokens
+            actual: index.vocabulary
         )
 
         return ExploratorySearchTrainerCaseResult(
@@ -204,7 +214,7 @@ final class ExploratorySearchTrainer: @unchecked Sendable {
             elapsedSeconds: Date().timeIntervalSince(start),
             index: ExploratorySearchTrainerIndexSummary(
                 fileCount: index.files.count,
-                tokenCount: index.tokens.count,
+                tokenCount: index.vocabulary.count,
                 vocabularyRecall: vocabularyRecall
             ),
             vectorBuild: ExploratorySearchTrainerVectorBuildSummary(
@@ -219,9 +229,11 @@ final class ExploratorySearchTrainer: @unchecked Sendable {
                 recall: expansionRecall,
                 expectsFailure: kase.expectsExpansionFailure ?? false
             ),
-            posting: ExploratorySearchTrainerPostingSummary(
+            grep: ExploratorySearchTrainerGrepSummary(
                 combinedTerms: combinedTerms,
                 hitFiles: hitFiles,
+                contentHitFiles: contentHitFiles,
+                nameHitFiles: nameHitFiles,
                 expectedHitFiles: kase.expectedHitFiles,
                 hitRecall: hitFilesRecall
             )
@@ -264,9 +276,11 @@ final class ExploratorySearchTrainer: @unchecked Sendable {
                 recall: nil,
                 expectsFailure: kase.expectsExpansionFailure ?? false
             ),
-            posting: ExploratorySearchTrainerPostingSummary(
+            grep: ExploratorySearchTrainerGrepSummary(
                 combinedTerms: [kase.query],
                 hitFiles: [],
+                contentHitFiles: nil,
+                nameHitFiles: nil,
                 expectedHitFiles: kase.expectedHitFiles,
                 hitRecall: nil
             )
@@ -274,6 +288,46 @@ final class ExploratorySearchTrainer: @unchecked Sendable {
     }
 
     // MARK: - Helpers
+
+    /// The files a grep over `terms` reaches - the measurement that replaced the posting
+    /// intersection. Runs the production executor, so a change to the walk's scope or to the
+    /// binary gate moves this number too.
+    static func grepHitFiles(
+        terms: [String], workFolderRoot: URL, internalDir: URL
+    ) async -> [String] {
+        guard !terms.isEmpty else { return [] }
+        let resolver = SandboxPathResolver(
+            workFolderRoot: workFolderRoot, internalDir: internalDir)
+        do {
+            let output = try await SearchExecutor.run(SearchExecutorInput(
+                workFolderRoot: workFolderRoot,
+                resolver: resolver,
+                fileManager: .default,
+                queries: terms,
+                maxResults: 200,
+                internalDir: internalDir))
+            return Array(Set(output.matches.map(\.path))).sorted()
+        } catch {
+            return []
+        }
+    }
+
+    /// The OTHER half of the envelope: `FilenameMatcher` over the whole index roster.
+    ///
+    /// Scoring the grep alone was a measurement defect, not a simplification — and it is the
+    /// reason an audit on 2026-09-12 read 0.474 as a recall collapse and nearly cut the
+    /// expansion for it. Measured on the 9-case real corpus: content alone 0.190 at production's
+    /// default page, names alone 0.857, the UNION 0.929. The two channels disagree about whether
+    /// expansion helps — it divides the content budget by N, and it is the only reason names
+    /// match at all, since `streaming preview manager` matches no filename while
+    /// `streamingpreviewmanager` does — so a number from either one alone points the next audit
+    /// at the wrong layer.
+    static func nameHitFiles(terms: [String], index: SearchIndex, limit: Int) -> [String] {
+        guard !terms.isEmpty else { return [] }
+        return FilenameMatcher.match(
+            candidates: index.files.map(\.path), queries: terms, limit: limit
+        ).map(\.path)
+    }
 
     /// Recall = |expected ∩ actual| / |expected| (case-insensitive compare
     /// after lowercasing). Returns `nil` when `expected` is nil or empty —
@@ -326,7 +380,7 @@ final class ExploratorySearchTrainer: @unchecked Sendable {
     }
 
     private func printCaseSummary(_ r: ExploratorySearchTrainerCaseResult) {
-        let hits = r.posting.hitFiles.count
+        let hits = r.grep.hitFiles.count
         let terms = r.expansion.terms.count
         let recallStr: String = {
             if let r = r.expansion.recall {
@@ -411,7 +465,7 @@ struct ExploratorySearchTrainerCaseResult: Codable {
     var index: ExploratorySearchTrainerIndexSummary
     var vectorBuild: ExploratorySearchTrainerVectorBuildSummary
     var expansion: ExploratorySearchTrainerExpansionSummary
-    var posting: ExploratorySearchTrainerPostingSummary
+    var grep: ExploratorySearchTrainerGrepSummary
 }
 
 struct ExploratorySearchTrainerIndexSummary: Codable {
@@ -436,9 +490,19 @@ struct ExploratorySearchTrainerExpansionSummary: Codable {
     var expectsFailure: Bool
 }
 
-struct ExploratorySearchTrainerPostingSummary: Codable {
+/// What the grep reached for this case.
+///
+/// Named for the grep since 2026-09-11: the index no longer records WHERE a word is, so there
+/// is no posting intersection to summarise. `hitFiles` is what `SearchExecutor` actually
+/// matched across the whole tree, which is also what the envelope's `hit_files` counts.
+struct ExploratorySearchTrainerGrepSummary: Codable {
     var combinedTerms: [String]
+    /// The UNION of both channels the envelope returns — grep matches and filename matches.
+    /// Scored as one because that is what the model is handed; the split lives below so an
+    /// auditor can still see which channel carried a case.
     var hitFiles: [String]
+    var contentHitFiles: [String]?
+    var nameHitFiles: [String]?
     var expectedHitFiles: [String]?
     var hitRecall: Double?
 }

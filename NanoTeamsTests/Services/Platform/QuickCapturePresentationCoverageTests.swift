@@ -163,7 +163,7 @@ final class QuickCaptureControllerCallbackTests: XCTestCase {
         sut = QuickCaptureController.shared
         sut._testReset()
         if sut._testIsInAnswerMode { sut._testExitAnswerMode() }
-        sut.formState._testClearAnswerDrafts()
+        sut.formState.answerDraftStore.discardAll()
         sut.formState.supervisorTask = ""
         sut.isTaskSelected = false
         sut._testForceNewTaskMode = false
@@ -288,6 +288,38 @@ final class QuickCaptureControllerCallbackTests: XCTestCase {
         XCTAssertFalse(sut._testIsInAnswerMode)
         XCTAssertEqual(sut.formState.supervisorTask, "task draft",
                        "Exiting answer mode must restore the stashed task draft.")
+    }
+
+    // MARK: applyAnswerModeTransition — leaving answer mode
+
+    /// Leaving answer mode for a destination that is NOT a live chat thread parks the live
+    /// fields under the branch that owns them and clears them (`exitAnswerMode`), rather than
+    /// handing them onward. The chat arm above it exists because a chat task's working composer
+    /// and its question are one conversation; an overlay — the new-task composer — is not, and
+    /// carrying an answer into it would put a reply to a role under a Create button.
+    ///
+    /// RED: hand the fields to `.taskChat(activeTaskID)` unconditionally → the panel stays in
+    /// answer mode (or, with no store, crashes on the missing task id) and the assertion fails.
+    func testRefresh_leavingAnswerModeIntoTheOverlay_exitsRatherThanHandingOn() {
+        sut._testIsPanelVisible = true
+        sut._testEnterAnswerMode(.supervisorAnswer(payload: SupervisorAnswerPayload(
+            stepID: "engineer", taskID: 9, role: .softwareEngineer, roleDefinition: nil,
+            question: "Which scheme?", messageContent: nil, thinking: nil, isChatMode: false
+        )))
+        sut.formState.answerText = "half-typed reply"
+        XCTAssertTrue(sut._testIsInAnswerMode)
+
+        // No store and no selected task: the mode resolves to `.overlay`, which needs no
+        // answer mode and is not a chat thread — the else arm.
+        sut.refreshPanelIfVisible()
+
+        XCTAssertFalse(sut._testIsInAnswerMode)
+        XCTAssertEqual(sut.formState.answerText, "", "the fields are cleared, not carried over")
+        XCTAssertEqual(
+            sut.formState.answerDraftStore.peek(
+                for: .role(TaskStepKey(taskID: 9, stepID: "engineer")))?.text,
+            "half-typed reply",
+            "and parked under the branch that owns them, so the chip keeps its dot")
     }
 
     // MARK: embedFilesInPrompt

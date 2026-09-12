@@ -12,6 +12,9 @@ extension NTMSOrchestrator {
         let engine = engineFactory()
         let adapter = TaskEngineStoreAdapter(orchestrator: self, taskID: taskID)
         engine.attach(store: adapter)
+        engine.onQueuedRolesChanged = { [weak self] roleIDs in
+            self?.engineState.setQueuedRoles(roleIDs, for: taskID)
+        }
         engine.onStateChanged = { [weak self] state in
             guard let self else { return }
             self.engineState[taskID] = state
@@ -144,6 +147,7 @@ extension NTMSOrchestrator {
         taskEngines.removeValue(forKey: taskID)
         engineState.removeEngine(for: taskID)
         engineState.clearMeetingParticipants(for: taskID)
+        engineState.clearQueuedRoles(for: taskID)
         completionAwaiter.cancelAll(taskID: taskID)
         // Kill any background `bash` commands this task started so a detached
         // server/watcher doesn't outlive its task (close / removal / delegation

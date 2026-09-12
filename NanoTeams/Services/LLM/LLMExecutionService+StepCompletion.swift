@@ -54,47 +54,19 @@ extension LLMExecutionService {
 
     // MARK: - Step Finalization
 
-    /// Combines build diagnostics attachment and final status update into a single mutation.
-    /// This ensures `completedAt` is set atomically with the terminal status, minimizing
-    /// the window between step completion and next step creation.
+    /// Sets the terminal status, so `completedAt` lands atomically with it and the window
+    /// between step completion and next-step creation stays closed.
+    ///
+    /// This used to also attach a "Build Diagnostics" artifact. That machinery was removed
+    /// on 2026-09-11: its real writer had been deleted in `cfbcf550` (2026-08-01) as dead,
+    /// and what survived was a stub that wrote `{skipped: true, skipReason: "clean_build",
+    /// errorCount: 0, issues: []}` — the SAME bytes whatever the step had done, including
+    /// a step that never built anything. An artifact whose only possible content is
+    /// "nothing was measured" is not an artifact, and `errorCount: 0` as evidence is the
+    /// MeditationApp task 48 defect in persistent form.
     private func finalizeStepCompletion(stepID: String, taskID: Int, status: StepStatus) async {
         guard let delegate else { return }
-
-        // Build Diagnostics only if role has "Build Diagnostics" in producesArtifacts
-        var diagPath: String?
-        if let workFolderRoot = delegate.workFolderURL,
-           let task = delegate.loadedTask(taskID),
-           let run = task.runs.last,
-           let step = run.steps.first(where: { $0.id == stepID }),
-           let projectContext = delegate.snapshot,
-           // The TASK's team, not the folder's active one. A delegation child, a run
-           // pinned to `run.teamID`, or a task-owned generated team all resolve to a
-           // different roster — and this decides whether Build Diagnostics is persisted
-           // for the role at all. `TeamResolution` is the documented single source of
-           // truth for that order.
-           let resolvedTeam = resolveTeam(task: task),
-           let roleDefinition = resolvedTeam.findRole(byIdentifier: step.effectiveRoleID),
-           roleDefinition.dependencies.producesArtifacts.contains(ArtifactConstants.buildDiagnosticsName) {
-            let ancestors = projectContext.tasksIndex.ancestorIDs(of: task.id)
-            diagPath = artifactService.buildDiagnosticsRelativePath(
-                taskID: task.id, runID: run.id, roleID: step.effectiveRoleID,
-                workFolderRoot: workFolderRoot, ancestors: ancestors
-            )
-            // If no diagnostics path (successful build), create a summary artifact
-            if diagPath == nil {
-                diagPath = try? artifactService.persistEmptyBuildDiagnostics(
-                    taskID: task.id, runID: run.id, roleID: step.effectiveRoleID,
-                    workFolderRoot: workFolderRoot, ancestors: ancestors
-                )
-            }
-        }
-
         await delegate.mutateTask(taskID: taskID) { task in
-            if let rel = diagPath {
-                TaskMutationService.attachBuildDiagnosticsArtifact(
-                    relativePath: rel, stepID: stepID, in: &task
-                )
-            }
             TaskMutationService.updateStepStatus(status, stepID: stepID, in: &task)
         }
     }

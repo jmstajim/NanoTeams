@@ -1,10 +1,13 @@
 import XCTest
 @testable import NanoTeams
 
-/// Structural invariants of the index after a build. If any of these fail
-/// after a code change, the on-disk index can corrupt downstream search
-/// behavior in subtle ways (e.g. out-of-bounds posting IDs in
-/// `files(containing:)`).
+/// Structural invariants of the index after a build.
+///
+/// Most of what this file used to pin died with the postings (2026-09-11): posting IDs in
+/// bounds, posting lists strictly ascending, `tokens[]` equal to `Set(postings.keys)`, and the
+/// four throwing-init cases that enforced them. What is left is what the word-vector shape can
+/// still get wrong — the roster's paths, the derived signature, and the guarantee that no file
+/// the walk stamped is silently wordless.
 final class SearchIndexInvariantsTests: XCTestCase {
 
     var tempDir: URL!
@@ -39,61 +42,6 @@ final class SearchIndexInvariantsTests: XCTestCase {
         SearchIndexService(workFolderRoot: tempDir, internalDir: internalDir, fileManager: .default)
     }
 
-    // MARK: - Postings invariants
-
-    func testAllPostingIDs_inBoundsOfFilesArray() async throws {
-        try write("A.swift", content: "alpha beta gamma")
-        try write("B.swift", content: "delta beta epsilon")
-        try write("C.swift", content: "zeta")
-        let index = await makeService().loadOrBuild()
-        let bound = index.files.count
-        for (token, ids) in index.postings {
-            for id in ids {
-                XCTAssertGreaterThanOrEqual(id, 0,
-                                            "Posting for '\(token)' has negative ID \(id)")
-                XCTAssertLessThan(id, bound,
-                                  "Posting for '\(token)' references out-of-range id \(id) (bound \(bound))")
-            }
-        }
-    }
-
-    func testAllPostingLists_sortedAscending() async throws {
-        try write("A.swift", content: "alpha")
-        try write("B.swift", content: "alpha beta")
-        try write("C.swift", content: "alpha gamma")
-        let index = await makeService().loadOrBuild()
-        for (token, ids) in index.postings {
-            XCTAssertEqual(ids, ids.sorted(),
-                           "Posting list for '\(token)' must be sorted ascending.")
-        }
-    }
-
-    func testAllPostingLists_haveNoDuplicates() async throws {
-        try write("A.swift", content: "alpha alpha alpha alpha")
-        try write("B.swift", content: "alpha")
-        let index = await makeService().loadOrBuild()
-        for (token, ids) in index.postings {
-            XCTAssertEqual(ids.count, Set(ids).count,
-                           "Posting list for '\(token)' contains duplicates: \(ids)")
-        }
-    }
-
-    func testTokensVocabulary_matchesPostingsKeys() async throws {
-        try write("A.swift", content: "alpha beta gamma")
-        let index = await makeService().loadOrBuild()
-        let tokenSet = Set(index.tokens)
-        let postingsKeys = Set(index.postings.keys)
-        XCTAssertEqual(tokenSet, postingsKeys,
-                       "tokens[] must equal Set(postings.keys) — same vocabulary surface.")
-    }
-
-    func testTokens_sortedAscending() async throws {
-        try write("A.swift", content: "zebra alpha mango bird")
-        let index = await makeService().loadOrBuild()
-        XCTAssertEqual(index.tokens, index.tokens.sorted(),
-                       "tokens[] must be sorted ascending for stable LLM hint slicing.")
-    }
-
     // MARK: - Signature invariants
 
     func testSignature_fileCount_equalsFilesArrayCount() async throws {
@@ -122,15 +70,31 @@ final class SearchIndexInvariantsTests: XCTestCase {
 
     // MARK: - Files invariants
 
+    /// A roster path is not merely "not absolute" — it must NAME the file from the root, and
+    /// it must be the only row that does.
+    ///
+    /// Both halves are load-bearing and neither is free: the path is handed to the model as a
+    /// `filename_matches` entry, so one that does not open is a `read_file` failure the model
+    /// was invited to make; and a duplicate is the one shape `SearchIndex.init(from:)` rejects,
+    /// which makes it permanent rather than transient.
+    ///
+    /// RED: derive a path from the entry's absolute url instead of threading the name chain, or
+    /// drop `SearchIndexPlanner.deduplicated` from `performRebuild` → a tree with a crossed
+    /// directory symlink yields paths that neither open nor stay unique.
     func testFiles_pathsAreRelativeToWorkFolderRoot() async throws {
         try write("A.swift", content: "x")
         try write("nested/B.swift", content: "y")
         let index = await makeService().loadOrBuild()
+        XCTAssertNoThrow(try SearchIndex.validate(files: index.files))
         for file in index.files {
             XCTAssertFalse(file.path.hasPrefix("/"),
                            "File path '\(file.path)' must be relative, not absolute.")
             XCTAssertFalse(file.path.contains(tempDir.path),
                            "File path '\(file.path)' must not contain absolute prefix.")
+            XCTAssertTrue(
+                FileManager.default.fileExists(
+                    atPath: tempDir.appendingPathComponent(file.path).path),
+                "File path '\(file.path)' does not open from the work folder root.")
         }
     }
 
@@ -153,7 +117,7 @@ final class SearchIndexInvariantsTests: XCTestCase {
         try Data([0xFF, 0xFE, 0xFD]).write(to: url)
         let index = await makeService().loadOrBuild()
         XCTAssertEqual(index.files.count, 1)
-        XCTAssertTrue(index.tokens.contains("uniquebinaryname"),
+        XCTAssertTrue(index.vocabulary.contains("uniquebinaryname"),
                       "Filename tokens must always land in the vocabulary.")
     }
 
@@ -167,86 +131,29 @@ final class SearchIndexInvariantsTests: XCTestCase {
                       "Index must persist to .nanoteams/internal/search_index.json")
     }
 
-    // MARK: - All files appear in at least one posting (or are empty)
+    // MARK: - Every stamped file contributed words
 
-    // MARK: - I6: throwing init catches hand-crafted invariants violations
-
-    /// Out-of-bounds posting ID must be rejected at construction time, not at
-    /// query time. Without the throwing init, a future caller could hand-roll
-    /// `SearchIndex(... postings: ["x": [999]], files: [f])` and
-    /// `files(containing:)` would silently drop the bad id — masking the bug.
-    func testInit_postingIDOutOfBounds_throws() {
-        XCTAssertThrowsError(try SearchIndex(
-            generatedAt: Date(),
-            signature: IndexSignature(fileCount: 1, maxMTime: Date(), totalSize: 1),
-            files: [IndexedFile(path: "A.swift", mTime: Date(), size: 1)],
-            tokens: ["x"],
-            postings: ["x": [99]]
-        ))
-    }
-
-    func testInit_tokensNotEqualToPostingsKeys_throws() {
-        XCTAssertThrowsError(try SearchIndex(
-            generatedAt: Date(),
-            signature: IndexSignature(fileCount: 1, maxMTime: Date(), totalSize: 1),
-            files: [IndexedFile(path: "A.swift", mTime: Date(), size: 1)],
-            tokens: ["x", "stray"],  // "stray" not in postings
-            postings: ["x": [0]]
-        ))
-    }
-
-    func testInit_postingListWithDuplicates_throws() {
-        XCTAssertThrowsError(try SearchIndex(
-            generatedAt: Date(),
-            signature: IndexSignature(fileCount: 1, maxMTime: Date(), totalSize: 1),
-            files: [IndexedFile(path: "A.swift", mTime: Date(), size: 1)],
-            tokens: ["x"],
-            postings: ["x": [0, 0]]
-        ))
-    }
-
-    func testInit_postingListNotSorted_throws() {
-        XCTAssertThrowsError(try SearchIndex(
-            generatedAt: Date(),
-            signature: IndexSignature(fileCount: 2, maxMTime: Date(), totalSize: 2),
-            files: [
-                IndexedFile(path: "A.swift", mTime: Date(), size: 1),
-                IndexedFile(path: "B.swift", mTime: Date(), size: 1),
-            ],
-            tokens: ["x"],
-            postings: ["x": [1, 0]]
-        ))
-    }
-
-    func testInit_validIndex_succeeds() throws {
-        let idx = try SearchIndex(
-            generatedAt: Date(),
-            signature: IndexSignature(fileCount: 2, maxMTime: Date(), totalSize: 2),
-            files: [
-                IndexedFile(path: "A.swift", mTime: Date(), size: 1),
-                IndexedFile(path: "B.swift", mTime: Date(), size: 1),
-            ],
-            tokens: ["x"],
-            postings: ["x": [0, 1]]
-        )
-        XCTAssertEqual(idx.files.count, 2)
-    }
-
-    func testEveryNonEmptyIndexedFile_appearsInAtLeastOnePosting() async throws {
+    /// A file in the roster whose words are missing from the vocabulary is defect Д1 exactly:
+    /// its `(mTime, size)` says "already read", so the diff will call it clean forever and the
+    /// content nobody read is unreachable for the rest of the index's life.
+    ///
+    /// Filename tokens make this checkable without reading anything: every stamped file owes at
+    /// least its own name.
+    ///
+    /// RED: have `indexOne` return `.indexed([])` on cancellation instead of `.cancelled` and
+    /// cancel mid-build → a stamped file with no words.
+    func testEveryStampedFile_contributedItsOwnNameTokens() async throws {
         try write("Alpha.swift", content: "kw1 kw2 kw3")
         try write("Beta.swift", content: "kw4")
         try write("Gamma.swift", content: "")
         let index = await makeService().loadOrBuild()
-        // Empty file still gets tokenized via filename → "gamma" must be present.
-        XCTAssertTrue(index.tokens.contains("gamma"))
-        // Every file id must appear in at least one posting list (filename
-        // tokens guarantee this).
-        let allCovered: Set<Int> = Set(
-            index.postings.values.reduce(into: [Int]()) { $0.append(contentsOf: $1) }
-        )
-        for id in 0..<index.files.count {
-            XCTAssertTrue(allCovered.contains(id),
-                          "File '\(index.files[id].path)' (id=\(id)) does not appear in any posting list.")
+        XCTAssertEqual(index.files.count, 3)
+        for file in index.files {
+            let expected = TokenExtractor.extractFilenameTokens(
+                from: tempDir.appendingPathComponent(file.path))
+            XCTAssertTrue(expected.isSubset(of: index.vocabulary),
+                          "'\(file.path)' is in the roster but its name tokens "
+                              + "\(expected.subtracting(index.vocabulary)) are not in the vocabulary")
         }
     }
 }

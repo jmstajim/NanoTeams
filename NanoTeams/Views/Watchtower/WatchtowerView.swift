@@ -87,6 +87,12 @@ struct WatchtowerView: View {
                                 if success { refreshNotifications() }
                                 return success
                             },
+                            onRequestQuestionnaire: { stepID, note in
+                                let success = await store.requestQuestionnaire(
+                                    stepID: stepID, taskID: notification.taskID, note: note)
+                                if success { refreshNotifications() }
+                                return success
+                            },
                             onStageAttachment: { stepID, url in
                                 // stepID is a role ID string; staging requires a UUID directory name
                                 let draftUUID = UUID()

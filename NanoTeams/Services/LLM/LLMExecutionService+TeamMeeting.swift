@@ -60,11 +60,25 @@ extension LLMExecutionService {
             return .failed("No valid participants for this meeting.\(rejected) Available teammates: \(available)")
         }
 
-        // The team's coordinator runs THIS meeting: opens it, speaks after every round,
-        // takes the last turn and is the only role holding `conclude_meeting`. Resolved
-        // through `Team.meetingCoordinatorID` — never nil for a team with roles; the
-        // initiator stands in only for a fixture with no team.
-        let coordinator: Role = effectiveCoordinator(team: team, initiator: initiatingRole)
+        // The chair runs THIS meeting: opens it, speaks after every round, takes the last
+        // turn and is the only role holding `conclude_meeting`. Normally the team's
+        // coordinator; for a `request_changes` vote, a stand-in when the coordinator is the
+        // requester or the target — the seat carries which. `handleChangeRequest` resolves
+        // the same function first and refuses the vote outright when nobody qualifies, so
+        // reaching `.noImpartialChair` here would mean the two disagreed; say so rather
+        // than silently seating whoever.
+        let voteTargetRoleID: String? = {
+            if case .presentsOnly(let targetRoleID) = initiatorSeat { return targetRoleID }
+            return nil
+        }()
+        let chairResolution = effectiveCoordinator(
+            team: team, initiator: initiatingRole, requesterRoleID: stepID,
+            seat: initiatorSeat, targetRoleID: voteTargetRoleID)
+        guard case .chair(let coordinator) = chairResolution else {
+            return .failed(
+                "This vote has no impartial chair — every non-Supervisor role in the team is "
+                    + "either the requester or the target.")
+        }
         // A stored coordinator id that no longer resolves is healed on open; if one
         // slipped in since, surface a one-shot info message naming who coordinates now.
         reportOrphanCoordinatorIfNeeded(team: team)
@@ -153,6 +167,11 @@ extension LLMExecutionService {
             team: team,
             coordinatorRole: coordinator,
             limits: teamSettings.limits,
+            // The same constructor the participants were built with, so `==` against the
+            // speaker in `buildTurnDirective` is sound (`Role.fromDefinition`).
+            voteTargetRole: voteTargetRoleID
+                .flatMap { team?.findRole(byIdentifier: $0) }
+                .map(Role.fromDefinition),
             globalContext: delegate.globalLLMContext
         )
 
@@ -173,9 +192,13 @@ extension LLMExecutionService {
             searchContextBefore: delegate.searchContextBefore,
             searchContextAfter: delegate.searchContextAfter
         )
-        let meetingRoleID = stepID
+        // The meeting's BASE context: `stepID` is the initiator's step — the meeting runs
+        // inside its tool loop and its card is the one that spins while a participant's
+        // build waits in the gate. `roleID` is rewritten per turn to the SPEAKER
+        // (`MeetingToolExecutor.turnContext`), so the log attributes a call to whoever made it.
         let toolContext = ToolExecutionContext(
-            workFolderRoot: workFolderRoot, taskID: tid, runID: run.id, roleID: meetingRoleID
+            workFolderRoot: workFolderRoot, taskID: tid, runID: run.id, roleID: stepID,
+            stepID: stepID
         )
 
         // Run meeting turns via consultation chats
@@ -300,7 +323,8 @@ extension LLMExecutionService {
                         config: speakerConfig,
                         tools: speakerTools,
                         runtime: runtime,
-                        toolContext: toolContext,
+                        toolContext: MeetingToolExecutor.turnContext(
+                            base: toolContext, speaker: speaker, team: team),
                         stepID: stepID,
                         networkLogger: networkLogger,
                         cancellationRegistrar: { [weak self] batchTask in

@@ -119,9 +119,18 @@ nonisolated struct TeamSettings: Codable, Hashable {
     /// rule every writer shares: bootstrap, `Team.addRole` / `removeRole`, the generated
     /// team builder and the Autovisor sync all resolve through here.
     static func defaultCoordinatorID(among roles: [TeamRoleDefinition]) -> String? {
+        defaultCoordinator(among: roles)?.id
+    }
+
+    /// The same rule, answering with the DEFINITION.
+    ///
+    /// `defaultCoordinatorID` is this, projected. A caller that needs the ROLE — the seat rule
+    /// in `MeetingChairPolicy` does — would otherwise take the id and walk the same roster a
+    /// second time to turn it back into the thing this function already held.
+    static func defaultCoordinator(among roles: [TeamRoleDefinition]) -> TeamRoleDefinition? {
         let candidates = roles.filter { !$0.isSupervisor }
-        return candidates.first(where: { $0.toolIDs.contains(ToolNames.requestTeamMeeting) })?.id
-            ?? candidates.first?.id
+        return candidates.first(where: { $0.toolIDs.contains(ToolNames.requestTeamMeeting) })
+            ?? candidates.first
     }
 
     // MARK: - Role ID Remapping

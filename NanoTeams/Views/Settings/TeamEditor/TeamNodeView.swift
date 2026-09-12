@@ -46,6 +46,11 @@ struct TeamNodeView: View {
                             .font(Typography.term2xs)
                             .foregroundStyle(Colors.info)
                             .padding(.top, 1)
+                        // A comma-separated list of artifact NAMES, not a sentence, inside a
+                        // node sized by the canvas rather than by its text: it wraps because
+                        // the names are long, and it stays at the tag scale because a node that
+                        // grew to fit them would move the graph.
+                        // ds:allow-micro-prose graph node
                         Text(dependencies.requiredArtifacts.joined(separator: ", "))
                             .font(Typography.term2xs)
                             .foregroundStyle(Colors.textSecondary)
@@ -60,6 +65,7 @@ struct TeamNodeView: View {
                             .font(Typography.term2xs)
                             .foregroundStyle(Colors.artifact)
                             .padding(.top, 1)
+                        // ds:allow-micro-prose graph node — same as the required list above.
                         Text(dependencies.producesArtifacts.joined(separator: ", "))
                             .font(Typography.term2xs)
                             .foregroundStyle(Colors.textSecondary)

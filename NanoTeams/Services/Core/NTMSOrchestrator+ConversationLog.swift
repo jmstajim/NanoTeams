@@ -122,8 +122,8 @@ extension NTMSOrchestrator {
             }
 
             // Pending (unanswered) supervisor questions are owned by the composer, not the
-            // timeline — surface them too (the wire shows the ask_supervisor immediately).
-            let pending = ActivityFeedBuilder.activeSupervisorQuestions(steps: run.steps)
+            // timeline — surface them too (the wire shows the ask immediately).
+            let pending = SupervisorQuestionInbox.pending(taskID: taskID, steps: run.steps)
 
             // `descendantTasks: []` keeps this log 1:1 with the run's own network_log.json
             // (also per-run); child runs render their own log the same way.
@@ -142,6 +142,9 @@ extension NTMSOrchestrator {
                 stepArtifactContentCache: cache,
                 debugModeEnabled: debug,
                 activeQuestions: pending,
+                // This log renders `pending` in its own trailing section, so the trailing
+                // ask card yields to that rather than to a composer no file has.
+                activeQuestionsRenderedElsewhere: true,
                 isStreaming: { _ in false }
             )
 

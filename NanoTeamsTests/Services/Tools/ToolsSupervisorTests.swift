@@ -82,6 +82,78 @@ final class ToolsSupervisorTests: XCTestCase {
         XCTAssertTrue(results[0].outputJSON.contains("pending"))
     }
 
+    // MARK: - ask_supervisor refuses the questionnaire's shape when the form is there
+
+    /// Two questions in one plain ask with the form in the batch: an error, not a park —
+    /// nothing was asked. `next` names the form, and the signal is nil so the dispatcher
+    /// cannot park on it.
+    func testAskSupervisor_severalQuestions_withFormAvailable_isRefusedNotParked() async {
+        var formContext = context!
+        formContext.questionnaireAvailable = true
+        let call = StepToolCall(
+            name: "ask_supervisor",
+            argumentsJSON: "{\"question\": \"Which view hides the badge? Should the choice persist?\"}"
+        )
+        let results = await runtime.executeAll(context: formContext, toolCalls: [call])
+
+        XCTAssertEqual(results.count, 1)
+        XCTAssertTrue(results[0].isError, results[0].outputJSON)
+        XCTAssertTrue(results[0].outputJSON.contains("QUESTIONNAIRE_REQUIRED"), results[0].outputJSON)
+        XCTAssertTrue(results[0].outputJSON.contains("ask_supervisor_form"), results[0].outputJSON)
+        XCTAssertTrue(results[0].outputJSON.contains("`questions`"), results[0].outputJSON)
+        XCTAssertNil(results[0].signal, "a refused call must not emit a park signal")
+    }
+
+    /// A questionnaire a role reaches through ANALYSIS has a body, and the form has nowhere
+    /// to put it. Told only to send the questions, the model sent the questions and dropped
+    /// 2.4 KB of analysis the Supervisor never read (MeditationApp task 67 run 1). The turn's
+    /// own text is the channel that carries it, and the refusal is where that is said —
+    /// nowhere else knows the questionnaire's shape is what refused the turn.
+    ///
+    /// RED: delete the last sentence of `questionnaireRequiredReason` → the refusal tells the
+    /// model what to keep and says nothing about what to do with the rest, so it drops it.
+    func testTheQuestionnaireRefusal_saysWhereTheAnalysisGoes() async {
+        var formContext = context!
+        formContext.questionnaireAvailable = true
+        let call = StepToolCall(
+            name: "ask_supervisor",
+            argumentsJSON: "{\"question\": \"Which view hides the badge? Should the choice persist?\"}"
+        )
+        let results = await runtime.executeAll(context: formContext, toolCalls: [call])
+        XCTAssertTrue(
+            results[0].outputJSON.contains("the turn's own text"), results[0].outputJSON)
+    }
+
+    /// The same text with the plain ask alone parks: the numbered list is that role's
+    /// sanctioned fallback, and a refusal naming a tool it lacks is the 2026-07-25 defect.
+    func testAskSupervisor_severalQuestions_withoutForm_parks() async {
+        let call = StepToolCall(
+            name: "ask_supervisor",
+            argumentsJSON: "{\"question\": \"Which view hides the badge? Should the choice persist?\"}"
+        )
+        let results = await runtime.executeAll(context: context, toolCalls: [call])
+
+        XCTAssertEqual(results.count, 1)
+        XCTAssertFalse(results[0].isError, results[0].outputJSON)
+        XCTAssertEqual(results[0].signal, .supervisorQuestion("Which view hides the badge? Should the choice persist?"))
+    }
+
+    /// One question with the form available still parks: the plain ask is the channel for
+    /// one question and for a chat reply.
+    func testAskSupervisor_oneQuestion_withFormAvailable_parks() async {
+        var formContext = context!
+        formContext.questionnaireAvailable = true
+        let call = StepToolCall(
+            name: "ask_supervisor",
+            argumentsJSON: "{\"question\": \"Should the badge hide instantly?\"}"
+        )
+        let results = await runtime.executeAll(context: formContext, toolCalls: [call])
+
+        XCTAssertEqual(results.count, 1)
+        XCTAssertFalse(results[0].isError, results[0].outputJSON)
+        XCTAssertEqual(results[0].signal, .supervisorQuestion("Should the badge hide instantly?"))
+    }
+
     // MARK: - ask_supervisor Error Cases
 
     func testAskSupervisor_missingQuestion() async {

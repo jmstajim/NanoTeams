@@ -245,7 +245,7 @@ final class SupervisorAnswerDeliveryOnceTests: XCTestCase {
     func testAutomatedButParkedAnswer_armsDelivery() {
         var task = makeParkedTask(taskID: 513, stepID: "swe_auto_parked")
         _ = StepMessagingService.answerSupervisorQuestion(
-            stepID: "swe_auto_parked", answer: answerText, isAutoAnswer: true, in: &task)
+            stepID: "swe_auto_parked", answer: answerText, origin: .automated, in: &task)
 
         let step = task.runs[0].steps[0]
         XCTAssertTrue(step.supervisorAnswerWasAuto)

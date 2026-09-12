@@ -16,14 +16,66 @@ final class SidebarViewLogicTests: XCTestCase {
         status: TaskStatus,
         isChatMode: Bool = false,
         recurring: Bool = false,
-        waiting: Bool? = false
+        waiting: Bool? = false,
+        questionCount: Int? = nil
     ) -> TaskSummary {
         TaskSummary(
             id: id, title: "task\(id)", status: status, updatedAt: t0,
             isChatMode: isChatMode,
             nextRecurrenceFireAt: recurring ? t0 : nil,
-            hasPendingSupervisorInput: waiting
+            hasPendingSupervisorInput: waiting,
+            pendingSupervisorQuestionCount: questionCount
         )
+    }
+
+    private func rows(_ summaries: [TaskSummary], seen: Set<Int> = []) -> [SidebarTaskItem] {
+        SidebarViewLogic.buildSidebarTaskItems(
+            summaries: summaries, seenSupervisorInputTaskIDs: seen, engineStates: [:])
+    }
+
+    // MARK: - waitingQuestionCount
+
+    func testBuild_countBadgeIsSilentBelowTwo() {
+        let items = rows([
+            summary(1, status: .running, waiting: true, questionCount: 0),
+            summary(2, status: .running, waiting: true, questionCount: 1)
+        ])
+        XCTAssertNil(items[0].waitingQuestionCount)
+        XCTAssertNil(items[1].waitingQuestionCount,
+                     "one question beside a row that already carries a waiting glyph is noise")
+    }
+
+    func testBuild_countBadgeSpeaksFromTwo() {
+        let items = rows([summary(1, status: .running, waiting: true, questionCount: 3)])
+        XCTAssertEqual(items[0].waitingQuestionCount, 3)
+    }
+
+    /// A row written before the field renders today's dot with no number — the `nil`
+    /// arm must not collapse into `0` anywhere along the way.
+    func testBuild_legacyRowShowsNoNumber() {
+        let items = rows([summary(1, status: .paused, waiting: true, questionCount: nil)])
+        XCTAssertNil(items[0].waitingQuestionCount)
+    }
+
+    /// "Seen" answers whether the user has LOOKED, which is the dot's question. What is
+    /// still owed does not become less owed by being read, so the count survives it —
+    /// otherwise a Supervisor who glanced at a three-question task loses the reason to
+    /// come back to it before the others.
+    func testBuild_countSurvivesTheSeenSet_whileTheDotDoesNot() {
+        let items = rows(
+            [summary(1, status: .running, isChatMode: true, waiting: true, questionCount: 3)],
+            seen: [1])
+        XCTAssertFalse(items[0].hasUnreadInput, "premise: seen retires the dot")
+        XCTAssertEqual(items[0].waitingQuestionCount, 3)
+    }
+
+    /// Non-chat tasks are exactly where the count matters — parallel roles (CLAUDE.md #45)
+    /// live there, and `hasUnreadInput` is chat-only, so without this the multi-question
+    /// case has no sidebar signal at all.
+    func testBuild_countLightsForANonChatTask() {
+        let items = rows([summary(1, status: .running, isChatMode: false, waiting: true, questionCount: 2)])
+        XCTAssertFalse(items[0].hasUnreadInput, "premise: the dot is chat-only")
+        XCTAssertEqual(items[0].waitingQuestionCount, 2)
     }
 
     private func item(_ id: Int, status: TaskStatus, recurring: Bool = false) -> SidebarTaskItem {

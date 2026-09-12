@@ -947,7 +947,37 @@ final class LLMMessageSourceContextTests: XCTestCase {
         case .delegatedQuestion, .delegationEscalation: return .delegationChatter
         case .serverError, .loopCorrection, .retryNudge,
              .toolAcknowledgement, .runtimeWarning, .screenDescription,
-             .compaction: return .appAuthored
+             .compaction, .questionnaireRequest: return .appAuthored
+        }
+    }
+
+    // MARK: - Which turns close a parked ask
+
+    /// The set `StepExecution.activeAskCall` and the feed's park pairing both read.
+    ///
+    /// Two members, and they are not interchangeable: one is someone ANSWERING, the other is
+    /// the app sending the role back to ask as a form. What they share is the only thing this
+    /// predicate claims — after either one lands, the step is no longer owed a reply.
+    ///
+    /// RED: drop `.questionnaireRequest` → the step reads as waiting forever, and the composer
+    /// chip, the Watchtower inbox and the sidebar dot all keep asking for an answer the
+    /// Supervisor has already given up on giving.
+    func testResolvesSupervisorAsk_isExactlyTheAnswerAndTheFormRequest() {
+        XCTAssertGreaterThanOrEqual(MessageSourceContext.allCases.count, 17,
+                                    "anti-vacuity: a short allCases would check almost nothing")
+        let resolving = Set(MessageSourceContext.allCases.filter(\.resolvesSupervisorAsk))
+
+        XCTAssertEqual(resolving, [.supervisorAnswer, .questionnaireRequest])
+    }
+
+    /// A resolving turn is never also an information BOUNDARY: both members arrive as the
+    /// reply to a call the model made itself, so counting either would let a model spinning on
+    /// `ask_supervisor` refresh the loop detector's cutoff with every repeat.
+    func testNoResolvingTurnIsAnInformationBoundary() {
+        for context in MessageSourceContext.allCases where context.resolvesSupervisorAsk {
+            XCTAssertFalse(
+                context.carriesUnsolicitedInformation,
+                "\(context.rawValue) both resolves an ask and claims to be unsolicited")
         }
     }
 

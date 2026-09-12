@@ -237,7 +237,8 @@ final class MeetingConclusionTests: XCTestCase {
 
         _ = await service.handleTeamMeeting(
             stepID: stepID, topic: "T", participantIDs: ["team_pm"], context: nil,
-            initiatingRole: initiator, initiatorSeat: .presentsOnly, task: mockDelegate.taskToMutate!,
+            initiatingRole: initiator, initiatorSeat: .presentsOnly(targetRoleID: "code_reviewer"),
+            task: mockDelegate.taskToMutate!,
             runIndex: 0, stepIndex: 0, client: client, config: stubConfig())
 
         let meeting = mockDelegate.taskToMutate?.runs.first?.meetings.first

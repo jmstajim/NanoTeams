@@ -133,6 +133,7 @@ private enum QuickCapturePanelPreview {
             role: .softwareEngineer,
             roleDefinition: nil,
             question: "Async/await or completion handlers for the network layer?",
+            askCallID: UUID(),
             messageContent: "Two possible approaches surfaced in the audit. Picking one to standardize on.",
             thinking: "Codebase currently mixes both patterns.",
             isChatMode: false
@@ -147,6 +148,7 @@ private enum QuickCapturePanelPreview {
                 iconBackground: RoleColorDefaults.defaultHex
             ),
             question: "What should I focus on next?",
+            askCallID: UUID(),
             messageContent: "Hi! I'm ready to help. What do you need?",
             thinking: "User just started a chat session.",
             isChatMode: true
@@ -270,7 +272,9 @@ extension View {
         mode: .overlay,
         formState: formState,
         onSubmit: {},
-        onCancel: {}
+        onCancel: {},
+        onSelectQuestion: { _ in },
+        onRequestQuestionnaire: {}
     )
     .quickCapturePreviewEnvironment(store: store)
     .quickCapturePreviewChrome(height: QuickCapturePanelPreview.heightCompact)
@@ -286,7 +290,9 @@ extension View {
         mode: .overlay,
         formState: formState,
         onSubmit: {},
-        onCancel: {}
+        onCancel: {},
+        onSelectQuestion: { _ in },
+        onRequestQuestionnaire: {}
     )
     .quickCapturePreviewEnvironment(store: store)
     .quickCapturePreviewChrome(height: QuickCapturePanelPreview.heightCompact)
@@ -306,7 +312,9 @@ extension View {
         mode: .overlay,
         formState: formState,
         onSubmit: {},
-        onCancel: {}
+        onCancel: {},
+        onSelectQuestion: { _ in },
+        onRequestQuestionnaire: {}
     )
     .quickCapturePreviewEnvironment(store: store)
     .quickCapturePreviewChrome(height: QuickCapturePanelPreview.heightCompact)
@@ -325,7 +333,9 @@ extension View {
         mode: .overlay,
         formState: formState,
         onSubmit: {},
-        onCancel: {}
+        onCancel: {},
+        onSelectQuestion: { _ in },
+        onRequestQuestionnaire: {}
     )
     .quickCapturePreviewEnvironment(store: store)
     .quickCapturePreviewChrome(height: QuickCapturePanelPreview.heightCompact)
@@ -347,7 +357,9 @@ extension View {
         mode: .overlay,
         formState: formState,
         onSubmit: {},
-        onCancel: {}
+        onCancel: {},
+        onSelectQuestion: { _ in },
+        onRequestQuestionnaire: {}
     )
     .quickCapturePreviewEnvironment(store: store)
     .quickCapturePreviewChrome(height: QuickCapturePanelPreview.heightMedium)
@@ -363,6 +375,7 @@ extension View {
         role: .softwareEngineer,
         roleDefinition: nil,
         question: "Should I use async/await or completion handlers for the network layer?",
+        askCallID: UUID(),
         messageContent: "I've analyzed the existing codebase and found two possible approaches for the network layer. I need your guidance on which direction to take.",
         thinking: "The codebase currently mixes both patterns. I should ask which one to standardize on.",
         isChatMode: false
@@ -372,7 +385,9 @@ extension View {
         mode: .supervisorAnswer(payload: payload),
         formState: formState,
         onSubmit: {},
-        onCancel: {}
+        onCancel: {},
+        onSelectQuestion: { _ in },
+        onRequestQuestionnaire: {}
     )
     .quickCapturePreviewEnvironment(store: store)
     .quickCapturePreviewChrome(height: QuickCapturePanelPreview.heightMedium)
@@ -392,6 +407,7 @@ extension View {
             iconBackground: RoleColorDefaults.defaultHex
         ),
         question: "What should I focus on next?",
+        askCallID: UUID(),
         messageContent: "Hi! I'm ready to help. What do you need?\n\nOptions:\n1. Describe a specific task\n2. Upload files to work with\n3. Ask something about the project",
         thinking: "The user started a chat session. I should ask what they need help with.",
         isChatMode: true
@@ -401,7 +417,9 @@ extension View {
         mode: .supervisorAnswer(payload: payload),
         formState: formState,
         onSubmit: {},
-        onCancel: {}
+        onCancel: {},
+        onSelectQuestion: { _ in },
+        onRequestQuestionnaire: {}
     )
     .quickCapturePreviewEnvironment(store: store)
     .quickCapturePreviewChrome(height: QuickCapturePanelPreview.heightTall)
@@ -416,7 +434,9 @@ extension View {
         mode: .taskWorking(roleName: "Tech Lead", isChatMode: false),
         formState: formState,
         onSubmit: {},
-        onCancel: {}
+        onCancel: {},
+        onSelectQuestion: { _ in },
+        onRequestQuestionnaire: {}
     )
     .quickCapturePreviewEnvironment(store: store)
     .quickCapturePreviewChrome(height: QuickCapturePanelPreview.heightCompact)
@@ -433,7 +453,9 @@ extension View {
         mode: .taskWorking(roleName: "Tech Lead", isChatMode: true),
         formState: formState,
         onSubmit: {},
-        onCancel: {}
+        onCancel: {},
+        onSelectQuestion: { _ in },
+        onRequestQuestionnaire: {}
     )
     .quickCapturePreviewEnvironment(store: store)
     .quickCapturePreviewChrome(height: QuickCapturePanelPreview.heightMedium)
@@ -463,7 +485,9 @@ extension View {
                         mode: sample.mode,
                         formState: sample.formState,
                         onSubmit: {},
-                        onCancel: {}
+                        onCancel: {},
+                        onSelectQuestion: { _ in },
+                        onRequestQuestionnaire: {}
                     )
                     .frame(
                         width: QuickCapturePanelPreview.panelWidth,
@@ -489,6 +513,62 @@ extension View {
     // two `cellWidth` cells with `Spacing.xl` inter-column gap; height lets
     // the longest two rows (tall + medium) breathe.
     .frame(minWidth: cellWidth * 2 + Spacing.xl * 3, minHeight: 1200)
+}
+
+/// The questionnaire in the panel. The card binds its answer to `formState`, not to the view,
+/// which is why a half-filled form survives the panel re-hosting its `NSHostingView` — and why
+/// the preview holds the form state outside the view exactly as the panel does.
+#Preview("Supervisor Answer / Questionnaire") {
+    @Previewable @State var store = QuickCapturePanelPreview.makeStore()
+    @Previewable @State var formState = QuickCapturePanelPreview.makeFormState()
+
+    let payload = SupervisorAnswerPayload(
+        stepID: "preview",
+        taskID: Int(),
+        role: .softwareEngineer,
+        roleDefinition: nil,
+        question: "A few decisions before I start on the exporter.",
+        inquiry: SupervisorInquiry(
+            headline: "A few decisions before I start on the exporter.",
+            questions: [
+                SupervisorInquiryQuestion(
+                    id: "scheme",
+                    prompt: "Which scheme should I build against?",
+                    detail: "The integration tests only run under one of them.",
+                    kind: .singleChoice,
+                    options: [
+                        SupervisorInquiryOption(id: "debug", label: "NanoTeams (Debug)",
+                                                detail: "what CI uses"),
+                        SupervisorInquiryOption(id: "release", label: "NanoTeams (Release)"),
+                    ]),
+                SupervisorInquiryQuestion(
+                    id: "suites",
+                    prompt: "Which suites should I run before I report back?",
+                    kind: .multiChoice,
+                    options: [
+                        SupervisorInquiryOption(id: "unit", label: "Unit tests"),
+                        SupervisorInquiryOption(id: "ui", label: "UI tests",
+                                                detail: "slow, and flaky on CI"),
+                    ]),
+                SupervisorInquiryQuestion(
+                    id: "notes", prompt: "Anything else I should know?", kind: .freeText),
+            ]),
+        askCallID: UUID(),
+        messageContent: nil,
+        thinking: nil,
+        isChatMode: false
+    )
+
+    QuickCaptureFormView(
+        mode: .supervisorAnswer(payload: payload),
+        formState: formState,
+        onSubmit: {},
+        onCancel: {},
+        onSelectQuestion: { _ in },
+        onRequestQuestionnaire: {}
+    )
+    .quickCapturePreviewEnvironment(store: store)
+    .quickCapturePreviewChrome(height: QuickCapturePanelPreview.heightTall)
 }
 
 #endif

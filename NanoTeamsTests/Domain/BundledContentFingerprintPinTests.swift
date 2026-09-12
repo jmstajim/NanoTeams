@@ -117,7 +117,163 @@ final class BundledContentFingerprintPinTests: XCTestCase {
     //   git diff 746b904e -- NanoTeams/Services/Tools/ | grep -c 'static let schema' → 0
     // So the reconcile this bump triggers rewrites nothing in an existing work folder; what
     // 1.9.12 delivers travels in the binary, and the watermark advance is the whole effect.
-    private static let expectedFingerprint = "5882e0ac100e1def"
+    // 1.9.13 — the value MOVES, for the first time since 1.9.10: the Ultra Team ships as the
+    // ninth bundled template, with seven new system roles, seven new artifacts and a
+    // `templateConfigs` row. All of that is folded content, so an existing work folder needs
+    // this bump to receive the roles' prompts and toolsets — the team itself arrives without
+    // one (`migrateIfNeeded` appends missing bundled templates unconditionally), but every
+    // later edit to its prompts does not.
+    // 1.9.14 — the value MOVES with the Ultra Team's first correction, found by auditing the
+    // shipped pipeline against the playbook rather than by a failure: the Spec Critic's contract
+    // is a table over the acceptance criteria and the Build Verifier settles the third of the
+    // run's three success conditions, and NEITHER received the brief those criteria live in — it
+    // reached both as a path in the handoff, on a read the model may skip. Two edges, one
+    // rewritten verifier contract (the diff read before the notes, a verdict per criterion, and
+    // changes no claim covers), one artifact description. All folded, so an existing work folder
+    // needs this bump to receive any of it.
+    // 1.9.15 — the value MOVED (`dda52773c3a51431` → `ada8e54b09f06a29`) and no note was
+    // written; recorded here retroactively, because the convention is that the note tracks the
+    // CONSTANT. What moved: `ask_supervisor_form`'s schema. Tool schemas fold through
+    // `ToolHandlerRegistry.allSchemas`, so a new tool moves this value by existing.
+    //
+    // 1.9.16 — the value MOVES with the questionnaire's last bundled edit: the Ultra Team's
+    // planner now holds `ask_supervisor_form` beside `ask_supervisor` (a role toolset — folded
+    // via `role.toolIDs`), and its prompt stops asking for a numbered list inside one plain
+    // call. Both reach an EXISTING work folder only through the version-gated reconcile, so
+    // without this bump the tool ships in the binary and no folder's planner is ever granted
+    // it — the feature would be live only in folders created after the upgrade.
+    //   git diff --stat 0e9b1dce..HEAD -- <the six folded surfaces> → the three files of the
+    //     tool's own wave (`SupervisorHandlers`, `SupervisorAskRouting`, `ToolRuntime`), none
+    //     of which moves a folded field; `grep -c 'static let schema'` on that diff → 0.
+    //   git diff HEAD --stat -- <the same six> → exactly the two files this bump is for.
+    //
+    // 1.9.17 — the value MOVES because the questionnaire stopped being one role's tool: every
+    // bundled role that holds `ask_supervisor` now holds `ask_supervisor_form` beside it (ten
+    // role templates plus four `TeamTemplateFactory` closures — folded via `role.toolIDs`),
+    // and the shared choice fragment the three chat roles carry stops asking them to hand-roll
+    // a numbered list when they hold the tool that IS the list (folded via `role.prompt`).
+    // Nothing here reaches an existing work folder without the bump: the reconcile rewrites a
+    // system role's `toolIDs` and `prompt` from the bundle, and its gate is the version.
+    //   Проверка: `grep -c 'TN.askSupervisorForm' NanoTeams/Domain/SystemTemplates+RoleTemplates.swift
+    //     NanoTeams/Domain/TeamTemplateFactory.swift` → 11 and 4; `grep -c 'TN.askSupervisor,'`
+    //     on the same two counts the pairs, never a lone plain ask.
+    // 1.9.18 — the largest move the register has recorded, because the Ultra Team stopped
+    // being a FEATURE pipeline and became a general CHANGE pipeline. Three system roles were
+    // renamed (`featurePlanner`/`featureEngineer`/`buildVerifier` →
+    // `changePlanner`/`changeEngineer`/`changeVerifier`), three were added (`briefCritic`,
+    // `feasibilityCritic`, `diffReviewer`), "Feature Brief" became "Change Brief" and three
+    // artifacts joined it; every one of the ten roles gained `analyze_image` and both Xcode
+    // runners; all ten prompts were rewritten around one shared `### Unverified` rule; and
+    // the team carries its own `TeamLimits.ultra`.
+    //
+    // This is also the first bump whose reconcile REMOVES something: the three retired ids
+    // live in `SystemTemplates.retiredSystemRoleIDs`, and step 4a deletes them from a stored
+    // team before the additive pass runs. Without the version bump a folder keeps both
+    // rosters — two planners, two writers on one tree — so the gate is doing more work here
+    // than usual.
+    //   Проверка: `grep -c 'changePlanner\|briefCritic\|feasibilityCritic\|diffReviewer'
+    //     NanoTeams/Domain/SystemTemplates+RoleTemplates.swift` → non-zero; and
+    //     `grep -rn 'featurePlanner' NanoTeams --include='*.swift'` → only the retired roster.
+    // 1.9.19 — the value MOVES with the review of 1.9.18, the same day: the Spec Critic's
+    // "Evidence outranks claims" stops penalising a MEASURED baseline (both architects hold the
+    // runners now, so a paired tool call is evidence; inventing a result for code that does
+    // not exist is still the defect); the Feasibility Critic's probe gets a placement rule
+    // (beside an existing source of the target — a root-level file is in no synchronized
+    // group and compiled by nothing) and one retry of the control before declaring everything
+    // unverified; the verifier's prompt drops the MeditationApp incident narrative (it lives
+    // in the Swift comment now); and the Implementation Notes / Verification Report
+    // descriptions agree with the prompts they ride beside. RETRACTED IN PART 2026-09-12:
+    // "all folded (`role.prompt`, artifact descriptions)" was half wrong — until 1.9.21 this
+    // value folded artifact NAMES only, and reconcile step 4 skipped an artifact it already
+    // had. So the prompt half of that 1.9.19 edit shipped and the DESCRIPTION half reached no
+    // existing folder at all, at any version. Both are fixed in 1.9.21; the 1.9.19 prompt
+    // changes stand as recorded.
+    //   Проверка: `grep -c 'MeditationApp' NanoTeams/Domain/SystemTemplates+RolePrompts.swift`
+    //     → the comment only (0 inside a prompt literal — `UltraTeamTests` pins it).
+    // 1.9.20 — the value MOVES because the recency slot now names the questionnaire: the
+    // advisory `{stepEnding}` sentence reads "Reply by calling `ask_supervisor` with your full
+    // response in its `question` field. Several questions, or a choice with its options, go as
+    // `ask_supervisor_form`." — one imperative, the "plain text outside tool calls is
+    // invisible" rationale dropped (R1.2.3, R4.3.2) — and `choiceFragment` is gone from the
+    // three chat roles that carried it mid-prompt (R4.3.2: one rule, one place — the tool's
+    // description, the refusal's `next`, the nudge, the recency slot). Both folded (template
+    // constant and `role.prompt`), so a folder already opened at 1.9.19 needs this bump.
+    // Measured live (REC.10, N=2 after the A2 point) — RUN_HISTORY 2026-09-11j.
+    //   Проверка: `grep -c choiceFragment NanoTeams/Domain/SystemTemplates+RolePrompts.swift` → 0.
+    // 1.9.21 — the value MOVES because the Ultra Team stopped being a SWIFT pipeline. It was a
+    // general CHANGE pipeline that only ran on a macOS project with an Xcode scheme: step 3.1 of
+    // `resolveToolSchemasCore` strips both runners when no scheme is selected, and the floor
+    // offered no other build channel, so on a SwiftPM package — or any repository that is not
+    // Swift — nine roles were ordered to build with nothing to build with (playbook E7.7.6:
+    // an unfulfillable directive, not disobedience). Three things moved together: `bash` +
+    // `bash_output` joined `ultraToolFloor` (folded via `role.toolIDs`); the Feasibility Critic
+    // retired, because its whole contract was a compiled `FeasibilityProbe.swift` inside an Xcode
+    // target — so ten roles became nine, `Feasibility Report` left `SystemTemplates.artifacts`,
+    // and three `requires` lists lost it (folded via the roster, the artifact set and
+    // `role.dependencies`); and five prompts were rewritten to stop naming a document that no
+    // longer exists and a runner the resolver may have taken away (folded via `role.prompt`).
+    //
+    // A fourth thing moved, found by the stack pin rather than by hand: an artifact DESCRIPTION
+    // rides the wire beside the role's prompt, but this value folded artifact NAMES only and
+    // reconcile step 4 skipped any artifact it already had — so a description edit reached no
+    // existing folder at any version, while the prompt beside it did. Both halves are folded and
+    // refreshed now (`RetiredSystemRoleReconcileTests.testStoredSystemArtifact_gets…`), which is
+    // also why this value moved twice while 1.9.21 was being assembled.
+    //
+    // The second bump whose reconcile REMOVES something, and the more dangerous of the two: the
+    // retired role held `write_file` + `delete_file`. Without the bump a stored folder keeps it
+    // alive beside the engineer — two writers on one tree — while every pin over the FRESH
+    // template stays green (`UltraTeamTests.testTheRetiredFeasibilityCriticIsActuallyRetired`).
+    //   Проверка: `grep -rn 'feasibilityCritic' NanoTeams --include='*.swift'` → only the retired
+    //     roster; `grep -c 'ultraToolFloor' NanoTeams/Domain/SystemTemplates+RoleTemplates.swift`
+    //     → 11 (one declaration, nine call sites, one comment), and the declaration carries
+    //     `TN.bash, TN.bashOutput`. And the nine prompts say nothing that only holds on one
+    //     stack: `grep -icE 'swift|xcode|macos|compile|runner' ` over the Ultra prompt bodies
+    //     → 0 (`UltraTeamTests.testNoUltraPromptNamesAStack` reads the same population).
+    // 1.9.22 (2026-09-12) — the two tool parameters that carry a nested JSON DOCUMENT,
+    // `ask_supervisor_form.form` and `create_team.team_config`, are declared `object` instead
+    // of `string`, and the form's worked example became the WHOLE call rather than the form's
+    // contents. Both handlers already accepted the object shape, dict-first; only the schema
+    // said otherwise. No provider is sent a real JSON Schema — `NativeChatRequest` and
+    // Ollama's `ChatRequest` have no `tools` field, every schema reaches the model as prose —
+    // so the rendered `(type)` was the only thing telling the model whether to send a value or
+    // a transcript of one, and `string` asked it to hand-escape 1500 characters of JSON inside
+    // JSON. Field measure over three runs, 2026-09-12 (MeditationApp tasks 71 and 74,
+    // `ornith-1.5:35b`): seven form emissions, six of them strings, two of those clean —
+    // 0 of 3 runs parked on the first attempt, 2.33 calls per park. The single NATIVE emission
+    // was syntactically flawless and was refused for a missing `form`, which is the other half
+    // of this bump: the handler now reads a top-level `questions` array as the document, and a
+    // `form` of the wrong type is reported as the wrong type rather than as missing.
+    //   Проверка: `./run_ask_supervisor_form_trainer.sh` — `clean-on-first` and
+    //     `calls-per-park` over N runs, the same numbers the classifier reads off any existing
+    //     run's `tool_calls.jsonl`.
+    // 1.9.23, 2026-09-12: the `ask_supervisor_form` description lost its assumed-answer
+    // paragraph and the Ultra changePlanner its stop-condition clause, because the behaviour
+    // both described is gone — an untouched question is no longer filled in from `options[0]`.
+    // Both texts promised something the app stopped doing, which is the one kind of prompt
+    // edit that cannot wait for a later bundle.
+    // 1.9.24, 2026-09-12: the `ask_supervisor_form` description stopped claiming that the
+    // first option is the recommended one, and teaches the spelling models already write
+    // unprompted instead — a recommendation opens that option's `detail` with the word
+    // Recommended, shown once in the worked example. `questionnaireRequiredReason` lost the
+    // same claim. The clause is bundled, so the reconcile must reach existing work folders:
+    // a role told "order them deliberately" by a stale template would be ordering for a
+    // reader that no longer reads order.
+    // 1.9.25, 2026-09-13 — bumped WITHOUT moving this value, as 1.9.5, 1.9.11 and 1.9.12 were.
+    // The release is the first public one since 1.9.12, thirteen bundled bumps back, so the
+    // watermark advance IS the effect here: every folder opened at any 1.9.1x receives the
+    // whole accumulated reconcile on this open. What the wave itself ships travels in the
+    // binary — the delegated exchange offering the parking PAIR (D-B14), the executor's
+    // rewritten refusals (D-B10), the chair rule lifted into `Domain` (D-B12) — and none of it
+    // is folded content.
+    //   Проверка, перепрогнанная а не унаследованная: over the wave's own range,
+    //     git diff --stat <range> -- NanoTeams/Domain/SystemTemplates+RolePrompts.swift \
+    //       SystemTemplates+RoleTemplates.swift SystemTemplates+ArtifactTemplates.swift \
+    //       SystemTemplates+PromptLibrary.swift TeamTemplateFactory.swift → EMPTY, and
+    //     the `ask_supervisor_form` schema's `description` and `parameters` are byte-identical
+    //     (`SupervisorHandlers.swift` lost 266 lines, all of them the decode ladder moving to
+    //     `SupervisorFormPayload`, none of them schema text).
+    private static let expectedFingerprint = "32337af25e41c6eb"
 
     func testBundledContent_hasNotChangedWithoutAVersionBump() {
         let actual = BundledContentFingerprint.current

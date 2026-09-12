@@ -292,7 +292,7 @@ final class StreamLoopRecoveryDispatchTests: XCTestCase {
         let stop = await driveToBudgetExhausted(
             task: task, supervisorMode: .manual, messages: &messages)
 
-        guard case .needsSupervisorInput(let q) = stop else {
+        guard case .needsSupervisorInput(let q, _) = stop else {
             return XCTFail("manual + budget-exhausted must escalate, got \(stop)")
         }
         XCTAssertTrue(q.contains("reasoning loop"), "question describes the loop")

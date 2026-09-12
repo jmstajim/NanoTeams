@@ -27,6 +27,13 @@ final class TaskEngineStoreAdapter: TeamEngineStore {
         resolvedTeam
     }
 
+    /// The user's `RoleConcurrencyMode`, read live so a change in Settings applies to the
+    /// next dispatch pass rather than to the next run. Global, not per-team: the resource it
+    /// rations is one local inference server shared by every team in the folder.
+    var maxConcurrentRoles: Int? {
+        orchestrator?.configuration.roleConcurrencyMode.maxConcurrentRoles
+    }
+
     func stepStatus(stepID: String) -> StepStatus? {
         guard let task = activeTask, let run = task.runs.last else { return nil }
         // Build a temporary O(1) lookup; steps array is typically 5-7 elements.

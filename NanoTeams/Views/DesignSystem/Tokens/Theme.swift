@@ -5,7 +5,7 @@ import SwiftUI
 /// One unified theme choice combining color-scheme intent and palette pick.
 ///
 /// `system` / `light` / `dark` cover the classic appearance modes (dark = the
-/// original Terminal palette). The other 11 cases are dark-only palette
+/// original Terminal palette). The other 14 cases are dark-only palette
 /// variants. Light Mode (whether picked explicitly or via `.system` resolving
 /// to light) always uses the shared paper surfaces; each theme contributes
 /// its own contrast-corrected accent so the pick stays visible.
@@ -25,6 +25,7 @@ nonisolated enum Theme: String, CaseIterable, Identifiable, Sendable {
     case cream
     case daylight
     case blush
+    case blueprint
     // MARK: Dark themes
     case terminal
     case oled
@@ -40,6 +41,7 @@ nonisolated enum Theme: String, CaseIterable, Identifiable, Sendable {
     case amethyst
     case neon
     case rose
+    case cobalt
 
     var id: String { rawValue }
 
@@ -56,6 +58,7 @@ nonisolated enum Theme: String, CaseIterable, Identifiable, Sendable {
         .cream: "Cream",
         .daylight: "Daylight",
         .blush: "Blush",
+        .blueprint: "Blueprint",
         .terminal: "Dark",
         .oled: "OLED",
         .arctic: "Arctic",
@@ -69,7 +72,8 @@ nonisolated enum Theme: String, CaseIterable, Identifiable, Sendable {
         .amber: "Amber",
         .amethyst: "Amethyst",
         .neon: "Neon",
-        .rose: "Rose"
+        .rose: "Rose",
+        .cobalt: "Cobalt"
     ]
 
     var displayName: String { Self.displayNameMap[self] ?? rawValue }
@@ -80,7 +84,7 @@ nonisolated enum Theme: String, CaseIterable, Identifiable, Sendable {
     var preferredColorScheme: ColorScheme? {
         switch self {
         case .system: return nil
-        case .light, .parchment, .mist, .sand, .dawn, .cream, .daylight, .blush:
+        case .light, .parchment, .mist, .sand, .dawn, .cream, .daylight, .blush, .blueprint:
             return .light
         default:
             return .dark
@@ -424,7 +428,7 @@ nonisolated extension Theme {
         accentTintStrong: 0xC8DDEB,
         accentBorder: 0xB6D2E6,
         textPrimary: 0x4A5C62,
-        textSecondary: 0x5C7077,
+        textSecondary: 0x4B5F66,
         textTertiary: 0x7C8E8E,
         textQuaternary: 0x9AA8A6,
         textOnAccent: 0xFDF6E3
@@ -754,6 +758,79 @@ nonisolated extension Theme {
         textOnAccent: 0xFFFFFF
     )
 
+    // MARK: Blueprint
+
+    /// Blue ink on drafting paper — the light half of the pair with Cobalt.
+    /// Same 16-colour text-mode lineage, inverted: the blue moves from the ground
+    /// to the ink, and the paper keeps as much of it as sRGB allows (C* 24 at the
+    /// ground, thinning to 6 only because a light blue cannot hold chroma — at
+    /// L* 96 the gamut ceiling IS about 6). Since the fill cannot carry the
+    /// identity, two other things do: `borderStrong` at ΔE 44 from the card,
+    /// the line-work a drawing in this idiom is actually made of; and a rail
+    /// deep enough to read as a separate plane — `surfaceBackground` at L* 78,
+    /// ten points below the next-deepest light theme, ΔE 12.5 from the content
+    /// against the 6.6 it shipped with.
+    ///
+    /// `textSecondary` is a measurement, not a taste: at its first value it gave
+    /// 4.15:1 on this paper, the worst of the nine light palettes (the median is
+    /// 6.3). It is now 5.82:1.
+    ///
+    /// The accent is the ink itself rather than a warm signal. An ochre accent
+    /// shipped here first and read as mud on a blue ground; the token that had
+    /// forced it — `textSecondary` sitting 7.4 ΔE from a blue accent — was the
+    /// one to move, and it is now a cool slate with no business being saturated.
+    static let blueprintLight = ThemePalette(
+        success: 0x2C6B3C,
+        warning: 0x8A6410,
+        error: 0xAF3A2C,
+        info: 0x1D5CA8,
+        neutral: 0x4E5C82,
+        purple: 0x67479E,
+        artifact: 0x2C6B3C,
+        teal: 0x1B6B70,
+        yellow: 0x8A6410,
+        indigo: 0x2B3F9E,
+        pink: 0x9E4A78,
+        cyan: 0x1B6B70,
+        mint: 0x2C6B3C,
+        brown: 0x7A5230,
+        emerald: 0x1F5C3A,
+        gold: 0x8A6410,
+        dim: 0x8E9AC6,
+        surfaceBackground: 0xA3C4ED,
+        surfacePrimary: 0xCAE0FE,
+        surfaceCard: 0xD9EBFF,
+        surfaceElevated: 0xE9F5FF,
+        surfaceElevatedSubtle: 0xD2E6FF,
+        surfaceHover: 0xBDD7F8,
+        surfaceOverlay: 0xD2E6FF,
+        surfaceOverlayStrong: 0xD9EBFF,
+        borderSubtle: 0x93B3DE,
+        borderStrong: 0x5E85BE,
+        accent: 0x2A4999,
+        successTint: 0xC1D9E4,
+        warningTint: 0xCED8DE,
+        errorTint: 0xD3D2E1,
+        infoTint: 0xBFD7F3,
+        purpleTint: 0xC9D4F1,
+        artifactTint: 0xC1D9E4,
+        cyanTint: 0xBED9EB,
+        yellowTint: 0xCED8DE,
+        neutralTint: 0xC6D7EE,
+        dimTint: 0xCEE0F7,
+        emeraldTint: 0xBFD7E3,
+        errorBorder: 0xC8A4AB,
+        neutralBorder: 0xA1B2CD,
+        accentTint: 0xC2D6F2,
+        accentTintStrong: 0xB2C7E9,
+        accentBorder: 0x93AAD6,
+        textPrimary: 0x163578,
+        textSecondary: 0x3E5278,
+        textTertiary: 0x6B7796,
+        textQuaternary: 0x9BA9C3,
+        textOnAccent: 0xF1F7FF
+    )
+
     // MARK: Terminal (default dark)
 
     static let terminalDark = ThemePalette(
@@ -965,7 +1042,7 @@ nonisolated extension Theme {
         accentBorder: 0x2E3E63,
         textPrimary: 0xC0CAF5,
         textSecondary: 0x9AA5CE,
-        textTertiary: 0x565F89,
+        textTertiary: 0x656E99,
         textQuaternary: 0x3B4261,
         textOnAccent: 0x16161E
     )
@@ -1126,8 +1203,8 @@ nonisolated extension Theme {
         accentTintStrong: 0x093F55,
         accentBorder: 0x11506B,
         textPrimary: 0x93A1A1,
-        textSecondary: 0x839496,
-        textTertiary: 0x657B83,
+        textSecondary: 0x8D9FA1,
+        textTertiary: 0x6A8088,
         textQuaternary: 0x586E75,
         textOnAccent: 0x002B36
     )
@@ -1180,8 +1257,8 @@ nonisolated extension Theme {
         accentTintStrong: 0x223A4F,
         accentBorder: 0x2C4660,
         textPrimary: 0xABB2BF,
-        textSecondary: 0x9098A4,
-        textTertiary: 0x6B727D,
+        textSecondary: 0x939BA7,
+        textTertiary: 0x757C87,
         textQuaternary: 0x5C6370,
         textOnAccent: 0x282C34
     )
@@ -1288,7 +1365,7 @@ nonisolated extension Theme {
         accentTintStrong: 0x394A2C,
         accentBorder: 0x455039,
         textPrimary: 0xD3C6AA,
-        textSecondary: 0x9DA9A0,
+        textSecondary: 0xA2AEA5,
         textTertiary: 0x859289,
         textQuaternary: 0x7A8478,
         textOnAccent: 0x2D353B
@@ -1510,6 +1587,77 @@ nonisolated extension Theme {
         textOnAccent: 0x20151F
     )
 
+    // MARK: Cobalt
+
+    /// A lit blue screen: deep blue panels, cyan and bone-white text, one yellow
+    /// accent. The hues descend from the 16-colour text mode of early PC display
+    /// hardware, shifted off those exact values — an eight-step surface ladder
+    /// needs more than 16 discrete colours anyway, and the shift keeps this a
+    /// palette in that lineage rather than a transcription of one.
+    /// Pairs with `blueprintLight`.
+    ///
+    /// The shift that matters is CHROMA, and it is the whole difference between
+    /// this and the version shipped on 2026-09-09. That one transcribed the
+    /// hardware blue faithfully — C* 97 on `surfacePrimary`, against 17 for the
+    /// most saturated palette otherwise in this file and 4.5 for `terminalDark`
+    /// — and a value drawn for a 640×350 CRT covers a 27-inch panel as a wall.
+    /// Halving it (C* 46) keeps the hue unmistakable at a fill you can sit in
+    /// front of, and moves the identity onto `borderStrong`: a cyan frame at
+    /// ΔE 42 from the card, which is what draws the panel edges the look is
+    /// actually made of. Chroma rises with the ladder (33 → 64) so lifted
+    /// surfaces read as lit rather than merely lighter.
+    static let cobaltDark = ThemePalette(
+        success: 0x5CD65C,
+        warning: 0xF2E85C,
+        error: 0xF0705E,
+        info: 0x6EE8F0,
+        neutral: 0xAAB2CE,
+        purple: 0xE07CE0,
+        artifact: 0xBC8CEE,
+        teal: 0x5CD6C8,
+        yellow: 0xF2E85C,
+        indigo: 0x93A4F2,
+        pink: 0xE887B8,
+        cyan: 0x6EE8F0,
+        mint: 0x7CE8B4,
+        brown: 0xC08A4A,
+        emerald: 0x5CD68A,
+        gold: 0xE0A63C,
+        dim: 0x53619E,
+        surfaceBackground: 0x121946,
+        surfacePrimary: 0x182669,
+        surfaceCard: 0x1E2E7A,
+        surfaceElevated: 0x283B97,
+        surfaceElevatedSubtle: 0x233488,
+        surfaceHover: 0x2F43AA,
+        surfaceOverlay: 0x151D51,
+        surfaceOverlayStrong: 0x0A0C31,
+        borderSubtle: 0x3846A6,
+        borderStrong: 0x1A88C9,
+        accent: 0xF2E85C,
+        successTint: 0x223F67,
+        warningTint: 0x374167,
+        errorTint: 0x363067,
+        infoTint: 0x24417C,
+        purpleTint: 0x34327A,
+        artifactTint: 0x2F347C,
+        cyanTint: 0x24417C,
+        yellowTint: 0x374167,
+        neutralTint: 0x2C3A77,
+        dimTint: 0x202E70,
+        emeraldTint: 0x223F6E,
+        errorBorder: 0x6A4265,
+        neutralBorder: 0x4F5B8F,
+        accentTint: 0x374167,
+        accentTintStrong: 0x4C5566,
+        accentBorder: 0x6B7064,
+        textPrimary: 0xE4EAF7,
+        textSecondary: 0x8FD8EC,
+        textTertiary: 0x8290C8,
+        textQuaternary: 0x53619E,
+        textOnAccent: 0x111E57
+    )
+
     // MARK: Light accent overrides
 
     // Accent + tints + on-accent foreground that each theme contributes when
@@ -1632,13 +1780,26 @@ nonisolated extension Theme {
         textOnAccent: 0xF4F5F6
     )
 
+    /// Cobalt in a light scheme: the screen yellow cannot carry on paper, so the
+    /// accent lands on the same blue ink `blueprintLight` uses — the pair stays
+    /// one family across both schemes.
+    static let cobaltLightAccent = LightAccent(
+        accent: 0x2A4999,
+        accentTint: 0xDEE2EC,
+        accentTintStrong: 0xCCD3E3,
+        accentBorder: 0xA7B4D3,
+        textOnAccent: 0xF4F5F6
+    )
+
     // MARK: Lookup maps
 
     /// Theme → dark palette. Built once at module load (constant data).
     /// `.system` and every explicit light theme map to Terminal dark — for
     /// `.system` it's the dark-mode fallback when the OS resolves to dark;
     /// for light themes it's a defensive default never actually hit
-    /// (`.preferredColorScheme(.light)` forces `isDark = false`).
+    /// (`.preferredColorScheme(.light)` forces `isDark = false`). Blueprint is
+    /// the one light theme that does not point at Terminal: unreachable either
+    /// way, it names its own pair's dark half instead of the global default.
     static let darkPaletteMap: [Theme: ThemePalette] = [
         .system: terminalDark,
         .light: terminalDark,
@@ -1649,6 +1810,7 @@ nonisolated extension Theme {
         .cream: terminalDark,
         .daylight: terminalDark,
         .blush: terminalDark,
+        .blueprint: cobaltDark,
         .terminal: terminalDark,
         .oled: oledDark,
         .arctic: arcticDark,
@@ -1662,7 +1824,8 @@ nonisolated extension Theme {
         .amber: amberDark,
         .amethyst: amethystDark,
         .neon: neonDark,
-        .rose: roseDark
+        .rose: roseDark,
+        .cobalt: cobaltDark
     ]
 
     /// Theme → full light palette. Only themes with their OWN explicit light
@@ -1676,7 +1839,8 @@ nonisolated extension Theme {
         .dawn: dawnLight,
         .cream: creamLight,
         .daylight: daylightLight,
-        .blush: blushLight
+        .blush: blushLight,
+        .blueprint: blueprintLight
     ]
 
     /// Theme → light-mode accent override for dark-only themes rendered under a
@@ -1698,6 +1862,7 @@ nonisolated extension Theme {
         .amber: amberLightAccent,
         .amethyst: amethystLightAccent,
         .neon: neonLightAccent,
-        .rose: roseLightAccent
+        .rose: roseLightAccent,
+        .cobalt: cobaltLightAccent
     ]
 }

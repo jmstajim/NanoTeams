@@ -162,7 +162,7 @@ final class SearchIndexCoordinatorWatcherSeamTests: XCTestCase {
     /// The exclusion is load-bearing, not decoration: `.nanoteams/internal/` receives an append
     /// to `tool_calls.jsonl` and `network_log.json` on every single tool call of an active run,
     /// and those paths are already outside the index walk — so without the exclusion each one
-    /// arms the debounce timer and pays a full signature probe that can only conclude "nothing
+    /// arms the debounce timer and pays a full walk of the tree that can only conclude "nothing
     /// changed". Nothing asserted this before, because the argument went straight into a real
     /// FSEventStream where it was unobservable.
     ///
@@ -179,7 +179,7 @@ final class SearchIndexCoordinatorWatcherSeamTests: XCTestCase {
         let w = try XCTUnwrap(watchers.first)
         XCTAssertEqual(w.paths, [tempDir])
         XCTAssertEqual(w.excludedPrefixes, [internalDir],
-                       "every tool-call log write would otherwise trigger a signature probe")
+                       "every tool-call log write would otherwise wake a walk of the tree")
         XCTAssertEqual(w.debounce, 0.05, accuracy: 0.0001,
                        "the injected debounce must reach the watcher, not just be stored")
         XCTAssertEqual(w.startCount, 1)

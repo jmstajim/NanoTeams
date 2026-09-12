@@ -124,4 +124,28 @@ nonisolated struct JSONSchema: Codable, Hashable {
             type: "object", description: description, properties: properties,
             required: required, items: nil, enumValues: nil)
     }
+
+    /// An object parameter whose SHAPE lives in the tool description rather than in the
+    /// schema — for a nested JSON document this model cannot express (an array of objects
+    /// dies at `JSONSchemaLeaf`, CLAUDE.md #46).
+    ///
+    /// Declaring it `object` rather than `string` is the point: no provider is sent a real
+    /// JSON Schema (neither `NativeChatRequest` nor Ollama's `ChatRequest` has a `tools`
+    /// field — every schema reaches the model as prose), so the `(type)` the renderer
+    /// prints is the ONLY thing telling the model whether to send a value or a transcript
+    /// of one. Declared `string`, `ask_supervisor_form` asked a local model to escape a
+    /// 1500-character JSON document by hand and got 2 clean emissions out of 6
+    /// (MeditationApp tasks 71/74, 2026-09-12); the handler had accepted the object form
+    /// all along.
+    ///
+    /// The sibling overload takes a `[String: JSONSchemaLeaf]` map and would write a dead
+    /// `"properties": {}` into every work folder's `tools.json` for a shape it cannot hold.
+    /// This one leaves `properties` nil, which the renderer prints as plain `(object)` —
+    /// see `NativeLMStudioClient.typeAndAttributes`, which licenses the description as the
+    /// documentation surface for exactly this case.
+    static func object(_ description: String) -> JSONSchemaProperty {
+        JSONSchemaProperty(
+            type: "object", description: description, properties: nil,
+            required: nil, items: nil, enumValues: nil)
+    }
 }

@@ -122,7 +122,7 @@ nonisolated final class ToolCallSummarizerCoveragePinTests: XCTestCase {
     /// assertion above becomes trivially true.
     func testTheScanActuallyCoveredTheRoster() {
         XCTAssertEqual(
-            ToolNames.allNames.count, 50,
+            ToolNames.allNames.count, 51,
             "roster size changed — update this pin deliberately, and check the new tool has a summary")
         let summarized = ToolNames.allNames.filter { ToolCallSummarizer.hasArgumentSummarizer(for: $0) }
         XCTAssertGreaterThan(

@@ -686,6 +686,28 @@ nonisolated struct TaskSummary: Codable, Identifiable, Hashable {
     /// (`TaskSummary+Queries.swift`), never as a raw `== false`.
     var hasPendingSupervisorInput: Bool?
 
+    /// HOW MANY questions the task's active run is waiting on — the durable twin of
+    /// `NTMSTask.pendingSupervisorQuestionCount`, mirrored beside the flag so the sidebar can
+    /// say "three roles are waiting" about a task nobody has opened.
+    ///
+    /// It is a second field rather than a widening of the flag because the flag has readers
+    /// that must keep answering a yes/no question with a yes/no answer (the seen-set sweep,
+    /// the Autovisor wake, `isWaitingForSupervisor`), and rewriting them to test `> 0` would
+    /// have bought nothing but a chance to get one of them wrong. `toSummary` computes the
+    /// count once and derives the flag from it, so the two cannot disagree.
+    ///
+    /// **Tri-state on purpose** (CLAUDE.md #91, the same contract as the three mirrors above):
+    /// `nil` is a row written before the field existed, which is NOT `0`. The distinction is
+    /// visible: an unknown row renders today's dot with no number, whereas `0` would assert
+    /// that nobody is waiting. Read it through `waitingQuestionCountIsKnown`
+    /// (`TaskSummary+Queries.swift`), and let `SupervisorAnswerFocus.waitingBadgeCount` decide
+    /// whether the number is worth showing at all.
+    ///
+    /// No `schemaVersion` bump, for the reason `hasGeneratedTeam` records: `TasksIndex` has no
+    /// version-gated legacy decode branch that could re-fire (#48 does not apply), so rows
+    /// converge individually on their next `toSummary()` write.
+    var pendingSupervisorQuestionCount: Int?
+
     /// Whether the task carries an adopted generated team (`generatedTeam != nil`),
     /// mirrored here so `placeholderChatCandidacy` can replicate
     /// `TeamResolution.resolveTeamID`'s FIRST rung without loading the blob — an
@@ -723,7 +745,7 @@ nonisolated struct TaskSummary: Codable, Identifiable, Hashable {
     /// `hasGeneratedTeam` above.
     var hasRolesAwaitingAcceptance: Bool?
 
-    init(id: Int, title: String, status: TaskStatus, updatedAt: Date = MonotonicClock.shared.now(), isChatMode: Bool = false, parentTaskID: Int? = nil, nextRecurrenceFireAt: Date? = nil, pinnedTeamID: NTMSID? = nil, hasPendingSupervisorInput: Bool? = nil, hasGeneratedTeam: Bool? = nil, preferredTeamID: NTMSID? = nil, hasRolesAwaitingAcceptance: Bool? = nil) {
+    init(id: Int, title: String, status: TaskStatus, updatedAt: Date = MonotonicClock.shared.now(), isChatMode: Bool = false, parentTaskID: Int? = nil, nextRecurrenceFireAt: Date? = nil, pinnedTeamID: NTMSID? = nil, hasPendingSupervisorInput: Bool? = nil, pendingSupervisorQuestionCount: Int? = nil, hasGeneratedTeam: Bool? = nil, preferredTeamID: NTMSID? = nil, hasRolesAwaitingAcceptance: Bool? = nil) {
         self.id = id
         self.title = title
         self.status = status
@@ -733,6 +755,7 @@ nonisolated struct TaskSummary: Codable, Identifiable, Hashable {
         self.nextRecurrenceFireAt = nextRecurrenceFireAt
         self.pinnedTeamID = pinnedTeamID
         self.hasPendingSupervisorInput = hasPendingSupervisorInput
+        self.pendingSupervisorQuestionCount = pendingSupervisorQuestionCount
         self.hasGeneratedTeam = hasGeneratedTeam
         self.preferredTeamID = preferredTeamID
         self.hasRolesAwaitingAcceptance = hasRolesAwaitingAcceptance
@@ -749,6 +772,8 @@ nonisolated struct TaskSummary: Codable, Identifiable, Hashable {
         self.nextRecurrenceFireAt = try container.decodeIfPresent(Date.self, forKey: .nextRecurrenceFireAt)
         self.pinnedTeamID = try container.decodeIfPresent(String.self, forKey: .pinnedTeamID)
         self.hasPendingSupervisorInput = try container.decodeIfPresent(Bool.self, forKey: .hasPendingSupervisorInput)
+        self.pendingSupervisorQuestionCount =
+            try container.decodeIfPresent(Int.self, forKey: .pendingSupervisorQuestionCount)
         self.hasGeneratedTeam = try container.decodeIfPresent(Bool.self, forKey: .hasGeneratedTeam)
         self.preferredTeamID = try container.decodeIfPresent(String.self, forKey: .preferredTeamID)
         self.hasRolesAwaitingAcceptance =
@@ -899,7 +924,13 @@ nonisolated extension NTMSTask {
     }
 
     func toSummary() -> TaskSummary {
-        TaskSummary(
+        // ONE pass, two facts. The flag is spelled `> 0` rather than read from
+        // `hasPendingSupervisorInput` so the row cannot ship a `true` beside a zero: the two
+        // are one fact in two shapes (see `Run.activeSupervisorInputCount`), and the only way
+        // to guarantee that at the seam where both are written is to write them from the same
+        // value. The extra work is nil — the flag's own `contains` walks the same steps.
+        let waitingQuestions = pendingSupervisorQuestionCount
+        return TaskSummary(
             id: id,
             title: title,
             status: derivedStatusFromActiveRun(),
@@ -908,7 +939,8 @@ nonisolated extension NTMSTask {
             parentTaskID: parentTaskID,
             nextRecurrenceFireAt: recurrence.flatMap { $0.isEnabled ? $0.nextFireAt : nil },
             pinnedTeamID: runs.last?.teamID,
-            hasPendingSupervisorInput: hasPendingSupervisorInput,
+            hasPendingSupervisorInput: waitingQuestions > 0,
+            pendingSupervisorQuestionCount: waitingQuestions,
             hasGeneratedTeam: generatedTeam != nil,
             preferredTeamID: preferredTeamID,
             hasRolesAwaitingAcceptance: hasRolesAwaitingAcceptance

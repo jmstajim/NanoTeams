@@ -10,7 +10,14 @@ nonisolated enum WatchtowerNotificationType {
     /// currently asking", which matters most in chat mode, where every assistant turn
     /// is another `ask_supervisor` call. Nil only on the escalation path, where the
     /// engine flips the waiting flag without appending a call.
-    case supervisorInput(stepID: String, question: String, role: Role, toolCallID: UUID?)
+    ///
+    /// `isInquiry` says the role asked a QUESTIONNAIRE rather than a question, and the banner
+    /// answers neither of them the same way: a form needs the card, and the card lives in the
+    /// task. A `Bool` and not the questionnaire itself, because the banner renders none of it
+    /// — the same shape, and the same reason, as `.bashApprovalNeeded` pointing at the
+    /// Allow/Deny card instead of growing its own.
+    case supervisorInput(
+        stepID: String, question: String, role: Role, toolCallID: UUID?, isInquiry: Bool = false)
     case acceptance(stepID: String, roleID: String, roleName: String)
     case failed(stepID: String, role: Role, errorMessage: String?)
     case taskDone(taskID: Int, taskTitle: String)
@@ -46,7 +53,7 @@ nonisolated enum WatchtowerNotificationType {
 
     func title(isChatMode: Bool) -> String {
         switch self {
-        case .supervisorInput(_, _, let role, _):
+        case .supervisorInput(_, _, let role, _, _):
             return isChatMode ? "\(role.displayName) replied" : "\(role.displayName) needs your input"
         case .acceptance(_, _, let roleName):
             return "\(roleName) needs your review"
@@ -97,7 +104,7 @@ nonisolated enum WatchtowerNotificationType {
     /// retires them by key. `::` separator: step IDs never contain it.
     var dismissID: String {
         switch self {
-        case .supervisorInput(let stepID, let question, _, let toolCallID):
+        case .supervisorInput(let stepID, let question, _, let toolCallID, _):
             return WatchtowerDismissKey.supervisorInputTypeID(
                 stepID: stepID, toolCallID: toolCallID, question: question)
         case .acceptance(let stepID, _, _):
@@ -168,25 +175,31 @@ nonisolated extension Run {
                 role: role, createdAt: req.createdAt))
         }
 
-        // Shared predicate so Watchtower / activity feed / composer chip agree.
-        // A bare `needsSupervisorInput && answer == nil` check misses the race
-        // window where the round-N+1 question is in flight but A_N is still on
-        // the step.
+        // One producer for all three surfaces, so the banner, the composer chip and the
+        // Quick Capture panel cannot describe different questions.
         //
-        // `supervisorQuestion` can lag the predicate during the same race (flag
-        // set, text not yet copied), so fall back to parsing the trailing ask
-        // call's args — same chain `activeSupervisorQuestions` uses for the
-        // composer chip. Without the fallback the banner is silently skipped. The
-        // chain lives in `StepExecution.supervisorQuestionText` — shared with the
-        // answer-time retirement, so banner and retirement key on ONE text.
-        for step in steps where step.hasActiveSupervisorInput {
-            let question = step.supervisorQuestionText
-            if let question {
-                notifications.append(.supervisorInput(
-                    stepID: step.id, question: question, role: step.role,
-                    toolCallID: step.activeSupervisorQuestionID))
-                seenStepIDs.insert(step.id)
-            }
+        // The local loop this replaces agreed with the composer on the GATE
+        // (`hasActiveSupervisorInput`, both verbatim) and disagreed on the TEXT.
+        // `supervisorQuestionText` was `supervisorQuestion ?? parsed-args`, and `??`
+        // short-circuits on a non-nil left side — but `answerSupervisorQuestion` never
+        // clears `supervisorQuestion`. So in the window where round N+1's ask has landed
+        // and the park has not yet run, the banner rendered round N's already-answered
+        // text, which is precisely the case the fallback was written for and could not
+        // reach. The inbox gates that arm on the flag, so the stale text cannot win.
+        //
+        // It also no longer SKIPS a waiting step whose text is unrecoverable: the inbox
+        // hands back a placeholder, and a banner the human can answer beats a step parked
+        // with nothing on screen.
+        //
+        // `askCallID` is `StepExecution.activeSupervisorQuestionID` — nil on a flag-only
+        // escalation, which is what keeps a re-parked step from inheriting the UUID of an
+        // ask the Supervisor already dismissed, and hands the dismissal its question text
+        // instead (`SupervisorQuestionInbox.PendingQuestion.dismissKey`).
+        for question in SupervisorQuestionInbox.pending(taskID: task.id, steps: steps) {
+            notifications.append(.supervisorInput(
+                stepID: question.stepID, question: question.headline, role: question.role,
+                toolCallID: question.askCallID, isInquiry: question.inquiry != nil))
+            seenStepIDs.insert(question.stepID)
         }
 
         // Acceptance needed (skip in chat mode; skip steps already shown above).

@@ -59,12 +59,18 @@ nonisolated enum TeamValidationService {
         /// normalised at runtime, which would hide the defect the banner names.
         case askSupervisorOffInChatMode
 
+        /// A role holds `ask_supervisor_form` without `ask_supervisor`. A warning, not an
+        /// error: the resolver pairs them before the schema ships (step 4-bis), so the run is
+        /// fine — but the stored toolset then differs from what runs, and a Tools tab showing
+        /// only the questionnaire reads as "this role cannot ask a plain question".
+        case supervisorFormWithoutPlainAsk(roleID: String)
+
         var isError: Bool {
             switch self {
             case .nonTopLevelDelegator, .delegationToSelf, .askSupervisorOffInChatMode:
                 return true
             case .unknownDelegationTeam, .noDelegationTargets, .unknownAttachedSkill,
-                 .meetingCoordinatorHealed:
+                 .meetingCoordinatorHealed, .supervisorFormWithoutPlainAsk:
                 return false  // Warning, not error
             }
         }
@@ -93,6 +99,8 @@ nonisolated enum TeamValidationService {
                 return "\(roleName(to)) coordinates this team’s meetings — the stored coordinator\(was) no longer names a role. Pick another one in Settings → Collaboration if that isn’t the right choice."
             case .askSupervisorOffInChatMode:
                 return "Ask Supervisor is Off, but this chat-mode team replies through ask_supervisor — its role would have no way to answer. Switch the mode to Manual or Autonomous."
+            case .supervisorFormWithoutPlainAsk(let roleID):
+                return "\(roleName(roleID)) can send a questionnaire but has no plain \(ToolNames.askSupervisor) — the run adds one beside it, because every escalation reminder names that tool. Check it in the role’s Tools tab to make the toolset say what actually runs."
             }
         }
     }
@@ -138,6 +146,39 @@ nonisolated enum TeamValidationService {
             }
         }
         return issues
+    }
+
+    // MARK: - Supervisor Ask Tools
+
+    /// Flags a role granted `ask_supervisor_form` without `ask_supervisor`.
+    ///
+    /// The questionnaire is a companion, never a replacement: the escalation texts each name
+    /// one channel and it is the plain tool (`LoopRecoveryPolicy.escalationChannel`,
+    /// `SystemTemplates.stepEnding`). The resolver therefore pairs the two before the schema
+    /// ships, which is why this is a warning rather than an error — nothing is broken, but
+    /// the stored toolset no longer describes the run, and the person reading the Tools tab
+    /// is the one who would be misled.
+    ///
+    /// Deliberately NOT symmetric, though the resolver's pairing is (step 4-bis pairs in both
+    /// directions since 2026-09-10). The plain ask alone is the shape the app itself writes —
+    /// `TeamGenerationService` teaches the model that one name, and every team stored before
+    /// the form existed carries it — so warning on it would put a row under nearly every
+    /// non-bundled role and turn the banner into wallpaper. It is also the harmless half: the
+    /// role keeps a channel every text names, it just cannot batch its questions. The
+    /// form-alone half is the one no app path produces and the one where three texts
+    /// contradict the shipped schema.
+    ///
+    /// Either way the Tools tab is not silent — it lists the paired-in tool under
+    /// "Auto-injected", because `RoleToolBadgePolicy` resolves through this same resolver.
+    ///
+    /// The Supervisor row is skipped for free: it is a human and holds no tools.
+    static func validateSupervisorAskTools(team: Team) -> [ValidationError] {
+        team.roles.compactMap { role in
+            let held = Set(role.toolIDs)
+            guard held.contains(ToolNames.askSupervisorForm),
+                  !held.contains(ToolNames.askSupervisor) else { return nil }
+            return .supervisorFormWithoutPlainAsk(roleID: role.id)
+        }
     }
 
     // MARK: - Delegation Policy

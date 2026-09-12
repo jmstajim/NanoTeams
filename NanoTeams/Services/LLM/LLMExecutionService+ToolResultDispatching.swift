@@ -129,7 +129,12 @@ extension LLMExecutionService {
             // The meeting result is attributed to the same coordinator the runtime
             // used for the meeting itself — the team's coordinator (the initiator
             // stands in only for a fixture with no team).
-            reflectAttribution(reply, role: effectiveCoordinator(team: resolveTeam(task: task), initiator: roleForMessage), context: .meeting)
+            let chair = effectiveCoordinator(
+                team: resolveTeam(task: task), initiator: roleForMessage,
+                requesterRoleID: stepID, seat: .speaks, targetRoleID: nil)
+            if case .chair(let chairRole) = chair {
+                reflectAttribution(reply, role: chairRole, context: .meeting)
+            }
 
         case .changeRequest(let targetRoleID, let changes, let reasoning):
             let reply = await handleChangeRequest(
@@ -413,8 +418,15 @@ extension LLMExecutionService {
             await appendLLMMessage(stepID: stepID, taskID: taskID, role: .user, content: guidance)
         }
 
-        if case .supervisorQuestion(let q) = result.signal {
+        switch result.signal {
+        case .supervisorQuestion(let q):
             Self.accumulateSupervisorQuestion(q, providerID: result.providerID, into: &outcome)
+        case .supervisorForm(let headline, let inquiry):
+            Self.accumulateSupervisorForm(
+                headline: headline, inquiry: inquiry,
+                providerID: result.providerID, into: &outcome)
+        default:
+            break
         }
         return false
     }
@@ -426,12 +438,52 @@ extension LLMExecutionService {
     /// and could not have caught the provider-id defect this fix closes.
     ///
     /// Empty and whitespace-only questions are dropped rather than merged: the dispatcher would
-    /// otherwise park the step on a blank question that `activeSupervisorQuestions` then has to
+    /// otherwise park the step on a blank question that `SupervisorQuestionInbox.pending` then has to
     /// invent a placeholder for.
     nonisolated static func accumulateSupervisorQuestion(
         _ question: String, providerID: String?, into outcome: inout ToolResultsOutcome
     ) {
         let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        accumulateSupervisorQuestionText(trimmed, providerID: providerID, into: &outcome)
+
+        // A plain ask joins the questionnaire ONLY when one is being built. Otherwise the
+        // common path — every chat-mode turn — would allocate structure nothing reads.
+        if outcome.hasSupervisorForm {
+            outcome.supervisorInquiryQuestions.append(
+                Self.freeTextQuestion(trimmed, index: outcome.supervisorInquiryQuestions.count))
+        }
+    }
+
+    /// Folds one `ask_supervisor_form` call into the batch.
+    ///
+    /// The headline goes through the SAME merge as a plain question, so `supervisorQuestion`
+    /// stays the one string every existing surface renders and none of them learns about
+    /// forms. The structure accumulates beside it.
+    nonisolated static func accumulateSupervisorForm(
+        headline: String, inquiry: SupervisorInquiry,
+        providerID: String?, into outcome: inout ToolResultsOutcome
+    ) {
+        // Plain questions merged BEFORE this form arrived are stranded in the headline text
+        // with no entry of their own — promote them now, in the order they were asked.
+        if !outcome.hasSupervisorForm, let earlier = outcome.supervisorQuestion {
+            outcome.supervisorInquiryQuestions = earlier
+                .components(separatedBy: "\n\n")
+                .enumerated()
+                .map { freeTextQuestion($1, index: $0) }
+        }
+        outcome.hasSupervisorForm = true
+        accumulateSupervisorQuestionText(headline, providerID: providerID, into: &outcome)
+        outcome.supervisorInquiryQuestions.append(
+            contentsOf: Self.uniquing(inquiry.questions, against: &outcome))
+    }
+
+    /// The headline/question text merge alone — shared so a form and a plain ask cannot
+    /// diverge on how the string every surface reads is built.
+    private nonisolated static func accumulateSupervisorQuestionText(
+        _ text: String, providerID: String?, into outcome: inout ToolResultsOutcome
+    ) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         if let existing = outcome.supervisorQuestion {
             outcome.supervisorQuestion = existing + "\n\n" + trimmed
@@ -440,5 +492,48 @@ extension LLMExecutionService {
         }
         if let providerID { outcome.supervisorToolCallProviderIDs.append(providerID) }
         outcome.shouldStopForSupervisor = true
+    }
+
+    /// A plain `ask_supervisor` rendered as a questionnaire entry.
+    ///
+    /// The id is POSITIONAL rather than derived from the text: two identical plain asks in one
+    /// batch are two questions, and a text-derived id would collide and silently merge their
+    /// answers.
+    private nonisolated static func freeTextQuestion(
+        _ prompt: String, index: Int
+    ) -> SupervisorInquiryQuestion {
+        SupervisorInquiryQuestion(
+            id: "ask_\(index + 1)",
+            prompt: prompt.trimmingCharacters(in: .whitespacesAndNewlines),
+            kind: .freeText)
+    }
+
+    /// Renames a form question whose id already exists in the batch.
+    ///
+    /// Two forms in one batch are each internally unique but can collide with each other, and
+    /// the answer map is keyed by id — a collision would record one decision against two
+    /// questions. Suffixing is silent on purpose: the human still sees both prompts, which is
+    /// the part that matters, and nothing the model can act on has changed.
+    private nonisolated static func uniquing(
+        _ questions: [SupervisorInquiryQuestion], against outcome: inout ToolResultsOutcome
+    ) -> [SupervisorInquiryQuestion] {
+        var taken = Set(outcome.supervisorInquiryQuestions.map(\.id))
+        return questions.map { question in
+            guard taken.contains(question.id) else {
+                taken.insert(question.id)
+                return question
+            }
+            var suffix = 2
+            while taken.contains("\(question.id)_\(suffix)") { suffix += 1 }
+            let id = "\(question.id)_\(suffix)"
+            taken.insert(id)
+            // `recommendedOptionID` threaded explicitly: the initializer defaults it to nil,
+            // so a rebuild that forgets it drops the recommendation silently and the card
+            // shows a form the model marked as one it marked nothing on.
+            return SupervisorInquiryQuestion(
+                id: id, prompt: question.prompt, detail: question.detail,
+                kind: question.kind, options: question.options,
+                recommendedOptionID: question.recommendedOptionID)
+        }
     }
 }

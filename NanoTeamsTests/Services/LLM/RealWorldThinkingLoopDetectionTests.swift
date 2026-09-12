@@ -151,6 +151,58 @@ final class RealWorldThinkingLoopDetectionTests: XCTestCase {
         }.joined()
     }
 
+    // MARK: - The eighth loop: Ultra Build Verifier, MeditationApp task 48 run 1
+
+    /// The loop that made the detector's CEILING the finding rather than its tiers.
+    /// The Ultra Build Verifier re-derived the same acceptance table and the same
+    /// "rewrite the report" resolution for nineteen minutes, emitting one 343 KB
+    /// thinking response. The top-level streaming scan saw that buffer on every one of
+    /// its ~859 probes and stayed silent the whole time — not because it was scanning
+    /// the wrong channel (it was scanning thinking, correctly), but because the loop's
+    /// exact period, **2635 chars**, sat above the then-current 1500 cap, and four reps
+    /// of it (10 540) would not have fitted the then-current 9000 window either.
+    ///
+    /// The cycle alternates two blocks (measured 1654 + 981). Reconstructed here at the
+    /// measured SHAPE — same two-block alternation, same ~2.6 K period — because the
+    /// verbatim bytes live in a work folder outside this repository and fixtures must
+    /// be readable from the repo alone. What the fixture pins is the structural fact
+    /// that made the run invisible: a period in the 1500–3000 band, needing a window
+    /// that holds four of them.
+    private var verifierAcceptanceTablePeriod: String { verifierTableBlock + verifierRewriteBlock }
+
+    /// First half of the cycle (~1.6 K): re-deriving the four acceptance criteria.
+    private let verifierTableBlock = #"""
+    I need to settle each acceptance criterion against the built code, not against the plan.
+    Criterion 1 says the streak counter increments once per completed session and never twice in the same calendar day.
+    The implementation notes claim this is handled in StreakStore.record(), but I have not read that file in this step.
+    Criterion 2 says the widget deep-link opens the session detail for the tapped day.
+    The notes name `.intentLink(_:)` for that, and I could not resolve `.intentLink` against any SDK surface I have access to.
+    Criterion 3 says the reminder fires at the configured hour even after a cold launch.
+    Nothing in the notes describes a scheduled notification request, so I cannot mark this settled either.
+    Criterion 4 says the onboarding carousel is skippable and the skip is remembered.
+    That one is plausible from the diff, but plausible is not settled, and I should not let it pass on the strength of looking reasonable.
+    So the honest table is: one unverified, one contradicted, one unaddressed, one plausible.
+    The build is the thing that would settle criteria 1 and 2 at once, because a symbol that does not exist cannot compile at all.
+    I ran the build and it returned eight errors, and the first of them named the deep-link modifier that criterion 2 depends on.
+    That is the single most load-bearing fact I have, and I should lead the report with it rather than with the table.
+    Ordering by evidence also means criterion 4 drops to last, because a plausible reading of a diff is the weakest thing on the page.
+    Let me restate the table with that fact folded in, so the ordering reflects evidence rather than the order of the criteria.
+    
+    """#
+
+    /// Second half of the cycle (~1.0 K): resolving to rewrite, then looping back.
+    private let verifierRewriteBlock = #"""
+    Rewriting the verification report now, leading with the compiler result rather than the criterion order.
+    The target does not build, so every behavioural criterion is unsettled by construction: there is no built code to settle it against.
+    I should say that plainly in the first line, then list the eight errors grouped by file, then mark all four criteria unsettled with the reason "target does not compile".
+    I attempted a fix and the edit tool was refused for this role, so the repair belongs to the engineer, not to me, and saying otherwise would be inventing authority I do not have.
+    I will note the refusal verbatim so the reader can see why I stopped rather than guessing that I gave up or ran out of turns.
+    The report is therefore short, and its shortness is the finding: there is nothing to verify until the target compiles.
+    Nothing below this line is settled, and I will not pretend otherwise in the summary table.
+    That is the whole report. Let me write it out.
+    
+    """#
+
     private var allPeriods: [(name: String, period: String)] {
         [("autovisor:list_tasks", autovisorListTasksPeriod),
          ("coding:import_fix", codingImportFixPeriod),
@@ -158,7 +210,8 @@ final class RealWorldThinkingLoopDetectionTests: XCTestCase {
          ("autovisor:ignore_prompt", autovisorIgnorePromptPeriod),
          ("coding:relic_plan", relicPlanPeriod),
          ("autovisor:scratchpad_749", autovisorScratchpadPeriod),
-         ("coding:framework_cycle_1244", frameworkCyclePeriod)]
+         ("coding:framework_cycle_1244", frameworkCyclePeriod),
+         ("ultra:verifier_acceptance_table_2635", verifierAcceptanceTablePeriod)]
     }
 
     /// Mirrors the production within-message funnel (`LoopScanner.detectWithin`):
@@ -201,6 +254,63 @@ final class RealWorldThinkingLoopDetectionTests: XCTestCase {
                 period.count, DelegationConstants.repetitionMaxSubstringChars,
                 "\(name) period must fit within the new cap")
         }
+    }
+
+    // MARK: - The run-48 ceiling: why the cap AND the window both had to move
+
+    /// RED before the widening, green after. The verifier's 2635-char period is
+    /// admissible only if BOTH caps moved: the old 1500 substring cap could not even
+    /// test a period that long, and the old 9000 window could not hold the four reps
+    /// the very-large tier demands (4 × 2635 = 10 540). Pinning both halves separately
+    /// means a future edit that shrinks either one back fails here with the reason.
+    func testVerifierLoop_neededBothTheWiderCapAndTheWiderWindow() {
+        let period = verifierAcceptanceTablePeriod
+        let buffer = String(repeating: period, count: 6)
+
+        XCTAssertGreaterThan(
+            period.count, 1500,
+            "test premise: the run-48 period must exceed the OLD 1500 substring cap — that is why it was invisible")
+        XCTAssertLessThanOrEqual(
+            period.count, DelegationConstants.repetitionMaxSubstringChars,
+            "the run-48 period must fit under the CURRENT cap, or the fix did not land")
+
+        XCTAssertNil(
+            detectWithCaps(buffer, maxSubstringChars: 1500, tailWindowChars: 9000),
+            "Under the pre-fix caps the loop is undetectable — the detector watched ~859 probes and could not fire")
+        XCTAssertNil(
+            detectWithCaps(buffer, maxSubstringChars: DelegationConstants.repetitionMaxSubstringChars, tailWindowChars: 9000),
+            "Widening the cap alone is not enough: a 9000 window holds only 3.4 reps of a 2635-char period, below the 4-rep tier")
+        XCTAssertNotNil(
+            detectWithCaps(buffer, maxSubstringChars: DelegationConstants.repetitionMaxSubstringChars, tailWindowChars: DelegationConstants.repetitionTailWindowChars),
+            "With both widened, the loop fires")
+    }
+
+    /// The window is DERIVED from the cap, not chosen independently: it must hold the
+    /// threshold number of reps of the largest admissible period, or the cap admits
+    /// periods the scan can never confirm. This is the rule both constants' doc
+    /// comments state; pin it so they cannot drift apart silently.
+    func testWindowHoldsThresholdRepsOfTheLargestAdmissiblePeriod() {
+        let needed = DelegationConstants.repetitionVeryLargeBlockMinRepeats
+            * DelegationConstants.repetitionMaxSubstringChars
+        XCTAssertGreaterThanOrEqual(
+            DelegationConstants.repetitionTailWindowChars, needed,
+            "tail window (\(DelegationConstants.repetitionTailWindowChars)) must hold \(DelegationConstants.repetitionVeryLargeBlockMinRepeats) reps of the largest admissible period (\(DelegationConstants.repetitionMaxSubstringChars)) = \(needed)")
+    }
+
+    /// Same funnel as `detectWithProductionCaps`, with the two paired caps overridden —
+    /// so a test can state what the PRE-FIX constants did without re-implementing the
+    /// detector call.
+    private func detectWithCaps(_ text: String, maxSubstringChars: Int, tailWindowChars: Int) -> MessageRepetitionDetector.Match? {
+        MessageRepetitionDetector.detectTailLoop(
+            text,
+            minSubstringChars: DelegationConstants.repetitionMinSubstringChars,
+            maxSubstringChars: maxSubstringChars,
+            minRepeats: DelegationConstants.repetitionMinRepeats,
+            tailWindowChars: tailWindowChars,
+            largeSubstringChars: DelegationConstants.repetitionLargeSubstringChars,
+            largeBlockMinRepeats: DelegationConstants.repetitionLargeBlockMinRepeats,
+            veryLargeSubstringChars: DelegationConstants.repetitionVeryLargeSubstringChars,
+            veryLargeBlockMinRepeats: DelegationConstants.repetitionVeryLargeBlockMinRepeats)
     }
 
     // MARK: - End-to-end through the production scan entry point (top-level / live buffer)

@@ -24,10 +24,19 @@ nonisolated enum Role: Hashable, Codable, Identifiable {
     case codingAssistant
     case codingAgent
     case autovisor
+    case changePlanner
+    case briefCritic
+    case solutionArchitect
+    case pragmaticArchitect
+    case specCritic
+    case regressionCritic
+    case changeEngineer
+    case diffReviewer
+    case changeVerifier
     case custom(id: String)
 
     static var builtInCases: [Role] {
-        [.supervisor, .productManager, .uxResearcher, .uxDesigner, .techLead, .softwareEngineer, .codeReviewer, .sre, .tpm, .loreMaster, .npcCreator, .encounterArchitect, .rulesArbiter, .questMaster, .theAgreeable, .theOpen, .theConscientious, .theExtrovert, .theNeurotic, .assistant, .codingAssistant, .codingAgent, .autovisor]
+        [.supervisor, .productManager, .uxResearcher, .uxDesigner, .techLead, .softwareEngineer, .codeReviewer, .sre, .tpm, .loreMaster, .npcCreator, .encounterArchitect, .rulesArbiter, .questMaster, .theAgreeable, .theOpen, .theConscientious, .theExtrovert, .theNeurotic, .assistant, .codingAssistant, .codingAgent, .autovisor, .changePlanner, .briefCritic, .solutionArchitect, .pragmaticArchitect, .specCritic, .regressionCritic, .changeEngineer, .diffReviewer, .changeVerifier]
     }
 
     /// Single source of truth for all built-in role metadata. Adding a new role case
@@ -61,6 +70,15 @@ nonisolated enum Role: Hashable, Codable, Identifiable {
         .codingAssistant:  .init(displayName: "Coding Assistant",   builtInID: "codingAssistant"),
         .codingAgent:      .init(displayName: "Coding Agent",       builtInID: "codingAgent"),
         .autovisor:    .init(displayName: "Autovisor",          builtInID: "autovisor"),
+        .changePlanner:       .init(displayName: "Change Planner",       builtInID: "changePlanner"),
+        .briefCritic:         .init(displayName: "Brief Critic",         builtInID: "briefCritic"),
+        .solutionArchitect:   .init(displayName: "Solution Architect",   builtInID: "solutionArchitect"),
+        .pragmaticArchitect:  .init(displayName: "Pragmatic Architect",  builtInID: "pragmaticArchitect"),
+        .specCritic:          .init(displayName: "Spec Critic",          builtInID: "specCritic"),
+        .regressionCritic:    .init(displayName: "Regression Critic",    builtInID: "regressionCritic"),
+        .changeEngineer:      .init(displayName: "Change Engineer",      builtInID: "changeEngineer"),
+        .diffReviewer:        .init(displayName: "Diff Reviewer",        builtInID: "diffReviewer"),
+        .changeVerifier:      .init(displayName: "Change Verifier",      builtInID: "changeVerifier"),
     ]
 
     /// Reverse lookup: builtInID string → Role. O(1) instead of O(n) scan.

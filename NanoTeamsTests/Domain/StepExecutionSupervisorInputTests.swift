@@ -87,6 +87,45 @@ final class StepExecutionSupervisorInputTests: XCTestCase {
         XCTAssertFalse(step.hasActiveSupervisorInput)
     }
 
+    // MARK: - A refused ask is not an ask
+
+    /// The gate refused the question (`QUESTIONNAIRE_REQUIRED`) and the loop went on: nobody
+    /// is owed anything. Read by name alone, the trailing call was a live question for the
+    /// seconds until the next call landed — a composer chip on a step still running
+    /// (MeditationApp task 52 run 9, 2026-09-11).
+    ///
+    /// RED: read `toolCalls.last` instead of the last call that is not a refused ask → the
+    /// refused call is the trailing ask again, `hasActiveSupervisorInput` reads true.
+    func testTrailingRefusedAsk_isNotWaiting() {
+        let step = makeStep(needsSupervisorInput: false, toolCalls: [refusedAskCall("A? B?")])
+        XCTAssertFalse(step.hasActiveSupervisorInput)
+        XCTAssertNil(step.activeSupervisorQuestionID)
+    }
+
+    /// One batch, two calls: the form parked the step and the plain ask beside it was
+    /// refused. The question is the form's, and so is its identity — the Watchtower
+    /// dismissal keys on it.
+    func testParkedForm_thenARefusedPlainAsk_isWaiting_withTheFormsIdentity() {
+        let form = formCall("Direction")
+        let step = makeStep(
+            needsSupervisorInput: true,
+            toolCalls: [form, refusedAskCall("Which? 1. A 2. B")]
+        )
+        XCTAssertTrue(step.hasActiveSupervisorInput)
+        XCTAssertEqual(step.activeSupervisorQuestionID, form.id)
+    }
+
+    /// The answer landed after the park; a refused ask appended later re-opens nothing.
+    func testAnsweredAsk_thenARefusedAsk_isNotWaiting() {
+        var step = makeStep(
+            needsSupervisorInput: false,
+            toolCalls: [askCall("Q1")],
+            answerMessages: 1
+        )
+        step.toolCalls.append(refusedAskCall("Q2?"))
+        XCTAssertFalse(step.hasActiveSupervisorInput)
+    }
+
     /// The backstop's other reachable case: the ask was asked AND answered, then an
     /// engine cap (drift / refusal-loop) escalated via `setNeedsSupervisorInput`
     /// without appending a call. The ask/answer count reads "resolved"; the flag
@@ -146,54 +185,6 @@ final class StepExecutionSupervisorInputTests: XCTestCase {
         )
         XCTAssertTrue(step.hasActiveSupervisorInput)
         XCTAssertNil(step.activeSupervisorQuestionID)
-    }
-
-    // MARK: - Question text and dismiss identity
-
-    /// One chain for banner and retirement: the persisted text first, the TRAILING
-    /// ask call's parsed args as the lag fallback (flag set, text not yet copied).
-    ///
-    /// RED: delete the `?? toolCalls.last(where:…)?.parsedSupervisorQuestion` fallback
-    /// → case (b) reads nil.
-    /// RED: `last(where:)` → `first(where:)` → case (b) reads "Old" — round N's question
-    /// shown during round N+1's lag window.
-    func testSupervisorQuestionText_prefersPersistedText_fallsBackToLastAskArgs() {
-        let persisted = makeStep(needsSupervisorInput: true, toolCalls: [askCall("Other")], supervisorQuestion: "Q")
-        XCTAssertEqual(persisted.supervisorQuestionText, "Q", "(a) persisted text wins over the call's args")
-
-        let lagged = makeStep(needsSupervisorInput: false, toolCalls: [askCall("Old"), askCall("Lagged")])
-        XCTAssertEqual(lagged.supervisorQuestionText, "Lagged", "(b) no persisted text → the TRAILING ask's args, not the first")
-
-        XCTAssertNil(makeStep(needsSupervisorInput: false).supervisorQuestionText, "(c) nothing to show")
-    }
-
-    /// The identity the answer-time retirement removes must be the identity the banner
-    /// was shown under. On a step that asked and was ANSWERED before, a flag-only
-    /// escalation keys on its TEXT — the answered call's UUID names a question the user
-    /// already read (and possibly dismissed), so keying on it would retire nothing
-    /// (or, at render, be born-dismissed).
-    ///
-    /// RED: in `activeSupervisorInputDismissKey` pass
-    /// `toolCallID: toolCalls.last(where: { $0.name == ToolNames.askSupervisor })?.id`
-    /// instead of `activeSupervisorQuestionID` → the key carries Q1's UUID, not the text.
-    func testActiveSupervisorInputDismissKey_flagOnlyEscalationOnAnsweredStep_keysOnTextNotTheStaleCall() {
-        let escalated = makeStep(
-            needsSupervisorInput: true,
-            toolCalls: [askCall("Q1")],
-            answerMessages: 1,
-            supervisorQuestion: "Stalled — continue?"
-        )
-        XCTAssertEqual(
-            escalated.activeSupervisorInputDismissKey(taskID: 3),
-            .supervisorInput(taskID: 3, stepID: escalated.id, toolCallID: nil, question: "Stalled — continue?"))
-
-        let quiet = makeStep(
-            needsSupervisorInput: false,
-            toolCalls: [askCall("Q1")],
-            answerMessages: 1,
-            supervisorQuestion: "Stalled — continue?"
-        )
-        XCTAssertNil(quiet.activeSupervisorInputDismissKey(taskID: 3), "no banner ⇒ no key to retire")
     }
 
     // MARK: - Answer reachability
@@ -264,6 +255,107 @@ final class StepExecutionSupervisorInputTests: XCTestCase {
     func testTask_noRuns_isNotWaiting() {
         let task = NTMSTask(id: 1, title: "T", supervisorTask: "s", runs: [])
         XCTAssertFalse(task.hasPendingSupervisorInput)
+    }
+
+    // MARK: - The count beside the flag
+
+    /// The reason the count exists: parallel roles (CLAUDE.md #45) park several steps at
+    /// once, and a Bool cannot tell "one role is waiting" from "three are". The
+    /// discriminator is that a `contains`-shaped count would stop at the first hit.
+    func testRunCount_countsEveryWaitingStep_notJustTheFirst() {
+        var run = Run(id: 0, teamID: "t")
+        run.steps = [
+            makeStep(id: "a", needsSupervisorInput: true),
+            makeStep(id: "b", needsSupervisorInput: false),
+            makeStep(id: "c", needsSupervisorInput: false, toolCalls: [askCall("Q")]),
+            makeStep(id: "d", needsSupervisorInput: true)
+        ]
+        XCTAssertEqual(run.activeSupervisorInputCount, 3)
+        XCTAssertTrue(run.hasActiveSupervisorInput)
+    }
+
+    func testRunCount_noWaitingSteps_isZero() {
+        var run = Run(id: 0, teamID: "t")
+        run.steps = [makeStep(id: "a", needsSupervisorInput: false)]
+        XCTAssertEqual(run.activeSupervisorInputCount, 0)
+    }
+
+    func testRunCount_answeredStepDoesNotCount() {
+        var run = Run(id: 0, teamID: "t")
+        run.steps = [
+            makeStep(id: "a", needsSupervisorInput: false, toolCalls: [askCall("Q")], answerMessages: 1),
+            makeStep(id: "b", needsSupervisorInput: false, toolCalls: [askCall("Q")])
+        ]
+        XCTAssertEqual(run.activeSupervisorInputCount, 1,
+                       "the count inherits the answer-after-ask law, not an ask tally")
+    }
+
+    func testTaskCount_scopedToActiveRun() {
+        var stale = Run(id: 0, teamID: "t")
+        stale.steps = [
+            makeStep(id: "a", needsSupervisorInput: true),
+            makeStep(id: "b", needsSupervisorInput: true)
+        ]
+        var current = Run(id: 1, teamID: "t")
+        current.steps = [makeStep(id: "a", needsSupervisorInput: false)]
+        let task = NTMSTask(id: 1, title: "T", supervisorTask: "s", runs: [stale, current])
+        XCTAssertEqual(task.pendingSupervisorQuestionCount, 0,
+                       "two questions on a superseded run are zero questions owed")
+    }
+
+    func testTaskCount_closedTaskCountsZero() {
+        var run = Run(id: 0, teamID: "t")
+        run.steps = [
+            makeStep(id: "a", needsSupervisorInput: true),
+            makeStep(id: "b", needsSupervisorInput: true)
+        ]
+        var task = NTMSTask(id: 1, title: "T", supervisorTask: "s", runs: [run])
+        XCTAssertEqual(task.pendingSupervisorQuestionCount, 2)
+        task.closedAt = Date()
+        XCTAssertEqual(task.pendingSupervisorQuestionCount, 0)
+    }
+
+    func testTaskCount_noRuns_isZero() {
+        XCTAssertEqual(
+            NTMSTask(id: 1, title: "T", supervisorTask: "s", runs: []).pendingSupervisorQuestionCount, 0)
+    }
+
+    /// The invariant, across every shape where a hand-written second predicate would drift:
+    /// the flag IS the count's `> 0`. Both delegate to `StepExecution.hasActiveSupervisorInput`,
+    /// so this can only fail if someone gives one of them a gate the other lacks.
+    func testFlagAndCountAgree_acrossEveryGate() {
+        var quiet = Run(id: 0, teamID: "t")
+        quiet.steps = [makeStep(id: "a", needsSupervisorInput: false)]
+        var one = Run(id: 0, teamID: "t")
+        one.steps = [makeStep(id: "a", needsSupervisorInput: false, toolCalls: [askCall("Q")])]
+        var two = Run(id: 0, teamID: "t")
+        two.steps = [
+            makeStep(id: "a", needsSupervisorInput: true),
+            makeStep(id: "b", needsSupervisorInput: false, toolCalls: [askCall("Q")])
+        ]
+        var superseded = Run(id: 1, teamID: "t")
+        superseded.steps = [makeStep(id: "a", needsSupervisorInput: false)]
+
+        var shapes: [(String, NTMSTask)] = [
+            ("no runs", NTMSTask(id: 1, title: "T", supervisorTask: "s", runs: [])),
+            ("quiet", NTMSTask(id: 1, title: "T", supervisorTask: "s", runs: [quiet])),
+            ("one waiting", NTMSTask(id: 1, title: "T", supervisorTask: "s", runs: [one])),
+            ("two waiting", NTMSTask(id: 1, title: "T", supervisorTask: "s", runs: [two])),
+            ("superseded", NTMSTask(id: 1, title: "T", supervisorTask: "s", runs: [two, superseded]))
+        ]
+        var closed = NTMSTask(id: 1, title: "T", supervisorTask: "s", runs: [two])
+        closed.closedAt = Date()
+        shapes.append(("closed", closed))
+
+        for (name, task) in shapes {
+            XCTAssertEqual(task.hasPendingSupervisorInput, task.pendingSupervisorQuestionCount > 0,
+                           "flag and count disagree on \(name)")
+            let summary = task.toSummary()
+            XCTAssertEqual(summary.hasPendingSupervisorInput, task.hasPendingSupervisorInput,
+                           "toSummary must carry the flag unchanged on \(name)")
+            XCTAssertEqual(summary.pendingSupervisorQuestionCount, task.pendingSupervisorQuestionCount,
+                           "toSummary must carry the count unchanged on \(name)")
+        }
     }
 
     // MARK: - Answer scan: equivalence corner cases
@@ -377,6 +469,22 @@ final class StepExecutionSupervisorInputTests: XCTestCase {
 
     private func askCall(_ question: String) -> StepToolCall {
         StepToolCall(name: ToolNames.askSupervisor, argumentsJSON: "{\"question\":\"\(question)\"}")
+    }
+
+    private func refusedAskCall(_ question: String) -> StepToolCall {
+        StepToolCall(
+            name: ToolNames.askSupervisor,
+            argumentsJSON: "{\"question\":\"\(question)\"}",
+            resultJSON: #"{"ok":false,"error":{"code":"QUESTIONNAIRE_REQUIRED","message":"…"}}"#,
+            isError: true)
+    }
+
+    private func formCall(_ headline: String) -> StepToolCall {
+        StepToolCall(
+            name: ToolNames.askSupervisorForm,
+            argumentsJSON: "{\"headline\":\"\(headline)\",\"form\":\"{}\"}",
+            resultJSON: #"{"ok":true,"data":{"status":"pending"}}"#,
+            isError: false)
     }
 
     private func answerMessage(_ text: String) -> LLMMessage {

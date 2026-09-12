@@ -282,7 +282,15 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
                        "Must not tell the manager its reply went nowhere, got: \(retry)")
     }
 
-    func testGenericNudge_withAskSupervisorOnly_keepsTheOriginalText() async {
+    /// The `ask_supervisor` arm names the reply channel AND the field the reply goes in,
+    /// as the `## Final reminder` does — and nothing else. Until 2026-09-11 it read "If the
+    /// reply is complete, send it via ask_supervisor; otherwise call the next tool you need
+    /// to continue": a model that could not decide whether its reply was complete resolved
+    /// the predicate by asking, and "the tool you need to continue" is where it put the
+    /// questionnaire (`Ratchet/NudgeTextPinTests` Rule 6). The dropped "plain text does not
+    /// reach the Supervisor" was the manager's false claim (the test above) for every other
+    /// role too: the human reads the feed; only the park does not happen.
+    func testGenericNudge_withAskSupervisorOnly_namesTheReplyChannelAndItsField() async {
         var messages: [ChatMessage] = []
         _ = await service._testHandleNoToolCalls(
             stepID: stepID,
@@ -294,9 +302,89 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
             allowedToolNames: [ToolNames.askSupervisor, ToolNames.readFile]
         )
         let retry = messages[0].content ?? ""
-        XCTAssertTrue(retry.contains(ToolNames.askSupervisor))
-        XCTAssertTrue(retry.contains("does not reach the Supervisor"))
+        XCTAssertTrue(retry.contains(ToolNames.askSupervisor), "got: \(retry)")
+        XCTAssertTrue(retry.contains("`question`"),
+                      "the field the reply goes in, as the Final reminder names it; got: \(retry)")
+        XCTAssertFalse(retry.contains("does not reach the Supervisor"), "got: \(retry)")
+        XCTAssertFalse(retry.contains("If the reply is complete"), "got: \(retry)")
+        XCTAssertFalse(retry.contains("otherwise"),
+                       "no second branch for the model to put a questionnaire in; got: \(retry)")
     }
+
+    /// The turn's own TEXT decides between the two ask channels, because the gate reads the
+    /// same predicate: a prose reply carrying several questions (or one with its options)
+    /// belongs in `ask_supervisor_form`, and naming the plain ask sent run 10 of MeditationApp
+    /// task 52 through nudge → `QUESTIONNAIRE_REQUIRED` → form, two turns for one reply.
+    ///
+    /// RED: drop the `questionnaire:` argument at the call site → the plain-ask arm again.
+    func testGenericNudge_questionnaireProse_withTheFormHeld_namesTheForm() async {
+        var messages: [ChatMessage] = []
+        _ = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: Self.questionnaireProse,
+            sawHarmonyMarker: false,
+            task: task,
+            roleDefinition: nil,
+            conversationMessages: &messages,
+            allowedToolNames: [ToolNames.askSupervisor, ToolNames.askSupervisorForm, ToolNames.readFile]
+        )
+        let retry = messages[0].content ?? ""
+        XCTAssertTrue(retry.contains(ToolNames.askSupervisorForm), "got: \(retry)")
+        XCTAssertTrue(retry.contains("one `questions` entry per question"), "got: \(retry)")
+        XCTAssertFalse(retry.contains("in its `question` field"),
+                       "the plain ask's field, on a text the gate would refuse; got: \(retry)")
+    }
+
+    /// The same text with the form withheld keeps the plain-ask arm: the numbered list is
+    /// the sanctioned fallback there, and a nudge naming a tool the role lacks is the
+    /// 2026-07-25 defect.
+    func testGenericNudge_questionnaireProse_withoutTheForm_namesThePlainAsk() async {
+        var messages: [ChatMessage] = []
+        _ = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: Self.questionnaireProse,
+            sawHarmonyMarker: false,
+            task: task,
+            roleDefinition: nil,
+            conversationMessages: &messages,
+            allowedToolNames: [ToolNames.askSupervisor, ToolNames.readFile]
+        )
+        let retry = messages[0].content ?? ""
+        XCTAssertFalse(retry.contains(ToolNames.askSupervisorForm), "got: \(retry)")
+        XCTAssertTrue(retry.contains("in its `question` field"), "got: \(retry)")
+    }
+
+    /// A one-question reply keeps the plain ask even with the form held — the form arm is
+    /// keyed on the SHAPE, not on the schema alone (R3.8.2: one nudge shape per failure shape).
+    func testGenericNudge_oneQuestion_withTheFormHeld_staysOnThePlainAsk() async {
+        var messages: [ChatMessage] = []
+        _ = await service._testHandleNoToolCalls(
+            stepID: stepID,
+            assistantContent: "Done. Shall I commit this?",
+            sawHarmonyMarker: false,
+            task: task,
+            roleDefinition: nil,
+            conversationMessages: &messages,
+            allowedToolNames: [ToolNames.askSupervisor, ToolNames.askSupervisorForm]
+        )
+        let retry = messages[0].content ?? ""
+        XCTAssertFalse(retry.contains(ToolNames.askSupervisorForm), "got: \(retry)")
+        XCTAssertTrue(retry.contains("in its `question` field"), "got: \(retry)")
+    }
+
+    /// The shape the field run sent: one question, five enumerated options, a `(recommended)`
+    /// mark — refused by the gate through the plain ask.
+    private static let questionnaireProse = """
+    Изучил структуру приложения. Предлагаю 5 направлений:
+    
+    1. Мини-редизайн (recommended) — тёмная тема + карточки из материала.
+    2. Тёмная медитативная тема — атмосфера меняется.
+    3. Пастельные градиенты + glassmorphism.
+    4. Hero-секция на Today.
+    5. Новый плеер с дыхательным кругом.
+    
+    Какой вариант выбираем?
+    """
 
     func testGenericNudge_withNeitherTool_namesNoToolAtAll() async {
         var messages: [ChatMessage] = []
@@ -321,19 +409,22 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
     /// into the phase's `plan_required` rejection.
     func testRepetitiveNonToolNudge_producingRoleWithArtifactToolWithheld_doesNotNameIt() {
         let withheld = LLMExecutionService.repetitiveNonToolNudge(
-            count: 3, allowedToolNames: [ToolNames.readFile, ToolNames.updateScratchpad])
+            count: 3, allowedToolNames: [ToolNames.readFile, ToolNames.updateScratchpad],
+            questionnaire: false)
         XCTAssertFalse(withheld.contains(ToolNames.createArtifact),
                        "Planning phase withholds create_artifact, got: \(withheld)")
 
         let granted = LLMExecutionService.repetitiveNonToolNudge(
-            count: 3, allowedToolNames: [ToolNames.createArtifact, ToolNames.askSupervisor])
+            count: 3, allowedToolNames: [ToolNames.createArtifact, ToolNames.askSupervisor],
+            questionnaire: false)
         XCTAssertTrue(granted.contains(ToolNames.createArtifact))
         XCTAssertTrue(granted.contains(ToolNames.askSupervisor))
     }
 
     func testRepetitiveNonToolNudge_manager_steersToWaitForEvents() {
         let text = LLMExecutionService.repetitiveNonToolNudge(
-            count: 4, allowedToolNames: [ToolNames.waitForEvents, ToolNames.listTasks])
+            count: 4, allowedToolNames: [ToolNames.waitForEvents, ToolNames.listTasks],
+            questionnaire: false)
         XCTAssertTrue(text.contains(ToolNames.waitForEvents))
         XCTAssertFalse(text.contains(ToolNames.askSupervisor))
         XCTAssertTrue(text.contains("The 4 turns immediately before this note"),
@@ -1146,7 +1237,7 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
             conversationMessages: &messages2,
             thinkingContent: hugeThinking
         )
-        guard case .needsSupervisorInput(let question) = stop else {
+        guard case .needsSupervisorInput(let question, _) = stop else {
             XCTFail("Second drift should escalate, got \(stop)")
             return
         }
@@ -1458,7 +1549,7 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
             task: task, roleDefinition: nil,
             conversationMessages: &second, thinkingContent: thinking)
 
-        guard case .needsSupervisorInput(let question) = stop else {
+        guard case .needsSupervisorInput(let question, _) = stop else {
             XCTFail("Second consecutive reasoning-channel turn should escalate, got \(stop)")
             return
         }
@@ -1639,7 +1730,7 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
             stepID: stepID, assistantContent: Self.nearMissEnvelope, sawHarmonyMarker: false,
             task: mockDelegate.taskToMutate!, roleDefinition: role,
             conversationMessages: &messages, allowedToolNames: [ToolNames.readFile])
-        guard case .needsSupervisorInput(let question) = third else {
+        guard case .needsSupervisorInput(let question, _) = third else {
             return XCTFail("the third consecutive near-miss must escalate, got \(third)")
         }
         XCTAssertTrue(question.contains("<|call|>"), question)

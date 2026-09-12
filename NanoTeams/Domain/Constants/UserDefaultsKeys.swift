@@ -93,6 +93,8 @@ nonisolated enum UserDefaultsKeys {
     static let searchContextBefore = "NanoTeams.search.contextBefore.v1"
     static let searchContextAfter = "NanoTeams.search.contextAfter.v1"
     static let globalContext = "NanoTeams.llm.globalContext.v1"
+    /// How many of a task's roles may run at once (`RoleConcurrencyMode`).
+    static let roleConcurrencyMode = "NanoTeams.llm.roleConcurrencyMode.v1"
     // Bash (shell command execution) policy.
     static let bashMode = "NanoTeams.bash.mode.v1"
     static let bashRestrictionLevel = "NanoTeams.bash.restrictionLevel.v1"

@@ -465,4 +465,48 @@ final class TeamConfigParserTests: XCTestCase {
         let build = try TeamConfigParser.decodeTeamConfig(from: payload)
         XCTAssertEqual(build.team.roles.count, 3, "Supervisor + Alpha + Beta")
     }
+
+    // MARK: - repairUnclosedTopLevel (the config's own final bracket)
+
+    /// The brace-only EOF salvage in `scanBalancedObject` truncates at the last `}` it saw
+    /// and pads braces, so a document whose ARRAY is the last thing closed comes back as
+    /// `{"roles":[{"n":"A"}}` and fails. Reading what was actually opened fixes it.
+    ///
+    /// RED: build the candidate with `insertingDroppedCloser` instead → that scan looks for a
+    /// contradiction INSIDE the document, finds none here, and returns nil.
+    func testRepairUnclosedTopLevel_aConfigMissingOnlyItsOwnBrace_isRepaired() {
+        XCTAssertEqual(
+            TeamConfigParser.repairUnclosedTopLevel(#"{"roles":[{"n":"A"}]"#),
+            #"{"roles":[{"n":"A"}]}"#)
+    }
+
+    /// More than the frame open is an emission the model abandoned, not a bracket it
+    /// miscounted: padding it would build a team out of the roles that happened to arrive.
+    func testRepairUnclosedTopLevel_aConfigAbandonedMidArray_isRefused() {
+        XCTAssertNil(TeamConfigParser.repairUnclosedTopLevel(#"{"roles":[{"n":"A"}"#))
+        XCTAssertNil(TeamConfigParser.repairUnclosedTopLevel(#"{"roles":[{"n":"#))
+    }
+
+    /// A balanced document is never touched, and neither is one this repair cannot make parse
+    /// — the adoption test is the parse, here as at every other rung.
+    func testRepairUnclosedTopLevel_leavesBalancedAndUnparsableInputAlone() {
+        XCTAssertNil(TeamConfigParser.repairUnclosedTopLevel(#"{"roles":[{"n":"A"}]}"#))
+        XCTAssertNil(TeamConfigParser.repairUnclosedTopLevel(#"{"n":tru"#))
+        XCTAssertNil(TeamConfigParser.repairUnclosedTopLevel(""))
+    }
+
+    /// End to end, on the shape the brace-only salvage cannot reach: the last thing the model
+    /// closed is an ARRAY, so `scanBalancedObject` truncates at the `}` before it and pads a
+    /// candidate that does not parse. A config whose final field is a list — which is the
+    /// usual shape, `supervisor_requires` last — has exactly this tail.
+    ///
+    /// RED: delete both `repairUnclosedTopLevel` rungs from `parseDictionaryStripping` → the
+    /// chain runs out and the config is refused.
+    func testAConfigEndingOnAnArray_missingOnlyItsOwnBrace_decodesThroughTheChain() throws {
+        let payload = """
+        {"name":"T","description":"d","roles":[{"name":"Alpha","prompt":"ok","produces_artifacts":["X"],"requires_artifacts":["Supervisor Task"]}],"artifacts":[{"name":"X","description":"x"}],"supervisor_requires":["X"]
+        """
+        let build = try TeamConfigParser.decodeTeamConfig(from: payload)
+        XCTAssertEqual(build.team.roles.count, 2, "Supervisor + Alpha")
+    }
 }

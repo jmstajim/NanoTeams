@@ -106,7 +106,8 @@ final class QuickCaptureModeCoordinatorTests: XCTestCase {
             activeTeam: makeTeam(),
             forceNewTaskMode: false
         )
-        if case .supervisorAnswer(let payload) = mode {
+        if case .supervisorAnswer(let payloadSession) = mode {
+            let payload = payloadSession.selected
             XCTAssertEqual(payload.question, "What should I do?")
             XCTAssertEqual(payload.taskID, task.id)
         } else {
@@ -271,11 +272,64 @@ final class QuickCaptureModeCoordinatorTests: XCTestCase {
             activeTeam: makeTeam(),
             forceNewTaskMode: false
         )
-        if case .supervisorAnswer(let payload) = mode {
+        if case .supervisorAnswer(let payloadSession) = mode {
+            let payload = payloadSession.selected
             XCTAssertEqual(payload.roleDefinition?.name, "Engineer")
         } else {
             XCTFail("Expected .supervisorAnswer with roleDefinition")
         }
+    }
+
+    /// The panel's payload carries the ask the park came from, because `[ Ask as form ]` is
+    /// offered only where the ROLE asked something of its own.
+    ///
+    /// RED: drop `askCallID` from the mapping → the button silently disappears from the
+    /// panel — nothing else changes, which is why this is asserted on the mapping rather than
+    /// left to a view test.
+    func testResolveMode_answerMode_carriesTheAskCallTheParkCameFrom() {
+        var task = makeTask(withQuestion: true)
+        let ask = StepToolCall(
+            name: ToolNames.askSupervisor,
+            argumentsJSON: #"{"question":"What should I do?"}"#)
+        task.runs[0].steps[0].toolCalls = [ask]
+
+        let mode = sut.resolveMode(
+            isTaskSelected: true,
+            activeTask: task,
+            engineState: .needsSupervisorInput,
+            isInitializingRun: false,
+            activeTeam: makeTeam(),
+            forceNewTaskMode: false)
+
+        guard case .supervisorAnswer(let session) = mode else {
+            return XCTFail("Expected .supervisorAnswer")
+        }
+        XCTAssertEqual(session.selected.askCallID, ask.id)
+        XCTAssertTrue(
+            SupervisorQuestionnaireRequest.isAvailable(
+                inquiry: session.selected.inquiry, askCallID: session.selected.askCallID))
+    }
+
+    /// A park the app raised has no call, and the panel says so: the button has nothing to
+    /// send the role back to re-ask.
+    func testResolveMode_answerMode_appRaisedPark_carriesNoAskCall() {
+        let task = makeTask(withQuestion: true)  // flag + text, no tool call
+
+        let mode = sut.resolveMode(
+            isTaskSelected: true,
+            activeTask: task,
+            engineState: .needsSupervisorInput,
+            isInitializingRun: false,
+            activeTeam: makeTeam(),
+            forceNewTaskMode: false)
+
+        guard case .supervisorAnswer(let session) = mode else {
+            return XCTFail("Expected .supervisorAnswer")
+        }
+        XCTAssertNil(session.selected.askCallID)
+        XCTAssertFalse(
+            SupervisorQuestionnaireRequest.isAvailable(
+                inquiry: session.selected.inquiry, askCallID: session.selected.askCallID))
     }
 
     // MARK: - QC ↔ Activity Feed sync contract
@@ -283,7 +337,7 @@ final class QuickCaptureModeCoordinatorTests: XCTestCase {
     /// Both surfaces (QC overlay header + activity-feed question card / composer
     /// chip preview) MUST display the same question text for the same step.
     /// QC reads `step.supervisorQuestion` directly via this coordinator; the
-    /// activity feed reads through `ActivityFeedBuilder.activeSupervisorQuestions`.
+    /// activity feed reads through `SupervisorQuestionInbox.pending`.
     /// They diverged when escalation overwrote `step.supervisorQuestion` while a
     /// stale ask_supervisor tool call still sat in `step.toolCalls` — the user
     /// saw two different texts for the same waiting step (see the bug
@@ -319,17 +373,18 @@ final class QuickCaptureModeCoordinatorTests: XCTestCase {
             engineState: .needsSupervisorInput, isInitializingRun: false,
             activeTeam: makeTeam(), forceNewTaskMode: false
         )
-        guard case .supervisorAnswer(let qcPayload) = qcMode else {
+        guard case .supervisorAnswer(let qcPayloadSession) = qcMode else {
             XCTFail("Expected .supervisorAnswer mode"); return
         }
+        let qcPayload = qcPayloadSession.selected
 
         // Activity-feed surface
-        let activeQuestions = ActivityFeedBuilder.activeSupervisorQuestions(steps: [step])
+        let activeQuestions = SupervisorQuestionInbox.pending(taskID: 1, steps: [step])
         XCTAssertEqual(activeQuestions.count, 1)
 
         // Contract: both surfaces show the SAME text.
         XCTAssertEqual(
-            qcPayload.question, activeQuestions.first?.question,
+            qcPayload.question, activeQuestions.first?.headline,
             "QC overlay and activity-feed composer must show the same question for the same step — divergence reintroduces the escalation/stale-tool-call desync bug."
         )
         XCTAssertEqual(
@@ -340,7 +395,7 @@ final class QuickCaptureModeCoordinatorTests: XCTestCase {
 
     /// Companion sync test for the normal path: when only a real ask_supervisor
     /// call exists (no escalation), both surfaces still agree. Without this,
-    /// a Green-phase change to `activeSupervisorQuestions` could break the
+    /// a Green-phase change to `SupervisorQuestionInbox.pending` could break the
     /// normal path while fixing the escalation path — silently breaking the
     /// common case.
     func testQCAndActivityFeed_agreeOnQuestion_normalAskSupervisorPath() {
@@ -370,14 +425,15 @@ final class QuickCaptureModeCoordinatorTests: XCTestCase {
             engineState: .needsSupervisorInput, isInitializingRun: false,
             activeTeam: makeTeam(), forceNewTaskMode: false
         )
-        guard case .supervisorAnswer(let qcPayload) = qcMode else {
+        guard case .supervisorAnswer(let qcPayloadSession) = qcMode else {
             XCTFail("Expected .supervisorAnswer mode"); return
         }
+        let qcPayload = qcPayloadSession.selected
 
-        let activeQuestions = ActivityFeedBuilder.activeSupervisorQuestions(steps: [step])
+        let activeQuestions = SupervisorQuestionInbox.pending(taskID: 1, steps: [step])
         XCTAssertEqual(activeQuestions.count, 1)
         XCTAssertEqual(
-            qcPayload.question, activeQuestions.first?.question,
+            qcPayload.question, activeQuestions.first?.headline,
             "Normal path: both surfaces show same question text"
         )
     }
@@ -522,9 +578,10 @@ final class QuickCaptureModeCoordinatorTests: XCTestCase {
             activeTeam: makeTeam(),
             forceNewTaskMode: false
         )
-        guard case .supervisorAnswer(let payload) = mode else {
+        guard case .supervisorAnswer(let payloadSession) = mode else {
             return XCTFail("Expected .supervisorAnswer, got \(mode)")
         }
+        let payload = payloadSession.selected
         XCTAssertEqual(payload.messageContent, "final question context")
         XCTAssertEqual(payload.thinking, "t2")
     }
@@ -548,9 +605,10 @@ final class QuickCaptureModeCoordinatorTests: XCTestCase {
             activeTeam: makeTeam(),
             forceNewTaskMode: false
         )
-        guard case .supervisorAnswer(let payload) = mode else {
+        guard case .supervisorAnswer(let payloadSession) = mode else {
             return XCTFail("Expected .supervisorAnswer, got \(mode)")
         }
+        let payload = payloadSession.selected
         XCTAssertNil(payload.messageContent)
         XCTAssertNil(payload.thinking)
     }
@@ -569,5 +627,116 @@ final class QuickCaptureModeCoordinatorTests: XCTestCase {
             initializing,
             QuickCapturePresentationPolicy.renderIdentity(of: .taskInitializing(isChatMode: false)),
             "Chat mode changes what the surface renders, so it must change the identity")
+    }
+
+    // MARK: - Divergences the shared producer removes
+
+    /// Closing a task is the Supervisor's explicit "done", and `closeTask` tears the engine
+    /// down. The panel used to read the raw flag, so it offered an answer field for a
+    /// finished task — and the answer went into a run whose engine had already been removed
+    /// from the registry, with `applied == true` and no banner to say otherwise.
+    ///
+    /// RED: drop the `closedAt` gate in `SupervisorQuestionInbox.pending(in:)` → the panel
+    /// opens in answer mode again.
+    func testClosedTask_stillHoldingTheFlag_doesNotOfferAnAnswerField() {
+        var task = makeTask(withQuestion: true)
+        XCTAssertEqual(
+            QuickCaptureVisualMode(resolve(task)), .answer, "anti-vacuum: open, it does ask")
+
+        task.closedAt = MonotonicClock.shared.now()
+        XCTAssertNotEqual(QuickCaptureVisualMode(resolve(task)), .answer)
+    }
+
+    /// Two roles parked at once (CLAUDE.md #45). The panel used to take
+    /// `run.steps.first(where:)` — array order, i.e. whichever step was CREATED first —
+    /// while the composer's leftmost chip takes the earliest ASK. The user met a different
+    /// question depending on which surface they opened, and because the panel returns only
+    /// the first match, the other role's question was unreachable from it entirely.
+    ///
+    /// RED: drop the `askedAt` sort in `pending(taskID:steps:)` → the payload names the
+    /// engineer, the composer's first chip names the tech lead.
+    func testTwoRolesWaiting_thePanelOpensTheSameQuestionAsTheComposersFirstChip() {
+        let task = makeTaskWithTwoAskers()
+        guard case .supervisorAnswer(let payloadSession) = resolve(task) else {
+            return XCTFail("expected an answer mode")
+        }
+        let payload = payloadSession.selected
+        let steps = task.runs.last!.steps
+        let composer = SupervisorQuestionInbox.pending(taskID: task.id, steps: steps)
+        XCTAssertEqual(payload.stepID, composer.first?.stepID)
+        XCTAssertEqual(payload.question, "Asked first")
+        XCTAssertEqual(payload.stepID, "tl", "the earliest ask, not the earliest step")
+    }
+
+    /// The ask has landed in `toolCalls`; the park that raises the flag has not run yet.
+    /// Two `mutateTask` publishes sit in that window, so it renders — and the panel, asking
+    /// the flag alone, showed the working loader for a role that was in fact waiting.
+    ///
+    /// RED: gate `pending` on `needsSupervisorInput` → the panel is back to `.working`.
+    func testAskLandedBeforeThePark_thePanelAlreadyOffersTheAnswerField() {
+        var task = makeTask(withQuestion: false)
+        task.runs[0].steps[0].toolCalls.append(StepToolCall(
+            name: ToolNames.askSupervisor, argumentsJSON: #"{"question":"Which scheme?"}"#))
+        guard case .supervisorAnswer(let payloadSession) = resolve(task, engineState: .running) else {
+            return XCTFail("expected an answer mode, not the working loader")
+        }
+        let payload = payloadSession.selected
+        XCTAssertEqual(payload.question, "Which scheme?")
+    }
+
+    /// The panel paired with the LAST assistant turn outright. A role that asks and then
+    /// keeps streaming has a later turn the question never prompted, and the panel showed
+    /// that one above the answer field.
+    ///
+    /// RED: drop the `atOrBefore` bound in `paired(in:atOrBefore:)` → this reads "After".
+    func testPanelPairsWithTheTurnThatAsked_notWhateverTheRoleSaidLast() {
+        var task = makeTask(withQuestion: false)
+        let ask = StepToolCall(
+            createdAt: Date(timeIntervalSinceReferenceDate: 200),
+            name: ToolNames.askSupervisor, argumentsJSON: #"{"question":"Q?"}"#)
+        task.runs[0].steps[0].toolCalls.append(ask)
+        task.runs[0].steps[0].llmConversation = [
+            LLMMessage(createdAt: Date(timeIntervalSinceReferenceDate: 100),
+                       role: .assistant, content: "Before"),
+            LLMMessage(createdAt: Date(timeIntervalSinceReferenceDate: 300),
+                       role: .assistant, content: "After"),
+        ]
+        guard case .supervisorAnswer(let payloadSession) = resolve(task) else {
+            return XCTFail("expected an answer mode")
+        }
+        let payload = payloadSession.selected
+        XCTAssertEqual(payload.messageContent, "Before")
+    }
+
+    // MARK: - Fixtures for the section above
+
+    private func resolve(
+        _ task: NTMSTask, engineState: TeamEngineState = .needsSupervisorInput
+    ) -> QuickCaptureMode {
+        sut.resolveMode(
+            isTaskSelected: true, activeTask: task, engineState: engineState,
+            isInitializingRun: false, activeTeam: makeTeam(), forceNewTaskMode: false)
+    }
+
+    /// Engineer is stored first and asks second; the tech lead is stored second and asks
+    /// first — so array order and ask order disagree, which is the whole point.
+    private func makeTaskWithTwoAskers() -> NTMSTask {
+        var task = NTMSTask(id: 0, title: "T", supervisorTask: "G")
+        var run = Run(id: 0, teamID: "t1")
+        for (id, question, offset) in [("eng", "Asked second", 200.0), ("tl", "Asked first", 100.0)] {
+            var step = StepExecution.make(for: TeamRoleDefinition(
+                id: id, name: id, prompt: "", toolIDs: [], usePlanningPhase: false,
+                dependencies: RoleDependencies()))
+            step.status = .needsSupervisorInput
+            step.needsSupervisorInput = true
+            step.supervisorQuestion = question
+            step.toolCalls = [StepToolCall(
+                createdAt: Date(timeIntervalSinceReferenceDate: offset),
+                name: ToolNames.askSupervisor,
+                argumentsJSON: #"{"question":"\#(question)"}"#)]
+            run.steps.append(step)
+        }
+        task.runs.append(run)
+        return task
     }
 }

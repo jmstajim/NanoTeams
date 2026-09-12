@@ -14,6 +14,11 @@ struct ToolCallItemView: View {
     /// Optional ` from <Team>` suffix in secondary gray for delegated
     /// child-team items.
     var roleTeamSuffix: String? = nil
+    /// The step this call belongs to, for the build-gate caption: while `resultJSON == nil`
+    /// the card spins whether the tool is building or merely queued behind another build,
+    /// and `StreamingPreviewManager.toolWaitCaption[waitKey]` is the one fact that tells
+    /// the two apart. `nil` for a surface with no step (previews).
+    var waitKey: TaskStepKey? = nil
 
     @Environment(\.openWindow) private var openWindow
 
@@ -96,6 +101,9 @@ struct ToolCallItemView: View {
 
             if let summary = model.customSummary {
                 ToolCallCustomSummaryView(summary: summary)
+            }
+            if call.resultJSON == nil, let waitKey {
+                ToolWaitCaptionLabel(key: waitKey)
             }
         }
         .contentShape(Rectangle())
@@ -180,6 +188,32 @@ private struct ToolCallCustomSummaryView: View {
     }
 }
 
+// MARK: - Wait caption
+
+/// The one reader of `StreamingPreviewManager.toolWaitCaption`, isolated in its own leaf
+/// (View Conventions #11) so the queue's rare changes re-evaluate this label and not the
+/// card: the card is `.equatable()` on its inputs, and the caption is not one of them —
+/// Observation invalidates the view whose body read the property, which is this one.
+/// Renders nothing while the step is not queued, so the row does not reserve space for it.
+private struct ToolWaitCaptionLabel: View {
+    let key: TaskStepKey
+    @Environment(StreamingPreviewManager.self) private var previews
+
+    var body: some View {
+        if let caption = previews.toolWaitCaption[key] {
+            HStack(spacing: Spacing.xs) {
+                Image(systemName: "hourglass")
+                    .font(Typography.term2xs)
+                Text(caption)
+                    .font(Typography.term2xs)
+                    .lineLimit(1)
+            }
+            .foregroundStyle(Colors.textTertiary)
+            .accessibilityLabel(caption)
+        }
+    }
+}
+
 // MARK: - Equatable
 
 /// See `MessageBubbleView`'s Equatable extension for the full rationale —
@@ -210,6 +244,7 @@ extension ToolCallItemView: Equatable {
             && lhs.teamRoles.elementsEqual(rhs.teamRoles) { $0.renderIdentity == $1.renderIdentity }
             && lhs.roleLabelOverride == rhs.roleLabelOverride
             && lhs.roleTeamSuffix == rhs.roleTeamSuffix
+            && lhs.waitKey == rhs.waitKey
     }
 }
 

@@ -20,6 +20,20 @@ nonisolated enum ToolErrorHandler {
     ) async -> ToolExecutionResult {
         do {
             return try await implementation()
+        } catch {
+            return envelope(for: error, toolName: toolName, args: args)
+        }
+    }
+
+    /// The ONE catch ladder, as a function of the error: what `execute` applies to a throw
+    /// from its closure, and what a handler applies itself to an error it holds as a VALUE —
+    /// `XcodeBuildGate.withExclusiveAccess` returns a `Result` so the queue duration
+    /// survives the failure and can be stamped on the envelope this builds.
+    static func envelope(
+        for error: Error, toolName: String, args: [String: Any]
+    ) -> ToolExecutionResult {
+        do {
+            throw error
         } catch let error as ToolArgumentError {
             return makeErrorResult(
                 toolName: toolName, args: args,

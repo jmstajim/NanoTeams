@@ -116,8 +116,8 @@ extension LLMExecutionService {
         // Distinct from the line above even at the same (tool, code): the two describe
         // different conditions — arguments held vs arguments varied — and a model that
         // moves from one to the other has changed its behaviour and earns a second word.
-        case .persistentToolError(let tool, _, let code):
-            return "persistent:\(tool):\(code)@\(epoch)"
+        case .persistentToolError(let tool, _, let code, let messagesIdentical):
+            return "persistent:\(tool):\(code):\(messagesIdentical ? "held" : "moving")@\(epoch)"
         }
     }
 
@@ -141,7 +141,7 @@ extension LLMExecutionService {
         loopDetection: LoopDetection,
         allowedToolNames: Set<String>
     ) -> String {
-        let escalation = Self.escalationClause(code: nil, allowedToolNames: allowedToolNames)
+        let escalation = Self.escalationClause(code: nil, tool: nil, allowedToolNames: allowedToolNames)
 
         switch loopDetection {
         case .repetitivePlanning(let count):
@@ -187,9 +187,9 @@ extension LLMExecutionService {
             }
             return "Loop detected: '\(tool)' has failed \(count) times in a row with "
                 + "identical arguments\(codeClause). \(directive)"
-                + Self.escalationClause(code: code, allowedToolNames: allowedToolNames)
+                + Self.escalationClause(code: code, tool: tool, allowedToolNames: allowedToolNames)
 
-        case .persistentToolError(let tool, let count, let code):
+        case .persistentToolError(let tool, let count, let code, let messagesIdentical):
             // The inverse of every other arm's advice. "Change the arguments" is what
             // the model has already done \(count) times, so repeating it would send it
             // back into the loop that produced this warning.
@@ -202,13 +202,22 @@ extension LLMExecutionService {
                 directive = "Your anchor text is the problem, not the replacement. "
                     + "Call read_file, then anchor on a short line that starts at "
                     + "column 0 and is unique in the file."
+            } else if code == ToolErrorCode.invalidArgs.rawValue, !messagesIdentical {
+                // The runtime's message MOVED between the failures: each call fixed what
+                // the previous excerpt named and the next excerpt named a new place — a
+                // converging repair, not a loop (MeditationApp task 52 run 11, 2026-09-11:
+                // `ask_supervisor_form`, characters 150 → 1102 → 1141, abandoned one
+                // character from success on the directive below). The message is the
+                // thing to follow; "not working" and "a different step" are both false.
+                directive = "Each error message names the fault in that call — fix exactly "
+                    + "what the latest one names and keep the rest."
             } else {
                 directive = "Changing the arguments is not working — read the error "
                     + "message and take a different step."
             }
             return "Loop detected: '\(tool)' has failed \(count) times in a row with the "
                 + "same error (\(code)) despite different arguments. \(directive)"
-                + Self.escalationClause(code: code, allowedToolNames: allowedToolNames)
+                + Self.escalationClause(code: code, tool: tool, allowedToolNames: allowedToolNames)
         }
     }
 
@@ -220,11 +229,21 @@ extension LLMExecutionService {
     /// once: `.persistentToolError` is the arm that fires when the model rewords a refused
     /// command, and it appended the clause too. Case-insensitive because the executor spells
     /// the same code in lowercase for a call the resolver had already withheld.
+    ///
+    /// Suppressed as well when the FAILING tool is itself a supervisor ask (`tool`): the
+    /// channel offered is the plain ask, and what a role whose `ask_supervisor_form` keeps
+    /// failing would send through it is the questionnaire's shape — which the plain ask
+    /// refuses (`QUESTIONNAIRE_REQUIRED`) with `next` pointing back at the form. A ring
+    /// (MeditationApp task 52 run 11, 2026-09-11). Nil for the arms that describe no
+    /// failing call.
     /// Internal (not private) for test pinning.
-    nonisolated static func escalationClause(code: String?, allowedToolNames: Set<String>) -> String {
+    nonisolated static func escalationClause(
+        code: String?, tool: String?, allowedToolNames: Set<String>
+    ) -> String {
         if let code, code.lowercased() == ToolErrorCode.approvalUnavailable.rawValue.lowercased() {
             return ""
         }
+        if let tool, ToolNames.supervisorAskTools.contains(tool) { return "" }
         return LoopRecoveryPolicy.escalationChannel(in: allowedToolNames)
             .map { " If you are blocked, call \($0)." } ?? ""
     }
@@ -252,59 +271,103 @@ extension LLMExecutionService {
     // manager was told to call a tool it provably does not have, on the very turn it
     // was already failing to act.
 
-    /// The completion-channel nudge for a role that replied with text and no tool call.
+    /// runtime-prompt
+    /// The completion-channel nudge for a role that replied with text and no tool call:
+    /// the defect, then ONE action — and never a predicate about the model's own output.
+    ///
+    /// Until 2026-09-11 the `ask_supervisor` arm read "If the reply is complete, send it via
+    /// ask_supervisor; otherwise call the next tool you need to continue." A model that
+    /// cannot decide whether its reply is complete resolves the question the only way it
+    /// can — by asking — and "the tool you need to continue" is where it put the
+    /// questionnaire: with `ask_supervisor_form` in its list, one form per turn with a
+    /// question per unknown; without it, a numbered list through the plain ask. A chat
+    /// role gets this nudge for every prose reply, up to 19 copies a step, none retired
+    /// (R3.1.5, R4.4.1; `Ratchet/NudgeTextPinTests` Rule 6 pins the predicate). The same
+    /// arm claimed "plain text does not reach the Supervisor" — the human reads the feed,
+    /// only the park does not happen, and the mode-Off reminder (`plainReplyStepEnding`)
+    /// says the opposite in the same request; the manager arm had dropped that claim on
+    /// 2026-07-25 and every other arm kept it.
     ///
     /// `wait_for_events` is checked first because it identifies the Autovisor manager,
-    /// the one role for which the "plain text does not reach the Supervisor" framing is
-    /// FALSE — its Supervisor is the human reading that very chat, and its own system
-    /// prompt calls plain text "your only reply channel". Telling it otherwise while
-    /// pointing at a missing tool is how a pass burns its recovery budget emitting
-    /// nothing. Keyed on the schema rather than on team identity so a role that holds
-    /// the tool gets the right text however it acquired it.
-    nonisolated static func noToolCallNudge(allowedToolNames: Set<String>) -> String {
+    /// whose pass ends on the idle park rather than on a reply. Keyed on the schema rather
+    /// than on team identity so a role that holds the tool gets the right text however it
+    /// acquired it.
+    ///
+    /// `ask_supervisor_form` is named in ONE case, added 2026-09-11: the turn's own text
+    /// carried the questionnaire's shape (`questionnaire`, from
+    /// `SupervisorQuestionShape.isQuestionnaire` at the call site) AND the role holds the
+    /// form. Both halves are required — the shape, because a nudge for the wrong failure is
+    /// a false diagnosis (R3.8.2), and the schema, because a nudge naming a tool the role
+    /// lacks is the 2026-07-25 defect. Without them the plain-ask arm is unchanged. The gate
+    /// reads the same predicate, which is the point: run 10 of MeditationApp task 52 (2026-09-11)
+    /// spent two turns going nudge → `ask_supervisor` → `QUESTIONNAIRE_REQUIRED` → form,
+    /// because this text named the channel the gate was about to refuse.
+    ///
+    /// - Parameter questionnaire: whether the no-tool turn's TEXT had the form's shape — two
+    ///   or more questions, or one with its options enumerated. No default: a default hides
+    ///   the axis from every value scan (`Ratchet/NudgeTextPinTests` renders both).
+    nonisolated static func noToolCallNudge(
+        allowedToolNames: Set<String>, questionnaire: Bool
+    ) -> String {
         // Anchored to the note, never to the reader's present ("You replied…" until
         // 2026-09-07): a nudge is never retired, and after the next tool call the sentence
         // must still name the turn it was about (R3.8.4).
         if allowedToolNames.contains(ToolNames.waitForEvents) {
             return "The turn immediately before this note was text and did not call any tools; "
-                + "the text is recorded. If nothing is left to do this pass, call wait_for_events "
-                + "to go idle; otherwise call the next tool you need to continue."
+                + "the text is recorded. Call the next tool you need, or wait_for_events to go "
+                + "idle for this pass."
+        }
+        if questionnaire, allowedToolNames.contains(ToolNames.askSupervisorForm) {
+            return "The turn immediately before this note was text and did not call any tools, "
+                + "and it asked the Supervisor more than one thing. Send those questions as "
+                + "ask_supervisor_form: one `questions` entry per question, a choice as "
+                + "single_choice with its options."
         }
         if allowedToolNames.contains(ToolNames.askSupervisor) {
-            return "The turn immediately before this note was text and did not call any tools — "
-                + "plain text does not reach the Supervisor. If the reply is complete, send it via "
-                + "ask_supervisor; otherwise call the next tool you need to continue."
+            return "The turn immediately before this note was text and did not call any tools. "
+                + "Reply by calling ask_supervisor with that text in its `question` field."
         }
-        return "The turn immediately before this note was text and did not call any tools — plain "
-            + "text does not reach the Supervisor. Call the next tool you need to continue."
+        return "The turn immediately before this note was text and did not call any tools. "
+            + "Call the next tool you need to continue."
     }
 
-    /// The nudge for N near-identical no-tool responses (`.repetitiveNonTool`).
+    /// runtime-prompt
+    /// The nudge for N near-identical no-tool responses (`.repetitiveNonTool`): the
+    /// defect, one action per rung, and no predicate about the model's own output — the
+    /// "If you've finished your work…" / "If your reply is complete…" rungs shared the
+    /// generic nudge's defect (see `noToolCallNudge`) until 2026-09-11.
     ///
     /// Discriminates on the SCHEMA, not on `producesArtifacts`: a producing role in the
     /// planning phase has `create_artifact` withheld, and this branch runs ABOVE the
     /// planning-phase handler, so the config signal would steer it straight into the
     /// phase's `plan_required` rejection.
-    nonisolated static func repetitiveNonToolNudge(count: Int, allowedToolNames: Set<String>) -> String {
+    ///
+    /// - Parameter questionnaire: as in `noToolCallNudge` — the repeated text carried the
+    ///   form's shape. Read only inside the ask rung, so the ladder's order is untouched.
+    nonisolated static func repetitiveNonToolNudge(
+        count: Int, allowedToolNames: Set<String>, questionnaire: Bool
+    ) -> String {
         let escalation = allowedToolNames.contains(ToolNames.askSupervisor)
             ? " If you're blocked, call ask_supervisor with a specific question."
             : ""
         let action: String
         if allowedToolNames.contains(ToolNames.createArtifact) {
-            action = "If you've finished your work, call create_artifact to submit "
-                + "your deliverable.\(escalation)"
+            action = "Call create_artifact to submit a deliverable, or the tool that advances "
+                + "your next step.\(escalation)"
         } else if allowedToolNames.contains(ToolNames.waitForEvents) {
-            action = "If you have nothing left to do this pass, call wait_for_events to go idle."
+            action = "Call the next tool you need, or wait_for_events to go idle for this pass."
+        } else if questionnaire, allowedToolNames.contains(ToolNames.askSupervisorForm) {
+            action = "Send those questions as ask_supervisor_form: one `questions` entry per "
+                + "question, a choice as single_choice with its options."
         } else if allowedToolNames.contains(ToolNames.askSupervisor) {
-            action = "If your reply is complete, send it via ask_supervisor and wait "
-                + "for the Supervisor's response."
+            action = "Reply by calling ask_supervisor with that text in its `question` field."
         } else {
             action = "Call the tool that advances your next step."
         }
         // Anchored to this note's own position (playbook R3.8.4): the note is never retired,
         // and "your last N responses" stops being true one turn later.
         return "The \(count) turns immediately before this note were near-identical and "
-            + "contained no tool calls. \(action) Do not repeat that response."
+            + "contained no tool calls. \(action) Do not repeat that text outside a tool call."
     }
 
     /// Illustrative tool ids for the "missing top-level `name`" explainer, filtered to
@@ -379,13 +442,15 @@ extension LLMExecutionService {
             return nil
         }
         guard let q = outcome.supervisorQuestion, supervisorMode == .autonomous else { return nil }
+        let inquiry = outcome.supervisorInquiry
 
         // `nil` means CANCELLED, not "no answer". Returning `nil` here leaves the question
         // standing and lets the caller park the step at `.needsSupervisorInput`, which is
         // what a Pause should look like — the alternative was persisting a canned decision
         // and reporting `.continueLoop` on a task the user had just stopped.
-        guard let answer = await generateAutoSupervisorAnswer(
+        guard let reply = await generateAutoSupervisorAnswer(
             question: q,
+            inquiry: inquiry,
             task: task,
             runIndex: runIndex,
             stepIndex: stepIndex,
@@ -394,7 +459,19 @@ extension LLMExecutionService {
             networkLogger: networkLogger,
             stepID: stepID
         ) else { return nil }
-        await recordAutoSupervisorAnswer(stepID: stepID, taskID: task.id, question: q, answer: answer)
+
+        // The same composition the parked paths run in `StepMessagingService`: an LLM's prose
+        // read back against the questionnaire, and a question its reply never named comes back
+        // unanswered — nothing is chosen in its place. One silence semantics for every
+        // answerer, human included: the asking role must not have to know which kind of
+        // Supervisor it got in order to read the answer. What keeps an autonomous run moving
+        // is the instruction to answer every question (`replyContract`, `questionnaireTail`),
+        // not a substitution this seam makes on the answerer's behalf.
+        let composed = SupervisorInquiryReply.compose(inquiry: inquiry, reply: reply)
+        let answer = composed.text
+        await recordAutoSupervisorAnswer(
+            stepID: stepID, taskID: task.id, question: q, answer: answer,
+            inquiry: inquiry, inquiryAnswer: composed.answer)
 
         // Replace EVERY pending `ask_supervisor` tool result with the answer. The questions were
         // merged, so one answer resolves all of them — but each call appended its own

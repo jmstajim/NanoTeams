@@ -365,9 +365,22 @@ extension NTMSOrchestrator {
         // already surfaced via `lastErrorMessage` by `answerSupervisorQuestion`
         // itself — don't clobber that specific error with a generic message here.
         if step.needsSupervisorInput {
+            // Minted whenever the step is parked on a questionnaire, and with an EMPTY answer:
+            // the Correct Role sheet is text-only, so nobody chose anything here. Its presence
+            // is what says a person authored the text — without it
+            // `SupervisorInquiryReply.compose` falls to `parse`, the grammar written for a
+            // model's `Q2: 1, 3` reply, and a correction opening "1. Use Release instead" is
+            // read as CHOOSING option 1 of question 1 — a decision the person never made.
+            // (Until 2026-09-12 it cost the rest of the form too: every other question filled
+            // from `options[0]` marked assumed. Nothing fills now, and the submission is still
+            // load-bearing for the one reason above — it routes `compose` away from `parse`.)
+            let submission = step.supervisorInquiry.map { _ in
+                SupervisorInquirySubmission(answer: SupervisorInquiryAnswer(), note: trimmed)
+            }
             _ = await answerSupervisorQuestion(
                 stepID: step.id, taskID: taskID,
-                answer: MessageSourceContext.supervisorFeedbackPrefix + trimmed
+                answer: MessageSourceContext.supervisorFeedbackPrefix + trimmed,
+                submission: submission
             )
             return
         }
@@ -556,7 +569,7 @@ extension NTMSOrchestrator {
     /// strands that key, and nothing reclaims them until the Watchtower is next shown
     /// with the task still resident — evicted or relaunched first, they wait until it
     /// is. `key` is the identity captured BEFORE the answer landed
-    /// (`StepExecution.activeSupervisorInputDismissKey`) — afterwards the step no longer
+    /// (`SupervisorQuestionInbox.dismissKey(forStep:taskID:)`) — afterwards the step no longer
     /// knows which banner it showed. It already carries the task scope. Absent key ⇒
     /// no write (`StoreConfiguration` guards on `contains`).
     func retireSupervisorInputDismissal(key: WatchtowerDismissKey) {

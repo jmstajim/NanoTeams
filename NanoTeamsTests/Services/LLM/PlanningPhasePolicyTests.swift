@@ -149,7 +149,7 @@ final class PlanningPhasePolicyTests: XCTestCase {
     /// The membership rule is the CRITERION, not a hand-kept list: a tool belongs iff it can
     /// neither put an unrecoverable turn on the wire nor mutate work-folder source. The Xcode
     /// runners satisfy both structurally — `ToolHandler.handle` is synchronous by signature,
-    /// they emit no `ToolSignal`, and `build_diagnostics.json` is written at step COMPLETION,
+    /// they emit no `ToolSignal`, and they write no step field at all,
     /// not in the tool loop. `git_commit` fails the second outright and no mechanism rescues it.
     ///
     /// `bash` satisfies the first structurally and the second only while the sandbox enforces

@@ -367,13 +367,17 @@ final class QuickCaptureController {
 
     // MARK: - Mode Resolution
 
-    private func resolveMode() -> QuickCaptureMode {
+    /// Internal rather than private because `submitAnswer` (in `+TaskCreation`) has to read
+    /// the row of waiting questions BEFORE the answer lands — that row is what "the next
+    /// question" is measured against, and once the answer is written the question it was
+    /// measured from is gone.
+    func resolveMode() -> QuickCaptureMode {
         let activeTask = store?.activeTask
         let engineState: TeamEngineState? = activeTask.flatMap { store?.taskEngineStates[$0.id] }
         let isInitializingRun = activeTask.flatMap {
             store?.engineState.isInitializingRun($0.id)
         } ?? false
-        return modeCoordinator.resolveMode(
+        let resolved = modeCoordinator.resolveMode(
             isTaskSelected: isTaskSelected,
             activeTask: activeTask,
             engineState: engineState,
@@ -381,12 +385,33 @@ final class QuickCaptureController {
             activeTeam: store?.resolvedTeam(for: activeTask),
             forceNewTaskMode: forceNewTaskMode
         )
+        // The coordinator says WHICH questions are waiting; which of them is on screen is the
+        // user's, and is applied here so the coordinator stays a pure map from app state.
+        return QuickCapturePresentationPolicy.aiming(resolved, at: formState.aimedQuestion)
+    }
+
+    /// The user tapped another question's chip.
+    ///
+    /// Nothing else moves the panel by hand: the refresh below re-resolves, sees a different
+    /// `renderIdentity` (the selection is folded into it), and takes the ordinary path —
+    /// `applyAnswerModeTransition` hands the live fields to the arriving branch, parking the
+    /// half-written reply under the question being left and taking back whatever was parked
+    /// under the one being opened.
+    ///
+    /// The task comes from the session on screen, not from `store.activeTaskID`: the chip the
+    /// user tapped belongs to the row they are looking at, and the two can differ for a tick.
+    func selectPendingQuestion(_ stepID: String) {
+        guard let taskID = resolveMode().answerSession?.selected.taskID else { return }
+        let aim = TaskStepKey(taskID: taskID, stepID: stepID)
+        guard formState.aimedQuestion != aim else { return }
+        formState.aimedQuestion = aim
+        refreshPanelIfVisible()
     }
 
     // MARK: - Private Helpers
 
-    /// Which task the live composer content belongs to is read from
-    /// `QuickCaptureFormState.answerFieldsOwnerTaskID` — a recorded claim, not the panel's
+    /// Which conversation branch the live composer content belongs to is read from
+    /// `QuickCaptureFormState.answerFieldsOwnerKey` — a recorded claim, not the panel's
     /// previous surface. Chat-mode `.taskWorking` and `.supervisorAnswer` bind the same live
     /// fields and the send button reads them against `store.activeTaskID`, so whenever the panel
     /// re-resolves onto another task the content in them still belongs to the earlier one;
@@ -396,63 +421,58 @@ final class QuickCaptureController {
         needsAnswerMode: Bool,
         resolvedMode: QuickCaptureMode
     ) {
+        // The aim records what is ON SCREEN, written where the mode is APPLIED rather than
+        // where it is resolved. Without this a pick that stopped resolving — its question
+        // answered from another surface — stays in the field dormant, and resurrects the moment
+        // that role asks again, yanking the panel off whatever the Supervisor was typing into.
+        // Resolution already decided which question wins; recording it is what makes that
+        // decision durable instead of re-derivable from a stale preference.
+        if case .supervisorAnswer(let session) = resolvedMode {
+            formState.aimedQuestion = TaskStepKey(
+                taskID: session.selected.taskID, stepID: session.selected.stepID)
+        }
         if needsAnswerMode && !formState.isInAnswerMode {
-            if case .supervisorAnswer(let payload) = resolvedMode {
-                // Chat-mode `.taskWorking` and `.supervisorAnswer` bind the composer to the
-                // same three live fields (answerText / answerAttachments / answerClippedTexts).
-                // When the LLM finishes thinking and asks a question, snapshot whatever the
-                // user was composing so `enterAnswerMode`'s has-draft branch loads it back
-                // instead of clearing.
+            if case .supervisorAnswer(let session) = resolvedMode {
+                let payload = session.selected
+                // No capture beforehand. `enterAnswerMode` hands the live bucket over, and the
+                // hand-off decides: content held for this task's CHAT thread belongs to the
+                // question that thread just asked, so it follows and nothing is parked;
+                // content held for another task, or for another ROLE of this one, is parked
+                // under its own branch first.
                 //
-                // No clear afterwards: `enterAnswerMode` writes all three fields on both of its
-                // branches, so clearing here would be a redundant step whose only remaining
-                // justification — stashing an empty `savedSupervisorTask` — went away with the
-                // stash itself when the task composer got its own text field.
-                //
-                // Gated on the bucket having an OWNER rather than on the previous visual mode
-                // and the arriving payload's chat-ness: what has to be saved is content the
-                // bucket is already holding for some task, which is exactly what an owner
-                // means. The old pair of conditions dropped it whenever the panel had taken a
-                // detour, and again whenever the arriving question happened to be non-chat.
-                if let owner = formState.answerFieldsOwnerTaskID {
-                    // Under the task the content BELONGS to. Filing it under `payload.taskID`
-                    // when the panel had just followed a task switch loaded A's half-typed
-                    // message straight back as the draft answer to B's question.
-                    formState.captureLiveComposerAsAnswerDraft(taskID: owner)
-                }
+                // The pair this replaces — snapshot the composer, then let `enterAnswerMode`
+                // load it back — only worked while a chat task had exactly one draft key. It
+                // does not: Quest Party is a chat team with five roles.
                 formState.enterAnswerMode(payload: payload)
             }
         } else if !needsAnswerMode && formState.isInAnswerMode {
-            formState.exitAnswerMode()
-            // Symmetric restore: returning to chat-mode `.taskWorking` for the active task
-            // reloads the draft `exitAnswerMode` just saved. No-op when no draft exists, so
-            // a fresh transition with empty composer stays empty.
+            // Symmetric with entry: returning to chat-mode `.taskWorking` for the same task
+            // continues the same thread, so the half-written reply stays in the box instead of
+            // being parked and taken back under another name.
             if resolvedMode.liveTaskChatMode == true,
                let taskID = store?.activeTaskID {
-                formState.restoreAnswerDraftToLiveFields(taskID: taskID)
-            }
-        } else if needsAnswerMode, case .supervisorAnswer(let payload) = resolvedMode {
-            // Already in answer mode — task switch: save old draft, load new
-            if let oldPayload = formState.pendingAnswer, oldPayload.taskID != payload.taskID {
-                formState.switchAnswerTask(from: oldPayload.taskID, to: payload)
+                formState.leaveAnswerMode(handingFieldsTo: .taskChat(taskID))
             } else {
-                formState.updateAnswerPayload(payload)
+                formState.exitAnswerMode()
             }
-        } else if case .reassign(let from, let to) = QuickCapturePresentationPolicy
+        } else if needsAnswerMode, case .supervisorAnswer(let session) = resolvedMode {
+            let payload = session.selected
+            // Already in answer mode — re-point at the arriving question. `updateAnswerPayload`
+            // parks and takes when that question belongs to another branch, so a task switch and
+            // a role switch inside one task travel the same path.
+            formState.updateAnswerPayload(payload)
+        } else if case .reassign(_, let to) = QuickCapturePresentationPolicy
             .chatComposerHandoff(
-                liveFieldsOwnerTaskID: formState.answerFieldsOwnerTaskID,
+                liveFieldsOwnerKey: formState.answerFieldsOwnerKey,
                 resolvedMode: resolvedMode,
                 newTaskID: store?.activeTaskID)
         {
             // The fourth quadrant — neither entering nor leaving answer mode. Two running chat
             // tasks share one composer, and nothing above matches a working→working switch, so
             // the half-typed message for A stayed in the fields the send button now reads
-            // against B. Same save-then-load shape as the answer-mode task switch beside it.
-            formState.captureLiveComposerAsAnswerDraft(taskID: from)
-            formState.answerText = ""
-            formState.answerAttachments = []
-            formState.answerClippedTexts = []
-            formState.restoreAnswerDraftToLiveFields(taskID: to)
+            // against B. The hand-off reads the live owner itself, so the policy's `from` is
+            // kept only because it is what makes the decision legible where it is TESTED.
+            formState.handOffLiveAnswerFields(to: to)
         }
 
         // Whatever branch ran, an arriving chat-working composer now holds this task's content:
@@ -476,10 +496,10 @@ final class QuickCaptureController {
         // `.reassign` branch above consumes.
         if resolvedMode.liveTaskChatMode == true,
            let taskID = store?.activeTaskID {
-            if formState.answerFieldsOwnerTaskID == nil {
-                formState.restoreAnswerDraftToLiveFields(taskID: taskID)
+            if formState.answerFieldsOwnerKey == nil {
+                formState.restoreAnswerDraftToLiveFields(for: .taskChat(taskID))
             } else {
-                formState.claimAnswerFields(for: taskID)
+                formState.claimAnswerFields(for: .taskChat(taskID))
             }
         }
     }
@@ -552,7 +572,11 @@ final class QuickCaptureController {
             mode: currentMode,
             formState: formState,
             onSubmit: submitAction(for: currentMode),
-            onCancel: { [weak self] in self?.cancelDraft() }
+            onCancel: { [weak self] in self?.cancelDraft() },
+            onSelectQuestion: { [weak self] stepID in self?.selectPendingQuestion(stepID) },
+            onRequestQuestionnaire: { [weak self] in
+                Task { @MainActor in await self?.requestQuestionnaire() }
+            }
         )
         .environment(store)
         .environment(store.configuration)
@@ -658,8 +682,8 @@ final class QuickCaptureController {
     #if DEBUG
     func _testResolveMode() -> QuickCaptureMode { resolveMode() }
     func _testEnterAnswerMode(_ mode: QuickCaptureMode) {
-        if case .supervisorAnswer(let payload) = mode {
-            formState.enterAnswerMode(payload: payload)
+        if case .supervisorAnswer(let session) = mode {
+            formState.enterAnswerMode(payload: session.selected)
         }
     }
     func _testExitAnswerMode() { formState.exitAnswerMode() }
@@ -697,6 +721,11 @@ final class QuickCaptureController {
         isPanelVisible = false
         forceNewTaskMode = false
         lastRefreshedTaskID = nil
+        // Nothing is on screen once `panel` is nil, so the rendered identity is nil too. Left
+        // over from an earlier test in the same process, an overlay identity made
+        // `refreshPanelIfVisible` read "nothing changed" and skip the answer-mode exit —
+        // `QuickCaptureControllerCallbackTests` went red by test ORDER (promote 2026-09-11).
+        lastRenderedIdentity = nil
         isTaskSelected = false
         store = nil
         dictation = nil

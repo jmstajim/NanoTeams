@@ -129,11 +129,32 @@ struct EditableMessageTextView: NSViewRepresentable {
             textStorage: storage,
             width: interior
         )
-        let lineHeight = (textView.font?.ascender ?? 0) - (textView.font?.descender ?? 0) + 2
-        let lines = max(minLineCount, 1)
-        let minHeight = lineHeight * CGFloat(lines) + insetY
+        let minHeight = Self.height(lines: minLineCount, font: textView.font ?? Self.defaultFont)
         let clamped = min(max(usedHeight + insetY, minHeight), maxHeight)
         return CGSize(width: width, height: clamped)
+    }
+
+    /// The height this editor occupies at exactly `lines` lines, `.editor` insets included.
+    ///
+    /// The same arithmetic `computeSize` floors an empty field with, exposed because a caller can
+    /// need it as a CEILING: a bounded field whose cap is a line count (the questionnaire's
+    /// free-text answer, four lines) has no pane to derive points from, and the alternative is a
+    /// rounded number at the call site that stops matching the font on the next type change.
+    /// One home for one fact (CLAUDE.md #55).
+    ///
+    /// `+ 2` is `NSLayoutManager`'s default line spacing for this stack, and the inset is counted
+    /// on both edges — this is a BOX height, not a text height.
+    static func height(lines: Int) -> CGFloat { height(lines: lines, font: defaultFont) }
+
+    /// Same, for a caller that already holds the text view's font.
+    ///
+    /// `font` carries no default argument on purpose: `defaultFont` is a `static` of this
+    /// `@MainActor` type, and a default-argument expression is evaluated NONISOLATED under Swift
+    /// 5 — which the public mirror still builds this target with (`DefaultArgumentIsolationPinTests`).
+    nonisolated static func height(lines: Int, font: NSFont) -> CGFloat {
+        let lineHeight = font.ascender - font.descender + 2
+        return lineHeight * CGFloat(max(lines, 1))
+            + InputSurface.Density.editor.verticalInset * 2
     }
 
     static func dismantleNSView(_ nsView: NSScrollView, coordinator: Coordinator) {

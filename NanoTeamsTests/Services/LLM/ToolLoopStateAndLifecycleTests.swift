@@ -942,7 +942,7 @@ final class StepFlowControlCapFailureCoverageTests: XCTestCase {
             task: mockDelegate.taskToMutate!, roleDefinition: nil,
             conversationMessages: &messages)
 
-        guard case .needsSupervisorInput(let question) = stop else {
+        guard case .needsSupervisorInput(let question, _) = stop else {
             return XCTFail("Three refusals must escalate, got \(stop)")
         }
         XCTAssertTrue(question.contains("consecutive refusal messages"),

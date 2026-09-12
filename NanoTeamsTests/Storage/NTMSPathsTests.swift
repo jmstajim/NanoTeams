@@ -141,28 +141,6 @@ final class NTMSPathsTests: XCTestCase {
         XCTAssertTrue(url.path.hasSuffix("network_log.json"))
     }
 
-    // MARK: - Internal Build Diagnostic Paths
-
-    func testBuildDiagnosticsJSON() {
-        let taskID = 0
-        let runID = 0
-        let roleID = "test_engineer"
-        let url = paths.buildDiagnosticsJSON(taskID: taskID, runID: runID, roleID: roleID)
-        XCTAssertTrue(url.path.hasSuffix("build_diagnostics.json"))
-        XCTAssertTrue(url.path.contains("internal"))
-        XCTAssertTrue(url.path.contains("roles/\(roleID)"))
-    }
-
-    func testBuildExcerptsTXT() {
-        let taskID = 0
-        let runID = 0
-        let roleID = "test_engineer"
-        let url = paths.buildExcerptsTXT(taskID: taskID, runID: runID, roleID: roleID)
-        XCTAssertTrue(url.path.hasSuffix("build_excerpts.txt"))
-        XCTAssertTrue(url.path.contains("internal"))
-        XCTAssertTrue(url.path.contains("roles/\(roleID)"))
-    }
-
     // MARK: - relativePathWithinNanoteams
 
     func testRelativePathWithinNanoteams_pathInsideNanoteams() {

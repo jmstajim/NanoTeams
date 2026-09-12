@@ -73,12 +73,19 @@ nonisolated extension PromptBuilder {
                 ? ": \(step.title)" : ""
             lines.append("### Step \(idx + 1) — \(step.role.displayName)\(title) — \(statusPhrase(step.status))")
 
-            if let q = step.supervisorQuestion, let a = step.effectiveSupervisorAnswer, !q.isEmpty, !a.isEmpty {
+            // `Supervisor A:` is read by OTHER roles, so it may only carry what a Supervisor
+            // actually said. The `[ Ask as form ]` directive lives in the same field — it is
+            // the only channel a parked step has — but it is the app telling that role to
+            // re-ask, not a decision anyone made. To this summary it is an UNANSWERED
+            // question, which is also true: the role is still owed one.
+            let answer = step.lastSupervisorAskResolution == .questionnaireRequest
+                ? nil : step.effectiveSupervisorAnswer
+            if let q = step.supervisorQuestion, let a = answer, !q.isEmpty, !a.isEmpty {
                 lines.append("Supervisor Q: \(q)")
                 lines.append("Supervisor A: \(a)")
             } else if let q = step.supervisorQuestion, !q.isEmpty {
                 lines.append("Supervisor Q: \(q)")
-            } else if let a = step.effectiveSupervisorAnswer, !a.isEmpty {
+            } else if let a = answer, !a.isEmpty {
                 lines.append("Supervisor A: \(a)")
             }
 
@@ -170,9 +177,14 @@ nonisolated extension PromptBuilder {
     /// section of the prompt itself.
     static let workFolderHeadingLevel = 2
 
+    /// `toolNames` has NO default on purpose. The capability line below is written from
+    /// it, and an omitted argument would read as "this role can run nothing" — the exact
+    /// falsehood the line exists to prevent, emitted silently at the one seam where every
+    /// role's work-folder context is built.
     static func buildWorkFolderContextMessage(
         workFolder: WorkFolderProjection?,
-        agentInstructions: AgentInstructionsSnapshot? = nil
+        agentInstructions: AgentInstructionsSnapshot? = nil,
+        toolNames: Set<String>
     ) -> String? {
         guard let wf = workFolder else { return nil }
 
@@ -199,6 +211,7 @@ nonisolated extension PromptBuilder {
             sections.append(SkillConstants.nestedBody(context, under: workFolderHeadingLevel))
         }
 
+        var injectedAnyInstructions = false
         if let snapshot = agentInstructions {
             for file in snapshot.injectedFiles {
                 // Scanner stores trimmed non-empty content; the whitespace probe
@@ -211,11 +224,15 @@ nonisolated extension PromptBuilder {
                 sections.append(
                     "### Agent instructions (\(file.relativePath))\n\n"
                         + SkillConstants.nestedBody(content, under: workFolderHeadingLevel + 1))
+                injectedAnyInstructions = true
             }
             let listed = snapshot.listedPaths
             if !listed.isEmpty {
                 let bullets = listed.map { "- \($0)" }.joined(separator: "\n")
                 sections.append("### Other agent instruction files\n\nRead with read_file when relevant:\n\(bullets)")
+            }
+            if injectedAnyInstructions {
+                sections.append(runnableCommandsSection(toolNames: toolNames))
             }
         }
 
@@ -228,5 +245,47 @@ nonisolated extension PromptBuilder {
         // label to avoid mixed label style, and was itself a second emphasis system in a
         // repo-authored layer (R4.3.2) until 2026-09-07.
         return "### \(wf.name)\n\n\(sections.joined(separator: "\n\n"))"
+    }
+
+    /// One line reconciling third-party instructions with the role's actual tools.
+    ///
+    /// An agent-instructions file is written for whoever reads it, and the ones in real
+    /// work folders give orders: NanoTeams' own `CLAUDE.md` says "run the project's build
+    /// command yourself". Until 2026-09-11 this message took no role, so that order went
+    /// verbatim to every role in the team — including the ones holding no runner. A
+    /// directive a role cannot carry out is, in the playbook's words, an unfulfillable
+    /// directive rather than disobedience (E7.7.6), and MeditationApp task 48 run 1 is what
+    /// a model does with one: the planner was refused `run_xcodebuild`, and 0.4 seconds
+    /// later wrote `=== BUILD SUCCESS ===` into the brief that five roles downstream took
+    /// as fact.
+    ///
+    /// The capable branch names tools; the incapable branch names NONE — R5.2.4 allows an
+    /// engine-authored turn to name only tools that are in the role's own schema, and
+    /// "ask someone who can build" to a role with no channel is prose nobody reads.
+    private static func runnableCommandsSection(toolNames: Set<String>) -> String {
+        var can: [String] = []
+        if toolNames.contains(ToolNames.runXcodebuild) || toolNames.contains(ToolNames.runXcodetests) {
+            let pair = [ToolNames.runXcodebuild, ToolNames.runXcodetests]
+                .filter(toolNames.contains)
+                .map { "`\($0)`" }
+                .joined(separator: " / ")
+            can.append("build and test commands, with \(pair)")
+        }
+        if toolNames.contains(ToolNames.bash) {
+            can.append("shell commands, with `\(ToolNames.bash)`")
+        }
+
+        let line: String
+        if can.isEmpty {
+            line = "The instructions above may ask for commands to be run. None of them is "
+                + "yours to run — you hold no tool that runs one. State what such a command "
+                + "would have settled as unverified, and never state its result."
+        } else {
+            line = "Of the commands the instructions above may ask for, you can run "
+                + can.joined(separator: "; and ")
+                + ". Anything else is not yours to run: state what it would have settled as "
+                + "unverified, and never state its result."
+        }
+        return "### Which of these commands are yours to run\n\n\(line)"
     }
 }

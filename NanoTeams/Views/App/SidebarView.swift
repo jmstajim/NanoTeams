@@ -103,9 +103,12 @@ struct SidebarView: View {
                 titleVisibility: .visible
             ) {
                 Button("Remove", role: .destructive) {
+                    // Snapshot synchronously, defer only the I/O — see the
+                    // "Confirming a dialog" note in `TaskManagementState`.
+                    guard let pending = taskState.takePendingDelete(store: store) else { return }
                     Task {
-                        let wasActive = await taskState.confirmDelete(store: store)
-                        if wasActive { selectedItem = .watchtower }
+                        await taskState.applyDelete(pending, store: store)
+                        if pending.wasActive { selectedItem = .watchtower }
                     }
                 }
                 Button("Cancel", role: .cancel) {}
@@ -118,7 +121,12 @@ struct SidebarView: View {
             )) {
                 // ds:allow-custom-input native .alert accessory — SwiftUI owns this field's chrome
                 TextField("Task name", text: $taskState.renameText)
-                Button("Rename") { Task { await taskState.confirmRename(store: store) } }
+                Button("Rename") {
+                    // The `isPresented` setter below runs `cancelRename()` in this
+                    // same turn, so the payload must be taken before any actor hop.
+                    guard let pending = taskState.takePendingRename() else { return }
+                    Task { await store.updateTaskTitle(id: pending.taskID, title: pending.title) }
+                }
                 Button("Cancel", role: .cancel) { taskState.cancelRename() }
             }
             .confirmationDialog(

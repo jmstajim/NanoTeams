@@ -30,15 +30,15 @@ nonisolated enum ConversationTranscriptRenderer {
     /// - Parameters:
     ///   - items: chronologically-ordered timeline items from `ActivityFeedBuilder.buildTimelineItems`.
     ///   - pending: unanswered supervisor questions (owned by the docked composer, NOT in
-    ///     `items`) from `ActivityFeedBuilder.activeSupervisorQuestions` — the user sees these
-    ///     in the composer, and the wire shows the `ask_supervisor` request immediately, so
-    ///     they're surfaced here too.
+    ///     `items`) from `SupervisorQuestionInbox.pending` — the user sees these in the
+    ///     composer, and the wire shows the ask request immediately, so they're surfaced
+    ///     here too.
     ///   - teamRoles: for resolving role display names by step id (matches the feed).
     ///   - isChatMode: feeds the supervisor-input header copy.
     ///   - generatedAt: file header timestamp.
     static func render(
         items: [ActivityFeedBuilder.TaggedItem],
-        pending: [ActivityFeedBuilder.ActiveSupervisorQuestion],
+        pending: [SupervisorQuestionInbox.PendingQuestion],
         teamRoles: [TeamRoleDefinition],
         isChatMode: Bool,
         generatedAt: Date
@@ -69,7 +69,16 @@ nonisolated enum ConversationTranscriptRenderer {
             for q in pending {
                 let anchor = makeAnchor(time: q.askedAt, roleName: roleName(for: q.stepID, fallback: q.role, teamRoles: teamRoles), stepID: q.stepID)
                 lines.append("\(anchor) waiting for the Supervisor")
-                lines.append(quote(q.question))
+                lines.append(quote(q.headline))
+                // The composer shows the whole questionnaire while it waits; printing the
+                // headline alone here would leave the audit log unable to say what the role
+                // actually asked for — in the one file whose stated job is to be compared
+                // against the wire.
+                if let inquiry = q.inquiry {
+                    appendInquiry(
+                        AnsweredInquiry(inquiry: inquiry, answer: nil),
+                        wasAutoAnswered: false, into: &lines)
+                }
                 lines.append("")
             }
         }
@@ -154,10 +163,17 @@ nonisolated enum ConversationTranscriptRenderer {
             let name = roleName(for: stepID, fallback: role, teamRoles: teamRoles)
             let anchor = makeAnchor(time: createdAt, roleName: name, stepID: stepID)
             switch type {
-            case let .supervisorInput(question, answer, answerAttachmentPaths, answerClippedTexts, _, _, wasAutoAnswered):
+            case let .supervisorInput(question, answer, answerAttachmentPaths, answerClippedTexts, _, _, wasAutoAnswered, inquiry):
                 lines.append("\(anchor) \(type.title(for: role, isChatMode: isChatMode))")
                 lines.append(quote(question))
-                if let answer, !answer.isEmpty {
+                if let inquiry {
+                    // A questionnaire's answer is N decisions, and `singleLine` would hand the
+                    // audit log one 200-character line with the rest cut off — the first three
+                    // questions and an ellipsis where the fourth answer was. One line per pair
+                    // instead, from the same renderer the model reads.
+                    appendInquiry(inquiry, wasAutoAnswered: wasAutoAnswered, into: &lines)
+                    appendAttachments(paths: answerAttachmentPaths, clips: answerClippedTexts, into: &lines)
+                } else if let answer, !answer.isEmpty {
                     let who = wasAutoAnswered ? "answer (auto)" : "answer"
                     lines.append("  \(who): \(singleLine(answer))")
                     appendAttachments(paths: answerAttachmentPaths, clips: answerClippedTexts, into: &lines)
@@ -195,6 +211,38 @@ nonisolated enum ConversationTranscriptRenderer {
     private static func toolStatus(_ call: StepToolCall) -> String {
         if call.resultJSON == nil || call.isAnalyzing || call.isGeneratingTeam { return "…" }
         return call.isError == true ? "✗" : "✓"
+    }
+
+    /// One line per question and one per answer, plus whatever the Supervisor said that no
+    /// question claimed. The answer text comes from `SupervisorInquiryRenderer` — the same
+    /// function that renders the wire — so the audit log and the model cannot disagree about
+    /// what was decided.
+    private static func appendInquiry(
+        _ inquiry: AnsweredInquiry, wasAutoAnswered: Bool, into lines: inout [String]
+    ) {
+        // Rendered whether or not it was answered. A questionnaire nobody answered — a closed
+        // task, an abandoned run — used to print as its headline alone, which in the file whose
+        // whole job is to be compared against `network_log.jsonl` reads as a question with no
+        // content. The feed card already renders every row in that state; each one comes out
+        // "(not answered)", which is the honest line.
+        //
+        // Since 2026-09-12 an ANSWERED form prints the same marker for any question the
+        // Supervisor left alone, where it used to print the recommendation plus an assumed
+        // suffix. What the asking role was told to DO about those absences
+        // (`SupervisorInquiryRenderer.unansweredDirection`) is wire text and is not repeated
+        // here: this loop calls `renderAnswer` per row, never `render`.
+        lines.append(inquiry.answer == nil
+            ? "  asked:"
+            : "  \(wasAutoAnswered ? "answer (auto)" : "answer"):")
+        if let note = inquiry.answer?.note, !note.isEmpty {
+            lines.append("    note: \(singleLine(note))")
+        }
+        for (index, question) in inquiry.inquiry.questions.enumerated() {
+            let stated = SupervisorInquiryRenderer.renderAnswer(
+                to: question, answer: inquiry.answer?.byQuestionID[question.id])
+            lines.append("    Q\(index + 1). \(singleLine(question.prompt))")
+            lines.append("    A\(index + 1). \(singleLine(stated))")
+        }
     }
 
     private static func appendAttachments(paths: [String], clips: [String], into lines: inout [String]) {

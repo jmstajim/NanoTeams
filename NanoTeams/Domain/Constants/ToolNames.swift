@@ -26,8 +26,16 @@ nonisolated enum ToolNames {
     // Xcode (2)
     static let runXcodebuild = "run_xcodebuild"
     static let runXcodetests = "run_xcodetests"
-    // Supervisor (1)
+    // Supervisor (2)
     static let askSupervisor = "ask_supervisor"
+    /// Structured sibling of `ask_supervisor`: several questions, each with predefined
+    /// options. A recommendation is read from what the model WROTE into
+    /// `SupervisorInquiryQuestion.recommendedOptionID`, never from order, and it is nil on
+    /// most questions. Deliberately a separate tool
+    /// rather than an optional parameter — chat-mode teams route every assistant reply
+    /// through `ask_supervisor`, and a form reachable there would turn conversation into
+    /// a questionnaire.
+    static let askSupervisorForm = "ask_supervisor_form"
     // Memory (1)
     static let updateScratchpad = "update_scratchpad"
     // Collaboration (4)
@@ -84,7 +92,7 @@ nonisolated enum ToolNames {
         gitStatus, gitAdd, gitCommit, gitPull, gitBranchList, gitCheckout, gitMerge,
         gitLog, gitDiff, gitStash, gitBranch,
         runXcodebuild, runXcodetests,
-        askSupervisor,
+        askSupervisor, askSupervisorForm,
         updateScratchpad,
         askTeammate, requestTeamMeeting, concludeMeeting, requestChanges,
         createArtifact,
@@ -96,4 +104,21 @@ nonisolated enum ToolNames {
         bash, bashOutput,
         screenCapture, uiClick, uiType, uiKey, uiScroll,
     ]
+
+    /// Tools whose call PARKS the step waiting for the Supervisor — the closed set that
+    /// every behavioural site must test against instead of spelling one name.
+    ///
+    /// Five sites read it, and each one fails differently and silently for a parking tool it
+    /// does not recognise: `AskCallIndex` stops indexing the call (so the question loses the
+    /// persisted identity its Watchtower dismissal is keyed on, and a re-asked identical
+    /// headline is born dismissed); `StepExecution.activeAskCall`
+    /// falls through to the flag-only escalation shape; `CompactionPolicy.carriesOpenPark`
+    /// folds an epoch ACROSS the open park, orphaning the pending tool result; and
+    /// `CompactionPolicy.supervisorAnswerResponse` — the worst of them — stops recognising
+    /// the human's answer, so it is dropped from the compacted wire with an identical
+    /// result and a clean log.
+    ///
+    /// `wait_for_events` is deliberately NOT here: it also suspends a role, but it is the
+    /// Autovisor's idle park, resolved by folder events rather than by a person.
+    static let supervisorAskTools: Set<String> = [askSupervisor, askSupervisorForm]
 }

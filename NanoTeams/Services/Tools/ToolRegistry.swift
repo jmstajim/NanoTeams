@@ -4,7 +4,19 @@ nonisolated struct ToolExecutionContext: Hashable {
     var workFolderRoot: URL
     var taskID: Int
     var runID: Int
+    /// WHO is calling — the log's attribution (`tool_calls.jsonl`, the network log). For a
+    /// step it is the step's role; for a meeting turn it is the SPEAKER's definition id
+    /// (`MeetingToolExecutor.turnContext`), which until the evening of 2026-09-11 was the
+    /// initiator's for every speaker, so a Diff Reviewer building mid-vote was logged as
+    /// the verifier building — `queuedMS` included, in the audit that reads it per role.
     var roleID: String
+    /// WHICH STEP's runtime state a call belongs to — the key of every per-step registry
+    /// (`stepKey`: `StreamingPreviewManager`, `executionStates`, the build gate's queue).
+    /// Equal to `roleID` for a step (`StepExecution.id` is the role id) and to the
+    /// INITIATOR's step for a meeting turn: the meeting runs inside that step's tool loop,
+    /// and its card is the one that spins while a participant's build waits. Two fields,
+    /// because the two answers differ exactly there.
+    var stepID: String
     /// Names the role is expected to produce via `create_artifact`. Sourced from
     /// `step.expectedArtifacts`. Used by `CreateArtifactTool` to give the model a
     /// concrete fix-up list when it submits a wrong-shaped name (e.g. "index.html"
@@ -24,12 +36,46 @@ nonisolated struct ToolExecutionContext: Hashable {
     /// handler ignores it. Defaults `false`: meetings build their own context and never enter
     /// the phase, and the default keeps the tool-handler test corpus compiling unchanged.
     var isPlanningPhase: Bool = false
+
+    /// True when `ask_supervisor_form` is in the set this batch was authorized against.
+    ///
+    /// Read by `AskSupervisorTool` alone: it refuses a question with the questionnaire's
+    /// shape (`SupervisorQuestionShape`) only while the form is there to receive it. Resolver
+    /// step 4-bis makes "plain ask ⇒ form" true of every step schema, so in practice the flag
+    /// is on wherever the plain ask is — the flag rather than the invariant because a refusal
+    /// pointing at a tool the caller lacks is the 2026-07-25 defect, and a context that does
+    /// not say the form is there (a handler test, a meeting turn, a future caller) gets the
+    /// permissive reading: the numbered list parks — the only shape a role without the form can send.
+    /// Per batch for the same reason `isPlanningPhase` is: `allowedToolNames` is a per-iteration
+    /// fact and this context is the only channel that carries one down to a handler.
+    var questionnaireAvailable: Bool = false
+
+    /// `stepID` defaults to `roleID` — the step shape, and what every handler test builds.
+    init(
+        workFolderRoot: URL, taskID: Int, runID: Int, roleID: String, stepID: String? = nil,
+        expectedArtifacts: [String] = [], isPlanningPhase: Bool = false,
+        questionnaireAvailable: Bool = false
+    ) {
+        self.workFolderRoot = workFolderRoot
+        self.taskID = taskID
+        self.runID = runID
+        self.roleID = roleID
+        self.stepID = stepID ?? roleID
+        self.expectedArtifacts = expectedArtifacts
+        self.isPlanningPhase = isPlanningPhase
+        self.questionnaireAvailable = questionnaireAvailable
+    }
 }
 
 /// Out-of-band signal from a tool handler indicating special processing is needed.
 /// Each case carries only the data relevant to that specific tool type.
 nonisolated enum ToolSignal: Hashable {
     case supervisorQuestion(String)
+    /// A structured questionnaire. Carries the decoded inquiry AND its headline separately —
+    /// the headline is what every existing surface renders (banner, chip label, sidebar
+    /// preview, dismissal key), and it is also what the dispatcher merges into
+    /// `outcome.supervisorQuestion` so those surfaces need to know nothing about forms.
+    case supervisorForm(headline: String, inquiry: SupervisorInquiry)
     case teammateConsultation(id: String, question: String, context: String?)
     case teamMeeting(topic: String, participants: [String], context: String?)
     case changeRequest(targetRole: String, changes: String, reasoning: String)
@@ -171,6 +217,14 @@ nonisolated struct ToolExecutionResult: Hashable {
     var outputJSON: String
     var isError: Bool
     var signal: ToolSignal?
+    /// Milliseconds this call spent waiting for `XcodeBuildGate`, when it waited at all.
+    ///
+    /// Runtime-only, and deliberately NOT in `ToolResultMeta`: meta rides every tool result
+    /// into the replayed conversation, and a per-run-varying number there would poison the
+    /// stable prompt prefix — the same reason `durationMS` is not in meta. It exists because
+    /// `durationMS` is suspend-INCLUSIVE, so without it an audit of
+    /// `jq 'select(.durationMS > 500)'` bills a build queue to the compiler.
+    var queuedMS: Double?
 
     init(
         toolName: String,
@@ -202,6 +256,23 @@ nonisolated struct ToolExecutionResult: Hashable {
         self.isError = isError
         self.signal = signal
     }
+
+    /// Records a non-zero queue wait. Zero stays `nil` so the log carries `queuedMS` only
+    /// for calls that actually waited — a field present on every record would read as
+    /// "the gate is always in the way".
+    func withQueuedTime(_ queued: Duration) -> ToolExecutionResult {
+        guard queued > .zero else { return self }
+        var copy = self
+        copy.queuedMS = queued.milliseconds
+        return copy
+    }
+}
+
+nonisolated extension ToolExecutionContext {
+    /// The composite key every per-step runtime registry is keyed by. Built from `stepID`,
+    /// not `roleID`: the two differ for a meeting turn, and two tasks on one team share
+    /// step-id strings — invariant #5.
+    var stepKey: TaskStepKey { TaskStepKey(taskID: taskID, stepID: stepID) }
 }
 
 nonisolated final class ToolRegistry: @unchecked Sendable {
@@ -261,17 +332,22 @@ nonisolated final class ToolRegistry: @unchecked Sendable {
     static let knownToolNamePrefixes: [String] = ["repo_browser.", "functions."]
 
     /// Canonicalize a raw tool name emitted by an LLM: trim whitespace, strip a
-    /// known provider prefix (`repo_browser.`, `functions.`), then apply the
-    /// common-hallucination alias map. Apply at every dispatch boundary so
-    /// name resolution is consistent.
+    /// known provider prefix (`repo_browser.`, `functions.`), lowercase, then apply the
+    /// common-hallucination alias map. Apply at every dispatch boundary so name
+    /// resolution is consistent.
+    ///
+    /// Lowercased WHOLE, not only for the alias lookup: every registered name is
+    /// lowercase and the runtime dispatches on `name.lowercased()`, but until the evening
+    /// of 2026-09-11 an unaliased `Read_File` came back as `Read_File`, missed the exact
+    /// `allowed` set and the exact schema read, and was classified `.unknownToolName` —
+    /// "no variant of this name is a tool" — for a tool the role held under one spelling.
     static func resolveToolName(_ raw: String) -> String {
-        var name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        let lower = name.lowercased()
-        for prefix in knownToolNamePrefixes where lower.hasPrefix(prefix) {
+        var name = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        for prefix in knownToolNamePrefixes where name.hasPrefix(prefix) {
             name = String(name.dropFirst(prefix.count))
             break
         }
-        return defaultAliases[name.lowercased()] ?? name
+        return defaultAliases[name] ?? name
     }
 
     /// List of all registered tool names

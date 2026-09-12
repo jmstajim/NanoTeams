@@ -298,6 +298,17 @@ final class ToolRegistryTests: XCTestCase {
         XCTAssertEqual(ToolRegistry.resolveToolName("FUNCTIONS.read_file"), "read_file")
     }
 
+    /// The whole name is lowercased, not only the alias key: every registered name is
+    /// lowercase and the runtime dispatches on `lowercased()`, so the canonical form must
+    /// match the exact `allowed` set and schema read too (`ToolUnavailabilityClassifierTests`).
+    func testResolveToolName_lowercasesTheWholeName() {
+        XCTAssertEqual(ToolRegistry.resolveToolName("Read_File"), ToolNames.readFile)
+        XCTAssertEqual(ToolRegistry.resolveToolName("  RUN_XCODEBUILD "), ToolNames.runXcodebuild)
+        XCTAssertEqual(ToolRegistry.resolveToolName("Functions.Write_File"), ToolNames.writeFile)
+        // An unknown name comes back lowercased as well — what the `unknown_tool` envelope echoes.
+        XCTAssertEqual(ToolRegistry.resolveToolName("Submit_Vote"), "submit_vote")
+    }
+
     func testResolveToolName_stripsWhitespaceBeforePrefixCheck() {
         XCTAssertEqual(ToolRegistry.resolveToolName("  repo_browser.search  "), "search")
     }

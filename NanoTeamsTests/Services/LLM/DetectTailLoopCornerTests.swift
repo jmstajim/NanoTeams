@@ -10,8 +10,12 @@ final class DetectTailLoopCornerTests: XCTestCase {
     // A long, deterministic, NON-repeating base. Each token is unique and token
     // lengths vary, so a prefix slice of any length has no internal sub-period — the
     // detected period equals the slice length, landing it in the intended tier.
+    // Must stay longer than `repetitionMaxSubstringChars + 100`, since the ceiling
+    // test slices a block ABOVE the cap out of it — a base shorter than the requested
+    // slice silently returns a shorter (and therefore ADMISSIBLE) period, which would
+    // turn that test green for the wrong reason. 640 tokens ≈ 5.6 K chars.
     private var base: String {
-        (0..<320).map { "w\($0)x\(($0 * 37) % 100)y " }.joined()
+        (0..<640).map { "w\($0)x\(($0 * 37) % 100)y " }.joined()
     }
 
     /// A substantive block of exactly `length` chars with no internal periodicity.

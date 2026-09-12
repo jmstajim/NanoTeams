@@ -102,7 +102,7 @@ final class SearchIndexFailureCoverageTests: XCTestCase, @unchecked Sendable {
     /// RED: set `lastLoadError` in the `!fileExists` branch → this fails.
     func testMissingIndexFile_reportsNoError() async {
         let service = makeService()
-        _ = await service.files(containing: ["anything"])
+        _ = await service.loadOrBuild()
         let error = await service.lastLoadError
         XCTAssertNil(error, "a missing index is the first-launch case and must stay silent")
     }
@@ -118,8 +118,9 @@ final class SearchIndexFailureCoverageTests: XCTestCase, @unchecked Sendable {
         try FileManager.default.createDirectory(at: indexPath, withIntermediateDirectories: true)
 
         let service = makeService()
-        let hits = await service.files(containing: ["anything"])
-        XCTAssertTrue(hits.isEmpty, "an unreadable index yields no results")
+        let rebuilt = await service.loadOrBuild()
+        XCTAssertTrue(rebuilt.vocabulary.isEmpty, "an unreadable index over an empty tree "
+            + "yields no words")
 
         let error = await service.lastLoadError
         XCTAssertNotNil(error, "an index that exists but cannot be read must be reported, or "
@@ -140,7 +141,7 @@ final class SearchIndexFailureCoverageTests: XCTestCase, @unchecked Sendable {
         try Data("{ not json at all".utf8).write(to: indexPath)
 
         let service = makeService()
-        _ = await service.files(containing: ["anything"])
+        _ = await service.loadOrBuild()
         let corruptError = await service.lastLoadError
 
         XCTAssertNotNil(corruptError)
@@ -183,12 +184,10 @@ final class SearchIndexFailureCoverageTests: XCTestCase, @unchecked Sendable {
                             + "launch silently pays a full rebuild")
 
         // …and the in-memory index still answers, which is why this is a warning and not
-        // a failure.
-        // Exact token, not a prefix: `files(containing:)` is a posting lookup, unlike
-        // the retired `vocabulary(matching:)` ranker this used to call.
-        let hits = await service.files(containing: ["alpha"])
-        XCTAssertFalse(hits.isEmpty,
-                       "search must keep working off the in-memory cache: \(hits)")
+        // a failure. The index lives in memory by design; the file is a cache of it.
+        let index = await service.loadOrBuild()
+        XCTAssertTrue(index.vocabulary.contains("alpha"),
+                      "search must keep working off the in-memory index")
     }
 
     /// A successful persist must CLEAR a previous error, or one transient failure leaves the
@@ -219,9 +218,11 @@ final class SearchIndexFailureCoverageTests: XCTestCase, @unchecked Sendable {
     /// A file the walk is told exists but cannot characterise contributes NOTHING — not a
     /// filename-token entry with a `.distantPast` mTime and size 0.
     ///
-    /// The reason is the signature, not tidiness: `IndexSignature` is (fileCount, maxMTime,
-    /// totalSize), so a placeholder entry makes the count disagree with the next walk's forever
-    /// and the whole index rebuilds on every `loadOrBuild` for the life of the folder.
+    /// The reason is the DIFF, not tidiness: a placeholder entry carries a `(mTime, size)` no
+    /// real file will ever match, so `SearchIndexPlanner.plan` calls it changed on every walk —
+    /// the roster never settles and `.reuse` is out of reach for the life of the folder. (Until
+    /// 2026-09-11 the same argument ran through `IndexSignature`, which was the freshness gate;
+    /// it no longer gates anything.)
     ///
     /// The phantom is the reachable shape for this: an entry that was in the directory read and
     /// is not there when the walk asks about it — which is what a file deleted mid-walk looks
@@ -241,15 +242,14 @@ final class SearchIndexFailureCoverageTests: XCTestCase, @unchecked Sendable {
         let index = await service.loadOrBuild(force: true)
 
         // The healthy file's vocabulary is present…
-        let readable = await service.files(containing: ["alpha"])
-        XCTAssertFalse(readable.isEmpty, "the healthy file must still be indexed")
+        XCTAssertTrue(index.vocabulary.contains("alpha"), "the healthy file must still be indexed")
 
         // …and the phantom contributed neither a roster entry nor its filename tokens.
         XCTAssertFalse(index.files.contains { $0.path == "phantom.txt" },
                        "an entry that cannot be characterised must not reach the roster: "
                            + "\(index.files.map(\.path))")
-        let phantomTokens = await service.files(containing: ["phantom"])
-        XCTAssertTrue(phantomTokens.isEmpty, "not even its filename tokens may be indexed")
+        XCTAssertFalse(index.vocabulary.contains("phantom"),
+                       "not even its filename tokens may be indexed")
         XCTAssertEqual(index.signature.fileCount, 1,
                        "the signature must count only files the walk could actually read")
         let warnings = await service.lastIndexWarnings
@@ -261,16 +261,27 @@ final class SearchIndexFailureCoverageTests: XCTestCase, @unchecked Sendable {
                                  + "nothing")
     }
 
-    /// `files(containing:)` shares the same load path, so it must surface the same diagnosis
-    /// rather than silently returning nothing on its own.
-    func testFilesContaining_sharesTheLoadDiagnosis() async throws {
+    /// The disk is probed exactly ONCE per folder, on the first build — after that the
+    /// in-memory index is authoritative and re-reading the file could only regress it.
+    ///
+    /// The observable consequence is the diagnosis's lifetime: an unreadable file is reported by
+    /// the build that hit it and by the build after it (which is what lets the settings card say
+    /// "regenerated because the copy was bad"), and is then retired.
+    ///
+    /// RED: drop the `didProbeDisk` gate → every build re-reads the broken file and the error is
+    /// permanent for the session.
+    func testLoadDiagnosis_survivesOneBuildAndIsThenRetired() async throws {
         let indexPath = internalDir.appendingPathComponent("search_index.json", isDirectory: true)
         try FileManager.default.createDirectory(at: indexPath, withIntermediateDirectories: true)
+        try Data("alpha".utf8).write(to: tempDir.appendingPathComponent("notes.txt"))
 
         let service = makeService()
-        let files = await service.files(containing: ["token"])
-        XCTAssertTrue(files.isEmpty)
-        let error = await service.lastLoadError
-        XCTAssertNotNil(error, "both query entry points go through loadFromDisk and must report it")
+        _ = await service.loadOrBuild()
+        let afterFirst = await service.lastLoadError
+        XCTAssertNotNil(afterFirst, "the build that hit the bad file must say why it rebuilt")
+
+        _ = await service.loadOrBuild()
+        let afterSecond = await service.lastLoadError
+        XCTAssertNil(afterSecond, "…and the next build retires it, or it is permanent")
     }
 }

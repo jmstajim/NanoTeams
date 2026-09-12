@@ -1779,21 +1779,33 @@ final class ToolsTailCreateTeamHandlerTests: XCTestCase {
 
     // MARK: - team_config shape
 
-    func testTeamConfig_numericValue_isReportedAsMissing() async {
-        // Neither a dict nor a string → the else branch. Reported as missing
-        // rather than "invalid", because the model supplied no config at all.
-        await assertRejected(run(["team_config": 42]),
-                             contains: "Missing required argument: team_config")
+    /// Present but neither shape — reported as the WRONG TYPE, naming what arrived.
+    ///
+    /// These three pinned "Missing required argument: team_config" until 2026-09-12, and the
+    /// note beside them read "because the model supplied no config at all" about a call that
+    /// supplied 42. An absence the model can see it did not commit sends it hunting for a
+    /// phantom omission instead of fixing the type — which is the whole reason
+    /// `ToolArgumentError.invalidValue` exists.
+    ///
+    /// RED: fall back to `.missingRequired` → the message names an absence that is not one.
+    func testTeamConfig_numericValue_isReportedAsTheWrongType() async {
+        await assertRejected(run(["team_config": 42]), contains: "received a number")
     }
 
-    func testTeamConfig_arrayValue_isReportedAsMissing() async {
-        await assertRejected(run(["team_config": [1, 2, 3]]),
-                             contains: "Missing required argument: team_config")
+    func testTeamConfig_arrayValue_isReportedAsTheWrongType() async {
+        await assertRejected(run(["team_config": [1, 2, 3]]), contains: "received an array")
     }
 
-    func testTeamConfig_booleanValue_isReportedAsMissing() async {
-        await assertRejected(run(["team_config": true]),
-                             contains: "Missing required argument: team_config")
+    func testTeamConfig_booleanValue_isReportedAsTheWrongType() async {
+        await assertRejected(run(["team_config": true]), contains: "received a boolean")
+    }
+
+    /// The distinction is only worth making if the other side still holds.
+    func testTeamConfig_wrongType_isNotReportedAsMissing() async {
+        let result = await run(["team_config": 42])
+        let env = toolsTailEnvelope(result)
+        XCTAssertFalse(env.errorMessage?.contains("Missing required argument") ?? false,
+                       env.errorMessage ?? "nil")
     }
 
     func testTeamConfig_absent_isReportedAsMissing() async {

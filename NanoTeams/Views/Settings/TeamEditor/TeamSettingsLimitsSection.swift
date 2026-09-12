@@ -13,7 +13,9 @@ struct TeamSettingsLimitsSection: View {
         SettingsCard(
             header: "Limits",
             systemImage: "gauge.with.dots.needle.bottom.50percent",
-            footer: "Limits prevent runaway collaboration costs. Adjust based on team complexity."
+            footer: "Limits prevent runaway collaboration costs. Adjust based on team complexity. "
+                + "How many roles of a task may run at the same time is not a team limit — it is a "
+                + "property of the server they share, and lives in Settings \u{2192} LLM \u{2192} Parallel Roles."
         ) {
             VStack(alignment: .leading, spacing: Spacing.m) {
                 DisclosureGroup(isExpanded: $consultationExpanded) {

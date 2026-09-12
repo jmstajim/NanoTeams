@@ -196,9 +196,9 @@ final class QuickCaptureChatComposerBucketCoverageTests: XCTestCase {
 
         sut.dismissPanel()
 
-        XCTAssertEqual(sut.formState._testAnswerDrafts[7]?.text, "half an answer",
+        XCTAssertEqual(sut.formState.answerDraftStore.peek(for: .role(TaskStepKey(taskID: 7, stepID: "r")))?.text, "half an answer",
                        "the answer is preserved per task, so reopening the panel restores it")
-        XCTAssertEqual(sut.formState._testAnswerDrafts[7]?.clippedTexts, ["clip"])
+        XCTAssertEqual(sut.formState.answerDraftStore.peek(for: .role(TaskStepKey(taskID: 7, stepID: "r")))?.clippedTexts, ["clip"])
         XCTAssertEqual(sut.formState.supervisorTask, "a task draft",
                        "and the stashed new-task draft comes back")
         XCTAssertFalse(sut.formState.isInAnswerMode)

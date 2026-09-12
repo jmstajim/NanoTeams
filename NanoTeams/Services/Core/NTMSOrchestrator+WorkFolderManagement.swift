@@ -250,16 +250,22 @@ extension NTMSOrchestrator {
     func recoverStaleStatusesAcrossIndex(folderURL: URL) async {
         // `TaskSummary` is a value type, so `filter` already hands back a snapshot —
         // `mutateTask` re-sorts the live array mid-loop and must not be observed here.
-        // The second clause is the one-time backfill for `hasPendingSupervisorInput`:
-        // a `.paused` row can hide an unanswered question (recovery parks every waiting
-        // step) and so can `.failed` (it outranks `.needsSupervisorInput` in
-        // `Run.derivedTaskStatus`), while a row predating the field answers nothing at
-        // all. Self-terminating — the convergence write below stamps the field, so the
-        // row drops out of this filter on the next open.
+        // The second clause is the one-time backfill for the MIRRORED SUPERVISOR-WAIT
+        // FACTS: a `.paused` row can hide an unanswered question (recovery parks every
+        // waiting step) and so can `.failed` (it outranks `.needsSupervisorInput` in
+        // `Run.derivedTaskStatus`), while a row predating a field answers nothing at all.
+        // Self-terminating — the convergence write below stamps EVERY field, so the row
+        // drops out of this filter on the next open.
+        //
+        // The predicate is `supervisorWaitFactsPredateAField` rather than one field's
+        // "is known", so a second mirrored fact widens this clause instead of forking it.
+        // `pendingSupervisorQuestionCount` is exactly that second fact: a row can know the
+        // flag and not the count, and the count's whole audience is a task the Supervisor
+        // has NOT opened — the one task no ordinary mutation will converge.
         let staleEntries = (snapshot?.tasksIndex.tasks ?? [])
             .filter {
                 $0.status == .running || $0.status == .needsSupervisorInput
-                    || (!$0.supervisorInputStateIsKnown
+                    || ($0.supervisorWaitFactsPredateAField
                         && ($0.status == .paused || $0.status == .failed))
             }
         guard !staleEntries.isEmpty else { return }
@@ -410,8 +416,8 @@ extension NTMSOrchestrator {
         //     will ever tear it down. Its FSEventStream, index walks and `search_index.json`
         //     writes keep running against the previous project; default storage — which this
         //     method's own doc says must never be indexed — ends up with an index; and
-        //     `exploratory_search` resolves postings from the old folder while executing
-        //     against the new root.
+        //     `exploratory_search` matches filenames against the old folder's roster while
+        //     executing against the new root.
         guard searchIndexCoordinator == nil, workFolderURL == url else {
             await coordinator.stop()
             return
@@ -419,12 +425,26 @@ extension NTMSOrchestrator {
         searchIndexCoordinator = coordinator
     }
 
-    /// Shuts down the coordinator (stops the FS watcher, cancels in-flight
-    /// builds). Does NOT delete the on-disk index so re-opening the folder
-    /// reuses the cached build when the signature still matches.
+    /// Shuts down the coordinator: stops the FS watcher, cancels in-flight builds, and WRITES
+    /// the in-memory index. Does NOT delete it — re-opening the folder then re-reads only what
+    /// changed while it was closed.
+    ///
+    /// This is the closing half of the index lifecycle, so it is also the last moment a
+    /// persist failure can reach a human: there is no next build to report one. Read at the same
+    /// moment the toggle-off path reads `searchIndexClearFailure`, and for the same reason — the
+    /// coordinator is the only object that knows, and the next line is the last at which it
+    /// exists.
+    ///
+    /// `saveFailure`, not the `lastError` aggregate: that one also carries the last build's walk
+    /// warnings ("Index built with 2 warning(s)"), which are true about the index and say
+    /// nothing about the save. Closing a folder holding one outward symlink would otherwise
+    /// raise a banner about a write that succeeded.
     func tearDownSearchIndexCoordinator() async {
         guard let coordinator = searchIndexCoordinator else { return }
         await coordinator.stop()
+        if let saveFailure = coordinator.saveFailure {
+            lastInfoMessage = saveFailure
+        }
         searchIndexCoordinator = nil
     }
 

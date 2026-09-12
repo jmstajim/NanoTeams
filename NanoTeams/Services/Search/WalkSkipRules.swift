@@ -16,9 +16,12 @@ nonisolated enum WalkSkipRules {
     /// exactly that reason — skipping them would silently swallow `src/build/` and
     /// `Sources/dist/`. Making those cheap is the binary gate's job, not this list's.
     ///
-    /// Five subsystems share this set — `SearchExecutor`, `list_files`, `SearchIndexService`,
-    /// `AgentInstructionsScanner` and `AgentSkillsScanner` — so an addition also changes what
-    /// `list_files` reports and where `AGENTS.md` / `SKILL.md` can be discovered. None of the
+    /// SEVEN subsystems share this set — `SearchExecutor`, `list_files`, `SearchIndexService`,
+    /// `FileSystemWatcher`, `WorkFolderContextBuilder`, `AgentInstructionsScanner` and
+    /// `AgentSkillsScanner` — so an addition also changes what `list_files` reports, where
+    /// `AGENTS.md` / `SKILL.md` can be discovered, which FS events wake the index at all, and
+    /// what the work-folder context blob shows EVERY ROLE in its system prompt. The last two
+    /// joined on 2026-09-11 and are the ones a reader is least likely to predict. None of the
     /// names here collide with an agent-instruction root (`claude.md`, `agents.md`, `gemini.md`,
     /// `.cursorrules`, `.github/…`, `.windsurfrules`) or a skill source (`.claude`, `.codex`,
     /// `.cursor`, `.gemini`, `.github`, `.windsurf`, `.opencode`, `.codeium`).
@@ -37,6 +40,14 @@ nonisolated enum WalkSkipRules {
         ".gradle", ".terraform", ".idea", ".vscode",
         // Generic vendored + cache trees
         "vendor", "third_party", ".cache",
+        // This repo's own generated tree — coverage runs park `DerivedData-<tag>` and
+        // `*.xcresult` under it. Measured 2026-09-11: the walk saw 46 872 entries / 4295 MB,
+        // and 2163 / 52.9 MB with this one name skipped. Neither existing rule reaches it —
+        // `DerivedData-<tag>` is not the bare name `DerivedData`, and `.artifacts` itself is
+        // not a bundle extension. The DOT is what keeps it safe: `artifacts` without it is a
+        // plausible hand-authored directory, and `.nanoteams/tasks/*/attachments` proves the
+        // codebase already spells that kind of thing without one.
+        ".artifacts",
     ]
 
     /// Files skipped only when they live directly inside `.nanoteams/`. These
@@ -65,12 +76,12 @@ nonisolated enum WalkSkipRules {
     /// The one question every walk asks about an entry.
     ///
     /// A predicate rather than an exported set, because the rule stopped being expressible as
-    /// one: five subsystems consume it (`SearchExecutor`, `list_files`, `SearchIndexService`,
-    /// `AgentInstructionsScanner`, `AgentSkillsScanner`) and each used to write its own
+    /// one: seven subsystems consume it (see `skipped`) and each used to write its own
     /// `WalkSkipRules.skipped.contains(name)`. Adding the extension rule to a SET would have
-    /// meant editing five call sites to ask two questions instead of one, and the sixth walk
-    /// written next year would ask one — which is CLAUDE.md #51 exactly. Now a new rule lands
-    /// here and every walk gets it.
+    /// meant editing every call site to ask two questions instead of one, and the next walk
+    /// written would ask one — which is CLAUDE.md #51 exactly. Now a new rule lands here and
+    /// every walk gets it. The sixth and seventh walks arrived on 2026-09-11 and needed no
+    /// edit, which is the whole argument.
     static func shouldSkip(name: String) -> Bool {
         if skipped.contains(name) { return true }
         // `pathExtension` and not `hasSuffix(".xcresult")`: the suffix form also matches a file

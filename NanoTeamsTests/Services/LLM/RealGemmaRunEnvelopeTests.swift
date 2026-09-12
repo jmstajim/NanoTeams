@@ -119,10 +119,17 @@ final class RealGemmaRunEnvelopeTests: XCTestCase {
     /// haven't submitted all expected artifacts" — for an attempt the harness had
     /// swallowed.
     ///
-    /// The named defect is `.malformedJSON`, not `.missingToolName`: this record carries
-    /// TWO defects, and the closers are wrong (`…"}}}]}`) so the brace walker stops on an
-    /// unparseable span before the absent `name` is ever reachable. That is the more
-    /// useful of the two nudges here anyway — the JSON genuinely is malformed.
+    /// The named defect is `.missingToolName`, and until 2026-09-12 it was `.malformedJSON`:
+    /// this record carries TWO defects, and the closer one used to mask the other. The
+    /// brace walker's span ends at the `]` (`…"}}}]`), which owes `}}]}` — the same four
+    /// closers in a different order, so `reorderingTrailingClosers` now puts them back and
+    /// the span parses. What the model is then told is its REAL mistake: it invented a batch
+    /// schema (`call_multiple` + `contributions`) and named no tool. The dispatch outcome is
+    /// unchanged and is the assertion that matters — nothing resolves, and nothing of the
+    /// envelope reaches the chat.
+    ///
+    /// No tool name is inferred either: the only `"name"` in the payload is the artifact's
+    /// ("Engineering Notes"), and the inference is gated on the registry.
     func testMeditationApp_record39_inventedBatchSchema_isNamedNotSwallowed() async throws {
         let content = #"""
         This completes the implementation of M1. I have introduced a minimal navigation structure using `NavigationView` in `ContentView.swift`.
@@ -139,7 +146,7 @@ final class RealGemmaRunEnvelopeTests: XCTestCase {
         XCTAssertTrue(result.harmonyBuffer.contains("create_artifact"),
                       "the payload must survive for the diagnostic — this is what ModelTokenCleaner used to eat")
         let issue = ToolCallParsingHelpers.classifyHarmonyCallIssue(in: result.harmonyBuffer)
-        XCTAssertEqual(issue, .malformedJSON,
+        XCTAssertEqual(issue, .missingToolName(inferredToolName: nil),
                        "must be classified as a named defect, not `.noCallEnvelope` / `.noEnvelopeAttempt` "
                            + "(which are what an unrecognised sentinel produces, and neither yields a usable nudge)")
         XCTAssertTrue(result.assistantContent.hasPrefix("This completes the implementation of M1."),

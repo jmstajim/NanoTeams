@@ -145,6 +145,23 @@ final class QuickCaptureQueueTests: XCTestCase {
         XCTAssertEqual(sut.queuedMessages(for: 1).map(\.text), ["a", "c"])
     }
 
+    /// Popping the LAST message drops the task's key rather than leaving an empty array behind.
+    /// `taskIDsWithQueuedMessages` is what the backstop iterates to decide which tasks still owe
+    /// a delivery, so an empty-but-present entry is a task it would wake for nothing.
+    ///
+    /// RED: assign the emptied queue back (`queuedChatMessages[taskID] = queue`) unconditionally
+    /// → the id stays in `taskIDsWithQueuedMessages` with nothing to deliver.
+    func testPopFirst_lastMessage_dropsTheTaskEntirely() {
+        sut.appendQueuedMessage(msg("only"), for: 1)
+        sut.appendQueuedMessage(msg("other task"), for: 2)
+
+        XCTAssertNotNil(sut.popFirstQueuedMessage(for: 1) { _ in true })
+
+        XCTAssertFalse(sut.hasQueuedMessage(for: 1))
+        XCTAssertEqual(sut.taskIDsWithQueuedMessages, [2],
+                       "an emptied queue leaves no entry for the backstop to walk")
+    }
+
     func testRemoveAt_removesSingleMessage() {
         sut.appendQueuedMessage(msg("a"), for: 1)
         sut.appendQueuedMessage(msg("b"), for: 1)

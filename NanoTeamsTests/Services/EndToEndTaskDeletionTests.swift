@@ -17,6 +17,55 @@ import XCTest
 @MainActor
 final class EndToEndTaskDeletionTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
+    // MARK: - Scenario 0: The dialog's confirm seam
+
+    /// The "Remove Task?" dialog spells its confirm the same way the rename alert
+    /// does — `takePendingDelete` snapshots and dismisses in one synchronous step,
+    /// and only `applyDelete` is deferred into a `Task`. `wasActive` is part of the
+    /// snapshot on purpose: it is the answer AT THE MOMENT OF THE PRESS, and it
+    /// drives the navigation fallback, so re-reading `activeTaskID` after the
+    /// removal would ask a question whose subject no longer exists.
+    func testTakePendingDelete_snapshotsWasActive_beforeRemoval() async {
+        let tms = TaskManagementState()
+        await sut.openWorkFolder(tempDir)
+        let idA = await sut.createTask(title: "A", supervisorTask: "x")!
+        let idB = await sut.createTask(title: "B", supervisorTask: "y")!
+        XCTAssertEqual(sut.activeTaskID, idB, "Setup: the last-created task is active")
+
+        tms.requestDelete(taskID: idB)
+        guard let pending = tms.takePendingDelete(store: sut) else {
+            return XCTFail("A pending delete must be taken synchronously")
+        }
+        XCTAssertTrue(pending.wasActive, "B was the active task when Remove was pressed")
+        XCTAssertNil(tms.taskToDelete, "The take consumes the payload")
+        XCTAssertFalse(tms.isShowingDeleteConfirmation, "…and dismisses the dialog")
+        XCTAssertNil(tms.takePendingDelete(store: sut), "A second take yields nothing")
+
+        await tms.applyDelete(pending, store: sut)
+
+        XCTAssertEqual(sut.activeTaskID, idA, "The orchestrator picked the fallback")
+        XCTAssertEqual(Set(sut.snapshot?.tasksIndex.tasks.map(\.id) ?? []), Set([idA]))
+    }
+
+    /// A non-active target reports `wasActive == false`, so the sidebar leaves
+    /// navigation alone.
+    func testTakePendingDelete_nonActiveTarget_reportsNotActive() async {
+        let tms = TaskManagementState()
+        await sut.openWorkFolder(tempDir)
+        let idA = await sut.createTask(title: "A", supervisorTask: "x")!
+        let idB = await sut.createTask(title: "B", supervisorTask: "y")!
+        XCTAssertEqual(sut.activeTaskID, idB)
+
+        tms.requestDelete(taskID: idA)
+        guard let pending = tms.takePendingDelete(store: sut) else {
+            return XCTFail("A pending delete must be taken synchronously")
+        }
+        XCTAssertFalse(pending.wasActive)
+
+        await tms.applyDelete(pending, store: sut)
+        XCTAssertEqual(sut.activeTaskID, idB, "Deleting a background task leaves the active one")
+    }
+
     // MARK: - Scenario 1: Delete non-active task preserves state
 
     func testDelete_nonActiveTask_activeUnchanged_indexConsistent() async {

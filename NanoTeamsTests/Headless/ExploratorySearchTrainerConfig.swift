@@ -98,8 +98,8 @@ struct ExploratorySearchTrainerCase: Codable {
     /// output" regardless of the underlying mechanism (see CLAUDE.md).
     var expectedExpansionTerms: [String]?
 
-    /// Relative paths the posting intersection of `[query] + expansion`
-    /// should recall. Primary quality signal.
+    /// Relative paths the grep over `[query] + expansion` should recall. Primary quality
+    /// signal.
     var expectedHitFiles: [String]?
 
     /// When `true`, this case is expected to EMPTY out the expanded list

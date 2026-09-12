@@ -44,10 +44,24 @@ struct HeadlessResult {
 final class HeadlessRunner {
 
     private let config: HeadlessConfig
+    private let makeOrchestrator: @MainActor (StoreConfiguration) -> NTMSOrchestrator
     private var orchestrator: NTMSOrchestrator!
 
-    init(config: HeadlessConfig) {
+    /// - Parameter makeOrchestrator: the orchestrator for this run, built from the
+    ///   configuration `makeConfiguration` assembles. `run_headless.sh` leaves it nil and gets
+    ///   the real one — a headless run is SUPPOSED to talk to the configured server; an
+    ///   offline test hands in `TestOrchestrator.make` around a client that never answers, to
+    ///   drive the timeout arm without a server (`HeadlessRunnerTimeoutTests`).
+    init(config: HeadlessConfig,
+         makeOrchestrator: (@MainActor (StoreConfiguration) -> NTMSOrchestrator)? = nil) {
         self.config = config
+        self.makeOrchestrator = makeOrchestrator ?? { configuration in
+            // NTMS-ALLOW-REAL-LLM-CLIENT: production-intent driver — a headless run is
+            // SUPPOSED to talk to the configured LM Studio / Ollama server, so this is the
+            // one place under NanoTeamsTests/ that must NOT route through
+            // `TestOrchestrator.make`.
+            NTMSOrchestrator(repository: NTMSRepository(), configuration: configuration)
+        }
     }
 
     /// The run's configuration: a FRESH install plus exactly the fields the config names.
@@ -82,6 +96,11 @@ final class HeadlessRunner {
         if let bashMode = config.bashMode {
             configuration.bashMode = bashMode
         }
+        // Stated rather than inherited, even though it matches the default: a headless run is
+        // a MEASUREMENT, and how many roles it may run at once changes both its wall-clock and
+        // its prompt-cache behaviour. Leaving it implicit is how a run silently measures
+        // whatever the reader last picked in Settings.
+        configuration.roleConcurrencyMode = .providerLimited
         return configuration
     }
 
@@ -99,11 +118,7 @@ final class HeadlessRunner {
         // `StoreConfiguration()` would read — and, through `didSet`, WRITE — the
         // developer's own app settings.
         let configuration = Self.makeConfiguration(config: config)
-        // NTMS-ALLOW-REAL-LLM-CLIENT: production-intent driver — a headless run
-        // is SUPPOSED to talk to the configured LM Studio / Ollama server, so
-        // this is the one place under NanoTeamsTests/ that must NOT route
-        // through `TestOrchestrator.make`.
-        orchestrator = NTMSOrchestrator(repository: NTMSRepository(), configuration: configuration)
+        orchestrator = makeOrchestrator(configuration)
         let provider = config.resolvedProvider
 
         print("[HEADLESS] Provider: \(provider.rawValue) | \(config.resolvedBaseURL) | \(config.resolvedModel)")
@@ -115,10 +130,17 @@ final class HeadlessRunner {
             return errorResult("openWorkFolder failed: \(err)", startTime: startTime)
         }
 
-        // 5. Switch team if needed
+        // 5. Switch team if needed.
+        //
+        // `templateID` first, then the display NAME. The name arm is what lets a team that
+        // exists only in a work folder be measured: `Team.duplicate` clears `templateID`, so an
+        // imported or hand-built team matches on nothing else, and a bundled template cannot be
+        // compared against a candidate that the harness is unable to select. Order matters —
+        // templateID is the stable identity and a rename must not silently pick another team.
         if let templateName = config.teamTemplate,
            let wf = orchestrator.workFolder,
-           let team = wf.teams.first(where: { $0.templateID == templateName }) {
+           let team = wf.teams.first(where: { $0.templateID == templateName })
+           ?? wf.teams.first(where: { $0.name == templateName }) {
             await orchestrator.switchTeam(to: team.id)
             print("[HEADLESS] Team: \(team.name)")
         }
@@ -182,6 +204,16 @@ final class HeadlessRunner {
 
             if elapsed >= timeout {
                 print("[HEADLESS] TIMEOUT after \(Int(elapsed))s")
+                // The engine is LIVE at this point and the process is about to leave it.
+                // Pause it — what the GUI's Pause writes and what `StatusRecoveryService`
+                // would write at the folder's next open — instead of exiting with `.running`
+                // on disk. A stranded `.running` step pins its team against the bundled-content
+                // reconcile (`NTMSRepository.busyRoleIDs`), and because the open's recovery
+                // runs AFTER that reconcile has read the evidence, the next run in the folder
+                // still measured the OLD templates (MeditationApp task 60, 2026-09-11). The
+                // result is built after the pause so the receipt reports the state the task
+                // was left in.
+                await orchestrator.pauseRun(taskID: taskID)
                 return buildResult(taskID: taskID, outcome: .timeout, startTime: startTime,
                                    errors: ["Timeout after \(Int(elapsed))s"])
             }

@@ -65,10 +65,48 @@ final class QuickCaptureFormState {
     private(set) var hasSubmittableAnswerText: Bool = false
     var answerAttachments: [StagedAttachment] = []
     var answerClippedTexts: [Clip] = []
+    /// The fourth member of the answer bucket: what the human has ticked and typed into an
+    /// `ask_supervisor_form` questionnaire so far, together with WHICH questionnaire.
+    ///
+    /// Observed rather than derived from the card, because the card is rebuilt from scratch on
+    /// every panel re-render (`QuickCaptureFormView` re-hosts its `NSHostingView`) — view state
+    /// would reset mid-fill. It travels with `answerText` through every park and take, so a
+    /// half-filled form survives exactly what the prose beside it survives.
+    ///
+    /// Paired with its questionnaire's identity, and that pairing is load-bearing here more
+    /// than anywhere: the bucket FOLLOWS the panel across a branch that continues the same
+    /// conversation (`AnswerDraftKey.continues(into:)`), which is right for a sentence and
+    /// wrong for a set of ticks. Under the chat thread's `.taskChat` key every role of the task
+    /// continues into every other, so a form filled for one role would arrive live under the
+    /// next role's questions. It still arrives — nothing silently deletes the Supervisor's work
+    /// — but every reader compares `SupervisorInquiryDraft.answer(for:)` and sees it is not an
+    /// answer to what is on screen.
+    var answerInquiry: SupervisorInquiryDraft?
 
     @ObservationIgnored private(set) var isInAnswerMode: Bool = false
 
-    /// Which task the live answer bucket currently holds content for, or nil when it is
+    /// Which of the task's waiting questions the panel is aimed at, or nil for "whichever
+    /// leads". Written when the user taps a chip, when a submit moves the panel on, and by the
+    /// transition that APPLIES a resolved mode — so it always names what is on screen.
+    ///
+    /// A `TaskStepKey` and not a bare step id, for the reason invariant #5 exists:
+    /// `StepExecution.id` IS the role id, so two tasks on one team carry byte-identical ones.
+    /// A bare id picked on task A does not decay when the panel re-resolves onto task B — it
+    /// MATCHES, and aims the panel at a role the Supervisor never picked there. That is a
+    /// stronger collision than the cross-folder one, because it needs no folder switch at all.
+    ///
+    /// A preference, not a fact: `QuickCapturePresentationPolicy.aiming(_:at:)` honours it only
+    /// for its own task and only while that question is still waiting, so a stale key decays.
+    /// Re-written on every applied transition as well, which is what stops a pick that stopped
+    /// resolving from lying dormant and then resurrecting when the same role asks again.
+    ///
+    /// `@ObservationIgnored` because nothing reads it from a view body — the panel renders the
+    /// resolved session it is handed by value, and the controller is what reads this. Tracking
+    /// it would invalidate the panel's whole tree on a change that already forces a rebuild
+    /// through `renderIdentity`.
+    @ObservationIgnored var aimedQuestion: TaskStepKey?
+
+    /// Which BRANCH the live answer bucket currently holds content for, or nil when it is
     /// unclaimed. The bucket is ONE set of fields shared by every task's answer and chat
     /// composer, so "whose content is in there" has to be recorded rather than inferred.
     ///
@@ -76,7 +114,12 @@ final class QuickCaptureFormState {
     /// answer only while the panel goes straight from one chat task to another. Any detour (the
     /// new-task form, Watchtower) made the previous mode `.newTask`, the hand-off decline, and
     /// the message typed for A arrive in B's composer under B's send button.
-    @ObservationIgnored private(set) var answerFieldsOwnerTaskID: Int?
+    ///
+    /// A task id, which this was until the draft store learned branches, is too coarse for a
+    /// TEAM task: parallel roles park at once (CLAUDE.md #45), the panel shows whichever question
+    /// leads, and a role answered elsewhere hands the panel the NEXT one under the same task id
+    /// — so the reply typed for the first role stayed in the fields aimed at the second.
+    @ObservationIgnored private(set) var answerFieldsOwnerKey: AnswerDraftKey?
 
     private func refreshHasSubmittableAnswerText() {
         let computed = !answerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -84,15 +127,16 @@ final class QuickCaptureFormState {
         hasSubmittableAnswerText = computed
     }
 
-    /// Per-task answer draft storage. Keyed by taskID. `@ObservationIgnored` because this
-    /// map is a snapshot store — readers (`enterAnswerMode`, `switchAnswerTask`,
-    /// `saveCurrentAnswerDraft`) COPY between this dictionary and the observed
-    /// `supervisorTask` / `answerAttachments` / `answerClippedTexts` properties. UI
-    /// observers re-render off those observed copies, so tracking the map itself would
-    /// produce redundant re-renders every time a draft is saved with no visible effect.
-    /// The queue below (`queuedChatMessages`) is deliberately NOT ignored because the
-    /// composer renders each queued row directly — see its own comment.
-    @ObservationIgnored private var answerDrafts: [Int: AnswerDraft] = [:]
+    /// Unsent replies for branches no composer is currently holding — shared with the docked
+    /// `TeamActivityComposer`, which reaches it the same way it already reaches
+    /// `queuedMessages`. Owned here rather than declared here: the panel is one of two
+    /// surfaces that park drafts, not the store's home.
+    ///
+    /// Observed, unlike the per-task map it replaces. That one was `@ObservationIgnored`
+    /// because readers COPIED between it and the live fields, so tracking it only produced
+    /// re-renders with no visible effect. Under take-and-return an entry exists exactly when
+    /// NO composer holds the content — which is a thing the parked-draft row renders directly.
+    let answerDraftStore = SupervisorAnswerDraftStore()
 
     /// In-memory FIFO queue of chat messages per task, waiting to be flushed when the
     /// engine reaches `.needsSupervisorInput`. Each entry may be targeted at a specific
@@ -102,14 +146,6 @@ final class QuickCaptureFormState {
     /// and `QuickCaptureFormView.queuedBadge` render directly from it — any append / pop /
     /// clear must trigger a re-render.
     private var queuedChatMessages: [Int: [QueuedChatMessage]] = [:]
-
-    // MARK: - Answer Draft
-
-    struct AnswerDraft {
-        var text: String
-        var attachments: [StagedAttachment]
-        var clippedTexts: [String]
-    }
 
     // MARK: - Queued Chat Message
 
@@ -205,87 +241,97 @@ final class QuickCaptureFormState {
 
     // MARK: - Answer Mode Transitions
 
-    /// Enters answer mode: loads this task's saved answer draft, or starts with empty answer
-    /// fields. `supervisorTask` is not read and not written — the task draft is a different
-    /// composer's content and simply stays where it is, which is what removed the
-    /// `savedSupervisorTask` stash along with every route the stash did not cover.
+    /// The branch a Supervisor question belongs to: the role that asked it.
     ///
-    /// The hand-off cycle runs through the FRESH branch below, not the re-entry guard: the
-    /// controller's only call site is gated on `!isInAnswerMode`, so a working→answer transition
-    /// arrives here having just snapshotted the live composer, and the draft load restores text,
-    /// attachments and clips together. The re-entry guard is defensive — it keeps a second call
-    /// from clobbering live fields, and routes a task change the same way the controller's own
-    /// already-in-answer-mode branch does.
-    func enterAnswerMode(payload: SupervisorAnswerPayload) {
-        guard !isInAnswerMode else {
-            // Task changed while already in answer mode — switch drafts
-            if let oldTaskID = pendingAnswer?.taskID, oldTaskID != payload.taskID {
-                switchAnswerTask(from: oldTaskID, to: payload)
-            } else {
-                pendingAnswer = payload
-                answerFieldsOwnerTaskID = payload.taskID
-                // Re-entry after a hand-off that saved a draft. Restore the buckets so the
-                // cycle keeps clips and attachments intact; `answerText` was left correct by
-                // whoever saved.
-                if answerAttachments.isEmpty && answerClippedTexts.isEmpty,
-                   let draft = answerDrafts[payload.taskID] {
-                    answerAttachments = draft.attachments
-                    answerClippedTexts = [Clip].minting(draft.clippedTexts)
-                }
+    /// Chat mode does not change this. The panel's chat-working composer is the only surface
+    /// that names no role, and it alone keys `.taskChat`; the two meet through
+    /// `AnswerDraftKey.continues(into:)`, which lets the live fields follow the panel across
+    /// the working↔answer flip instead of being parked and taken under two names.
+    static func draftKey(for payload: SupervisorAnswerPayload) -> AnswerDraftKey {
+        .role(TaskStepKey(taskID: payload.taskID, stepID: payload.stepID))
+    }
+
+    /// Hands the live answer bucket to `destination`.
+    ///
+    /// Content that `continues(into:)` the destination stays exactly where it is — the fields
+    /// are simply re-labelled. Anything else is parked under the branch that owns it, and the
+    /// destination's own parked draft is TAKEN into the fields.
+    ///
+    /// The one hand-off. Four call sites used to spell their own version of it (enter answer
+    /// mode, leave it, switch payload inside it, the chat→chat reassign), and they agreed on
+    /// the task switch and on nothing else.
+    func handOffLiveAnswerFields(to destination: AnswerDraftKey) {
+        if let owner = answerFieldsOwnerKey, owner.continues(into: destination) {
+            answerFieldsOwnerKey = destination
+            // The store's contract is that no entry stands under a branch a composer holds.
+            // An entry here means another surface parked content while this one had the
+            // fields; take it back rather than leaving the same reply in two places — but
+            // never over live content.
+            if !liveAnswerFieldsHaveContent, let parked = answerDraftStore.take(for: destination) {
+                loadLiveAnswerFields(from: parked)
             }
             return
         }
-        if let draft = answerDrafts[payload.taskID] {
-            answerText = draft.text
-            answerAttachments = draft.attachments
-            answerClippedTexts = [Clip].minting(draft.clippedTexts)
-        } else {
-            answerText = ""
-            answerAttachments = []
-            answerClippedTexts = []
+        if let owner = answerFieldsOwnerKey {
+            parkLiveAnswerFields(under: owner)
         }
+        loadLiveAnswerFields(from: answerDraftStore.take(for: destination))
+        answerFieldsOwnerKey = destination
+    }
+
+    /// Enters answer mode on `payload`'s branch, handing the live fields over.
+    ///
+    /// No capture beforehand: the hand-off decides whether the content in the bucket belongs
+    /// to the arriving branch. A chat task's working composer holds content for the SAME
+    /// thread the question was asked in, so it follows and nothing is parked — which is the
+    /// whole reason the old "snapshot, reset, load it back again" round trip existed, and the
+    /// reason it broke the moment a chat team had more than one role.
+    ///
+    /// `supervisorTask` is not read and not written — the task draft is a different composer's
+    /// content and simply stays where it is, which is what removed the `savedSupervisorTask`
+    /// stash along with every route the stash did not cover.
+    func enterAnswerMode(payload: SupervisorAnswerPayload) {
+        guard !isInAnswerMode else {
+            updateAnswerPayload(payload)
+            return
+        }
+        handOffLiveAnswerFields(to: Self.draftKey(for: payload))
         pendingAnswer = payload
-        answerFieldsOwnerTaskID = payload.taskID
         isInAnswerMode = true
     }
 
-    /// Exits answer mode: saves the current answer draft per-task, then clears the answer
-    /// composer. Nothing is restored — the task composer's text was never moved.
+    /// Leaves answer mode with nowhere to hand the fields: parks them under the branch that
+    /// owns them and clears. The panel dismissing, or arriving at a surface that binds no
+    /// composer at all.
     func exitAnswerMode() {
-        // Save current answer state as draft before exiting
-        if let payload = pendingAnswer {
-            saveCurrentAnswerDraft(taskID: payload.taskID)
+        if let key = answerFieldsOwnerKey ?? pendingAnswer.map(Self.draftKey(for:)) {
+            parkLiveAnswerFields(under: key)
         }
-        answerText = ""
-        answerAttachments = []
-        answerClippedTexts = []
-        answerFieldsOwnerTaskID = nil
+        clearLiveAnswerFields()
+        answerFieldsOwnerKey = nil
         pendingAnswer = nil
         isInAnswerMode = false
     }
 
-    /// Updates the pending answer payload without toggling the mode flag. Used when the
-    /// active task changes while the panel is already in answer mode.
-    func updateAnswerPayload(_ payload: SupervisorAnswerPayload) {
-        pendingAnswer = payload
+    /// Leaves answer mode INTO another composer — the chat-working field of the same task.
+    /// The draft follows rather than round-tripping through the store, so the message the user
+    /// was writing is still in the box when the role stops asking.
+    func leaveAnswerMode(handingFieldsTo destination: AnswerDraftKey) {
+        handOffLiveAnswerFields(to: destination)
+        pendingAnswer = nil
+        isInAnswerMode = false
     }
 
-    /// Saves the current answer-mode fields as a draft for the given task,
-    /// then clears them so the next task starts clean.
-    func switchAnswerTask(from oldTaskID: Int, to newPayload: SupervisorAnswerPayload) {
-        saveCurrentAnswerDraft(taskID: oldTaskID)
-        // Load draft for the new task (or start fresh)
-        if let draft = answerDrafts[newPayload.taskID] {
-            answerText = draft.text
-            answerAttachments = draft.attachments
-            answerClippedTexts = [Clip].minting(draft.clippedTexts)
-        } else {
-            answerText = ""
-            answerAttachments = []
-            answerClippedTexts = []
-        }
-        pendingAnswer = newPayload
-        answerFieldsOwnerTaskID = newPayload.taskID
+    /// Re-points answer mode at a question, handing the live fields to its branch.
+    ///
+    /// One method for every branch change — a task switch and a question moving to another
+    /// ROLE of the same task are the same event seen from different distances, and the pair of
+    /// methods that used to split them agreed only on the first. A team task whose leading role
+    /// was answered from Watchtower hands the panel the NEXT role's question under the same
+    /// task id, and the task-id comparison read that as "nothing moved".
+    func updateAnswerPayload(_ payload: SupervisorAnswerPayload) {
+        handOffLiveAnswerFields(to: Self.draftKey(for: payload))
+        pendingAnswer = payload
     }
 
     /// Drops every piece of form state that is keyed by a **folder-local task id**, or
@@ -294,7 +340,7 @@ final class QuickCaptureFormState {
     /// Task ids are allocated from each folder's own `TasksIndex.nextTaskID`, so the first
     /// task of every folder carries the same id — collision across folders is the norm,
     /// not an edge case. `NTMSOrchestrator.apply(_:)` already says exactly that and already
-    /// drops `loadedTasks` for it; this map and `answerDrafts` are the same class of state
+    /// drops `loadedTasks` for it; this map and the draft store are the same class of state
     /// one layer up, in a process-global singleton, and were simply not included. Left
     /// behind, a message the user typed for folder A's task #3 is delivered to folder B's
     /// unrelated task #3, and `tryFlushQueuedMessages` — which iterates the surviving keys
@@ -306,15 +352,15 @@ final class QuickCaptureFormState {
     /// task in the folder being closed — so it goes with the rest of the answer bucket.
     func discardFolderScopedState() {
         queuedChatMessages.removeAll()
-        answerDrafts.removeAll()
+        answerDraftStore.discardAll()
         // Torn down directly rather than through `exitAnswerMode()`, whose first act is to
         // SAVE the very draft we are discarding.
         pendingAnswer = nil
         isInAnswerMode = false
-        answerText = ""
-        answerAttachments = []
-        answerClippedTexts = []
-        answerFieldsOwnerTaskID = nil
+        clearLiveAnswerFields()
+        answerFieldsOwnerKey = nil
+        // Task ids are folder-local, so the key names a task in the folder being left.
+        aimedQuestion = nil
         // Staged files live under the closed folder's `.nanoteams/staged/<draftID>/`, so
         // their relative paths resolve to nothing under the new root. A fresh `draftID`
         // keeps the next drop out of a directory keyed to the folder we just left.
@@ -324,37 +370,43 @@ final class QuickCaptureFormState {
         selectedTeamID = nil
     }
 
-    /// Discards the answer draft for a specific task. Called on successful submit or explicit cancel.
-    func discardAnswerDraft(taskID: Int) {
-        answerDrafts.removeValue(forKey: taskID)
+    /// Discards the branch's draft for good. Called on successful submit or explicit cancel.
+    func discardAnswerDraft(for key: AnswerDraftKey) {
+        answerDraftStore.discard(for: key)
     }
 
-    /// Snapshots the current live composer fields into `answerDrafts[taskID]`. Called by the
-    /// controller across `.taskWorking` (chat) → `.supervisorAnswer` transitions for the same
-    /// task so the in-progress message survives `enterAnswerMode`'s reset path. Reuses the
-    /// same emptiness contract as `saveCurrentAnswerDraft` — empty content removes the entry
-    /// rather than creating a phantom draft.
-    func captureLiveComposerAsAnswerDraft(taskID: Int) {
-        saveCurrentAnswerDraft(taskID: taskID)
-    }
-
-    /// Records that the live answer bucket now holds content for `taskID`. Called by the
+    /// Records that the live answer bucket now holds `key`'s content. Called by the
     /// controller every time it resolves a composer bound to that bucket, so the claim is made
     /// where the binding is, not inferred later from which surface happened to precede it.
-    func claimAnswerFields(for taskID: Int) {
-        answerFieldsOwnerTaskID = taskID
+    func claimAnswerFields(for key: AnswerDraftKey) {
+        answerFieldsOwnerKey = key
     }
 
-    /// Loads `answerDrafts[taskID]` into the live composer fields. No-op when no draft exists.
-    /// Called by the controller after `.supervisorAnswer` → `.taskWorking` (chat) transitions
-    /// for the same task so the just-saved draft becomes visible again in the chat-working
-    /// composer (which binds to the same three live fields).
-    func restoreAnswerDraftToLiveFields(taskID: Int) {
-        answerFieldsOwnerTaskID = taskID
-        guard let draft = answerDrafts[taskID] else { return }
-        answerText = draft.text
-        answerAttachments = draft.attachments
-        answerClippedTexts = [Clip].minting(draft.clippedTexts)
+    /// Claims the bucket for `key` and takes back the one parked draft that belongs in it.
+    ///
+    /// The ONE arrival the hand-off cannot describe: an UNCLAIMED bucket, where there is no
+    /// owner to compare the destination against. The candidates are this task's parked
+    /// branches that `continues(into:)` the destination — for a chat thread that is every
+    /// branch of the task, because the thread and the questions asked in it are one
+    /// conversation, and `dismissPanel` in answer mode parks under the ROLE that was asking.
+    ///
+    /// Exactly one candidate is unambiguous and is taken. Several are not: two roles of one
+    /// task each holding an unsent reply is a real state (CLAUDE.md #45), and picking one of
+    /// them for the user would be a guess. They stay parked, and the docked composer's rows
+    /// offer them by name.
+    ///
+    /// A take rather than a read: leaving the entry behind would put the same reply in the
+    /// live fields AND in the store, and the store is what those rows render — the user would
+    /// be offered a copy of the text already in front of them.
+    func restoreAnswerDraftToLiveFields(for key: AnswerDraftKey) {
+        answerFieldsOwnerKey = key
+        let candidates = answerDraftStore
+            .keys(forTask: key.taskID)
+            .filter { $0.continues(into: key) }
+        guard candidates.count == 1, let draft = answerDraftStore.take(for: candidates[0]) else {
+            return
+        }
+        loadLiveAnswerFields(from: draft)
     }
 
     // MARK: - Queued Chat Message API
@@ -488,9 +540,14 @@ final class QuickCaptureFormState {
     /// path, rebuilding the whole `QuickCaptureFormView.body` per
     /// character.
     func canSubmit(mode: QuickCaptureMode) -> Bool {
-        if case .supervisorAnswer = mode {
+        if case .supervisorAnswer(let session) = mode {
+            let payload = session.selected
+            // A ticked questionnaire with no prose beside it is a whole answer — the card IS
+            // the answer field there. Only the answer branch counts it, and only for the form
+            // actually on screen: the chat-working branch below queues a MESSAGE, which no
+            // questionnaire is.
             return hasSubmittableAnswerText || !answerAttachments.isEmpty
-                || !answerClippedTexts.isEmpty
+                || !answerClippedTexts.isEmpty || hasAnsweredInquiry(of: payload)
         }
         // Chat-mode working lets the user queue the next message — same rules as answer mode.
         // Non-chat working has no composer, so submit is always disabled there.
@@ -509,6 +566,24 @@ final class QuickCaptureFormState {
         // empty, `createPreparedTaskAndStart` can derive no title and returns nil without a
         // word — enabling the button there would trade a dead button for a dead press.
         return hasSubmittableText || hasSubmittableClip
+    }
+
+    /// True when the human has ticked or typed something into the questionnaire THIS payload is
+    /// asking — not merely into some questionnaire.
+    ///
+    /// The identity check is the gate, not decoration. The bucket follows the panel across
+    /// branches that continue one conversation, and a role that re-asks plainly leaves
+    /// `payload.inquiry == nil` while the ticks are still in hand: without it, a stale form
+    /// lights Send over a plain question, `submitAnswer` sends an EMPTY answer (there is no
+    /// prose and the structure is scoped away downstream), and the step is unparked having been
+    /// told nothing.
+    ///
+    /// Reads the answer's own emptiness rule rather than `byQuestionID.isEmpty`: opening the
+    /// "other" field on a question mints an entry holding nothing, and a send button that lit
+    /// up for an empty field the user merely opened would submit a blank answer.
+    private func hasAnsweredInquiry(of payload: SupervisorAnswerPayload) -> Bool {
+        guard let answered = answerInquiry?.answer(for: payload.inquiry) else { return false }
+        return !answered.isEmpty
     }
 
     /// True when at least one clip carries something other than whitespace. Same trim as
@@ -530,25 +605,59 @@ final class QuickCaptureFormState {
 
     // MARK: - Private
 
-    private func saveCurrentAnswerDraft(taskID: Int) {
-        let text = answerText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if text.isEmpty && answerAttachments.isEmpty && answerClippedTexts.isEmpty {
-            answerDrafts.removeValue(forKey: taskID)
-        } else {
-            answerDrafts[taskID] = AnswerDraft(
-                text: answerText,
-                attachments: answerAttachments,
-                clippedTexts: answerClippedTexts.texts
-            )
-        }
+    /// Whether the live answer bucket is holding anything — prose, files, clips, or a
+    /// questionnaire the human has started filling in.
+    ///
+    /// Asked through `AnswerDraft.isEmpty` so "is this worth keeping" has ONE definition, the
+    /// same one the store uses to decide whether to drop an entry.
+    private var liveAnswerFieldsHaveContent: Bool {
+        !liveAnswerDraft.isEmpty
+    }
+
+    private var liveAnswerDraft: AnswerDraft {
+        AnswerDraft(
+            text: answerText,
+            attachments: answerAttachments,
+            clippedTexts: answerClippedTexts.texts,
+            inquiry: answerInquiry
+        )
+    }
+
+    /// Deposits whatever the live answer bucket holds under `key`. The store drops the entry
+    /// when there is nothing worth keeping, so an emptied composer leaves no phantom draft.
+    private func parkLiveAnswerFields(under key: AnswerDraftKey) {
+        answerDraftStore.save(liveAnswerDraft, for: key)
+    }
+
+    /// Puts a taken draft into the live bucket, or empties it when there was none. One method
+    /// for both arms: the FOUR fields must move together, and the sites that spelled the set by
+    /// hand are how a clip once survived a switch its own text did not.
+    private func loadLiveAnswerFields(from draft: AnswerDraft?) {
+        answerText = draft?.text ?? ""
+        answerAttachments = draft?.attachments ?? []
+        answerClippedTexts = [Clip].minting(draft?.clippedTexts ?? [])
+        answerInquiry = draft?.inquiry
+    }
+
+    private func clearLiveAnswerFields() {
+        loadLiveAnswerFields(from: nil)
+    }
+
+    /// Empties the answer bucket without touching who owns it or which question is pending.
+    ///
+    /// For the three controller sites that consume the bucket's content and then leave answer
+    /// mode — a submitted answer, a queued chat message, a cancelled draft. Each of them spelled
+    /// the set by hand, and each was one field behind the moment the bucket grew a fourth: a
+    /// half-filled questionnaire left standing there is parked by `exitAnswerMode` under the
+    /// branch whose question was just answered, and offered back as an unsent reply to a
+    /// question that no longer exists.
+    func clearAnswerFields() {
+        clearLiveAnswerFields()
     }
 
     // MARK: - Test Helpers
 
     #if DEBUG
-    var _testAnswerDrafts: [Int: AnswerDraft] { answerDrafts }
-    func _testClearAnswerDrafts() { answerDrafts.removeAll() }
-
     /// Full form-state reset for test isolation, driven by `QuickCaptureController._testReset()`.
     /// `exitAnswerMode()` already clears `pendingAnswer` / `isInAnswerMode` / the answer bucket.
     func _testReset() {
@@ -558,11 +667,10 @@ final class QuickCaptureFormState {
         selectedTeamID = nil
         attachments = []
         clippedTexts = []
-        answerText = ""
-        answerAttachments = []
-        answerClippedTexts = []
-        answerFieldsOwnerTaskID = nil
-        answerDrafts.removeAll()
+        clearAnswerFields()
+        answerFieldsOwnerKey = nil
+        aimedQuestion = nil
+        answerDraftStore.discardAll()
         queuedChatMessages.removeAll()
     }
     #endif

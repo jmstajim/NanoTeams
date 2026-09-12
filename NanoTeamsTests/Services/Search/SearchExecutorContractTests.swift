@@ -457,13 +457,20 @@ final class SearchExecutorContractTests: XCTestCase {
                       "expected a cap notice, got \(out.warnings)")
     }
 
-    /// No cut, no warning — the notice must not fire on a complete list.
-    func testContentMode_filenameMatchesComplete_emitsNoWarning() async throws {
+    /// No cut, no CAP notice — that one must not fire on a complete list.
+    ///
+    /// The content channel here is empty (the files say "unrelated"), so the empty-result sentence
+    /// does fire, and it is asserted rather than excluded: those three name hits are the whole
+    /// result, and a caller told only `matches: []` re-issues the search it just ran.
+    func testContentMode_filenameMatchesComplete_emitsNoCapWarning() async throws {
         for i in 0..<3 { try write("NEEDLE_\(i).swift", content: "unrelated\n") }
 
         let out = try await run(["NEEDLE"], maxResults: 50)
         XCTAssertEqual(out.filenameMatches.count, 3)
-        XCTAssertTrue(out.warnings.isEmpty, "got \(out.warnings)")
+        XCTAssertFalse(out.warnings.contains { $0.contains("capped") }, "got \(out.warnings)")
+        XCTAssertEqual(out.warnings.count, 1, "got \(out.warnings)")
+        XCTAssertTrue(out.warnings[0].contains("filename_matches"),
+                      "the empty content channel must point at the names: \(out.warnings)")
     }
 
     // MARK: - Degenerate pages

@@ -26,6 +26,7 @@ struct GraphPanelView: View {
     var isPaused: Bool = false
     var isEngineRunning: Bool = true
     var meetingParticipants: Set<String> = []
+    var queuedRoles: Set<String> = []
     var isTaskInReview: Bool = false
 
     @Environment(NTMSOrchestrator.self) private var store
@@ -265,6 +266,7 @@ struct GraphPanelView: View {
             isPaused: isPaused,
             isEngineRunning: isEngineRunning,
             meetingParticipants: meetingParticipants,
+            queuedRoles: queuedRoles,
             isTaskInReview: isTaskInReview
         )
         .clipped()
@@ -302,6 +304,7 @@ struct GraphPanelView: View {
                     isPaused: layer.isPaused,
                     isEngineRunning: !layer.isPaused,
                     meetingParticipants: engineState.activeMeetingParticipants[layer.id] ?? [],
+                    queuedRoles: engineState.queuedRoleIDs[layer.id] ?? [],
                     isTaskInReview: false,
                     teamLabelSuffix: nil
                 )

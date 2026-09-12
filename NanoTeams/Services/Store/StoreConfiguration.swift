@@ -482,6 +482,18 @@ final class StoreConfiguration {
         didSet { storage.set(autoCompactEnabled, forKey: Keys.autoCompactEnabled) }
     }
 
+    /// How many of a task's roles the engine may run at the same time.
+    ///
+    /// Global rather than per-team: the resource it rations is ONE local inference server,
+    /// shared by every team in the folder. A copy in `teams.json` would travel with an
+    /// exported team to a machine whose hardware it knows nothing about.
+    ///
+    /// Default `.providerLimited` — exactly today's behaviour, so the setting adds a choice
+    /// without moving anyone's runs.
+    var roleConcurrencyMode: RoleConcurrencyMode {
+        didSet { storage.set(roleConcurrencyMode.rawValue, forKey: Keys.roleConcurrencyMode) }
+    }
+
     /// Share of the model's loaded context window one step may occupy before automatic
     /// compaction fires, as a percentage. Clamped to `AppDefaults.autoCompactBudgetPercentRange`.
     var autoCompactBudgetPercent: Int {
@@ -807,7 +819,7 @@ final class StoreConfiguration {
 
     /// Gates the exploratory-search feature: when true, `search(exploratory: true)`
     /// calls through to the semantic vector index (per-token + whole-phrase
-    /// embeddings) intersected with the token posting index; when false, it
+    /// embeddings) and appends the terms it returns to the grep; when false, it
     /// falls back to a plain search. Proactive indexing (and the on-disk
     /// `search_index.json`, `vocab_vectors.*`) is also gated on this flag.
     var exploratorySearchEnabled: Bool {
@@ -1000,6 +1012,10 @@ final class StoreConfiguration {
                 .compactMap(LLMProvider.init(rawValue:)))
         self.maxLLMRetries = (storage.object(forKey: Keys.maxLLMRetries) as? Int) ?? LLMConstants.defaultMaxLLMRetries
         self.autoCompactEnabled = (storage.object(forKey: Keys.autoCompactEnabled) as? Bool) ?? true
+        // Fail OPEN on an unreadable value: an unknown rawValue (a downgrade, a hand-edited
+        // plist) must not silently serialize every run to one role at a time.
+        self.roleConcurrencyMode = storage.string(forKey: Keys.roleConcurrencyMode)
+            .flatMap(RoleConcurrencyMode.init(rawValue:)) ?? .providerLimited
         self.autoCompactBudgetPercent =
             (storage.object(forKey: Keys.autoCompactBudgetPercent) as? Int)
                 ?? AppDefaults.autoCompactBudgetPercent
@@ -1226,6 +1242,7 @@ final class StoreConfiguration {
         storage.removeObject(forKey: Keys.benchmarkExcludedProviders)
         storage.removeObject(forKey: Keys.maxLLMRetries)
         storage.removeObject(forKey: Keys.autoCompactEnabled)
+        storage.removeObject(forKey: Keys.roleConcurrencyMode)
         storage.removeObject(forKey: Keys.autoCompactBudgetPercent)
         storage.removeObject(forKey: Keys.llmRequestTimeoutSeconds)
         storage.removeObject(forKey: Keys.ollamaKeepAliveSeconds)
@@ -1295,6 +1312,7 @@ final class StoreConfiguration {
         benchmarkExcludedProviders = []
         maxLLMRetries = LLMConstants.defaultMaxLLMRetries
         autoCompactEnabled = true
+        roleConcurrencyMode = .providerLimited
         autoCompactBudgetPercent = AppDefaults.autoCompactBudgetPercent
         llmRequestTimeoutSeconds = LLMConstants.defaultLLMRequestTimeoutSeconds
         ollamaKeepAliveSeconds = LLMConstants.defaultOllamaKeepAliveSeconds

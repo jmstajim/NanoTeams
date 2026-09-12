@@ -86,7 +86,9 @@ nonisolated enum NoToolTurnNudges {
     }
 
     /// runtime-prompt
-    static func malformedJSON(defect: String, allowedToolNames: Set<String>) -> String {
+    static func malformedJSON(
+        defect: String, allowedToolNames: Set<String>, failingToolName: String? = nil
+    ) -> String {
         // Anchored to this note's own position, never to the reader's present: the note is
         // never retired, and "your previous turn" is false the moment one more turn follows it
         // (R3.8.4).
@@ -103,7 +105,14 @@ nonisolated enum NoToolTurnNudges {
         // closers it had already written, and repeated "missing closing brace" in its next
         // reasoning (CastleSurvivors task 5 run 0). The defect is named once, by the parser,
         // in `defect`; this sentence asks only for a whole envelope (R3.8.7).
-        "The tool call in the turn immediately before this note had malformed JSON and could not be parsed (\(defect)). Re-emit it as one complete envelope: the whole call object between `<|call|>` and `<|end|>`.\(LLMExecutionService.callShapeClause(allowedToolNames: allowedToolNames))"
+        //
+        // The tool is NAMED when its name survived the defect: a read-only batch is several
+        // calls in one turn, and "the tool call" then picks out none of them. The illustration
+        // below stays the generic envelope on purpose — `HarmonyCallExample` synthesises
+        // placeholders from the schema, and for a parameter carrying a JSON DOCUMENT that is
+        // `{}`, which would teach the model to send an empty one.
+        let subject = failingToolName.map { "The call to `\($0)`" } ?? "The tool call"
+        return "\(subject) in the turn immediately before this note had malformed JSON and could not be parsed (\(defect)). Re-emit it as one complete envelope: the whole call object between `<|call|>` and `<|end|>`.\(LLMExecutionService.callShapeClause(allowedToolNames: allowedToolNames))"
     }
 
     /// runtime-prompt

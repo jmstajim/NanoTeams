@@ -8,16 +8,17 @@ import Synchronization
 nonisolated extension StepExecution {
     /// Single source of truth for "this step has an unanswered `ask_supervisor`
     /// question that the docked composer should own". Shared by `emitItems`'s
-    /// supervisor-input skip, `activeSupervisorQuestions`, the
+    /// supervisor-input skip, `SupervisorQuestionInbox.pending`, the
     /// `supervisorInputCount` fingerprint, the Watchtower inbox, and
     /// `TaskSummary.hasPendingSupervisorInput` — all of them must agree,
     /// otherwise the composer chip, the feed skip, the rebuild trigger and the
     /// sidebar indicator fall out of sync (which is exactly the bug the
     /// multi-round race produced).
     ///
-    /// Criterion: the trailing tool call is `ask_supervisor` AND no
-    /// `Supervisor answer: …` message has landed AFTER it (`MonotonicClock`
-    /// makes `createdAt` a strict order, so "after" is well-defined).
+    /// Criterion: the trailing tool call — skipping any refused asks at the tail, which
+    /// asked nobody anything (`StepToolCall.isRefusedAsk`) — is a parking tool AND no
+    /// RESOLVING message has landed AFTER it (`MessageSourceContext.resolvesSupervisorAsk`;
+    /// `MonotonicClock` makes `createdAt` a strict order, so "after" is well-defined).
     /// `needsSupervisorInput` is OR'd in as the backstop for engine paths that
     /// set the flag without appending a call (drift / refusal-loop escalation).
     ///
@@ -45,14 +46,27 @@ nonisolated extension StepExecution {
 
     /// The trailing `ask_supervisor` call while it is still unanswered — the
     /// question the docked composer owns. Nil when the last tool call is not an
-    /// ask, or when a Supervisor-answer message landed after it.
+    /// ask, or when a resolving message landed after it.
     ///
-    /// Every answer path appends a `.supervisorAnswer` message in the same
-    /// mutation that delivers the answer — including attachments-only answers
-    /// (`StepMessagingService.answerSupervisorQuestion`) — so "no answer after
-    /// the call" is equivalent to "still owed".
+    /// Every path that unparks the step appends a resolving message in the same
+    /// mutation that delivers its text — including attachments-only answers and the
+    /// `[ Ask as form ]` directive (`StepMessagingService.answerSupervisorQuestion`,
+    /// one seam, `SupervisorAnswerOrigin` picking the context) — so "nothing
+    /// resolving after the call" is equivalent to "still owed".
     private var activeAskCall: StepToolCall? {
-        guard let last = toolCalls.last, last.name == ToolNames.askSupervisor else { return nil }
+        // Membership in the closed parking set, not equality with one name: a step parked by
+        // `ask_supervisor_form` must resolve to ITS call, or the question has no persisted
+        // identity and `activeSupervisorQuestionID` hands the Watchtower dismissal its
+        // question TEXT instead — under which a re-asked identical headline is born dismissed.
+        //
+        // A refused ask (`QUESTIONNAIRE_REQUIRED`, `INVALID_ARGS`) is walked over: on a step
+        // still running it opened nothing, and beside the form that parked the step it must
+        // not take that park's identity. The walk is O(refused asks at the tail) — zero on
+        // every step but the one mid-repair (MeditationApp task 52 run 9, 2026-09-11: the
+        // composer showed a chip for ~8 s after each refusal, on a `.running` step).
+        guard let last = toolCalls.last(where: { !$0.isRefusedAsk }),
+              last.isSupervisorAsk
+        else { return nil }
         // REVERSE, stopping at the first message not newer than the ask.
         //
         // The predicate only cares about messages created AFTER the trailing ask,
@@ -79,9 +93,30 @@ nonisolated extension StepExecution {
             SupervisorInputScanProbe.noteExamined()
             #endif
             guard message.createdAt > last.createdAt else { break }
-            if message.sourceContext == .supervisorAnswer { return nil }
+            if message.sourceContext?.resolvesSupervisorAsk == true { return nil }
         }
         return last
+    }
+
+    /// What last RESOLVED a park on this step — `.supervisorAnswer` when someone answered,
+    /// `.questionnaireRequest` when the Supervisor sent the role back to ask as a form, nil
+    /// when nothing has.
+    ///
+    /// Read by the prompt builders, which quote `supervisorAnswer` under the Supervisor's
+    /// name: the directive is not a decision and must not be replayed to OTHER roles as one
+    /// (`PromptBuilder+PipelineContext`), nor to this role with the `Supervisor answer: `
+    /// marker the live wire never attaches (`PromptBuilder`, replayed ask envelope).
+    ///
+    /// Reverse scan stopping at the first resolution, the same idiom as `activeAskCall` — and
+    /// paid on the same cadence as the thing that reads it, once per request rather than per
+    /// body pass.
+    var lastSupervisorAskResolution: MessageSourceContext? {
+        for message in llmConversation.reversed() {
+            if let context = message.sourceContext, context.resolvesSupervisorAsk {
+                return context
+            }
+        }
+        return nil
     }
 
     /// Identity of the active `ask_supervisor` call, when there is one.
@@ -97,33 +132,6 @@ nonisolated extension StepExecution {
     /// the documented escalation identity.
     var activeSupervisorQuestionID: UUID? {
         activeAskCall?.id
-    }
-
-    /// The text the banner/composer show for this step's question: the persisted
-    /// `supervisorQuestion`, else the last `ask_supervisor` call's parsed args (the
-    /// flag-set/text-not-yet-copied lag). Moved here from `Run.allWatchtowerNotifications`
-    /// so the retirement in `answerSupervisorQuestion` reads the SAME chain the banner was
-    /// keyed on (CLAUDE.md #91). Does not check activeness — callers gate on
-    /// `hasActiveSupervisorInput`, which is why the `last(where:)` walk is not on the
-    /// common path: the banner loop admits only waiting steps and `??` short-circuits
-    /// whenever the text was copied.
-    var supervisorQuestionText: String? {
-        supervisorQuestion
-            ?? toolCalls.last(where: { $0.name == ToolNames.askSupervisor })?.parsedSupervisorQuestion
-    }
-
-    /// Dismiss identity of the Watchtower `.supervisorInput` banner this step produces RIGHT
-    /// NOW — nil when it produces none (the same two conditions `Run.allWatchtowerNotifications`
-    /// applies: waiting AND a question text). Read it BEFORE an answer lands:
-    /// `StepMessagingService.answerSupervisorQuestion` appends the `.supervisorAnswer` message
-    /// that turns `activeSupervisorQuestionID` nil and clears `needsSupervisorInput` in one
-    /// closure. Keyed on `activeSupervisorQuestionID`, never on the trailing call's id: a
-    /// flag-only escalation on a step with an earlier, ANSWERED ask must not inherit that
-    /// call's UUID (see the doc above).
-    func activeSupervisorInputDismissKey(taskID: Int) -> WatchtowerDismissKey? {
-        guard hasActiveSupervisorInput, let question = supervisorQuestionText else { return nil }
-        return .supervisorInput(
-            taskID: taskID, stepID: id, toolCallID: activeSupervisorQuestionID, question: question)
     }
 
     /// Owed an answer AND reachable right now — the gate for delivering one.
@@ -153,6 +161,27 @@ nonisolated extension Run {
         steps.contains { $0.hasActiveSupervisorInput }
     }
 
+    /// HOW MANY steps are still owed a Supervisor answer.
+    ///
+    /// The same per-step predicate as `hasActiveSupervisorInput`, deliberately: the flag is
+    /// this count's `> 0` and nothing else, so no surface can claim a task is waiting while
+    /// its counter says nobody is. That the two are one fact in two shapes is what
+    /// `NTMSTask.toSummary` relies on when it computes the count once and derives the flag.
+    ///
+    /// It exists because "waiting" is a Bool only for a team with one role. Parallel roles
+    /// (CLAUDE.md #45) routinely park two or three steps on the same task at the same moment,
+    /// and until the composer grew a chip row the extra questions were not merely uncounted —
+    /// they were unreachable. The sidebar is the one surface that sees a task the Supervisor
+    /// has NOT opened, so it is the one place the number can arrive before the click does.
+    ///
+    /// `count(where:)` rather than `contains`: the short-circuit `contains` buys is at most a
+    /// few `toolCalls.last` name checks (a step whose trailing call is not an ask answers in
+    /// O(1); only a waiting one walks its conversation tail), which is why the summary can
+    /// afford one pass for both facts instead of two passes for one each.
+    var activeSupervisorInputCount: Int {
+        steps.count { $0.hasActiveSupervisorInput }
+    }
+
     /// Identities of every active `ask_supervisor` call in this run.
     var activeSupervisorQuestionIDs: Set<UUID> {
         Set(steps.compactMap(\.activeSupervisorQuestionID))
@@ -168,6 +197,19 @@ nonisolated extension NTMSTask {
     var hasPendingSupervisorInput: Bool {
         guard closedAt == nil else { return false }
         return runs.last?.hasActiveSupervisorInput ?? false
+    }
+
+    /// How many questions the task is waiting on — the same two gates
+    /// `hasPendingSupervisorInput` applies, so a closed task counts zero and a superseded
+    /// run counts nothing at all.
+    ///
+    /// `hasPendingSupervisorInput == (pendingSupervisorQuestionCount > 0)` is an invariant,
+    /// not a coincidence: both delegate to `StepExecution.hasActiveSupervisorInput`, and
+    /// `SupervisorInputCountAgreementTests` pins it across the shapes where a hand-written
+    /// second predicate would drift (closed task, superseded run, flag-only escalation).
+    var pendingSupervisorQuestionCount: Int {
+        guard closedAt == nil else { return 0 }
+        return runs.last?.activeSupervisorInputCount ?? 0
     }
 
     /// Identities of the active questions on the active run — empty for a closed task.

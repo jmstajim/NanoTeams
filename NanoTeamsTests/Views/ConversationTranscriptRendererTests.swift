@@ -16,7 +16,7 @@ final class ConversationTranscriptRendererTests: XCTestCase {
 
     private func render(
         _ items: [TeamActivityTimelineItem],
-        pending: [ActivityFeedBuilder.ActiveSupervisorQuestion] = [],
+        pending: [SupervisorQuestionInbox.PendingQuestion] = [],
         isChatMode: Bool = false
     ) -> String {
         ConversationTranscriptRenderer.render(
@@ -302,9 +302,11 @@ final class ConversationTranscriptRendererTests: XCTestCase {
             call: StepToolCall(name: "read_file", argumentsJSON: "{}", resultJSON: "{\"ok\":true}", isError: false),
             role: .softwareEngineer, stepID: "eng", originTaskID: 0
         )
-        let pending = ActivityFeedBuilder.ActiveSupervisorQuestion(
-            stepID: "eng", role: .softwareEngineer, question: "ZZZ_PENDING",
-            paired: nil, toolCallID: UUID(), askedAt: Date()
+        let pending = SupervisorQuestionInbox.PendingQuestion(
+            key: TaskStepKey(taskID: 0, stepID: "eng"), role: .softwareEngineer,
+            headline: "ZZZ_PENDING", inquiry: nil, paired: nil,
+            askCallID: UUID(), askedAt: Date(
+            )
         )
         let md = render([task, msg, call], pending: [pending])
 
@@ -321,13 +323,11 @@ final class ConversationTranscriptRendererTests: XCTestCase {
     // MARK: - Pending (unanswered) supervisor question (composer-owned)
 
     func testPendingSupervisorQuestion_surfaced() {
-        let pending = ActivityFeedBuilder.ActiveSupervisorQuestion(
-            stepID: "eng",
-            role: .softwareEngineer,
-            question: "SHOULD_I_ADD_A_TEST",
-            paired: nil,
-            toolCallID: UUID(),
-            askedAt: Date(timeIntervalSince1970: 1_700_000_001)
+        let pending = SupervisorQuestionInbox.PendingQuestion(
+            key: TaskStepKey(taskID: 0, stepID: "eng"), role: .softwareEngineer,
+            headline: "SHOULD_I_ADD_A_TEST", inquiry: nil, paired: nil,
+            askCallID: UUID(), askedAt: Date(timeIntervalSince1970: 1_700_000_001
+            )
         )
         let md = render([], pending: [pending])
         XCTAssertTrue(md.contains("Pending supervisor input"))

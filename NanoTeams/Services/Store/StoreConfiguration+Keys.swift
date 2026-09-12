@@ -53,6 +53,7 @@ extension StoreConfiguration {
         static let searchContextBefore = UserDefaultsKeys.searchContextBefore
         static let searchContextAfter = UserDefaultsKeys.searchContextAfter
         static let globalContext = UserDefaultsKeys.globalContext
+        static let roleConcurrencyMode = UserDefaultsKeys.roleConcurrencyMode
         static let bashMode = UserDefaultsKeys.bashMode
         static let bashRestrictionLevel = UserDefaultsKeys.bashRestrictionLevel
         static let bashAllowRules = UserDefaultsKeys.bashAllowRules

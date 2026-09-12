@@ -293,6 +293,35 @@ final class RoleToolBadgePolicyTests: XCTestCase {
         XCTAssertFalse(m.autoInjected.contains(ToolNames.askSupervisor))
     }
 
+    /// The questionnaire wears the same badge, because Off withholds it too — the resolver
+    /// strips the whole `supervisorAskTools` set. A row with no badge beside a tool the run
+    /// removes is the editor claiming a capability that never ships.
+    ///
+    /// RED: keep `toolName == ToolNames.askSupervisor` in `governing` → the form is absent
+    /// from `unavailableHere[.askSupervisorEnabled]` while still absent from `effective`.
+    func testAskSupervisorOff_putsTheQuestionnaireUnderTheSameRequirement() {
+        let def = role(
+            toolIDs: [ToolNames.askSupervisor, ToolNames.askSupervisorForm, ToolNames.readFile],
+            requires: ["Brief"])
+        let m = model(def, team: team([def], settings: TeamSettings(supervisorMode: .off)))
+
+        XCTAssertEqual(m.unavailableHere[.askSupervisorEnabled]?.sorted(),
+                       ToolNames.supervisorAskTools.sorted(),
+                       "both parking tools are unavailable, and the editor says so about both")
+        XCTAssertTrue(Set(m.effective).isDisjoint(with: ToolNames.supervisorAskTools))
+    }
+
+    /// With a mode that DOES answer, the questionnaire carries no requirement of its own —
+    /// it is the plain ask's companion, not a gated family.
+    func testAskSupervisorManual_questionnaireHasNoRequirement() {
+        let def = role(
+            toolIDs: [ToolNames.askSupervisor, ToolNames.askSupervisorForm], requires: ["Brief"])
+        let m = model(def, team: team([def], settings: TeamSettings(supervisorMode: .manual)))
+
+        XCTAssertNil(m.unavailableHere[.askSupervisorEnabled])
+        XCTAssertTrue(Set(m.effective).isSuperset(of: ToolNames.supervisorAskTools))
+    }
+
     // MARK: - Delegation pack
 
     func testDelegationWithUsableTeam_injectsTheWholeFourToolPack() {

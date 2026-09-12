@@ -114,23 +114,64 @@ final class NudgeToolAwarenessBranchTests: XCTestCase {
     /// step" (the bottom rung) would leave it with no way to finish.
     func testRepetitiveNonTool_askSupervisorOnly_steersToAskSupervisor() {
         let msg = Svc.repetitiveNonToolNudge(
-            count: 3, allowedToolNames: [ToolNames.askSupervisor, ToolNames.readFile])
+            count: 3, allowedToolNames: [ToolNames.askSupervisor, ToolNames.readFile],
+            questionnaire: false)
 
-        XCTAssertTrue(msg.contains("send it via ask_supervisor"),
-                      "an advisory role's only completion channel must be named; got: \(msg)")
+        XCTAssertTrue(msg.contains(ToolNames.askSupervisor) && msg.contains("`question`"),
+                      "an advisory role's only completion channel must be named, with the field its reply goes in; got: \(msg)")
+        XCTAssertFalse(msg.contains("If your reply is complete"),
+                       "no predicate about the model's own output (the nudge-text pin, Rule 6); got: \(msg)")
         XCTAssertFalse(msg.contains(ToolNames.createArtifact), "got: \(msg)")
         XCTAssertFalse(msg.contains(ToolNames.waitForEvents), "got: \(msg)")
         XCTAssertTrue(msg.contains("3"),
                       "the repeat count is the evidence; got: \(msg)")
     }
 
+    /// The ask rung splits on the repeated text's SHAPE: several questions go to the form
+    /// when the role holds it, which is the channel the gate accepts.
+    func testRepetitiveNonTool_questionnaire_withTheFormHeld_steersToTheForm() {
+        let msg = Svc.repetitiveNonToolNudge(
+            count: 3,
+            allowedToolNames: [ToolNames.askSupervisor, ToolNames.askSupervisorForm, ToolNames.readFile],
+            questionnaire: true)
+
+        XCTAssertTrue(msg.contains(ToolNames.askSupervisorForm), "got: \(msg)")
+        XCTAssertTrue(msg.contains("one `questions` entry per question"), "got: \(msg)")
+        XCTAssertFalse(msg.contains("in its `question` field"),
+                       "the plain ask's field, on a text the gate would refuse; got: \(msg)")
+        XCTAssertTrue(msg.contains("Do not repeat that text outside a tool call."),
+                      "the shared tail stays; got: \(msg)")
+    }
+
+    /// Same text, form withheld: the plain ask, never a tool the role lacks.
+    func testRepetitiveNonTool_questionnaire_withoutTheForm_staysOnThePlainAsk() {
+        let msg = Svc.repetitiveNonToolNudge(
+            count: 3, allowedToolNames: [ToolNames.askSupervisor, ToolNames.readFile],
+            questionnaire: true)
+
+        XCTAssertFalse(msg.contains(ToolNames.askSupervisorForm), "got: \(msg)")
+        XCTAssertTrue(msg.contains("in its `question` field"), "got: \(msg)")
+    }
+
+    /// The manager rung outranks the shape: `wait_for_events` identifies the Autovisor, whose
+    /// pass ends on the idle park and which holds neither ask tool.
+    func testRepetitiveNonTool_questionnaire_managerStillGoesIdle() {
+        let msg = Svc.repetitiveNonToolNudge(
+            count: 3, allowedToolNames: [ToolNames.waitForEvents, ToolNames.listTasks],
+            questionnaire: true)
+
+        XCTAssertTrue(msg.contains(ToolNames.waitForEvents), "got: \(msg)")
+        XCTAssertFalse(msg.contains(ToolNames.askSupervisorForm), "got: \(msg)")
+    }
+
     /// Rung order, top: create_artifact wins over ask_supervisor even though both
     /// are present — a producing role must submit, not escalate.
     func testRepetitiveNonTool_producingRole_prefersCreateArtifact() {
         let msg = Svc.repetitiveNonToolNudge(
-            count: 3, allowedToolNames: [ToolNames.createArtifact, ToolNames.askSupervisor])
+            count: 3, allowedToolNames: [ToolNames.createArtifact, ToolNames.askSupervisor],
+            questionnaire: false)
 
-        XCTAssertTrue(msg.contains("call create_artifact"), "got: \(msg)")
+        XCTAssertTrue(msg.contains(ToolNames.createArtifact), "got: \(msg)")
         XCTAssertTrue(msg.contains("call ask_supervisor with a specific question"),
                       "the escalation suffix rides alongside the primary action; got: \(msg)")
     }
@@ -139,7 +180,8 @@ final class NudgeToolAwarenessBranchTests: XCTestCase {
     /// holds `ask_supervisor` — `resolveToolSchemas` strips it) is told to go idle.
     func testRepetitiveNonTool_manager_steersToWaitForEvents() {
         let msg = Svc.repetitiveNonToolNudge(
-            count: 5, allowedToolNames: [ToolNames.waitForEvents, ToolNames.listTasks])
+            count: 5, allowedToolNames: [ToolNames.waitForEvents, ToolNames.listTasks],
+            questionnaire: false)
 
         XCTAssertTrue(msg.contains(ToolNames.waitForEvents), "got: \(msg)")
         XCTAssertFalse(msg.contains(ToolNames.askSupervisor),
@@ -148,7 +190,7 @@ final class NudgeToolAwarenessBranchTests: XCTestCase {
 
     /// Bottom rung: nothing recognizable in the schema ⇒ no tool is named at all.
     func testRepetitiveNonTool_noRecognizedTools_namesNoTool() {
-        let msg = Svc.repetitiveNonToolNudge(count: 2, allowedToolNames: [ToolNames.readFile])
+        let msg = Svc.repetitiveNonToolNudge(count: 2, allowedToolNames: [ToolNames.readFile], questionnaire: false)
 
         XCTAssertTrue(msg.contains("Call the tool that advances your next step."), "got: \(msg)")
         for tool in [ToolNames.createArtifact, ToolNames.waitForEvents, ToolNames.askSupervisor] {
@@ -162,8 +204,8 @@ final class NudgeToolAwarenessBranchTests: XCTestCase {
     func testEmptySchema_noBuilderNamesAnyTool() {
         let messages = [
             Svc.loopWarningMessage(loopDetection: scratchpadLoop, allowedToolNames: []),
-            Svc.repetitiveNonToolNudge(count: 3, allowedToolNames: []),
-            Svc.noToolCallNudge(allowedToolNames: []),
+            Svc.repetitiveNonToolNudge(count: 3, allowedToolNames: [], questionnaire: true),
+            Svc.noToolCallNudge(allowedToolNames: [], questionnaire: true),
         ]
         let everyTool = [
             ToolNames.createArtifact, ToolNames.editFile, ToolNames.writeFile,

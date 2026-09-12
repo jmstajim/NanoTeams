@@ -176,17 +176,20 @@ final class QuickCapturePanelResolveBaselineCoverageTests: XCTestCase {
         sut.formState.answerText = "half an answer"
 
         sut.dismissPanel()
-        XCTAssertNil(sut.formState.answerFieldsOwnerTaskID, "the dismiss released the bucket")
+        XCTAssertNil(sut.formState.answerFieldsOwnerKey, "the dismiss released the bucket")
         XCTAssertEqual(sut.formState.answerText, "", "and cleared it")
-        XCTAssertEqual(sut.formState._testAnswerDrafts[taskA]?.text, "half an answer",
-                       "precondition: the dismiss saved it rather than discarding it")
+        XCTAssertEqual(
+            sut.formState.answerDraftStore
+                .peek(for: QuickCaptureFormState.draftKey(for: answerPayload(taskID: taskA)))?.text,
+            "half an answer",
+            "precondition: the dismiss parked it under the ROLE that was asking, not discarded")
 
         // The question was answered elsewhere; the task is back to plain chat working.
         sut._testPresentPanelSync()
 
         XCTAssertEqual(sut.formState.answerText, "half an answer",
                        "the chat composer binds the same bucket — the text belongs on screen")
-        XCTAssertEqual(sut.formState.answerFieldsOwnerTaskID, taskA)
+        XCTAssertEqual(sut.formState.answerFieldsOwnerKey, .taskChat(taskA))
     }
 
     /// Why loading on an unclaimed arrival is safe rather than merely convenient: the only two
@@ -206,16 +209,16 @@ final class QuickCapturePanelResolveBaselineCoverageTests: XCTestCase {
         state.answerClippedTexts = [Clip].minting(["clip"])
         state.exitAnswerMode()
 
-        XCTAssertNil(state.answerFieldsOwnerTaskID)
+        XCTAssertNil(state.answerFieldsOwnerKey)
         XCTAssertEqual(state.answerText, "")
         XCTAssertTrue(state.answerAttachments.isEmpty)
         XCTAssertTrue(state.answerClippedTexts.isEmpty)
 
-        state.claimAnswerFields(for: 2)
+        state.claimAnswerFields(for: .taskChat(2))
         state.answerText = "typed again"
         state.discardFolderScopedState()
 
-        XCTAssertNil(state.answerFieldsOwnerTaskID)
+        XCTAssertNil(state.answerFieldsOwnerKey)
         XCTAssertEqual(state.answerText, "")
     }
 
@@ -236,9 +239,8 @@ final class QuickCapturePanelResolveBaselineCoverageTests: XCTestCase {
         sut._testIsPanelVisible = true
 
         // A stale draft exists for A, and the live composer has moved on past it.
-        sut.formState.claimAnswerFields(for: taskA)
-        sut.formState.answerText = "stale"
-        sut.formState.captureLiveComposerAsAnswerDraft(taskID: taskA)
+        sut.formState.answerDraftStore.save(AnswerDraft(text: "stale"), for: .taskChat(taskA))
+        sut.formState.claimAnswerFields(for: .taskChat(taskA))
         sut.formState.answerText = "what the user is typing now"
 
         sut.refreshPanelIfVisible()
@@ -261,10 +263,10 @@ final class QuickCapturePanelResolveBaselineCoverageTests: XCTestCase {
         store.engineState[taskA] = .running
         await store.switchTask(to: taskA)
 
-        sut.formState.claimAnswerFields(for: 999)
+        sut.formState.claimAnswerFields(for: .taskChat(999))
         sut._testPresentPanelSync()
 
-        XCTAssertEqual(sut.formState.answerFieldsOwnerTaskID, 999,
+        XCTAssertEqual(sut.formState.answerFieldsOwnerKey, .taskChat(999),
                        "a loader-only surface has no composer to hand the bucket to")
     }
 }

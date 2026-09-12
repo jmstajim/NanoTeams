@@ -145,7 +145,13 @@ nonisolated enum Colors {
     static var surfacePrimary: Color { themed(\.surfacePrimary) }
     /// Cards, panels — activity feed, settings sections (surface)
     static var surfaceCard: Color { themed(\.surfaceCard) }
-    /// Elevated — popovers, selected row, hover (elevated).
+    /// Elevated — popovers, selected row, hover, and a card NESTED on a `surfaceCard` host
+    /// (elevated).
+    ///
+    /// The nesting case is the tree's oldest unwritten one — six sites by 2026-09-11, among them
+    /// the composer's question card and the feed's tool-call rows — and it is not hover or
+    /// selection: a card inside a card takes the next level up so its edge is visible without a
+    /// border. Written down because an audit had to re-derive it from the call sites.
     ///
     /// Says nothing about INPUTS, deliberately. It read "inputs, popovers, selected row" until
     /// 2026-08-24, and no shipping primitive had ever agreed — both the multi-line and the

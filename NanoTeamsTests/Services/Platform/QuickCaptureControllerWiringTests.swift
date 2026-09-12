@@ -44,7 +44,7 @@ final class QuickCaptureControllerWiringTests: XCTestCase {
         sut = QuickCaptureController.shared
         sut._testReset()
         if sut._testIsInAnswerMode { sut._testExitAnswerMode() }
-        sut.formState._testClearAnswerDrafts()
+        sut.formState.answerDraftStore.discardAll()
         sut.formState.supervisorTask = ""
         sut.isTaskSelected = false
         sut._testForceNewTaskMode = false

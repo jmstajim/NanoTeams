@@ -225,4 +225,31 @@ final class BundledUpdateReportCopyTests: XCTestCase {
         let report = BundledUpdateReport(deferred: [team(name: "FAANG Team")])
         XCTAssertNil(report.durableMessage)
     }
+
+    // MARK: - A retired role held by an unclosed task
+
+    /// The other deferral reason gets its own sentence: a busy task ends on its own, a task
+    /// holding a role this version retires does not — the user must close it, and the copy
+    /// says exactly that instead of "is mid-run".
+    func testRetiredRoleDeferral_tellsTheUserToCloseTheTask() {
+        let report = BundledUpdateReport(deferred: [
+            .init(teamID: NTMSID.from(name: "ultra"), teamName: "Ultra Team",
+                  roleNames: ["Feature Engineer"], taskID: 12, taskTitle: "Streaks",
+                  reason: .retiredRoleInUnclosedTask),
+        ])
+        let message = report.bannerMessage ?? ""
+        XCTAssertTrue(message.contains("task #12 still holds Feature Engineer"), message)
+        XCTAssertTrue(message.contains("a role this version retires"), message)
+        XCTAssertTrue(message.contains("Close that task, then reopen this folder."), message)
+        XCTAssertFalse(message.contains("mid-run"), message)
+
+        let several = BundledUpdateReport(deferred: [
+            .init(teamID: NTMSID.from(name: "ultra"), teamName: "Ultra Team",
+                  roleNames: ["Feature Engineer"], taskID: 12, taskTitle: "Streaks",
+                  otherBlockingTaskCount: 2, reason: .retiredRoleInUnclosedTask),
+        ])
+        let plural = several.bannerMessage ?? ""
+        XCTAssertTrue(plural.contains("3 tasks still hold Feature Engineer"), plural)
+        XCTAssertTrue(plural.contains("Close those tasks"), plural)
+    }
 }

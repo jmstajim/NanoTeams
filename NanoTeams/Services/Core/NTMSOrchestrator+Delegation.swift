@@ -206,7 +206,8 @@ extension NTMSOrchestrator {
     func answerSupervisorQuestion(taskID: Int, stepID: String, answer: String) async -> Bool {
         // The delegating parent ROLE (an LLM) is answering the child's question —
         // mark it auto so the child's feed shows the "Auto-answered" badge.
-        await answerSupervisorQuestion(stepID: stepID, taskID: taskID, answer: answer, isAutoAnswer: true)
+        await answerSupervisorQuestion(
+            stepID: stepID, taskID: taskID, answer: answer, origin: .automated)
     }
 
     // MARK: - Delegation Interrupt (Supervisor-driven abort)

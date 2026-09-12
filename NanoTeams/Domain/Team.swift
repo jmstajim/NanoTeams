@@ -233,7 +233,8 @@ nonisolated struct Team: Codable, Identifiable {
     ///
     /// If the removed role is a system role (`isSystemRole == true` with a non-nil
     /// `systemRoleID`), its `systemRoleID` is appended to `deletedSystemRoleIDs`
-    /// so subsequent version-bump reconciles won't resurrect it.
+    /// so subsequent version-bump reconciles won't resurrect it — this is the USER's
+    /// door (the editor), and a tombstone means "the user deleted this".
     mutating func removeRole(_ roleID: String) {
         if let removed = roles.first(where: { $0.id == roleID }),
            removed.isSystemRole,
@@ -242,6 +243,20 @@ nonisolated struct Team: Codable, Identifiable {
         {
             deletedSystemRoleIDs.append(sid)
         }
+        dropRole(roleID)
+    }
+
+    /// The BUNDLE's door: the same cleanup as `removeRole` — layout, hierarchy, invitable
+    /// set, checkpoints, the coordinator heal — with NO tombstone. Reconciliation retires a
+    /// system role the bundle itself dropped (`SystemTemplates.retiredSystemRoleIDs`); a
+    /// tombstone would record that decision under user-deletion semantics, and a later
+    /// bundle that revived the id would be refused on this folder alone, with the editor's
+    /// Restore — which erases every REAL tombstone too — as the only way out.
+    mutating func retireSystemRole(_ roleID: String) {
+        dropRole(roleID)
+    }
+
+    private mutating func dropRole(_ roleID: String) {
         roles.removeAll(where: { $0.id == roleID })
         graphLayout.hiddenRoleIDs.remove(roleID)
         graphLayout.nodePositions.removeAll(where: { $0.roleID == roleID })

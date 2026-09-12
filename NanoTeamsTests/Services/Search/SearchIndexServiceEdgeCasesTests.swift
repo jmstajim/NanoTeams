@@ -56,7 +56,7 @@ final class SearchIndexServiceEdgeCasesTests: XCTestCase {
         // loadOrBuild should detect the corruption and rebuild.
         let rebuilt = await service2.loadOrBuild()
         XCTAssertEqual(rebuilt.files.count, 1)
-        XCTAssertTrue(rebuilt.tokens.contains("alpha"))
+        XCTAssertTrue(rebuilt.vocabulary.contains("alpha"))
     }
 
     func testDiskCorruption_oldVersion_rebuildsFromScratch() async throws {
@@ -65,13 +65,20 @@ final class SearchIndexServiceEdgeCasesTests: XCTestCase {
         _ = await service.loadOrBuild()
 
         // Re-persist with a bogus version to simulate an old/future schema.
-        struct AnyEncodable: Encodable { let v: Int; let f: [String] = []; let t: [String] = []
-            enum CodingKeys: String, CodingKey { case version, files, tokens }
+        // Hand-rolled so the payload can carry a version the current shape would never
+        // produce. Its keys must be the CURRENT ones — a fixture built from a retired shape
+        // compiles happily against its own `CodingKeys` and goes stale in silence, which is
+        // what `tokens` did here until 2026-09-11.
+        struct AnyEncodable: Encodable {
+            let v: Int
+            let f: [String] = []
+            let vocab: [String] = []
+            enum CodingKeys: String, CodingKey { case version, files, vocabulary }
             func encode(to encoder: Encoder) throws {
                 var c = encoder.container(keyedBy: CodingKeys.self)
                 try c.encode(v, forKey: .version)
                 try c.encode(f, forKey: .files)
-                try c.encode(t, forKey: .tokens)
+                try c.encode(vocab, forKey: .vocabulary)
             }
         }
         let dummy = AnyEncodable(v: 9999)
@@ -91,67 +98,38 @@ final class SearchIndexServiceEdgeCasesTests: XCTestCase {
         let service = makeService()
         let index = await service.loadOrBuild()
         XCTAssertEqual(index.files.count, 0)
-        XCTAssertEqual(index.tokens.count, 0)
-        XCTAssertEqual(index.postings.count, 0)
+        XCTAssertEqual(index.vocabulary.count, 0)
         XCTAssertEqual(index.signature.fileCount, 0)
         XCTAssertEqual(index.signature.totalSize, 0)
     }
 
-    // MARK: - Duplicate tokens across files
+    // MARK: - Duplicate words across files
 
-    func testDuplicateToken_postingDeduplicated() async throws {
-        // Both files have the same token — posting list for "alpha" must list
-        // each file ID exactly once.
+    /// A word is a word, however many times and in whatever case it occurs. The posting-list
+    /// dedup this replaces was about ID lists; a set has no such failure mode, so what is worth
+    /// pinning now is the CASE FOLD — which `TokenExtractor` owns and which the vocabulary
+    /// depends on for `expand`'s lookups to hit.
+    func testDuplicateWord_appearsOnceCaseFolded() async throws {
         try write("A.swift", content: "alpha alpha alpha alpha")
         try write("B.swift", content: "alpha ALPHA Alpha")
         let service = makeService()
         let index = await service.loadOrBuild()
-        let postings = index.postings["alpha"] ?? []
-        XCTAssertEqual(postings, Array(Set(postings)).sorted())
-        XCTAssertEqual(postings.count, 2)
+        XCTAssertTrue(index.vocabulary.contains("alpha"))
+        XCTAssertFalse(index.vocabulary.contains("ALPHA"))
+        XCTAssertFalse(index.vocabulary.contains("Alpha"))
     }
 
     // MARK: - Mixed scripts across files
 
-    func testMultilingual_postingsHandleCyrillicAndLatin() async throws {
+    func testMultilingual_vocabularyHoldsCyrillicAndLatin() async throws {
         try write("ScrollView.swift", content: "let прокрутка = ScrollView()")
         let service = makeService()
         let index = await service.loadOrBuild()
-        XCTAssertTrue(index.postings["прокрутка"] != nil)
-        XCTAssertTrue(index.postings["scrollview"] != nil)
-        XCTAssertTrue(index.postings["scroll"] != nil)
-        XCTAssertTrue(index.postings["view"] != nil)
+        XCTAssertTrue(index.vocabulary.contains("прокрутка"))
+        XCTAssertTrue(index.vocabulary.contains("scrollview"))
+        XCTAssertTrue(index.vocabulary.contains("scroll"))
+        XCTAssertTrue(index.vocabulary.contains("view"))
     }
-
-    // MARK: - files(containing:) corner cases
-
-    func testFilesContaining_tokenAbsent_returnsEmpty() async throws {
-        try write("A.swift", content: "alpha")
-        let service = makeService()
-        _ = await service.loadOrBuild()
-        let none = await service.files(containing: ["notindexed"])
-        XCTAssertEqual(none, [])
-    }
-
-    func testFilesContaining_emptyTermList_returnsEmpty() async throws {
-        try write("A.swift", content: "alpha")
-        let service = makeService()
-        _ = await service.loadOrBuild()
-        let none = await service.files(containing: [])
-        XCTAssertEqual(none, [])
-    }
-
-    func testFilesContaining_caseInsensitive() async throws {
-        try write("A.swift", content: "Alpha")
-        let service = makeService()
-        _ = await service.loadOrBuild()
-        let hitLower = await service.files(containing: ["alpha"])
-        let hitUpper = await service.files(containing: ["ALPHA"])
-        XCTAssertEqual(hitLower, ["A.swift"])
-        XCTAssertEqual(hitUpper, ["A.swift"])
-    }
-
- 
 
     // MARK: - Force rebuild
 
@@ -174,7 +152,7 @@ final class SearchIndexServiceEdgeCasesTests: XCTestCase {
         let service = makeService()
         let index = await service.loadOrBuild()
         XCTAssertEqual(index.files.first?.path, "a/b/c/d/e/Deep.swift")
-        XCTAssertTrue(index.tokens.contains("deeptype"))
+        XCTAssertTrue(index.vocabulary.contains("deeptype"))
     }
 
     // MARK: - Signature: same mTime + size preserved after no-op rebuild
@@ -185,7 +163,7 @@ final class SearchIndexServiceEdgeCasesTests: XCTestCase {
         let first = await service.loadOrBuild()
         let second = await service.loadOrBuild()
         XCTAssertEqual(first.signature, second.signature)
-        XCTAssertEqual(first.tokens, second.tokens)
+        XCTAssertEqual(first.vocabulary, second.vocabulary)
     }
 
     // MARK: - Clear is idempotent
