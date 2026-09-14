@@ -96,6 +96,11 @@ final class HeadlessRunner {
         if let bashMode = config.bashMode {
             configuration.bashMode = bashMode
         }
+        // Absent ⇒ `auto`, the fresh-install default the storage holds — a run then measures
+        // whatever the provider reports for the model, which is the production path.
+        if let preference = config.toolCallingPreference {
+            configuration.toolCallingPreference = preference
+        }
         // Stated rather than inherited, even though it matches the default: a headless run is
         // a MEASUREMENT, and how many roles it may run at once changes both its wall-clock and
         // its prompt-cache behaviour. Leaving it implicit is how a run silently measures
@@ -122,7 +127,7 @@ final class HeadlessRunner {
         let provider = config.resolvedProvider
 
         print("[HEADLESS] Provider: \(provider.rawValue) | \(config.resolvedBaseURL) | \(config.resolvedModel)")
-        print("[HEADLESS] Bash mode: \(configuration.bashMode.rawValue) | Computer-use mode: \(configuration.computerUseMode.rawValue) (fresh in-memory configuration; only the config's fields override)")
+        print("[HEADLESS] Bash mode: \(configuration.bashMode.rawValue) | Computer-use mode: \(configuration.computerUseMode.rawValue) | Tool calling: \(configuration.toolCallingPreference.rawValue) (fresh in-memory configuration; only the config's fields override)")
 
         // 4. Open project
         await orchestrator.openWorkFolder(projectURL)

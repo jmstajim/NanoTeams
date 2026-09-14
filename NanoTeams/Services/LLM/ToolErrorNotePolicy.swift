@@ -8,11 +8,17 @@ import Foundation
 /// where the call simply failed, it reads **direction the envelope does not give**.
 ///
 /// So this returns a DIRECTION and never a FACT. The fact is the envelope, and the
-/// envelope is the immediately preceding turn on the wire — on Ollama it is even
-/// merged into the same user message. Restating it buys the model nothing and
-/// costs context permanently, which is not free: a stock Ollama window is ~4096
-/// and overflow truncates from the HEAD, so waste here is paid for in system
-/// prompt.
+/// envelope is the SAME turn on the wire: since 2026-09-14 the direction is the tail of
+/// the failed call's own `tool` turn — envelope, blank line, direction
+/// (`LLMExecutionService.appendingDirection`) — where until then it was a `.user` turn
+/// of its own. Byte-identical on the prompt-taught wires (they joined the two parts
+/// with `\n\n` anyway); on the native wires one turn fewer, and the one that mattered:
+/// a user turn makes the Qwen3.5 template drop every earlier think block, so on a
+/// model whose cache cannot be trimmed each tool error cost a full re-prefill
+/// (34 s at 42k tokens, MeditationApp task 113). Restating the envelope buys the
+/// model nothing and costs context permanently, which is not free: a stock Ollama
+/// window is ~4096 and overflow truncates from the HEAD, so waste here is paid for
+/// in system prompt.
 ///
 /// Every one of the nine arms used to open with the envelope's `message` verbatim,
 /// and three of them added nothing else at all — `plan_required` paraphrased the

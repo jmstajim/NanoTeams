@@ -108,8 +108,8 @@ final class PromptPrefixFingerprintTests: XCTestCase {
 
     func testIsToolError_isNotSerialisedAndSoIsNotFingerprinted() {
         XCTAssertEqual(
-            PromptPrefixFingerprint.chain(messages: [ChatMessage(role: .tool, content: "x", isToolError: true)]),
-            PromptPrefixFingerprint.chain(messages: [ChatMessage(role: .tool, content: "x", isToolError: false)]))
+            PromptPrefixFingerprint.chain(messages: [ChatMessage(role: .tool, content: "x", carriesErrorDirection: true)]),
+            PromptPrefixFingerprint.chain(messages: [ChatMessage(role: .tool, content: "x", carriesErrorDirection: false)]))
     }
 
     // MARK: - Roles and separators
@@ -321,6 +321,12 @@ final class PromptPrefixFingerprintTests: XCTestCase {
                                   imageContent: [ImageContent(base64Data: "QUJD",
                                                               mimeType: "image/png")]),
                       user("u")])
+        // A system message CARRYING reasoning — no builder produces one (reasoning rides
+        // `.native` assistant turns), so the arm is priced for the same reason the image arm
+        // is: parity by construction, not by an assumption about system turns. With content,
+        // and with the nil content the joiner skips.
+        assertParity([ChatMessage(role: .system, content: "s", reasoning: "r"), user("u")])
+        assertParity([ChatMessage(role: .system, content: nil, reasoning: "r"), user("u")])
     }
 
     // MARK: - commonPrefixLength edges
@@ -331,5 +337,51 @@ final class PromptPrefixFingerprintTests: XCTestCase {
         XCTAssertEqual(PromptPrefixFingerprint.commonPrefixLength([1, 2, 3], [1, 2, 3]), 3)
         XCTAssertEqual(PromptPrefixFingerprint.commonPrefixLength([1, 2, 3], [1, 2]), 2)
         XCTAssertEqual(PromptPrefixFingerprint.commonPrefixLength([9, 2], [1, 2]), 0)
+    }
+
+    // MARK: - Reasoning
+
+    /// A native assistant turn carries its reasoning on the wire (`reasoning_content` /
+    /// `thinking`), so the reasoning is part of the segment: two turns differing only there
+    /// are two different prefixes to the server, and the fingerprint must say so.
+    func testReasoning_isPartOfTheSegment() {
+        let without = PromptPrefixFingerprint.chain(messages: [user("q"), assistant("a")])
+        let with = PromptPrefixFingerprint.chain(
+            messages: [user("q"), ChatMessage(role: .assistant, content: "a", reasoning: "because")])
+        XCTAssertEqual(without.count, with.count)
+        XCTAssertEqual(without[1], with[1], "the user segment is untouched")
+        XCTAssertNotEqual(without[2], with[2], "the assistant segment must move with its reasoning")
+        XCTAssertNotEqual(
+            PromptPrefixFingerprint.chain(
+                messages: [ChatMessage(role: .assistant, content: "a", reasoning: "x")]),
+            PromptPrefixFingerprint.chain(
+                messages: [ChatMessage(role: .assistant, content: "a", reasoning: "y")]))
+    }
+
+    /// Reasoning is folded behind its own separator, so content `ab` + reasoning `c` and content
+    /// `a` + reasoning `bc` are different segments — the same ambiguity rule the role label has.
+    func testReasoning_concatenationAmbiguity_isAvoided() {
+        XCTAssertNotEqual(
+            PromptPrefixFingerprint.chain(
+                messages: [ChatMessage(role: .assistant, content: "ab", reasoning: "c")]),
+            PromptPrefixFingerprint.chain(
+                messages: [ChatMessage(role: .assistant, content: "a", reasoning: "bc")]))
+        XCTAssertNotEqual(
+            PromptPrefixFingerprint.chain(
+                messages: [ChatMessage(role: .assistant, content: "a", reasoning: "")]),
+            PromptPrefixFingerprint.chain(
+                messages: [ChatMessage(role: .assistant, content: "a", reasoning: nil)]),
+            "an empty string is a different wire statement from absence")
+    }
+
+    func testFused_parityOnReasoningTurns() {
+        let call = ChatMessage(
+            role: .assistant, content: nil,
+            toolCalls: [ChatToolCall(id: "1", name: "read_file", argumentsJSON: #"{"path":"a"}"#)],
+            reasoning: "Сначала прочитать файл.\n")
+        let result = ChatMessage(role: .tool, content: "{\"ok\":true}", toolCallID: "1")
+        let prose = ChatMessage(role: .assistant, content: "done", reasoning: "plain ascii reasoning")
+        assertParity([system("s"), user("u"), call, result, prose])
+        assertParity([ChatMessage(role: .assistant, content: "", reasoning: "")])
     }
 }

@@ -12,7 +12,9 @@ import Synchronization
 /// `@MainActor`, and tests are implicitly nonisolated and drive this value type synchronously.
 nonisolated struct PromptImprovementDisplay {
     /// Raw deltas, untouched — `PromptImprovementService.postProcess` reads it at end of stream.
-    private(set) var raw = ""
+    var raw: String { stream.raw }
+    /// The raw stream and its gate: the one incremental shape, shared with the streaming preview.
+    private var stream = ModelTokenCleaner.IncrementalStrip()
     /// What the field shows: `raw` with `<|…|>` tokens stripped and the opening fence line hidden.
     private(set) var text = ""
     private(set) var fence: OpeningFence = .undecided
@@ -32,22 +34,22 @@ nonisolated struct PromptImprovementDisplay {
     }
 
     /// O(delta) on the common path. Whole-buffer work runs only when the RAW tail could have completed
-    /// a token (`tailMayCompleteToken`, the same window `StreamingPreviewManager.append` gates on) or
-    /// while the fence decision is not final — units of times per stream. `text += delta` still
-    /// memcpy's N bytes when the host / `lastWritten` share its storage; that is the cost of handing
-    /// the field a String per delta, not of this pipeline.
+    /// a token (`ModelTokenCleaner.IncrementalStrip` — the same gate, on the same raw-buffer
+    /// contract, that `StreamingPreviewManager.append` runs on) or while the fence decision is not
+    /// final — units of times per stream. `text += delta` still memcpy's N bytes when the host /
+    /// `lastWritten` share its storage; that is the cost of handing the field a String per delta,
+    /// not of this pipeline.
     ///
-    /// Why `raw` is kept rather than stripping the shown buffer incrementally: gate-silent proves
-    /// `stripTokens(raw + delta) == stripTokens(raw) + delta` (see `tailMayCompleteToken`), which is
-    /// STRONGER than the `StreamingPreviewManager` contract (equivalence to re-stripping an
-    /// already-stripped buffer). The two differ on an opener kept for its span — `<|` + 27×`a` +
-    /// `<|e|>` then `|>` — where the incremental shape deletes what the whole-buffer strip keeps.
+    /// Why `raw` is kept rather than the shown buffer being stripped again lives on
+    /// `IncrementalStrip`: gate-silent proves `stripTokens(raw + delta) == stripTokens(raw) + delta`,
+    /// and re-stripping the shown buffer differs on an opener kept for its span — `<|` + 27×`a` +
+    /// `<|e|>` then `|>` — where that shape deletes what the whole-buffer strip keeps.
     mutating func append(_ delta: String) {
-        raw += delta
-        // Evaluated on EVERY delta (the work pin's anti-vacuum relies on the gate seeing each one).
-        let tokenMayHaveCompleted = ModelTokenCleaner.tailMayCompleteToken(raw, newDeltaCount: delta.count)
-        if tokenMayHaveCompleted || !fence.isFinal {
-            (text, fence) = Self.rendered(ModelTokenCleaner.stripTokens(raw))
+        // The gate sees EVERY delta (the work pin's anti-vacuum relies on it).
+        if let stripped = stream.append(delta) {
+            (text, fence) = Self.rendered(stripped)
+        } else if !fence.isFinal {
+            (text, fence) = Self.rendered(ModelTokenCleaner.stripTokens(stream.raw))
         } else {
             text += delta
         }

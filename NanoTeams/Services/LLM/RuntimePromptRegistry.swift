@@ -124,6 +124,11 @@ enum RuntimePromptRegistry {
         add("NativeLMStudioClient.buildToolSchemaBody/sampleTool") {
             NativeLMStudioClient.buildToolSchemaBody(tools: [sampleSchema])
         }
+        // The native chip: the catalog rides the provider's `tools` field, so the body is
+        // the one-tool rule and the injection boundary alone (2026-09-13).
+        add("NativeLMStudioClient.buildToolSchemaBody/native") {
+            NativeLMStudioClient.buildToolSchemaBody(tools: [sampleSchema], mode: .native)
+        }
         add("PromptBuilder.formatToolCallingBlock/noTools") { PromptBuilder.formatToolCallingBlock(tools: []) }
         add("HarmonyToolCallEnvelope.text") {
             HarmonyToolCallEnvelope.text(name: "sample_tool", argumentsJSON: "{\"path\":\"a.txt\"}")
@@ -278,6 +283,25 @@ enum RuntimePromptRegistry {
         add("NoToolTurnNudges.planningSalvage") {
             NoToolTurnNudges.planningSalvage(allowedToolNames: sampleTools)
         }
+        // The native arms (2026-09-13): no envelope to illustrate, a tool to name.
+        add("NoToolTurnNudges.planningSalvage/native") {
+            NoToolTurnNudges.planningSalvage(allowedToolNames: sampleTools, mode: .native)
+        }
+        add("NoToolTurnNudges.reasoningChannel/native") {
+            NoToolTurnNudges.reasoningChannel(
+                namedCalls: [ToolNames.readFile], allowedToolNames: sampleTools, mode: .native)
+        }
+        add("NoToolTurnNudges.nativeCallRejected") {
+            NoToolTurnNudges.nativeCallRejected(
+                reason: "tool call does not match the expected peg-native format",
+                allowedToolNames: sampleTools)
+        }
+        add("NoToolTurnNudges.outputTruncated") {
+            NoToolTurnNudges.outputTruncated(allowedToolNames: sampleTools, mode: .promptTaught)
+        }
+        add("NoToolTurnNudges.outputTruncated/native") {
+            NoToolTurnNudges.outputTruncated(allowedToolNames: sampleTools, mode: .native)
+        }
         add("NoToolTurnNudges.planRecorded") { NoToolTurnNudges.planRecorded() }
         add("NoToolTurnNudges.unrecognisedSentinel") {
             NoToolTurnNudges.unrecognisedSentinel(
@@ -291,6 +315,9 @@ enum RuntimePromptRegistry {
         }
         add("LLMExecutionService.callShapeClause") {
             LLMExecutionService.callShapeClause(allowedToolNames: sampleTools)
+        }
+        add("LLMExecutionService.callShapeClause/native") {
+            LLMExecutionService.callShapeClause(allowedToolNames: sampleTools, mode: .native)
         }
         add("LLMExecutionService.reasoningEnvelopeEscalationQuestion") {
             LLMExecutionService.reasoningEnvelopeEscalationQuestion(roleName: "Software Engineer")
@@ -309,6 +336,12 @@ enum RuntimePromptRegistry {
         add("LLMExecutionService.unrecognisedSentinelEscalationQuestion") {
             LLMExecutionService.unrecognisedSentinelEscalationQuestion(
                 roleName: "Software Engineer", sentinel: "<|tool_call|")
+        }
+        add("LLMExecutionService.nativeCallRejectedEscalationQuestion") {
+            LLMExecutionService.nativeCallRejectedEscalationQuestion(roleName: "Software Engineer")
+        }
+        add("LLMExecutionService.outputTruncatedEscalationQuestion") {
+            LLMExecutionService.outputTruncatedEscalationQuestion(roleName: "Software Engineer")
         }
         add("LLMExecutionService.noToolParkQuestion") {
             LLMExecutionService.noToolParkQuestion(turns: 20)
@@ -336,6 +369,9 @@ enum RuntimePromptRegistry {
         add("ToolCallParsingHelpers.malformedJSONDiagnostic/unbalanced") {
             ToolCallParsingHelpers.malformedJSONDiagnostic(
                 in: #"<|call|>{"name":"write_file","arguments":{"path":"x"#)!
+        }
+        add("ToolCallParsingHelpers.leadingEmptyObjectsNote") {
+            ToolCallParsingHelpers.leadingEmptyObjectsNote(count: 1)!
         }
         add("ToolCallParsingHelpers.spilledArgumentsNote") {
             ToolCallParsingHelpers.spilledArgumentsNote(

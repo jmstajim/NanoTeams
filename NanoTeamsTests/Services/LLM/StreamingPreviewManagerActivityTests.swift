@@ -198,7 +198,7 @@ final class StreamingPreviewManagerActivityTests: XCTestCase {
                        "commit must clear streamingToolCall even without a preview")
         XCTAssertFalse(manager.hasReceivedStreamActivity(stepID: "step1", taskID: 0),
                        "commit must clear hasStreamActivity even without a preview")
-        XCTAssertNil(manager.processingStatus[TaskStepKey(taskID: 0, stepID: "step1")],
+        XCTAssertNil(manager.promptProcessingStatus(stepID: "step1", taskID: 0),
                      "commit must clear processingStatus even without a preview")
         XCTAssertNil(manager.lastStreamActivity(stepID: "step1", taskID: 0))
     }
@@ -269,7 +269,7 @@ final class StreamingPreviewManagerActivityTests: XCTestCase {
 
         manager.beginStreaming(stepID: "step1", taskID: 0, messageID: UUID(), role: .softwareEngineer)
 
-        XCTAssertNil(manager.processingStatus[TaskStepKey(taskID: 0, stepID: "step1")],
+        XCTAssertNil(manager.promptProcessingStatus(stepID: "step1", taskID: 0),
                      "A fresh stream starts with no progress signal — a stale percent must not survive into the retry")
     }
 

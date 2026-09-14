@@ -354,6 +354,15 @@ final class AskCallIndexTests: XCTestCase {
             "NanoTeams/Domain/ChatMessage.swift: toolCalls = try container.decodeIfPresent([ChatToolCall].self, forKey: .toolCalls)",
             "NanoTeams/Services/LLM/DelegatedSupervisorAnswerService.swift: captured.toolCalls = accumulator.finalize()",
             "NanoTeams/Services/LLM/DelegatedSupervisorAnswerService.swift: captured.toolCalls = HarmonyToolCallParser()",
+            // Wire DECODERS of a provider's native `tool_calls` chunk (Ollama `/api/chat`,
+            // LM Studio `/v1/chat/completions`) — a different type, read once per chunk and
+            // folded into `ToolCallAccumulator`; nothing here touches a step's record.
+            "NanoTeams/Services/LLM/OllamaClient+WireTypes.swift: case toolCalls = \"tool_calls\"",
+            "NanoTeams/Services/LLM/OllamaClient+WireTypes.swift: self.toolCalls = toolCalls",
+            "NanoTeams/Services/LLM/OllamaClient+WireTypes.swift: toolCalls = (try? c.decodeIfPresent([ToolCallChunk].self, forKey: .toolCalls)) ?? nil",
+            "NanoTeams/Services/LLM/OpenAICompatLMStudioClient+WireTypes.swift: case toolCalls = \"tool_calls\"",
+            "NanoTeams/Services/LLM/OpenAICompatLMStudioClient+WireTypes.swift: self.toolCalls = toolCalls",
+            "NanoTeams/Services/LLM/OpenAICompatLMStudioClient+WireTypes.swift: toolCalls = (try? c.decodeIfPresent([ToolCallDelta].self, forKey: .toolCalls)) ?? nil",
         ]
 
         XCTAssertFalse(found.isEmpty, "anti-vacuum: the scan must see the recorded writers")

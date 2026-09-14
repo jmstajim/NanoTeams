@@ -287,17 +287,36 @@ nonisolated enum PrefixCachePolicy {
         /// Tokens the server says it prefilled — the DENOMINATOR of `prefillNsPerToken`, and the
         /// reason that rate is only comparable against a floor sampled at a similar depth.
         var promptTokens: Int?
+        /// Ollama only (≥ 0.12): `prompt_eval_cached_count / prompt_eval_count`. The DIRECT
+        /// statement of reuse — the server counting what it did not re-process — where the
+        /// rate branch below has to infer it against a learned floor. Nil where not reported.
+        var cachedFraction: Double?
 
         init(
             modelLoadMs: Double? = nil,
             prefillNsPerToken: Double? = nil,
-            promptTokens: Int? = nil
+            promptTokens: Int? = nil,
+            cachedFraction: Double? = nil
         ) {
             self.modelLoadMs = modelLoadMs
             self.prefillNsPerToken = prefillNsPerToken
             self.promptTokens = promptTokens
+            self.cachedFraction = cachedFraction
         }
     }
+
+    /// The share of the prompt the server must report as cached for a request to count as a
+    /// REUSE when it says so directly (`ServerSignals.cachedFraction`).
+    ///
+    /// Measured on 2026-09-13 (Ollama 0.34.0, `ornith-1.5:35b`, `gemma4:26b`): a second turn of a
+    /// native tool loop reported 413/475, 503/526 and 161/237 cached — 0.68 to 0.96 — while a
+    /// cold first request reported 0 or the handful of tokens every template shares (4/163).
+    /// One half sits between the two bands with room on either side, and errs toward SILENCE
+    /// like `minimumLoadMsForReload`: a request the server says was mostly reused is not
+    /// reported as a miss even when the rate branch would have said so, because the direct
+    /// count outranks the inference. Below it the rate branch decides as before — a low count
+    /// alone is not a miss either (the tail of a long append is honestly uncached).
+    static let cachedFractionForReuse = 0.5
 
     /// How long a reported model load has to be before it counts as a RELOAD.
     ///
@@ -405,6 +424,12 @@ nonisolated enum PrefixCachePolicy {
 
         if let load = server.modelLoadMs, load > minimumLoadMsForReload {
             return miss(.modelReloaded)
+        }
+
+        // The server said how much it reused. A count above the floor is a reuse, whatever
+        // the prefill RATE looked like — the rate is the inference this count replaces.
+        if let cached = server.cachedFraction, cached >= cachedFractionForReuse {
+            return structural
         }
 
         if let ratio = server.prefillNsPerToken,

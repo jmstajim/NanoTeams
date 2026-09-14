@@ -69,12 +69,11 @@ struct MessageBubbleStreamingIndicator: View, Equatable {
     /// almost always a tool call) or OpenAI tool-call deltas arrived.
     /// The envelope text streams into the THINKING preview (the user
     /// watches it being typed under the animated "Thinking…" row), so
-    /// normally the `hasThinkingContent` suppression handles this state.
-    /// This flag is the FALLBACK: when the thinking preview is still
-    /// empty, it overrides the content suppression — prose rendered
-    /// before the marker froze the moment the envelope started, so "the
-    /// growing text is the indicator" no longer holds and the bubble
-    /// would otherwise show zero animation. Default `false` for surfaces
+    /// normally that row is the live signal. When the thinking preview is
+    /// still empty this flag makes the status row say "Generating…", ahead
+    /// of any stale prompt-processing value. A provider that sends a call
+    /// whole never raises it (native Ollama); the prose arm of
+    /// `resolveStatusText` covers that window. Default `false` for surfaces
     /// without access to the streaming preview manager.
     var isStreamingToolCall: Bool = false
 
@@ -91,21 +90,6 @@ struct MessageBubbleStreamingIndicator: View, Equatable {
                 Spacer()
             }
             .padding(.trailing, ActivityCardTokens.cardPadding)
-        } else if Self.reservesStatusSlot(
-            isStreaming: isStreaming,
-            hasMessageContent: hasMessageContent,
-            hasThinkingContent: hasThinkingContent,
-            isStreamingToolCall: isStreamingToolCall
-        ) {
-            // Height keeper — see `reservesStatusSlot`. The SAME `MonoCell` the
-            // real row's loader uses, so the reserved row is exactly the height
-            // the caption will occupy when it returns. Not a hidden
-            // `MessageLoaderLabel`: that would spin an 80ms ticker for a row
-            // nobody can see. `else if` (rather than a `ZStack` of conditions)
-            // is what makes the negative case a true `EmptyView`, which the
-            // enclosing `VStack` elides along with its `Spacing.xs` gap.
-            MonoCell(font: Typography.termXs)
-                .accessibilityHidden(true)
         }
     }
 
@@ -124,10 +108,10 @@ struct MessageBubbleStreamingIndicator: View, Equatable {
     }
 
     /// Pure status-text resolver — extracted from `body` so tests can pin
-    /// the priority order (thinking-preview suppression > tool-call
-    /// Generating > content suppression > Processing > Generating >
-    /// Waiting) without reaching into SwiftUI view internals. Returns
-    /// nil for "no status row needed".
+    /// the priority order (an animating thinking row > tool call or visible
+    /// prose → Generating > Processing > Generating > Waiting) without
+    /// reaching into SwiftUI view internals. Returns nil for "no status row
+    /// needed".
     ///
     /// Output strings are ready-to-render (no caller-side suffixing):
     /// `"Processing 42%"` (ticking %), `"Processing…"`, `"Generating…"` /
@@ -161,42 +145,39 @@ struct MessageBubbleStreamingIndicator: View, Equatable {
         // The condition is "a disclosure row is ANIMATING", not "a disclosure exists": a
         // static row is not a live signal, and yielding to one would leave the bubble with
         // zero animation — the regression class `testStreamingBubble_alwaysHasLiveSignal`
-        // exists to catch. Asked of the two view helpers that decide it, the way
-        // `reservesStatusSlot` already asks, so the rule cannot drift from the rows it
+        // exists to catch. Asked of the view helper that decides it
+        // (`MessageBubbleView.thinkingRowAnimates`), so the rule cannot drift from the rows it
         // mirrors. Only the first arm is reachable for an epoch (no prose, no tool call); the
         // rest is what makes the rule total, since nothing at this seam states that.
         if isCompacting {
-            let disclosureIsLive = hasThinkingContent
-                && (MessageBubbleView.topThinkingRowAnimates(
-                    isStreaming: isStreaming,
-                    hasMessageContent: hasMessageContent,
-                    isStreamingToolCall: isStreamingToolCall)
-                    || MessageBubbleView.showsTrailingThinkingRow(
-                        isStreaming: isStreaming,
-                        hasMessageContent: hasMessageContent,
-                        isStreamingToolCall: isStreamingToolCall,
-                        hasThinkingContent: hasThinkingContent))
+            let disclosureIsLive = MessageBubbleView.thinkingRowAnimates(
+                isStreaming: isStreaming,
+                hasMessageContent: hasMessageContent,
+                hasThinkingContent: hasThinkingContent,
+                isStreamingToolCall: isStreamingToolCall)
             return disclosureIsLive ? nil : "Compacting…"
         }
         if isStreaming {
-            // Thinking row is the indicator whenever a thinking preview
-            // exists — during tool-call assembly the streaming loop pipes
-            // the envelope text into it and `MessageBubbleView` keeps its
-            // "Thinking…" loader animating (`isThinkingStreaming` includes
-            // `isStreamingToolCall`), so no separate status row is needed.
-            if hasThinkingContent { return nil }
-            if isStreamingToolCall {
-                // Fallback: the stream committed to a tool-call envelope but
-                // nothing has landed in the thinking preview yet (or a future
-                // invisible-buffer path skips the pipe). Without this, frozen
-                // prose would suppress every status below and the bubble
-                // would show zero animation for the whole argument assembly.
-                // Checked before Processing too: tokens ARE flowing, so a
-                // stale progress value must not relabel this as prompt
-                // processing.
+            // Exactly one animated row while the request is open. An animating thinking row
+            // is that row: the top one while reasoning is the live tail, the trailing one
+            // while a tool-call envelope is typed into the thinking preview after prose.
+            if MessageBubbleView.thinkingRowAnimates(
+                isStreaming: isStreaming,
+                hasMessageContent: hasMessageContent,
+                hasThinkingContent: hasThinkingContent,
+                isStreamingToolCall: isStreamingToolCall
+            ) { return nil }
+            if isStreamingToolCall || hasMessageContent {
+                // Otherwise this row is. With a tool call assembling, or with prose on
+                // screen, tokens ARE flowing — a stale progress value must not relabel that
+                // as prompt processing. Visible prose is NOT a live signal by itself: it
+                // grows only while the provider streams it. Native tool calling on Ollama
+                // sends `message.tool_calls` whole and nothing while the arguments are
+                // generated, and a `hasMessageContent → nil` arm here left the bubble with
+                // zero animation for that whole window (MeditationApp task 111, 2026-09-13:
+                // 118 s and 204 s).
                 return "Generating…"
             }
-            if hasMessageContent { return nil } // content is visible — no status row needed
             if let status = processingStatus {
                 return Self.processingText(for: status)
             }
@@ -225,9 +206,8 @@ struct MessageBubbleStreamingIndicator: View, Equatable {
         return nil
     }
 
-    /// Whether this view renders a row at all — the union of `body`'s two
-    /// branches, derived from the same two functions the body switches on so
-    /// the two cannot drift.
+    /// Whether this view renders a row at all — `body`'s one branch, derived
+    /// from the same resolver the body switches on so the two cannot drift.
     ///
     /// Exposed because the row's TOP SPACING is a property of the bubble's
     /// structure, not of this view: the status row and `MessageThinkingSection`
@@ -247,7 +227,7 @@ struct MessageBubbleStreamingIndicator: View, Equatable {
         isStreamingToolCall: Bool,
         isCompacting: Bool = false
     ) -> Bool {
-        let hasStatus = resolveStatusText(
+        resolveStatusText(
             isStreaming: isStreaming,
             isImplicitStreamTarget: isImplicitStreamTarget,
             hasMessageContent: hasMessageContent,
@@ -257,61 +237,6 @@ struct MessageBubbleStreamingIndicator: View, Equatable {
             isStreamingToolCall: isStreamingToolCall,
             isCompacting: isCompacting
         ) != nil
-        return hasStatus || reservesStatusSlot(
-            isStreaming: isStreaming,
-            hasMessageContent: hasMessageContent,
-            hasThinkingContent: hasThinkingContent,
-            isStreamingToolCall: isStreamingToolCall
-        )
-    }
-
-    /// Whether an INVISIBLE one-line slot must be held open where the status
-    /// row would go.
-    ///
-    /// Once prose exists, the bubble's tail region churns: the status row
-    /// vanishes the instant content lands (the `hasMessageContent` suppression
-    /// in `resolveStatusText`), and the trailing `Thinking…` row appears when a
-    /// tool-call envelope starts streaming into the thinking preview. Each of
-    /// those is a whole row (11pt line + `Spacing.xs` ≈ 17pt) appearing or
-    /// vanishing under a feed pinned to the bottom. Holding ONE row open for
-    /// the live window turns them into pure swaps: the slot opens once when
-    /// prose first lands and closes once at commit, both times alongside a
-    /// larger legitimate change.
-    ///
-    /// Three gates, each stopping the reservation from reading as dead space:
-    ///
-    /// - `isStreaming` — deliberately NOT `isStreaming || isImplicitStreamTarget`.
-    ///   That branch of `resolveStatusText` is unreachable in production:
-    ///   `resolveBubbleInputs` returns `.committed` for any non-streaming
-    ///   bubble, and `.committed` hard-returns nil/false for the three fields
-    ///   the branch reads. Its silent window is not an instant but the WHOLE
-    ///   tool execution, so reserving there would park a blank row between a
-    ///   turn's `Thinking` row and the tool-call card it produced — undoing the
-    ///   turn grouping in `TeamActivityFeedView.rowTopPadding`.
-    /// - `hasMessageContent` — gates the reservation ON content, the opposite
-    ///   of how `resolveStatusText` reads the same flag. Before prose, the
-    ///   status row and the top `Thinking…` row occupy the SAME slot (the
-    ///   bubble's only child under the header) and already swap in place at
-    ///   constant height; reserving there would add a blank row under a live
-    ///   `Thinking…`.
-    /// - `!showsTrailingThinkingRow` — that row IS this slot's occupant.
-    ///   Derived from this view's own stored properties rather than threaded in
-    ///   as a flag, so `==` (and therefore `.equatable()`) needs no new member
-    ///   and cannot drift from the row it mirrors.
-    static func reservesStatusSlot(
-        isStreaming: Bool,
-        hasMessageContent: Bool,
-        hasThinkingContent: Bool,
-        isStreamingToolCall: Bool
-    ) -> Bool {
-        isStreaming
-            && hasMessageContent
-            && !MessageBubbleView.showsTrailingThinkingRow(
-                isStreaming: isStreaming,
-                hasMessageContent: hasMessageContent,
-                isStreamingToolCall: isStreamingToolCall,
-                hasThinkingContent: hasThinkingContent
-            )
     }
 
     /// Renders the prompt-processing window at the precision the provider

@@ -87,7 +87,9 @@ final class NativeLMStudioClientStreamingAuthTests: XCTestCase {
     /// → a response record appears and both log assertions fail; the thrown-error
     /// assertion also fails, since the generic arm rethrows the original error wrapped
     /// as a transport failure.
-    func testStreamChat_transportCancelled_finishesCleanlyAndLogsNoFailure() async throws {
+    /// Until 2026-09-13 a cancellation logged NOTHING; now it leaves the interrupted record —
+    /// `cancelled`, status 0, the body that had streamed (none here) — rule #331.
+    func testStreamChat_transportCancelled_finishesCleanly_andLogsTheInterruption() async throws {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -121,10 +123,12 @@ final class NativeLMStudioClientStreamingAuthTests: XCTestCase {
         let records = try NetworkLogTestReading.strictRecords(at: logURL)
         XCTAssertTrue(records.contains { $0.direction == .request },
                       "precondition: the request was logged, so the run really reached the transport")
-        XCTAssertFalse(records.contains { $0.direction == .response },
-                       "a cancellation must not fabricate a response record; got: \(records)")
-        XCTAssertFalse(records.contains { $0.errorMessage != nil },
-                       "…nor an error record; got: \(records)")
+        let response = try XCTUnwrap(records.first { $0.direction == .response },
+                                     "the interrupted request leaves its record; got: \(records)")
+        XCTAssertEqual(response.errorMessage, "cancelled", "one word for either cancellation layer")
+        XCTAssertEqual(response.statusCode, 0)
+        XCTAssertNil(response.body, "nothing had streamed")
+        XCTAssertEqual(records.filter { $0.direction == .response }.count, 1, "one record, not one per catch arm")
     }
 
     func testStreamChat_setsAuthorizationHeader_whenResolverHasToken() async {

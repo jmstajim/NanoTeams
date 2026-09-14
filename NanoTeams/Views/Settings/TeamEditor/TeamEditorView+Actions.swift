@@ -50,10 +50,12 @@ extension TeamEditorView {
     /// `lastErrorMessage` after the workfolder mutate) as a sheet error.
     func handleGenerateTeam(taskDescription: String) async -> String? {
         do {
-            let effectiveConfig = LLMExecutionService.buildEffectiveConfig(
+            var effectiveConfig = LLMExecutionService.buildEffectiveConfig(
                 globalConfig: store.globalLLMConfig,
                 roleOverride: store.configuration.teamGenLLMOverride
             )
+            // The same memo the runtime path reads, for the model the override names.
+            effectiveConfig.toolCallingMode = await store.resolveToolCallingMode(for: effectiveConfig)
             // Interleaves on the global model like the runtime team-gen path does.
             await store.recordPrefixChainForTasklessCall(
                 owner: .oneShot(label: "team generation"),

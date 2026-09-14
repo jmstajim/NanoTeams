@@ -32,10 +32,16 @@ nonisolated struct CallMarkerStrategy: ToolCallParsingStrategy {
                 // `extractCallObject`, not the bare walker: it adds the premature-closer
                 // repair, which the walker cannot perform because it returns at the first
                 // depth-0 close — several members too soon when the model closed early.
-                if let (jsonText, endIdx) = ToolCallParsingHelpers.extractCallObject(
+                if let (jsonText, endIdx, skippedEmptyObjects) = ToolCallParsingHelpers.extractCallObject(
                     in: tail, from: idx, endMarker: Self.endMarker)
                 {
-                    if let call = ToolCallParsingHelpers.parseToolCallFromJSON(jsonText) {
+                    if var call = ToolCallParsingHelpers.parseToolCallFromJSON(jsonText) {
+                        // The empty objects the walker skipped are a repair the model must hear
+                        // about once (REC.5) — merged with whatever the parse itself repaired.
+                        call.argumentRepairNote = ToolCallParsingHelpers.mergedRepairNote(
+                            [call.argumentRepairNote,
+                             ToolCallParsingHelpers.leadingEmptyObjectsNote(count: skippedEmptyObjects)]
+                                .compactMap { $0 })
                         results.append(call)
                         cursor = ToolCallParsingHelpers.advanceCursor(
                             in: tail, from: endIdx, endMarker: Self.endMarker)

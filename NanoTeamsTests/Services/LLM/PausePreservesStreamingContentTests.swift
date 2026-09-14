@@ -298,12 +298,8 @@ final class PausePreservesStreamingContentTests: XCTestCase, @unchecked Sendable
             task: initialTask, runIndex: 0, stepIndex: 0)
 
         // Wait until content actually arrives. `markStreamActivity` fires on every
-        // content delta — `appendStreamingPreview` may not, because the streaming
-        // pipeline buffers small content into `pendingUI` (capped by
-        // `LLMConstants.uiFlushCharThreshold` and a time window). The buffered
-        // content still ends up in `assistantCollected` via the forced flush inside
-        // `commitStreamingContent` on cancellation, so we just need to confirm the
-        // stream is live before pausing.
+        // content delta, so it is enough to confirm the stream is live before pausing;
+        // what matters below is that the partial turn is committed on cancellation.
         try await waitUntil {
             !mock.markStreamActivityCalls.isEmpty
         }
@@ -932,7 +928,7 @@ private final class StreamPersistingMockDelegate: LLMExecutionDelegate {
     func markStreamingToolCall(stepID: String, taskID _: Int) { markStreamingToolCallCalls.append(stepID) }
     var compactingStepIDs: Set<String> = []
     var compactionMarks: [(String, Bool)] = []
-    func markStreamingCompaction(stepID: String, taskID: Int, _ isCompacting: Bool) {
+    func markStreamingCompaction(stepID: String, taskID _: Int, _ isCompacting: Bool) {
         compactionMarks.append((stepID, isCompacting))
         if isCompacting { compactingStepIDs.insert(stepID) }
         else { compactingStepIDs.remove(stepID) }

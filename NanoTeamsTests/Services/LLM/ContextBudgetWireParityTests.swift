@@ -15,7 +15,7 @@ private extension NativeLMStudioClient.NativeChatInput {
 ///
 /// `toolSchemaTextForMeasurement` mirrors the request builders' append rule, and that rule has
 /// two halves. It owned only the first (`tools.isEmpty`) and dropped the second
-/// (`!systemPrompt.contains(harmonyBodyMarker)`) — so for every role step, where `PromptBuilder`
+/// (`!systemPrompt.contains(toolBlockMarker)`) — so for every role step, where `PromptBuilder`
 /// renders the catalog INTO the system message via the `{toolCalling}` chip and both builders
 /// therefore skip the append, the catalog was counted twice. It is the largest single block this
 /// app builds, so the overcount ran ~50-60% of a first payload: it inflated every cache-miss
@@ -88,7 +88,7 @@ final class ContextBudgetWireParityTests: XCTestCase {
     func testMeasurement_ignoresTheMarkerInNonSystemMessages() {
         let quoted = ChatMessage(
             role: .tool,
-            content: "file contents:\n" + NativeLMStudioClient.harmonyBodyMarker)
+            content: "file contents:\n" + NativeLMStudioClient.toolBlockMarker)
         XCTAssertFalse(
             NativeLMStudioClient.toolSchemaTextForMeasurement(
                 tools: tools, messages: [system("Plain prompt."), quoted]
@@ -125,9 +125,11 @@ final class ContextBudgetWireParityTests: XCTestCase {
     /// merged prompt — and the builders, joining identically, will append. Asserted as parity
     /// rather than as a value: the point is that both sides read the same string.
     func testMeasurement_markerSplitAcrossTwoSystemTurns_matchesTheBuilder() {
+        let marker = NativeLMStudioClient.toolBlockMarker
+        let cut = marker.index(marker.startIndex, offsetBy: marker.count / 2)
         let messages = [
-            system("Call tools using this Harmony"),
-            system(" format:"),
+            system(String(marker[..<cut])),
+            system(String(marker[cut...])),
             user("go"),
         ]
         let config = LLMConfig(
@@ -147,10 +149,26 @@ final class ContextBudgetWireParityTests: XCTestCase {
         XCTAssertEqual(
             NativeLMStudioClient.toolSchemaTextForMeasurement(
                 tools: tools,
-                messages: [system(NativeLMStudioClient.harmonyBodyMarker)]),
+                messages: [system(NativeLMStudioClient.toolBlockMarker)]),
             "",
             "the marker is the anchor — carrying it, and nothing else, still means the builder "
                 + "will not append")
+    }
+
+    /// The Harmony lesson line is NOT the anchor (2026-09-13): the native body carries no
+    /// lesson, so a mode-blind anchor has to be the line both bodies share — the injection
+    /// boundary. A prompt quoting only the lesson is appended to, on the wire and here alike.
+    func testMeasurement_theHarmonyLessonAlone_isNotTheAnchor() {
+        let messages = [system(NativeLMStudioClient.harmonyBodyMarker), user("go")]
+        let config = LLMConfig(
+            provider: .ollama, baseURLString: "http://127.0.0.1:11434", modelName: "m")
+        let wire = OllamaClient.buildRequest(config: config, messages: messages, tools: tools)
+        let wireSystem = wire.messages.first { $0.role == "system" }?.content ?? ""
+        XCTAssertTrue(wireSystem.contains(NativeLMStudioClient.toolBlockMarker),
+                      "the builder appended: the lesson line alone did not anchor")
+        XCTAssertFalse(
+            NativeLMStudioClient.toolSchemaTextForMeasurement(tools: tools, messages: messages).isEmpty,
+            "and the measurement prices the same append")
     }
 
     func testMeasurement_emptyMessages_stillPricesTheCatalog() {
@@ -317,5 +335,50 @@ final class ContextBudgetWireParityTests: XCTestCase {
         let lmStudio = NativeLMStudioClient.buildRequest(
             config: config, messages: messages, tools: [])
         XCTAssertTrue(lmStudio.input.textValue!.contains(envelope))
+    }
+
+
+    // MARK: - `.native` prices the `tools` array (2026-09-13)
+
+    /// Under `.native` the catalog never rides the system prompt, so the measurement is the
+    /// `tools` array's bytes — whatever the prompt carries — and those are the bytes the
+    /// Ollama wire adds.
+    func testMeasurement_native_pricesTheToolsArray_whateverTheSystemPromptCarries() throws {
+        let expected = NativeLMStudioClient.nativeToolsText(tools: tools)
+        XCTAssertFalse(expected.isEmpty)
+        XCTAssertEqual(
+            NativeLMStudioClient.toolSchemaTextForMeasurement(
+                tools: tools, messages: [system(NativeLMStudioClient.toolBlockMarker)], mode: .native),
+            expected, "the anchor in the prompt skips nothing under native")
+        XCTAssertEqual(
+            NativeLMStudioClient.toolSchemaTextForMeasurement(tools: tools, messages: [], mode: .native),
+            expected)
+        XCTAssertEqual(
+            NativeLMStudioClient.toolSchemaTextForMeasurement(tools: [], messages: [], mode: .native), "")
+
+        let config = LLMConfig(
+            provider: .ollama, baseURLString: "http://127.0.0.1:11434", modelName: "m",
+            toolCallingMode: .native)
+        let wire = OllamaClient.buildRequest(config: config, messages: [user("go")], tools: tools)
+        let encoded = String(decoding: try JSONCoderFactory.makeWireEncoder().encode(wire), as: UTF8.self)
+        XCTAssertTrue(encoded.contains("\"tools\":" + expected), "the priced bytes are the wire's bytes")
+    }
+
+    /// A native assistant turn's reasoning is re-sent on every later request of the step
+    /// (`reasoning_content` / `thinking`), so the estimate prices it — as its own ceiled string,
+    /// the same granularity `estimateTokens` applies to every other priced part. It is only ever
+    /// set on turns whose wire carries it (`processStreamingResult`, `.native`), so pricing it
+    /// unconditionally here over-counts nothing.
+    func testEstimate_pricesTheReasoningANativeTurnCarries() {
+        let reasoning = String(repeating: "думать ", count: 40) + String(repeating: "think ", count: 40)
+        let without = [user("go"), ChatMessage(role: .assistant, content: "a")]
+        let with = [user("go"), ChatMessage(role: .assistant, content: "a", reasoning: reasoning)]
+        XCTAssertEqual(
+            ContextBudgetPolicy.estimateTokens(messages: with),
+            ContextBudgetPolicy.estimateTokens(messages: without)
+                + WorkFolderContextPromptPlanner.estimateTokens(reasoning))
+        XCTAssertGreaterThan(
+            ContextBudgetPolicy.estimateTokens(messages: with),
+            ContextBudgetPolicy.estimateTokens(messages: without))
     }
 }

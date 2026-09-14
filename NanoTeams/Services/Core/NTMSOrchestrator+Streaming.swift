@@ -102,9 +102,8 @@ extension NTMSOrchestrator {
 
     func commitStreaming(stepID: String, taskID: Int, content: String, thinking: String?) async {
         // Get the role from the preview before committing
-        let key = TaskStepKey(taskID: taskID, stepID: stepID)
-        let role = streamingPreviewManager.previews[key]?.role ?? .softwareEngineer
-        let messageID = streamingPreviewManager.streamingMessageIDs[key] ?? UUID()
+        let role = streamingPreviewManager.preview(stepID: stepID, taskID: taskID)?.role ?? .softwareEngineer
+        let messageID = streamingPreviewManager.streamingMessageID(stepID: stepID, taskID: taskID) ?? UUID()
 
         // Clear streaming state
         streamingPreviewManager.commit(stepID: stepID, taskID: taskID)

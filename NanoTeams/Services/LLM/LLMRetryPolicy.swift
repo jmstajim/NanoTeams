@@ -43,6 +43,11 @@ nonisolated enum LLMRetryPolicy {
         case .missingResponse, .providerError:
             // Could be a transient server hiccup — retry.
             return true
+        case .nativeToolCallRejected:
+            // The MODEL wrote a call the server's grammar could not read. A byte-identical
+            // resend re-rolls the same dice; the step's malformed-call branch nudges instead
+            // and escalates on the third strike (`handleNoToolCalls`).
+            return false
         case .badHTTPStatus(let code, let body):
             // Checked BEFORE the 4xx/5xx split: "LM Studio has no free memory
             // to load this model" arrives as a 500, which the rule below would

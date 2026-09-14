@@ -145,7 +145,10 @@ final class ToolCallAccumulatorTests: XCTestCase {
         let url = RatchetSourceScan.repoRoot
             .appendingPathComponent("NanoTeams/Services/LLM/LLMExecutionService+Streaming.swift")
         let source = try String(contentsOf: url, encoding: .utf8)
-        guard let branchStart = source.range(of: "if !event.toolCallDeltas.isEmpty {") else {
+        // The second clause is the native-provider guard (2026-09-13): after a duplicate is
+        // seen the branch stops absorbing rather than breaking the stream, so the terminal
+        // usage chunk still lands. The probes below live inside it either way.
+        guard let branchStart = source.range(of: "if !event.toolCallDeltas.isEmpty, !duplicateNativeCallsSeen {") else {
             return XCTFail("toolCallDeltas branch not found — the pin's subject moved")
         }
         // The branch ends where the usage-capture lines resume.

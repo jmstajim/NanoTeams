@@ -661,4 +661,54 @@ final class SupervisorAnswerDeliveryOnceTests: XCTestCase {
             "waitUntil: condition not met within \(timeout)s."
         }
     }
+
+
+    // MARK: - The answer resolves the parked ask IN PLACE (native wire shape)
+
+    /// A park under `.native` persists the ask as an assistant `tool_calls` entry plus a
+    /// `{"status":"pending"}` `.tool` result under the call's id. The human's answer must
+    /// replace that placeholder — id kept — not follow it: a second, id-less `.tool` after a
+    /// claimed call was minted a fresh `tool_call_id` inside every request on the OpenAI-compat
+    /// route (a prefix-cache miss per iteration the fingerprint cannot see) and shipped
+    /// unnamed on Ollama (review of 2026-09-13).
+    func testNativeShapedPark_theAnswerReplacesThePlaceholderUnderTheAsksID() async throws {
+        let taskID = 507
+        let stepID = "swe_native_park"
+        mockDelegate.taskToMutate = makeNativelyParkedThenAnsweredTask(taskID: taskID, stepID: stepID, askID: "ask-1")
+
+        try await runOneEntry(stepID: stepID, taskID: taskID, expectingCallIndex: 0)
+        let wire = stubClient.capturedCalls[0].messages
+        let toolTurns = wire.filter { $0.role == .tool }
+        XCTAssertEqual(toolTurns.count, 1, "replaced, never appended: \(toolTurns.map { $0.toolCallID ?? "nil" })")
+        XCTAssertEqual(toolTurns.first?.toolCallID, "ask-1")
+        XCTAssertTrue(toolTurns.first?.content?.contains(answerText) == true)
+        XCTAssertFalse(toolTurns.first?.content?.contains("pending") == true)
+        let assistantIndex = try XCTUnwrap(wire.firstIndex { $0.role == .assistant })
+        XCTAssertEqual(wire[assistantIndex + 1].role, .tool, "the answer sits where the placeholder sat")
+    }
+
+    private func makeNativelyParkedThenAnsweredTask(taskID: Int, stepID: String, askID: String) -> NTMSTask {
+        var step = StepExecution(
+            id: stepID, role: .softwareEngineer, title: "SWE Step",
+            expectedArtifacts: ["Engineering Notes"], status: .running,
+            needsSupervisorInput: false,
+            supervisorQuestion: "Please approve running `swift build`.",
+            supervisorAnswer: answerText,
+            llmConversation: [LLMMessage(role: .system, content: "System prompt")])
+        step.toolCallingMode = .native
+        step.wireTranscript = [
+            ChatMessage(role: .system, content: "System prompt"),
+            ChatMessage(role: .user, content: "## Supervisor Task\n\nImplement M2."),
+            ChatMessage(role: .assistant, content: nil, toolCalls: [
+                ChatToolCall(id: askID, name: ToolNames.askSupervisor,
+                             argumentsJSON: #"{"question":"Please approve running `swift build`."}"#),
+            ]),
+            ChatMessage(
+                role: .tool,
+                content: #"{"ok":true,"data":{"question":"Please approve running `swift build`.","status":"pending"}}"#,
+                toolCallID: askID),
+        ]
+        return NTMSTask(id: taskID, title: "Test", supervisorTask: "Implement M2.",
+                        runs: [Run(id: 0, steps: [step])])
+    }
 }

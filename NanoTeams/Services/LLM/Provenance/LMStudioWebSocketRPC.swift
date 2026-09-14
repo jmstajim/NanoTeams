@@ -168,8 +168,11 @@ nonisolated struct LMStudioWebSocketRPC: Sendable {
 
     /// All three keys are required and none of the values is checked — see the type's note.
     private struct AuthFrame: Encodable {
+        // periphery:ignore - read by the synthesized Encodable, never by code
         let authVersion = 1
+        // periphery:ignore - read by the synthesized Encodable, never by code
         let clientIdentifier = "nanoteams"
+        // periphery:ignore - read by the synthesized Encodable, never by code
         let clientPasskey = "nanoteams"
     }
 

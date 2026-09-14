@@ -14,6 +14,13 @@ import XCTest
 /// the persisted `step.llmConversation` content is already clean —
 /// this strip is purely a streaming-preview fix.
 ///
+/// Two layers, two owners (2026-09-14): the SERVICE keeps the WIRE buffer
+/// (`assistantCollected`) free of the leading gap and trims the rewind value; the
+/// PREVIEW's edges belong to `StreamingPreviewManager`, which keeps `.content`
+/// `clean`-normal at both ends on every route (see
+/// `StreamingPreviewManagerTrailingWhitespaceTests`). This suite asserts on a
+/// mock delegate, so it pins the service's half alone.
+///
 /// Two funnels, two rules — the distinction this suite exists to hold:
 ///
 /// - GROWTH (`appendAssistant`): `stripLeadingWhitespace`, gated on
@@ -133,9 +140,27 @@ final class LLMExecutionServiceStreamingLeadingWhitespaceTests: XCTestCase {
         XCTAssertEqual(LLMExecutionService.stripLeadingWhitespace(""), "")
     }
 
-    /// `Character.isWhitespace` is Unicode-aware — line separator U+2028
-    /// and paragraph separator U+2029 are dropped too. Some models emit
-    /// these instead of `\n`.
+    /// The set is `ModelTokenCleaner.edgeWhitespace` — what `clean` trims at commit — on
+    /// SCALARS. Foundation's set contains U+200B (Unicode's `White_Space` does not), so a reply
+    /// of one zero-width space is nothing to commit and must be nothing here too: until
+    /// 2026-09-14 `Character.isWhitespace` kept it, `assistantCollected` was non-empty,
+    /// `clean` emptied it, and the tokens-only nudge fired with no token in sight.
+    func testStripLeadingWhitespace_dropsZeroWidthSpace_asCleanDoes() {
+        XCTAssertEqual(LLMExecutionService.stripLeadingWhitespace("\u{200B}"), "")
+        XCTAssertEqual(LLMExecutionService.stripLeadingWhitespace("\u{200B}\nHi"), "Hi")
+        XCTAssertEqual(ModelTokenCleaner.clean("\u{200B}"), "", "the premise")
+    }
+
+    /// Scalars, not Characters: `" \u{301}"` is ONE Character (space + combining acute), which
+    /// `Character.isWhitespace` dropped whole; `clean` keeps the mark, and so does this.
+    func testStripLeadingWhitespace_cutsAtScalars_keepsACombiningMarkAfterASpace() {
+        XCTAssertEqual(LLMExecutionService.stripLeadingWhitespace(" \u{0301}x"), "\u{0301}x")
+        XCTAssertEqual(LLMExecutionService.stripLeadingWhitespace(" \u{0301}x"),
+                       ModelTokenCleaner.clean(" \u{0301}x"))
+    }
+
+    /// The set is Unicode-aware — line separator U+2028 and paragraph
+    /// separator U+2029 are dropped too. Some models emit these instead of `\n`.
     func testStripLeadingWhitespace_dropsUnicodeLineAndParagraphSeparators() {
         XCTAssertEqual(
             LLMExecutionService.stripLeadingWhitespace("\u{2028}\u{2029}Hi"),
@@ -203,13 +228,13 @@ final class LLMExecutionServiceStreamingLeadingWhitespaceTests: XCTestCase {
     /// `testInternalNewlines_preservedAfterFirstNonWhitespaceChar`.
     ///
     /// RED: revert `stripSurroundingWhitespace` to `stripLeadingWhitespace` at
-    /// the rewind → assertion 3 fails with the trailing `\n\n` back.
+    /// the rewind → assertions 2 and 3 fail together with the trailing `\n\n` back.
     ///
-    /// Assertion 3 is load-bearing precisely BECAUSE assertion 2 is not: the
-    /// preview is trimmed a second time on its own line (it also has to strip
-    /// tokens, which can expose fresh trailing space), so the preview alone is
-    /// defended twice and survives that single mutation. `assistantContent` is
-    /// the singly-defended value, so it is what pins the `preMarker` trim.
+    /// Since 2026-09-14 the delegate argument IS `preMarker` — the value the wire
+    /// keeps — so the rewind's one trim is what both assertions read: the preview
+    /// is no longer trimmed a second time here. What the manager then shows (its
+    /// own `clean`, trailing run held) is pinned by
+    /// `StreamingPreviewManagerTrailingWhitespaceTests`.
     func testHarmonyEnvelope_visibleContentAfterReasoning_stripsLeadingAndTrailingNotInternal() async throws {
         let thinkingText = "The file is huge — about 1.1M lines. I should not read it whole; let me grep for crash markers first."
         let leadingGap = "\n\n\n\n"
@@ -258,16 +283,15 @@ final class LLMExecutionServiceStreamingLeadingWhitespaceTests: XCTestCase {
         XCTAssertEqual(rewound, committed,
                        "preview and committed content must be byte-identical")
 
-        // 3. The `preMarker` trim itself. `assistantContent` is the only value
-        //    the rewind's own trim is solely responsible for — see the RED note.
+        // 3. The `preMarker` trim itself, on the wire's side of the same value.
         XCTAssertEqual(
             result.assistantContent, visibleContent,
-            "the rewind must trim its own buffer, not lean on the preview's second trim"
+            "the rewind must trim its own buffer — the value both the wire and the preview's stream receive"
         )
 
         // 3. Joined preview history doesn't leak a leading `\n` either,
-        //    in case the first chunk was pure whitespace and flushPendingUI
-        //    fired before the rewind branch.
+        //    in case the first chunk was pure whitespace and reached the
+        //    preview before the rewind branch.
         let allPreview = mockDelegate.appendStreamingPreviewCalls.map(\.3).joined()
         XCTAssertFalse(
             allPreview.hasPrefix("\n"),
@@ -324,13 +348,12 @@ final class LLMExecutionServiceStreamingLeadingWhitespaceTests: XCTestCase {
         XCTAssertEqual(mockDelegate.commitStreamingCalls[0].2, body)
     }
 
-    /// Non-Harmony path: a single delta crosses `uiFlushCharThreshold`
-    /// (200 chars) and lands via `flushPendingUI` → `appendAssistant`,
-    /// not via the marker rewind. The strip lives inside `appendAssistant`
-    /// so it must fire on this funnel too. Without this test, moving the
-    /// strip out of `appendAssistant` onto an inline call site would
-    /// silently regress the flush-threshold path.
-    func testFlushThresholdPath_stripsLeadingWhitespace() async throws {
+    /// Non-Harmony path: a delta with no marker lands via `appendAssistant`
+    /// directly, not via the marker rewind. The strip lives inside
+    /// `appendAssistant`, so it must fire on this funnel too. Without this
+    /// test, moving the strip out of `appendAssistant` onto an inline call
+    /// site would silently regress the growth path.
+    func testGrowthPath_stripsLeadingWhitespace() async throws {
         let body = String(repeating: "x", count: 250)
         mockClient.deltas = [
             StreamEvent(contentDelta: "\n\n\n\n" + body)
@@ -511,20 +534,23 @@ final class LLMExecutionServiceStreamingLeadingWhitespaceTests: XCTestCase {
         XCTAssertEqual(mockDelegate.replaceStreamingPreviewCalls[0].3, prose)
     }
 
-    /// `uiBuffer` holds RAW deltas while the append path strips tokens per
-    /// delta, so the rewind could otherwise put a `<|…|>` back on screen that
-    /// was already gone. `<|end|>` is not in `harmonyMarkers`, so it can
-    /// legitimately precede the earliest one.
+    /// `uiBuffer` holds RAW deltas, and so does the manager's stream: the rewind hands the
+    /// manager the pre-marker text with its tokens IN — the same bytes `assistantCollected`
+    /// keeps — and the manager derives the display (`ModelTokenCleaner.clean`) and re-seeds its
+    /// stream from them. `<|end|>` is not in `harmonyMarkers`, so it can legitimately precede
+    /// the earliest one; what reaches the SCREEN is the manager's business, pinned end to end by
+    /// `StreamingActivityWiringTests.testHarmonyRewind_strayTokenBeforeTheMarker_screenShowsTheProse`.
     ///
-    /// RED: drop `ModelTokenCleaner.stripTokens` from the preview value →
-    /// the stray `<|end|>` reaches the bubble.
-    func testRewind_strayTokenBeforeMarker_doesNotReachThePreview() async throws {
+    /// RED: strip the tokens before the delegate call (the shape until 2026-09-14) → the
+    /// argument no longer equals `assistantContent`, and a seed `clean` already touched is a
+    /// different stream than the one commit strips (`clean` is not idempotent).
+    func testRewind_handsTheManagerTheRawPreMarker_tokensIncluded() async throws {
         mockClient.deltas = [
             StreamEvent(contentDelta: "Done thinking.<|end|>\n\n"
                 + #"<|call|>{"name":"git_status","arguments":{}}<|end|>"#)
         ]
 
-        _ = try await service.performStreamingCall(
+        let result = try await service.performStreamingCall(
             stepID: stepID, taskID: taskID, roleForMessage: .codingAgent,
             client: mockClient, config: LLMConfig(),
             tools: [], conversationMessages: [],
@@ -532,19 +558,18 @@ final class LLMExecutionServiceStreamingLeadingWhitespaceTests: XCTestCase {
         )
 
         let rewound = mockDelegate.replaceStreamingPreviewCalls[0].3
-        XCTAssertFalse(rewound.contains("<|"),
-                       "the rewind must not reintroduce a token the append path removed")
-        XCTAssertEqual(rewound, "Done thinking.")
+        XCTAssertEqual(rewound, "Done thinking.<|end|>", "whitespace trimmed, tokens kept — the wire's value")
+        XCTAssertEqual(rewound, result.assistantContent, "one truth for the wire and for the preview's stream")
     }
 
     /// The regression guard for the fix's own scope: `+StepFlowControl`'s
     /// tokens-only retry fires on `!assistantContent.isEmpty &&
     /// clean(assistantContent).isEmpty`. Folding `stripTokens` into
-    /// `assistantCollected` (rather than only into the preview) would make
-    /// that branch unreachable, so the rewind must leave tokens in place on
-    /// the result even while stripping them from the preview.
+    /// `assistantCollected` would make that branch unreachable, so the rewind
+    /// must leave tokens in place on the result. The token strip for the SCREEN
+    /// belongs to the manager: the service hands it the same tokens-included value.
     ///
-    /// RED: apply `stripTokens` to `assistantCollected` too → the result is
+    /// RED: apply `stripTokens` to `assistantCollected` → the result is
     /// empty and the diagnostic silently dies.
     func testRewind_tokensOnlyProse_staysDetectableAsTokensOnly() async throws {
         mockClient.deltas = [

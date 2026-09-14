@@ -344,6 +344,17 @@ extension LLMExecutionService {
         return "{" + body + separator + member + "}"
     }
 
+    /// The failed call's direction (`ToolErrorNotePolicy`) as the tail of the tool turn's
+    /// content: envelope, blank line, direction. `nil` or empty → the content as it was.
+    /// Text after the envelope rather than a member inside it — `appendingRepairNote` splices
+    /// INTO the JSON because a format note is a fact about the arguments the envelope
+    /// describes; a direction is a sentence to the model, and the bytes after the blank line
+    /// are exactly what the prompt-taught wires rendered when it was a turn of its own.
+    nonisolated static func appendingDirection(_ direction: String?, to content: String) -> String {
+        guard let direction, !direction.isEmpty else { return content }
+        return content + "\n\n" + direction
+    }
+
     /// Supervisor questions are recorded in `outcome` but do not interrupt processing.
     @discardableResult
     func processRegularToolResult(
@@ -366,11 +377,38 @@ extension LLMExecutionService {
             contentForConversation = content
         }
 
+        // Conditional, and `nil` is the common case for `edit_file`: the envelope is the
+        // same turn, so a direction that only restates it costs context and teaches
+        // nothing (`ToolErrorNotePolicy`).
+        let direction: String? = result.isError
+            ? ToolErrorNotePolicy.direction(for: result, allowedToolNames: allowedToolNames)
+            : nil
+
+        // The direction rides the FAILED CALL'S OWN TURN — envelope, blank line, direction —
+        // not a `.user` turn of its own (until 2026-09-14 it did). On the two prompt-taught
+        // wires the bytes are identical either way: both join consecutive user-side parts with
+        // `\n\n`, so `[Tool Result]\n{envelope}\n\n{direction}` is what they always rendered.
+        // On the two native wires it removes a user turn — and a user turn is where the
+        // Qwen3.5 template drops every earlier assistant turn's reasoning
+        // (`loop.index0 > ns.last_query_index`): the rendered prompt shrinks, the prefix
+        // diverges, and a cache that cannot be trimmed restarts. Measured on MeditationApp
+        // task 113 (2026-09-14): one `read_file` error → 34 s to re-prefill 42k tokens, on a
+        // wire whose every other append was warm. A `tool` turn does not move that gate.
+        // `carriesErrorDirection` is in-process routing, never a wire byte (no builder reads it,
+        // the fingerprint skips it): with the direction inside the tool turn it is the ONE sign
+        // `ConversationRepairService.repairConversationIfNeeded` has left of the `.user` turn it
+        // replaced — so it is set under THAT turn's condition, a direction, not on every error.
+        // Flagging `result.isError` (the first cut, 2026-09-14) widened the repair to
+        // nil-direction errors such as a typed `ANCHOR_NOT_FOUND`: a retryable 503 then deleted
+        // the whole batch, successful results included, and blamed the calls' arguments.
         conversationMessages.append(
             ChatMessage(
                 role: .tool,
-                content: Self.appendingRepairNote(argumentRepairNote, to: contentForConversation),
-                toolCallID: result.providerID)
+                content: Self.appendingDirection(
+                    direction,
+                    to: Self.appendingRepairNote(argumentRepairNote, to: contentForConversation)),
+                toolCallID: result.providerID,
+                carriesErrorDirection: direction != nil ? true : nil)
         )
         // Through the shared producer, not a second literal: `TaskMutationService`'s own doc
         // says two producers of one wire shape is the drift class, and this was the second.
@@ -391,14 +429,10 @@ extension LLMExecutionService {
         )
         await processCreateArtifactResult(result: result, stepID: stepID, taskID: taskID)
 
-        // Conditional, and `nil` is the common case for `edit_file`: the envelope is the
-        // preceding turn, so a direction that only restates it costs context and teaches
-        // nothing (`ToolErrorNotePolicy`).
-        if result.isError,
-           let guidance = ToolErrorNotePolicy.direction(for: result, allowedToolNames: allowedToolNames) {
-            conversationMessages.append(ChatMessage(role: .user, content: guidance))
-            // Persisted despite being invisible, and that is not belt-and-braces — two
-            // consumers read the display record rather than the wire:
+        if let guidance = direction {
+            // The wire carried it inside the tool turn above; the DISPLAY RECORD keeps its own
+            // `.user` entry, and that is not belt-and-braces — two consumers read the display
+            // record rather than the wire:
             // `ConversationReplay.rebuildFromDisplayRecord` (the `wireTranscript`-less
             // fallback, which would otherwise re-show the model its failed call with the
             // steering stripped) and `DelegatedSupervisorAnswerService.buildSeed`, which drops

@@ -319,6 +319,7 @@ struct SupervisorInquiryCard: View {
 #if DEBUG
 /// The questionnaire both previews below render, so the blank and the half-filled states are
 /// demonstrably the same form and differ only in what has been answered.
+// periphery:ignore - used in #Preview macros below
 private enum InquiryCardPreview {
     static let inquiry = SupervisorInquiry(
         headline: "A few decisions before I start on the exporter.",

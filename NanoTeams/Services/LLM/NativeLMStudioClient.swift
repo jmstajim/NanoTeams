@@ -7,8 +7,12 @@ import Foundation
 /// Notes:
 /// - System prompt uses the `system_prompt` field and ships on every request
 /// - `input` is a plain string (single user message or joined tool results + user text)
-/// - No `tools` parameter — tool schemas are injected into `system_prompt` as a Harmony-format
-///   description block; models generate `<|call|>` tool calls parsed by HarmonyToolCallParser
+/// - No `tools` parameter on THIS endpoint — under `.promptTaught` tool schemas are injected
+///   into `system_prompt` as a Harmony-format description block and models generate `<|call|>`
+///   tool calls parsed by HarmonyToolCallParser. A `.native` request with tools never lands
+///   here: `LLMClientRouter` sends it to `OpenAICompatLMStudioClient` (`/v1/chat/completions`,
+///   the one LM Studio endpoint that carries `tools`); this client stays the lifecycle owner
+///   and the probe (`toolCallingSupport` → `trained_for_tool_use`) for both routes.
 /// - SSE uses named `event:` lines (18 event types) instead of JSON `type` field
 /// - Token stats come from `stats.tokens_in/tokens_out`
 /// - Models endpoint is `/api/v1/models`
@@ -55,6 +59,10 @@ nonisolated struct NativeLMStudioClient: LLMClient {
                 var requestRecord: NetworkLogRecord?
                 var startTime = Date()
                 var capturedResidency: ClientResidencyFacts?
+                // Accumulators for network logging — outside the `do` so the interrupted
+                // record can carry them.
+                var accumulatedContent = ""
+                var accumulatedThinking = ""
                 // Census this request so the model-switch hook refuses to
                 // unload the instance while it is streaming. Bracketed here
                 // rather than around the HTTP call so the load itself is
@@ -155,9 +163,6 @@ nonisolated struct NativeLMStudioClient: LLMClient {
                         throw LLMClientError.badHTTPStatus(http.statusCode, body)
                     }
 
-                    // Accumulators for network logging
-                    var accumulatedContent = ""
-                    var accumulatedThinking = ""
                     var capturedUsage: TokenUsage?
                     var capturedPrefill: ServerPrefillReport?
                     var capturedGenerationRate: Double?
@@ -214,18 +219,13 @@ nonisolated struct NativeLMStudioClient: LLMClient {
                     // Log response
                     if let logger, let reqRecord = requestRecord {
                         let durationMs = Date().timeIntervalSince(startTime) * 1000
-                        var responseBody = ""
-                        if !accumulatedThinking.isEmpty {
-                            responseBody += "[reasoning]\n\(accumulatedThinking)\n[/reasoning]\n\n"
-                        }
-                        if !accumulatedContent.isEmpty {
-                            responseBody += accumulatedContent
-                        }
                         let responseRecord = NetworkLogger.createResponseRecord(
                             for: reqRecord,
                             statusCode: http.statusCode,
                             durationMs: durationMs,
-                            body: responseBody.isEmpty ? nil : responseBody,
+                            body: NetworkLogger.streamedBodyText(
+                                thinking: accumulatedThinking, content: accumulatedContent,
+                                toolCalls: []),
                             error: nil,
                             inputTokens: capturedUsage?.inputTokens,
                             outputTokens: capturedUsage?.outputTokens,
@@ -236,15 +236,21 @@ nonisolated struct NativeLMStudioClient: LLMClient {
                     }
 
                     continuation.finish()
-                } catch is CancellationError {
-                    continuation.finish(throwing: CancellationError())
                 } catch {
+                    // One arm for a transport failure, a provider error chunk and a
+                    // cancellation alike: the record carries what had streamed by then.
+                    // Until 2026-09-13 a Swift cancellation logged nothing and a URL-layer
+                    // one logged `cancelled` with no body, so a request cut off at the
+                    // run's timeout after minutes of reasoning left the log blank.
                     if let logger, let reqRecord = requestRecord {
                         let durationMs = Date().timeIntervalSince(startTime) * 1000
                         let errorRecord = NetworkLogger.createResponseRecord(
                             for: reqRecord,
                             statusCode: 0,
                             durationMs: durationMs,
+                            body: NetworkLogger.streamedBodyText(
+                                thinking: accumulatedThinking, content: accumulatedContent,
+                                toolCalls: []),
                             error: error
                         )
                         logger.append(errorRecord)
@@ -278,6 +284,23 @@ nonisolated struct NativeLMStudioClient: LLMClient {
     /// model isn't in the list; a listed model without `capabilities.vision`
     /// is a definitive `false`.
     func modelSupportsVision(config: LLMConfig) async -> Bool? {
+        guard let info = await nativeModelInfo(config: config) else { return nil }
+        return info.capabilities?.vision == true
+    }
+
+    /// Whether `config.modelName` was trained for tool use, per the native model list's
+    /// `capabilities.trained_for_tool_use`. Same decode and the same three `nil`s as
+    /// `modelSupportsVision`: transport failure, the OpenAI-shaped fallback (which carries no
+    /// capability object), and a model not in the list. A listed model whose capability
+    /// object omits the key is a definitive `false`.
+    func toolCallingSupport(config: LLMConfig) async -> Bool? {
+        guard let info = await nativeModelInfo(config: config) else { return nil }
+        return info.capabilities?.trainedForToolUse == true
+    }
+
+    /// One `GET /api/v1/models` + native decode, matched on `key`. Shared by the two
+    /// capability probes so they cannot disagree about which entry answers for a model.
+    private func nativeModelInfo(config: LLMConfig) async -> NativeModelListResponse.NativeModelInfo? {
         guard let baseURL = URL(string: config.baseURLString) else { return nil }
         let url = baseURL.appendingPathComponent("api/v1/models")
         var request = URLRequest(url: url)
@@ -290,9 +313,7 @@ nonisolated struct NativeLMStudioClient: LLMClient {
               (200..<300).contains(http.statusCode),
               let native = try? JSONCoderFactory.makeWireDecoder().decode(NativeModelListResponse.self, from: data)
         else { return nil }
-
-        guard let info = native.models.first(where: { $0.key == config.modelName }) else { return nil }
-        return info.capabilities?.vision == true
+        return native.models.first(where: { $0.key == config.modelName })
     }
 
     /// Best-effort probe of the context-window size (tokens) of `config.modelName`,

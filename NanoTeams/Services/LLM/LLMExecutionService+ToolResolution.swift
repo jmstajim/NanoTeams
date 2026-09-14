@@ -3,9 +3,61 @@ import Foundation
 /// Tool schema resolution, effective config building, and pre-flight checks.
 extension LLMExecutionService {
 
+    // MARK: - Tool-calling mode
+
+    /// The mode a request on `config` runs under — the user's preference resolved against the
+    /// provider's capability report, through `ToolCallingModeResolver`.
+    ///
+    /// The ONE resolution point for every tool-bearing caller (the step, a meeting turn, team
+    /// generation, delegation, the delegated-Supervisor exchange — the last three reach it
+    /// through `NTMSOrchestrator.resolveToolCallingMode(for:)`). Async because the answer is a
+    /// network probe; `buildEffectiveConfig` stays synchronous and pure and copies the field
+    /// through, so a caller resolves the config first and the mode second, and never the
+    /// other way round — a mode resolved for the override's model must not be overwritten by
+    /// the global model's, and `preflightCheck` can swap one for the other.
+    ///
+    /// Memo per `(server, model)` for a definitive answer only; an undeterminable one is
+    /// retried at most once per step entry when `stepKey` is given (the same split the
+    /// context-window and vision probes use), and every time for a step-less caller, which is
+    /// a bounded number of one-shot calls.
+    func resolveToolCallingMode(
+        config: LLMConfig, stepKey: TaskStepKey? = nil
+    ) async -> ToolCallingMode {
+        let preference = delegate?.toolCallingPreference ?? .auto
+        // An explicit preference asks the server nothing.
+        guard preference == .auto else {
+            return ToolCallingModeResolver.resolve(preference: preference, providerSupport: nil)
+        }
+        let cacheKey = "\(config.baseURLString.normalizedBaseURL)|\(config.modelName)"
+        let support: Bool?
+        if let cached = probedToolCallingSupport[cacheKey] {
+            support = cached
+        } else if let stepKey, executionStates[stepKey]?.probedToolCallingKeys.contains(cacheKey) == true {
+            support = nil
+        } else {
+            if let stepKey { executionStates[stepKey]?.probedToolCallingKeys.insert(cacheKey) }
+            support = await clientFactory().toolCallingSupport(config: config)
+            if let support { probedToolCallingSupport[cacheKey] = support }
+        }
+        return ToolCallingModeResolver.resolve(preference: preference, providerSupport: support)
+    }
+
+    /// `config` with its mode resolved — the shape every caller that holds a config wants.
+    func withResolvedToolCallingMode(
+        _ config: LLMConfig, stepKey: TaskStepKey? = nil
+    ) async -> LLMConfig {
+        var resolved = config
+        resolved.toolCallingMode = await resolveToolCallingMode(config: config, stepKey: stepKey)
+        return resolved
+    }
+
     // MARK: - Effective Config Resolution
 
     /// Builds the effective LLM config for a role, applying per-role overrides to the global config.
+    ///
+    /// Synchronous and PURE — it copies `toolCallingMode` through and never decides it: the
+    /// mode is a network probe's answer (`resolveToolCallingMode`), resolved by the caller AFTER
+    /// this and after `preflightCheck`, on whichever config those two settled on.
     static func buildEffectiveConfig(
         globalConfig: LLMConfig,
         roleOverride: LLMOverride?
@@ -29,7 +81,10 @@ extension LLMExecutionService {
             requestTimeoutSeconds: globalConfig.requestTimeoutSeconds,
             // Same reason as the timeout above: a URL-only override must not silently
             // drop the residency hint and let the model evict mid-step.
-            keepAliveSeconds: globalConfig.keepAliveSeconds
+            keepAliveSeconds: globalConfig.keepAliveSeconds,
+            // Copied, not resolved — the override may name a different model, and the caller
+            // re-resolves the mode for it once the config is final.
+            toolCallingMode: globalConfig.toolCallingMode
         )
     }
 

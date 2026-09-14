@@ -38,9 +38,6 @@ extension LLMExecutionService {
         let supervisorMode = stepRuntime.supervisorMode
         let roleForMessage = stepRuntime.roleForMessage
 
-        let fullConversation = buildChatMessages(
-            for: task, stepID: stepID, tools: tools, supervisorMode: supervisorMode)
-
         // Re-entry: continue the conversation this step actually sent instead of
         // re-synthesizing one. `resume` is nil only for a genuinely fresh step.
         // The two re-entry triggers are made mutually exclusive below: an
@@ -79,7 +76,7 @@ extension LLMExecutionService {
             await self.forgetPrefixChainForFreshConversation(stepID: stepID, taskID: taskID)
 
             // Resolve effective config with provider-aware pre-flight check
-            let config: LLMConfig
+            var config: LLMConfig
             if effectiveConfig.provider != globalConfig.provider
                 || effectiveConfig.baseURLString != globalConfig.baseURLString
             {
@@ -94,6 +91,28 @@ extension LLMExecutionService {
             } else {
                 config = effectiveConfig
             }
+
+            // The tool-calling mode, AFTER the config is final: the probe is keyed by
+            // (server, model), and `preflightCheck` above can have swapped the override's for
+            // the global's. A re-entry continues under the mode its transcript was written in
+            // (`replayToolCallingMode`); only a genuinely fresh step asks the provider, and
+            // pins the answer on the step so every later entry of this conversation agrees.
+            let toolCallingMode: ToolCallingMode
+            if let pinned = step.replayToolCallingMode {
+                toolCallingMode = pinned
+            } else {
+                toolCallingMode = await self.resolveToolCallingMode(config: config, stepKey: stepKey)
+                await self.pinToolCallingMode(stepID: stepID, taskID: taskID, mode: toolCallingMode)
+            }
+            config.toolCallingMode = toolCallingMode
+
+            // Rendered HERE, after the mode is known, because the `{toolCalling}` chip is a
+            // function of it. It used to be rendered before this task opened — before
+            // `preflightCheck` could even change the config — which was harmless only while
+            // the prompt depended on nothing the config decided.
+            let fullConversation = self.buildChatMessages(
+                for: task, stepID: stepID, tools: tools, supervisorMode: supervisorMode,
+                toolCallingMode: toolCallingMode)
 
             // Pin the resolved (base, model) as in-use for this step so a
             // residency reconcile fired by another engine's transition can't
@@ -143,8 +162,19 @@ extension LLMExecutionService {
                     let answerJSON = self.buildCollaborationToolResult(
                         toolName: ToolNames.askSupervisor,
                         response: answer)
-                    conversation = resume.messages
-                        + [ChatMessage(role: .tool, content: answerJSON)]
+                    // The answer REPLACES the `{"status":"pending"}` placeholder the park left
+                    // under the ask's id (`SupervisorAskWireResolution` — the auto-answer path's
+                    // producer too). Only a transcript persisted before ids rode the wire has no
+                    // placeholder to resolve; there the answer is appended and pairs with the
+                    // preceding turn's ask positionally (`NativeToolTurnPairing`).
+                    var resumed = resume.messages
+                    if !SupervisorAskWireResolution.resolve(
+                        ids: SupervisorAskWireResolution.pendingAskCallIDs(in: resumed),
+                        with: answerJSON, in: &resumed)
+                    {
+                        resumed.append(ChatMessage(role: .tool, content: answerJSON))
+                    }
+                    conversation = resumed
                 } else if let resume = resumeConversation, hasRevisionFeedback,
                           let feedback = step.revisionComment {
                     // `revisionComment` is raw by contract, but tasks persisted by older
@@ -432,7 +462,10 @@ extension LLMExecutionService {
     /// server on a role whose override is unreachable.
     struct StepRuntime {
         let globalConfig: LLMConfig
-        let effectiveConfig: LLMConfig
+        /// `var`: the out-of-loop compaction stamps the suspended step's PINNED tool-calling
+        /// mode onto it — the one field of a config that is decided per step rather than per
+        /// role, and the resolver here is deliberately synchronous (see `buildEffectiveConfig`).
+        var effectiveConfig: LLMConfig
         let client: any LLMClient
         let tools: [ToolSchema]
         let runtime: ToolRuntime

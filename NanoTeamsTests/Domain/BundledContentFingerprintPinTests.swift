@@ -273,6 +273,25 @@ final class BundledContentFingerprintPinTests: XCTestCase {
     //     the `ask_supervisor_form` schema's `description` and `parameters` are byte-identical
     //     (`SupervisorHandlers.swift` lost 266 lines, all of them the decode ladder moving to
     //     `SupervisorFormPayload`, none of them schema text).
+    // 1.9.30, 2026-09-14 — bumped WITHOUT moving this value, as 1.9.25 was. Over the release
+    // range (`e5d41bd5`, the tree 1.9.25 was archived from, to `4af4490d`) exactly one file that
+    // feeds `compute` changed — `SystemTemplates.swift` — and its one changed literal is
+    // `producingStepEnding`, which the bundled templates reach only through the `{stepEnding}`
+    // CHIP that `PromptBuilder` resolves per request. So that sentence moved
+    // `RuntimePromptFingerprint`, together with the native tool-calling rows and the
+    // leading-empty-objects note (`5bd6732fd5c69a9`, shipped with 1.9.25, → `b5544fec2e2a8e54`
+    // → `2c8dbdfd84afa18b` → `7d26d97335ae62ff`), and cannot move this one. Native tool calling
+    // changes how the catalog reaches the wire, not a schema's text.
+    //   Проверка — every path spelled from the root. The 1.9.25 note above passes four of its
+    //   files bare (`SystemTemplates+RoleTemplates.swift` …), a bare pathspec matches nothing
+    //   from the repository root, and so its EMPTY held by construction:
+    //     git diff --stat e5d41bd5..4af4490d -- 'NanoTeams/Domain/SystemTemplates*.swift' \
+    //       NanoTeams/Domain/TeamTemplateFactory.swift NanoTeams/Domain/ToolDefinitionRecord.swift \
+    //       NanoTeams/Services/Tools/Handlers → `SystemTemplates.swift | 12 +++++++++++-`, and
+    //     every `+`/`-` line of that hunk is `producingStepEnding` or its doc comment.
+    //   The half that cannot be vacuous is this test: `compute` folds `Team.defaultTeams`, the
+    //   Autovisor, `templateConfigs` and `ToolDefinitionRecord.defaultDefinitions()`, and the
+    //   value below still matches on the release tree.
     private static let expectedFingerprint = "32337af25e41c6eb"
 
     func testBundledContent_hasNotChangedWithoutAVersionBump() {

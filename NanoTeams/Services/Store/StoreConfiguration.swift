@@ -471,6 +471,14 @@ final class StoreConfiguration {
         }
     }
 
+    /// How tools reach the model — `auto` follows the provider's capability report, the two
+    /// explicit values override it (`ToolCallingPreference`). Read per request by
+    /// `LLMExecutionService.resolveToolCallingMode`; a change takes effect on the next STEP
+    /// that starts, never mid-step, because the mode is pinned on the step with its transcript.
+    var toolCallingPreference: ToolCallingPreference {
+        didSet { storage.set(toolCallingPreference.rawValue, forKey: Keys.toolCallingPreference) }
+    }
+
     /// Whether a step replaces its own conversation with a summary when it crosses
     /// `autoCompactBudgetPercent` of the model's loaded window.
     ///
@@ -1012,6 +1020,10 @@ final class StoreConfiguration {
                 .compactMap(LLMProvider.init(rawValue:)))
         self.maxLLMRetries = (storage.object(forKey: Keys.maxLLMRetries) as? Int) ?? LLMConstants.defaultMaxLLMRetries
         self.autoCompactEnabled = (storage.object(forKey: Keys.autoCompactEnabled) as? Bool) ?? true
+        // Fail toward `.auto` on an unreadable value: an unknown rawValue must not pin an
+        // install to either protocol.
+        self.toolCallingPreference = storage.string(forKey: Keys.toolCallingPreference)
+            .flatMap(ToolCallingPreference.init(rawValue:)) ?? .auto
         // Fail OPEN on an unreadable value: an unknown rawValue (a downgrade, a hand-edited
         // plist) must not silently serialize every run to one role at a time.
         self.roleConcurrencyMode = storage.string(forKey: Keys.roleConcurrencyMode)
@@ -1242,6 +1254,7 @@ final class StoreConfiguration {
         storage.removeObject(forKey: Keys.benchmarkExcludedProviders)
         storage.removeObject(forKey: Keys.maxLLMRetries)
         storage.removeObject(forKey: Keys.autoCompactEnabled)
+        storage.removeObject(forKey: Keys.toolCallingPreference)
         storage.removeObject(forKey: Keys.roleConcurrencyMode)
         storage.removeObject(forKey: Keys.autoCompactBudgetPercent)
         storage.removeObject(forKey: Keys.llmRequestTimeoutSeconds)
@@ -1312,6 +1325,7 @@ final class StoreConfiguration {
         benchmarkExcludedProviders = []
         maxLLMRetries = LLMConstants.defaultMaxLLMRetries
         autoCompactEnabled = true
+        toolCallingPreference = .auto
         roleConcurrencyMode = .providerLimited
         autoCompactBudgetPercent = AppDefaults.autoCompactBudgetPercent
         llmRequestTimeoutSeconds = LLMConstants.defaultLLMRequestTimeoutSeconds

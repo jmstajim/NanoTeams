@@ -66,6 +66,13 @@ extension LLMExecutionService {
         /// memo for a real answer, per-step latch for an undeterminable one.
         var probedVisionKeys: Set<String> = []
 
+        /// And the third of the family, for the tool-calling capability probe: the memo keeps
+        /// only a definitive answer, so this bounds the retry of an undeterminable one to once
+        /// per step entry. Deliberately NOT cleared by `resetConversationScopedState` — the
+        /// mode is pinned for the whole step at its first request and the boundary never
+        /// re-resolves it, so a second probe there would answer a question nobody asks.
+        var probedToolCallingKeys: Set<String> = []
+
         /// Where this step's conversation came from when it (re-)entered.
         ///
         /// Drives the prompt-prefix cache detector's first-request rule, which cannot simply be
@@ -229,6 +236,20 @@ extension LLMExecutionService {
         ///    post-revision one.
         /// 4. `cleanup()`.
         var consecutiveReasoningEnvelopeCount: Int = 0
+
+        /// Count of consecutive turns the SERVER cut off at its output ceiling
+        /// (`done_reason` / `finish_reason == "length"`) with no call resolved. First → a nudge
+        /// naming the cut; second consecutive → escalate. Its own counter because it is its
+        /// own shape: the drift counter measures reasoning LENGTH in characters and a turn the
+        /// server truncated at 600 tokens never reaches that threshold, while the failure —
+        /// a model reasoning in circles about a tool the schema lacks until the ceiling —
+        /// repeats identically every turn (gemma-4-26b on LM Studio, 2026-09-13).
+        ///
+        /// Reset on any turn the server ends with another reason, on any turn that made a
+        /// parseable call (`resetCountersOnParseableToolCall` — a dispatched turn never enters
+        /// `handleNoToolCalls`, so without that reset two cuts twenty productive turns apart
+        /// counted as consecutive), on the revision branch, and in `cleanup()`.
+        var consecutiveTruncatedTurns: Int = 0
 
         /// Most-recent computer-use screenshot for this step: the conversion metadata
         /// (region origin/size, pixel size) the `.click`/`.scroll` finalizers need, plus
@@ -401,6 +422,7 @@ extension LLMExecutionService {
             consecutiveNonProductiveTurns = 0
             consecutiveHarmonyParseFailureCount = 0
             consecutiveReasoningEnvelopeCount = 0
+            consecutiveTruncatedTurns = 0
             compactRequested = nil
             lastContextFill = nil
             autoCompactExhausted = false

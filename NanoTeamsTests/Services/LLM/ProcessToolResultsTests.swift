@@ -185,10 +185,12 @@ final class ProcessToolResultsTests: XCTestCase {
 
     // MARK: - Group C: error results
 
-    /// An error result flips the card red, records an unsuccessful tracker entry, and
-    /// appends a `.user` guidance turn AFTER the `.tool` turn — on the wire and on the
-    /// step. `INVALID_ARGS` takes `ToolErrorNotePolicy.direction`'s `default` arm, which must
-    /// prefix the typed code and steer toward fixing arguments.
+    /// An error result flips the card red, records an unsuccessful tracker entry, and puts
+    /// its direction INSIDE the `.tool` turn on the wire (no `.user` turn follows — that turn
+    /// cost a full re-prefill on a hybrid model, 2026-09-14) while the step's display record
+    /// keeps a `.user` entry for its two readers. `INVALID_ARGS` takes
+    /// `ToolErrorNotePolicy.direction`'s `default` arm, which must prefix the typed code and
+    /// steer toward fixing arguments.
     func testProcessToolResults_errorResult_flipsCardAndAppendsTypedGuidance() async {
         let callID = UUID()
         let call = makeCall(id: callID, providerID: "tc_0", name: ToolNames.listFiles,
@@ -214,12 +216,14 @@ final class ProcessToolResultsTests: XCTestCase {
         XCTAssertEqual(card(callID)?.resultJSON ?? nil, errorEnvelope)
         XCTAssertEqual(tracker.recentCalls(limit: .max).first?.wasSuccessful, false)
 
-        XCTAssertEqual(conversation.count, 2,
-                       "An error result appends the tool turn AND a guidance turn")
-        guard conversation.count == 2 else { return }
+        XCTAssertEqual(conversation.count, 1,
+                       "An error result appends ONE turn — the tool turn carrying its direction")
+        guard conversation.count == 1 else { return }
         XCTAssertEqual(conversation[0].role, .tool)
-        XCTAssertEqual(conversation[1].role, .user)
-        let guidance = conversation[1].content ?? ""
+        let toolTurn = conversation[0].content ?? ""
+        XCTAssertTrue(toolTurn.hasPrefix(errorEnvelope), "the envelope leads. Got: \(toolTurn)")
+        let guidance = ToolErrorNotePolicy.direction(for: result, allowedToolNames: []) ?? ""
+        XCTAssertTrue(toolTurn.hasSuffix("\n\n" + guidance), "the direction closes the same turn. Got: \(toolTurn)")
         XCTAssertTrue(guidance.contains("[INVALID_ARGS]"),
                       "Typed code must be surfaced so the model can pick a recovery. Got: \(guidance)")
         XCTAssertTrue(guidance.contains("Fix the arguments and retry."),
@@ -306,11 +310,12 @@ final class ProcessToolResultsTests: XCTestCase {
         // Half two of the contract, and it belongs in the same test: the model must
         // still be steered, or a later "the row is noise" cleanup deletes the steering
         // with it and nothing turns red.
-        XCTAssertEqual(conversation.count, 2, "tool turn + direction")
-        XCTAssertTrue((conversation.last?.content ?? "").contains("Do NOT retry"),
-                      "Got: \(conversation.last?.content ?? "")")
-        XCTAssertFalse((conversation.last?.content ?? "").contains("ask_supervisor"),
-                       "APPROVAL_UNAVAILABLE names no channel — the answerer cannot approve. Got: \(conversation.last?.content ?? "")")
+        XCTAssertEqual(conversation.count, 1, "one tool turn: envelope + direction (a user turn of its own is a re-prefill on a hybrid model)")
+        let toolTurn = conversation.last?.content ?? ""
+        XCTAssertTrue(toolTurn.hasPrefix(denied), "the envelope leads the turn. Got: \(toolTurn)")
+        XCTAssertTrue(toolTurn.contains("\n\nDo NOT retry"), "the direction closes it. Got: \(toolTurn)")
+        XCTAssertFalse(toolTurn.contains("ask_supervisor"),
+                       "APPROVAL_UNAVAILABLE names no channel — the answerer cannot approve. Got: \(toolTurn)")
     }
 
     /// The executor-emitted envelope shape stores the code as a TOP-LEVEL string
@@ -340,9 +345,10 @@ final class ProcessToolResultsTests: XCTestCase {
             conversation: &conversation, tracker: ToolCallTracker()
         )
 
-        XCTAssertEqual(conversation.count, 2)
-        guard conversation.count == 2 else { return }
-        let guidance = conversation[1].content ?? ""
+        XCTAssertEqual(conversation.count, 1, "envelope + direction in one tool turn")
+        guard conversation.count == 1 else { return }
+        let guidance = ToolErrorNotePolicy.direction(for: result, allowedToolNames: []) ?? ""
+        XCTAssertTrue((conversation[0].content ?? "").hasSuffix("\n\n" + guidance))
         XCTAssertTrue(guidance.contains("Do not retry 'write_file'"),
                       "Policy rejections must steer away from the tool, not toward new arguments. Got: \(guidance)")
         XCTAssertFalse(guidance.contains("Fix the arguments and retry."),
@@ -560,7 +566,8 @@ final class ProcessToolResultsTests: XCTestCase {
         XCTAssertTrue(artifacts.isEmpty,
                       "A failed create_artifact must not deposit a deliverable")
         XCTAssertEqual(card(callID)?.isError ?? nil, true)
-        XCTAssertEqual(conversation.count, 2, "The error still earns a guidance turn")
+        XCTAssertEqual(conversation.count, 1, "one tool turn, the direction inside it")
+        XCTAssertTrue((conversation[0].content ?? "").contains("\n\n"), "envelope, blank line, direction")
     }
 
     // MARK: - Group F: scratchpad side effect

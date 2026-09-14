@@ -127,8 +127,7 @@ extension TeamActivityFeedView {
             isStreaming: manager.isStreaming(messageID: messageID),
             content: manager.streamingContent(stepID: stepID, taskID: taskID),
             thinking: manager.streamingThinking(stepID: stepID, taskID: taskID),
-            processingStatus: manager.processingStatus[
-                TaskStepKey(taskID: taskID, stepID: stepID)],
+            processingStatus: manager.promptProcessingStatus(stepID: stepID, taskID: taskID),
             hasStreamActivity: manager.hasReceivedStreamActivity(
                 stepID: stepID, taskID: taskID),
             isStreamingToolCall: manager.isStreamingToolCall(

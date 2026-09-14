@@ -252,7 +252,35 @@ final class RuntimePromptFingerprintPinTests: XCTestCase {
     // branches on `ToolHandlerRegistry.shellTools` while every row rendered with
     // `run_xcodebuild`, so it rode no fingerprint at all. REC.10 is OWED and deferred by the
     // wave's decision — recorded in DEBTS D-36.
-    private static let expectedFingerprint = "5bd6732fd5c69a9"
+    //
+    // 2026-09-13 — `b5544fec2e2a8e54`, the native tool-calling wave (task 90 → provider-native
+    // `tools`/`tool_calls`). NINE new rows and no rewritten prompt-taught byte: the native
+    // chip body (`buildToolSchemaBody/native` — the one-tool rule and the boundary, no
+    // lesson, no catalog), the native arms of `planningSalvage`, `reasoningChannel` and
+    // `callShapeClause` (a tool to NAME, no envelope to illustrate — an illustration in any
+    // text syntax teaches a format the provider's parser never reads, which was task 90's
+    // whole defect), `nativeCallRejected` (the server's own sentence quoted, the model's bytes
+    // never), `outputTruncated` in both modes (`done_reason: length` with no call — gemma-4's
+    // 599-token reasoning loop about a tool the schema did not carry), and the two escalation
+    // questions behind their 3- and 2-strike caps. REC.10: the wave's own headless N=2 on
+    // both providers, Auto vs Prompt-taught, recorded in the engineering-lessons entry.
+    //
+    // 2026-09-13, evening — `2c8dbdfd84afa18b`: ONE new row, `leadingEmptyObjectsNote` — the line
+    // the model reads on the result of a call it opened with a run of empty `{}` objects
+    // (MeditationApp task 94, sixteen times in one step, each answered until then by a
+    // missing-name nudge about a name that stood one object later). No prompt-taught byte
+    // rewritten. REC.10: the shape appeared in 1 of the 12 A/B runs of that evening; the note's
+    // own effect is unmeasured until the shape recurs in a run log (KNOWN_ISSUES, Resolved).
+    //
+    // 2026-09-13, night — `7d26d97335ae62ff`: the producing `## Final reminder` sentence
+    // (`SystemTemplates.producingStepEnding`, two registry rows) names the tool and the field —
+    // "Write each deliverable as the `content` of one `create_artifact` call — that is how the
+    // step ends." — where it read "Submit each deliverable exactly once — that is how the step
+    // ends." REC.10: gemma-4-26b-a4b-qat / LM Studio, Ultra Team, MeditationApp, N=2 per
+    // tool-calling mode: before, 15 of 30 producing steps wrote the deliverable as a plain reply
+    // first (tasks 95–98; the same habit on a second brief, tasks 103–106); after — the entry
+    // in train-first-prompt/RUN_HISTORY.md (Audit 2026-09-13, the reminder entry).
+    private static let expectedFingerprint = "7d26d97335ae62ff"
 
     func testRuntimePromptText_hasNotChangedWithoutRecordingIt() {
         let actual = RuntimePromptFingerprint.current

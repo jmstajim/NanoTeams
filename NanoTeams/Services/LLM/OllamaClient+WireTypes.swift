@@ -24,10 +24,31 @@ nonisolated extension OllamaClient {
         var options: Options?
         /// Seconds. Sent on EVERY request — Ollama restarts the idle timer per call.
         var keepAlive: Int?
+        /// The native tool catalog — `.native` mode only. Ollama renders it into the model's
+        /// own chat template and, when the model answers in its own call syntax, parses the
+        /// reply into `message.tool_calls`. Absent (not `[]`) under `.promptTaught`: sending an
+        /// empty array is still "tools were declared" to some templates.
+        var tools: [NativeToolDeclaration]?
 
         enum CodingKeys: String, CodingKey {
-            case model, messages, stream, options
+            case model, messages, stream, options, tools
             case keepAlive = "keep_alive"
+        }
+
+        init(
+            model: String,
+            messages: [ChatRequestMessage],
+            stream: Bool,
+            options: Options?,
+            keepAlive: Int?,
+            tools: [NativeToolDeclaration]? = nil
+        ) {
+            self.model = model
+            self.messages = messages
+            self.stream = stream
+            self.options = options
+            self.keepAlive = keepAlive
+            self.tools = tools
         }
 
         struct Options: Encodable {
@@ -63,6 +84,62 @@ nonisolated extension OllamaClient {
         var role: String
         var content: String
         var images: [String]?
+        /// `.native` assistant turns: the calls the model made, as the OBJECTS Ollama expects
+        /// (`arguments` is structure here, not a string). Absent under `.promptTaught`, where
+        /// the same calls ride `content` as Harmony text.
+        var toolCalls: [ToolCallEntry]?
+        /// `.native` tool turns: which tool this result answers. Optional on the wire too —
+        /// Ollama accepts a bare `tool` message — and derived positionally when the app's
+        /// own `.tool` message carries no id (`NativeToolTurnPairing`).
+        var toolName: String?
+        /// `.native` assistant turns: the reasoning the model generated on that turn, verbatim,
+        /// in the message field Ollama's API documents for thinking models — the renderer's own
+        /// gate decides whether the model sees it again. Absent (no key) when the turn had none,
+        /// and absent under `.promptTaught`, where the turn is Harmony text with no slot for it.
+        var thinking: String?
+
+        enum CodingKeys: String, CodingKey {
+            case role, content, images, thinking
+            case toolCalls = "tool_calls"
+            case toolName = "tool_name"
+        }
+
+        init(
+            role: String,
+            content: String,
+            images: [String]? = nil,
+            toolCalls: [ToolCallEntry]? = nil,
+            toolName: String? = nil,
+            thinking: String? = nil
+        ) {
+            self.role = role
+            self.content = content
+            self.images = images
+            self.toolCalls = toolCalls
+            self.toolName = toolName
+            self.thinking = thinking
+        }
+    }
+
+    /// One call on a replayed assistant turn: `{"function":{"index":0,"name":…,"arguments":{…}}}`.
+    ///
+    /// `arguments` is re-parsed from the call's `argumentsJSON`; a string that is not a JSON
+    /// object becomes `{}` — the same fallback `HarmonyToolCallEnvelope` applies to an empty
+    /// value, because a replayed turn must be a well-formed call or the whole request is refused.
+    struct ToolCallEntry: Encodable, Equatable {
+        struct Function: Encodable, Equatable {
+            var index: Int
+            var name: String
+            var arguments: JSONValue
+        }
+        var function: Function
+
+        init(index: Int, call: ChatToolCall) {
+            let parsed = JSONValue(json: call.argumentsJSON)
+            function = Function(
+                index: index, name: call.name,
+                arguments: parsed?.isObject == true ? parsed! : .object([:]))
+        }
     }
 
     // MARK: - Chat Stream Chunk (one NDJSON line)
@@ -71,11 +148,49 @@ nonisolated extension OllamaClient {
         struct Message: Decodable {
             var content: String?
             var thinking: String?
+            /// Native calls, whole — Ollama emits each call complete, not as deltas, on one
+            /// chunk (its own, or the terminal `done:true` one; both placements are measured
+            /// on 2026-09-13 and both are pinned).
+            ///
+            /// Decoded LENIENTLY, like the telemetry: `content` and `thinking` stay strict so a
+            /// malformed one costs the chunk rather than silently dropping text, but a call
+            /// the server could not spell (an `arguments` that is not an object, a missing
+            /// `function`) must not take the content and the terminal counts down with it.
+            var toolCalls: [ToolCallChunk]?
+
+            enum CodingKeys: String, CodingKey {
+                case content, thinking
+                case toolCalls = "tool_calls"
+            }
+
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                content = try c.decodeIfPresent(String.self, forKey: .content)
+                thinking = try c.decodeIfPresent(String.self, forKey: .thinking)
+                toolCalls = (try? c.decodeIfPresent([ToolCallChunk].self, forKey: .toolCalls)) ?? nil
+            }
+        }
+
+        /// `{"id":"call_…","function":{"index":0,"name":"read_file","arguments":{…}}}`. The id is
+        /// `call_xxxxxxxx` from Ollama's own renderers and a 32-character token from a
+        /// llama-server model; `index` is present on the renderer path and absent on the other.
+        struct ToolCallChunk: Decodable {
+            struct Function: Decodable {
+                var index: Int?
+                var name: String
+                var arguments: JSONValue?
+            }
+            var id: String?
+            var function: Function
         }
 
         var message: Message?
         var done: Bool?
         var promptEvalCount: Int?
+        /// How many of `prompt_eval_count` the server served from its KV cache — the direct
+        /// answer to "did the prefix hold", where `prompt_eval_duration` is only the indirect
+        /// one. Reported by Ollama ≥ 0.12 on every terminal chunk; absent on older builds.
+        var promptEvalCachedCount: Int?
         var evalCount: Int?
         /// Nanoseconds spent PREFILLING the prompt. Server-measured and decode-excluded, which
         /// makes `prompt_eval_duration / prompt_eval_count` the cleanest cache-hit signal either
@@ -120,6 +235,7 @@ nonisolated extension OllamaClient {
         enum CodingKeys: String, CodingKey {
             case message, done, error
             case promptEvalCount = "prompt_eval_count"
+            case promptEvalCachedCount = "prompt_eval_cached_count"
             case evalCount = "eval_count"
             case promptEvalDurationNs = "prompt_eval_duration"
             case loadDurationNs = "load_duration"
@@ -149,6 +265,8 @@ nonisolated extension OllamaClient {
             done = try c.decodeIfPresent(Bool.self, forKey: .done)
             error = try c.decodeIfPresent(String.self, forKey: .error)
             promptEvalCount = (try? c.decodeIfPresent(Int.self, forKey: .promptEvalCount)) ?? nil
+            promptEvalCachedCount =
+                (try? c.decodeIfPresent(Int.self, forKey: .promptEvalCachedCount)) ?? nil
             evalCount = (try? c.decodeIfPresent(Int.self, forKey: .evalCount)) ?? nil
             promptEvalDurationNs =
                 (try? c.decodeIfPresent(Double.self, forKey: .promptEvalDurationNs)) ?? nil

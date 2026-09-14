@@ -20,7 +20,7 @@ final class ConversationRepairServiceTests: XCTestCase {
                 content: nil,
                 toolCalls: [ChatToolCall(id: "tc1", name: "read_file", argumentsJSON: "{\"path\":\"/bad\"}")]
             ),
-            ChatMessage(role: .tool, content: "Error: file not found", toolCallID: "tc1", isToolError: true),
+            ChatMessage(role: .tool, content: "Error: file not found", toolCallID: "tc1", carriesErrorDirection: true),
             ChatMessage(role: .user, content: "Please continue without that file"),
         ]
 
@@ -45,7 +45,7 @@ final class ConversationRepairServiceTests: XCTestCase {
                 content: nil,
                 toolCalls: [ChatToolCall(id: "tc1", name: "edit_file", argumentsJSON: "{\"path\":\"/x\"}")]
             ),
-            ChatMessage(role: .tool, content: "Error", toolCallID: "tc1", isToolError: true),
+            ChatMessage(role: .tool, content: "Error", toolCallID: "tc1", carriesErrorDirection: true),
             ChatMessage(role: .user, content: "guidance"),
         ]
         ConversationRepairService.repairConversationIfNeeded(&messages)
@@ -70,11 +70,113 @@ final class ConversationRepairServiceTests: XCTestCase {
                 role: .assistant, content: nil,
                 toolCalls: [ChatToolCall(id: "tc1", name: "write_file", argumentsJSON: longArgs)]
             ),
-            ChatMessage(role: .tool, content: "Error", toolCallID: "tc1", isToolError: true),
+            ChatMessage(role: .tool, content: "Error", toolCallID: "tc1", carriesErrorDirection: true),
             ChatMessage(role: .user, content: "g"),
         ]
         ConversationRepairService.repairConversationIfNeeded(&messages)
         XCTAssertLessThan(messages.last?.content?.count ?? .max, 500)
+    }
+
+    /// The wire since 2026-09-14: the direction rides the failed call's own tool turn, so the tail
+    /// is `assistant(toolCalls) → tool(carriesErrorDirection)` with no user turn after it — and it is still
+    /// the poisoned shape, recognised by the flag.
+    func testRepairConversation_repairsErrorTail_whenTheDirectionRidesTheToolTurn() {
+        var messages: [ChatMessage] = [
+            ChatMessage(role: .system, content: "System prompt"),
+            ChatMessage(role: .user, content: "Build a feature"),
+            ChatMessage(
+                role: .assistant, content: nil,
+                toolCalls: [ChatToolCall(id: "tc1", name: "read_file", argumentsJSON: "{\"path\":\"/bad\"}")],
+                reasoning: "Read it first."),
+            ChatMessage(
+                role: .tool,
+                content: "{\"ok\":false,\"error\":{\"code\":\"FILE_NOT_FOUND\"}}\n\nTool 'read_file': [FILE_NOT_FOUND] fix or choose another approach.",
+                toolCallID: "tc1", carriesErrorDirection: true),
+        ]
+        XCTAssertTrue(ConversationRepairService.repairConversationIfNeeded(&messages))
+        XCTAssertEqual(messages.count, 3, "assistant + tool removed, one recovery turn appended")
+        XCTAssertEqual(messages.last?.role, .user)
+        XCTAssertTrue(messages.last?.content?.contains("read_file") ?? false, "names the failed call")
+        XCTAssertTrue(messages.last?.content?.contains("server error") ?? false)
+    }
+
+    /// The healthy tail every iteration ends on — `assistant(toolCalls) → tool` with results
+    /// that succeeded — is not poisoned. Without the flag and without a trailing user turn the
+    /// repair must stay out, or a retryable 503 during model loading would delete good work.
+    func testRepairConversation_leavesAHealthyToolTailUnchanged() {
+        var messages: [ChatMessage] = [
+            ChatMessage(role: .system, content: "s"),
+            ChatMessage(role: .user, content: "u"),
+            ChatMessage(role: .assistant, content: nil,
+                        toolCalls: [ChatToolCall(id: "tc1", name: "read_file", argumentsJSON: "{}")]),
+            ChatMessage(role: .tool, content: "{\"ok\":true,\"data\":\"…\"}", toolCallID: "tc1"),
+        ]
+        let before = messages
+        XCTAssertFalse(ConversationRepairService.repairConversationIfNeeded(&messages))
+        XCTAssertEqual(messages, before)
+    }
+
+    /// An error ENVELOPE without the flag is not the signal — the repair reads structure, never
+    /// content: a transcript that lost the flag, or a tool whose text merely mentions an error,
+    /// is left alone unless a guidance turn closes the tail.
+    func testRepairConversation_errorLookingContentWithoutTheFlag_isNotRepaired() {
+        var messages: [ChatMessage] = [
+            ChatMessage(role: .assistant, content: nil,
+                        toolCalls: [ChatToolCall(id: "tc1", name: "read_file", argumentsJSON: "{}")]),
+            ChatMessage(role: .tool, content: "{\"ok\":false,\"error\":{\"code\":\"X\"}}", toolCallID: "tc1"),
+        ]
+        XCTAssertFalse(ConversationRepairService.repairConversationIfNeeded(&messages))
+        XCTAssertEqual(messages.count, 2)
+    }
+
+    /// Several results, one of them flagged: the whole batch belongs to the failed assistant
+    /// turn and goes with it.
+    func testRepairConversation_batchWithOneFlaggedResult_removesTheWholeTail() {
+        var messages: [ChatMessage] = [
+            ChatMessage(role: .user, content: "u"),
+            ChatMessage(role: .assistant, content: nil,
+                        toolCalls: [ChatToolCall(id: "a", name: "read_file", argumentsJSON: "{}"),
+                                    ChatToolCall(id: "b", name: "list_files", argumentsJSON: "{}")]),
+            ChatMessage(role: .tool, content: "{\"ok\":true}", toolCallID: "a"),
+            ChatMessage(role: .tool, content: "{\"ok\":false}\n\nTool 'list_files': [X] …", toolCallID: "b", carriesErrorDirection: true),
+        ]
+        XCTAssertTrue(ConversationRepairService.repairConversationIfNeeded(&messages))
+        XCTAssertEqual(messages.count, 2, "user + one recovery turn")
+        XCTAssertEqual(messages.first?.content, "u")
+    }
+
+    /// The flag stands in for the `.user` direction turn the wire carried until 2026-09-14, and
+    /// that turn could only repair the tail from the END: a direction on an earlier result of the
+    /// batch left `tool(err) → user → tool(ok)`, which ends on a tool turn and was resent
+    /// untouched. Reading "a flagged result anywhere in the trailing run" widened the repair to
+    /// delete a later SUCCESSFUL result of the same batch — a write already on disk — and to tell
+    /// the model both calls "had invalid arguments".
+    /// RED: the repair scans the whole trailing run for the flag → it replaces this tail.
+    func testRepairConversation_flaggedResultFollowedByASuccessfulOne_isLeftAlone() {
+        var messages: [ChatMessage] = [
+            ChatMessage(role: .user, content: "u"),
+            ChatMessage(role: .assistant, content: nil,
+                        toolCalls: [ChatToolCall(id: "a", name: "list_files", argumentsJSON: "{}"),
+                                    ChatToolCall(id: "b", name: "write_file", argumentsJSON: "{}")]),
+            ChatMessage(role: .tool, content: "{\"ok\":false}\n\nTool 'list_files': [X] …", toolCallID: "a", carriesErrorDirection: true),
+            ChatMessage(role: .tool, content: "{\"ok\":true}", toolCallID: "b"),
+        ]
+        let before = messages
+        XCTAssertFalse(ConversationRepairService.repairConversationIfNeeded(&messages))
+        XCTAssertEqual(messages, before, "a batch whose last result succeeded is not a poisoned tail")
+    }
+
+    /// The legacy shape keeps working without the flag — a transcript persisted before
+    /// 2026-09-14 replays the direction as its own user turn and carried no flag.
+    func testRepairConversation_legacyGuidanceTail_needsNoFlag() {
+        var messages: [ChatMessage] = [
+            ChatMessage(role: .assistant, content: nil,
+                        toolCalls: [ChatToolCall(id: "tc1", name: "edit_file", argumentsJSON: "{}")]),
+            ChatMessage(role: .tool, content: "Error", toolCallID: "tc1"),
+            ChatMessage(role: .user, content: "guidance"),
+        ]
+        XCTAssertTrue(ConversationRepairService.repairConversationIfNeeded(&messages))
+        XCTAssertEqual(messages.count, 1)
     }
 
     func testRepairConversation_leavesHealthyConversationUnchanged() {
@@ -299,5 +401,169 @@ final class ConversationRepairServiceTests: XCTestCase {
         XCTAssertEqual(
             ConversationRepairService.reasoningChannelToolCallNames(in: thinking), ["git_diff"]
         )
+    }
+
+    // MARK: - reasoningChannelToolCallNames: the function-tag form
+
+    // Verbatim from `MeditationApp` task 111 run 2 (2026-09-13): `qwythos-9b-claude-mythos-5-1m-mlx`
+    // on LM Studio under `toolCalling: native`. 3 of 10 responses wrote the model's own template
+    // form inside `[reasoning]` and stopped — `finish_reason: stop`, no `tool_calls`, empty
+    // content, because the server parses that form outside reasoning only. The detector read
+    // `<|call|>` alone, so each of the three reached the producing-role "Missing deliverables"
+    // nudge instead of the one naming the channel. Still diagnosis only: nothing here dispatches.
+
+    /// Response 20:26:48 — one sentence, one call, nothing after it.
+    func testReasoningNames_functionTagCall_namesIt() {
+        let thinking = ##"""
+        Let me look at the MeditationApp directory structure to understand what files exist.
+        
+        <tool_call>
+        <function=list_files>
+        <parameter=path>
+        MeditationApp
+        </parameter>
+        </function>
+        </tool_call>
+        
+        """##
+        XCTAssertEqual(
+            ConversationRepairService.reasoningChannelToolCallNames(in: thinking), ["list_files"])
+    }
+
+    /// Response 20:27:09 — a markdown list with backticks and `()` ahead of the call.
+    func testReasoningNames_functionTagCallAfterMarkdownProse_namesIt() {
+        let thinking = ##"""
+        Now I have a clear picture of the current state:
+        
+        1. **Widget Bundle**: `WidgetBundle.swift` exists and has `StreaksWidget()` and `QuickStartWidget()` registered
+        2. **StreaksWidget**: This exists as a separate file `StreaksWidget.swift`
+        3. **QuickStartWidget**: This exists as a separate file `QuickStartWidget.swift`
+        
+        Let me now read the actual widget files to understand their structure and what data they currently use.
+        
+        <tool_call>
+        <function=read_file>
+        <parameter=path>
+        MeditationApp/StreaksWidget.swift
+        </parameter>
+        </function>
+        </tool_call>
+        
+        """##
+        XCTAssertEqual(
+            ConversationRepairService.reasoningChannelToolCallNames(in: thinking), ["read_file"])
+    }
+
+    /// The same rule as `testReasoningNames_truncatedEnvelope_returnsEmpty`: an unfinished
+    /// call is not a callable one written in the wrong channel.
+    func testReasoningNames_functionTagWithoutItsCloser_returnsEmpty() {
+        let thinking = ##"""
+        Let me read it.
+        
+        <tool_call>
+        <function=read_file>
+        <parameter=path>
+        MeditationApp/SessionHistoryStore.swift
+        """##
+        XCTAssertEqual(ConversationRepairService.reasoningChannelToolCallNames(in: thinking), [])
+    }
+
+    /// The function tag alone is how prose DESCRIBES the form; the call is the wrapped tag.
+    func testReasoningNames_functionTagWithoutTheToolCallWrapper_returnsEmpty() {
+        let thinking = "The form is <function=read_file><parameter=path>a.swift</parameter></function> — noted."
+        XCTAssertEqual(ConversationRepairService.reasoningChannelToolCallNames(in: thinking), [])
+    }
+
+    /// An exact literal, never case-folded — the rule `HarmonySentinelNormalizer` states for
+    /// its own `<tool_call>`.
+    func testReasoningNames_functionTagUnderAnUppercaseWrapper_returnsEmpty() {
+        let thinking = "<TOOL_CALL>\n<function=read_file>\n</function>\n</TOOL_CALL>"
+        XCTAssertEqual(ConversationRepairService.reasoningChannelToolCallNames(in: thinking), [])
+    }
+
+    func testReasoningNames_proseBetweenWrapperAndFunctionTag_returnsEmpty() {
+        let thinking = "<tool_call> is the wrapper, and then <function=read_file></function>"
+        XCTAssertEqual(ConversationRepairService.reasoningChannelToolCallNames(in: thinking), [])
+    }
+
+    func testReasoningNames_functionTagGap_fourWhitespaceIsAdjacent_fiveIsNot() {
+        XCTAssertEqual(
+            ConversationRepairService.reasoningChannelToolCallNames(
+                in: "<tool_call>\n\n\t <function=read_file></function></tool_call>"),
+            ["read_file"])
+        XCTAssertEqual(
+            ConversationRepairService.reasoningChannelToolCallNames(
+                in: "<tool_call>\n\n\t  <function=read_file></function></tool_call>"),
+            [])
+    }
+
+    func testReasoningNames_functionTagWithEmptyOrInvalidName_returnsEmpty() {
+        XCTAssertEqual(
+            ConversationRepairService.reasoningChannelToolCallNames(
+                in: "<tool_call><function=></function></tool_call>"),
+            [])
+        XCTAssertEqual(
+            ConversationRepairService.reasoningChannelToolCallNames(
+                in: "<tool_call><function=read file></function></tool_call>"),
+            [])
+    }
+
+    func testReasoningNames_severalFunctionTagCalls_inWrittenOrderWithoutRepeats() {
+        let thinking = """
+        <tool_call>
+        <function=read_file>
+        <parameter=path>
+        a.swift
+        </parameter>
+        </function>
+        </tool_call>
+        <tool_call>
+        <function=list_files>
+        </function>
+        </tool_call>
+        <tool_call>
+        <function=read_file>
+        </function>
+        </tool_call>
+        """
+        XCTAssertEqual(
+            ConversationRepairService.reasoningChannelToolCallNames(in: thinking),
+            ["read_file", "list_files"])
+    }
+
+    /// A closer belongs to the call it follows: an abandoned call must not borrow the
+    /// `</function>` of the next one.
+    func testReasoningNames_abandonedFunctionTagThenCompleteOne_namesOnlyTheComplete() {
+        let thinking = """
+        <tool_call>
+        <function=write_file>
+        <parameter=path>
+        x.swift
+        <tool_call>
+        <function=read_file>
+        </function>
+        </tool_call>
+        """
+        XCTAssertEqual(
+            ConversationRepairService.reasoningChannelToolCallNames(in: thinking), ["read_file"])
+    }
+
+    /// Both forms in one block: the Harmony names first, then the function-tag names, one
+    /// list without repeats.
+    func testReasoningNames_bothForms_harmonyFirstThenFunctionTag() {
+        let thinking = ##"""
+        <tool_call>
+        <function=read_file>
+        </function>
+        </tool_call>
+        <|call|>{"name":"list_files","arguments":{"path":"."}}<|end|>
+        <tool_call>
+        <function=list_files>
+        </function>
+        </tool_call>
+        """##
+        XCTAssertEqual(
+            ConversationRepairService.reasoningChannelToolCallNames(in: thinking),
+            ["list_files", "read_file"])
     }
 }

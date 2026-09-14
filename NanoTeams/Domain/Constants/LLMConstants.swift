@@ -88,9 +88,6 @@ nonisolated enum LLMConstants {
     /// tag, not on this prefix — see `appendOrReplaceRetryNotice`.)
     static let llmServerErrorRetryNotePrefix = "LLM server error (attempt"
 
-    /// Character threshold for batching UI flushes during streaming.
-    static let uiFlushCharThreshold = 200
-
     /// Maximum tracked tool calls per step (oldest evicted when exceeded).
     static let maxTrackedToolCalls = 30
 

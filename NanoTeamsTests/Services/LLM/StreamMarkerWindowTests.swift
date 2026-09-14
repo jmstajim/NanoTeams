@@ -160,8 +160,9 @@ final class StreamMarkerWindowTests: XCTestCase {
     }
 
     /// The tag ALONE must never fire. If it did, the latch would close on prose: visible
-    /// content would freeze mid-reply, `pendingUI` would be discarded, and the model would
-    /// get a `.noCallEnvelope` nudge for a turn it never framed as a call.
+    /// content would freeze mid-reply, the rest of the reply would route to the envelope
+    /// buffer, and the model would get a `.noCallEnvelope` nudge for a turn it never framed
+    /// as a call.
     func testChatMLTagAloneNeverFires() {
         XCTAssertFalse(assertParity(["prose <tool_call>", " and more prose"]))
     }

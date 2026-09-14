@@ -10,6 +10,7 @@ import XCTest
 ///
 /// Lives in `NanoTeamsTests/Support` because that is the deliverable-side home for shared test
 /// code (CLAUDE.md #112) — `Ratchet/` is not synced to the mirror.
+// periphery:ignore - called from several suites; periphery 3.7.2 does not index calls to this generic async global
 func XCTAssertThrowsErrorAsync<T>(
     _ expression: @autoclosure () async throws -> T,
     _ message: @autoclosure () -> String = "",

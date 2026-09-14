@@ -129,7 +129,7 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
         func markStreamingToolCall(stepID _: String, taskID _: Int) {}
         var compactingStepIDs: Set<String> = []
         var compactionMarks: [(String, Bool)] = []
-        func markStreamingCompaction(stepID: String, taskID: Int, _ isCompacting: Bool) {
+        func markStreamingCompaction(stepID: String, taskID _: Int, _ isCompacting: Bool) {
             compactionMarks.append((stepID, isCompacting))
             if isCompacting { compactingStepIDs.insert(stepID) }
             else { compactingStepIDs.remove(stepID) }
@@ -154,10 +154,11 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
         var captures: [(messages: [ChatMessage], tools: [ToolSchema], roleName: String?)] = []
         /// Thrown instead of streaming. Lets a test distinguish a user Pause from a
         /// transport failure, which the service must NOT conflate.
+        var capturedConfigs: [LLMConfig] = []
         var shouldThrow: Error?
 
         func streamChat(
-            config _: LLMConfig,
+            config: LLMConfig,
             messages: [ChatMessage],
             tools: [ToolSchema],
             logger _: NetworkLogger?,
@@ -165,6 +166,7 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
             roleName: String?
         ) -> AsyncThrowingStream<StreamEvent, Error> {
             captures.append((messages, tools, roleName))
+            capturedConfigs.append(config)
             if let shouldThrow {
                 return AsyncThrowingStream { $0.finish(throwing: shouldThrow) }
             }
@@ -1141,5 +1143,51 @@ extension DelegatedSupervisorAnswerServiceTests {
         let escalated = client.captures.last?.messages.last?.content ?? ""
         XCTAssertTrue(escalated.contains("Which minimum target?"),
                       "the FIRST parking call in emission order is the ask: \(escalated)")
+    }
+
+
+    // MARK: - The exchange runs under the parent step's PINNED mode
+
+    /// The seed is the parent's own system prompt, whose `{toolCalling}` chip was rendered
+    /// for the mode pinned on the step; the request must run under that pin, not under the
+    /// delegate's memo of the moment (the stub's default answers `.promptTaught`) — both
+    /// builders skip the auto-append when the chip is present, so a mismatch would leave the
+    /// answering role with no ask tools at all.
+    func testExchange_runsUnderTheParentStepsPinnedMode_notTheMemo() async {
+        let delegate = MultiTaskDelegateStub()
+        let parentTeam = makeParentTeam()
+        delegate.workFolderProjection = makeProjection(teams: [parentTeam])
+        var parent = makeParentTask(seedConversation: [LLMMessage(role: .system, content: "You are PM.")])
+        parent.runs[0].steps[0].toolCallingMode = .native
+        delegate.tasks[1] = parent
+        delegate.tasks[2] = makeChildTask(question: "Which one?")
+        let client = ScriptedLLMClient()
+        client.script = [.init(content: "The first.", toolCalls: [])]
+
+        _ = await DelegatedSupervisorAnswerService.handleChildQuestion(
+            childTID: 2, parentTaskID: 1, parentRoleID: "pm", parentTeam: parentTeam,
+            targetTeamName: "Engineering", client: client,
+            globalConfig: delegate.globalLLMConfig, delegate: delegate)
+
+        XCTAssertEqual(client.capturedConfigs.map(\.toolCallingMode), [.native])
+    }
+
+    /// A parent persisted before the pin existed carries a transcript and no mode: the rule
+    /// is `replayToolCallingMode`'s — prompt-taught, since that transcript is a Harmony one.
+    func testExchange_withoutAPin_isPromptTaught() async {
+        let delegate = MultiTaskDelegateStub()
+        let parentTeam = makeParentTeam()
+        delegate.workFolderProjection = makeProjection(teams: [parentTeam])
+        delegate.tasks[1] = makeParentTask(seedConversation: [LLMMessage(role: .system, content: "You are PM.")])
+        delegate.tasks[2] = makeChildTask(question: "Which one?")
+        let client = ScriptedLLMClient()
+        client.script = [.init(content: "The first.", toolCalls: [])]
+
+        _ = await DelegatedSupervisorAnswerService.handleChildQuestion(
+            childTID: 2, parentTaskID: 1, parentRoleID: "pm", parentTeam: parentTeam,
+            targetTeamName: "Engineering", client: client,
+            globalConfig: delegate.globalLLMConfig, delegate: delegate)
+
+        XCTAssertEqual(client.capturedConfigs.map(\.toolCallingMode), [.promptTaught])
     }
 }

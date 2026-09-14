@@ -900,8 +900,8 @@ final class NativeLMStudioRequestBuilderTests: XCTestCase {
                        parameters: .object(properties: ["path": JSONSchema.string("Path")],
                                            required: ["path"])),
         ])
-        XCTAssertTrue(body.hasPrefix("Call tools using this Harmony format:"),
-                      "First line must remain the auto-append detection marker (harmonyBodyMarker)")
+        XCTAssertTrue(body.hasPrefix(NativeLMStudioClient.harmonyBodyMarker),
+                      "First line of the prompt-taught body is the Harmony lesson (harmonyBodyMarker)")
         guard let exampleRange = body.range(of: "Example:"),
               let boundaryRange = body.range(of: Self.boundarySentence),
               let firstToolRange = body.range(of: "**read_file**:"),
@@ -937,5 +937,92 @@ final class NativeLMStudioRequestBuilderTests: XCTestCase {
             tools: []
         )
         XCTAssertFalse((request.systemPrompt ?? "").contains(Self.boundarySentence))
+    }
+
+
+    // MARK: - The chip under `.native` (2026-09-13)
+
+    private var nativeChipTools: [ToolSchema] {
+        [
+            ToolSchema(name: "read_file", description: "Read a file",
+                       parameters: .object(properties: ["path": JSONSchema.string("Path")], required: ["path"])),
+            ToolSchema(name: "list_files", description: "List files",
+                       parameters: .object(properties: ["path": JSONSchema.string("Path")], required: ["path"])),
+        ]
+    }
+
+    /// The provider renders the catalog into the model's own template, so the body holds
+    /// only what the template does NOT say: the one-tool rule and the injection boundary.
+    func testBuildToolSchemaBody_native_isTheOneToolRuleAndTheBoundaryOnly() {
+        let body = NativeLMStudioClient.buildToolSchemaBody(tools: nativeChipTools, mode: .native)
+        XCTAssertTrue(body.hasPrefix(NativeLMStudioClient.oneToolPerResponseRule + "\n\n"), body)
+        XCTAssertTrue(body.contains(NativeLMStudioClient.toolBlockMarker), "the anchor every builder reads")
+        XCTAssertFalse(body.contains(NativeLMStudioClient.harmonyBodyMarker), "no format lesson")
+        XCTAssertFalse(body.contains("<|call|>"), "no envelope in any text syntax")
+        XCTAssertFalse(body.contains("Example:"), "no example — the template shows the schema")
+        XCTAssertFalse(body.contains("**read_file**"), "no catalog — it rides `tools`")
+        XCTAssertFalse(body.contains("**list_files**"))
+        XCTAssertEqual(body.components(separatedBy: NativeLMStudioClient.oneToolPerResponseRule).count - 1, 1,
+                       "the rule once")
+    }
+
+    /// The boundary paragraph is byte-identical in both modes — three tests and the
+    /// playbook's R3.6.1 Check grep for these bytes.
+    func testBuildToolSchemaBody_boundaryParagraph_isByteIdenticalAcrossModes() {
+        let native = NativeLMStudioClient.buildToolSchemaBody(tools: nativeChipTools, mode: .native)
+        let taught = NativeLMStudioClient.buildToolSchemaBody(tools: nativeChipTools, mode: .promptTaught)
+        let boundary = String(native.dropFirst(NativeLMStudioClient.oneToolPerResponseRule.count + 2))
+        XCTAssertTrue(boundary.hasPrefix(NativeLMStudioClient.toolBlockMarker))
+        XCTAssertTrue(taught.hasSuffix(boundary), "the prompt-taught body ends with the same paragraph")
+    }
+
+    func testBuildToolSchemaBody_native_emptyTools_stillCarriesRuleAndBoundary() {
+        let body = NativeLMStudioClient.buildToolSchemaBody(tools: [], mode: .native)
+        XCTAssertTrue(body.contains(NativeLMStudioClient.oneToolPerResponseRule))
+        XCTAssertTrue(body.contains(NativeLMStudioClient.toolBlockMarker))
+    }
+
+    /// `formatToolCallingBlock` is the chip's SSOT: the same "None available" for no tools,
+    /// and the mode-aware body otherwise.
+    func testFormatToolCallingBlock_native_isTheNativeBody_andEmptyToolsReadNoneAvailable() {
+        XCTAssertEqual(
+            PromptBuilder.formatToolCallingBlock(tools: [], mode: .native),
+            PromptBuilder.formatToolCallingBlock(tools: [], mode: .promptTaught))
+        XCTAssertEqual(
+            PromptBuilder.formatToolCallingBlock(tools: nativeChipTools, mode: .native),
+            NativeLMStudioClient.buildToolSchemaBody(tools: nativeChipTools, mode: .native))
+        XCTAssertNotEqual(
+            PromptBuilder.formatToolCallingBlock(tools: nativeChipTools, mode: .native),
+            PromptBuilder.formatToolCallingBlock(tools: nativeChipTools, mode: .promptTaught))
+    }
+
+    /// `nativeToolsText` is the `tools` array as the wire encoder writes it — the bytes a
+    /// native request adds on top of its messages, priced and fingerprinted once.
+    func testNativeToolsText_isTheWireEncodersToolsArray() throws {
+        let text = NativeLMStudioClient.nativeToolsText(tools: nativeChipTools)
+        XCTAssertTrue(text.hasPrefix(#"[{"function":{"description":"Read a file""#), text)
+        XCTAssertTrue(text.contains(#""type":"function""#))
+        XCTAssertTrue(text.contains(#""name":"list_files""#))
+        let encoded = String(decoding: try JSONCoderFactory.makeWireEncoder().encode(
+            nativeChipTools.map(NativeToolDeclaration.init)), as: UTF8.self)
+        XCTAssertEqual(text, encoded)
+        XCTAssertEqual(NativeLMStudioClient.nativeToolsText(tools: []), "")
+    }
+
+
+    /// A system message anywhere in the array is merged into `system_prompt` and never becomes
+    /// a labelled text turn.
+    func testBuildRequest_systemMessageMidArray_mergesIntoSystemPrompt_andIsNoTurn() {
+        let config = LLMConfig(provider: .lmStudio, baseURLString: "http://localhost:1234", modelName: "test-model")
+        let request = NativeLMStudioClient.buildRequest(
+            config: config,
+            messages: [
+                ChatMessage(role: .system, content: "A"),
+                ChatMessage(role: .user, content: "go"),
+                ChatMessage(role: .system, content: "B"),
+            ],
+            tools: [])
+        XCTAssertEqual(request.systemPrompt, "A\n\nB")
+        XCTAssertEqual(request.input.textValue, "go")
     }
 }

@@ -183,4 +183,28 @@ final class MeetingStreamingServiceTests: XCTestCase {
         XCTAssertFalse(system.contains(faang.roles[i].prompt),
                        "the step contract — deliverables, tools it does not hold here — never rides a meeting turn")
     }
+
+
+    // MARK: - The speaker's chip follows the tool-calling mode (2026-09-13)
+
+    func testSpeakerSystemPrompt_native_carriesTheRuleAndBoundary_butNoLessonAndNoCatalog() throws {
+        let faang = try XCTUnwrap(Team.defaultTeams.first { $0.templateID == "faang" })
+        let meeting = TeamMeeting(topic: "T", initiatedBy: .productManager, participants: [.techLead])
+        let tools = [ToolSchema(name: ToolNames.readFile, description: "Read a file", parameters: .object(properties: [:]))]
+
+        let native = MeetingStreamingService.buildMeetingMessages(
+            speaker: .productManager, meeting: meeting, context: context(team: faang),
+            tools: tools, toolCallingMode: .native).first?.content ?? ""
+        XCTAssertTrue(native.contains(NativeLMStudioClient.oneToolPerResponseRule))
+        XCTAssertTrue(native.contains(NativeLMStudioClient.toolBlockMarker), "the boundary is the builders' anchor")
+        XCTAssertFalse(native.contains(NativeLMStudioClient.harmonyBodyMarker), "no format lesson: the provider renders the model's own")
+        XCTAssertFalse(native.contains("**read_file**"), "no catalog: it rides `tools`")
+
+        let taught = MeetingStreamingService.buildMeetingMessages(
+            speaker: .productManager, meeting: meeting, context: context(team: faang),
+            tools: tools).first?.content ?? ""
+        XCTAssertTrue(taught.contains(NativeLMStudioClient.harmonyBodyMarker))
+        XCTAssertTrue(taught.contains("**read_file**"))
+        XCTAssertNotEqual(native, taught)
+    }
 }

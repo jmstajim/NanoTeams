@@ -25,6 +25,8 @@ nonisolated enum UserDefaultsKeys {
     /// the thing it was made about.
     static let benchmarkExcludedProviders = "NanoTeams.benchmark.excludedProviders.v1"
     static let llmRequestTimeoutSeconds = "NanoTeams.llm.requestTimeoutSeconds.v1"
+    /// Auto / Native / Prompt-taught — how tools reach the model (`ToolCallingPreference`).
+    static let toolCallingPreference = "NanoTeams.llm.toolCallingPreference.v1"
     static let ollamaKeepAliveSeconds = "NanoTeams.llm.ollamaKeepAliveSeconds.v1"
     static let lastOpenedWorkFolderPath = "LastOpenedProjectPath"
     static let appAppearance = "appAppearance"

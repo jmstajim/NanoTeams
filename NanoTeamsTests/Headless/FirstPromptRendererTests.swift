@@ -50,14 +50,26 @@ final class FirstPromptRendererTests: XCTestCase {
         print("[RENDERER] Wrote \(bytesWritten) bytes to \(config.outputPath)")
 
         // Sanity-check the envelope round-trips and the wire half carries the
-        // required fields.
+        // required fields — of the SHAPE the mode renders: the native endpoint's
+        // `system_prompt` + `input` under `.promptTaught`, the OpenAI shape's `messages`
+        // + `tools` under `.native` (`--tool-calling-mode native` failed here on its first
+        // smoke, 2026-09-13, against assertions written for one shape).
         let outData = try Data(contentsOf: URL(fileURLWithPath: config.outputPath))
         let parsed = try JSONSerialization.jsonObject(with: outData) as? [String: Any]
         XCTAssertNotNil(parsed, "output must be a JSON object")
         let wire = parsed?["wire"] as? [String: Any]
         XCTAssertNotNil(wire, "envelope must carry a `wire` object")
-        XCTAssertNotNil(wire?["system_prompt"], "wire payload must have system_prompt")
-        XCTAssertNotNil(wire?["input"], "wire payload must have input")
+        switch config.resolvedToolCallingMode {
+        case .promptTaught:
+            XCTAssertNotNil(wire?["system_prompt"], "wire payload must have system_prompt")
+            XCTAssertNotNil(wire?["input"], "wire payload must have input")
+            XCTAssertNil(wire?["tools"], "the prompt-taught wire teaches the catalog in text")
+        case .native:
+            let messages = wire?["messages"] as? [[String: Any]]
+            XCTAssertEqual(messages?.first?["role"] as? String, "system", "the OpenAI shape leads with the system message")
+            XCTAssertNotNil(wire?["tools"], "the native wire carries the catalog on `tools`")
+            XCTAssertNil(wire?["system_prompt"], "no native-endpoint field on the OpenAI shape")
+        }
         XCTAssertNotNil(wire?["model"], "wire payload must have model")
         XCTAssertNotNil(parsed?["render_meta"], "envelope must carry render_meta")
     }
@@ -147,7 +159,7 @@ final class FirstPromptRendererTests: XCTestCase {
             supervisorTaskBrief: "shows error Load failed",
             outputPath: outputPath,
             modelName: nil, temperature: nil, globalContext: nil,
-            selectedScheme: nil, visionConfigured: nil, computerUseMode: nil, bashMode: nil, kind: nil)
+            selectedScheme: nil, visionConfigured: nil, computerUseMode: nil, bashMode: nil, kind: nil, toolCallingMode: nil)
         _ = try FirstPromptRenderer.run(config: config)
 
         let toolNames = try readWireToolNames(at: outputPath)
@@ -190,7 +202,7 @@ final class FirstPromptRendererTests: XCTestCase {
                 supervisorTaskBrief: "filter parity test",
                 outputPath: outputPath,
                 modelName: nil, temperature: nil, globalContext: globalContext,
-                selectedScheme: nil, visionConfigured: nil, computerUseMode: nil, bashMode: nil, kind: nil)
+                selectedScheme: nil, visionConfigured: nil, computerUseMode: nil, bashMode: nil, kind: nil, toolCallingMode: nil)
             _ = try FirstPromptRenderer.run(config: config)
             return try readWireSystemPrompt(at: outputPath)
         }
@@ -214,7 +226,7 @@ final class FirstPromptRendererTests: XCTestCase {
             supervisorTaskBrief: "Build a calculator",
             outputPath: outputPath,
             modelName: nil, temperature: nil, globalContext: nil,
-            selectedScheme: nil, visionConfigured: nil, computerUseMode: nil, bashMode: bashMode, kind: kind)
+            selectedScheme: nil, visionConfigured: nil, computerUseMode: nil, bashMode: bashMode, kind: kind, toolCallingMode: nil)
     }
 
     private func readRenderMeta(at path: String) throws -> [String: Any] {
@@ -357,7 +369,7 @@ final class FirstPromptRendererTests: XCTestCase {
             globalContext: nil,
             selectedScheme: nil,
             visionConfigured: nil,
-            computerUseMode: nil, bashMode: nil, kind: nil
+            computerUseMode: nil, bashMode: nil, kind: nil, toolCallingMode: nil
         )
     }
 
@@ -391,7 +403,7 @@ final class FirstPromptRendererTests: XCTestCase {
             supervisorTaskBrief: "Debate the four-day week",
             outputPath: outputPath,
             modelName: nil, temperature: nil, globalContext: nil,
-            selectedScheme: nil, visionConfigured: nil, computerUseMode: nil, bashMode: nil, kind: kind)
+            selectedScheme: nil, visionConfigured: nil, computerUseMode: nil, bashMode: nil, kind: kind, toolCallingMode: nil)
     }
 
     /// `--kind consultation`: the consultation template, no tools (production passes
@@ -442,5 +454,50 @@ final class FirstPromptRendererTests: XCTestCase {
         }
         XCTAssertEqual(try decode("meeting").resolvedKind, .meeting)
         XCTAssertThrowsError(try decode("meting"), "a typo fails the load, not the render")
+    }
+
+
+    // MARK: - `--tool-calling-mode native` (2026-09-13)
+
+    /// Under `.native` the wire is the OpenAI-shaped request the router sends to
+    /// `/v1/chat/completions`: a top-level `tools` array, the system prompt as the first
+    /// message with the native chip (rule + boundary, no lesson), no `system_prompt`/`input`.
+    func testRender_native_wireIsTheOpenAIShape_withTopLevelToolsAndNoLesson() throws {
+        let (workfolder, outputPath) = try makeIsolatedWorkfolder()
+        defer { try? FileManager.default.removeItem(at: workfolder) }
+        let config = FirstPromptRendererConfig(
+            projectPath: workfolder.path,
+            target: ResolutionTarget(team: .name("Startup"), role: .name("Software Engineer")),
+            supervisorTaskBrief: "Build a calculator",
+            outputPath: outputPath,
+            modelName: nil, temperature: nil, globalContext: nil,
+            selectedScheme: nil, visionConfigured: nil, computerUseMode: nil, bashMode: nil,
+            kind: nil, toolCallingMode: .native)
+        try FirstPromptRenderer.run(config: config)
+
+        let data = try Data(contentsOf: URL(fileURLWithPath: outputPath))
+        let parsed = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let wire = try XCTUnwrap(parsed["wire"] as? [String: Any])
+        let tools = try XCTUnwrap(wire["tools"] as? [[String: Any]])
+        XCTAssertFalse(tools.isEmpty)
+        XCTAssertEqual(tools.first?["type"] as? String, "function")
+        XCTAssertNil(wire["system_prompt"], "the OpenAI shape carries the prompt as a message")
+        XCTAssertNil(wire["input"])
+        let messages = try XCTUnwrap(wire["messages"] as? [[String: Any]])
+        XCTAssertEqual(messages.first?["role"] as? String, "system")
+        let system = try XCTUnwrap(messages.first?["content"] as? String)
+        XCTAssertFalse(system.contains(NativeLMStudioClient.harmonyBodyMarker), "no format lesson under native")
+        XCTAssertTrue(system.contains(NativeLMStudioClient.toolBlockMarker))
+        XCTAssertTrue(system.contains(NativeLMStudioClient.oneToolPerResponseRule))
+        XCTAssertFalse(system.contains("<|call|>"))
+
+        let meta = try readRenderMeta(at: outputPath)
+        XCTAssertEqual((meta["sizes"] as? [String: Any])?["tools_count"] as? Int, tools.count,
+                       "the audit counts the same catalog the wire carries")
+
+        // The prompt-taught render of the same target is a different wire, on the native endpoint.
+        let taughtPath = workfolder.appendingPathComponent("taught.json").path
+        try FirstPromptRenderer.run(config: startupSWEConfig(workfolder: workfolder, outputPath: taughtPath))
+        XCTAssertTrue(try readWireSystemPrompt(at: taughtPath).contains(NativeLMStudioClient.harmonyBodyMarker))
     }
 }

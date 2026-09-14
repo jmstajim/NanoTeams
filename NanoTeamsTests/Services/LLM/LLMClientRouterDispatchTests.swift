@@ -75,24 +75,49 @@ final class LLMClientRouterDispatchTests: XCTestCase {
             return ModelLoadDetails(fields: [.init(label: "marker", value: marker)])
         }
 
+        func toolCallingSupport(config: LLMConfig) async -> Bool? {
+            calls.append("toolCallingSupport")
+            return marker == "native"
+        }
     }
 
     private var native: MarkerClient!
     private var ollama: MarkerClient!
+    private var compat: MarkerClient!
     private var router: LLMClientRouter!
 
     override func setUp() {
         super.setUp()
         native = MarkerClient(marker: "native")
         ollama = MarkerClient(marker: "ollama")
-        router = LLMClientRouter(nativeClient: native, ollamaClient: ollama)
+        compat = MarkerClient(marker: "compat")
+        router = LLMClientRouter(nativeClient: native, ollamaClient: ollama, openAICompatClient: compat)
     }
 
     override func tearDown() {
         native = nil
         ollama = nil
+        compat = nil
         router = nil
         super.tearDown()
+    }
+
+    private func config(_ provider: LLMProvider, mode: ToolCallingMode) -> LLMConfig {
+        var config = config(provider)
+        config.toolCallingMode = mode
+        return config
+    }
+
+    private var readFile: ToolSchema {
+        ToolSchema(name: ToolNames.readFile, description: "Read", parameters: .object(properties: [:]))
+    }
+
+    private var wireWithACall: [ChatMessage] {
+        [
+            ChatMessage(role: .assistant, content: nil,
+                        toolCalls: [ChatToolCall(id: "c1", name: ToolNames.readFile, argumentsJSON: "{}")]),
+            ChatMessage(role: .tool, content: "{}", toolCallID: "c1"),
+        ]
     }
 
     private func config(_ provider: LLMProvider) -> LLMConfig {
@@ -195,5 +220,102 @@ final class LLMClientRouterDispatchTests: XCTestCase {
             provider: .ollama, modelName: "m", baseURLString: "http://x:11434")
         XCTAssertEqual(ollama.calls, ["loadModel"])
         XCTAssertTrue(native.calls.isEmpty)
+    }
+
+
+    // MARK: - Three clients, two providers (2026-09-13)
+
+    /// The predicate is explicit on purpose; this is its whole truth table.
+    func testUsesOpenAICompatEndpoint_truthTable() {
+        let lmsNative = config(.lmStudio, mode: .native)
+        XCTAssertTrue(LLMClientRouter.usesOpenAICompatEndpoint(config: lmsNative, tools: [readFile], messages: []))
+        XCTAssertTrue(LLMClientRouter.usesOpenAICompatEndpoint(config: lmsNative, tools: [], messages: wireWithACall),
+                      "a compaction summary of a native step passes the wire's calls even with no tools")
+        XCTAssertFalse(LLMClientRouter.usesOpenAICompatEndpoint(config: lmsNative, tools: [], messages: []),
+                       "a tool-less call stays on the native endpoint that reports prompt_processing.*")
+        XCTAssertFalse(LLMClientRouter.usesOpenAICompatEndpoint(
+            config: lmsNative, tools: [],
+            messages: [ChatMessage(role: .assistant, content: "prose", toolCalls: [])]),
+        "an empty toolCalls array is no call")
+        XCTAssertFalse(LLMClientRouter.usesOpenAICompatEndpoint(
+            config: config(.lmStudio, mode: .promptTaught), tools: [readFile], messages: wireWithACall))
+        XCTAssertFalse(LLMClientRouter.usesOpenAICompatEndpoint(
+            config: config(.ollama, mode: .native), tools: [readFile], messages: wireWithACall),
+        "Ollama's own endpoint carries `tools`")
+    }
+
+    func testStreamChat_lmStudioNativeWithTools_goesToTheOpenAICompatClient() async {
+        let out = await firstContent(router.streamChat(
+            config: config(.lmStudio, mode: .native), messages: [], tools: [readFile],
+            logger: nil, stepID: nil))
+        XCTAssertEqual(out, "compat")
+        XCTAssertEqual(native.calls, [])
+        XCTAssertEqual(ollama.calls, [])
+    }
+
+    func testStreamChat_lmStudioNativeWireCarryingCalls_goesToTheOpenAICompatClient() async {
+        let out = await firstContent(router.streamChat(
+            config: config(.lmStudio, mode: .native), messages: wireWithACall, tools: [],
+            logger: nil, stepID: nil))
+        XCTAssertEqual(out, "compat")
+    }
+
+    func testStreamChat_everyOtherShape_neverReachesTheOpenAICompatClient() async {
+        let toolless = await firstContent(router.streamChat(
+            config: config(.lmStudio, mode: .native), messages: [], tools: [], logger: nil, stepID: nil))
+        let taught = await firstContent(router.streamChat(
+            config: config(.lmStudio, mode: .promptTaught), messages: wireWithACall, tools: [readFile],
+            logger: nil, stepID: nil))
+        let ollamaNative = await firstContent(router.streamChat(
+            config: config(.ollama, mode: .native), messages: wireWithACall, tools: [readFile],
+            logger: nil, stepID: nil))
+        XCTAssertEqual(toolless, "native")
+        XCTAssertEqual(taught, "native")
+        XCTAssertEqual(ollamaNative, "ollama")
+        XCTAssertEqual(compat.calls, [])
+    }
+
+    /// One LM Studio answer for the probe and the lifecycle: the native client's.
+    func testToolCallingSupport_dispatchesPerProvider_neverToTheCompatClient() async {
+        let lms = await router.toolCallingSupport(config: config(.lmStudio, mode: .native))
+        let oll = await router.toolCallingSupport(config: config(.ollama, mode: .native))
+        XCTAssertEqual(lms, true)
+        XCTAssertEqual(oll, false)
+        XCTAssertEqual(native.calls, ["toolCallingSupport"])
+        XCTAssertEqual(ollama.calls, ["toolCallingSupport"])
+        XCTAssertEqual(compat.calls, [])
+    }
+
+    func testLifecycleAndProbes_neverReachTheCompatClient() async throws {
+        _ = try await router.loadModel(provider: .lmStudio, modelName: "m", baseURLString: "http://x:1")
+        _ = try await router.listLoadedInstances(provider: .lmStudio, baseURLString: "http://x:1")
+        _ = await router.modelSupportsVision(config: config(.lmStudio, mode: .native))
+        _ = await router.modelContextLength(config: config(.lmStudio, mode: .native))
+        _ = try await router.fetchModels(config: config(.lmStudio, mode: .native), visionOnly: false)
+        XCTAssertEqual(compat.calls, [])
+        XCTAssertEqual(native.calls.count, 5)
+    }
+
+    /// The default third client is built around the SAME native client, so the two LM Studio
+    /// routes share one ensurer census; a router built without one still routes.
+    func testDefaultOpenAICompatClient_isBuiltWhenNoneIsInjected() async {
+        let twoClient = LLMClientRouter(nativeClient: native, ollamaClient: ollama)
+        let out = await firstContent(twoClient.streamChat(
+            config: config(.lmStudio, mode: .promptTaught), messages: [], tools: [readFile],
+            logger: nil, stepID: nil))
+        XCTAssertEqual(out, "native", "prompt-taught never needs the third client")
+    }
+
+
+    /// A router built on DOUBLES never resolves outward: a `.native` LM Studio request with
+    /// tools reaches the injected native double, not a real client on `URLSession.shared`
+    /// with the process-global ensurer (the #49 seam).
+    func testDefaultOpenAICompatClient_onADouble_routesToTheDouble() async {
+        let twoClient = LLMClientRouter(nativeClient: native, ollamaClient: ollama)
+        let out = await firstContent(twoClient.streamChat(
+            config: config(.lmStudio, mode: .native), messages: [], tools: [readFile],
+            logger: nil, stepID: nil))
+        XCTAssertEqual(out, "native")
+        XCTAssertEqual(native.calls, ["streamChat"])
     }
 }

@@ -111,18 +111,23 @@ final class ContextCompactionWiringTests: XCTestCase {
             CompactionPolicy.recordedSupervisorMessages(in: seed), ["Never touch Storage/."])
     }
 
-    /// The request is the wire plus the rubric, with NO tools: a summary reply that resolved a
-    /// tool call would be dispatched by nobody, and advertising the catalog is what makes a
-    /// model reach for it.
-    func testEpoch_sendsTheWirePlusTheRubric_withNoTools() async {
+    /// The request is the wire plus the rubric, with the STEP'S tools (2026-09-13; `[]` until
+    /// then): under `.native` the wire carries `tool_calls` turns that only make sense against
+    /// the schemas they were made with — an OpenAI-shaped provider refuses an assistant
+    /// `tool_calls` turn whose tools it was never told about, and the router picks the client
+    /// by them. A summary reply that resolved a call is still dispatched by nobody
+    /// (`Outcome.summaryText` digs the prose out of it).
+    func testEpoch_sendsTheWirePlusTheRubric_withTheStepsTools() async {
         let client = ScriptedSummaryClient(summary: "Summary.")
         var conversation = wire()
+        let readFile = ToolSchema(name: ToolNames.readFile, description: "Read", parameters: .object(properties: [:]))
         _ = await sut._testCompactConversationInLoop(
             stepID: stepID, taskID: taskID, reason: .manual, step: step(),
             client: client, config: config, roleForMessage: .softwareEngineer,
+            tools: [readFile],
             conversationMessages: &conversation)
 
-        XCTAssertEqual(client.sentToolCounts, [0])
+        XCTAssertEqual(client.sentToolCounts, [1], "the step's catalog, not an empty one")
         XCTAssertEqual(client.sentMessages.first?.count, wire().count + 1)
         XCTAssertEqual(
             client.sentMessages.first?.last?.content, CompactionPolicy.summaryRequestTurn())
@@ -510,13 +515,14 @@ final class ContextCompactionWiringTests: XCTestCase {
         let client = ScriptedSummaryClient(summary: "Folded work.")
         var conversation = wire()
         var usage = TokenUsage()
+        let readFile = ToolSchema(name: ToolNames.readFile, description: "Read", parameters: .object(properties: [:]))
 
         _ = try await sut.runOneLLMToolIteration(
             stepID: stepID,
             roleForMessage: .softwareEngineer,
             client: client,
             config: config,
-            tools: [],
+            tools: [readFile],
             runtime: ToolRegistry.defaultRegistry(
                 workFolderRoot: FileManager.default.temporaryDirectory,
                 toolCallsLogURL: nil).runtime,
@@ -534,6 +540,8 @@ final class ContextCompactionWiringTests: XCTestCase {
             conversation.contains { CompactionPolicy.isCompactionSeed($0) },
             "the iteration must have folded the wire before sending it")
         XCTAssertEqual(Array(conversation[..<2]), Array(wire()[..<2]))
+        XCTAssertEqual(client.sentToolCounts.first, 1,
+                       "the in-loop epoch hands the summary request the step's own tools")
     }
 
     /// Mid-planning the phase owns the wire: its boundary slices at the brief, and an epoch

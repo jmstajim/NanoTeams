@@ -112,10 +112,19 @@ enum DelegatedSupervisorAnswerService {
             return nil
         }
         let roleDef = roleTeam.findRole(byIdentifier: roleID)
-        let effectiveConfig = LLMExecutionService.buildEffectiveConfig(
+        var effectiveConfig = LLMExecutionService.buildEffectiveConfig(
             globalConfig: globalConfig,
             roleOverride: roleDef?.llmOverride
         )
+        // The exchange advertises the two supervisor-ask schemas, so it is a tool-bearing
+        // request — and its seed is the parent step's own system prompt, whose `{toolCalling}`
+        // chip was rendered for the mode PINNED on that step. The mode must be the pin, not the
+        // memo of the moment: both request builders skip the auto-append when the chip is
+        // present, so a chip rendered native under a prompt-taught memo would leave the
+        // answering role with no ask tools at all (review of 2026-09-13). The parent is
+        // mid-loop, so the pin was set at its first request; the fallback is the rule
+        // `replayToolCallingMode` documents.
+        effectiveConfig.toolCallingMode = step.replayToolCallingMode ?? .promptTaught
 
         // 3. Build messages for the side exchange: the parent's full
         //    `llmConversation` as the seed, plus the new question turn.

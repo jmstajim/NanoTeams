@@ -64,6 +64,13 @@ struct HeadlessConfig: Codable {
     /// a typo fails at config load, not 15 minutes into the run.
     var bashMode: BashExecutionMode?
 
+    /// How tools reach the model for the run, by RAW value: `auto`, `native`, `promptTaught`
+    /// (`ToolCallingPreference`). Omitted ⇒ the fresh-install default (`auto`), which follows
+    /// the provider's capability report. Stated per config rather than inherited because a
+    /// headless run is a MEASUREMENT and the protocol is the axis a before/after compares.
+    /// Typed like `provider` and `bashMode`: a typo fails at config load.
+    var toolCallingPreference: ToolCallingPreference?
+
     // MARK: - Resolved Helpers
 
     var resolvedProvider: LLMProvider {
@@ -91,6 +98,7 @@ struct HeadlessConfig: Codable {
         case workFolderContext
         case visionModel, visionBaseURL, selectedScheme
         case bashMode
+        case toolCallingPreference
         // Legacy: pre-rename configs used `projectDescription` for the same payload.
         case legacyProjectDescription = "projectDescription"
     }
@@ -134,6 +142,17 @@ struct HeadlessConfig: Codable {
         } else {
             self.bashMode = nil
         }
+        if let raw = try c.decodeIfPresent(String.self, forKey: .toolCallingPreference) {
+            guard let parsed = ToolCallingPreference(rawValue: raw) else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .toolCallingPreference, in: c,
+                    debugDescription: "Unknown toolCallingPreference \"\(raw)\". Valid values: "
+                        + ToolCallingPreference.allCases.map(\.rawValue).joined(separator: ", "))
+            }
+            self.toolCallingPreference = parsed
+        } else {
+            self.toolCallingPreference = nil
+        }
     }
 
     func encode(to encoder: Encoder) throws {
@@ -152,6 +171,7 @@ struct HeadlessConfig: Codable {
         try c.encodeIfPresent(visionBaseURL, forKey: .visionBaseURL)
         try c.encodeIfPresent(selectedScheme, forKey: .selectedScheme)
         try c.encodeIfPresent(bashMode, forKey: .bashMode)
+        try c.encodeIfPresent(toolCallingPreference, forKey: .toolCallingPreference)
         // Intentionally NOT writing `legacyProjectDescription` — re-encoding a
         // legacy file completes the migration in-place.
     }

@@ -42,6 +42,28 @@ struct LLMServerConfigCard: View {
                     Spacer(minLength: 0)
                 }
 
+                // How tools reach the model. `Auto` asks the server whether the model was
+                // trained for tool use and sends the schemas on its own `tools` field when it
+                // was; the two explicit values override the report in either direction. Takes
+                // effect on the next step that starts — the mode is pinned per step with its
+                // transcript, so a running role never switches protocol mid-conversation.
+                VStack(alignment: .leading, spacing: Spacing.xs) {
+                    HStack(spacing: Spacing.s) {
+                        Text("Tool calling")
+                            .font(Typography.caption)
+                            .foregroundStyle(Colors.textSecondary)
+                        TerminalSegmentedPicker(
+                            selection: $config.toolCallingPreference,
+                            options: ToolCallingPreference.allCases.map { ($0, $0.displayName) }
+                        )
+                        .frame(maxWidth: 320)
+                        Spacer(minLength: 0)
+                    }
+                    Text(config.toolCallingPreference.explanation)
+                        .font(Typography.caption)
+                        .foregroundStyle(Colors.textTertiary)
+                }
+
                 LLMEndpointEditor(
                     baseURL: $config.llmBaseURLString,
                     modelName: $config.llmModelName,

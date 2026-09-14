@@ -3,11 +3,14 @@ import Foundation
 /// Ollama native API client — STATELESS chat via `POST /api/chat`.
 ///
 /// Unification contract with the LM Studio path:
-/// - Tool calling is prompt-based on BOTH providers: the same Harmony
-///   tool-schema block (`NativeLMStudioClient.buildToolSchemaSection` — the
-///   app-wide SSOT) is injected into the system message, and tool calls come
-///   back as `<|call|>{…}<|end|>` text parsed downstream by
-///   `HarmonyToolCallParser`. Zero divergence in the tool pipeline.
+/// - Tool calling follows `config.toolCallingMode` on BOTH providers. `.native` sends the
+///   catalog on `tools`, replays assistant turns as `tool_calls` objects and tool results as
+///   `role: tool` messages, and reads the calls back from `message.tool_calls` — whole, not as
+///   deltas. `.promptTaught` is the house protocol: the same Harmony tool-schema block
+///   (`NativeLMStudioClient.buildToolSchemaSection` — the app-wide SSOT) is injected into the
+///   system message, and calls come back as `<|call|>{…}<|end|>` text parsed downstream by
+///   `HarmonyToolCallParser`. Which one runs is the provider's own answer about the model
+///   (`toolCallingSupport`), never a table of families here.
 /// - Statelessness is universal: every call on every provider carries the full
 ///   conversation and relies on the server's prompt-prefix cache. Server-side
 ///   response chains were removed app-wide.
@@ -49,6 +52,10 @@ nonisolated struct OllamaClient: LLMClient {
             let streamTask = Task.detached {
                 var requestRecord: NetworkLogRecord?
                 var startTime = Date()
+                // Declared outside the `do` so the interrupted record can carry them.
+                var accumulatedContent = ""
+                var accumulatedThinking = ""
+                var accumulatedToolCalls: [StreamEvent.ToolCallDelta] = []
                 do {
                     guard let baseURL = URL(string: config.baseURLString) else {
                         throw LLMClientError.invalidBaseURL(config.baseURLString)
@@ -108,8 +115,6 @@ nonisolated struct OllamaClient: LLMClient {
                         throw LLMClientError.badHTTPStatus(http.statusCode, body)
                     }
 
-                    var accumulatedContent = ""
-                    var accumulatedThinking = ""
                     var capturedUsage: TokenUsage?
                     var capturedPrefill: ServerPrefillReport?
                     var capturedGenerationNs: Double?
@@ -125,6 +130,9 @@ nonisolated struct OllamaClient: LLMClient {
                         case .thinkingDelta(let thinking):
                             accumulatedThinking += thinking
                             continuation.yield(StreamEvent(thinkingDelta: thinking))
+                        case .toolCallDeltas(let calls):
+                            accumulatedToolCalls += calls
+                            continuation.yield(StreamEvent(toolCallDeltas: calls))
                         case .chatEnd(let report):
                             capturedUsage = report.usage
                             capturedPrefill = report.prefill
@@ -132,6 +140,19 @@ nonisolated struct OllamaClient: LLMClient {
                             capturedTotalNs = report.totalNs
                             capturedDoneReason = report.doneReason
                         case .error(let message):
+                            // A native call the server's parser could not read arrives as an
+                            // error CHUNK on a 200 stream, not as a transport failure. It is
+                            // the model's turn, not the server's health — classified so the
+                            // step nudges rather than retrying a byte-identical prompt.
+                            let sawGeneration = !accumulatedContent.isEmpty
+                                || !accumulatedThinking.isEmpty || !accumulatedToolCalls.isEmpty
+                            if config.toolCallingMode == .native,
+                               NativeToolCallRejectionClassifier.isRejection(
+                                   message: message, sawGeneration: sawGeneration,
+                                   toolsDeclared: !tools.isEmpty)
+                            {
+                                throw LLMClientError.nativeToolCallRejected(message)
+                            }
                             throw LLMClientError.providerError(message)
                         }
                     }
@@ -160,36 +181,41 @@ nonisolated struct OllamaClient: LLMClient {
 
                     if let logger, let reqRecord = requestRecord {
                         let durationMs = Date().timeIntervalSince(startTime) * 1000
-                        var responseBody = ""
-                        if !accumulatedThinking.isEmpty {
-                            responseBody += "[reasoning]\n\(accumulatedThinking)\n[/reasoning]\n\n"
-                        }
-                        if !accumulatedContent.isEmpty {
-                            responseBody += accumulatedContent
-                        }
+                        // The calls the server parsed ride the body as the log's own
+                        // rendering — the wire carried them as structure, so without this a
+                        // native turn logged as an empty response.
                         let responseRecord = NetworkLogger.createResponseRecord(
                             for: reqRecord,
                             statusCode: http.statusCode,
                             durationMs: durationMs,
-                            body: responseBody.isEmpty ? nil : responseBody,
+                            body: NetworkLogger.streamedBodyText(
+                                thinking: accumulatedThinking, content: accumulatedContent,
+                                toolCalls: accumulatedToolCalls),
                             error: nil,
                             inputTokens: capturedUsage?.inputTokens,
                             outputTokens: capturedUsage?.outputTokens,
-                            serverPrefill: capturedPrefill
+                            serverPrefill: capturedPrefill,
+                            doneReason: capturedDoneReason
                         )
                         logger.append(responseRecord)
                     }
 
                     continuation.finish()
-                } catch is CancellationError {
-                    continuation.finish(throwing: CancellationError())
                 } catch {
+                    // One arm for a transport failure, a provider error chunk and a
+                    // cancellation alike: the record carries what had streamed by then.
+                    // Until 2026-09-13 a Swift cancellation logged nothing and a URL-layer
+                    // one logged `cancelled` with no body, so a request cut off at the
+                    // run's timeout after minutes of reasoning left the log blank.
                     if let logger, let reqRecord = requestRecord {
                         let durationMs = Date().timeIntervalSince(startTime) * 1000
                         let errorRecord = NetworkLogger.createResponseRecord(
                             for: reqRecord,
                             statusCode: 0,
                             durationMs: durationMs,
+                            body: NetworkLogger.streamedBodyText(
+                                thinking: accumulatedThinking, content: accumulatedContent,
+                                toolCalls: accumulatedToolCalls),
                             error: error
                         )
                         logger.append(errorRecord)
@@ -210,25 +236,33 @@ nonisolated struct OllamaClient: LLMClient {
     /// `NativeLMStudioClient.buildRequest`.
     ///
     /// - System: all system messages merge into ONE system message, with the
-    ///   shared Harmony tool-schema block auto-appended when the prompt doesn't
+    ///   shared tool-calling block auto-appended when the prompt doesn't
     ///   already carry it (same marker detection as the LM Studio builder —
-    ///   `PromptBuilder` places the block itself via `{toolCalling}`).
-    /// - Tool results ride the user channel labelled `[Tool Result]`
+    ///   `PromptBuilder` places the block itself via `{toolCalling}`). Under `.native` that
+    ///   block is the one-tool rule and the injection boundary only; the catalog rides `tools`.
+    /// - `.promptTaught`: tool results ride the user channel labelled `[Tool Result]`
     ///   (prompt-based tool calling — models see the exact convention the LM
-    ///   Studio flat rendering uses, so behavior is unified across providers).
+    ///   Studio flat rendering uses, so behavior is unified across providers), and assistant
+    ///   calls are re-materialized as Harmony text.
+    /// - `.native`: assistant calls ride `tool_calls` as objects and every tool result is its
+    ///   own `role: tool` message naming the tool it answers (`NativeToolTurnPairing`) — no
+    ///   label, no merge into the user turn, because the template renders the tool role itself.
     /// - Consecutive user-side turns merge into a single message: chat
     ///   templates behave best with alternating roles, and this mirrors the
-    ///   LM Studio input-string join.
+    ///   LM Studio input-string join. Under `.native` only `.user` turns merge; a `.tool` turn
+    ///   is its own role and closes the run.
     static func buildRequest(
         config: LLMConfig,
         messages: [ChatMessage],
         tools: [ToolSchema]
     ) -> ChatRequest {
+        let native = config.toolCallingMode == .native && !tools.isEmpty
         let systemMessages = messages.filter { $0.role == .system }
         var systemPrompt = systemMessages.compactMap(\.content).joined(separator: "\n\n")
-        if !tools.isEmpty && !systemPrompt.contains(NativeLMStudioClient.harmonyBodyMarker) {
+        if !tools.isEmpty && !systemPrompt.contains(NativeLMStudioClient.toolBlockMarker) {
             systemPrompt = TemplateResolver.appendingToolCallingSection(
-                NativeLMStudioClient.buildToolSchemaSection(tools: tools), to: systemPrompt)
+                NativeLMStudioClient.buildToolSchemaSection(tools: tools, mode: config.toolCallingMode),
+                to: systemPrompt)
         }
 
         var out: [ChatRequestMessage] = []
@@ -248,32 +282,59 @@ nonisolated struct OllamaClient: LLMClient {
             pendingImages = []
         }
 
-        for msg in messages where msg.role != .system {
+        let pairs = native ? NativeToolTurnPairing.pairs(in: messages) : [:]
+
+        for (index, msg) in messages.enumerated() {
             let images = (msg.imageContent ?? []).map(\.base64Data)
             switch msg.role {
+            case .system:
+                // Already merged into the one system message above.
+                continue
             case .user:
                 pendingUserParts.append(msg.content ?? "")
                 pendingImages.append(contentsOf: images)
             case .tool:
-                pendingUserParts.append("[Tool Result]\n\(msg.content ?? "")")
-                pendingImages.append(contentsOf: images)
+                if native {
+                    flushUser()
+                    out.append(ChatRequestMessage(
+                        role: "tool",
+                        content: msg.content ?? "",
+                        images: images.isEmpty ? nil : images,
+                        toolName: pairs[index]?.name))
+                } else {
+                    pendingUserParts.append("[Tool Result]\n\(msg.content ?? "")")
+                    pendingImages.append(contentsOf: images)
+                }
             case .assistant:
                 flushUser()
-                // Re-materialize tool calls as the Harmony text the model
-                // originally emitted. The streaming path truncates the
-                // envelope out of the persisted assistant content, so a
-                // stateless full-history resend without this would show the
-                // model empty assistant turns followed by orphan
-                // `[Tool Result]` blocks — degrading every multi-iteration
-                // tool loop. `HarmonyToolCallEnvelope` owns those bytes: the
-                // LM Studio builder and both measurement surfaces render the
-                // same text from the same function.
-                out.append(ChatRequestMessage(
-                    role: "assistant",
-                    content: (msg.content ?? "")
-                        + HarmonyToolCallEnvelope.appendedWireText(for: msg)))
-            case .system:
-                break
+                if native {
+                    let calls = (msg.toolCalls ?? []).enumerated().map { offset, call in
+                        ToolCallEntry(index: offset, call: call)
+                    }
+                    // The turn goes back as the model generated it, reasoning included, in
+                    // Ollama's own `thinking` field — see `ChatMessage.reasoning` for why a
+                    // server's cache may depend on it and why the renderer, not the client,
+                    // decides what of it the model sees again.
+                    out.append(ChatRequestMessage(
+                        role: "assistant",
+                        content: msg.content ?? "",
+                        toolCalls: calls.isEmpty ? nil : calls,
+                        thinking: msg.reasoning))
+                } else {
+                    // Re-materialize tool calls as the Harmony text the model
+                    // originally emitted. The streaming path truncates the
+                    // envelope out of the persisted assistant content, so a
+                    // stateless full-history resend without this would show the
+                    // model empty assistant turns followed by orphan
+                    // `[Tool Result]` blocks — degrading every multi-iteration
+                    // tool loop. `HarmonyToolCallEnvelope` owns those bytes: the
+                    // LM Studio builder and both measurement surfaces render the
+                    // same text from the same function.
+                    out.append(ChatRequestMessage(
+                        role: "assistant",
+                        content: (msg.content ?? "")
+                            + HarmonyToolCallEnvelope.appendedWireText(for: msg)))
+                }
             }
         }
         flushUser()
@@ -289,7 +350,8 @@ nonisolated struct OllamaClient: LLMClient {
                 ? nil
                 : ChatRequest.Options(
                     temperature: config.temperature, numPredict: config.maxOutputTokens),
-            keepAlive: config.keepAliveSeconds
+            keepAlive: config.keepAliveSeconds,
+            tools: native ? tools.map(NativeToolDeclaration.init) : nil
         )
     }
 
@@ -460,6 +522,22 @@ nonisolated struct OllamaClient: LLMClient {
         else { return nil }
         return capabilities.contains("vision")
     }
+
+    /// Whether `config.modelName` was trained for tool use, per `/api/show` `capabilities`
+    /// (`["completion","tools","thinking",…]` on current builds). `nil` when the probe failed
+    /// or the field is absent — never a guess, because the caller's fallback on `nil` is the
+    /// protocol it controls, and a guessed `true` would send a grammar-forced request to a
+    /// model that never learned the syntax.
+    func toolCallingSupport(config: LLMConfig) async -> Bool? {
+        guard let meta = await showMetadata(model: config.modelName, config: config),
+              let capabilities = meta.capabilities
+        else { return nil }
+        return capabilities.contains(Self.toolsCapability)
+    }
+
+    /// The `/api/show` capability that names a tool-trained model. One literal, here, so the
+    /// probe and its test cannot spell it two ways.
+    static let toolsCapability = "tools"
 
     /// EFFECTIVE context window, preferring the LOADED instance's own figure.
     ///

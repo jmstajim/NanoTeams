@@ -84,10 +84,14 @@ extension NTMSOrchestrator {
         // 2. Call TeamGenerationService in the background.
         let generationResult: Result<GeneratedTeamBuilder.BuildResult, Error>
         do {
-            let effectiveConfig = LLMExecutionService.buildEffectiveConfig(
+            // Mode resolved AFTER the override, for the model the override names — the
+            // generator's one tool (`create_team`) reaches the model natively or as prose
+            // depending on what that model was trained for.
+            var effectiveConfig = LLMExecutionService.buildEffectiveConfig(
                 globalConfig: globalLLMConfig,
                 roleOverride: configuration.teamGenLLMOverride
             )
+            effectiveConfig.toolCallingMode = await resolveToolCallingMode(for: effectiveConfig)
             // Construct a logger pointed at the same per-task `network_log.json`
             // the role's own LLM calls use, so the team-generation request +
             // response land in the existing trace next to the surrounding

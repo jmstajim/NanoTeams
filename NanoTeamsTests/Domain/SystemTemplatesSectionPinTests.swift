@@ -89,8 +89,10 @@ final class SystemTemplatesSectionPinTests: XCTestCase {
                       "autovisorTemplate FR must restate the Work Folder Context refresh")
         // Canary against an accidental repoint back to a producing-role template:
         // the deliverable-submission FR only exists in templates the Autovisor must NOT use.
-        XCTAssertFalse(t.contains("Submit each deliverable"),
-                       "autovisorTemplate must not carry the generic deliverable-submission Final reminder")
+        XCTAssertFalse(t.contains(SystemTemplates.producingStepEnding),
+                       "autovisorTemplate must not carry the producing-role Final reminder")
+        XCTAssertFalse(t.contains("{stepEnding}"),
+                       "nor the chip that resolves to it")
     }
 
     func testAutovisorTemplate_doesNotOpenWithYouAre() {

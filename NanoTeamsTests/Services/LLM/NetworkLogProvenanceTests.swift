@@ -95,6 +95,27 @@ final class NetworkLogProvenanceTests: XCTestCase {
         XCTAssertEqual(try body(of: records[0])["model"] as? String, "gpt-oss-20b")
     }
 
+    /// The response record's `doneReason` (2026-09-13) is optional on the way IN too: a line
+    /// written before the field existed decodes with nil instead of failing the strict reader.
+    func testResponseRecord_carriesTheDoneReason_andALineWithoutItStillDecodes() throws {
+        let logURL = tempDir.appendingPathComponent("network_log.jsonl")
+        let logger = NetworkLogger(logURL: logURL)
+        logger.append(NetworkLogger.createResponseRecord(
+            for: makeRecord(), statusCode: 200, durationMs: 12, error: nil, doneReason: "length"))
+        let withReason = try NetworkLogTestReading.strictRecords(at: logURL)
+        XCTAssertEqual(withReason.map(\.doneReason), ["length"])
+
+        // The same line as a pre-field writer would have left it: the key removed.
+        let text = try String(contentsOf: logURL, encoding: .utf8)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+        XCTAssertNotNil(object.removeValue(forKey: "doneReason"))
+        try JSONSerialization.data(withJSONObject: object).write(to: logURL)
+        let legacy = try NetworkLogTestReading.strictRecords(at: logURL)
+        XCTAssertEqual(legacy.count, 1)
+        XCTAssertNil(legacy[0].doneReason)
+        XCTAssertEqual(legacy[0].statusCode, 200)
+    }
+
     // MARK: - Dedup
 
     /// Per (log, server, model) — not per call and not per logger INSTANCE. A step builds
@@ -194,7 +215,11 @@ final class NetworkLogProvenanceTests: XCTestCase {
     /// `XCTUnwrap` fails naming the file.
     func testBothClients_noteProvenanceBeforeTheRequestRecord() throws {
         let call = "logger.noteProvenanceIfNeeded(config: config, stepID: stepID, roleName: roleName)"
-        for file in ["NanoTeams/Services/LLM/NativeLMStudioClient.swift", "NanoTeams/Services/LLM/OllamaClient.swift"] {
+        for file in [
+            "NanoTeams/Services/LLM/NativeLMStudioClient.swift",
+            "NanoTeams/Services/LLM/OllamaClient.swift",
+            "NanoTeams/Services/LLM/OpenAICompatLMStudioClient.swift",
+        ] {
             let source = try String(contentsOf: Self.repoRoot.appendingPathComponent(file), encoding: .utf8)
             let note = try XCTUnwrap(source.range(of: call), "\(file) must note provenance")
             let append = try XCTUnwrap(source.range(of: "logger.append(requestRecord!)"), file)
@@ -206,6 +231,29 @@ final class NetworkLogProvenanceTests: XCTestCase {
             encoding: .utf8)
         XCTAssertFalse(step.contains("createProvenanceRecord("),
                        "the step no longer writes provenance itself — the client seam does")
+    }
+
+    // MARK: - The tool-calling mode is part of the triple (2026-09-13)
+
+    /// One run can drive one model under BOTH protocols — a step pinned before the setting
+    /// changed beside a fresh one — and a record naming the model alone would say nothing
+    /// about which wire the requests after it carried.
+    func testWriter_writesOncePerMode_soAModelDrivenBothWaysGetsTwoRecords() throws {
+        let logURL = tempDir.appendingPathComponent("network_log.jsonl")
+        var config = LLMConfig(provider: .ollama, baseURLString: "http://localhost:11434", modelName: "ornith")
+        config.toolCallingMode = .promptTaught
+        NetworkLogger(logURL: logURL).noteProvenanceIfNeeded(config: config, stepID: "s1", roleName: "R")
+        config.toolCallingMode = .native
+        NetworkLogger(logURL: logURL).noteProvenanceIfNeeded(config: config, stepID: "s2", roleName: "R")
+        NetworkLogger(logURL: logURL).noteProvenanceIfNeeded(config: config, stepID: "s3", roleName: "R")
+
+        let lines = try String(contentsOf: logURL, encoding: .utf8)
+            .split(separator: "\n").map(String.init)
+        XCTAssertEqual(lines.count, 2, "one per (server, model, MODE): \(lines)")
+        XCTAssertTrue(lines[0].contains("promptTaught"), lines[0])
+        XCTAssertTrue(lines[1].contains("native"), lines[1])
+        XCTAssertFalse(lines[0].contains("\"native\""))
+        XCTAssertTrue(lines.allSatisfy { $0.contains("toolCalling") }, "the body names the field")
     }
 
     private static let repoRoot = URL(fileURLWithPath: #filePath)

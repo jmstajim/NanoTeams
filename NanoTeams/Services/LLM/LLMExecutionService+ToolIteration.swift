@@ -93,6 +93,7 @@ extension LLMExecutionService {
                 step: step,
                 client: client,
                 config: config,
+                tools: tools,
                 networkLogger: networkLogger,
                 roleForMessage: roleForMessage,
                 conversationMessages: &conversationMessages)
@@ -137,7 +138,7 @@ extension LLMExecutionService {
         // its own copy — which for a role step it does NOT, because `PromptBuilder` already put
         // the catalog in the system message, which is why `messages` decides the answer.
         let toolSchemaText = NativeLMStudioClient.toolSchemaTextForMeasurement(
-            tools: tools, messages: messagesToSend)
+            tools: tools, messages: messagesToSend, mode: config.toolCallingMode)
 
         // 2b-bis. Fingerprint what we are about to send against what this step sent last, so a
         // silent prompt-prefix (KV) cache miss can be attributed. Recorded BEFORE the send: the
@@ -636,7 +637,8 @@ extension LLMExecutionService {
         var server = PrefixCachePolicy.ServerSignals(
             modelLoadMs: serverPrefill?.modelLoadMs,
             prefillNsPerToken: serverPrefill?.nsPerToken,
-            promptTokens: serverPrefill?.promptTokens)
+            promptTokens: serverPrefill?.promptTokens,
+            cachedFraction: serverPrefill?.cachedFraction)
 
         // Exemption 4: the user asked for immediate unload, so a reload is what they configured,
         // not a defect.

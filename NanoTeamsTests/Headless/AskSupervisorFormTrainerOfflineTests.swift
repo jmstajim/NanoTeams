@@ -9,6 +9,27 @@ import XCTest
 @MainActor
 final class AskSupervisorFormTrainerOfflineTests: XCTestCase {
 
+    // MARK: - Configuration
+
+    /// The trainer measures the WIRE it is told to, not whatever Auto resolves. Since 1.9.30 Auto
+    /// sends a model its server calls tool-trained natively, while the form's field baseline
+    /// (2026-09-12) was taken on the prompt-taught `<|call|>` envelope — an after-arm comparable
+    /// with that baseline needs the mode stated in the config, and a bare config must stay Auto,
+    /// the production path.
+    /// RED: the config has no `toolCallingPreference` → the key is ignored and the run is Auto.
+    func testMakeConfiguration_appliesTheToolCallingPreference_andDefaultsToAuto() async throws {
+        let stated = try JSONDecoder().decode(
+            AskSupervisorFormTrainerConfig.self,
+            from: Data(#"{"projectPath":"/tmp/p","outputPath":"/tmp/o.json","toolCallingPreference":"promptTaught"}"#.utf8))
+        XCTAssertEqual(AskSupervisorFormTrainer.makeConfiguration(config: stated).toolCallingPreference, .promptTaught)
+
+        let bare = try JSONDecoder().decode(
+            AskSupervisorFormTrainerConfig.self,
+            from: Data(#"{"projectPath":"/tmp/p","outputPath":"/tmp/o.json"}"#.utf8))
+        XCTAssertEqual(AskSupervisorFormTrainer.makeConfiguration(config: bare).toolCallingPreference, .auto,
+                       "absent → the fresh-install default, which is what a user runs")
+    }
+
     // MARK: - The classifier, over the field runs it was derived from
 
     /// The baseline the wave is measured against, emission by emission.

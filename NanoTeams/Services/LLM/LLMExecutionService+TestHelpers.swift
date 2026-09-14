@@ -148,11 +148,12 @@ extension LLMExecutionService {
         client: any LLMClient,
         config: LLMConfig,
         roleForMessage: Role,
+        tools: [ToolSchema] = [],
         conversationMessages: inout [ChatMessage]
     ) async -> Bool {
         await compactConversationInLoop(
             stepID: stepID, taskID: taskID, reason: reason, step: step,
-            client: client, config: config, networkLogger: nil,
+            client: client, config: config, tools: tools, networkLogger: nil,
             roleForMessage: roleForMessage, conversationMessages: &conversationMessages)
     }
 
@@ -284,7 +285,11 @@ extension LLMExecutionService {
         allowedToolNames: Set<String> = [],
         wireIsMidPlanning: Bool? = nil,
         seedMessageLoopRing: Bool = true,
-        runtime: ToolRuntime? = nil
+        runtime: ToolRuntime? = nil,
+        serverDoneReason: String? = nil,
+        nativeCallRejection: String? = nil,
+        nativeCallAttempt: String? = nil,
+        toolCallingMode: ToolCallingMode = .promptTaught
     ) async -> LLMStepStop {
         if seedMessageLoopRing {
             reseedMessageLoopRing(
@@ -295,7 +300,11 @@ extension LLMExecutionService {
             thinkingContent: thinkingContent,
             resolvedToolCalls: [],
             sawHarmonyMarker: sawHarmonyMarker,
-            harmonyBuffer: harmonyBuffer
+            harmonyBuffer: harmonyBuffer,
+            serverDoneReason: serverDoneReason,
+            nativeCallRejection: nativeCallRejection,
+            nativeCallAttempt: nativeCallAttempt,
+            toolCallingMode: toolCallingMode
         )
         return await handleNoToolCalls(
             stepID: stepID,

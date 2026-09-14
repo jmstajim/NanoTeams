@@ -118,8 +118,18 @@ nonisolated enum SystemTemplates {
     /// Off has no tool to end on at all — three sentences, one chip. No "plain text is
     /// invisible" clause: a rationale inside the imperative (R1.2.3), and untrue for the
     /// human, who reads the feed.
+    ///
+    /// The producing sentence names the tool AND the field since 2026-09-13. Until then it
+    /// read "Submit each deliverable exactly once — that is how the step ends.", and gemma-4
+    /// on LM Studio wrote 15 of 30 deliverables as a plain reply first, then re-sent each
+    /// through `create_artifact` after the missing-deliverable nudge (MeditationApp tasks
+    /// 95–98, N=2 per tool-calling mode) — a WHERE failure, not a WHAT failure: "submit"
+    /// reads as handing in text already written, the closing user turn that names the tool
+    /// rides the first request only, and under native tool calling the system prompt
+    /// carried the name nowhere else. REC.10 before/after: `train-first-prompt/RUN_HISTORY.md`,
+    /// Audit 2026-09-13 (the reminder entry).
     static let producingStepEnding =
-        "Submit each deliverable exactly once — that is how the step ends."
+        "Write each deliverable as the `content` of one `create_artifact` call — that is how the step ends."
     static let advisoryStepEnding =
         "Reply by calling `ask_supervisor` with your full response in its `question` field. Several questions, or a choice with its options, go as `ask_supervisor_form`."
     static let plainReplyStepEnding =

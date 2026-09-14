@@ -62,6 +62,18 @@ nonisolated struct NetworkLogRecord: Codable, Hashable {
     /// `minimumLoadMsForReload`, and mixing an app-measured duration into it would poison any
     /// attempt to re-derive that threshold. Nil whenever the model was already resident.
     var appModelLoadMs: Double?
+    /// Prompt tokens the server served from its KV cache — Ollama `prompt_eval_cached_count`,
+    /// VERBATIM. The direct half of the cache audit `prefillMs` carries indirectly: `jq
+    /// '.cachedPromptTokens / .inputTokens'` over a run reads the reuse rate per request with
+    /// no floor to calibrate. Nil on LM Studio and on Ollama builds that do not report it.
+    var cachedPromptTokens: Int?
+    /// How the SERVER says the generation ended, VERBATIM — Ollama `done_reason`
+    /// (`stop` / `length`), the OpenAI-compat route's `finish_reason` (`stop` / `tool_calls` /
+    /// `length`). The stream event carried it since the native tool-calling wave, but the log
+    /// did not, so the first live A/B (2026-09-13, MeditationApp tasks 91–95) could not say
+    /// whether any turn was cut by the server's output cap — the `length` arm of the truncation
+    /// nudge was unobservable from the record. Nil where the server reports none.
+    var doneReason: String?
 }
 
 nonisolated final class NetworkLogger: @unchecked Sendable {
@@ -120,11 +132,14 @@ nonisolated final class NetworkLogger: @unchecked Sendable {
     nonisolated(unsafe) private static var notedProvenance: Set<String> = []
     private static let provenanceLock = NSLock()
 
-    /// Writes one `.provenance` record per `(log file, server, model)`. Called by both
+    /// Writes one `.provenance` record per `(log file, server, model, tool-calling mode)`. Called by both
     /// provider clients right before their first request record — the one seam every wire
     /// request passes through, so a caller is covered without knowing about it.
     func noteProvenanceIfNeeded(config: LLMConfig, stepID: String?, roleName: String?) {
-        let key = "\(logURL.path)|\(config.baseURLString)|\(config.modelName)"
+        // The mode is part of the key: one run can drive one model under both protocols (a
+        // step pinned before the setting changed beside a fresh one), and a record naming the
+        // model alone would say nothing about which wire the requests after it carried.
+        let key = "\(logURL.path)|\(config.baseURLString)|\(config.modelName)|\(config.toolCallingMode.rawValue)"
         Self.provenanceLock.lock()
         let inserted = Self.notedProvenance.insert(key).inserted
         Self.provenanceLock.unlock()
@@ -133,6 +148,7 @@ nonisolated final class NetworkLogger: @unchecked Sendable {
             provider: config.provider.rawValue,
             baseURL: config.baseURLString,
             model: config.modelName,
+            toolCalling: config.toolCallingMode.rawValue,
             appVersion: AppVersion.current,
             promptVersion: BundledContentFingerprint.current,
             runtimePromptVersion: RuntimePromptFingerprint.primed ?? RuntimePromptFingerprint.unprimedMarker,
@@ -262,6 +278,7 @@ nonisolated final class NetworkLogger: @unchecked Sendable {
         provider: String,
         baseURL: String,
         model: String,
+        toolCalling: String = ToolCallingMode.promptTaught.rawValue,
         appVersion: String,
         promptVersion: String,
         runtimePromptVersion: String,
@@ -273,6 +290,8 @@ nonisolated final class NetworkLogger: @unchecked Sendable {
             "provider": provider,
             "baseURL": baseURL,
             "model": model,
+            // `native` or `promptTaught` — which wire the requests after this record carried.
+            "toolCalling": toolCalling,
             "appVersion": appVersion,
             "promptVersion": promptVersion,
             "runtimePromptVersion": runtimePromptVersion,
@@ -293,6 +312,47 @@ nonisolated final class NetworkLogger: @unchecked Sendable {
         )
     }
 
+    /// The log's own rendering of native calls, appended to a response body after the
+    /// prose: one `[tool_call] name {arguments}` line per call. The wire carried them as
+    /// structure the log's string body cannot hold; without this a native turn that made
+    /// only calls logged as an empty response.
+    static func toolCallsLogText(_ calls: [StreamEvent.ToolCallDelta]) -> String {
+        guard !calls.isEmpty else { return "" }
+        return calls.map { call in
+            "\n[tool_call] \(call.name ?? "?") \(call.argumentsDelta ?? "")"
+        }.joined()
+    }
+
+    /// The log's rendering of what a streaming response carried: the reasoning first, then
+    /// the prose, then the calls the server parsed. ONE composer for the completed record and
+    /// the interrupted one — until 2026-09-13 each provider client composed the body inline
+    /// on its success path only, so a request cancelled at the run's timeout left a record
+    /// that said `cancelled` and nothing else while the client held minutes of streamed
+    /// reasoning (MeditationApp task 103: a 662 s Change Planner request, unreadable;
+    /// CLAUDE.md #331).
+    static func streamedBodyText(
+        thinking: String, content: String, toolCalls: [StreamEvent.ToolCallDelta]
+    ) -> String? {
+        var text = ""
+        if !thinking.isEmpty {
+            text += "[reasoning]\n\(thinking)\n[/reasoning]\n\n"
+        }
+        text += content
+        text += toolCallsLogText(toolCalls)
+        return text.isEmpty ? nil : text
+    }
+
+    /// What a record says about the error that ended its request. A cancelled request says
+    /// `cancelled` whichever layer cancelled it: Swift's `CancellationError` describes itself
+    /// as "The operation couldn't be completed" and `URLError.cancelled` as a localized word,
+    /// while `ToolErrorNotePolicy` and the log's readers match one string.
+    static func errorMessage(for error: Error) -> String {
+        if error is CancellationError || (error as? URLError)?.code == .cancelled {
+            return "cancelled"
+        }
+        return error.localizedDescription
+    }
+
     /// Creates a response record paired with a request via correlationID
     static func createResponseRecord(
         for request: NetworkLogRecord,
@@ -303,7 +363,8 @@ nonisolated final class NetworkLogger: @unchecked Sendable {
         inputTokens: Int? = nil,
         outputTokens: Int? = nil,
         serverPrefill: ServerPrefillReport? = nil,
-        clientResidency: ClientResidencyFacts? = nil
+        clientResidency: ClientResidencyFacts? = nil,
+        doneReason: String? = nil
     ) -> NetworkLogRecord {
         NetworkLogRecord(
             id: UUID(),
@@ -314,7 +375,7 @@ nonisolated final class NetworkLogger: @unchecked Sendable {
             statusCode: statusCode,
             body: body,
             durationMs: durationMs,
-            errorMessage: error?.localizedDescription,
+            errorMessage: error.map(errorMessage(for:)),
             correlationID: request.correlationID,
             stepID: request.stepID,
             inputTokens: inputTokens,
@@ -322,7 +383,9 @@ nonisolated final class NetworkLogger: @unchecked Sendable {
             roleName: request.roleName,
             prefillMs: serverPrefill?.prefillNs.map { $0 / 1_000_000 },
             modelLoadMs: serverPrefill?.modelLoadMs,
-            appModelLoadMs: clientResidency?.appModelLoadMs
+            appModelLoadMs: clientResidency?.appModelLoadMs,
+            cachedPromptTokens: serverPrefill?.cachedPromptTokens,
+            doneReason: doneReason
         )
     }
     nonisolated deinit {}

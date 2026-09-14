@@ -85,7 +85,7 @@ final class StreamingPreviewManagerCrossTaskIsolationTests: XCTestCase, @uncheck
             sut.hasReceivedStreamActivity(stepID: stepID, taskID: taskB),
             "Task A's commit must not wipe task B's stream-activity flag (the lost-indicator bug)")
         XCTAssertTrue(sut.isStreamingToolCall(stepID: stepID, taskID: taskB))
-        XCTAssertNotNil(sut.processingStatus[TaskStepKey(taskID: taskB, stepID: stepID)])
+        XCTAssertNotNil(sut.promptProcessingStatus(stepID: stepID, taskID: taskB))
         XCTAssertNotNil(sut.lastStreamActivity(stepID: stepID, taskID: taskB))
         XCTAssertTrue(sut.isStreaming(messageID: msgB))
     }
@@ -104,6 +104,25 @@ final class StreamingPreviewManagerCrossTaskIsolationTests: XCTestCase, @uncheck
         XCTAssertEqual(sut.streamingContent(stepID: stepID, taskID: taskA), "A")
         XCTAssertTrue(sut.hasReceivedStreamActivity(stepID: stepID, taskID: taskA))
         XCTAssertTrue(sut.isStreaming(messageID: msgA))
+    }
+
+    /// The held trailing run (`StreamingPreviewManagerTrailingWhitespaceTests`) is per-step
+    /// state like every other transient here: task B's stream on the shared stepID must
+    /// neither receive task A's held run nor drop it.
+    func testHeldTrailingWhitespace_isPerTask_andSurvivesTheOtherTasksBeginStreaming() async {
+        let msgA = UUID()
+        seedLiveStream(taskID: taskA, messageID: msgA, content: "A mid-stream", thinking: "A thinks")
+        sut.append(stepID: stepID, taskID: taskA, messageID: msgA, role: .softwareEngineer, content: "\n\n")
+
+        let msgB = UUID()
+        sut.beginStreaming(stepID: stepID, taskID: taskB, messageID: msgB, role: .softwareEngineer)
+        sut.append(stepID: stepID, taskID: taskB, messageID: msgB, role: .softwareEngineer, content: "B")
+
+        XCTAssertEqual(sut.streamingContent(stepID: stepID, taskID: taskB), "B",
+                       "task A's held run must not be delivered into task B's preview")
+        sut.append(stepID: stepID, taskID: taskA, messageID: msgA, role: .softwareEngineer, content: "more")
+        XCTAssertEqual(sut.streamingContent(stepID: stepID, taskID: taskA), "A mid-stream\n\nmore",
+                       "task B's beginStreaming must not drop task A's held run")
     }
 
     /// Pre-fix, task B's `beginStreaming` on the shared stepID RESET task A's

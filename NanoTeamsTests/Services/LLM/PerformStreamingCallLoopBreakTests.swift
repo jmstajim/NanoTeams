@@ -62,16 +62,19 @@ final class PerformStreamingCallLoopBreakTests: XCTestCase {
     /// The canonical (whitespace/key-order) duplicate probe runs behind
     /// `toolDeltaScanGate`, not per delta — this pins that the gated path FIRES:
     /// two canonically-equal-but-byte-different calls whose deltas exceed the
-    /// cadence must break the stream, so the trailing content never lands.
+    /// cadence must stop the accumulator absorbing, so a later delta never lands as a
+    /// call. Since 2026-09-13 the STREAM is not broken by it (a native provider puts
+    /// the calls and the usage on one terminal chunk), so trailing content still
+    /// arrives — the assertion is on the calls, not on the prose.
     /// The per-delta raw probe must NOT fire here (different bytes), which is
     /// exactly what makes this the canonical branch's test and not its sibling's.
     ///
     /// RED: delete the gated `containsDuplicateToolCalls` call from the
-    /// `toolCallDeltas` branch → the stream runs to completion and the
-    /// trailing-content assertion below fails on "AFTER-BREAK".
+    /// `toolCallDeltas` branch → the third delta is absorbed and `read_file`
+    /// resolves beside the collapsed pair.
     /// (The other half — the probe being GATED rather than per-delta — is
     /// pinned by `testStreamingWiring_canonicalProbeIsCadenceGated`.)
-    func testCanonicalDuplicateToolCalls_breakTheStream_behindTheCadenceGate() async throws {
+    func testCanonicalDuplicateToolCalls_stopAbsorbing_behindTheCadenceGate() async throws {
         setUpStep(stepID: "dup", taskID: 41)
         let filler = String(repeating: "x", count: 180)
         let argsA = "{\"path\":\"a.txt\",\"content\":\"\(filler)\"}"
@@ -83,12 +86,18 @@ final class PerformStreamingCallLoopBreakTests: XCTestCase {
             StreamEvent(toolCallDeltas: [
                 StreamEvent.ToolCallDelta(index: 1, id: "b", name: "write_file", argumentsDelta: argsB),
             ]),
-            StreamEvent(contentDelta: "AFTER-BREAK prose that must never arrive"),
+            StreamEvent(toolCallDeltas: [
+                StreamEvent.ToolCallDelta(index: 2, id: "c", name: "read_file", argumentsDelta: "{\"path\":\"b.txt\"}"),
+            ]),
+            StreamEvent(contentDelta: "trailing prose still arrives",
+                        tokenUsage: TokenUsage(inputTokens: 50, outputTokens: 5)),
         ]
         let result = try await run(events, stepID: "dup", taskID: 41)
 
-        XCTAssertFalse(result.assistantContent.contains("AFTER-BREAK"),
-                       "the canonical duplicate must break the stream before the trailing content")
+        XCTAssertEqual(result.resolvedToolCalls.map(\.name), ["write_file"],
+                       "the canonical duplicate collapsed and nothing after it was absorbed")
+        XCTAssertEqual(result.assistantContent, "trailing prose still arrives")
+        XCTAssertEqual(result.tokenUsage?.inputTokens, 50, "the terminal usage survives")
     }
 
     // MARK: - Top-level

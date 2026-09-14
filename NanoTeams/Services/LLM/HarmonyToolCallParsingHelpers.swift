@@ -333,22 +333,58 @@ nonisolated enum ToolCallParsingHelpers {
     /// The repaired object still carries the recovered members as SIBLINGS of
     /// `arguments`; moving them inside is `ToolCallShapeRecognizer`'s job, which owns
     /// shape recognition. This function only recovers bytes the walker discarded.
+    ///
+    /// A second thing the walker cannot do: look PAST the first balanced object. `ornith-1.5:35b`
+    /// (MeditationApp task 94, 2026-09-13, prompt-taught) opened sixteen envelopes in one step as
+    /// `<|call|>{}{"name":"read_file","arguments":{…}}<|end|>` — an empty object glued before the
+    /// call. The walker returned `{}`, the parser found no `name`, and the nudge asked the model
+    /// to "put the id at the top level" of a call that had it one object later; the model,
+    /// told nothing true, re-emitted the shape every time. `callObjectStart` skips that run of
+    /// empty objects (only when a `{` follows, only before `endMarker`) and reports how many, so
+    /// the dispatcher can tell the model once what was dropped (REC.5).
     static func extractCallObject(
         in s: Substring, from index: String.Index, endMarker: String
-    ) -> (json: String, next: String.Index)? {
+    ) -> (json: String, next: String.Index, skippedEmptyObjects: Int)? {
+        let limit = s.range(of: endMarker, range: index..<s.endIndex)?.lowerBound ?? s.endIndex
+        let (start, skipped) = callObjectStart(in: s, from: index, limit: limit)
         guard
             let (json, next) = extractJSONBracedValue(
-                in: s, from: index, salvageEndMarker: endMarker)
+                in: s, from: start, salvageEndMarker: endMarker)
         else { return nil }
 
         let bodyEnd = s.range(of: endMarker, range: next..<s.endIndex)?.lowerBound ?? s.endIndex
         guard next < bodyEnd, continuesMemberList(s, from: next, limit: bodyEnd) else {
-            return (json, next)
+            return (json, next, skipped)
         }
-        guard let repaired = repairPrematureObjectClose(String(s[index..<bodyEnd])) else {
-            return (json, next)
+        guard let repaired = repairPrematureObjectClose(String(s[start..<bodyEnd])) else {
+            return (json, next, skipped)
         }
-        return (repaired, bodyEnd)
+        return (repaired, bodyEnd, skipped)
+    }
+
+    /// Where the call object begins when the model wrote one or more EMPTY objects first:
+    /// `{}{"name":…}`, `{ } {}\n{"name":…}`. Skips an empty object only when the next
+    /// non-whitespace character before `limit` opens another object — `{}` alone is still the
+    /// (name-less) call, and `{},"name":…` is still the premature-close shape
+    /// `repairPrematureObjectClose` owns. Returns the original index and 0 when nothing was
+    /// skipped. Shared by `extractCallObject` (dispatch) and `postCallJSON` (diagnosis) so both
+    /// read the same bytes.
+    static func callObjectStart(
+        in s: Substring, from index: String.Index, limit: String.Index
+    ) -> (start: String.Index, skippedEmptyObjects: Int) {
+        var start = index
+        var skipped = 0
+        while start < limit, s[start] == "{" {
+            var i = s.index(after: start)
+            while i < limit, s[i].isWhitespace { i = s.index(after: i) }
+            guard i < limit, s[i] == "}" else { break }
+            i = s.index(after: i)
+            while i < limit, s[i].isWhitespace { i = s.index(after: i) }
+            guard i < limit, s[i] == "{" else { break }
+            start = i
+            skipped += 1
+        }
+        return (start, skipped)
     }
 
     /// Removes closers that ended an object while its member list was still going, then
@@ -687,6 +723,19 @@ nonisolated enum ToolCallParsingHelpers {
 
     /// runtime-prompt
     ///
+    /// One line for the model, or nil when nothing stood before its call object. Reported on
+    /// the result of the call that dispatched anyway, for the same reason as the spilled-
+    /// arguments note below: a repair nobody reports is a shape the model re-emits for the
+    /// rest of the run (task 94: sixteen times in one step).
+    static func leadingEmptyObjectsNote(count: Int) -> String? {
+        guard count > 0 else { return nil }
+        let what = count == 1 ? "an empty `{}` object stood" : "\(count) empty `{}` objects stood"
+        return what + " before your call object and was dropped; open the call object "
+            + "directly after `<|call|>`"
+    }
+
+    /// runtime-prompt
+    ///
     /// One line for the model, or nil when it emitted the call correctly.
     static func spilledArgumentsNote(recoveredKeys: [String]) -> String? {
         guard !recoveredKeys.isEmpty else { return nil }
@@ -805,7 +854,7 @@ nonisolated enum ToolCallParsingHelpers {
         let sub = Substring(repaired)
         let start = skipWhitespace(in: sub, from: sub.startIndex)
         guard start < sub.endIndex, sub[start] == "{" else { return nil }
-        guard let (span, _) = extractCallObject(
+        guard let (span, _, _) = extractCallObject(
             in: sub, from: start, endMarker: CallMarkerStrategy.endMarker)
         else { return nil }
         guard let call = parseToolCallFromJSON(span) else { return nil }
@@ -1185,12 +1234,16 @@ nonisolated enum ToolCallParsingHelpers {
             return .noCallMarker
         }
         let tail = text[callRange.upperBound...]
-        let jsonStart = skipWhitespace(in: tail, from: tail.startIndex)
-        guard jsonStart < tail.endIndex, tail[jsonStart] == "{" else {
+        let firstBrace = skipWhitespace(in: tail, from: tail.startIndex)
+        guard firstBrace < tail.endIndex, tail[firstBrace] == "{" else {
             return .noObject
         }
-        // Same `salvageEndMarker` the dispatch walk uses, so the classifier and the retry
-        // diagnostic describe the same bytes that `extractCallObject` would have accepted.
+        // Same leading-empty-object skip and the same `salvageEndMarker` the dispatch walk
+        // uses, so the classifier and the retry diagnostic describe the same bytes that
+        // `extractCallObject` would have accepted.
+        let limit = tail.range(of: CallMarkerStrategy.endMarker, range: firstBrace..<tail.endIndex)?
+            .lowerBound ?? tail.endIndex
+        let (jsonStart, _) = callObjectStart(in: tail, from: firstBrace, limit: limit)
         guard
             let (jsonText, _) = extractJSONBracedValue(
                 in: tail, from: jsonStart, salvageEndMarker: CallMarkerStrategy.endMarker)

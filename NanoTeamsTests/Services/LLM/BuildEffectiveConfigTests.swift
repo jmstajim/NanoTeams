@@ -145,4 +145,36 @@ final class BuildEffectiveConfigTests: XCTestCase {
         XCTAssertEqual(result.provider, .ollama,
                        "The override's provider decides the wire format for its URL")
     }
+
+
+    // MARK: - Tool-calling mode (2026-09-13)
+
+    /// The mode is resolved ONCE (`resolveToolCallingMode`) and stamped on the global config;
+    /// an override that swaps the model or the server must carry it through, or a per-role
+    /// override would silently fall back to the prompt-taught protocol.
+    func testOverride_copiesTheToolCallingMode() {
+        var global = makeGlobalConfig()
+        global.toolCallingMode = .native
+
+        XCTAssertEqual(
+            LLMExecutionService.buildEffectiveConfig(
+                globalConfig: global, roleOverride: LLMOverride(modelName: "other")).toolCallingMode,
+            .native)
+        XCTAssertEqual(
+            LLMExecutionService.buildEffectiveConfig(
+                globalConfig: global,
+                roleOverride: LLMOverride(baseURLString: "http://other:1", provider: .ollama)).toolCallingMode,
+            .native)
+        XCTAssertEqual(
+            LLMExecutionService.buildEffectiveConfig(globalConfig: global, roleOverride: nil).toolCallingMode,
+            .native)
+    }
+
+    func testDefaultMode_isPromptTaught_theFailClosedProtocol() {
+        XCTAssertEqual(makeGlobalConfig().toolCallingMode, .promptTaught)
+        XCTAssertEqual(
+            LLMExecutionService.buildEffectiveConfig(
+                globalConfig: makeGlobalConfig(), roleOverride: LLMOverride(modelName: "m")).toolCallingMode,
+            .promptTaught)
+    }
 }

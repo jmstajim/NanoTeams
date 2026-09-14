@@ -105,6 +105,15 @@ nonisolated struct LLMConfig: Hashable {
     /// LM Studio ignores it: the app manages that residency explicitly through
     /// `ChatModelEnsurer` and its ownership ledger.
     var keepAliveSeconds: Int?
+    /// How this request advertises its tools and reads the calls back — see `ToolCallingMode`.
+    ///
+    /// Defaults to `.promptTaught`, the protocol every existing caller and test double was
+    /// written against. Written ONLY by `LLMExecutionService.resolveToolCallingMode` (through
+    /// `NTMSOrchestrator.resolveToolCallingMode(for:)` for the callers that hold no service):
+    /// the value depends on an async capability probe, and `buildEffectiveConfig` — the pure,
+    /// synchronous config resolver — therefore copies it through rather than deciding it.
+    /// Both request builders and `LLMClientRouter` read it; nothing else should.
+    var toolCallingMode: ToolCallingMode
 
     init(
         provider: LLMProvider = .lmStudio,
@@ -113,7 +122,8 @@ nonisolated struct LLMConfig: Hashable {
         temperature: Double? = nil,
         maxOutputTokens: Int? = nil,
         requestTimeoutSeconds: Int? = nil,
-        keepAliveSeconds: Int? = nil
+        keepAliveSeconds: Int? = nil,
+        toolCallingMode: ToolCallingMode = .promptTaught
     ) {
         self.provider = provider
         self.baseURLString = baseURLString ?? provider.defaultBaseURL
@@ -122,6 +132,7 @@ nonisolated struct LLMConfig: Hashable {
         self.maxOutputTokens = maxOutputTokens
         self.requestTimeoutSeconds = requestTimeoutSeconds ?? LLMConstants.defaultLLMRequestTimeoutSeconds
         self.keepAliveSeconds = keepAliveSeconds
+        self.toolCallingMode = toolCallingMode
     }
 }
 
@@ -305,11 +316,28 @@ nonisolated struct ServerPrefillReport: Hashable {
     var prefillNs: Double?
     /// Tokens the server says it prefilled. Ollama `prompt_eval_count`, LM Studio `input_tokens`.
     var promptTokens: Int?
+    /// Of those, the tokens the server served from its KV cache — Ollama `prompt_eval_cached_count`
+    /// (≥ 0.12). The DIRECT cache signal: `prefillNs` says how long the prefill took and has to
+    /// be compared against a learned floor, this one says how much of the prompt was never
+    /// re-processed. Nil on LM Studio and on older Ollama builds. Verbatim, like every field
+    /// here; `PrefixCachePolicy.cachedFractionForReuse` owns the threshold.
+    var cachedPromptTokens: Int?
 
-    init(modelLoadMs: Double? = nil, prefillNs: Double? = nil, promptTokens: Int? = nil) {
+    init(
+        modelLoadMs: Double? = nil, prefillNs: Double? = nil, promptTokens: Int? = nil,
+        cachedPromptTokens: Int? = nil
+    ) {
         self.modelLoadMs = modelLoadMs
         self.prefillNs = prefillNs
         self.promptTokens = promptTokens
+        self.cachedPromptTokens = cachedPromptTokens
+    }
+
+    /// `cachedPromptTokens / promptTokens`, or `nil` unless both are present and the prompt
+    /// is non-empty. Scale-free, like `nsPerToken`.
+    var cachedFraction: Double? {
+        guard let cachedPromptTokens, let promptTokens, promptTokens > 0 else { return nil }
+        return Double(cachedPromptTokens) / Double(promptTokens)
     }
 
     /// Nanoseconds per prefilled token — the scale-free form that can be compared against a warm
@@ -323,7 +351,7 @@ nonisolated struct ServerPrefillReport: Hashable {
     /// NOT count: it is only the denominator for `nsPerToken`, it duplicates `TokenUsage`, and
     /// every provider always sends it — so counting it would make the report non-empty on every
     /// request while saying nothing about the cache.
-    var isEmpty: Bool { modelLoadMs == nil && prefillNs == nil }
+    var isEmpty: Bool { modelLoadMs == nil && prefillNs == nil && cachedPromptTokens == nil }
 }
 
 // MARK: - TokenUsage
@@ -352,6 +380,12 @@ nonisolated enum LLMClientError: LocalizedError, Equatable {
     case missingResponse
     case rateLimited(retryAfter: Double?)
     case providerError(String)
+    /// A `.native` request whose reply the SERVER could not parse as a call — Ollama's
+    /// llama-server answers `{"error": "…"}` mid-stream when the model's call text does not
+    /// match the grammar it was constrained to. The model's turn, not the server's health:
+    /// `LLMRetryPolicy` does not retry it and the step treats it as a malformed-call turn
+    /// (`NativeToolCallRejectionClassifier`).
+    case nativeToolCallRejected(String)
 
     var errorDescription: String? {
         switch self {
@@ -401,6 +435,8 @@ nonisolated enum LLMClientError: LocalizedError, Equatable {
             }
         case .providerError(let message):
             "LLM provider error: \(message)"
+        case .nativeToolCallRejected(let message):
+            "The server could not parse the model's tool call: \(message)"
         }
     }
 }

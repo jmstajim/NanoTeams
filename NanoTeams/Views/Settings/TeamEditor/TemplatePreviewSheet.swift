@@ -34,6 +34,10 @@ struct TemplatePreviewSheet: View {
     /// non-coordinator branch and silently diverged from the actual wire
     /// payload for coordinator roles.
     @State private var previewAsCoordinator: Bool = false
+    /// The mode the selected role's next request would run under, resolved in `.task`
+    /// through the orchestrator's memo for the role's EFFECTIVE config (its override, else the
+    /// global one). `.promptTaught` until resolved — the bytes every earlier preview showed.
+    @State private var toolCallingMode: ToolCallingMode = .promptTaught
 
     enum TemplateType {
         case system
@@ -108,8 +112,19 @@ struct TemplatePreviewSheet: View {
             // Same reason for role-attached skills: their bodies are read at
             // scan time, so a stale snapshot would preview the previous wire.
             await store.refreshAgentSkills()
+            toolCallingMode = await resolveModeFromEnv()
             rendered = renderFromEnv()
         }
+    }
+
+    /// The role's effective config — override, else global — resolved through the same memo
+    /// the step uses, so the preview names the block the wire will carry.
+    private func resolveModeFromEnv() async -> ToolCallingMode {
+        guard let id = selectedRoleID, let role = team.roles.first(where: { $0.id == id })
+        else { return .promptTaught }
+        let effective = LLMExecutionService.buildEffectiveConfig(
+            globalConfig: store.globalLLMConfig, roleOverride: role.llmOverride)
+        return await store.resolveToolCallingMode(for: effective)
     }
 
     /// Combined identity for `.task(id:)` — re-runs the renderer when either
@@ -155,7 +170,8 @@ struct TemplatePreviewSheet: View {
             globalContext: config.globalContext,
             isCoordinator: previewAsCoordinator,
             agentInstructions: store.agentInstructions,
-            attachedSkills: store.roleSkills?.resolve(role.attachedSkillIDs) ?? []
+            attachedSkills: store.roleSkills?.resolve(role.attachedSkillIDs) ?? [],
+            toolCallingMode: toolCallingMode
         )
         return renderWirePreview(kind: templateType.kind, inputs: inputs)
     }

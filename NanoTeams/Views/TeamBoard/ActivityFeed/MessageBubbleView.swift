@@ -105,6 +105,12 @@ struct MessageBubbleView: View {
     /// in practice). The top section goes static in this state so there is
     /// exactly one live indicator, placed in chronological order. Pinned by
     /// `TeamActivityFeedLogicTests`.
+    ///
+    /// The 2 pt `statusRowTopSpacing` between the frozen prose and this row is
+    /// the only gap there is: the content preview never ends in whitespace
+    /// (`StreamingPreviewManager` holds a delta's trailing run until the next
+    /// visible delta), so the template newlines a native tool call leaves in
+    /// the content channel cannot sit between the two as empty line fragments.
     nonisolated static func showsTrailingThinkingRow(
         isStreaming: Bool,
         hasMessageContent: Bool,
@@ -137,6 +143,29 @@ struct MessageBubbleView: View {
             hasMessageContent: hasMessageContent,
             isStreamingToolCall: isStreamingToolCall
         ) && !hasMessageContent
+    }
+
+    /// Whether EITHER thinking row is animating — the live row the bubble already has, which
+    /// the streaming indicator yields to (`MessageBubbleStreamingIndicator.resolveStatusText`).
+    /// A static row is not a live signal. The union of `topThinkingRowAnimates` and
+    /// `showsTrailingThinkingRow`, stated once so the indicator cannot drift from the rows it
+    /// mirrors.
+    nonisolated static func thinkingRowAnimates(
+        isStreaming: Bool,
+        hasMessageContent: Bool,
+        hasThinkingContent: Bool,
+        isStreamingToolCall: Bool
+    ) -> Bool {
+        hasThinkingContent
+            && (topThinkingRowAnimates(
+                isStreaming: isStreaming,
+                hasMessageContent: hasMessageContent,
+                isStreamingToolCall: isStreamingToolCall)
+                || showsTrailingThinkingRow(
+                    isStreaming: isStreaming,
+                    hasMessageContent: hasMessageContent,
+                    isStreamingToolCall: isStreamingToolCall,
+                    hasThinkingContent: hasThinkingContent))
     }
 
     /// Top spacing for a status row — `Thinking…` / `Thinking` from

@@ -25,7 +25,7 @@ final class EndToEndConversationRepairTests: XCTestCase {
             ChatMessage(role: .user, content: "Start the step."),
             ChatMessage(role: .assistant, content: "Let me read the file.",
                         toolCalls: [ChatToolCall(id: "tc1", name: "read_file", argumentsJSON: "{}")]),
-            ChatMessage(role: .tool, content: "Error: file not found", toolCallID: "tc1", isToolError: true),
+            ChatMessage(role: .tool, content: "Error: file not found", toolCallID: "tc1", carriesErrorDirection: true),
             ChatMessage(role: .user, content: "Continue with your task without repeating the failed call."),
         ]
 
@@ -92,8 +92,8 @@ final class EndToEndConversationRepairTests: XCTestCase {
                             ChatToolCall(id: "tc1", name: "read_file", argumentsJSON: "{}"),
                             ChatToolCall(id: "tc2", name: "list_files", argumentsJSON: "{}"),
                         ]),
-            ChatMessage(role: .tool, content: "Error 1", toolCallID: "tc1", isToolError: true),
-            ChatMessage(role: .tool, content: "Error 2", toolCallID: "tc2", isToolError: true),
+            ChatMessage(role: .tool, content: "Error 1", toolCallID: "tc1", carriesErrorDirection: true),
+            ChatMessage(role: .tool, content: "Error 2", toolCallID: "tc2", carriesErrorDirection: true),
             ChatMessage(role: .user, content: "Retry guidance"),
         ]
 

@@ -21,6 +21,10 @@ struct AskSupervisorFormTrainerConfig: Codable {
     /// e.g. `"http://127.0.0.1:11434"`.
     var baseURL: String?
     var model: String?
+    /// Which wire the measurement uses. `nil` -> Auto, the fresh-install default, under which a
+    /// tool-trained model goes native. The form's field baseline (2026-09-12) was taken on the
+    /// prompt-taught `<|call|>` envelope, so an after-arm comparable with it states `promptTaught`.
+    var toolCallingPreference: ToolCallingPreference?
 
     // MARK: - Run
 
@@ -60,8 +64,4 @@ struct AskSupervisorFormTrainerConfig: Codable {
     /// deliberately naming the tool: what is being measured is how the questionnaire is
     /// ENCODED, not whether the model decides to reach for it.
     static let defaultSupervisorTask = "как дела? используй ask_supervisor_form"
-
-    func toLLMConfig() -> LLMConfig {
-        LLMConfig(provider: resolvedProvider, baseURLString: resolvedBaseURL, modelName: resolvedModel)
-    }
 }

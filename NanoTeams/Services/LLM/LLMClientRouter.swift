@@ -23,16 +23,37 @@ import Foundation
 /// `loadModel` stays LM-Studio-only in EFFECT — Ollama's client inherits the
 /// throwing default, because Ollama loads on first use and offers no load
 /// endpoint — but it is now the provider client that says so, not the router.
+///
+/// **Three clients, two providers** (2026-09-13). LM Studio's own `/api/v1/chat` has no `tools`
+/// field, so a `.native` request there goes to `OpenAICompatLMStudioClient` on
+/// `/v1/chat/completions`. The predicate is `usesOpenAICompatEndpoint` and it is explicit on
+/// purpose: LM Studio, native mode, AND either a non-empty tool catalog or a wire that already
+/// carries native `tool_calls` — a context-compaction summary of a native step passes the
+/// step's tools for exactly that reason. Every tool-less call (vision, the judges, the
+/// Supervisor auto-answer, consultations, the benchmark) stays on the native endpoint, which
+/// is the one that reports `prompt_processing.*` and `stats`. Only `streamChat` is routed
+/// this way; the lifecycle and probe surface has one LM Studio answer, the native client's,
+/// which the OpenAI-compat client delegates to as well.
 nonisolated struct LLMClientRouter: LLMClient {
     private let nativeClient: LLMClient
     private let ollamaClient: LLMClient
+    private let openAICompatClient: LLMClient
 
     init(
         nativeClient: LLMClient = NativeLMStudioClient(),
-        ollamaClient: LLMClient = OllamaClient()
+        ollamaClient: LLMClient = OllamaClient(),
+        openAICompatClient: LLMClient? = nil
     ) {
         self.nativeClient = nativeClient
         self.ollamaClient = ollamaClient
+        // Built around the SAME native client when the default was taken, so the two LM
+        // Studio routes share one ensurer census and one lifecycle owner. A router built on a
+        // DOUBLE routes the compat surface to that double: the alternative resolved outward
+        // to a real `NativeLMStudioClient` on `URLSession.shared` with the process-global
+        // ensurer — the #49 seam, one `.native` request away from the network in a test.
+        self.openAICompatClient = openAICompatClient
+            ?? (nativeClient as? NativeLMStudioClient).map { OpenAICompatLMStudioClient(native: $0) }
+            ?? nativeClient
     }
 
     /// Convenience init that builds provider clients with a non-default
@@ -40,8 +61,10 @@ nonisolated struct LLMClientRouter: LLMClient {
     /// SecureField token for "Test Connection" / "Fetch Models" before the
     /// user has committed it to the Keychain.
     init(tokenResolver: any LLMTokenResolver) {
-        self.nativeClient = NativeLMStudioClient(tokenResolver: tokenResolver)
+        let native = NativeLMStudioClient(tokenResolver: tokenResolver)
+        self.nativeClient = native
         self.ollamaClient = OllamaClient(tokenResolver: tokenResolver)
+        self.openAICompatClient = OpenAICompatLMStudioClient(tokenResolver: tokenResolver, native: native)
     }
 
     private func client(for provider: LLMProvider) -> LLMClient {
@@ -49,6 +72,24 @@ nonisolated struct LLMClientRouter: LLMClient {
         case .lmStudio: nativeClient
         case .ollama: ollamaClient
         }
+    }
+
+    /// Whether a chat request goes to the OpenAI-compatible LM Studio endpoint. Pinned by
+    /// `LLMClientRouterDispatchTests`; see the type doc for why each clause is there.
+    static func usesOpenAICompatEndpoint(
+        config: LLMConfig, tools: [ToolSchema], messages: [ChatMessage]
+    ) -> Bool {
+        guard config.provider == .lmStudio, config.toolCallingMode == .native else { return false }
+        if !tools.isEmpty { return true }
+        return messages.contains { $0.role == .assistant && !($0.toolCalls ?? []).isEmpty }
+    }
+
+    private func chatClient(
+        config: LLMConfig, tools: [ToolSchema], messages: [ChatMessage]
+    ) -> LLMClient {
+        Self.usesOpenAICompatEndpoint(config: config, tools: tools, messages: messages)
+            ? openAICompatClient
+            : client(for: config.provider)
     }
 
     func streamChat(
@@ -59,7 +100,7 @@ nonisolated struct LLMClientRouter: LLMClient {
         stepID: String?,
         roleName: String?
     ) -> AsyncThrowingStream<StreamEvent, Error> {
-        client(for: config.provider).streamChat(
+        chatClient(config: config, tools: tools, messages: messages).streamChat(
             config: config,
             messages: messages,
             tools: tools,
@@ -108,5 +149,9 @@ nonisolated struct LLMClientRouter: LLMClient {
 
     func modelLoadDetails(config: LLMConfig) async -> ModelLoadDetails? {
         await client(for: config.provider).modelLoadDetails(config: config)
+    }
+
+    func toolCallingSupport(config: LLMConfig) async -> Bool? {
+        await client(for: config.provider).toolCallingSupport(config: config)
     }
 }

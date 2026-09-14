@@ -137,11 +137,13 @@ final class PromptImprovementDisplayTests: XCTestCase {
     /// RAW buffer keeps it (the opener's FIRST closer makes a 34-char span). The field must show
     /// what a whole-buffer strip shows.
     ///
-    /// RED: replace the recompute with the `StreamingPreviewManager` shape — `text += delta;
-    /// ModelTokenCleaner.stripTokensInTail(&text, newDeltaCount: delta.count)` → the discriminator
-    /// renders `""` instead of `"<|aaa…a|>"`.
-    /// RED: drop `|| !fence.isFinal` from the recompute condition → the char-by-char fence vector
-    /// shows `"```"` after its third delta where the whole-buffer render shows `""`.
+    /// RED: replace the recompute with a re-strip of the SHOWN buffer — `text += delta; if
+    /// tailMayCompleteToken(text, newDeltaCount: delta.count) { text = stripTokens(text) }`, the
+    /// shape the streaming preview had until 2026-09-14 — → the discriminator renders `""`
+    /// instead of `"<|aaa…a|>"`.
+    /// RED: drop the `else if !fence.isFinal` branch (let a silent gate always `text += delta`) →
+    /// the char-by-char fence vector shows `"```"` after its third delta where the whole-buffer
+    /// render shows `""`.
     func testAppend_matchesWholeBufferRender_onHandVectors() {
         let longOpener = "<|" + String(repeating: "a", count: 27)
         let vectors: [[String]] = [
@@ -186,8 +188,9 @@ final class PromptImprovementDisplayTests: XCTestCase {
     /// counter: a plain `_testRenderWork() < Σ raw.count` bound stays green under an unconditional
     /// recompute whenever a token was stripped.
     ///
-    /// RED: gate on the SHOWN buffer (`tailMayCompleteToken(text, …)`) instead of `raw` → a prefix
-    /// diverges within the first few hundred sequences.
+    /// RED: on a fired gate, render `stripTokens(text + delta)` — the shown buffer stripped again —
+    /// instead of the `stripped` the stream returns → a prefix diverges within the first few
+    /// hundred sequences.
     /// RED: drop `+ maxTokenSpan - 1` from the window → same.
     /// RED: recompute unconditionally in `append` (`if true || …`) → the equivalence holds, and the
     /// anti-vacuum fails with `append` render work == oracle render work.
@@ -242,7 +245,8 @@ final class PromptImprovementDisplayTests: XCTestCase {
     ///
     /// RED: recompute unconditionally in `append` (drop the `if`) → `_testStripWork` and
     /// `_testRenderWork` ≈ 25 000 000 ≫ total.
-    /// RED: gate with `containsModelTokens(raw)` instead of `tailMayCompleteToken` →
+    /// RED: in `IncrementalStrip.append`, gate with `containsModelTokens(raw)` instead of
+    /// `tailMayCompleteToken` →
     /// `_testGateWork` ≈ 25 000 000 ≫ 2×total (measured; and because `raw` keeps the completed
     /// sentinel forever, that gate never goes silent again, so strip/render follow at ≈ 18 800 000).
     func testAppend_workIsLinearInTheStream_notQuadratic() {

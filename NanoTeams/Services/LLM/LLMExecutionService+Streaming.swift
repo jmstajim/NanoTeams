@@ -26,6 +26,25 @@ extension LLMExecutionService {
         /// The looping generation is discarded — `assistantContent`/`thinkingContent`/
         /// `resolvedToolCalls` are empty when this is set.
         var thinkingLoopSignal: LoopSignal?
+        /// Why the server stopped — `stop`, `tool_calls`, `length` — when it said. `length`
+        /// is the one `handleNoToolCalls` acts on: a turn cut off at the output ceiling made
+        /// no call BECAUSE it was cut off, which is a different defect from every other
+        /// no-call turn (a reasoning loop, measured 2026-09-13 on `gemma-4-26b`: 599 tokens
+        /// of reasoning about a tool name the schema does not carry, then `length`).
+        var serverDoneReason: String?
+        /// The server's own words when it could not parse the model's NATIVE call
+        /// (`LLMClientError.nativeToolCallRejected`). The stream is over, the turn resolved
+        /// nothing, and `handleNoToolCalls` treats it as a malformed-call turn — the native
+        /// twin of a Harmony envelope that failed to parse.
+        var nativeCallRejection: String?
+        /// Under a rejection: the call the accumulator had absorbed before the server refused
+        /// it (the OpenAI-compat route streams the pieces first; Ollama's grammar refuses
+        /// before any delta), rendered `name arguments` per line — for the card's envelope,
+        /// never for the wire.
+        var nativeCallAttempt: String?
+        /// The mode this request ran under, so the no-call branches can word a correction in
+        /// the protocol the model is actually using.
+        var toolCallingMode: ToolCallingMode = .promptTaught
     }
 
     // MARK: - Stream-content helpers
@@ -33,16 +52,32 @@ extension LLMExecutionService {
     /// Drops leading Unicode whitespace. Callers gate on
     /// `assistantCollected.isEmpty` so internal and trailing whitespace
     /// are preserved once the first non-whitespace char has been recorded.
-    /// Post-commit cleanup (`ModelTokenCleaner.clean`) trims both ends —
-    /// this strip only protects the live `SelectableMessageText` preview
-    /// from the `[/reasoning]\n\n\n\n…` gap during streaming.
+    /// Post-commit cleanup (`ModelTokenCleaner.clean`) trims both ends.
+    ///
+    /// Wire-side: keeps `assistantCollected` free of the `[/reasoning]\n\n\n\n…`
+    /// gap so the loop scanner, the tokens-only-retry diagnostic
+    /// (`!assistantContent.isEmpty && clean(assistantContent).isEmpty`) and a
+    /// partial commit see prose, not a whitespace prefix. The PREVIEW no longer
+    /// depends on it: `StreamingPreviewManager` keeps `.content`
+    /// `clean`-normal at both ends itself (2026-09-14).
     ///
     /// The GROWTH path only. A buffer that is still growing may legitimately
     /// end in whitespace the next delta continues from, so the tail is not
-    /// this function's business — see `stripSurroundingWhitespace` for the
+    /// this function's business: on the wire it is `clean`'s at commit, on
+    /// the screen it is the manager's, which HOLDS it and delivers it with
+    /// the next visible delta — see `stripSurroundingWhitespace` for the
     /// rewind, where the content is final.
+    ///
+    /// `ModelTokenCleaner.edgeWhitespace` on Unicode SCALARS — the set and the
+    /// unit `clean` trims by, so the wire agrees with commit on exactly which
+    /// scalars are edge whitespace. `Character.isWhitespace` (what stood here
+    /// until 2026-09-14) reads the first scalar of a cluster and differs from
+    /// the set on U+200B: a reply of one zero-width space stayed "content"
+    /// here while `clean` emptied it, and the tokens-only nudge fired with no
+    /// token in sight; and `" \u{301}"` (space + combining acute, one
+    /// Character) was dropped whole where `clean` keeps the mark.
     static func stripLeadingWhitespace(_ s: String) -> String {
-        String(s.drop(while: \.isWhitespace))
+        String(s.unicodeScalars.drop(while: { ModelTokenCleaner.edgeWhitespace.contains($0) }))
     }
 
     /// Trims BOTH ends, for the marker rewind only.
@@ -50,15 +85,24 @@ extension LLMExecutionService {
     /// At the rewind the prose is FINAL for the rest of the turn — every later
     /// delta routes to the thinking pipe — so a trailing `\n\n` is not
     /// "formatting between paragraphs" that the next token will continue, it
-    /// is a hanging tail before an envelope the user never sees. Rendered
-    /// verbatim by `SelectableMessageText` it becomes real empty line
-    /// fragments: the blank band under a streaming bubble for the whole
-    /// envelope-assembly window (measured ~29 s on a 4-call turn).
+    /// is a hanging tail before an envelope the user never sees.
     ///
-    /// Deliberately the SAME character set `ModelTokenCleaner.clean` uses, so
-    /// the preview is byte-identical to the value commit will produce and the
-    /// bubble cannot shift when the turn lands. Widening it past whitespace
-    /// would eat the prose's own last character —
+    /// For the WIRE: `assistantCollected` is what the turn's content and the
+    /// tokens-only-retry diagnostic read. The screen's edges are enforced by
+    /// `StreamingPreviewManager.replaceContent` (`clean`), so this trim and the
+    /// manager's agree by construction and the preview stays byte-identical
+    /// to the value commit will produce — the bubble cannot shift when the
+    /// turn lands. The blank band that motivated the trim (a trailing `\n\n`
+    /// rendered by `SelectableMessageText` as empty line fragments for the
+    /// whole envelope-assembly window, ~29 s on a 4-call Harmony turn) was
+    /// fixed here first and generalized to every route on 2026-09-14, when
+    /// native tool calls on LM Studio produced the same band with no marker
+    /// to rewind at (MeditationApp task 113 run 6: `calls + 1` newlines per
+    /// turn).
+    ///
+    /// Deliberately the SAME character set `ModelTokenCleaner.clean` uses
+    /// (`ModelTokenCleaner.edgeWhitespace`, one definition for all three seams).
+    /// Widening it past whitespace would eat the prose's own last character —
     /// `testRewind_noWhitespaceBeforeEnvelope_isUnchanged` is that guard.
     ///
     /// Internal whitespace is untouched — `testInternalNewlines_preservedAfterFirstNonWhitespaceChar`
@@ -73,7 +117,7 @@ extension LLMExecutionService {
     /// all-whitespace case, `testRewind_tokensOnlyProse_staysDetectableAsTokensOnly`
     /// for the all-tokens one.
     static func stripSurroundingWhitespace(_ s: String) -> String {
-        s.trimmingCharacters(in: .whitespacesAndNewlines)
+        s.trimmingCharacters(in: ModelTokenCleaner.edgeWhitespace)
     }
 
     // MARK: - LLM Streaming
@@ -95,7 +139,8 @@ extension LLMExecutionService {
         guard let delegate else {
             return StreamingResult(
                 assistantContent: "", thinkingContent: "",
-                resolvedToolCalls: [], sawHarmonyMarker: false, harmonyBuffer: "")
+                resolvedToolCalls: [], sawHarmonyMarker: false, harmonyBuffer: "",
+                toolCallingMode: config.toolCallingMode)
         }
 
         let streamingMessageID = UUID()
@@ -157,6 +202,15 @@ extension LLMExecutionService {
                 stepID: stepID, taskID: taskID, status: .indeterminate)
         }
 
+        // Every content delta that does not complete a Harmony envelope goes to the preview as
+        // it arrives. A batch stood here (`pendingUI`: flushed at 200 characters or 0.2 s after
+        // the previous flush), and its decision ran only when the NEXT delta arrived — so a
+        // provider that goes quiet with the request still open kept the tail off screen until
+        // the stream ended. Native tool calling on Ollama is that provider: it sends nothing
+        // while the model writes a call's arguments (MeditationApp task 111, 2026-09-13: the
+        // preview stopped at "…Now I'll write the" for 118 s). The batch saved nothing either:
+        // the preview is `@ObservationIgnored`, the feed polls it through `TimelineView`, and
+        // `StreamingPreviewManager.append` costs O(delta).
         func appendAssistant(_ text: String) {
             guard !text.isEmpty else { return }
             // Strip leading whitespace while the buffer is still empty so the
@@ -172,23 +226,6 @@ extension LLMExecutionService {
                 messageID: streamingMessageID, role: roleForMessage, content: delta)
         }
 
-        let uiFlushInterval: TimeInterval = 0.2
-        let uiFlushCharThreshold = LLMConstants.uiFlushCharThreshold
-        var pendingUI = ""
-        var lastUIFlush = Date()
-
-        func flushPendingUI(force: Bool = false) {
-            guard !pendingUI.isEmpty else { return }
-            let now = Date()
-            if force || pendingUI.count >= uiFlushCharThreshold
-                || now.timeIntervalSince(lastUIFlush) >= uiFlushInterval
-            {
-                appendAssistant(pendingUI)
-                pendingUI.removeAll(keepingCapacity: true)
-                lastUIFlush = now
-            }
-        }
-
         var toolAccumulator = ToolCallAccumulator()
         var sawHarmonyMarker = false
         var harmonyBuffer = ""
@@ -196,10 +233,18 @@ extension LLMExecutionService {
         var capturedUsage: TokenUsage?
         var capturedPrefill: ServerPrefillReport?
         var capturedResidency: ClientResidencyFacts?
+        var capturedDoneReason: String?
+        var nativeCallRejection: String?
+        var nativeCallAttempt: String?
+        /// Once a byte-identical duplicate has arrived among native deltas, further tool deltas
+        /// are dropped rather than the stream broken: on both native routes the terminal usage
+        /// rides the LAST chunk (Ollama puts the calls themselves on it), and a `break` there
+        /// threw away the count that drives the fill indicator, the truncation detector and
+        /// the compaction trigger. The post-stream dedup is unconditional either way.
+        var duplicateNativeCallsSeen = false
 
         /// Commits streaming content (final or partial on cancellation).
         func commitStreamingContent() async {
-            flushPendingUI(force: true)
             // `isExecutionLive` is the post-teardown barrier: this runs from the
             // cancellation catch path too, and an orphan whose executionStates
             // entry was already removed (bulk cancel / timed-out cancel) must NOT
@@ -367,7 +412,6 @@ extension LLMExecutionService {
                         }
                     } else {
                         uiBuffer += delta
-                        pendingUI += delta
                         let harmonyMarkers = HarmonyToolCallParser.harmonyMarkers
                         // Windowed detection: the delta plus a needle-sized overlap is all
                         // a marker or a mangled sentinel (see `HarmonySentinelNormalizer` —
@@ -442,35 +486,35 @@ extension LLMExecutionService {
                                 // `+StepFlowControl`'s tokens-only retry fires on
                                 // `!assistantContent.isEmpty && clean(assistantContent).isEmpty`,
                                 // so handing it pre-cleaned content makes that
-                                // diagnostic unreachable. The preview gets the
-                                // token-stripped copy below; the wire is unaffected
-                                // either way (`clean(trim(x)) == clean(x)`).
+                                // diagnostic unreachable. The preview gets this same
+                                // value and strips it for the screen itself; the wire
+                                // is unaffected either way (`clean(trim(x)) == clean(x)`).
                                 let preMarker = Self.stripSurroundingWhitespace(String(uiBuffer[..<lower]))
                                 loopScanGate.noteReplacement(
                                     oldCount: assistantCollected.count,
                                     newCount: preMarker.count)
                                 assistantCollected = preMarker
                                 // Rewind the on-screen preview so partial marker
-                                // prefixes (e.g. `<`, `<|`) that were flushed by
-                                // the time/size heuristic don't linger — see
-                                // ModelTokenCleaner.containsModelTokens which only
-                                // strips once both `<|` and `|>` are present.
-                                //
-                                // `uiBuffer` holds RAW deltas while the append path
-                                // strips tokens per delta, so without this the rewind
-                                // puts a `<|…|>` back on screen that was already gone
-                                // (`<|end|>` is not in `harmonyMarkers`, so it can
-                                // precede the earliest one). Strip THEN re-trim:
-                                // removing a token can expose fresh trailing space.
-                                let previewContent = Self.stripSurroundingWhitespace(
-                                    ModelTokenCleaner.stripTokens(preMarker)
-                                )
+                                // prefixes (e.g. `<`, `<|`) that earlier deltas
+                                // already delivered don't linger. The manager is
+                                // handed the SAME value `assistantCollected` now holds
+                                // — tokens included (`<|end|>` is not in
+                                // `harmonyMarkers`, so it can precede the earliest
+                                // one) — and derives the display from it as it does
+                                // from the stream (`ModelTokenCleaner.clean`, the
+                                // trailing run held), re-seeding its raw stream with
+                                // these bytes: screen and commit agree by construction
+                                // at this seam too. Until 2026-09-14 a token-stripped
+                                // copy went here "for the readers of the delegate
+                                // argument"; `clean` is not idempotent (`<<|x|>` +
+                                // `|y|>`), so a pre-stripped seed was a different
+                                // stream than the one commit strips.
                                 delegate.replaceStreamingPreview(
                                     stepID: stepID,
                                     taskID: taskID,
                                     messageID: streamingMessageID,
                                     role: roleForMessage,
-                                    content: previewContent
+                                    content: preMarker
                                 )
                                 // The post-marker slice the rewind just removed
                                 // from the content preview re-surfaces as live
@@ -479,14 +523,13 @@ extension LLMExecutionService {
                                 delegate.appendStreamingThinking(
                                     stepID: stepID, taskID: taskID, content: String(uiBuffer[lower...]))
                             }
-                            pendingUI = ""
                             continue
                         }
-                        flushPendingUI()
+                        appendAssistant(delta)
                     }
                 }
 
-                if !event.toolCallDeltas.isEmpty {
+                if !event.toolCallDeltas.isEmpty, !duplicateNativeCallsSeen {
                     toolAccumulator.absorb(event.toolCallDeltas)
                     // OpenAI-style tool-call deltas don't materialize in the
                     // content preview — the UI only renders the call card
@@ -513,14 +556,15 @@ extension LLMExecutionService {
                     // whitespace/key-order comparison — a full JSON parse of every
                     // args blob — fires on the cadence gate only.
                     if toolAccumulator.hasRawDuplicate {
-                        break
-                    }
-                    toolDeltaScanGate.noteDelta(count: event.toolCallDeltas.reduce(0) {
-                        $0 + ($1.argumentsDelta?.count ?? 0) + ($1.name?.count ?? 0)
-                    })
-                    if toolDeltaScanGate.probeIsDue() {
-                        if Self.containsDuplicateToolCalls(toolAccumulator.finalize()) {
-                            break
+                        duplicateNativeCallsSeen = true
+                    } else {
+                        toolDeltaScanGate.noteDelta(count: event.toolCallDeltas.reduce(0) {
+                            $0 + ($1.argumentsDelta?.count ?? 0) + ($1.name?.count ?? 0)
+                        })
+                        if toolDeltaScanGate.probeIsDue(),
+                           Self.containsDuplicateToolCalls(toolAccumulator.finalize())
+                        {
+                            duplicateNativeCallsSeen = true
                         }
                     }
                 }
@@ -528,6 +572,7 @@ extension LLMExecutionService {
                 if let u = event.tokenUsage { capturedUsage = u }
                 if let p = event.serverPrefill { capturedPrefill = p }
                 if let r = event.clientResidency { capturedResidency = r }
+                if let d = event.serverDoneReason { capturedDoneReason = d }
 
                 // In-stream loop scan (cadence-throttled). For child tasks this fires
                 // the parent interrupt and returns false (no break). For top-level it
@@ -549,7 +594,6 @@ extension LLMExecutionService {
             // the raw payload would already be in `step.llmConversation`, and since
             // `HarmonyToolCallEnvelope.appendedWireText` re-materializes the call on top
             // of non-empty content, every stateless resend would carry that call twice.
-            flushPendingUI(force: true)
 
             // 1. Provider-native `tool_calls` deltas always win.
             resolvedToolCalls = toolAccumulator.finalize()
@@ -609,6 +653,13 @@ extension LLMExecutionService {
             // result — the second is pure cost, and for a mutating tool it is a second
             // write attempt against state the first one already changed.
             resolvedToolCalls = Self.deduplicateToolCalls(resolvedToolCalls)
+            // ONE id per call, minted here or carried from the provider, and read by every
+            // later frame: the assistant turn's `ChatToolCall.id`, the runtime's
+            // `ToolExecutionResult.providerID`, the `.tool` message's `toolCallID`. Until
+            // 2026-09-13 each of those minted its own `UUID()` when the call carried none —
+            // harmless on a wire that renders no ids, and a broken pairing on the OpenAI shape,
+            // whose `tool_call_id` must name the call it answers.
+            resolvedToolCalls = Self.assigningProviderIDs(resolvedToolCalls)
 
             if thinkingLoopSignal != nil {
                 // Top-level thinking-loop break: DISCARD the looping generation —
@@ -627,6 +678,17 @@ extension LLMExecutionService {
             delegate.clearStreamingProcessingStatus(stepID: stepID, taskID: taskID)
             await commitStreamingContent()
             throw CancellationError()
+        } catch LLMClientError.nativeToolCallRejected(let reason) {
+            // The server could not read the model's native call. That is a TURN, not a
+            // transport failure: whatever streamed before the rejection is committed as the
+            // turn's content, no call resolves, and the no-call branch below names the defect
+            // to the model (`handleNoToolCalls`). Throwing would hand it to the retry loop,
+            // which resends the identical prompt — the shape this arm exists to stop.
+            delegate.clearStreamingProcessingStatus(stepID: stepID, taskID: taskID)
+            nativeCallRejection = reason
+            nativeCallAttempt = Self.renderedAttempt(toolAccumulator.finalize())
+            resolvedToolCalls = []
+            await commitStreamingContent()
         } catch {
             // Transport/server failure mid-stream. The retry lives in
             // `+StepLifecycle`, which posts an "LLM server error … Retrying in Ns…"
@@ -654,8 +716,29 @@ extension LLMExecutionService {
             tokenUsage: capturedUsage,
             serverPrefill: capturedPrefill,
             clientResidency: capturedResidency,
-            thinkingLoopSignal: thinkingLoopSignal
+            thinkingLoopSignal: thinkingLoopSignal,
+            serverDoneReason: capturedDoneReason,
+            nativeCallRejection: nativeCallRejection,
+            nativeCallAttempt: nativeCallAttempt,
+            toolCallingMode: config.toolCallingMode
         )
+    }
+
+    /// The calls a rejected turn had streamed, one `name arguments` line each, for the
+    /// `rejected_tool_call` card; nil when the server refused before any delta.
+    static func renderedAttempt(_ calls: [StepToolCall]) -> String? {
+        let lines = calls.map { "\($0.name) \($0.argumentsJSON)".trimmingCharacters(in: .whitespaces) }
+        return lines.isEmpty ? nil : lines.joined(separator: "\n")
+    }
+
+    /// Every call with an id — the provider's when it sent one, a fresh one otherwise.
+    nonisolated static func assigningProviderIDs(_ calls: [StepToolCall]) -> [StepToolCall] {
+        calls.map { call in
+            guard call.providerID == nil else { return call }
+            var minted = call
+            minted.providerID = UUID().uuidString
+            return minted
+        }
     }
 
     // MARK: - Streaming-time loop detection helpers
@@ -747,6 +830,17 @@ extension LLMExecutionService {
 
     /// Appends the assistant/tool-call turn to the conversation and the persisted log.
     ///
+    /// The turn is appended AS THE MODEL GENERATED IT: under `.native` the raw reasoning rides
+    /// `ChatMessage.reasoning` beside the calls and the content, on every branch below — the
+    /// tool-call turn, the prose turn, the empty anchor. The two structured wires replay it in
+    /// the provider's own field (`reasoning_content`, `thinking`) and the template's gate decides
+    /// what of it the model sees again; a server whose cache cannot be trimmed (Qwen3.5's
+    /// recurrent layers under LM Studio's batching kit) continues its cache only on that
+    /// byte-identical turn — 0.39 s vs 13.28 s to first token at 19.9k tokens (2026-09-14). Under
+    /// `.promptTaught` the flattened wires have no slot for it, so the record carries none: the
+    /// transcript is what was sent. Whitespace-only reasoning is the empty think block some
+    /// models emit and is not a turn's reasoning — the rule `commitStreaming` applies above.
+    ///
     /// Returns nothing, and used to claim otherwise: the signature was `-> LLMStepStop?` with the
     /// doc "returns `.completed` if the LLM signaled task completion", but the body's only
     /// function-level return was `return nil`, so the caller's `if let completionStop` could not
@@ -764,6 +858,17 @@ extension LLMExecutionService {
         let stepKey = TaskStepKey(taskID: taskID, stepID: stepID)
         let hasContent = !result.assistantContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let hasToolCalls = !result.resolvedToolCalls.isEmpty
+        // A rejected native call is a turn the model MADE even when nothing of it reached the
+        // client (Ollama's grammar refuses before any delta): without an assistant turn here
+        // the nudge that follows would sit directly after the previous tool result and point
+        // at "the turn immediately before this note" — a turn the model cannot see (R3.8.4;
+        // review of 2026-09-13). The wire gets the turn with whatever content streamed, empty
+        // included; the attempt itself goes to the card, never onto the wire.
+        let isRejectedTurn = result.nativeCallRejection != nil
+        let reasoning: String? =
+            result.toolCallingMode == .native
+                && !result.thinkingContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? result.thinkingContent : nil
 
         // Append the assistant turn to the in-memory conversation — the conversation
         // IS the request on every iteration (stateless full history), so a turn the
@@ -771,7 +876,7 @@ extension LLMExecutionService {
         // for calls it has no record of making.
         // NOTE: The LLMMessage and StepMessage are already committed by commitStreaming()
         // in performStreamingCall(), so we only update conversationMessages here.
-        if hasContent || hasToolCalls {
+        if hasContent || hasToolCalls || isRejectedTurn {
             let cleanedContent = hasContent ? ModelTokenCleaner.clean(result.assistantContent) : nil
             if hasToolCalls {
                 let toolCallMessages = result.resolvedToolCalls.map { call in
@@ -785,7 +890,8 @@ extension LLMExecutionService {
                     ChatMessage(
                         role: .assistant,
                         content: cleanedContent,
-                        toolCalls: toolCallMessages
+                        toolCalls: toolCallMessages,
+                        reasoning: reasoning
                     ),
                     stepKey: stepKey, to: &conversationMessages)
             } else {
@@ -806,7 +912,7 @@ extension LLMExecutionService {
                         .joined(separator: "\n\n")
                 }
                 appendAssistantTurn(
-                    ChatMessage(role: .assistant, content: content),
+                    ChatMessage(role: .assistant, content: content, reasoning: reasoning),
                     stepKey: stepKey, to: &conversationMessages)
             }
         } else {
@@ -833,7 +939,8 @@ extension LLMExecutionService {
             appendAssistantTurn(
                 ChatMessage(
                     role: .assistant,
-                    content: Self.unresolvedEnvelopeAnchor(result.harmonyBuffer)),
+                    content: Self.unresolvedEnvelopeAnchor(result.harmonyBuffer),
+                    reasoning: reasoning),
                 stepKey: stepKey, to: &conversationMessages)
         }
 

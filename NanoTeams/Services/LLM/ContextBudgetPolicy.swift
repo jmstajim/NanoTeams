@@ -4,9 +4,12 @@ import Foundation
 ///
 /// Exists because a prompt that overflows is not rejected — it is silently TRUNCATED,
 /// and truncation drops the HEAD. The head is the system prompt: the role's identity, its
-/// deliverable contract and the Harmony tool catalog. The server answers HTTP 200 with a
-/// fluent reply, so nothing downstream can tell the difference between "the model ignored
-/// its instructions" and "the model never received them".
+/// deliverable contract and the tool catalog (rendered into the prompt under
+/// `.promptTaught`; carried on the request's `tools` field under `.native`, where the
+/// server renders it into the template's own head — either way the first bytes to go).
+/// The server answers HTTP 200 with a fluent reply, so nothing downstream can tell the
+/// difference between "the model ignored its instructions" and "the model never received
+/// them".
 ///
 /// Ollama makes this the common case rather than an edge one: its runtime window is
 /// `OLLAMA_CONTEXT_LENGTH` (~4096 stock) regardless of what the architecture supports, and
@@ -77,6 +80,12 @@ nonisolated enum ContextBudgetPolicy {
             }
             total += WorkFolderContextPromptPlanner.estimateTokens(
                 HarmonyToolCallEnvelope.appendedWireText(for: message))
+            // A `.native` assistant turn re-sends its reasoning on every later request of the
+            // step (`reasoning_content` / `thinking`); it is set only on turns whose wire
+            // carries it, so pricing it here over-counts nothing (2026-09-14).
+            if let reasoning = message.reasoning {
+                total += WorkFolderContextPromptPlanner.estimateTokens(reasoning)
+            }
             for image in message.imageContent ?? [] {
                 total += WorkFolderContextPromptPlanner.estimateTokensForBase64(image.base64Data)
             }

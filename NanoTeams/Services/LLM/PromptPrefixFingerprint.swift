@@ -76,21 +76,32 @@ nonisolated enum PromptPrefixFingerprint {
 
     /// The wire-visible content of one non-system message.
     ///
-    /// Deliberately EXCLUDES `toolCallID` and `ChatToolCall.id`: neither reaches either
-    /// provider's wire (LM Studio flattens every turn into a labelled `input` string;
-    /// `OllamaClient` re-materializes calls as `{"name":…,"arguments":…}` with no id), while
-    /// both are freshly minted `UUID().uuidString` values. Hashing them would report a
-    /// divergence the server cannot see — a false positive, which for a warning is the
-    /// expensive direction to be wrong in.
+    /// Deliberately EXCLUDES `toolCallID` and `ChatToolCall.id`. Under `.promptTaught` neither
+    /// reaches either provider's wire (LM Studio flattens every turn into a labelled `input`
+    /// string; `OllamaClient` re-materializes calls as `{"name":…,"arguments":…}` with no id).
+    /// Under `.native` the OpenAI-shaped wire DOES carry them (`tool_calls[].id`,
+    /// `tool_call_id`) — but since 2026-09-13 an id is minted ONCE per call
+    /// (`LLMExecutionService.assigningProviderIDs`) and replayed verbatim on every resend, so
+    /// it is byte-stable across requests and hashing it would add nothing. Hashing a
+    /// per-request value would report a divergence the server cannot see — a false positive,
+    /// which for a warning is the expensive direction to be wrong in.
     ///
-    /// The calls themselves ARE folded, through `HarmonyToolCallEnvelope` — the same function
-    /// both request builders render from, so what is hashed is exactly what ships, including
-    /// the role gate (neither builder reads `toolCalls` outside its `.assistant` branch). Going
-    /// through that function rather than folding `name`/`argumentsJSON` by hand is what keeps
-    /// this type from carrying its own copy of a format it has to agree with.
+    /// The calls themselves ARE folded, through `HarmonyToolCallEnvelope` — the prompt-taught
+    /// rendering, in BOTH modes (decision of 2026-09-13: the fingerprint, the budget and the
+    /// compaction estimate keep one deterministic per-message text while only the two wire
+    /// builders switch; a rewrite of the prefix shows up identically either way, and the
+    /// native wire's objects carry the same `name`/`argumentsJSON` bytes in another spelling).
+    /// Going through that function rather than folding `name`/`argumentsJSON` by hand is what
+    /// keeps this type from carrying its own copy of a format it has to agree with.
     ///
-    /// `isToolError` is likewise excluded: it routes error guidance in-process and is never
-    /// serialized.
+    /// `carriesErrorDirection` is likewise excluded: it routes the poisoned-tail repair
+    /// in-process and is never sent to a provider.
+    ///
+    /// `reasoning` IS folded (2026-09-14): a `.native` assistant turn carries it on the wire
+    /// (`reasoning_content` / `thinking`), so two turns differing only there are two different
+    /// prefixes to the server. Behind its own separator, only when present — `""` and `nil` are
+    /// different wire statements (a key with an empty string versus no key). Set only on turns
+    /// whose wire carries it, so folding it unconditionally reports nothing the server cannot see.
     ///
     /// Images are folded by shape (`mimeType` + payload length), not by payload. A screenshot is
     /// megabytes of base64 and appears in exactly one request before
@@ -108,6 +119,7 @@ nonisolated enum PromptPrefixFingerprint {
         var parts: [String] = [message.role.rawValue, message.content ?? ""]
         let toolCallText = HarmonyToolCallEnvelope.appendedWireText(for: message)
         if !toolCallText.isEmpty { parts.append(toolCallText) }
+        if let reasoning = message.reasoning { parts.append(reasoning) }
         for image in message.imageContent ?? [] {
             parts.append(image.mimeType)
             parts.append(String(image.base64Data.utf8.count))
@@ -185,6 +197,9 @@ nonisolated enum PromptPrefixFingerprint {
         for message in messages where message.role == .system {
             total += WorkFolderContextPromptPlanner.estimateTokens(
                 HarmonyToolCallEnvelope.appendedWireText(for: message))
+            if let reasoning = message.reasoning {
+                total += WorkFolderContextPromptPlanner.estimateTokens(reasoning)
+            }
             for image in message.imageContent ?? [] {
                 total += WorkFolderContextPromptPlanner.estimateTokensForBase64(image.base64Data)
             }
@@ -209,6 +224,14 @@ nonisolated enum PromptPrefixFingerprint {
                 var wa = 0, wn = 0
                 running = foldCounting(running, toolCallText, ascii: &wa, nonAscii: &wn)
                 total += WorkFolderContextPromptPlanner.estimateTokens(ascii: wa, nonAscii: wn)
+            }
+            if let reasoning = message.reasoning {
+                // Shared bytes, like content and wire text: folded AND priced in one pass, the
+                // string ceiled on its own as `estimateTokens` does.
+                running = fold(running, "\u{1}")
+                var ra = 0, rn = 0
+                running = foldCounting(running, reasoning, ascii: &ra, nonAscii: &rn)
+                total += WorkFolderContextPromptPlanner.estimateTokens(ascii: ra, nonAscii: rn)
             }
             for image in message.imageContent ?? [] {
                 running = fold(running, "\u{1}")

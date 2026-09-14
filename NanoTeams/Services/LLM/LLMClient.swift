@@ -136,6 +136,18 @@ nonisolated protocol LLMClient: Sendable {
     /// one-shot work-folder-context prompt so it fits the loaded model.
     func modelContextLength(config: LLMConfig) async -> Int?
 
+    /// Whether `config.modelName` was TRAINED for tool use, per the provider's own model
+    /// metadata — Ollama `/api/show` `capabilities ∋ "tools"`, LM Studio `/api/v1/models`
+    /// `capabilities.trained_for_tool_use`. `nil` = undeterminable (transport failure, a
+    /// server build without capability metadata, a model not listed) — callers fail toward
+    /// `.promptTaught`, the protocol this app controls, never toward native.
+    ///
+    /// This is the ONE question the app asks about a model's call syntax. It deliberately
+    /// does not read the chat template, the parser name or the model family: the provider
+    /// renders and parses the model's own format, and a table of families here would be the
+    /// per-model hardcode the native mode exists to remove (`ToolCallingMode`).
+    func toolCallingSupport(config: LLMConfig) async -> Bool?
+
     /// Human-readable load parameters of `config.modelName` (residency state,
     /// effective context window, quantization, …) for the Settings → LLM
     /// "Model Details" card. `nil` = undeterminable (transport failure /
@@ -160,6 +172,12 @@ nonisolated extension LLMClient {
     /// back to their conservative context assumption. `NativeLMStudioClient`
     /// implements the real probe; `LLMClientRouter` forwards.
     func modelContextLength(config: LLMConfig) async -> Int? { nil }
+
+    /// Default: undeterminable — every test double inherits this and resolves to
+    /// `.promptTaught`, which is the protocol those doubles were written against.
+    /// `OllamaClient` and `NativeLMStudioClient` implement the real probe; `LLMClientRouter`
+    /// forwards.
+    func toolCallingSupport(config: LLMConfig) async -> Bool? { nil }
 
     /// Default: no load-details surface — test doubles inherit this; the
     /// Model Details card renders its empty state.

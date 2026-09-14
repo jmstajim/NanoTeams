@@ -404,11 +404,25 @@ extension LLMExecutionService {
     /// still carries its instruction, while one with a fake id teaches an id that dispatches
     /// to `tool_not_found`. Leading newline included so callers interpolate it directly
     /// after a sentence.
-    nonisolated static func callShapeClause(allowedToolNames: Set<String>) -> String {
-        guard let envelope = HarmonyCallExample.envelope(preferring: allowedToolNames) else {
-            return ""
+    ///
+    /// Under `.native` there is no envelope to illustrate — the provider renders the model's
+    /// own call syntax and the model was trained on it — so the clause names a tool the role
+    /// holds and nothing about its shape: an illustration in ANY text syntax would teach a
+    /// format the native parser does not read.
+    nonisolated static func callShapeClause(
+        allowedToolNames: Set<String>, mode: ToolCallingMode = .promptTaught
+    ) -> String {
+        switch mode {
+        case .native:
+            guard let name = HarmonyCallExample.toolAndArguments(preferring: allowedToolNames)?.name
+            else { return "" }
+            return " For example, call `\(name)`."
+        case .promptTaught:
+            guard let envelope = HarmonyCallExample.envelope(preferring: allowedToolNames) else {
+                return ""
+            }
+            return "\n`\(envelope)`"
         }
-        return "\n`\(envelope)`"
     }
 
     // MARK: - Supervisor Auto-Answer in Tool Loop
@@ -478,15 +492,8 @@ extension LLMExecutionService {
         // `{"status":"pending"}`, and resolving only the first left the others pending on the wire
         // for the rest of the step, resent every iteration.
         let answerContent = buildCollaborationToolResult(toolName: ToolNames.askSupervisor, response: answer)
-        var replacedAny = false
-        for toolCallID in outcome.supervisorToolCallProviderIDs {
-            guard let idx = conversationMessages.lastIndex(where: { $0.toolCallID == toolCallID })
-            else { continue }
-            conversationMessages[idx] = ChatMessage(
-                role: .tool, content: answerContent, toolCallID: toolCallID
-            )
-            replacedAny = true
-        }
+        let replacedAny = SupervisorAskWireResolution.resolve(
+            ids: outcome.supervisorToolCallProviderIDs, with: answerContent, in: &conversationMessages)
         if !replacedAny {
             // Fallback: append as user message
             conversationMessages.append(

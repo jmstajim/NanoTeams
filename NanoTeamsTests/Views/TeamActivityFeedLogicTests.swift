@@ -1028,33 +1028,15 @@ final class TeamActivityFeedLogicTests: XCTestCase {
         }
     }
 
-    // MARK: - Reserved status slot
+    // MARK: - Tail status slot
 
-    /// Mirrors `MessageBubbleStreamingIndicator.body`: the reserve is the
-    /// `else` of the status row, so a caller can never get both.
-    private func effectivelyReserves(
-        isStreaming: Bool, implicitTarget: Bool, hasContent: Bool,
-        hasThinking: Bool, progress: PromptProcessingStatus?, activity: Bool, toolCall: Bool
-    ) -> Bool {
-        let status = MessageBubbleStreamingIndicator.resolveStatusText(
-            isStreaming: isStreaming, isImplicitStreamTarget: implicitTarget,
-            hasMessageContent: hasContent, hasThinkingContent: hasThinking,
-            processingStatus: progress, hasStreamActivity: activity,
-            isStreamingToolCall: toolCall)
-        guard status == nil else { return false }
-        return MessageBubbleStreamingIndicator.reservesStatusSlot(
-            isStreaming: isStreaming, hasMessageContent: hasContent,
-            hasThinkingContent: hasThinking, isStreamingToolCall: toolCall)
-    }
-
-    /// The reserve exists to make the bubble's tail height constant, so it must
-    /// never ADD a row beside one that is already there. Same matrix as the
-    /// exclusivity pin above, now counting the reserve as an occupant.
+    /// The tail slot under the prose holds exactly one occupant: the status row or the
+    /// trailing `Thinking…` row, never both. Until 2026-09-13 a blank height keeper
+    /// (`reservesStatusSlot`) stood in for the status row while prose grew; the row now says
+    /// "Generating…" there instead, so the keeper had nothing left to keep.
     ///
-    /// RED: drop the `!showsTrailingThinkingRow(...)` conjunct from
-    /// `reservesStatusSlot` → this fails on every tool-call-with-thinking combo,
-    /// where a blank row is reserved directly beneath the live trailing
-    /// `Thinking…` row it was supposed to be standing in for.
+    /// RED: drop the `MessageBubbleView.thinkingRowAnimates` yield from `resolveStatusText` → this fails
+    /// on every tool-call-with-thinking-and-prose combination.
     func testTrailingSlot_occupiedAtMostOnce_acrossFullFlagMatrix() {
         for isStreaming in [false, true] {
             for hasContent in [false, true] {
@@ -1071,14 +1053,10 @@ final class TeamActivityFeedLogicTests: XCTestCase {
                                 let trailing = MessageBubbleView.showsTrailingThinkingRow(
                                     isStreaming: isStreaming, hasMessageContent: hasContent,
                                     isStreamingToolCall: toolCall, hasThinkingContent: hasThinking)
-                                let reserved = effectivelyReserves(
-                                    isStreaming: isStreaming, implicitTarget: implicitTarget,
-                                    hasContent: hasContent, hasThinking: hasThinking,
-                                    progress: progress, activity: activity, toolCall: toolCall)
 
-                                let occupancy = [statusText != nil, trailing, reserved].filter(\.self).count
+                                let occupancy = [statusText != nil, trailing].filter(\.self).count
                                 XCTAssertLessThanOrEqual(occupancy, 1,
-                                                         "Tail slot occupied \(occupancy)× (status: \(statusText ?? "nil"), trailing: \(trailing), reserved: \(reserved)) at (isStreaming: \(isStreaming), hasContent: \(hasContent), toolCall: \(toolCall), hasThinking: \(hasThinking), progress: \(String(describing: progress)), activity: \(activity))")
+                                                         "Tail slot occupied \(occupancy)× (status: \(statusText ?? "nil"), trailing: \(trailing)) at (isStreaming: \(isStreaming), hasContent: \(hasContent), toolCall: \(toolCall), hasThinking: \(hasThinking), progress: \(String(describing: progress)), activity: \(activity))")
                             }
                         }
                     }
@@ -1087,59 +1065,54 @@ final class TeamActivityFeedLogicTests: XCTestCase {
         }
     }
 
-    /// Before prose lands, the status row and the top `Thinking…` row occupy the
-    /// SAME slot and already swap in place at constant height. Reserving there
-    /// would put a permanently blank row under a live reasoning row.
+    /// Before prose lands, the status row and the top `Thinking…` row occupy the SAME slot
+    /// and swap in place. A status row under a live reasoning row would be a second animated
+    /// row.
     ///
-    /// RED: drop the `hasMessageContent` conjunct from `reservesStatusSlot` →
-    /// this fails, and every reasoning-phase bubble grows a blank row beneath
-    /// its `Thinking…` line for as long as the model is thinking.
+    /// RED: drop the `MessageBubbleView.thinkingRowAnimates` yield from `resolveStatusText` → this fails,
+    /// and every reasoning-phase bubble grows a `Generating…` row beneath its `Thinking…` line.
     func testTrailingSlot_isEmpty_whileReasoningIsTheOnlyRow() {
         for toolCall in [false, true] {
             XCTAssertFalse(
-                effectivelyReserves(
-                    isStreaming: true, implicitTarget: false, hasContent: false,
-                    hasThinking: true, progress: nil, activity: true, toolCall: toolCall),
-                "No reserve while reasoning is the only row (toolCall: \(toolCall))."
+                MessageBubbleStreamingIndicator.rendersRow(
+                    isStreaming: true, isImplicitStreamTarget: false,
+                    hasMessageContent: false, hasThinkingContent: true,
+                    processingStatus: nil, hasStreamActivity: true,
+                    isStreamingToolCall: toolCall),
+                "No status row while reasoning is the only live row (toolCall: \(toolCall))."
             )
         }
     }
 
-    /// A finished message must keep exactly the height it has today. This is the
-    /// guard that stops the reserve from undoing the turn grouping: the
-    /// committed bubble of a role whose step is still running is the implicit
-    /// stream target for the WHOLE tool execution, so a reserve there would park
-    /// a blank row between a turn's `Thinking` row and the tool-call card it
-    /// produced.
+    /// A finished message keeps the height it has today: the live-stream rule — prose on
+    /// screen means "Generating…" — must not leak onto committed bubbles. The committed
+    /// bubble of a role whose step is still running sits between a turn's `Thinking` row and
+    /// the tool-call card it produced; a row there would undo the turn grouping.
     ///
-    /// RED: drop the `isStreaming` conjunct from `reservesStatusSlot` → this
-    /// fails, and every committed bubble with prose in the feed grows a
-    /// permanent blank strip.
-    func testTrailingSlot_isEmpty_onEveryCommittedBubble() {
+    /// RED: move the `isStreamingToolCall || hasMessageContent → Generating…` arm above `if isStreaming` →
+    /// this fails on every committed bubble with prose.
+    func testTailSlot_isEmpty_onEveryCommittedBubble() {
         for hasContent in [false, true] {
             for hasThinking in [false, true] {
-                for activity in [false, true] {
-                    XCTAssertFalse(
-                        effectivelyReserves(
-                            isStreaming: false, implicitTarget: activity,
-                            hasContent: hasContent, hasThinking: hasThinking,
-                            progress: nil, activity: activity, toolCall: false),
-                        "Committed bubble must reserve nothing (content: \(hasContent), thinking: \(hasThinking), activity: \(activity))."
-                    )
-                }
+                XCTAssertFalse(
+                    MessageBubbleStreamingIndicator.rendersRow(
+                        isStreaming: false, isImplicitStreamTarget: false,
+                        hasMessageContent: hasContent, hasThinkingContent: hasThinking,
+                        processingStatus: nil, hasStreamActivity: false,
+                        isStreamingToolCall: false),
+                    "Committed bubble must render no status row (content: \(hasContent), thinking: \(hasThinking))."
+                )
             }
         }
     }
 
-    /// The whole point, as a sequence: one turn that reasons, writes prose, then
-    /// assembles a tool call. Counts the bubble's one-line rows (top thinking +
-    /// trailing thinking + tail slot); prose height is excluded because it grows
-    /// legitimately.
+    /// The whole point, as a sequence: one turn that reasons, writes prose, then assembles a
+    /// tool call. Counts the bubble's one-line rows (top thinking + trailing thinking + tail
+    /// status row); prose height is excluded because it grows legitimately.
     ///
-    /// RED: make `reservesStatusSlot` return `false` unconditionally → the
-    /// counts become [1, 1, 1, 2, 1], i.e. a row pops IN when the tool-call
-    /// envelope starts and drops OUT at commit — the ±17pt churn this reserve
-    /// exists to remove.
+    /// RED: restore `if hasMessageContent { return nil }` in `resolveStatusText` → the counts become
+    /// [1, 1, 1, 2, 1], i.e. a row pops IN when the tool-call envelope starts — and the bubble
+    /// has no animated row at all while the prose waits.
     func testTrailingSlot_isConstantThroughOneLiveTurn_onceProseExists() {
         // (isStreaming, hasContent, hasThinking, toolCall, progress, activity)
         let steps: [(String, Bool, Bool, Bool, Bool, PromptProcessingStatus?, Bool)] = [
@@ -1159,12 +1132,9 @@ final class TeamActivityFeedLogicTests: XCTestCase {
             let trailing = MessageBubbleView.showsTrailingThinkingRow(
                 isStreaming: isStreaming, hasMessageContent: hasContent,
                 isStreamingToolCall: toolCall, hasThinkingContent: hasThinking)
-            let reserved = effectivelyReserves(
-                isStreaming: isStreaming, implicitTarget: false, hasContent: hasContent,
-                hasThinking: hasThinking, progress: progress, activity: activity, toolCall: toolCall)
             // The top section renders whenever thinking exists — animated or static.
             let top = hasThinking
-            counts.append([top, trailing, statusText != nil || reserved].filter(\.self).count)
+            counts.append([top, trailing, statusText != nil].filter(\.self).count)
         }
         XCTAssertEqual(
             counts, [1, 1, 2, 2, 1],
@@ -1214,12 +1184,19 @@ final class TeamActivityFeedLogicTests: XCTestCase {
 
     /// Liveness corner pin — the inverse of the exclusivity test: while
     /// streaming, the bubble must NEVER show zero animation. Every streaming
-    /// state must surface at least one live signal: an animated thinking row,
-    /// an indicator status text, or visibly growing prose (content present
-    /// with no tool-call freeze — the growing text itself is the indicator).
-    /// This is the regression class of the original 37s zero-animation
-    /// freeze during tool-call envelope assembly: a future edit that hides a
-    /// row without handing the live signal to another component fails here.
+    /// state must surface an animated thinking row or an indicator status text.
+    ///
+    /// Visible prose does not count, and this test used to say it did. Prose is a
+    /// signal only while it grows, and the client cannot know that it will: a
+    /// provider can hold the request open while withholding output. Native tool
+    /// calling on Ollama does exactly that — `message.tool_calls` arrives whole and
+    /// nothing streams while the arguments are generated — and the exemption this
+    /// test granted "growing prose" is what let MeditationApp task 111 (2026-09-13)
+    /// sit frozen for 118 s and 204 s. Same class as the original 37 s freeze
+    /// during tool-call envelope assembly.
+    ///
+    /// RED: restore `if hasMessageContent { return nil }` in `resolveStatusText` → this fails at
+    /// (hasContent: true, toolCall: false) on every non-compacting combination.
     func testStreamingBubble_alwaysHasLiveSignal() {
         // A compaction epoch is the same contract: relabelling the rows must not remove them.
         for isCompacting in [false, true] {
@@ -1245,9 +1222,7 @@ final class TeamActivityFeedLogicTests: XCTestCase {
                                     hasStreamActivity: activity,
                                     isStreamingToolCall: toolCall,
                                     isCompacting: isCompacting)
-                                let growingProse = hasContent && !toolCall
-
-                                XCTAssertTrue(top || trailing || statusText != nil || growingProse,
+                                XCTAssertTrue(top || trailing || statusText != nil,
                                               "Zero live signal while streaming at (hasContent: \(hasContent), toolCall: \(toolCall), hasThinking: \(hasThinking), progress: \(String(describing: progress)), activity: \(activity), isCompacting: \(isCompacting))")
                             }
                         }
@@ -1460,6 +1435,56 @@ final class TeamActivityFeedLogicTests: XCTestCase {
         streamingManager.commit(stepID: stepID, taskID: 0)
         XCTAssertFalse(streamingManager.isStreaming(messageID: messageID))
         XCTAssertNil(streamingManager.streamingThinking(stepID: stepID, taskID: 0))
+        XCTAssertNil(streamingManager.streamingContent(stepID: stepID, taskID: 0))
+    }
+
+    // MARK: - Native tool-call window: no blank band under the prose
+
+    /// The bubble during a NATIVE tool call, through the real manager and the view's own
+    /// resolvers (`makeStreamingSnapshot` → `resolveBubbleInputs`): the prose freezes, the
+    /// template's newlines around the calls arrive as content deltas (`\n\n` before the first
+    /// call, `\n` per further call — LM Studio, 2026-09-14, MeditationApp task 113 run 6), the
+    /// call fragments stream into the thinking preview, and the trailing "Thinking…" row sits
+    /// directly under the prose. Nothing between them: the content the bubble receives never
+    /// ends in whitespace, and what commit persists is the value that was on screen.
+    ///
+    /// RED: let `StreamingPreviewManager.append` render trailing whitespace → the bubble's
+    /// content ends in `"\n\n\n\n"` and `SelectableMessageText` draws four empty lines above
+    /// the row.
+    func testStreamingNativeToolCallWindow_bubbleShowsProseWithNoTrailingGap_andTrailingThinkingRow() {
+        let stepID = "ultra_team_change_planner"
+        let messageID = UUID()
+        let prose = "Let me check the file."
+
+        streamingManager.beginStreaming(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer)
+        streamingManager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: prose)
+        streamingManager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "\n\n")
+        streamingManager.markStreamActivity(stepID: stepID, taskID: 0)
+        streamingManager.markStreamingToolCall(stepID: stepID, taskID: 0)
+        streamingManager.appendThinking(stepID: stepID, taskID: 0, content: "read_file{\"path\":")
+        streamingManager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "\n")
+        streamingManager.append(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer, content: "\n")
+
+        let snapshot = TeamActivityFeedView.makeStreamingSnapshot(
+            manager: streamingManager, messageID: messageID, stepID: stepID, taskID: 0)
+        let inputs = TeamActivityFeedView.resolveBubbleInputs(
+            msg: LLMMessage(id: messageID, role: .assistant, content: ""), streaming: snapshot)
+
+        XCTAssertTrue(inputs.isStreaming)
+        XCTAssertEqual(inputs.contentForBubble, prose,
+                       "the template's newlines must not reach the bubble — they are the blank band")
+        XCTAssertFalse(inputs.contentForBubble.hasSuffix("\n"))
+        XCTAssertTrue(inputs.isStreamingToolCall)
+        XCTAssertEqual(inputs.thinkingForBubble, "read_file{\"path\":")
+        XCTAssertTrue(
+            MessageBubbleView.showsTrailingThinkingRow(
+                isStreaming: true, hasMessageContent: true, isStreamingToolCall: true, hasThinkingContent: true),
+            "the live signal is the trailing row directly under the prose")
+
+        // What commit persists (`clean(assistantCollected)`) is what was on screen: no shift.
+        let committed = ModelTokenCleaner.clean(prose + "\n\n" + "\n" + "\n")
+        XCTAssertEqual(committed, inputs.contentForBubble)
+        streamingManager.commit(stepID: stepID, taskID: 0)
         XCTAssertNil(streamingManager.streamingContent(stepID: stepID, taskID: 0))
     }
 

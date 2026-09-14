@@ -81,7 +81,8 @@ enum MeetingStreamingService {
         speaker: Role,
         meeting: TeamMeeting,
         context: TeamMeetingService.MeetingContext,
-        tools: [ToolSchema] = []
+        tools: [ToolSchema] = [],
+        toolCallingMode: ToolCallingMode = .promptTaught
     ) -> [ChatMessage] {
         var messages: [ChatMessage] = []
 
@@ -89,7 +90,8 @@ enum MeetingStreamingService {
             speaker: speaker,
             meeting: meeting,
             context: context,
-            tools: tools
+            tools: tools,
+            toolCallingMode: toolCallingMode
         )
         messages.append(ChatMessage(role: .system, content: systemPrompt))
 
@@ -163,7 +165,8 @@ enum MeetingStreamingService {
         speaker: Role,
         meeting: TeamMeeting,
         context: TeamMeetingService.MeetingContext,
-        tools: [ToolSchema] = []
+        tools: [ToolSchema] = [],
+        toolCallingMode: ToolCallingMode
     ) -> String {
         // The MEETING body when the role has one, else its step prompt — a step prompt
         // that says "route fixes through request_changes" in a turn whose schema holds no
@@ -190,10 +193,10 @@ enum MeetingStreamingService {
             // Role-attached skills ride the STEP prompt only. Resolvable-but-empty
             // so a hand-typed chip never ships as a literal token.
             "roleSkills": "",
-            "toolCalling": PromptBuilder.formatToolCallingBlock(tools: tools),
+            "toolCalling": PromptBuilder.formatToolCallingBlock(tools: tools, mode: toolCallingMode),
             // Backwards-compat alias for stored templates with the older
             // `{toolCallingBlock}` placeholder name.
-            "toolCallingBlock": PromptBuilder.formatToolCallingBlock(tools: tools),
+            "toolCallingBlock": PromptBuilder.formatToolCallingBlock(tools: tools, mode: toolCallingMode),
         ]
 
         return TemplateResolver.resolveSystemPrompt(

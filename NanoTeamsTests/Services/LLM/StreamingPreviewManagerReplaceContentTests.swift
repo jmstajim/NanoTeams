@@ -20,6 +20,13 @@ import XCTest
 ///   leaves state unchanged.
 /// - `replaceContent` does not touch `thinkingPreviews` or
 ///   `processingStatus`.
+/// - `replaceContent` takes the RAW rewind value — the service's `assistantCollected`,
+///   tokens included. The display is its `clean` (tokens stripped, leading run dropped,
+///   trailing run detached); the detached trailing run is HELD and comes back in front
+///   of the next visible delta; the old held run is dropped; the raw stream is re-seeded
+///   with the raw bytes, so a later strip runs over `rewound + deltas`. A value with
+///   nothing visible is recorded as an empty stream (see
+///   `StreamingPreviewManagerTrailingWhitespaceTests`).
 @MainActor
 final class StreamingPreviewManagerReplaceContentTests: XCTestCase {
 
@@ -67,7 +74,8 @@ final class StreamingPreviewManagerReplaceContentTests: XCTestCase {
         manager.replaceContent(stepID: stepID, taskID: 0, messageID: messageID,
                                role: .productManager, content: "Plan overview. ")
 
-        XCTAssertEqual(manager.streamingContent(stepID: stepID, taskID: 0), "Plan overview. ",
+        // The rewind value is `clean`-normalized by the type: no trailing space on screen.
+        XCTAssertEqual(manager.streamingContent(stepID: stepID, taskID: 0), "Plan overview.",
                        "Only the marker prefix should be trimmed")
     }
 
@@ -130,7 +138,7 @@ final class StreamingPreviewManagerReplaceContentTests: XCTestCase {
         manager.replaceContent(stepID: stepID, taskID: 0, messageID: messageID,
                                role: .productManager, content: "Intro ")
 
-        XCTAssertEqual(manager.processingStatus[TaskStepKey(taskID: 0, stepID: stepID)], .fraction(0.4))
+        XCTAssertEqual(manager.promptProcessingStatus(stepID: stepID, taskID: 0), .fraction(0.4))
     }
 
     // MARK: - Rewind with no existing preview
@@ -224,7 +232,7 @@ final class StreamingPreviewManagerReplaceContentTests: XCTestCase {
         manager.replaceContent(stepID: stepA, taskID: 0, messageID: messageA,
                                role: .productManager, content: "PM text ")
 
-        XCTAssertEqual(manager.streamingContent(stepID: stepA, taskID: 0), "PM text ")
+        XCTAssertEqual(manager.streamingContent(stepID: stepA, taskID: 0), "PM text")
         XCTAssertEqual(manager.streamingContent(stepID: stepB, taskID: 0), "TL unaffected",
                        "Rewind on one step must not touch another step")
     }
@@ -262,7 +270,7 @@ final class StreamingPreviewManagerReplaceContentTests: XCTestCase {
         manager.replaceContent(stepID: stepID, taskID: 0, messageID: messageID,
                                role: .productManager, content: "Answer: 42. ")
 
-        XCTAssertEqual(manager.streamingContent(stepID: stepID, taskID: 0), "Answer: 42. ",
+        XCTAssertEqual(manager.streamingContent(stepID: stepID, taskID: 0), "Answer: 42.",
                        "The preview must reflect the post-rewind content, not the marker-polluted prefix")
     }
 }

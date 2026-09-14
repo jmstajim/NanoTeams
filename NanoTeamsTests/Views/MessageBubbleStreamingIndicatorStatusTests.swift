@@ -35,9 +35,11 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
         XCTAssertNil(result, "isStreaming gates everything — even latent state from a finished stream must not surface a status row")
     }
 
-    // MARK: - Visible content / thinking → no status row
+    // MARK: - A live thinking row is the indicator; visible prose is not
 
-    func testHasMessageContent_returnsNil() {
+    /// Prose on screen is a signal only while it grows, and the client cannot know it will:
+    /// a provider may keep the request open while withholding output. So the row stays.
+    func testHasMessageContent_stillStreaming_returnsGenerating() {
         let result = MessageBubbleStreamingIndicator.resolveStatusText(
             isStreaming: true,
             isImplicitStreamTarget: false,
@@ -46,7 +48,38 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             processingStatus: nil,
             hasStreamActivity: true
         )
-        XCTAssertNil(result, "Visible content makes the status row redundant — content itself is the visual indicator")
+        XCTAssertEqual(result, "Generating…",
+                       "Visible prose is not a live signal — it freezes whenever the provider withholds output")
+    }
+
+    /// The native tool-calling shape that shipped with zero animation: Ollama sends
+    /// `message.tool_calls` whole and nothing while the model writes the arguments, so no
+    /// tool-call flag is ever raised. Reasoning and prose are on screen, the top `Thinking`
+    /// row went static when the prose landed, no trailing row shows — and the request is
+    /// still open (MeditationApp task 111: 118 s for the Change Brief, 204 s for the Brief
+    /// Critique).
+    ///
+    /// RED: restore `if hasMessageContent { return nil }` in `resolveStatusText` → nil, and this fails.
+    func testProseAndThinking_noToolCallFlag_stillStreaming_returnsGenerating() {
+        let result = MessageBubbleStreamingIndicator.resolveStatusText(
+            isStreaming: true,
+            isImplicitStreamTarget: false,
+            hasMessageContent: true,
+            hasThinkingContent: true,
+            processingStatus: nil,
+            hasStreamActivity: true,
+            isStreamingToolCall: false
+        )
+        XCTAssertEqual(result, "Generating…")
+        XCTAssertFalse(
+            MessageBubbleView.topThinkingRowAnimates(
+                isStreaming: true, hasMessageContent: true, isStreamingToolCall: false),
+            "precondition: the top row is static once prose exists")
+        XCTAssertFalse(
+            MessageBubbleView.showsTrailingThinkingRow(
+                isStreaming: true, hasMessageContent: true,
+                isStreamingToolCall: false, hasThinkingContent: true),
+            "precondition: no trailing row without a tool-call flag")
     }
 
     func testHasThinkingContent_returnsNil() {
@@ -212,10 +245,10 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
         XCTAssertEqual(result, "Processing 100%")
     }
 
-    /// Both content AND thinking visible — thinking wins (returns nil
-    /// either way; redundant case but the early-return order matters
-    /// for the tool-call fallback, which thinking outranks).
-    func testBothContentAndThinking_visible_returnsNil() {
+    /// Both content AND thinking visible, no tool-call flag: neither thinking row animates
+    /// (the top one went static with the prose), so the status row carries the signal — and
+    /// a stale `processingStatus` must not relabel flowing output as prompt processing.
+    func testBothContentAndThinking_noToolCall_returnsGenerating() {
         let result = MessageBubbleStreamingIndicator.resolveStatusText(
             isStreaming: true,
             isImplicitStreamTarget: false,
@@ -224,7 +257,7 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             processingStatus: .fraction(0.5),
             hasStreamActivity: true
         )
-        XCTAssertNil(result)
+        XCTAssertEqual(result, "Generating…")
     }
 
     // MARK: - Streaming tool call (harmony envelope / OpenAI tool-call deltas mid-stream)
@@ -438,11 +471,9 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
                      "Implicit target with no live signal must NOT park a 'Waiting' pill — that's the committed steady state, not a streaming gap")
     }
 
-    /// Regression guard for the actively-growing bubble: `isStreaming=true`
-    /// with content present must still return nil — the existing logic
-    /// where visible growing content IS the indicator. The implicit-target
-    /// branch only kicks in when `isStreaming` is false.
-    func testImplicitTarget_doesNotOverrideStreamingContentSuppression() {
+    /// With a live stream the implicit-target flag changes nothing: the streaming rule
+    /// answers first. The implicit-target branch only kicks in when `isStreaming` is false.
+    func testImplicitTarget_withLiveStream_followsTheStreamingRule() {
         let result = MessageBubbleStreamingIndicator.resolveStatusText(
             isStreaming: true,
             isImplicitStreamTarget: true,
@@ -451,8 +482,16 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             processingStatus: nil,
             hasStreamActivity: true
         )
-        XCTAssertNil(result,
-                     "Active preview growing into this bubble — content IS the signal, no redundant pill")
+        XCTAssertEqual(result,
+                       MessageBubbleStreamingIndicator.resolveStatusText(
+                           isStreaming: true,
+                           isImplicitStreamTarget: false,
+                           hasMessageContent: true,
+                           hasThinkingContent: false,
+                           processingStatus: nil,
+                           hasStreamActivity: true),
+                       "a live stream answers by the streaming rule whatever the implicit-target flag says")
+        XCTAssertEqual(result, "Generating…")
     }
 
     /// Neither streaming nor implicit-target → nil (committed bubble in a
@@ -555,15 +594,19 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
             "neither disclosure row animates — yielding would leave zero animation")
     }
 
-    /// The epoch's content preview is empty for its whole life, so the reservation — which is
-    /// gated ON content — never fires and no blank keeper row appears under the disclosure.
-    func testCompacting_neverReservesABlankSlot() {
+    /// Once the epoch's disclosure animates, nothing renders under it: its content preview is
+    /// empty for its whole life, so no second live row appears beside the first.
+    func testCompacting_rendersNoRowUnderALiveDisclosure() {
         XCTAssertFalse(
-            MessageBubbleStreamingIndicator.reservesStatusSlot(
+            MessageBubbleStreamingIndicator.rendersRow(
                 isStreaming: true,
+                isImplicitStreamTarget: false,
                 hasMessageContent: false,
                 hasThinkingContent: true,
-                isStreamingToolCall: false))
+                processingStatus: nil,
+                hasStreamActivity: true,
+                isStreamingToolCall: false,
+                isCompacting: true))
     }
 
     /// The flag is not gated on `isStreaming`: an epoch on a PARKED step has no live stream by
@@ -610,16 +653,28 @@ final class MessageBubbleStreamingIndicatorStatusTests: XCTestCase {
                 isCompacting: true))
     }
 
-    /// Default off: every existing call site keeps its behaviour unchanged.
+    /// Default off: a call site that omits the flag answers exactly as one passing `false`,
+    /// and never says "Compacting…". Compared against the explicit call rather than a
+    /// literal, so the pin is about the DEFAULT and survives a change to what the live
+    /// state itself says.
     func testCompactingDefaultsToOff() {
-        XCTAssertNil(
-            MessageBubbleStreamingIndicator.resolveStatusText(
-                isStreaming: true,
-                isImplicitStreamTarget: false,
-                hasMessageContent: true,
-                hasThinkingContent: false,
-                processingStatus: nil,
-                hasStreamActivity: false))
+        let omitted = MessageBubbleStreamingIndicator.resolveStatusText(
+            isStreaming: true,
+            isImplicitStreamTarget: false,
+            hasMessageContent: true,
+            hasThinkingContent: false,
+            processingStatus: nil,
+            hasStreamActivity: false)
+        let explicitOff = MessageBubbleStreamingIndicator.resolveStatusText(
+            isStreaming: true,
+            isImplicitStreamTarget: false,
+            hasMessageContent: true,
+            hasThinkingContent: false,
+            processingStatus: nil,
+            hasStreamActivity: false,
+            isCompacting: false)
+        XCTAssertEqual(omitted, explicitOff)
+        XCTAssertNotEqual(omitted, "Compacting…")
     }
 
     // MARK: - The thinking row's own label

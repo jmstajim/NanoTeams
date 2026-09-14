@@ -13,6 +13,8 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
     var globalLLMConfig: LLMConfig = LLMConfig()
     var globalLLMContext: String = ""
     var maxLLMRetries: Int = 0
+    /// Settable so a test can drive the resolver's three arms; the protocol default is `.auto`.
+    var toolCallingPreference: ToolCallingPreference = .auto
     var visionLLMConfig: LLMConfig?
     var bashPolicy: BashPolicy = BashPolicy()
     /// Records in-loop bash-approval requests published by the gate — tests poll
@@ -96,7 +98,7 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
     }
     var compactingStepIDs: Set<String> = []
     var compactionMarks: [(String, Bool)] = []
-    func markStreamingCompaction(stepID: String, taskID: Int, _ isCompacting: Bool) {
+    func markStreamingCompaction(stepID: String, taskID _: Int, _ isCompacting: Bool) {
         compactionMarks.append((stepID, isCompacting))
         if isCompacting { compactingStepIDs.insert(stepID) }
         else { compactingStepIDs.remove(stepID) }
@@ -2290,10 +2292,11 @@ final class LLMExecutionServiceStreamingHarmonyTests: XCTestCase {
         XCTAssertTrue(result.harmonyBuffer.contains("ask_supervisor"))
     }
 
-    /// Marker split across flush boundary — partial marker flushed in one batch,
-    /// rest arrives in next delta. uiBuffer-based truncation must handle this.
-    func testHarmonyMarker_splitAcrossFlushBoundary_stripsJSON() async throws {
-        // Send a large delta (>200 chars to exceed uiFlushCharThreshold) ending with partial marker
+    /// Marker split across two deltas — the partial marker already reached the
+    /// preview with the first, the rest arrives in the next. uiBuffer-based
+    /// truncation must handle this.
+    func testHarmonyMarker_splitAcrossDeltas_stripsJSON() async throws {
+        // A delta ending with a partial marker, delivered to the preview before the rest arrives
         let longPrefix = String(repeating: "A", count: 210) + "<|ca"
         mockClient.deltas = [
             StreamEvent(contentDelta: longPrefix),

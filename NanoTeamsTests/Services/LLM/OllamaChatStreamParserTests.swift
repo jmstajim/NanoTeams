@@ -355,4 +355,133 @@ final class OllamaChatStreamParserTests: XCTestCase {
         XCTAssertEqual(report.usage?.outputTokens, 45)
         XCTAssertNil(report.totalNs)
     }
+
+
+    // MARK: - Native tool calls (2026-09-13)
+
+    /// Recorded on Ollama 0.34.0: `ornith-1.5:35b` puts the whole call INSIDE the `done:true`
+    /// chunk. The call must be emitted BEFORE `chatEnd`, so the accumulator holds it when the
+    /// usage arrives.
+    func testToolCallsOnTheTerminalChunk_emitBeforeChatEnd_withTheCachedCount() {
+        let events = parser.parse(line: """
+        {"model":"ornith-1.5:35b","message":{"role":"assistant","content":"","tool_calls":[{"id":"Aeu8czDi2vLdHojVqS7dgemauTBH7qxh","function":{"index":0,"name":"read_file","arguments":{"path":"MeditationApp/App.swift"}}}]},"done":true,"done_reason":"stop","total_duration":7741185750,"load_duration":6966900917,"prompt_eval_count":368,"prompt_eval_cached_count":0,"prompt_eval_duration":363373000,"eval_count":30,"eval_duration":385566000}
+        """)
+        XCTAssertEqual(events.count, 2)
+        guard case .toolCallDeltas(let calls) = events[0] else { return XCTFail("\(events)") }
+        XCTAssertEqual(calls, [StreamEvent.ToolCallDelta(
+            index: 0, id: "Aeu8czDi2vLdHojVqS7dgemauTBH7qxh", name: "read_file",
+            argumentsDelta: #"{"path":"MeditationApp/App.swift"}"#)])
+        guard case .chatEnd(let report) = events[1] else { return XCTFail("\(events)") }
+        XCTAssertEqual(report.usage, TokenUsage(inputTokens: 368, outputTokens: 30))
+        XCTAssertEqual(report.prefill?.cachedPromptTokens, 0)
+        XCTAssertEqual(report.prefill?.promptTokens, 368)
+        XCTAssertEqual(report.prefill?.cachedFraction, 0)
+        XCTAssertEqual(report.doneReason, "stop")
+    }
+
+    /// Recorded the same day: `gemma4:26b` puts the call on its OWN chunk and the terminal
+    /// one follows, carrying a non-zero cached count.
+    func testToolCallsOnTheirOwnChunk_thenTheTerminalChunkCarriesTheCachedCount() {
+        let call = parser.parse(line: """
+        {"model":"gemma4:26b-nvfp4","message":{"role":"assistant","content":"","tool_calls":[{"id":"call_wysz28ql","function":{"index":0,"name":"list_files","arguments":{"path":"."}}}]},"done":false}
+        """)
+        XCTAssertEqual(call, [.toolCallDeltas([StreamEvent.ToolCallDelta(
+            index: 0, id: "call_wysz28ql", name: "list_files", argumentsDelta: #"{"path":"."}"#)])])
+
+        let end = parser.parse(line: """
+        {"model":"gemma4:26b-nvfp4","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","total_duration":777575000,"load_duration":10453583,"prompt_eval_count":163,"prompt_eval_cached_count":4,"prompt_eval_duration":120279875,"eval_count":60,"eval_duration":646160291}
+        """)
+        guard end.count == 1, case .chatEnd(let report) = end[0] else { return XCTFail("\(end)") }
+        XCTAssertEqual(report.prefill?.cachedPromptTokens, 4)
+        XCTAssertEqual(report.prefill?.promptTokens, 163)
+        XCTAssertEqual(report.prefill?.cachedFraction ?? 0, 4.0 / 163.0, accuracy: 1e-9)
+    }
+
+    /// The llama-server path numbers nothing: a missing `index` falls back to the position,
+    /// or every call of a batch would fold onto slot 0.
+    func testToolCalls_withoutAnIndex_areNumberedByPosition() {
+        let events = parser.parse(line: """
+        {"message":{"role":"assistant","tool_calls":[{"function":{"name":"read_file","arguments":{"path":"a"}}},{"function":{"name":"read_file","arguments":{"path":"b"}}}]},"done":false}
+        """)
+        guard case .toolCallDeltas(let calls) = events.first else { return XCTFail("\(events)") }
+        XCTAssertEqual(calls.map(\.index), [0, 1])
+        XCTAssertEqual(calls.map(\.id), [nil, nil])
+    }
+
+    /// Arguments are re-spelled in the app's stable form — sorted keys, integral numbers as
+    /// integers — and an absent object becomes `{}`.
+    func testToolCallArguments_areSpelledStably() {
+        let events = parser.parse(line: """
+        {"message":{"role":"assistant","tool_calls":[{"function":{"index":0,"name":"list_files","arguments":{"depth":1,"path":"."}}},{"function":{"index":1,"name":"git_status"}}]},"done":false}
+        """)
+        guard case .toolCallDeltas(let calls) = events.first else { return XCTFail("\(events)") }
+        XCTAssertEqual(calls[0].argumentsDelta, #"{"depth":1,"path":"."}"#)
+        XCTAssertEqual(calls[1].argumentsDelta, "{}")
+    }
+
+    /// Lenient like the telemetry: a `tool_calls` the server could not spell must not cost
+    /// the chunk its content — nor the terminal chunk its counts.
+    func testMalformedToolCalls_costOnlyTheCalls_neverTheContentOrTheCounts() {
+        XCTAssertEqual(
+            parser.parse(line: #"{"message":{"role":"assistant","content":"hi","tool_calls":"garbage"},"done":false}"#),
+            [.contentDelta("hi")])
+        let end = parser.parse(line: #"{"message":{"role":"assistant","content":"","tool_calls":[{"nofunction":true}]},"done":true,"prompt_eval_count":10,"eval_count":2,"prompt_eval_cached_count":9}"#)
+        guard end.count == 1, case .chatEnd(let report) = end[0] else { return XCTFail("\(end)") }
+        XCTAssertEqual(report.usage, TokenUsage(inputTokens: 10, outputTokens: 2))
+        XCTAssertEqual(report.prefill?.cachedPromptTokens, 9)
+    }
+
+    func testEmptyToolCallsArray_emitsNoEvent() {
+        XCTAssertEqual(
+            parser.parse(line: #"{"message":{"role":"assistant","content":"","tool_calls":[]},"done":false}"#),
+            [])
+    }
+
+    /// `prompt_eval_cached_count` is telemetry: a malformed one is dropped alone.
+    func testMalformedCachedCount_doesNotCostTheTerminalChunk() {
+        let end = parser.parse(line: #"{"done":true,"prompt_eval_count":10,"eval_count":2,"prompt_eval_cached_count":"many"}"#)
+        guard end.count == 1, case .chatEnd(let report) = end[0] else { return XCTFail("\(end)") }
+        XCTAssertEqual(report.usage, TokenUsage(inputTokens: 10, outputTokens: 2))
+        XCTAssertNil(report.prefill?.cachedPromptTokens)
+    }
+
+    /// An older build reports no cached count at all: the report says nothing, not zero.
+    func testAbsentCachedCount_isNil_notZero() {
+        let end = parser.parse(line: #"{"done":true,"prompt_eval_count":10,"eval_count":2,"prompt_eval_duration":5000}"#)
+        guard end.count == 1, case .chatEnd(let report) = end[0] else { return XCTFail("\(end)") }
+        XCTAssertNil(report.prefill?.cachedPromptTokens)
+        XCTAssertNil(report.prefill?.cachedFraction)
+    }
+
+
+    /// Numbering is per STREAM: two unnumbered calls on two chunks are two calls, not one
+    /// slot overwritten; and an unnumbered call after a numbered batch takes the next slot.
+    func testToolCalls_withoutAnIndex_acrossChunks_keepCounting() {
+        let first = parser.parse(line: """
+        {"message":{"role":"assistant","tool_calls":[{"function":{"name":"read_file","arguments":{"path":"a"}}}]},"done":false}
+        """)
+        let second = parser.parse(line: """
+        {"message":{"role":"assistant","tool_calls":[{"function":{"name":"read_file","arguments":{"path":"b"}}}]},"done":false}
+        """)
+        guard case .toolCallDeltas(let c1) = first.first, case .toolCallDeltas(let c2) = second.first
+        else { return XCTFail("\(first) \(second)") }
+        XCTAssertEqual(c1.map(\.index), [0])
+        XCTAssertEqual(c2.map(\.index), [1])
+
+        var accumulator = ToolCallAccumulator()
+        accumulator.absorb(c1); accumulator.absorb(c2)
+        XCTAssertEqual(accumulator.finalize().map(\.argumentsJSON), [#"{"path":"a"}"#, #"{"path":"b"}"#])
+
+        var numbered = OllamaChatStreamParser()
+        let batch = numbered.parse(line: """
+        {"message":{"role":"assistant","tool_calls":[{"function":{"index":0,"name":"a"}},{"function":{"index":1,"name":"b"}}]},"done":false}
+        """)
+        let tail = numbered.parse(line: """
+        {"message":{"role":"assistant","tool_calls":[{"function":{"name":"c"}}]},"done":false}
+        """)
+        guard case .toolCallDeltas(let b) = batch.first, case .toolCallDeltas(let t) = tail.first
+        else { return XCTFail("\(batch) \(tail)") }
+        XCTAssertEqual(b.map(\.index), [0, 1])
+        XCTAssertEqual(t.map(\.index), [2])
+    }
 }

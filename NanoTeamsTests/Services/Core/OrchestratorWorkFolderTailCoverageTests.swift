@@ -330,12 +330,10 @@ final class AOrchStreamingTailTests: NTMSOrchestratorTestBase, @unchecked Sendab
         sut.updateStreamingProcessingStatus(stepID: "engineer", taskID: 7, status: .fraction(0.42))
 
         XCTAssertEqual(
-            sut.streamingPreviewManager.processingStatus[
-                TaskStepKey(taskID: 7, stepID: "engineer")],
+            sut.streamingPreviewManager.promptProcessingStatus(stepID: "engineer", taskID: 7),
             .fraction(0.42))
         XCTAssertNil(
-            sut.streamingPreviewManager.processingStatus[
-                TaskStepKey(taskID: 8, stepID: "engineer")],
+            sut.streamingPreviewManager.promptProcessingStatus(stepID: "engineer", taskID: 8),
             "the same role id in another task must not inherit this progress")
     }
 
@@ -350,12 +348,10 @@ final class AOrchStreamingTailTests: NTMSOrchestratorTestBase, @unchecked Sendab
         sut.updateStreamingProcessingStatus(stepID: "engineer", taskID: 7, status: .indeterminate)
 
         XCTAssertEqual(
-            sut.streamingPreviewManager.processingStatus[
-                TaskStepKey(taskID: 7, stepID: "engineer")],
+            sut.streamingPreviewManager.promptProcessingStatus(stepID: "engineer", taskID: 7),
             .indeterminate)
         XCTAssertNil(
-            sut.streamingPreviewManager.processingStatus[
-                TaskStepKey(taskID: 8, stepID: "engineer")],
+            sut.streamingPreviewManager.promptProcessingStatus(stepID: "engineer", taskID: 8),
             "the same role id in another task must not inherit this status")
     }
 
@@ -370,8 +366,7 @@ final class AOrchStreamingTailTests: NTMSOrchestratorTestBase, @unchecked Sendab
         sut.clearStreamingProcessingStatus(stepID: "engineer", taskID: 7)
 
         XCTAssertNil(
-            sut.streamingPreviewManager.processingStatus[
-                TaskStepKey(taskID: 7, stepID: "engineer")],
+            sut.streamingPreviewManager.promptProcessingStatus(stepID: "engineer", taskID: 7),
             "a stale progress value renders as a frozen 'Processing 99%' indicator")
     }
 

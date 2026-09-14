@@ -211,6 +211,11 @@ final class ThinkTagSplitterTests: XCTestCase {
 ///
 /// RED: drop the `splitter` from `SSEEventParser` → every framing but "no tags at all"
 /// diverges on the LM Studio side.
+///
+/// Three parsers since 2026-09-13: `OpenAIChatChunkParser` (LM Studio `/v1/chat/completions`,
+/// the native tool-calling route) runs the same splitter on `delta.content` for the same
+/// reason — with the server's reasoning setting off, or a model the build has no parser for,
+/// reasoning arrives inline there too.
 final class ThinkTagRoutingParityTests: XCTestCase {
 
     private enum Routed: Equatable {
@@ -230,7 +235,14 @@ final class ThinkTagRoutingParityTests: XCTestCase {
     func testEveryFraming_routesIdenticallyOnBothProviders() throws {
         for framing in Self.framings {
             XCTAssertEqual(try Self.ollama(framing.chunks), try Self.lmStudio(framing.chunks), framing.name)
+            XCTAssertEqual(try Self.ollama(framing.chunks), try Self.openAICompat(framing.chunks),
+                           "OpenAI-compat: \(framing.name)")
         }
+    }
+
+    func testLeadingThinkSpan_landsOnTheThinkingChannel_onTheOpenAICompatRoute() throws {
+        XCTAssertEqual(try Self.openAICompat(["<think>r</think>a"]), [.thinking("r"), .content("a")])
+        XCTAssertEqual(try Self.openAICompat(["<think>r", "</thi"]), [.thinking("r"), .thinking("</thi")])
     }
 
     func testLeadingThinkSpan_landsOnTheThinkingChannel_onLMStudio() throws {
@@ -264,6 +276,25 @@ final class ThinkTagRoutingParityTests: XCTestCase {
         }
         out += parser.finalize().compactMap(route)
         return out
+    }
+
+    private static func openAICompat(_ chunks: [String]) throws -> [Routed] {
+        var parser = OpenAIChatChunkParser()
+        var out: [Routed] = []
+        for chunk in chunks {
+            let payload = try jsonLine(["choices": [["index": 0, "delta": ["content": chunk]]]])
+            out += parser.parse(line: "data: " + payload).compactMap(route)
+        }
+        out += parser.finalize().compactMap(route)
+        return out
+    }
+
+    private static func route(_ event: OpenAIChatChunkParser.ParsedEvent) -> Routed? {
+        switch event {
+        case .thinkingDelta(let text): return .thinking(text)
+        case .contentDelta(let text): return .content(text)
+        default: return nil
+        }
     }
 
     private static func route(_ event: OllamaChatStreamParser.ParsedEvent) -> Routed? {

@@ -10,7 +10,18 @@ nonisolated enum ConversationRepairService {
     // MARK: - Conversation Repair
 
     /// Repairs a "poisoned" conversation that causes LLM servers to crash (HTTP 500).
-    /// Pattern: assistant(toolCalls) -> tool(error) -> user(guidance) at the tail.
+    /// Two tail shapes, one meaning — a failed call the server then choked on:
+    ///  - `assistant(toolCalls) → tool+ → user(guidance)`: the wire until 2026-09-14, when the
+    ///    error direction was a `.user` turn of its own; still what a transcript persisted before
+    ///    that day replays, so the trailing user turn keeps saying "this tail failed" on its own;
+    ///  - `assistant(toolCalls) → tool+` whose LAST result has `carriesErrorDirection`: the wire
+    ///    since then — the direction rides the failed call's own tool turn (a user turn there made
+    ///    the Qwen3.5 template drop every earlier think block and a non-trimmable cache restart),
+    ///    so the flag stands where the `.user` turn stood and repairs exactly when that turn did:
+    ///    from the END only. A direction on an earlier result of the batch left
+    ///    `tool(err) → user → tool(ok)`, which ended on a tool turn and was resent untouched; a
+    ///    flag read anywhere in the run would delete the later successful result as well.
+    ///    Without the flag on the last result, and without a trailing user turn, the tail stays.
     /// Replaces the poisoned tail with a single user message so the next LLM call can succeed.
     ///
     /// Returns whether it actually repaired anything. The caller needs that: the repair is a
@@ -21,15 +32,15 @@ nonisolated enum ConversationRepairService {
     /// which is what makes it an exemption rather than a defect.
     @discardableResult
     static func repairConversationIfNeeded(_ messages: inout [ChatMessage]) -> Bool {
-        guard messages.count >= 3 else { return false }
+        guard messages.count >= 2 else { return false }
 
-        // Scan backwards: expect user(guidance), then one or more tool results, then assistant(toolCalls)
+        // Scan backwards: an optional user(guidance), then one or more tool results, then
+        // assistant(toolCalls). Without the user turn, the LAST result must carry the direction.
         let last = messages[messages.count - 1]
-        guard last.role == .user else { return false }
-
-        // Count tool messages before the user guidance
+        let endsWithGuidance = last.role == .user
+        guard endsWithGuidance || last.carriesErrorDirection == true else { return false }
         var toolCount = 0
-        var idx = messages.count - 2
+        var idx = messages.count - (endsWithGuidance ? 2 : 1)
         while idx >= 0, messages[idx].role == .tool {
             toolCount += 1
             idx -= 1
@@ -54,7 +65,7 @@ nonisolated enum ConversationRepairService {
         let callsDescription = failedCalls.isEmpty
             ? "The tool call before this note"
             : "The \(failedCalls.joined(separator: ", ")) call before this note"
-        let removeCount = 1 + toolCount + 1 // assistant + tools + user
+        let removeCount = 1 + toolCount + (endsWithGuidance ? 1 : 0) // assistant + tools (+ user)
         messages.removeLast(removeCount)
         messages.append(
             ChatMessage(
@@ -258,20 +269,25 @@ nonisolated enum ConversationRepairService {
             && toolCallCount == 0
     }
 
-    /// Tool names the model wrote into the REASONING channel as a Harmony envelope.
+    /// Tool names the model wrote into the REASONING channel as a call — the taught Harmony
+    /// envelope, or the function-tag form a `.native` model's own template carries
+    /// (`FunctionTagToolCallRecognizer`; until 2026-09-13 only the envelope was read, and a
+    /// native turn of that shape was told "Missing deliverables" instead).
     ///
     /// Diagnosis only, never dispatch. The result reaches nothing but the text of a nudge:
     /// there is no route from `thinkingCollected` into `resolvedToolCalls`, and none is being
     /// added — see the route list in `performStreamingCall` for why a rehearsed call is not a
     /// call. This function exists because the turn is ALREADY lost by the time it runs, and
-    /// the model deserves to be told which channel swallowed it.
+    /// the model deserves to be told which channel swallowed it. Reading reasoning better is
+    /// not executing from it.
     ///
-    /// Names come back in written order and deduplicated: a nudge that lists one name twice
-    /// reads as two separate mistakes.
+    /// Names come back deduplicated — a nudge that lists one name twice reads as two separate
+    /// mistakes — the Harmony names in written order, then the function-tag names in written
+    /// order. The order ACROSS the two forms is a convention, not an observation.
     static func reasoningChannelToolCallNames(in thinking: String) -> [String] {
         var seen = Set<String>()
-        return HarmonyToolCallParser().extractAllToolCalls(from: thinking)
-            .map(\.name)
+        let harmonyNames = HarmonyToolCallParser().extractAllToolCalls(from: thinking).map(\.name)
+        return (harmonyNames + FunctionTagToolCallRecognizer.calledNames(in: thinking))
             .filter { seen.insert($0).inserted }
     }
 

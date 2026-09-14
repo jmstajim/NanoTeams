@@ -519,7 +519,7 @@ final class DLLMOllamaStreamTailTests: XCTestCase {
     ///
     /// RED: delete the `catch is CancellationError` arm -> the generic arm
     /// appends a `.response` record and `XCTAssertEqual(records.count, 1)` fails.
-    func testTransportCancellation_rethrowsCancellationAndWritesNoErrorRecord() async throws {
+    func testTransportCancellation_rethrowsCancellation_andWritesTheInterruptedRecord() async throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("dllm-ollama-cancel-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -548,11 +548,14 @@ final class DLLMOllamaStreamTailTests: XCTestCase {
             failure is CancellationError,
             "Cancellation must propagate as CancellationError, got \(String(describing: failure))")
 
+        // Until 2026-09-13 a cancel wrote no response record at all; now it writes the
+        // interrupted one — `cancelled`, status 0, whatever had streamed — rule #331.
         let records = try NetworkLogTestReading.strictRecords(at: logURL)
-        XCTAssertEqual(
-            records.count, 2,
-            "The provenance line and the request record belong in the log; a cancel is not a failed response")
-        XCTAssertEqual(records.map(\.direction), [.provenance, .request])
+        XCTAssertEqual(records.map(\.direction), [.provenance, .request, .response])
+        let interrupted = try XCTUnwrap(records.last)
+        XCTAssertEqual(interrupted.errorMessage, "cancelled")
+        XCTAssertEqual(interrupted.statusCode, 0)
+        XCTAssertNil(interrupted.body, "nothing had streamed before the cancel")
     }
 }
 
@@ -1101,14 +1104,13 @@ final class DLLMStreamingPreviewTokenStripTests: XCTestCase {
     /// the preview keeps `<|channel|>` and the `contains` assertion fails.
     func testAppend_stripsModelTokensFromThePreview_evenWhenSplitAcrossDeltas() async {
         let sut = StreamingPreviewManager()
-        let key = TaskStepKey(taskID: 1, stepID: "swe")
         let messageID = UUID()
 
         sut.append(stepID: "swe", taskID: 1, messageID: messageID, role: .softwareEngineer, content: "Hello <|chan")
         // Mid-token: nothing closes it yet, so the raw text is still accumulating.
         sut.append(stepID: "swe", taskID: 1, messageID: messageID, role: .softwareEngineer, content: "nel|> world")
 
-        let preview = sut.previews[key]
+        let preview = sut.preview(stepID: "swe", taskID: 1)
         XCTAssertNotNil(preview)
         XCTAssertFalse(
             preview?.content.contains("<|") ?? true,
@@ -1117,15 +1119,19 @@ final class DLLMStreamingPreviewTokenStripTests: XCTestCase {
     }
 
     /// Plain content must survive byte-for-byte — the strip is not allowed to
-    /// trim or normalise while the stream is still arriving.
-    func testAppend_plainContent_isPreservedIncludingTrailingWhitespace() async {
+    /// alter what the stream delivered. A TRAILING run is held rather than shown
+    /// (the preview is `clean`-normal at both ends, see
+    /// `StreamingPreviewManagerTrailingWhitespaceTests`) and comes back intact in
+    /// front of the next visible delta, which is what "preserved" means here.
+    func testAppend_plainContent_isPreserved_trailingWhitespaceHeldUntilTheNextVisibleDelta() async {
         let sut = StreamingPreviewManager()
-        let key = TaskStepKey(taskID: 2, stepID: "pm")
 
         sut.append(stepID: "pm", taskID: 2, messageID: UUID(), role: .productManager, content: "one ")
         sut.append(stepID: "pm", taskID: 2, messageID: UUID(), role: .productManager, content: "two ")
+        XCTAssertEqual(sut.streamingContent(stepID: "pm", taskID: 2), "one two")
 
-        XCTAssertEqual(sut.previews[key]?.content, "one two ")
+        sut.append(stepID: "pm", taskID: 2, messageID: UUID(), role: .productManager, content: "three")
+        XCTAssertEqual(sut.streamingContent(stepID: "pm", taskID: 2), "one two three")
     }
 }
 

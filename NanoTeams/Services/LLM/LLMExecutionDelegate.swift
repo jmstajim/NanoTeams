@@ -37,6 +37,19 @@ protocol LLMStateDelegate: TaskMutationDelegate {
     var autoCompactEnabled: Bool { get }
     /// That share, as a percentage of the model's loaded context window.
     var autoCompactBudgetPercent: Int { get }
+    /// How tools reach the model — Settings → LLM. Surfaced from
+    /// `StoreConfiguration.toolCallingPreference`.
+    var toolCallingPreference: ToolCallingPreference { get }
+    /// The mode a request on `config` runs under: the preference above resolved against the
+    /// provider's capability report, memoized per `(server, model)` by the execution
+    /// service.
+    ///
+    /// The MODE is not on the delegate: the service resolves it (`resolveToolCallingMode`),
+    /// the orchestrator exposes that one memo to the Team Editor and its own team generation
+    /// (`NTMSOrchestrator.resolveToolCallingMode(for:)`), and the delegated Supervisor
+    /// exchange reads the parent step's pin. A delegate-level resolver was the second way
+    /// to answer the question, and it answered from the memo where the pin was the truth
+    /// (review of 2026-09-13).
     /// Publishes how full a step's context is, for the composer's indicator. Called after
     /// every response that carries a server count, and once per epoch.
     func updateContextFill(stepID: String, taskID: Int, fill: ContextFill)
@@ -364,6 +377,10 @@ extension LLMStateDelegate {
     var autoCompactEnabled: Bool { true }
 
     var autoCompactBudgetPercent: Int { AppDefaults.autoCompactBudgetPercent }
+
+    /// Default `.auto`, which without a probe answers `.promptTaught` — the protocol every
+    /// existing double was written against.
+    var toolCallingPreference: ToolCallingPreference { .auto }
 
     func updateContextFill(stepID _: String, taskID _: Int, fill _: ContextFill) {}
 

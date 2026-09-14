@@ -21,7 +21,7 @@ final class StreamingPreviewManagerTests: XCTestCase {
     // MARK: - Initialization Tests
 
     func testInitialStateIsEmpty() {
-        XCTAssertTrue(manager.previews.isEmpty)
+        XCTAssertEqual(manager._testLiveStepCount(), 0)
     }
 
     // MARK: - Append Tests
@@ -155,7 +155,7 @@ final class StreamingPreviewManagerTests: XCTestCase {
         manager.clear(stepID: "test_step", taskID: 0)
 
         // Should not throw or crash
-        XCTAssertTrue(manager.previews.isEmpty)
+        XCTAssertEqual(manager._testLiveStepCount(), 0)
     }
 
     func testClearOnlyAffectsSpecifiedStep() {
@@ -186,13 +186,13 @@ final class StreamingPreviewManagerTests: XCTestCase {
 
         manager.clearAll()
 
-        XCTAssertTrue(manager.previews.isEmpty)
+        XCTAssertEqual(manager._testLiveStepCount(), 0)
     }
 
     func testClearAllOnEmptyManagerDoesNothing() {
         manager.clearAll()
 
-        XCTAssertTrue(manager.previews.isEmpty)
+        XCTAssertEqual(manager._testLiveStepCount(), 0)
     }
 
     // MARK: - Preview Accessor Tests
@@ -428,7 +428,7 @@ final class StreamingPreviewManagerTests: XCTestCase {
 
         manager.beginStreaming(stepID: stepID, taskID: 0, messageID: messageID, role: .softwareEngineer)
 
-        XCTAssertEqual(manager.streamingMessageIDs[TaskStepKey(taskID: 0, stepID: stepID)], messageID)
+        XCTAssertEqual(manager.streamingMessageID(stepID: stepID, taskID: 0), messageID)
     }
 
     func testBeginStreamingOverwritesExistingPreview() {
@@ -445,7 +445,7 @@ final class StreamingPreviewManagerTests: XCTestCase {
         XCTAssertEqual(manager.preview(stepID: stepID, taskID: 0)?.id, messageID2)
         XCTAssertEqual(manager.preview(stepID: stepID, taskID: 0)?.role, .techLead)
         XCTAssertEqual(manager.preview(stepID: stepID, taskID: 0)?.content, "")
-        XCTAssertEqual(manager.streamingMessageIDs[TaskStepKey(taskID: 0, stepID: stepID)], messageID2)
+        XCTAssertEqual(manager.streamingMessageID(stepID: stepID, taskID: 0), messageID2)
     }
 
     // MARK: - isStreaming Tests
@@ -587,7 +587,7 @@ final class StreamingPreviewManagerTests: XCTestCase {
         let stepID = "test_step"
         manager.updateProcessingStatus(stepID: stepID, taskID: 0, status: .fraction(0.45))
 
-        XCTAssertEqual(manager.processingStatus[TaskStepKey(taskID: 0, stepID: stepID)], .fraction(0.45))
+        XCTAssertEqual(manager.promptProcessingStatus(stepID: stepID, taskID: 0), .fraction(0.45))
     }
 
     func testUpdateProcessingProgressUpdatesValue() {
@@ -595,7 +595,7 @@ final class StreamingPreviewManagerTests: XCTestCase {
         manager.updateProcessingStatus(stepID: stepID, taskID: 0, status: .fraction(0.3))
         manager.updateProcessingStatus(stepID: stepID, taskID: 0, status: .fraction(0.7))
 
-        XCTAssertEqual(manager.processingStatus[TaskStepKey(taskID: 0, stepID: stepID)], .fraction(0.7))
+        XCTAssertEqual(manager.promptProcessingStatus(stepID: stepID, taskID: 0), .fraction(0.7))
     }
 
     func testClearProcessingProgressRemovesValue() {
@@ -603,13 +603,13 @@ final class StreamingPreviewManagerTests: XCTestCase {
         manager.updateProcessingStatus(stepID: stepID, taskID: 0, status: .fraction(0.5))
         manager.clearProcessingStatus(stepID: stepID, taskID: 0)
 
-        XCTAssertNil(manager.processingStatus[TaskStepKey(taskID: 0, stepID: stepID)])
+        XCTAssertNil(manager.promptProcessingStatus(stepID: stepID, taskID: 0))
     }
 
     func testClearProcessingProgressOnNonexistentIsNoOp() {
         // Should not crash
         manager.clearProcessingStatus(stepID: "test_step", taskID: 0)
-        XCTAssertTrue(manager.processingStatus.isEmpty)
+        XCTAssertEqual(manager._testLiveStepCount(), 0)
     }
 
     func testProcessingProgressClearedOnCommit() {
@@ -618,7 +618,7 @@ final class StreamingPreviewManagerTests: XCTestCase {
         manager.updateProcessingStatus(stepID: stepID, taskID: 0, status: .fraction(0.8))
         manager.commit(stepID: stepID, taskID: 0)
 
-        XCTAssertNil(manager.processingStatus[TaskStepKey(taskID: 0, stepID: stepID)])
+        XCTAssertNil(manager.promptProcessingStatus(stepID: stepID, taskID: 0))
     }
 
     func testProcessingProgressClearedOnClear() {
@@ -627,7 +627,7 @@ final class StreamingPreviewManagerTests: XCTestCase {
         manager.updateProcessingStatus(stepID: stepID, taskID: 0, status: .fraction(0.5))
         manager.clear(stepID: stepID, taskID: 0)
 
-        XCTAssertNil(manager.processingStatus[TaskStepKey(taskID: 0, stepID: stepID)])
+        XCTAssertNil(manager.promptProcessingStatus(stepID: stepID, taskID: 0))
     }
 
     func testProcessingProgressClearedOnClearAll() {
@@ -637,7 +637,7 @@ final class StreamingPreviewManagerTests: XCTestCase {
         manager.updateProcessingStatus(stepID: stepID2, taskID: 0, status: .fraction(0.6))
         manager.clearAll()
 
-        XCTAssertTrue(manager.processingStatus.isEmpty)
+        XCTAssertEqual(manager._testLiveStepCount(), 0)
     }
 
     // MARK: - Commit Clears All Streaming State
@@ -656,8 +656,8 @@ final class StreamingPreviewManagerTests: XCTestCase {
         XCTAssertNil(manager.preview(stepID: stepID, taskID: 0))
         XCTAssertFalse(manager.isStreaming(messageID: messageID))
         XCTAssertNil(manager.streamingThinking(stepID: stepID, taskID: 0))
-        XCTAssertNil(manager.processingStatus[TaskStepKey(taskID: 0, stepID: stepID)])
-        XCTAssertNil(manager.streamingMessageIDs[TaskStepKey(taskID: 0, stepID: stepID)])
+        XCTAssertNil(manager.promptProcessingStatus(stepID: stepID, taskID: 0))
+        XCTAssertNil(manager.streamingMessageID(stepID: stepID, taskID: 0))
     }
 
     // MARK: - Clear Clears All Streaming State
@@ -676,8 +676,8 @@ final class StreamingPreviewManagerTests: XCTestCase {
         XCTAssertNil(manager.preview(stepID: stepID, taskID: 0))
         XCTAssertFalse(manager.isStreaming(messageID: messageID))
         XCTAssertNil(manager.streamingThinking(stepID: stepID, taskID: 0))
-        XCTAssertNil(manager.processingStatus[TaskStepKey(taskID: 0, stepID: stepID)])
-        XCTAssertNil(manager.streamingMessageIDs[TaskStepKey(taskID: 0, stepID: stepID)])
+        XCTAssertNil(manager.promptProcessingStatus(stepID: stepID, taskID: 0))
+        XCTAssertNil(manager.streamingMessageID(stepID: stepID, taskID: 0))
     }
 
     // MARK: - ClearAll Clears All Streaming State
@@ -697,10 +697,7 @@ final class StreamingPreviewManagerTests: XCTestCase {
 
         manager.clearAll()
 
-        XCTAssertTrue(manager.previews.isEmpty)
-        XCTAssertTrue(manager.streamingMessageIDs.isEmpty)
-        XCTAssertTrue(manager.thinkingPreviews.isEmpty)
-        XCTAssertTrue(manager.processingStatus.isEmpty)
+        XCTAssertEqual(manager._testLiveStepCount(), 0, "one struct per step: no key survives clearAll")
         XCTAssertFalse(manager.isStreaming(messageID: messageID1))
         XCTAssertFalse(manager.isStreaming(messageID: messageID2))
     }
@@ -741,15 +738,17 @@ final class StreamingPreviewManagerTests: XCTestCase {
 
         XCTAssertEqual(manager.streamingContent(stepID: stepID1, taskID: 0), "Requirements: feature X")
         XCTAssertEqual(manager.streamingContent(stepID: stepID2, taskID: 0), "Code: func main()")
-        XCTAssertEqual(manager.streamingContent(stepID: stepID3, taskID: 0), "Plan: ")
+        // Step 3's trailing space is HELD for its next delta (`StreamingPreviewManagerTrailingWhitespaceTests`);
+        // this test's subject is per-step isolation, not the tail.
+        XCTAssertEqual(manager.streamingContent(stepID: stepID3, taskID: 0), "Plan:")
 
         XCTAssertEqual(manager.streamingThinking(stepID: stepID1, taskID: 0), "Analyzing requirements")
         XCTAssertEqual(manager.streamingThinking(stepID: stepID2, taskID: 0), "Writing implementation")
         XCTAssertNil(manager.streamingThinking(stepID: stepID3, taskID: 0))
 
-        XCTAssertNil(manager.processingStatus[TaskStepKey(taskID: 0, stepID: stepID1)])
-        XCTAssertNil(manager.processingStatus[TaskStepKey(taskID: 0, stepID: stepID2)])
-        XCTAssertEqual(manager.processingStatus[TaskStepKey(taskID: 0, stepID: stepID3)], .fraction(0.5))
+        XCTAssertNil(manager.promptProcessingStatus(stepID: stepID1, taskID: 0))
+        XCTAssertNil(manager.promptProcessingStatus(stepID: stepID2, taskID: 0))
+        XCTAssertEqual(manager.promptProcessingStatus(stepID: stepID3, taskID: 0), .fraction(0.5))
 
         // Commit step 1 — others unaffected
         manager.commit(stepID: stepID1, taskID: 0)
@@ -765,7 +764,7 @@ final class StreamingPreviewManagerTests: XCTestCase {
 
         XCTAssertFalse(manager.isStreaming(messageID: messageID2))
         XCTAssertTrue(manager.isStreaming(messageID: messageID3))
-        XCTAssertEqual(manager.processingStatus[TaskStepKey(taskID: 0, stepID: stepID3)], .fraction(0.5))
+        XCTAssertEqual(manager.promptProcessingStatus(stepID: stepID3, taskID: 0), .fraction(0.5))
     }
 
     // MARK: - Full Inline Streaming Lifecycle
@@ -782,13 +781,13 @@ final class StreamingPreviewManagerTests: XCTestCase {
 
         // Phase 2: Processing progress (prompt processing)
         manager.updateProcessingStatus(stepID: stepID, taskID: 0, status: .fraction(0.0))
-        XCTAssertEqual(manager.processingStatus[TaskStepKey(taskID: 0, stepID: stepID)], .fraction(0.0))
+        XCTAssertEqual(manager.promptProcessingStatus(stepID: stepID, taskID: 0), .fraction(0.0))
         manager.updateProcessingStatus(stepID: stepID, taskID: 0, status: .fraction(0.5))
-        XCTAssertEqual(manager.processingStatus[TaskStepKey(taskID: 0, stepID: stepID)], .fraction(0.5))
+        XCTAssertEqual(manager.promptProcessingStatus(stepID: stepID, taskID: 0), .fraction(0.5))
         manager.updateProcessingStatus(stepID: stepID, taskID: 0, status: .fraction(1.0))
-        XCTAssertEqual(manager.processingStatus[TaskStepKey(taskID: 0, stepID: stepID)], .fraction(1.0))
+        XCTAssertEqual(manager.promptProcessingStatus(stepID: stepID, taskID: 0), .fraction(1.0))
         manager.clearProcessingStatus(stepID: stepID, taskID: 0)
-        XCTAssertNil(manager.processingStatus[TaskStepKey(taskID: 0, stepID: stepID)])
+        XCTAssertNil(manager.promptProcessingStatus(stepID: stepID, taskID: 0))
 
         // Phase 3: Thinking starts streaming
         manager.appendThinking(stepID: stepID, taskID: 0, content: "I need to ")
@@ -805,7 +804,7 @@ final class StreamingPreviewManagerTests: XCTestCase {
         XCTAssertFalse(manager.isStreaming(messageID: messageID))
         XCTAssertNil(manager.streamingContent(stepID: stepID, taskID: 0))
         XCTAssertNil(manager.streamingThinking(stepID: stepID, taskID: 0))
-        XCTAssertNil(manager.processingStatus[TaskStepKey(taskID: 0, stepID: stepID)])
+        XCTAssertNil(manager.promptProcessingStatus(stepID: stepID, taskID: 0))
     }
     // MARK: - Compaction mark
 
@@ -815,7 +814,7 @@ final class StreamingPreviewManagerTests: XCTestCase {
         XCTAssertTrue(manager.isCompacting(stepID: "engineer", taskID: 0))
         manager.markCompacting(stepID: "engineer", taskID: 0, false)
         XCTAssertFalse(manager.isCompacting(stepID: "engineer", taskID: 0))
-        XCTAssertTrue(manager.compacting.isEmpty, "clearing must remove the key, not store false")
+        XCTAssertEqual(manager._testLiveStepCount(), 0, "clearing must remove the key, not store false")
     }
 
     /// Keyed by `TaskStepKey`, like every other per-step registry: `StepExecution.id` is the
@@ -868,7 +867,7 @@ final class StreamingPreviewManagerTests: XCTestCase {
 
         manager.markCompacting(stepID: "engineer", taskID: 0, true)
         manager.clearAll()
-        XCTAssertTrue(manager.compacting.isEmpty)
+        XCTAssertEqual(manager._testLiveStepCount(), 0)
     }
 
     /// `clear` early-returns when nothing is set. A mark alone must be enough to make it act,

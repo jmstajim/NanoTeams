@@ -112,6 +112,16 @@ final class LLMExecutionService {
     /// be HANDED this instance, not reach for a global.
     let prefixLedger: PromptPrefixLedger
 
+    /// Provider answers to "was this model trained for tool use?", keyed by
+    /// `"<normalizedBase>|<model>"` — the input of `ToolCallingModeResolver`.
+    ///
+    /// Only a DEFINITIVE answer is memoized, the same split `mainModelVisionCache` and
+    /// `probedContextLengths` draw: a model's training does not change while it is loaded, so
+    /// a `true`/`false` holds for the service's lifetime, while a `nil` (unreachable server, a
+    /// build without capability metadata) is a transient that must not pin every later step
+    /// to the fallback. The per-step retry bound is `StepExecutionState.probedToolCallingKeys`.
+    var probedToolCallingSupport: [String: Bool] = [:]
+
     /// Auto-detected "can the main model see images?" verdicts, keyed by
     /// `"baseURL|model"`. Replaces the removed "Main model supports vision"
     /// Settings toggle. Only DEFINITIVE probe results are cached (a model's
@@ -264,6 +274,7 @@ final class LLMExecutionService {
         executionStates[key]?.consecutiveDriftTurnCount = 0
         executionStates[key]?.consecutiveHarmonyParseFailureCount = 0
         executionStates[key]?.consecutiveReasoningEnvelopeCount = 0
+        executionStates[key]?.consecutiveTruncatedTurns = 0
     }
 
     /// Resets the consecutive thinking-loop-break counter. Called from

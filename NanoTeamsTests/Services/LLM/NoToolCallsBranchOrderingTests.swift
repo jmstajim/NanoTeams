@@ -786,6 +786,67 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
         )
     }
 
+    /// Reasoning of response 20:26:48, `MeditationApp` task 111 run 2 (2026-09-13).
+    private static let functionTagReasoning = """
+    Let me look at the MeditationApp directory structure to understand what files exist.
+    
+    <tool_call>
+    <function=list_files>
+    <parameter=path>
+    MeditationApp
+    </parameter>
+    </function>
+    </tool_call>
+    
+    """
+
+    /// Task 111 run 2, reproduced: a producing role under `.native` wrote its model's own
+    /// template form inside reasoning and stopped with empty content. The reasoning-channel
+    /// branch sits above the producing-role branch, but its detector read `<|call|>` alone, so
+    /// all three such turns were told "Missing deliverables" — and the model, which had called
+    /// `list_files` as far as it knew, restarted its survey twice.
+    func testNativeFunctionTagInReasoning_producingRole_namesTheChannelNotTheDeliverable() async {
+        let role = makeProducingRole(artifactName: "Change Brief")
+        let allowed: Set<String> = [ToolNames.listFiles, ToolNames.readFile, ToolNames.createArtifact]
+        var messages: [ChatMessage] = []
+        let stop = await service._testHandleNoToolCalls(
+            stepID: stepID, assistantContent: "", sawHarmonyMarker: false,
+            task: task, roleDefinition: role,
+            conversationMessages: &messages, thinkingContent: Self.functionTagReasoning,
+            allowedToolNames: allowed, serverDoneReason: "stop", toolCallingMode: .native)
+        guard case .continueLoop = stop else { return XCTFail("expected .continueLoop, got \(stop)") }
+        XCTAssertEqual(messages.count, 1)
+        let nudge = messages[0].content ?? ""
+        XCTAssertEqual(
+            nudge,
+            NoToolTurnNudges.reasoningChannel(
+                namedCalls: [ToolNames.listFiles], allowedToolNames: allowed, mode: .native))
+        XCTAssertFalse(nudge.contains("Missing deliverables"), nudge)
+    }
+
+    /// The function-tag form feeds the same streak as the Harmony envelope: two consecutive
+    /// turns escalate, as `testReasoningEnvelopeCap_whenTheEscalationDoesNotPersist_…` pins
+    /// for `<|call|>`.
+    func testNativeFunctionTagInReasoning_twoConsecutiveTurns_escalate() async {
+        let allowed: Set<String> = [ToolNames.listFiles]
+        var messages: [ChatMessage] = []
+        let first = await service._testHandleNoToolCalls(
+            stepID: stepID, assistantContent: "", sawHarmonyMarker: false,
+            task: mockDelegate.taskToMutate!, roleDefinition: nil,
+            conversationMessages: &messages, thinkingContent: Self.functionTagReasoning,
+            allowedToolNames: allowed, toolCallingMode: .native)
+        guard case .continueLoop = first else { return XCTFail("the first turn is nudged, got \(first)") }
+
+        let second = await service._testHandleNoToolCalls(
+            stepID: stepID, assistantContent: "", sawHarmonyMarker: false,
+            task: mockDelegate.taskToMutate!, roleDefinition: nil,
+            conversationMessages: &messages, thinkingContent: Self.functionTagReasoning,
+            allowedToolNames: allowed, toolCallingMode: .native)
+        guard case .needsSupervisorInput = second else {
+            return XCTFail("the second consecutive turn escalates, got \(second)")
+        }
+    }
+
     /// A role that has submitted one of two deliverables is told about the OTHER one only.
     /// Until 2026-09-06 the nudge quoted the role definition's whole `producesArtifacts`,
     /// so "Research Report" was reported missing on every no-tool turn after it had been

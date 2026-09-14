@@ -274,8 +274,19 @@ nonisolated extension NativeLMStudioClient {
             enum CodingKeys: String, CodingKey { case name }
         }
 
+        /// `{ "vision": true, "trained_for_tool_use": true }` on the native list. Explicit
+        /// keys because `JSONCoderFactory.makeWireDecoder()` has NO snake_case strategy — a
+        /// synthesized key would look for `trainedForToolUse` and read every model as
+        /// untrained. (The sibling `/api/v0/models` route spells capabilities as a bare string
+        /// array, `["tool_use", "vision"]`; it is not decoded here — see `V0ModelListResponse`.)
         struct ModelCapabilities: Decodable {
             let vision: Bool?
+            let trainedForToolUse: Bool?
+
+            enum CodingKeys: String, CodingKey {
+                case vision
+                case trainedForToolUse = "trained_for_tool_use"
+            }
         }
     }
 

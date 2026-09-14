@@ -223,17 +223,52 @@ final class RegularToolResultDispatchTests: XCTestCase {
                       "the full status payload ships every time, nested raw. got: \(second)")
     }
 
-    // MARK: - Error results: guidance on the wire, and durable but unattributed
+    // MARK: - Error results: the direction rides the tool turn, and is durable but unattributed
+
+    /// An error the policy has nothing to add to (`ToolErrorNotePolicy.direction` → nil) is ONLY
+    /// its envelope, and it is not flagged. The flag stands in for the `.user` direction turn the
+    /// wire carried until 2026-09-14, which such an error never produced — so the poisoned-tail
+    /// repair never fired on it. Flagging every error let a retryable 503 after an
+    /// `ANCHOR_NOT_FOUND` (the commonest `edit_file` failure, and a nil-direction one) delete the
+    /// whole batch, successful results included.
+    /// RED: the flag follows `result.isError` → it is set on this turn.
+    func testErrorResultWithoutADirection_carriesOnlyTheEnvelope_andIsNotFlagged() async {
+        let output = #"{"ok":false,"error":{"code":"WORK_SUPERSEDED","message":"A newer run holds the runners."}}"#
+        let result = ToolExecutionResult(
+            providerID: "tc_superseded",
+            toolName: ToolNames.runXcodebuild,
+            argumentsJSON: "{}",
+            outputJSON: output,
+            isError: true
+        )
+        XCTAssertNil(ToolErrorNotePolicy.direction(for: result, allowedToolNames: []),
+                     "precondition: the policy adds nothing to this code, so the case is the nil arm")
+
+        var conversation: [ChatMessage] = []
+        var outcome = LLMExecutionService.ToolResultsOutcome()
+        await runRegular(result, into: &conversation, outcome: &outcome)
+
+        XCTAssertEqual(conversation.count, 1)
+        XCTAssertEqual(conversation[0].role, .tool)
+        XCTAssertEqual(conversation[0].content, output, "no direction, so nothing follows the envelope")
+        XCTAssertNil(conversation[0].carriesErrorDirection,
+                     "no direction rode this turn, so it is not the tail the repair exists for")
+    }
 
     /// An error result must (a) bypass tag compaction entirely (`.passthrough` —
-    /// every file processor guards on `!isError`), and (b) append a `.user`
-    /// guidance turn to both the live conversation and the persisted history.
+    /// every file processor guards on `!isError`), and (b) carry its direction INSIDE the
+    /// `.tool` turn — the envelope, a blank line, the direction — with no `.user` turn after
+    /// it. On the two prompt-taught wires that is byte-for-byte what a separate user turn
+    /// rendered (`[Tool Result]\n{envelope}\n\n{direction}`, the `\n\n` join); on the two
+    /// native wires it removes a user turn that made the Qwen3.5 template drop every earlier
+    /// think block — measured 2026-09-14 as a 34 s re-prefill at 42k tokens after one
+    /// `read_file` error (MeditationApp task 113), against a warm continuation otherwise.
     ///
-    /// The persisted half is for the two consumers that read the display record
-    /// instead of the wire (`ConversationReplay.rebuildFromDisplayRecord`,
-    /// `DelegatedSupervisorAnswerService.buildSeed`) — NOT for the human, who reads
-    /// the reason off the tool card. That it stays off screen is
-    /// `ProcessToolResultsTests`' assertion; this one pins that it is still recorded.
+    /// The persisted half is unchanged: a `.user` record for the two consumers that read the
+    /// display record instead of the wire (`ConversationReplay.rebuildFromDisplayRecord`,
+    /// `DelegatedSupervisorAnswerService.buildSeed`) — NOT for the human, who reads the
+    /// reason off the tool card. That it stays off screen is `ProcessToolResultsTests`'
+    /// assertion; this one pins that it is still recorded.
     func testErrorResult_bypassesTagging_andIsDurableOnBothTheWireAndTheRecord() async {
         let output = #"{"ok":false,"error":{"code":"FILE_NOT_FOUND","message":"File not found: missing.swift"}}"#
         let result = ToolExecutionResult(
@@ -248,27 +283,30 @@ final class RegularToolResultDispatchTests: XCTestCase {
         var outcome = LLMExecutionService.ToolResultsOutcome()
         await runRegular(result, into: &conversation, outcome: &outcome)
 
-        XCTAssertEqual(conversation.count, 2,
-                       "An error appends the tool result AND a guidance turn.")
-        XCTAssertEqual(conversation[0].content, output,
-                       "An errored read is never tagged — the tag store passes it through untouched.")
-
-        XCTAssertEqual(conversation[1].role, .user,
-                       "Guidance rides the user channel (a mid-conversation system turn would corrupt stateless rebuilds).")
-        let guidance = conversation[1].content ?? ""
-        XCTAssertTrue(guidance.contains("[FILE_NOT_FOUND]"),
-                      "Guidance must surface the typed code so the model can pick a recovery. got: \(guidance)")
-        // The handler's message is the ENVELOPE's, and `conversation[0]` above is it —
-        // the immediately preceding turn. Restating it in the guidance is the duplication
-        // `ToolErrorNotePolicy` removed, so the assertion belongs on the tool turn.
+        XCTAssertEqual(conversation.count, 1,
+                       "An error appends ONE turn: the tool result carrying its direction. A user turn here is a re-prefill on a hybrid model.")
+        XCTAssertEqual(conversation[0].role, .tool)
+        XCTAssertEqual(conversation[0].carriesErrorDirection, true,
+                       "the in-process flag is what the poisoned-tail repair reads now that no user turn follows")
+        let toolTurn = conversation[0].content ?? ""
+        XCTAssertTrue(toolTurn.hasPrefix(output),
+                      "An errored read is never tagged — the envelope leads the turn untouched. got: \(toolTurn)")
+        let direction = ToolErrorNotePolicy.direction(for: result, allowedToolNames: []) ?? ""
+        XCTAssertFalse(direction.isEmpty)
+        XCTAssertEqual(toolTurn, output + "\n\n" + direction,
+                       "envelope, blank line, direction — the bytes the prompt-taught wires always rendered")
+        XCTAssertTrue(direction.contains("[FILE_NOT_FOUND]"),
+                      "The direction must surface the typed code so the model can pick a recovery. got: \(direction)")
+        // The handler's message is the ENVELOPE's, the first half of this same turn. Restating
+        // it in the direction is the duplication `ToolErrorNotePolicy` removed.
         XCTAssertTrue(output.contains("File not found: missing.swift"), output)
-        XCTAssertFalse(guidance.contains("File not found: missing.swift"),
-                       "the direction must not restate the turn before it. got: \(guidance)")
+        XCTAssertFalse(direction.contains("File not found: missing.swift"),
+                       "the direction must not restate the envelope. got: \(direction)")
 
         let persisted = persistedConversation()
         XCTAssertEqual(persisted.last?.role, .user)
-        XCTAssertEqual(persisted.last?.content, guidance,
-                       "A replay rebuilt from the record must show the model the same steering the wire did.")
+        XCTAssertEqual(persisted.last?.content, direction,
+                       "The display record keeps the direction as its own entry for the two record readers.")
         XCTAssertNil(persisted.last?.sourceContext,
                      "Unattributed on purpose — the feed's no-source filter is what keeps this off screen.")
         XCTAssertEqual(persisted.filter({ $0.role == .tool }).count, 1,
@@ -295,15 +333,17 @@ final class RegularToolResultDispatchTests: XCTestCase {
         var outcome = LLMExecutionService.ToolResultsOutcome()
         await runRegular(result, into: &conversation, outcome: &outcome)
 
-        XCTAssertEqual(conversation.count, 2, "tool turn + direction")
-        XCTAssertTrue((conversation[0].content ?? "").contains("is not available for this role"),
-                      "The executor's scope-specific message reaches the model in the tool turn. got: \(conversation[0].content ?? "")")
+        XCTAssertEqual(conversation.count, 1, "one tool turn carrying envelope + direction")
+        let toolTurn = conversation[0].content ?? ""
+        XCTAssertTrue(toolTurn.contains("is not available for this role"),
+                      "The executor's scope-specific message reaches the model in the tool turn. got: \(toolTurn)")
 
-        let guidance = conversation[1].content ?? ""
-        XCTAssertTrue(guidance.contains("Do not retry 'git_commit'"),
-                      "An unauthorised tool is a schema fact, not an argument bug — the model must be told to stop. got: \(guidance)")
-        XCTAssertFalse(guidance.contains("is not available for this role"),
-                       "the direction must not restate the turn before it. got: \(guidance)")
+        let direction = ToolErrorNotePolicy.direction(for: result, allowedToolNames: []) ?? ""
+        XCTAssertTrue(toolTurn.hasSuffix("\n\n" + direction), toolTurn)
+        XCTAssertTrue(direction.contains("Do not retry 'git_commit'"),
+                      "An unauthorised tool is a schema fact, not an argument bug — the model must be told to stop. got: \(direction)")
+        XCTAssertFalse(direction.contains("is not available for this role"),
+                       "the direction must not restate the envelope it rides behind. got: \(direction)")
     }
 
     // MARK: - Supervisor question merging
@@ -441,8 +481,8 @@ final class RegularToolResultDispatchTests: XCTestCase {
                        "A torn-down step must not write into whatever currently answers to that task id.")
     }
 
-    /// Same barrier, error variant: the guidance turn reaches the model (so it can
-    /// recover this iteration) but is not persisted.
+    /// Same barrier, error variant: the direction reaches the model inside the tool turn (so
+    /// it can recover this iteration) but nothing is persisted.
     func testNotLiveStep_errorGuidance_reachesModelButIsNotPersisted() async {
         let result = ToolExecutionResult(
             providerID: "tc_err",
@@ -464,9 +504,10 @@ final class RegularToolResultDispatchTests: XCTestCase {
             outcome: &outcome
         )
 
-        XCTAssertEqual(conversation.count, 2,
-                       "Tool result + guidance still reach the in-flight conversation.")
-        XCTAssertEqual(conversation[1].role, .user)
+        XCTAssertEqual(conversation.count, 1,
+                       "The tool result, direction inside, still reaches the in-flight conversation.")
+        XCTAssertEqual(conversation[0].role, .tool)
+        XCTAssertTrue((conversation[0].content ?? "").contains("[FILE_NOT_FOUND]"))
         XCTAssertFalse(mockDelegate.eventLog.contains(where: { $0.hasPrefix("mutate-begin") }),
                        "Nothing may be persisted for a torn-down step.")
     }

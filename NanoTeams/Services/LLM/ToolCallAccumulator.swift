@@ -24,10 +24,11 @@ nonisolated struct ToolCallAccumulator {
     /// and memcpy'd the whole blob, which the type's own doc measures in hundreds of KB:
     /// Θ(args²) across a stream, the same defect as `StreamingPreviewManager.append`.
     ///
-    /// Latent rather than live today: no shipping client emits `toolCallDeltas`
-    /// (`NativeLMStudioClient` / `OllamaClient` produce content, thinking, progress and
-    /// usage only — `ConversationReplay` says the same). Fixed because it is that same
-    /// class, not because it fires now.
+    /// Live since the native tool-calling wave (2026-09-13): `OllamaChatStreamParser` under
+    /// `.native` and `OpenAIChatChunkParser` emit `toolCallDeltas` — whole calls on Ollama,
+    /// argument fragments on the OpenAI-compat route — and `ContextCompactionSummaryService`
+    /// and `DelegatedSupervisorAnswerService` absorb them beside the step loop. Fixed before
+    /// that, because it is the same class as `StreamingPreviewManager.append`.
     mutating func absorb(_ deltas: [StreamEvent.ToolCallDelta]) {
         for delta in deltas {
             let idx = delta.index ?? 0

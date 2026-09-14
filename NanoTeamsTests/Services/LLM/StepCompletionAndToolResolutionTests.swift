@@ -30,7 +30,6 @@ import XCTest
 @MainActor
 final class StepCompletionAndToolResolutionTests: XCTestCase {
 
-    private let fm = FileManager.default
     private var tempDir: URL!
     private var service: LLMExecutionService!
     /// A second service that NEVER gets a delegate — drives the `guard let delegate`

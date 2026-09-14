@@ -1011,7 +1011,7 @@ final class LLMClientSurfacesTests: XCTestCase {
         let ndjson = """
         {"message":{"thinking":"weighing options"},"done":false}
         {"message":{"content":"final answer"},"done":false}
-        {"done":true,"prompt_eval_count":21,"eval_count":5}
+        {"done":true,"done_reason":"stop","prompt_eval_count":21,"eval_count":5}
         """
         let session = ScriptedNetworkSession()
         session.bytesResult = .http(200, ndjson)
@@ -1039,6 +1039,8 @@ final class LLMClientSurfacesTests: XCTestCase {
         XCTAssertEqual(response.statusCode, 200)
         XCTAssertEqual(response.inputTokens, 21)
         XCTAssertEqual(response.outputTokens, 5)
+        XCTAssertEqual(response.doneReason, "stop",
+                       "the server's `done_reason` rides the record — the `length` arm is otherwise invisible in a log")
         XCTAssertEqual(response.correlationID, records[1].correlationID,
                        "request and response must share a correlation id")
         let body = try XCTUnwrap(response.body)
@@ -1095,6 +1097,35 @@ final class LLMClientSurfacesTests: XCTestCase {
         XCTAssertEqual(records.last?.statusCode, 0,
                        "the catch arm records a synthetic 0 — the HTTP code is inside the error")
         XCTAssertNotNil(records.last?.errorMessage)
+    }
+
+    /// The interrupted record carries what had streamed: a request cut off at the run's
+    /// timeout used to log `cancelled` and nothing else (MeditationApp task 103, 2026-09-13).
+    func testOllamaStream_withLogger_errorChunkAfterTokens_recordsWhatStreamed() async throws {
+        let logURL = tempDir.appendingPathComponent("ollama_interrupted.json")
+        let logger = NetworkLogger(logURL: logURL)
+        let ndjson = """
+        {"message":{"thinking":"weighing options"},"done":false}
+        {"message":{"content":"partial prose"},"done":false}
+        {"error":"model runner has unexpectedly stopped"}
+        """
+        let session = ScriptedNetworkSession()
+        session.bytesResult = .http(200, ndjson)
+        let client = OllamaClient(session: session, tokenResolver: StubLLMTokenResolver())
+
+        let outcome = await drainOllamaStream(
+            client: client, config: ollamaConfig(), logger: logger)
+        XCTAssertNotNil(outcome.error)
+        XCTAssertEqual(outcome.content, "partial prose", "what streamed reached the consumer")
+
+        let records = try readNetworkRecords(at: logURL)
+        XCTAssertEqual(records.count, 3, "provenance, request, interrupted response")
+        let response = try XCTUnwrap(records.last)
+        XCTAssertEqual(response.statusCode, 0)
+        XCTAssertNotNil(response.errorMessage)
+        let body = try XCTUnwrap(response.body, "what streamed before the error is in the record")
+        XCTAssertTrue(body.hasPrefix("[reasoning]\nweighing options\n[/reasoning]\n\n"), body)
+        XCTAssertTrue(body.hasSuffix("partial prose"), body)
     }
 
     func testOllamaStream_invalidBaseURL_withLogger_writesNothing() async {

@@ -221,15 +221,16 @@ extension NTMSOrchestrator {
         streamingPreviewManager.lastStreamActivity(stepID: stepID, taskID: taskID)
     }
 
-    /// The step's current (uncommitted) streaming thinking+content buffer, combined
-    /// the same way `DelegationLoopWatcher` combines them. Feeds the stuck-detector's
-    /// within-message (thinking-loop) check. Returns nil when nothing is buffered.
-    // periphery:ignore - protocol conformance (LLMStateDelegate)
-    // periphery:ignore - protocol conformance (LLMStateDelegate)
+    /// Prompt-processing progress for a step, sourced from the streaming preview manager.
+    /// No `periphery:ignore`: unlike its neighbours this one has a concrete-typed production
+    /// caller (`NTMSOrchestrator+AutovisorWake`), so the scan sees it without the tests.
     func streamProcessingStatus(stepID: String, taskID: Int) -> PromptProcessingStatus? {
         streamingPreviewManager.promptProcessingStatus(stepID: stepID, taskID: taskID)
     }
 
+    /// The step's current (uncommitted) streaming thinking+content buffer, combined
+    /// the same way `DelegationLoopWatcher` combines them. Feeds the stuck-detector's
+    /// within-message (thinking-loop) check. Returns nil when nothing is buffered.
     func streamLiveText(stepID: String, taskID: Int) -> String? {
         let thinking = streamingPreviewManager.streamingThinking(stepID: stepID, taskID: taskID) ?? ""
         let content = streamingPreviewManager.streamingContent(stepID: stepID, taskID: taskID) ?? ""

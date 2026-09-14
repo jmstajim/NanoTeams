@@ -121,4 +121,42 @@ final class StepExecutionWireTranscriptTests: XCTestCase {
             revised.wireTranscript.isEmpty,
             "revision is a continuation — only reset() discards the transcript")
     }
+
+    // MARK: - Reasoning on the record
+
+    /// A native assistant turn's reasoning is part of what was SENT (`reasoning_content` /
+    /// `thinking`), so the byte-faithful record keeps it — verbatim, newlines included — and a
+    /// replayed step re-sends exactly the turn the server cached.
+    func testRoundTrip_preservesAssistantReasoning_verbatim() throws {
+        let reasoning = "Сначала список файлов.\n\nThen read one.\n"
+        let s = step(transcript: [
+            ChatMessage(role: .user, content: "go"),
+            ChatMessage(role: .assistant, content: nil,
+                        toolCalls: [ChatToolCall(id: "1", name: "list_files", argumentsJSON: "{}")],
+                        reasoning: reasoning),
+            ChatMessage(role: .assistant, content: "prose", reasoning: nil),
+        ])
+        let back = try roundTrip(s)
+        XCTAssertEqual(back.wireTranscript[1].reasoning, reasoning)
+        XCTAssertNil(back.wireTranscript[2].reasoning, "absence survives as absence, not as \"\"")
+        XCTAssertEqual(back.wireTranscript, s.wireTranscript)
+    }
+
+    /// A transcript written before the field existed decodes with no reasoning on any turn —
+    /// the replay then sends what that step always sent.
+    func testLegacyTranscript_withoutTheKey_decodesToNilReasoning() throws {
+        let json = """
+        {"role":"assistant","content":"","tool_calls":[{"id":"1","name":"read_file","arguments_json":"{}"}]}
+        """
+        let message = try decoder().decode(ChatMessage.self, from: Data(json.utf8))
+        XCTAssertNil(message.reasoning)
+        XCTAssertEqual(message.toolCalls?.first?.name, "read_file")
+    }
+
+    /// The key is written only when there is something to write: a turn without reasoning
+    /// encodes exactly as it did before the field existed.
+    func testEncoding_omitsTheKey_whenThereIsNoReasoning() throws {
+        let data = try encoder().encode(ChatMessage(role: .assistant, content: "a"))
+        XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("reasoning"))
+    }
 }

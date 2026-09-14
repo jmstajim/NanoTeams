@@ -94,6 +94,11 @@ final class AskSupervisorFormTrainer {
         configuration.llmProvider = config.resolvedProvider
         configuration.llmBaseURLString = config.resolvedBaseURL
         configuration.llmModelName = config.resolvedModel
+        // Absent -> Auto, the storage's fresh-install default: the path a user runs. Stated ->
+        // the wire the measurement is about (`HeadlessRunner.makeConfiguration` does the same).
+        if let preference = config.toolCallingPreference {
+            configuration.toolCallingPreference = preference
+        }
         // `tool_calls.jsonl` IS the measurement, so this is not optional decoration.
         configuration.loggingEnabled = true
         configuration.roleConcurrencyMode = .providerLimited

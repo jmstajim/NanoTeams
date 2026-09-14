@@ -26,7 +26,9 @@ nonisolated enum NoToolTurnNudges {
     }
 
     /// runtime-prompt
-    static func reasoningChannel(namedCalls: [String], allowedToolNames: Set<String>) -> String {
+    static func reasoningChannel(
+        namedCalls: [String], allowedToolNames: Set<String>, mode: ToolCallingMode = .promptTaught
+    ) -> String {
         let named = namedCalls.filter(allowedToolNames.contains)
         let wrote = named.isEmpty
             ? ""
@@ -35,11 +37,16 @@ nonisolated enum NoToolTurnNudges {
         // stripped from the history the model is resent, so a nudge that opens by naming
         // what the model wrote there points at a turn it cannot see. What it CAN verify is
         // that nothing ran.
+        //
+        // "as a single envelope on its own line" is the prompt-taught shape; under `.native`
+        // the model's own syntax has no envelope the app can describe, so the sentence ends
+        // at the channel and the clause names a tool instead of a form.
+        let shape = mode == .native ? "." : ", as a single envelope on its own line."
         return """
         This step received no callable output — the tool call was written inside your \
         reasoning, where nothing can run it.\(wrote) Write the call in your reply instead \
-        of your reasoning, as a single envelope on its own line.\
-        \(LLMExecutionService.callShapeClause(allowedToolNames: allowedToolNames))
+        of your reasoning\(shape)\
+        \(LLMExecutionService.callShapeClause(allowedToolNames: allowedToolNames, mode: mode))
         """
     }
 
@@ -144,18 +151,63 @@ nonisolated enum NoToolTurnNudges {
     }
 
     /// runtime-prompt
-    static func planningSalvage(allowedToolNames: Set<String>) -> String {
+    static func planningSalvage(
+        allowedToolNames: Set<String>, mode: ToolCallingMode = .promptTaught
+    ) -> String {
         // Anchored to the note, not to "That" — re-read on every later request, a
         // demonstrative points at whatever turn is nearest (R3.8.4). And a real id from the
         // phase's narrowed schema, in the one phase where the model most needs to be shown
         // which ids survive.
-        """
-        The turn immediately before this note looked like a tool call but did not \
-        parse as one, so nothing ran and nothing was recorded. Emit it as a single \
-        envelope on its own line.\
-        \(LLMExecutionService.callShapeClause(allowedToolNames: allowedToolNames))
-        Nothing before the `<|call|>` and nothing after the `<|end|>`.
-        """
+        //
+        // The last two sentences are the prompt-taught SHAPE — the sentinels the house format
+        // wraps a call in. Under `.native` the text the model wrote was JSON in its reply
+        // instead of a call in its own syntax, and the only true correction is "make the call,
+        // do not describe it": naming `<|call|>` there would teach a format the provider's
+        // parser never reads (task 90's whole defect, one nudge over).
+        switch mode {
+        case .native:
+            return """
+            The turn immediately before this note looked like a tool call written out as \
+            text, so nothing ran and nothing was recorded. Make the call itself rather \
+            than describing it.\
+            \(LLMExecutionService.callShapeClause(allowedToolNames: allowedToolNames, mode: mode))
+            """
+        case .promptTaught:
+            return """
+            The turn immediately before this note looked like a tool call but did not \
+            parse as one, so nothing ran and nothing was recorded. Emit it as a single \
+            envelope on its own line.\
+            \(LLMExecutionService.callShapeClause(allowedToolNames: allowedToolNames))
+            Nothing before the `<|call|>` and nothing after the `<|end|>`.
+            """
+        }
+    }
+
+    /// runtime-prompt
+    ///
+    /// The native twin of `malformedJSON`: the SERVER'S parser refused the model's call, and
+    /// the server's own sentence is the only diagnosis there is — the app never saw the
+    /// bytes (they stayed inside the provider's parser). Quoted for that reason, and only
+    /// that reason; the model's own attempt is never quoted back (R3.8.3).
+    static func nativeCallRejected(reason: String, allowedToolNames: Set<String>) -> String {
+        let trimmed = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        let diagnosis = trimmed.isEmpty ? "" : " The server reported: \(trimmed)."
+        return "The turn immediately before this note made a tool call the server could not "
+            + "parse, so nothing ran and nothing was recorded.\(diagnosis) Make the call again "
+            + "as one complete call with every argument inside it."
+            + LLMExecutionService.callShapeClause(allowedToolNames: allowedToolNames, mode: .native)
+    }
+
+    /// runtime-prompt
+    ///
+    /// The server stopped the turn at its output ceiling before a call was made. Says the
+    /// FACT and the one action — decide, then call — without naming a length, a token count
+    /// or the reasoning that filled the budget: the model cannot see its own reasoning in the
+    /// resent history, and a number would be an anchor for the wrong thing.
+    static func outputTruncated(allowedToolNames: Set<String>, mode: ToolCallingMode) -> String {
+        "The turn immediately before this note was cut off at the output limit before it "
+            + "called any tool, so nothing ran. Decide in one step and make the call at once."
+            + LLMExecutionService.callShapeClause(allowedToolNames: allowedToolNames, mode: mode)
     }
 
     /// runtime-prompt

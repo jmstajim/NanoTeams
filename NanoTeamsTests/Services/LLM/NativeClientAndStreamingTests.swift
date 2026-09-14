@@ -715,6 +715,40 @@ final class NativeClientStreamChatTests: XCTestCase {
         XCTAssertNil(response.body)
     }
 
+    /// The interrupted record carries what had streamed before the error frame (2026-09-13).
+    func testStream_networkLogger_errorFrameAfterTokens_recordsWhatStreamed() async throws {
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+        let logURL = dir.appendingPathComponent("network_log.json")
+
+        let session = LMStudioRoutingSession()
+        session.dataRoutes["/api/v0/models"] = (200, "{\"data\":[]}")
+        session.dataRoutes["/api/v1/models/load"] = (200, "{\"instance_id\":\"inst-1\"}")
+        session.chatPayload = """
+        event: reasoning.delta
+        data: {"content":"deliberating"}
+        
+        event: message.delta
+        data: {"content":"partial prose"}
+        
+        event: error
+        data: {"message":"model unloaded"}
+        """
+        let out = await drain(
+            makeClient(session), config: makeConfig(), logger: NetworkLogger(logURL: logURL))
+        XCTAssertNotNil(out.error)
+
+        let records = try readLog(logURL)
+        let response = try XCTUnwrap(records.first { $0.direction == .response })
+        XCTAssertEqual(response.statusCode, 0)
+        XCTAssertNotNil(response.errorMessage)
+        let body = try XCTUnwrap(response.body, "what streamed before the error is in the record")
+        XCTAssertTrue(body.hasPrefix("[reasoning]\ndeliberating\n[/reasoning]\n\n"), body)
+        XCTAssertTrue(body.hasSuffix("partial prose"), body)
+    }
+
     /// Nothing is logged when the base URL never resolves — there is no request to pair.
     func testStream_networkLogger_invalidBaseURL_writesNothing() async {
         let fm = FileManager.default
@@ -987,9 +1021,14 @@ final class StreamingPostStreamArmsTests: XCTestCase {
             [ToolNames.readFile, ToolNames.readFile, ToolNames.gitStatus])
     }
 
-    // MARK: - Duplicate-tool-call break (provider-native deltas)
+    // MARK: - Duplicate tool-call deltas (provider-native): stop absorbing, keep the stream
 
-    func testDuplicateProviderToolCallDeltas_breakTheStream_andCollapseToOneCall() async throws {
+    /// Until 2026-09-13 a raw duplicate `break`-ed the stream. A provider that sends calls
+    /// whole puts them on its LAST chunk (Ollama), beside the usage and prefill counts the
+    /// fill indicator, the truncation detector and the compaction trigger read — a break
+    /// there threw the count away. Now the accumulator stops ABSORBING and the stream runs
+    /// to its end; the post-stream dedup collapses the pair as before.
+    func testDuplicateProviderToolCallDeltas_stopAbsorbing_collapseToOneCall_andKeepTheTail() async throws {
         let result = try await run([
             StreamEvent(toolCallDeltas: [
                 StreamEvent.ToolCallDelta(
@@ -997,13 +1036,19 @@ final class StreamingPostStreamArmsTests: XCTestCase {
                 StreamEvent.ToolCallDelta(
                     index: 1, id: "c1", name: ToolNames.gitStatus, argumentsDelta: "{}"),
             ]),
-            StreamEvent(contentDelta: "MUST-NOT-BE-CONSUMED"),
+            StreamEvent(toolCallDeltas: [
+                StreamEvent.ToolCallDelta(
+                    index: 2, id: "c2", name: ToolNames.readFile, argumentsDelta: "{\"path\":\"a\"}"),
+            ]),
+            StreamEvent(contentDelta: "TAIL-STILL-ARRIVES",
+                        tokenUsage: TokenUsage(inputTokens: 100, outputTokens: 9)),
         ])
 
-        XCTAssertEqual(result.resolvedToolCalls.count, 1)
-        XCTAssertEqual(result.resolvedToolCalls.first?.name, ToolNames.gitStatus)
-        XCTAssertFalse(result.assistantContent.contains("MUST-NOT-BE-CONSUMED"),
-                       "the break must stop the loop before the next event is processed")
+        XCTAssertEqual(result.resolvedToolCalls.map(\.name), [ToolNames.gitStatus],
+                       "collapsed to one; the delta after the duplicate was not absorbed")
+        XCTAssertEqual(result.assistantContent, "TAIL-STILL-ARRIVES",
+                       "the stream is not broken — the terminal chunk still lands")
+        XCTAssertEqual(result.tokenUsage?.inputTokens, 100)
     }
 
     /// Key order and whitespace differences are the same call — the canonical signature is

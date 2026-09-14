@@ -191,7 +191,8 @@ enum FirstPromptRenderer {
                 roleDefinition: roleDefinition,
                 globalContext: config.resolvedGlobalContext,
                 agentInstructions: agentInstructions,
-                attachedSkills: attachedSkills
+                attachedSkills: attachedSkills,
+                toolCallingMode: config.resolvedToolCallingMode
             )
             messages = PromptBuilder.buildChatMessages(context: promptContext, tools: toolSchemas)
         case .consultation, .meeting:
@@ -208,7 +209,8 @@ enum FirstPromptRenderer {
                 globalContext: config.resolvedGlobalContext,
                 isCoordinator: team.meetingCoordinatorID == roleDefinition.id,
                 agentInstructions: agentInstructions,
-                attachedSkills: attachedSkills)
+                attachedSkills: attachedSkills,
+                toolCallingMode: config.resolvedToolCallingMode)
             let systemPrompt = try PromptBuilder.buildWirePromptPreview(kind: kind, inputs: inputs)
             toolSchemas = PromptBuilder.resolveWirePreviewTools(kind: kind, inputs: inputs)
             messages = [ChatMessage(role: .system, content: systemPrompt)]
@@ -217,23 +219,32 @@ enum FirstPromptRenderer {
         // 7. Fuse into the actual NativeChatRequest via the production builder.
         //    Every call is stateless → system_prompt is NOT
         //    omitted, tool schema section IS appended.
+        //    Under `.native` the wire is the OpenAI-shaped request the router sends to
+        //    `/v1/chat/completions` — the one carrying a top-level `tools` array — through
+        //    the same builder production uses; under `.promptTaught` the native endpoint's.
         let llmConfig = LLMConfig(
             provider: .lmStudio,
             baseURLString: LLMProvider.lmStudio.defaultBaseURL,
             modelName: config.resolvedModelName,
-            temperature: config.temperature
+            temperature: config.temperature,
+            toolCallingMode: config.resolvedToolCallingMode
         )
-        let wireRequest = NativeLMStudioClient.buildRequest(
-            config: llmConfig,
-            messages: messages,
-            tools: toolSchemas
-        )
+        let wireData: Data
+        switch config.resolvedToolCallingMode {
+        case .native:
+            wireData = try JSONCoderFactory.makeWireEncoder().encode(
+                OpenAICompatLMStudioClient.buildRequest(
+                    config: llmConfig, messages: messages, tools: toolSchemas))
+        case .promptTaught:
+            wireData = try JSONCoderFactory.makeWireEncoder().encode(
+                NativeLMStudioClient.buildRequest(
+                    config: llmConfig, messages: messages, tools: toolSchemas))
+        }
 
         // 8. Encode wire payload, wrap in `{wire, render_meta}` envelope, write
         //    out. Envelope keeps `wire` structurally identical to a real
         //    `network_log.json` record's `.body`, so audits can diff
         //    `--render`'s `wire` directly against `--from-logs`'s `wire`.
-        let wireData = try JSONCoderFactory.makeWireEncoder().encode(wireRequest)
         guard let wireDict = try JSONSerialization.jsonObject(with: wireData) as? [String: Any] else {
             throw RenderError.internalInvariantViolation(
                 "wire encode did not produce a JSON object"
@@ -361,7 +372,12 @@ enum FirstPromptRenderer {
             let encoded = try encoder.encode(tool)
             return RenderMeta.ToolAudit(name: tool.name, chars: encoded.count)
         }
-        let systemPrompt = (wireDict["system_prompt"] as? String) ?? ""
+        // `system_prompt` on the native endpoint's request; the OpenAI shape carries it as
+        // the first `messages` entry.
+        let systemPrompt = (wireDict["system_prompt"] as? String)
+            ?? ((wireDict["messages"] as? [[String: Any]])?
+                .first(where: { $0["role"] as? String == "system" })?["content"] as? String)
+            ?? ""
         let inputChars: Int
         if let s = wireDict["input"] as? String {
             inputChars = s.count
@@ -373,6 +389,19 @@ enum FirstPromptRenderer {
             inputChars = arr.reduce(into: 0) { acc, part in
                 if let text = part["content"] as? String { acc += text.count }
                 if let dataURL = part["data_url"] as? String { acc += dataURL.count }
+            }
+        } else if let msgs = wireDict["messages"] as? [[String: Any]] {
+            // The OpenAI shape: every non-system message is the input.
+            inputChars = msgs.filter { $0["role"] as? String != "system" }.reduce(into: 0) { acc, m in
+                if let text = m["content"] as? String { acc += text.count }
+                if let parts = m["content"] as? [[String: Any]] {
+                    for part in parts {
+                        if let text = part["text"] as? String { acc += text.count }
+                        if let image = part["image_url"] as? [String: Any], let url = image["url"] as? String {
+                            acc += url.count
+                        }
+                    }
+                }
             }
         } else {
             inputChars = 0

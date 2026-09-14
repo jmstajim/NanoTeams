@@ -195,6 +195,17 @@ final class NTMSOrchestrator {
     }
 
     // periphery:ignore - protocol conformance (LLMStateDelegate)
+    var toolCallingPreference: ToolCallingPreference {
+        configuration.toolCallingPreference
+    }
+
+    /// The one tool-calling-mode memo, for the callers that hold no service: the Team
+    /// Editor's previews and generate button, and the orchestrator's own team generation.
+    func resolveToolCallingMode(for config: LLMConfig) async -> ToolCallingMode {
+        await llmExecutionService.resolveToolCallingMode(config: config)
+    }
+
+    // periphery:ignore - protocol conformance (LLMStateDelegate)
     var maxLLMRetries: Int {
         get { configuration.maxLLMRetries }
         set { configuration.maxLLMRetries = newValue }

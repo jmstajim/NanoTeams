@@ -150,6 +150,20 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
     /// best-effort reconstruction from ``llmConversation``.
     var wireTranscript: [ChatMessage]
 
+    /// The tool-calling protocol this step's conversation was written under, pinned at the
+    /// step's FIRST request and read on every re-entry — see `replayToolCallingMode`.
+    ///
+    /// `nil` for a step that has not sent anything yet: the next entry resolves the mode from
+    /// the provider's capability report and pins it here. Cleared by `reset()` with the
+    /// transcript it describes; preserved by the retry path, which keeps the transcript.
+    ///
+    /// A mode is persisted rather than re-resolved because the transcript is byte-faithful to
+    /// ONE protocol: a wire holding `<|call|>` envelopes replayed as native `tool_calls` hands
+    /// the model calls it never made in that syntax, and a native wire rendered as Harmony text
+    /// does the reverse — either way the prefix the server cached is gone and the model's
+    /// few-shot changes mid-step.
+    var toolCallingMode: ToolCallingMode?
+
     /// Non-nil when the step is in revision mode (Supervisor requested changes).
     /// Contains the Supervisor's feedback. Cleared when LLM creates a new artifact via `create_artifact`.
     /// While set, `checkArtifactCompleteness` is skipped to prevent premature auto-completion
@@ -258,6 +272,7 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         llmConversation: [LLMMessage] = [],
         wireTranscript: [ChatMessage] = [],
         revisionComment: String? = nil,
+        toolCallingMode: ToolCallingMode? = nil,
         ancillaryQuestion: String? = nil,
         ancillaryAnswer: String? = nil,
         activeDelegationChildID: Int? = nil,
@@ -294,6 +309,7 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         self.llmConversation = llmConversation
         self.wireTranscript = wireTranscript
         self.revisionComment = revisionComment
+        self.toolCallingMode = toolCallingMode
         // Aggregate the four legacy delegation/ancillary parameters into the
         // two structs. The DelegationState init enforces
         // `activeChildID ∈ history`, so callers passing an active id without
@@ -338,6 +354,7 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         case llmConversation
         case wireTranscript
         case revisionComment
+        case toolCallingMode
         case logCommit
         // New aggregated shape (preferred on encode + decode).
         case delegation
@@ -399,6 +416,11 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         self.wireTranscript =
             try c.decodeIfPresent([ChatMessage].self, forKey: .wireTranscript) ?? []
         self.revisionComment = try c.decodeIfPresent(String.self, forKey: .revisionComment)
+        // Absent for every step written before the mode existed, and that absence is NOT
+        // resolved here: `task.json` carries the stream arrays stripped (`logCommit`), so at
+        // decode time the transcript this decision depends on is not yet hydrated.
+        // `replayToolCallingMode` answers it at the read site, after hydration.
+        self.toolCallingMode = try c.decodeIfPresent(ToolCallingMode.self, forKey: .toolCallingMode)
         self.logCommit = try c.decodeIfPresent(StepLogCommit.self, forKey: .logCommit)
         // Delegation/ancillary: prefer the new nested shape, fall back to
         // the legacy flat keys for files written by earlier builds.
@@ -471,6 +493,7 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         // disk re-encoded after a read) don't grow a `"wireTranscript":[]` key.
         if !wireTranscript.isEmpty { try c.encode(wireTranscript, forKey: .wireTranscript) }
         try c.encodeIfPresent(revisionComment, forKey: .revisionComment)
+        try c.encodeIfPresent(toolCallingMode, forKey: .toolCallingMode)
         try c.encodeIfPresent(logCommit, forKey: .logCommit)
         // Encode the new bundled shape only when non-empty (preserves the
         // pre-fix policy of omitting empty delegation/ancillary state from
@@ -499,6 +522,19 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
     /// True for the synthetic step `runTeamGeneration` injects. Prefer this over a
     /// hand-written `id.hasPrefix(...)` — same match, one place.
     var isTeamGenerationStep: Bool { id.hasPrefix(Self.teamGenerationIDPrefix) }
+
+    /// The mode a RE-ENTRY must continue under, or `nil` when the step is genuinely fresh
+    /// and the next entry is free to resolve one.
+    ///
+    /// A step that carries a conversation but no pinned mode was written by a build that
+    /// knew only the prompt-taught protocol, and its transcript is Harmony text by
+    /// construction — so the absence resolves to `.promptTaught`, never to a fresh probe.
+    /// Read AFTER the stream arrays are hydrated (every `loadedTask` is), which is why this
+    /// is a computed property at the read site rather than a rule inside `init(from:)`.
+    var replayToolCallingMode: ToolCallingMode? {
+        if let toolCallingMode { return toolCallingMode }
+        return (wireTranscript.isEmpty && llmConversation.isEmpty) ? nil : .promptTaught
+    }
 
     /// Whether this step holds work a `reset()` would destroy.
     ///
@@ -603,6 +639,8 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         // re-entry replay a conversation belonging to the discarded attempt.
         wireTranscript = []
         revisionComment = nil
+        // The transcript this mode described is gone with it; the re-run resolves afresh.
+        toolCallingMode = nil
         // `reset` clears delegation history too — this is a full re-run, not a
         // continuation, so the audit trail starts fresh.
         delegation = DelegationState()

@@ -295,4 +295,36 @@ final class PromptPrefixWireParityTests: XCTestCase {
             sameShapeDifferentPayload,
             "equal mime + equal length fold the same — the payload itself is never hashed")
     }
+
+    // MARK: - Reasoning: both native wires carry it, neither prompt-taught wire can
+
+    /// The two structured wires have a slot for the model's reasoning (`reasoning_content` on
+    /// the OpenAI shape, `thinking` on Ollama's) and replay it there; the two flattened
+    /// prompt-taught wires render assistant turns as labelled text and carry none — the
+    /// reasoning is never content-channel text (playbook A6.16). One `ChatMessage`, four wires.
+    func testReasoning_ridesBothNativeWires_andNeitherPromptTaughtWire() throws {
+        let turn = ChatMessage(
+            role: .assistant, content: nil,
+            toolCalls: [ChatToolCall(id: "1", name: "read_file", argumentsJSON: "{}")],
+            reasoning: "REASONING-BYTES")
+        let messages = [system("s"), user("u"), turn, ChatMessage(role: .tool, content: "r", toolCallID: "1")]
+
+        var lmNative = lmStudioConfig
+        lmNative.toolCallingMode = .native
+        let openAI = OpenAICompatLMStudioClient.buildRequest(config: lmNative, messages: messages, tools: tools)
+        XCTAssertEqual(openAI.messages.first { $0.role == "assistant" }?.reasoningContent, "REASONING-BYTES")
+
+        var ollamaNative = ollamaConfig
+        ollamaNative.toolCallingMode = .native
+        let ollama = OllamaClient.buildRequest(config: ollamaNative, messages: messages, tools: tools)
+        XCTAssertEqual(ollama.messages.first { $0.role == "assistant" }?.thinking, "REASONING-BYTES")
+
+        let lmTaught = NativeLMStudioClient.buildRequest(config: lmStudioConfig, messages: messages, tools: tools)
+        XCTAssertFalse(try XCTUnwrap(lmTaught.input.conversationText).contains("REASONING-BYTES"))
+        XCTAssertFalse(lmTaught.systemPrompt?.contains("REASONING-BYTES") ?? false)
+
+        let ollamaTaught = OllamaClient.buildRequest(config: ollamaConfig, messages: messages, tools: tools)
+        XCTAssertTrue(ollamaTaught.messages.allSatisfy { $0.thinking == nil })
+        XCTAssertFalse(ollamaTaught.messages.contains { $0.content.contains("REASONING-BYTES") })
+    }
 }

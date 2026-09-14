@@ -15,6 +15,10 @@ extension LLMExecutionService {
     }
 
 
+    /// The `done_reason` / `finish_reason` both providers use for "cut off at the output
+    /// ceiling" — Ollama and the OpenAI shape agree on the word.
+    nonisolated static let lengthDoneReason = "length"
+
     /// True when the step has a pending supervisor-feedback revision. Reads the
     /// freshest task from the delegate so mid-iteration mutations are observed.
     func isStepInRevision(stepID: String, taskID: Int) -> Bool {
@@ -30,15 +34,16 @@ extension LLMExecutionService {
 
     /// Handles the case where the LLM produced no tool calls.
     ///
-    /// Contract: ten nudge paths append one correction and return `.continueLoop`. Terminal
-    /// values leave here only by DELEGATION, never as a self-declared completion —
+    /// Contract: thirteen nudge paths append one correction and return `.continueLoop`.
+    /// Terminal values leave here only by DELEGATION, never as a self-declared completion —
     /// `.completed` from `checkArtifactCompleteness` (every deliverable submitted, the
     /// `artifactStop` below) or from `noteNonProductiveTurn`'s chat-mode advisory backstop at
-    /// `maxNonProductiveTurns`; `.needsSupervisorInput` from the five cap escalations
-    /// (reasoning-channel ×2, thinking drift ×2, refusal loop, malformed JSON ×3, and the
-    /// non-productive cap for every other role); `.toolFailure` when an escalation cannot
-    /// persist its question. Until 2026-09-06 this comment said "always returns
-    /// `.continueLoop`", and the playbook's R3.1.4 / REC.6 Checks repeated it.
+    /// `maxNonProductiveTurns`; `.needsSupervisorInput` from the seven cap escalations
+    /// (native call rejected ×3 — sharing the malformed-JSON counter — output truncated ×2,
+    /// reasoning-channel ×2, thinking drift ×2, refusal loop, malformed JSON ×3, unrecognised
+    /// sentinel ×3, and the non-productive cap for every other role); `.toolFailure` when an
+    /// escalation cannot persist its question. Until 2026-09-06 this comment said "always
+    /// returns `.continueLoop`", and the playbook's R3.1.4 / REC.6 Checks repeated it.
     /// Producing roles get artifact-missing reminders; other roles get tool-use nudges.
     ///
     /// - Parameter allowedToolNames: the set `executeToolCalls` authorizes against this
@@ -85,6 +90,83 @@ extension LLMExecutionService {
         }
 
         let stepKey = TaskStepKey(taskID: task.id, stepID: stepID)
+
+        // The SERVER refused the model's native call. The exact twin of the `.malformedJSON`
+        // arm below — a call was made and could not be read — so it shares that arm's counter
+        // and its 3-strike escalation: three in any mixture is the same evidence that nudging
+        // has stopped working. Above every other branch because it is the most specific claim
+        // this turn can carry: the stream ended on the rejection, and whatever content
+        // preceded it was the model's preamble, not its reply.
+        if let rejection = result.nativeCallRejection {
+            let runID = task.runs.indices.contains(runIndex)
+                ? task.runs[runIndex].id : (task.runs.last?.id ?? 0)
+            await recordNonDispatchedAttempt(
+                stepID: stepID, taskID: task.id, runID: runID,
+                name: "rejected_tool_call", code: "NATIVE_CALL_REJECTED",
+                message: "The server could not parse the model's native tool call; not dispatched. "
+                    + "Server: \(rejection)",
+                envelope: [result.assistantContent, result.nativeCallAttempt]
+                    .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "\n"),
+                runtime: runtime)
+            if isStepInRevision(stepID: stepID, taskID: task.id) {
+                executionStates[stepKey]?.consecutiveHarmonyParseFailureCount = 0
+            } else {
+                let newCount = (executionStates[stepKey]?.consecutiveHarmonyParseFailureCount ?? 0) + 1
+                executionStates[stepKey]?.consecutiveHarmonyParseFailureCount = newCount
+                if newCount >= 3 {
+                    executionStates[stepKey]?.consecutiveHarmonyParseFailureCount = 0
+                    let question = Self.nativeCallRejectedEscalationQuestion(
+                        roleName: roleForMessage.displayName)
+                    let escalated = await setNeedsSupervisorInput(
+                        stepID: stepID, taskID: task.id, question: question)
+                    guard escalated else {
+                        return .toolFailure(message: "Native-call rejection cap exceeded but Supervisor escalation failed to persist; aborting step. Question would have been: \(question)")
+                    }
+                    return .needsSupervisorInput(question: question)
+                }
+            }
+            let nudge = NoToolTurnNudges.nativeCallRejected(
+                reason: rejection, allowedToolNames: allowedToolNames)
+            conversationMessages.append(ChatMessage(role: .user, content: nudge))
+            await appendLLMMessage(
+                stepID: stepID, taskID: task.id, role: .user, content: nudge,
+                sourceContext: .retryNudge)
+            return .continueLoop
+        }
+
+        // The server CUT the turn at its output ceiling and no call resolved. Its own shape,
+        // above drift: the drift heuristic measures reasoning length in characters, and a
+        // turn truncated at a few hundred tokens never reaches that threshold while failing
+        // the same way every time (a model reasoning in circles about a tool the schema does
+        // not carry). First → the cut named and one action; second consecutive → escalate.
+        if result.serverDoneReason == LLMExecutionService.lengthDoneReason {
+            if isStepInRevision(stepID: stepID, taskID: task.id) {
+                executionStates[stepKey]?.consecutiveTruncatedTurns = 0
+            } else {
+                let newCount = (executionStates[stepKey]?.consecutiveTruncatedTurns ?? 0) + 1
+                executionStates[stepKey]?.consecutiveTruncatedTurns = newCount
+                if newCount >= 2 {
+                    executionStates[stepKey]?.consecutiveTruncatedTurns = 0
+                    let question = Self.outputTruncatedEscalationQuestion(
+                        roleName: roleForMessage.displayName)
+                    let escalated = await setNeedsSupervisorInput(
+                        stepID: stepID, taskID: task.id, question: question)
+                    guard escalated else {
+                        return .toolFailure(message: "Output-truncation cap exceeded but Supervisor escalation failed to persist; aborting step. Question would have been: \(question)")
+                    }
+                    return .needsSupervisorInput(question: question)
+                }
+            }
+            let nudge = NoToolTurnNudges.outputTruncated(
+                allowedToolNames: allowedToolNames, mode: result.toolCallingMode)
+            conversationMessages.append(ChatMessage(role: .user, content: nudge))
+            await appendLLMMessage(
+                stepID: stepID, taskID: task.id, role: .user, content: nudge,
+                sourceContext: .retryNudge)
+            return .continueLoop
+        } else {
+            executionStates[stepKey]?.consecutiveTruncatedTurns = 0
+        }
 
         // The model wrote a dispatchable envelope into the REASONING channel and nothing
         // into the one that dispatches. The turn is already lost — no route reads reasoning
@@ -138,7 +220,8 @@ extension LLMExecutionService {
                 }
             }
             let nudge = NoToolTurnNudges.reasoningChannel(
-                namedCalls: reasoningCallNames, allowedToolNames: allowedToolNames)
+                namedCalls: reasoningCallNames, allowedToolNames: allowedToolNames,
+                mode: result.toolCallingMode)
             conversationMessages.append(ChatMessage(role: .user, content: nudge))
             await appendLLMMessage(
                 stepID: stepID, taskID: task.id, role: .user, content: nudge,
@@ -453,7 +536,7 @@ extension LLMExecutionService {
                 // this arm shipped the literal `TOOL_NAME` until 2026-09-06, in the one
                 // phase where the model most needs to be shown which ids survive.
                 let nudge = NoToolTurnNudges.planningSalvage(
-                    allowedToolNames: allowedToolNames)
+                    allowedToolNames: allowedToolNames, mode: result.toolCallingMode)
                 conversationMessages.append(ChatMessage(role: .user, content: nudge))
                 await appendLLMMessage(
                     stepID: stepID, taskID: task.id, role: .user, content: nudge,
@@ -970,6 +1053,27 @@ extension LLMExecutionService {
         it is copying its own broken form back from the conversation, so a nudge \
         cannot reach it. Restart the role with a different model, or mark the step \
         failed and re-plan.
+        """
+    }
+
+    /// runtime-prompt
+    nonisolated static func nativeCallRejectedEscalationQuestion(roleName: String) -> String {
+        """
+        Role \(roleName) produced 3 consecutive tool calls the server's parser could not \
+        read — the model is not producing the call syntax it was trained on, and a \
+        correction cannot show it a syntax the app never sees. Restart the role with a \
+        different model, switch the tool-calling setting to prompt-taught for this server, \
+        or mark the step failed and re-plan.
+        """
+    }
+
+    /// runtime-prompt
+    nonisolated static func outputTruncatedEscalationQuestion(roleName: String) -> String {
+        """
+        Role \(roleName) hit the server's output limit on two consecutive turns without \
+        calling any tool — the model is reasoning in circles until it is cut off. Advise \
+        how to proceed (name the exact tool and arguments to use, restart the role with a \
+        different model, or mark the step failed).
         """
     }
 

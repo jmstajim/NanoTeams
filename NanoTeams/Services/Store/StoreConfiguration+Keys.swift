@@ -11,6 +11,7 @@ extension StoreConfiguration {
         static let llmModel = UserDefaultsKeys.llmModel
         static let debugModeEnabled = UserDefaultsKeys.debugModeEnabled
         static let maxLLMRetries = UserDefaultsKeys.maxLLMRetries
+        static let toolCallingPreference = UserDefaultsKeys.toolCallingPreference
         static let autoCompactEnabled = UserDefaultsKeys.autoCompactEnabled
         static let autoCompactBudgetPercent = UserDefaultsKeys.autoCompactBudgetPercent
         static let benchmarkRepeats = UserDefaultsKeys.benchmarkRepeats

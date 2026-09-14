@@ -175,4 +175,53 @@ final class HeadlessConfigTests: XCTestCase {
         XCTAssertEqual(c.resolvedModel, "ornith-1.5:35b")
         XCTAssertEqual(c.bashMode, .manual, "the sample spells the Manual raw value out so a reader sees it")
     }
+
+
+    // MARK: - toolCallingPreference (typed, like provider and bashMode; 2026-09-13)
+
+    @MainActor func testToolCallingPreference_omitted_isNil_andTheRunnerResolvesAuto() async throws {
+        let c = try decode(minimal)
+        XCTAssertNil(c.toolCallingPreference)
+        XCTAssertEqual(HeadlessRunner.makeConfiguration(config: c).toolCallingPreference, .auto,
+                       "absent ⇒ the fresh-install default: ask the provider")
+    }
+
+    @MainActor func testToolCallingPreference_decodesByRawValue_andReachesTheConfiguration() async throws {
+        let native = try decode("""
+        {"projectPath":"/p","taskTitle":"T","supervisorTask":"S","toolCallingPreference":"native"}
+        """)
+        XCTAssertEqual(native.toolCallingPreference, .native)
+        XCTAssertEqual(HeadlessRunner.makeConfiguration(config: native).toolCallingPreference, .native)
+        let taught = try decode("""
+        {"projectPath":"/p","taskTitle":"T","supervisorTask":"S","toolCallingPreference":"promptTaught"}
+        """)
+        XCTAssertEqual(taught.toolCallingPreference, .promptTaught)
+        XCTAssertEqual(HeadlessRunner.makeConfiguration(config: taught).toolCallingPreference, .promptTaught)
+    }
+
+    /// The A/B knob of the wave's REC.10 measurement: a typo must not silently run the
+    /// wrong arm.
+    func testToolCallingPreference_unknownValue_failsLoudlyNamingTheLegalValues() {
+        XCTAssertThrowsError(try decode("""
+        {"projectPath":"/p","taskTitle":"T","supervisorTask":"S","toolCallingPreference":"harmony"}
+        """)) { error in
+            let text = "\(error)"
+            XCTAssertTrue(text.contains("harmony"), "must quote the offending value: \(text)")
+            for preference in ToolCallingPreference.allCases {
+                XCTAssertTrue(text.contains(preference.rawValue), "must list \(preference.rawValue): \(text)")
+            }
+        }
+    }
+
+    func testToolCallingPreference_roundTripsThroughEncode() throws {
+        let c = try decode("""
+        {"projectPath":"/p","taskTitle":"T","supervisorTask":"S","toolCallingPreference":"auto"}
+        """)
+        let data = try JSONCoderFactory.makeWireEncoder().encode(c)
+        let back = try JSONCoderFactory.makeWireDecoder().decode(HeadlessConfig.self, from: data)
+        XCTAssertEqual(back.toolCallingPreference, .auto)
+        let absent = try JSONCoderFactory.makeWireDecoder().decode(
+            HeadlessConfig.self, from: try JSONCoderFactory.makeWireEncoder().encode(try decode(minimal)))
+        XCTAssertNil(absent.toolCallingPreference, "an absent preference is not written back as a default")
+    }
 }

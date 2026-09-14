@@ -92,9 +92,19 @@ struct FirstPromptRendererConfig: Codable {
     /// could not be audited offline (playbook REC.10 / KF4).
     let kind: RenderKind?
 
+    /// The tool-calling mode to render under — `native` or `promptTaught`
+    /// (`ToolCallingMode` raw values). The renderer talks to no server, so it cannot ask the
+    /// provider and the config must SAY which protocol's first request it wants; default
+    /// `promptTaught`, the bytes every audit numbered before 2026-09-13 measured. Under
+    /// `native` the `{toolCalling}` chip carries no catalog and the wire is the OpenAI-shaped
+    /// `/v1/chat/completions` request with a top-level `tools` array (`render_meta.tool_schemas`
+    /// is the same list either way).
+    let toolCallingMode: ToolCallingMode?
+
     // MARK: - Resolved helpers
 
     var resolvedKind: RenderKind { kind ?? .step }
+    var resolvedToolCallingMode: ToolCallingMode { toolCallingMode ?? .promptTaught }
 
     var resolvedModelName: String { modelName ?? "render-only" }
     /// The production default when the config carries no `globalContext` — the same

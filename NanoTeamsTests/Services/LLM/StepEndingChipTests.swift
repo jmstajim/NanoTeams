@@ -37,11 +37,22 @@ final class StepEndingChipTests: XCTestCase {
         XCTAssertEqual(SystemTemplates.stepEnding(producing: false, canAskSupervisor: false), SystemTemplates.plainReplyStepEnding)
     }
 
-    func testThreeSentences_areDistinct_andOnlyTheAdvisoryOneNamesATool() {
+    func testThreeSentences_areDistinct_andEachToolBearingOneNamesItsToolAndField() {
         let all = [SystemTemplates.producingStepEnding, SystemTemplates.advisoryStepEnding, SystemTemplates.plainReplyStepEnding]
         XCTAssertEqual(Set(all).count, 3)
-        XCTAssertFalse(SystemTemplates.producingStepEnding.contains("create_artifact"),
-                       "the tool is named by the closing user turn and the schema, not the reminder")
+        // Until 2026-09-13 this asserted the OPPOSITE — "the tool is named by the closing user
+        // turn and the schema, not the reminder" — and gemma-4 wrote 15 of 30 deliverables as a
+        // plain reply first: the closing turn rides the first request only, and under native
+        // tool calling the system prompt carried the name nowhere else.
+        XCTAssertTrue(SystemTemplates.producingStepEnding.contains("`create_artifact`"),
+                      "the reminder names the tool the step ends on")
+        XCTAssertTrue(SystemTemplates.producingStepEnding.contains("`content`"),
+                      "and the WHERE: the drafted text goes in the call's `content`, not in the reply")
+        XCTAssertFalse(SystemTemplates.producingStepEnding.contains("Submit"),
+                       "\"submit\" reads as handing in text already written — the verb the prose-first turn obeyed")
+        for word in ["because", "unless", "except", "invisible"] {
+            XCTAssertFalse(SystemTemplates.producingStepEnding.contains(word), "one imperative, no rationale (R1.2.3): \(word)")
+        }
         XCTAssertTrue(SystemTemplates.advisoryStepEnding.contains("`ask_supervisor`"))
         XCTAssertTrue(SystemTemplates.advisoryStepEnding.contains("`ask_supervisor_form`"),
                       "the recency slot names the questionnaire beside the plain ask (2026-09-11): "

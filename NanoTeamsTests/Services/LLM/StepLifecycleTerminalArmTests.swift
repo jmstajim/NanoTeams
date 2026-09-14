@@ -174,6 +174,59 @@ final class StepLifecycleTerminalArmTests: XCTestCase {
                           "a step whose question never persisted must not be left claiming to wait for one")
     }
 
+    // MARK: - .toolFailure
+
+    /// The failure arm, engineered the way the sibling persist-failure test is: the step's run
+    /// is no longer the latest one, so the cap's escalation finds nothing to write and reports
+    /// `false`, and the loop ends through `.toolFailure` — the step COMPLETES (preview
+    /// cleared) instead of parking or returning silently. The cap here is the non-productive
+    /// one: measured 2026-09-13, twenty byte-IDENTICAL unreadable envelopes run to
+    /// `maxNonProductiveTurns` rather than the parse-failure 3-strike, while three DISTINCT
+    /// ones take the strike (next test); the mechanism that breaks the streak on an identical
+    /// envelope is not pinned here.
+    func testToolFailure_capEscalationCannotPersist_completesTheStepAsFailed() async throws {
+        seedStepBehindANewerRun(extraTools: [])
+        let client = ScriptedToolCallClient(script: [
+            .text(#"<|call|>{"name":"read_file",{"path":"a.swift"}}<|end|>"#),
+        ])
+        attach(client)
+
+        service.startStepExecution(
+            stepID: stepID, taskID: taskID, task: mockDelegate.taskToMutate!,
+            runIndex: 0, stepIndex: 0)
+        try await waitUntil { self.mockDelegate.clearStreamingPreviewCalls.contains(self.stepID) }
+
+        XCTAssertEqual(client.callCount, LLMConstants.maxNonProductiveTurns,
+                       "every no-call turn is non-productive; the cap's escalation is what cannot persist")
+        XCTAssertTrue(mockDelegate.notifyQueuedMessageBackstopCalls.isEmpty,
+                      "the backstop fires only on a successful park — this turn failed the step")
+        let s = mockDelegate.taskToMutate?.runs[0].steps[0]
+        XCTAssertNotEqual(s?.status, .needsSupervisorInput)
+        XCTAssertNil(s?.supervisorQuestion, "no question was written, so none may be shown")
+    }
+
+    /// Same arm through the parse-failure cap: three DISTINCT unreadable envelopes (task 90's
+    /// object-in-key-position, each with its own path) reach the 3-strike, whose escalation
+    /// cannot persist, so the step fails on the third request.
+    func testToolFailure_threeDistinctMalformedEnvelopes_failOnTheThirdRequest() async throws {
+        seedStepBehindANewerRun(extraTools: [])
+        let client = ScriptedToolCallClient(script: [
+            .text(#"<|call|>{"name":"read_file",{"path":"a.swift"}}<|end|>"#),
+            .text(#"<|call|>{"name":"read_file",{"path":"b.swift"}}<|end|>"#),
+            .text(#"<|call|>{"name":"read_file",{"path":"c.swift"}}<|end|>"#),
+            .text("done"),
+        ])
+        attach(client)
+
+        service.startStepExecution(
+            stepID: stepID, taskID: taskID, task: mockDelegate.taskToMutate!,
+            runIndex: 0, stepIndex: 0)
+        try await waitUntil { self.mockDelegate.clearStreamingPreviewCalls.contains(self.stepID) }
+
+        XCTAssertEqual(client.callCount, 3, "two nudged turns, then the strike")
+        XCTAssertTrue(mockDelegate.notifyQueuedMessageBackstopCalls.isEmpty)
+    }
+
     // MARK: - Poisoned-tail repair arms the prefix-reset exemption
 
     /// The retry path repairs a poisoned tail by TRUNCATING it — a deliberate
@@ -183,10 +236,11 @@ final class StepLifecycleTerminalArmTests: XCTestCase {
     /// on a no-op would swallow a genuine miss instead.
     func testRetryAfterPoisonedTail_armsTheExpectedPrefixReset() async throws {
         seed(producesArtifacts: [], extraTools: [ToolNames.askSupervisor])
-        // Turn 1 emits a tool call the role does NOT hold → rejected → error
-        // guidance appended as a `.user` turn. That leaves exactly the shape the
-        // repair recognises: assistant(toolCalls), tool, user. Turn 2 then throws
-        // a retryable 503, which is where the repair runs.
+        // Turn 1 emits a tool call the role does NOT hold → rejected → the error
+        // direction rides the tool turn itself (since 2026-09-14; until then a `.user`
+        // turn of its own). That leaves exactly the shape the repair recognises:
+        // assistant(toolCalls), tool(carriesErrorDirection). Turn 2 then throws a retryable 503,
+        // which is where the repair runs.
         attach(ScriptedToolCallClient(script: [
             .toolCall(name: ToolNames.gitCommit, argumentsJSON: #"{"message":"x"}"#),
             .error(LLMClientError.badHTTPStatus(503, "loading")),
@@ -225,6 +279,45 @@ final class StepLifecycleTerminalArmTests: XCTestCase {
             service._testExpectedPrefixResetPending(stepID: stepID, taskID: taskID), false,
             "no repair fired, so nothing may be exempted")
         await service.cancelStepExecution(stepID: stepID, taskID: taskID)
+    }
+
+
+    /// A failed call the policy adds nothing to — `ANCHOR_NOT_FOUND` with its typed diagnosis,
+    /// the commonest `edit_file` failure — is not a poisoned tail. Until 2026-09-14 no `.user`
+    /// turn followed it, so a retryable server error resent the batch untouched; flagging every
+    /// error made the retry delete it and put a note blaming the call's arguments in its place.
+    /// Read off the REQUESTS, not the prefix-reset flag: the retry notice is recorded BEFORE the
+    /// repair runs and the flag is consumed by the next report, so neither brackets the repair.
+    /// RED: the flag follows `result.isError` → the retried request ends on the repair note.
+    func testRetryAfterAFailedCallWithoutADirection_resendsTheSameWire() async throws {
+        try "let a = 1\n".write(
+            to: tempDir.appendingPathComponent("a.swift"), atomically: true, encoding: .utf8)
+        seed(producesArtifacts: [], extraTools: [ToolNames.editFile, ToolNames.askSupervisor])
+        let recorder = RequestRecordingClient(ScriptedToolCallClient(script: [
+            .toolCall(name: ToolNames.readFile, argumentsJSON: #"{"path":"a.swift"}"#),
+            .toolCall(name: ToolNames.editFile,
+                      argumentsJSON: #"{"path":"a.swift","old_text":"let b = 2","new_text":"let b = 3"}"#),
+            .error(LLMClientError.badHTTPStatus(503, "loading")),
+        ]))
+        service = LLMExecutionService(repository: NTMSRepository(), clientFactory: { recorder })
+        service.retryDelaySeconds = 1
+        service.attach(delegate: mockDelegate)
+
+        service.startStepExecution(
+            stepID: stepID, taskID: taskID, task: mockDelegate.taskToMutate!,
+            runIndex: 0, stepIndex: 0)
+        try await waitUntil(timeout: 10) { recorder.requests.count >= 4 }
+        await service.cancelStepExecution(stepID: stepID, taskID: taskID)
+
+        let requests = recorder.requests
+        let failed = requests[2], retried = requests[3]
+        XCTAssertEqual(failed.last?.role, .tool)
+        XCTAssertTrue((failed.last?.content ?? "").contains("ANCHOR_NOT_FOUND"),
+                      "precondition: the request that failed ended on the edit_file error. got: \(failed.last?.content ?? "nil")")
+        XCTAssertEqual(retried, failed,
+                       "a batch whose error carried no direction must be resent exactly as it was")
+        XCTAssertFalse(retried.contains { ($0.content ?? "").contains("caused a server error") },
+                       "the repair note blames the call's arguments — false for an anchor that was not found")
     }
 
     // MARK: - Fixtures
@@ -292,4 +385,32 @@ final class StepLifecycleTerminalArmTests: XCTestCase {
         let timeout: TimeInterval
         var errorDescription: String? { "condition not met within \(timeout)s" }
     }
+}
+
+/// Wraps a scripted client and records the `messages` of every request, in order — the wire each
+/// iteration actually sent, which is the only place a repair of the tail is observable.
+private final class RequestRecordingClient: LLMClient, @unchecked Sendable {
+    private let inner: ScriptedToolCallClient
+    private let lock = NSLock()
+    private var _requests: [[ChatMessage]] = []
+
+    init(_ inner: ScriptedToolCallClient) { self.inner = inner }
+
+    var requests: [[ChatMessage]] { lock.withLock { _requests } }
+
+    func streamChat(
+        config: LLMConfig,
+        messages: [ChatMessage],
+        tools: [ToolSchema],
+        logger: NetworkLogger?,
+        stepID: String?,
+        roleName: String?
+    ) -> AsyncThrowingStream<StreamEvent, Error> {
+        lock.withLock { _requests.append(messages) }
+        return inner.streamChat(
+            config: config, messages: messages, tools: tools,
+            logger: logger, stepID: stepID, roleName: roleName)
+    }
+
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
 }

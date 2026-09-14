@@ -60,7 +60,7 @@ nonisolated enum ConversationReplay {
     /// `.tool` entries keep their `[CALL] … Arguments: … [RESULT] …` composite verbatim.
     /// It is self-describing, so a model reading it recovers which call produced which
     /// result — which matters because `providerID` is nil in essentially all production
-    /// traffic (no client emits `toolCallDeltas`; the Harmony parser hard-codes nil), so
+    /// traffic (a record this rebuild reads predates the native routes, and the Harmony parser hard-codes nil), so
     /// there is no `tool_call_id` to pair on and never was.
     static func rebuildFromDisplayRecord(_ conversation: [LLMMessage]) -> [ChatMessage] {
         var out: [ChatMessage] = []
@@ -118,8 +118,10 @@ nonisolated enum ConversationReplay {
             if let parsed = TaskMutationService.parseToolResultComposite(conversation[i].content) {
                 calls.append(
                     ChatToolCall(
-                        // `providerID` is nil in essentially all production traffic, so there is
-                        // no id to restore; the wire renderer does not read one.
+                        // The legacy record carries no id to restore. This rebuild resolves to
+                        // `.promptTaught` by `replayToolCallingMode` (a transcript-less step is
+                        // pre-native), so no native renderer ever reads the id; it is minted
+                        // ONCE here, at re-entry, not per request.
                         id: UUID().uuidString,
                         name: parsed.toolName,
                         argumentsJSON: parsed.argumentsJSON))

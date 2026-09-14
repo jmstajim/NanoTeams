@@ -309,7 +309,7 @@ final class LLMTypesTests: XCTestCase {
         XCTAssertEqual(msg.content, "You are a helpful assistant.")
         XCTAssertNil(msg.toolCallID)
         XCTAssertNil(msg.toolCalls)
-        XCTAssertNil(msg.isToolError)
+        XCTAssertNil(msg.carriesErrorDirection)
     }
 
     func testChatMessageUserRole() {
@@ -335,8 +335,8 @@ final class LLMTypesTests: XCTestCase {
     }
 
     func testChatMessageToolRoleWithError() {
-        let msg = ChatMessage(role: .tool, content: "Error: file not found", toolCallID: "tc-2", isToolError: true)
-        XCTAssertEqual(msg.isToolError, true)
+        let msg = ChatMessage(role: .tool, content: "Error: file not found", toolCallID: "tc-2", carriesErrorDirection: true)
+        XCTAssertEqual(msg.carriesErrorDirection, true)
     }
 
     // MARK: - ChatMessage: Codable Round-Trip
@@ -349,7 +349,7 @@ final class LLMTypesTests: XCTestCase {
         XCTAssertEqual(decoded.content, "Test message")
         XCTAssertNil(decoded.toolCallID)
         XCTAssertNil(decoded.toolCalls)
-        XCTAssertNil(decoded.isToolError)
+        XCTAssertNil(decoded.carriesErrorDirection)
     }
 
     func testChatMessageCodableRoundTripWithToolCalls() throws {
@@ -366,22 +366,22 @@ final class LLMTypesTests: XCTestCase {
     }
 
     func testChatMessageCodableRoundTripToolResponse() throws {
-        let original = ChatMessage(role: .tool, content: "result", toolCallID: "tc-99", isToolError: false)
+        let original = ChatMessage(role: .tool, content: "result", toolCallID: "tc-99", carriesErrorDirection: false)
         let data = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(ChatMessage.self, from: data)
         XCTAssertEqual(decoded.role, .tool)
         XCTAssertEqual(decoded.toolCallID, "tc-99")
-        XCTAssertEqual(decoded.isToolError, false)
+        XCTAssertEqual(decoded.carriesErrorDirection, false)
     }
 
     func testChatMessageCodingKeysUseSnakeCase() throws {
         let toolCall = ChatToolCall(id: "tc-1", name: "read_file", argumentsJSON: "{}")
-        let msg = ChatMessage(role: .tool, content: "ok", toolCallID: "tc-1", toolCalls: [toolCall], isToolError: true)
+        let msg = ChatMessage(role: .tool, content: "ok", toolCallID: "tc-1", toolCalls: [toolCall], carriesErrorDirection: true)
         let data = try JSONEncoder().encode(msg)
         let jsonString = String(data: data, encoding: .utf8)!
         XCTAssertTrue(jsonString.contains("\"tool_call_id\""), "Should use snake_case key tool_call_id")
         XCTAssertTrue(jsonString.contains("\"tool_calls\""), "Should use snake_case key tool_calls")
-        XCTAssertTrue(jsonString.contains("\"is_tool_error\""), "Should use snake_case key is_tool_error")
+        XCTAssertTrue(jsonString.contains("\"carries_error_direction\""), "Should use snake_case key carries_error_direction")
     }
 
     // MARK: - ChatMessage: Hashable

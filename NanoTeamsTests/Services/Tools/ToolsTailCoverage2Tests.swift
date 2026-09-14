@@ -796,6 +796,7 @@ final class FToolsPureTailTests: XCTestCase {
     /// `JSONEncoder` throws on a non-conforming float by default, which is the only
     /// way an `Encodable` payload can fail this encoder.
     private struct FToolsUnencodablePayload: Encodable {
+        // periphery:ignore - read only by the synthesized Encodable, whose throw is the case under test
         let value: Double = .infinity
     }
 

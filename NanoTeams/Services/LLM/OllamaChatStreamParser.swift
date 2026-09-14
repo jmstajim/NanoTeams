@@ -63,12 +63,22 @@ nonisolated struct OllamaChatStreamParser {
     enum ParsedEvent: Equatable {
         case contentDelta(String)
         case thinkingDelta(String)
+        /// Native calls, whole. Emitted BEFORE `chatEnd` when both ride the terminal chunk,
+        /// so the accumulator holds the calls by the time the usage arrives.
+        case toolCallDeltas([StreamEvent.ToolCallDelta])
         case chatEnd(TerminalReport)
         case error(String)
     }
 
     private let decoder = JSONCoderFactory.makeWireDecoder()
     private var splitter = ThinkTagSplitter()
+    /// The next slot for a call the server did not number. Per STREAM, not per chunk: the
+    /// llama-server path sends no `index`, and two calls of one turn on two chunks both
+    /// numbered from the chunk's own enumeration folded onto `ToolCallAccumulator` slot 0 —
+    /// the second overwrote the first's name and appended its arguments (review of
+    /// 2026-09-13). Advanced past any explicit index too, so a numbered batch followed by an
+    /// unnumbered call never collides.
+    private var nextToolCallIndex = 0
 
     /// Parse one NDJSON line. A single line can produce several events (e.g. a
     /// content chunk that closes a `<think>` span yields a thinking delta AND a
@@ -89,6 +99,22 @@ nonisolated struct OllamaChatStreamParser {
         if let content = chunk.message?.content, !content.isEmpty {
             events.append(contentsOf: route(splitter.feed(content)))
         }
+        if let calls = chunk.message?.toolCalls, !calls.isEmpty {
+            let base = nextToolCallIndex
+            // The renderer path numbers calls; the llama-server path does not, and a missing
+            // index would fold every call of a batch onto slot 0.
+            let indices = calls.enumerated().map { offset, call in call.function.index ?? (base + offset) }
+            let deltas = zip(calls, indices).map { call, index in
+                StreamEvent.ToolCallDelta(
+                    index: index,
+                    id: call.id,
+                    name: call.function.name,
+                    // The whole arguments object as one delta, in the app's stable spelling.
+                    argumentsDelta: (call.function.arguments ?? .object([:])).stableString)
+            }
+            nextToolCallIndex = indices.reduce(base + calls.count) { max($0, $1 + 1) }
+            events.append(.toolCallDeltas(deltas))
+        }
         if chunk.done == true {
             // Drain any held-back partial tag prefix BEFORE the end event so
             // no trailing text is lost on the final line.
@@ -106,7 +132,8 @@ nonisolated struct OllamaChatStreamParser {
             let prefill = ServerPrefillReport(
                 modelLoadMs: chunk.loadDurationNs.map { $0 / 1_000_000 },
                 prefillNs: chunk.promptEvalDurationNs,
-                promptTokens: chunk.promptEvalCount)
+                promptTokens: chunk.promptEvalCount,
+                cachedPromptTokens: chunk.promptEvalCachedCount)
             events.append(.chatEnd(TerminalReport(
                 usage: usage,
                 prefill: prefill.isEmpty ? nil : prefill,

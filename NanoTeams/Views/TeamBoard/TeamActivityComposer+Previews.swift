@@ -65,6 +65,7 @@ import SwiftUI
 
 /// Long enough to overflow both caps below — the state the question card's fade exists for,
 /// and which no preview covered while the fade was a fraction of the frame.
+// periphery:ignore - used in #Preview macros below
 private let previewLongQuestion = """
 I've wired both widgets into the main app target as `WidgetBundle` scenes and the build is \
 green, but before I go further I want to confirm the scope with you.
@@ -190,6 +191,7 @@ Should I keep the single-target approach, or split the widgets into their own ex
 }
 
 /// Shared questionnaire fixture for the previews above.
+// periphery:ignore - used in #Preview macros above
 private let previewInquiry = SupervisorInquiry(
     headline: "A few decisions before I start on the exporter.",
     questions: [

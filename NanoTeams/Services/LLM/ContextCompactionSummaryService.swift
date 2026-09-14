@@ -45,10 +45,18 @@ nonisolated enum ContextCompactionSummaryService {
     ///     accumulators, which live here; a caller doing it would need state of its own. Not
     ///     called for an event carrying neither channel. The caller owns the epoch gate — this
     ///     service does not know whether its epoch is still the current one.
+    ///   - tools: the STEP's own schemas, not `[]`. The wire being summarised is the step's
+    ///     conversation, and under `.native` it carries `tool_calls` turns that only make
+    ///     sense against the schemas they were made with — an OpenAI-shaped provider refuses
+    ///     an assistant `tool_calls` turn whose tools it was never told about, and the router
+    ///     picks the client by them (`LLMClientRouter`). Under `.promptTaught` a step wire
+    ///     already holds the catalog in its system prompt, so the builders append nothing and
+    ///     the request is byte-identical to what it was with `[]`.
     static func summarize(
         wire: [ChatMessage],
         client: any LLMClient,
         config: LLMConfig,
+        tools: [ToolSchema],
         logger: NetworkLogger?,
         stepID: String?,
         roleName: String?,
@@ -59,13 +67,16 @@ nonisolated enum ContextCompactionSummaryService {
 
         var collected = ""
         var reasoning = ""
+        // A native-mode provider answers a call as structured deltas rather than text; the
+        // resolver reads them first, and `summaryText` digs the prose out of the arguments.
+        var nativeCalls = ToolCallAccumulator()
         do {
             // prefix-cache-owner: registered by the caller —
             // `LLMExecutionService+ContextCompaction` notes `.oneShot("context compaction")`.
             // An interleave rather than an owner: the step's own chain must survive the
             // epoch, and this request's prefix is thrown away with the wire it carries.
             for try await event in client.streamChat(
-                config: config, messages: messages, tools: [],
+                config: config, messages: messages, tools: tools,
                 logger: logger, stepID: stepID, roleName: roleName)
             {
                 var disclosure = event.thinkingDelta
@@ -85,6 +96,7 @@ nonisolated enum ContextCompactionSummaryService {
                 // Reasoning models put the whole summary here and leave `content` empty —
                 // the same channel asymmetry every other one-shot caller recovers from.
                 if !event.thinkingDelta.isEmpty { reasoning += event.thinkingDelta }
+                if !event.toolCallDeltas.isEmpty { nativeCalls.absorb(event.toolCallDeltas) }
                 if !disclosure.isEmpty { await onDelta(disclosure) }
             }
         } catch {
@@ -112,7 +124,7 @@ nonisolated enum ContextCompactionSummaryService {
         // wrote before the envelope; `summaryText` then digs into the call's arguments when
         // it wrote nothing else, rather than discarding a summary that exists.
         let resolution = FinishedReplyToolCallResolver.resolve(
-            content: reply, nativeCalls: [], advertised: [])
+            content: reply, nativeCalls: nativeCalls.finalize(), advertised: tools)
         return Outcome(
             summary: CompactionPolicy.summaryText(from: resolution), wasCancelled: false)
     }

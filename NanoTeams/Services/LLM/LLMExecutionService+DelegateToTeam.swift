@@ -70,10 +70,11 @@ extension LLMExecutionService {
                     message: "This role is not allowed to generate new teams on the fly. Pick an existing team_id from the list embedded in delegate_to_team's description."
                 )
             }
-            let generationConfig = Self.buildEffectiveConfig(
-                globalConfig: config,
-                roleOverride: parentRoleDef.llmOverride
-            )
+            let generationConfig = await withResolvedToolCallingMode(
+                Self.buildEffectiveConfig(
+                    globalConfig: config,
+                    roleOverride: parentRoleDef.llmOverride),
+                stepKey: TaskStepKey(taskID: parentTID, stepID: stepID))
             // Mirror `runTeamGeneration`'s pattern: persist a synthetic
             // `create_team` tool call on the delegating role's step BEFORE
             // streaming starts, carrying the `"status":"generating"` marker

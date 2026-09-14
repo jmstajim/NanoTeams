@@ -158,4 +158,15 @@ final class LLMRetryPolicyTests: XCTestCase {
         XCTAssertTrue(LLMRetryPolicy.isRetryable(LLMClientError.badHTTPStatus(0, nil)))
         XCTAssertTrue(LLMRetryPolicy.isRetryable(LLMClientError.badHTTPStatus(-1, nil)))
     }
+
+
+    // MARK: - Native tool call rejected (2026-09-13)
+
+    /// The MODEL wrote a call the server's grammar could not read; a byte-identical resend
+    /// re-rolls the same dice. The step's malformed-call branch nudges instead.
+    func testNativeToolCallRejected_isNotRetryable() {
+        XCTAssertFalse(LLMRetryPolicy.isRetryable(
+            LLMClientError.nativeToolCallRejected("tool call does not match the expected peg-native format")))
+        XCTAssertFalse(LLMRetryPolicy.isRetryable(LLMClientError.nativeToolCallRejected("")))
+    }
 }

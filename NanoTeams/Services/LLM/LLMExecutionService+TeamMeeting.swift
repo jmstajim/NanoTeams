@@ -147,12 +147,17 @@ extension LLMExecutionService {
         }
         availableArtifacts.append(contentsOf: step.artifacts)
 
-        // Per-role LLM config resolver
-        let meetingConfigResolver: (Role) -> LLMConfig = { speakerRole in
+        // Per-role LLM config resolver. Async because the tool-calling mode is a capability
+        // probe of the SPEAKER's model — an override can point a participant at a model the
+        // initiator's mode says nothing about — resolved after the override, on the final config.
+        let meetingConfigResolver: (Role) async -> LLMConfig = { [weak self] speakerRole in
             let roleDef = team?.findRole(byIdentifier: speakerRole.baseID)
-            return Self.buildEffectiveConfig(
+            let effective = Self.buildEffectiveConfig(
                 globalConfig: config, roleOverride: roleDef?.llmOverride
             )
+            guard let self else { return effective }
+            return await self.withResolvedToolCallingMode(
+                effective, stepKey: TaskStepKey(taskID: tid, stepID: stepID))
         }
 
         // Build meeting context (still needed for tool loop fallback + turn completion)
@@ -233,7 +238,7 @@ extension LLMExecutionService {
                     meeting: meeting, participants: participants, coordinator: coordinator,
                     maxTurns: maxTurns
                 )
-                let speakerConfig = meetingConfigResolver(speaker)
+                let speakerConfig = await meetingConfigResolver(speaker)
                 let speakerTools: [ToolSchema]
                 if let resolved = toolsBySpeaker[speaker] {
                     speakerTools = resolved
@@ -269,7 +274,8 @@ extension LLMExecutionService {
                     speaker: speaker,
                     meeting: meeting,
                     context: meetingContext,
-                    tools: speakerTools
+                    tools: speakerTools,
+                    toolCallingMode: speakerConfig.toolCallingMode
                 )
 
                 // A meeting turn is a genuine accumulating chain, not a one-shot: its tool

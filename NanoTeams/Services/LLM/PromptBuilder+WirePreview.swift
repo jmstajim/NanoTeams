@@ -59,6 +59,11 @@ nonisolated extension PromptBuilder {
         /// byte-identical to the wire. Default `[]` keeps existing call sites
         /// compiling and renders as the pre-skills prompt.
         let attachedSkills: [ResolvedRoleSkill]
+        /// How the role's tools reach the model — decides what the `{toolCalling}` chip and
+        /// the auto-appended block render. The sheets resolve it through the orchestrator
+        /// (`resolveToolCallingMode(for:)`) for the role's EFFECTIVE config; the default keeps
+        /// every existing call site rendering the prompt-taught bytes.
+        let toolCallingMode: ToolCallingMode
 
         init(
             role: TeamRoleDefinition,
@@ -72,7 +77,8 @@ nonisolated extension PromptBuilder {
             globalContext: String,
             isCoordinator: Bool = false,
             agentInstructions: AgentInstructionsSnapshot? = nil,
-            attachedSkills: [ResolvedRoleSkill] = []
+            attachedSkills: [ResolvedRoleSkill] = [],
+            toolCallingMode: ToolCallingMode = .promptTaught
         ) {
             self.role = role
             self.team = team
@@ -86,6 +92,7 @@ nonisolated extension PromptBuilder {
             self.isCoordinator = isCoordinator
             self.agentInstructions = agentInstructions
             self.attachedSkills = attachedSkills
+            self.toolCallingMode = toolCallingMode
         }
     }
 
@@ -129,7 +136,7 @@ nonisolated extension PromptBuilder {
         try guardRenderable(team: inputs.team)
         let tools = resolveWirePreviewTools(kind: kind, inputs: inputs)
         let body = resolveWirePreviewBody(kind: kind, inputs: inputs)
-        return appendingToolBlock(to: body, tools: tools)
+        return appendingToolBlock(to: body, tools: tools, mode: inputs.toolCallingMode)
     }
 
     /// Same payload as `buildWirePromptPreview`, but rendered as an
@@ -200,7 +207,7 @@ nonisolated extension PromptBuilder {
         // miss legacy `{toolCallingBlock}` resolutions and could be fooled by
         // commented-out chip text).
         let templateHasToolCallingChip = result.string.contains(
-            NativeLMStudioClient.harmonyBodyMarker)
+            NativeLMStudioClient.toolBlockMarker)
         if !tools.isEmpty && !templateHasToolCallingChip {
             let separator = result.length > 0 ? "\n\n" : ""
             let toolsAttrs: [NSAttributedString.Key: Any] = [
@@ -208,7 +215,8 @@ nonisolated extension PromptBuilder {
                 .foregroundColor: PlaceholderAttachment.color(for: "tools"),
             ]
             result.append(NSAttributedString(
-                string: separator + NativeLMStudioClient.buildToolSchemaSection(tools: tools),
+                string: separator + NativeLMStudioClient.buildToolSchemaSection(
+                    tools: tools, mode: inputs.toolCallingMode),
                 attributes: toolsAttrs
             ))
         }
@@ -314,12 +322,14 @@ nonisolated extension PromptBuilder {
     /// `buildToolSchemaBody` emits), NOT on the `## Tool Calling` header
     /// substring — user prose with the header heading must not fool the
     /// auto-append into skipping.
-    private static func appendingToolBlock(to body: String, tools: [ToolSchema]) -> String {
+    private static func appendingToolBlock(
+        to body: String, tools: [ToolSchema], mode: ToolCallingMode
+    ) -> String {
         guard !tools.isEmpty else { return body }
-        if body.contains(NativeLMStudioClient.harmonyBodyMarker) { return body }
+        if body.contains(NativeLMStudioClient.toolBlockMarker) { return body }
         var result = body
         if !result.isEmpty { result += "\n\n" }
-        result += NativeLMStudioClient.buildToolSchemaSection(tools: tools)
+        result += NativeLMStudioClient.buildToolSchemaSection(tools: tools, mode: mode)
         return result
     }
 
@@ -382,10 +392,10 @@ nonisolated extension PromptBuilder {
                 canAskSupervisor: toolNames.contains(ToolNames.askSupervisor)),
             "globalContext": PromptBuilder.formatGlobalContext(inputs.globalContext),
             "roleSkills": PromptBuilder.formatRoleSkills(inputs.attachedSkills),
-            "toolCalling": PromptBuilder.formatToolCallingBlock(tools: tools),
+            "toolCalling": PromptBuilder.formatToolCallingBlock(tools: tools, mode: inputs.toolCallingMode),
             // Backwards-compat alias for stored templates with the older
             // `{toolCallingBlock}` placeholder name.
-            "toolCallingBlock": PromptBuilder.formatToolCallingBlock(tools: tools),
+            "toolCallingBlock": PromptBuilder.formatToolCallingBlock(tools: tools, mode: inputs.toolCallingMode),
         ]
     }
 
@@ -440,10 +450,10 @@ nonisolated extension PromptBuilder {
             "globalContext": PromptBuilder.formatGlobalContext(inputs.globalContext),
             // Step-execution-only by design — see `wirePreviewConsultationValues`.
             "roleSkills": "",
-            "toolCalling": PromptBuilder.formatToolCallingBlock(tools: tools),
+            "toolCalling": PromptBuilder.formatToolCallingBlock(tools: tools, mode: inputs.toolCallingMode),
             // Backwards-compat alias for stored templates with the older
             // `{toolCallingBlock}` placeholder name.
-            "toolCallingBlock": PromptBuilder.formatToolCallingBlock(tools: tools),
+            "toolCallingBlock": PromptBuilder.formatToolCallingBlock(tools: tools, mode: inputs.toolCallingMode),
         ]
     }
 

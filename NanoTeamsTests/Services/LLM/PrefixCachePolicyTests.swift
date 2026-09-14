@@ -729,4 +729,88 @@ final class PrefixCachePolicyTests: XCTestCase {
         XCTAssertEqual(unmeasured.estimatedSeconds, 5.81, accuracy: 0.3)
     }
 
+
+    // MARK: - The server's own reuse count (Ollama `prompt_eval_cached_count`, 2026-09-13)
+
+    /// The direct statement outranks the inference: a request the server says was mostly
+    /// reused is not a miss even when the prefill RATE alone would have called it one.
+    func testResolve_serverReportedReuse_outranksAColdPrefillRate() {
+        let verdict = resolve(
+            .reused(segments: 12),
+            server: .init(
+                modelLoadMs: Bench.warmLoadMs,
+                prefillNsPerToken: Bench.coldPrefillNsPerToken,
+                promptTokens: 12_927,
+                cachedFraction: 413.0 / 475.0),
+            floor: Bench.warmFloorNsPerToken, samples: 3, suspect: "bash judge")
+        XCTAssertNil(verdict.diagnosis, "413 of 475 cached is a reuse, whatever the rate said")
+        XCTAssertEqual(verdict, .reused(segments: 12))
+    }
+
+    /// Below the threshold the count decides nothing on its own — the tail of a long append is
+    /// honestly uncached — and the rate branch rules as before.
+    func testResolve_lowCachedCount_leavesTheRateBranchToDecide() {
+        let cold = resolve(
+            .reused(segments: 12),
+            server: .init(
+                modelLoadMs: Bench.warmLoadMs,
+                prefillNsPerToken: Bench.coldPrefillNsPerToken,
+                promptTokens: 12_927,
+                cachedFraction: 4.0 / 163.0),
+            floor: Bench.warmFloorNsPerToken, samples: 3, suspect: "bash judge")
+        XCTAssertEqual(cold.diagnosis?.cause, .serverDroppedCache(suspect: "bash judge"))
+
+        let quiet = resolve(.reused(segments: 12), server: .init(cachedFraction: 0))
+        XCTAssertNil(quiet.diagnosis, "a low count with no rate evidence is not a miss")
+    }
+
+    /// A model load still wins: the count describes the prompt, the load describes the model.
+    func testResolve_coldLoad_outranksAHighCachedCount() {
+        let verdict = resolve(
+            .reused(segments: 12),
+            server: .init(modelLoadMs: Bench.coldLoadMs, cachedFraction: 0.96))
+        XCTAssertEqual(verdict.diagnosis?.cause, .modelReloaded)
+    }
+
+    /// Measured bands on 2026-09-13: cold first requests reported 0 or 4/163 (0.025); warm
+    /// native tool-loop turns reported 0.68-0.96. The threshold sits between them with room on
+    /// either side, and errs toward silence like `minimumLoadMsForReload`.
+    func testCachedFractionForReuse_sitsBetweenTheMeasuredBands() {
+        XCTAssertGreaterThan(PrefixCachePolicy.cachedFractionForReuse, 4.0 / 163.0 * 4,
+                             "a cold first request must not read as a reuse")
+        XCTAssertLessThan(PrefixCachePolicy.cachedFractionForReuse, 0.68 * 0.9,
+                          "the lowest measured warm turn must read as a reuse")
+        XCTAssertEqual(PrefixCachePolicy.cachedFractionForReuse, 0.5)
+    }
+
+    func testResolve_exactlyTheThreshold_isAReuse() {
+        let verdict = resolve(
+            .reused(segments: 3),
+            server: .init(
+                prefillNsPerToken: Bench.coldPrefillNsPerToken, promptTokens: 12_927,
+                cachedFraction: PrefixCachePolicy.cachedFractionForReuse),
+            floor: Bench.warmFloorNsPerToken, samples: 3)
+        XCTAssertNil(verdict.diagnosis)
+    }
+
+    func testResolve_naNCachedFraction_fallsThroughToTheRateBranch() {
+        let verdict = resolve(
+            .reused(segments: 3),
+            server: .init(
+                prefillNsPerToken: Bench.coldPrefillNsPerToken, promptTokens: 12_927,
+                cachedFraction: .nan),
+            floor: Bench.warmFloorNsPerToken, samples: 3)
+        XCTAssertEqual(verdict.diagnosis?.cause, .serverDroppedCache(suspect: nil))
+    }
+
+    /// The report derives the fraction; the policy never divides.
+    func testServerPrefillReport_cachedFraction_requiresBothCountsAndAPositivePrompt() {
+        XCTAssertEqual(ServerPrefillReport(promptTokens: 475, cachedPromptTokens: 413).cachedFraction ?? 0,
+                       413.0 / 475.0, accuracy: 1e-12)
+        XCTAssertNil(ServerPrefillReport(promptTokens: 475).cachedFraction)
+        XCTAssertNil(ServerPrefillReport(cachedPromptTokens: 10).cachedFraction)
+        XCTAssertNil(ServerPrefillReport(promptTokens: 0, cachedPromptTokens: 0).cachedFraction)
+        XCTAssertFalse(ServerPrefillReport(cachedPromptTokens: 0).isEmpty,
+                       "a reported zero is a report — the server said it re-prefilled everything")
+    }
 }

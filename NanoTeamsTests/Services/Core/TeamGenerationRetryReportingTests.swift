@@ -179,4 +179,12 @@ final class TeamGenerationRetryReportingTests: NTMSOrchestratorTestBase, @unchec
             project.teams.append(TeamTemplateFactory.generatedTeam())
         }
     }
+
+    /// A task the orchestrator does not hold at all: the report names it, read off durable
+    /// state rather than the single-shot banner.
+    func testTaskNotLoaded_reportsFailureNamingTheTask() async {
+        let result = await sut.retryTeamGenerationReportingResult(taskID: 424_242)
+        XCTAssertFalse(result.ok, result.message)
+        XCTAssertTrue(result.message.contains("424242"), result.message)
+    }
 }

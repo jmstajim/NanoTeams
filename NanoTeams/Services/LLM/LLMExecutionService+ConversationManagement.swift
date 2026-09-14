@@ -9,7 +9,8 @@ extension LLMExecutionService {
         for task: NTMSTask,
         stepID: String,
         tools: [ToolSchema],
-        supervisorMode _: SupervisorMode
+        supervisorMode _: SupervisorMode,
+        toolCallingMode: ToolCallingMode = .promptTaught
     ) -> [ChatMessage] {
         guard let delegate else { return [] }
         guard let run = task.runs.last else { return [] }
@@ -56,10 +57,25 @@ extension LLMExecutionService {
             roleDefinition: roleDefinition,
             globalContext: stepGlobalContext,
             agentInstructions: delegate.agentInstructions,
-            attachedSkills: attachedSkills
+            attachedSkills: attachedSkills,
+            toolCallingMode: toolCallingMode
         )
 
         return PromptBuilder.buildChatMessages(context: context, tools: tools)
+    }
+
+    /// Records the mode a FRESH step's first request runs under, so every re-entry of the
+    /// conversation it starts replays under the same protocol (`StepExecution.toolCallingMode`).
+    /// Written once, before the first request; a step that already carries a transcript
+    /// never reaches this (`replayToolCallingMode` answers for it).
+    func pinToolCallingMode(stepID: String, taskID: Int, mode: ToolCallingMode) async {
+        guard let delegate, isExecutionLive(stepID: stepID, taskID: taskID) else { return }
+        await delegate.mutateTask(taskID: taskID) { task in
+            guard let runIndex = task.runs.indices.last,
+                  let stepIndex = task.runs[runIndex].steps.firstIndex(where: { $0.id == stepID })
+            else { return }
+            task.runs[runIndex].steps[stepIndex].toolCallingMode = mode
+        }
     }
 
     // MARK: - LLM Conversation Persistence

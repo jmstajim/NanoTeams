@@ -27,6 +27,9 @@ nonisolated struct PromptBuilder {
         /// the order of the rendered `### Skill:` sections. Default `[]` keeps existing
         /// call sites compiling and renders byte-identically to the pre-skills prompt.
         let attachedSkills: [ResolvedRoleSkill]
+        /// How the step's tools reach the model — decides what the `{toolCalling}` chip
+        /// renders. Default `.promptTaught` keeps every existing call site and its bytes.
+        let toolCallingMode: ToolCallingMode
 
         init(
             task: NTMSTask,
@@ -39,7 +42,8 @@ nonisolated struct PromptBuilder {
             roleDefinition: TeamRoleDefinition?,
             globalContext: String = "",
             agentInstructions: AgentInstructionsSnapshot? = nil,
-            attachedSkills: [ResolvedRoleSkill] = []
+            attachedSkills: [ResolvedRoleSkill] = [],
+            toolCallingMode: ToolCallingMode = .promptTaught
         ) {
             self.task = task
             self.step = step
@@ -52,6 +56,7 @@ nonisolated struct PromptBuilder {
             self.globalContext = globalContext
             self.agentInstructions = agentInstructions
             self.attachedSkills = attachedSkills
+            self.toolCallingMode = toolCallingMode
         }
     }
 
@@ -173,10 +178,10 @@ nonisolated struct PromptBuilder {
             // template covers both cases, so the `## Tool Calling` header is never
             // orphan-stripped and the editor's `{toolCalling}` chip always ships
             // meaningful content.
-            "toolCalling": Self.formatToolCallingBlock(tools: tools),
+            "toolCalling": Self.formatToolCallingBlock(tools: tools, mode: context.toolCallingMode),
             // Backwards-compat alias for stored templates created before the
             // 2026-05 rename (was `{toolCallingBlock}`).
-            "toolCallingBlock": Self.formatToolCallingBlock(tools: tools),
+            "toolCallingBlock": Self.formatToolCallingBlock(tools: tools, mode: context.toolCallingMode),
         ]
 
         let system = TemplateResolver.resolveSystemPrompt(
@@ -382,10 +387,15 @@ nonisolated struct PromptBuilder {
     /// `formatToolCallingBlock` when `{toolCallingBlock}` was the primary
     /// chip name). The PRIMARY chip is now `{toolCalling}`; the function
     /// name stayed to minimise churn at the call sites.
-    static func formatToolCallingBlock(tools: [ToolSchema]) -> String {
+    ///
+    /// `mode` reaches the body: under `.native` the catalog rides the provider's `tools` field
+    /// and the chip keeps only what the model's template does not say (`buildToolSchemaBody`).
+    static func formatToolCallingBlock(
+        tools: [ToolSchema], mode: ToolCallingMode = .promptTaught
+    ) -> String {
         tools.isEmpty
             ? "None available — respond directly without tool calls."
-            : NativeLMStudioClient.buildToolSchemaBody(tools: tools)
+            : NativeLMStudioClient.buildToolSchemaBody(tools: tools, mode: mode)
     }
 
     /// Returns the bare body of the conversation-mechanics section (no

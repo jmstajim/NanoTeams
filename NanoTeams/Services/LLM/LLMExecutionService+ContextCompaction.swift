@@ -204,6 +204,7 @@ extension LLMExecutionService {
         step: StepExecution,
         client: any LLMClient,
         config: LLMConfig,
+        tools: [ToolSchema],
         networkLogger: NetworkLogger?,
         roleForMessage: Role,
         conversationMessages: inout [ChatMessage]
@@ -231,7 +232,7 @@ extension LLMExecutionService {
 
         let outcome = await summarizeWithLiveBubble(
             stepID: stepID, taskID: taskID, epoch: epoch, wire: conversationMessages,
-            client: client, config: config, networkLogger: networkLogger,
+            client: client, config: config, tools: tools, networkLogger: networkLogger,
             role: roleForMessage)
         // A Pause is not a failure, and neither is a re-entry: leave the conversation
         // exactly as it was found and say nothing.
@@ -281,9 +282,13 @@ extension LLMExecutionService {
               !step.supervisorAnswerPendingDelivery
         else { return false }
 
-        let runtime = resolveStepRuntime(
+        var runtime = resolveStepRuntime(
             step: step, task: task, runID: task.runs[runIndex].id,
             workFolderRoot: workFolderRoot, delegate: delegate)
+        // A suspended step HAS a transcript (guarded above), so its mode is pinned or, for a
+        // transcript written before the pin existed, prompt-taught — never a fresh probe. The
+        // summary request must carry the same protocol as the wire it summarises.
+        runtime.effectiveConfig.toolCallingMode = step.replayToolCallingMode ?? .promptTaught
 
         // A parked step keeps its entry (with a nil `runningTask`); a failed one may not
         // have one at all. Creating it is what makes `appendLLMMessage` and the fill
@@ -354,7 +359,7 @@ extension LLMExecutionService {
 
         let outcome = await summarizeWithLiveBubble(
             stepID: stepID, taskID: taskID, epoch: epoch, wire: expected,
-            client: runtime.client, config: runtime.effectiveConfig,
+            client: runtime.client, config: runtime.effectiveConfig, tools: runtime.tools,
             networkLogger: runtime.networkLogger, role: runtime.roleForMessage)
 
         guard !outcome.wasCancelled, !Task.isCancelled,
@@ -508,6 +513,7 @@ extension LLMExecutionService {
         wire: [ChatMessage],
         client: any LLMClient,
         config: LLMConfig,
+        tools: [ToolSchema],
         networkLogger: NetworkLogger?,
         role: Role
     ) async -> ContextCompactionSummaryService.Outcome {
@@ -525,6 +531,7 @@ extension LLMExecutionService {
             wire: wire,
             client: client,
             config: config,
+            tools: tools,
             logger: networkLogger,
             stepID: stepID,
             roleName: role.displayName.isEmpty ? nil : role.displayName,

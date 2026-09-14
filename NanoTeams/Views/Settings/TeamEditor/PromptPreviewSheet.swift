@@ -19,6 +19,8 @@ struct PromptPreviewSheet: View {
     let workFolder: WorkFolderProjection?
 
     @State private var rendered: WirePreviewRender = .notRendered
+    /// Resolved in `.task` for the role's effective config — see `TemplatePreviewSheet`.
+    @State private var toolCallingMode: ToolCallingMode = .promptTaught
 
     var body: some View {
         VStack(spacing: 0) {
@@ -76,6 +78,9 @@ struct PromptPreviewSheet: View {
             // Same reason for role-attached skills: their bodies are read at
             // scan time, so a stale snapshot would preview the previous wire.
             await store.refreshAgentSkills()
+            let effective = LLMExecutionService.buildEffectiveConfig(
+                globalConfig: store.globalLLMConfig, roleOverride: roleDefinition.llmOverride)
+            toolCallingMode = await store.resolveToolCallingMode(for: effective)
             rendered = renderFromEnv()
         }
     }
@@ -101,7 +106,8 @@ struct PromptPreviewSheet: View {
                 workFolderSettings: workFolder?.settings),
             globalContext: config.globalContext,
             agentInstructions: store.agentInstructions,
-            attachedSkills: store.roleSkills?.resolve(roleDefinition.attachedSkillIDs) ?? []
+            attachedSkills: store.roleSkills?.resolve(roleDefinition.attachedSkillIDs) ?? [],
+            toolCallingMode: toolCallingMode
         )
         return renderWirePreview(kind: .stepExecution, inputs: inputs)
     }

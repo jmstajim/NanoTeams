@@ -59,10 +59,10 @@ final class StreamingActivityWiringTests: XCTestCase {
 
     // MARK: - Side-effect of preview/thinking append
 
-    /// Token deltas through `appendStreamingPreview` ALSO mark activity
-    /// — covers the case where content streams normally but the UI hasn't
-    /// flushed `pendingUI` yet (uiFlushInterval=0.2s); the indicator
-    /// should already say "Generating" even with empty preview.
+    /// Token deltas through `appendStreamingPreview` ALSO mark activity —
+    /// the orchestrator stamps it on the content path itself, so the flag does
+    /// not depend on the streaming service remembering its paired
+    /// `markStreamActivity` call.
     func testAppendStreamingPreview_marksActivity() async {
         let store = makeOrchestrator()
         let messageID = UUID()
@@ -164,5 +164,156 @@ final class StreamingActivityWiringTests: XCTestCase {
             store.streamingPreviewManager.hasReceivedStreamActivity(stepID: "stepE", taskID: 0),
             "clearStreamingPreview must remove the activity flag — abandoned/cancelled streams must not poison the next session"
         )
+    }
+
+    /// A whitespace-only content delta is HELD by the manager rather than rendered
+    /// (`StreamingPreviewManagerTrailingWhitespaceTests`), but it is still server activity:
+    /// the orchestrator stamps the clock on the content path itself, so the Autovisor's
+    /// stuck detector must not read a burst of inter-call newlines as silence.
+    func testAppendStreamingPreview_whitespaceOnlyDelta_isHeldButStillMarksActivity() async {
+        let store = makeOrchestrator()
+        let messageID = UUID()
+        store.streamingPreviewManager.beginStreaming(
+            stepID: "stepF", taskID: 0, messageID: messageID, role: .softwareEngineer)
+        store.appendStreamingPreview(
+            stepID: "stepF", taskID: 0, messageID: messageID, role: .softwareEngineer, content: "prose")
+        let stampedAfterProse = store.streamingPreviewManager.lastStreamActivity(stepID: "stepF", taskID: 0)
+
+        store.appendStreamingPreview(
+            stepID: "stepF", taskID: 0, messageID: messageID, role: .softwareEngineer, content: "\n")
+
+        XCTAssertEqual(store.streamingPreviewManager.streamingContent(stepID: "stepF", taskID: 0), "prose",
+                       "the newline is held, not rendered")
+        let stampedAfterNewline = store.streamingPreviewManager.lastStreamActivity(stepID: "stepF", taskID: 0)
+        XCTAssertNotNil(stampedAfterNewline)
+        XCTAssertGreaterThan(stampedAfterNewline!, stampedAfterProse!,
+                             "a held delta must still refresh the activity clock")
+    }
+
+    // MARK: - Service → orchestrator → manager: the native tool-call window end to end
+
+    /// A provider the test drives: it yields what the test yields and keeps the request open
+    /// until the test finishes it.
+    private final class HeldOpenStreamClient: LLMClient, @unchecked Sendable {
+        let stream: AsyncThrowingStream<StreamEvent, Error>
+
+        init(stream: AsyncThrowingStream<StreamEvent, Error>) {
+            self.stream = stream
+        }
+
+        func streamChat(
+            config: LLMConfig, messages: [ChatMessage], tools: [ToolSchema],
+            logger: NetworkLogger?, stepID: String?, roleName: String?
+        ) -> AsyncThrowingStream<StreamEvent, Error> {
+            stream
+        }
+
+        func fetchModels(config: LLMConfig, visionOnly: Bool) async throws -> [LLMModelInfo] { [] }
+    }
+
+    /// The untouched streaming service against the REAL manager, in the parser's own event
+    /// shape (`OpenAIChatChunkParser` emits `.contentDelta("\n")` and `.toolCallDeltas` as
+    /// separate events): prose, the template's newline, a native call, two more newlines.
+    /// While the request is open the preview reads exactly the prose and the tool-call flag
+    /// is up; after the stream closes the committed turn carries the same bytes that were on
+    /// screen. The guard against a future "helpful" trim in `appendAssistant` — the service
+    /// forwards every delta verbatim, and the manager is what keeps the band off screen.
+    func testNativeToolCallTurn_previewEndsWithoutTheTemplateNewlines_untilTheStreamCloses() async throws {
+        let store = makeOrchestrator()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("NanoTeams-native-tail-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        await store.openWorkFolder(root)
+        let taskID = await store.createTask(title: "T", supervisorTask: "x")!
+        let stepID = "ultra_team_change_planner"
+        await store.mutateTask(taskID: taskID) { task in
+            task.runs = [Run(id: 0, steps: [
+                StepExecution(id: stepID, role: .softwareEngineer, title: "Step")
+            ])]
+        }
+        store.llmExecutionService._testRegisterStepTask(stepID: stepID, taskID: taskID)
+
+        let (stream, continuation) = AsyncThrowingStream<StreamEvent, Error>.makeStream()
+        continuation.yield(StreamEvent(contentDelta: "prose"))
+        continuation.yield(StreamEvent(contentDelta: "\n"))
+        continuation.yield(StreamEvent(toolCallDeltas: [
+            .init(index: 0, id: "c1", name: "read_file", argumentsDelta: #"{"path":"a"}"#)
+        ]))
+        continuation.yield(StreamEvent(contentDelta: "\n"))
+        continuation.yield(StreamEvent(contentDelta: "\n"))
+        let client = HeldOpenStreamClient(stream: stream)
+        let call = Task { @MainActor in
+            try await store.llmExecutionService.performStreamingCall(
+                stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
+                client: client, config: LLMConfig(), tools: [], conversationMessages: [],
+                networkLogger: nil)
+        }
+
+        await waitUntil("the prose on screen, the call flagged, the request still open", timeoutSeconds: 3) {
+            store.streamingPreviewManager.streamingContent(stepID: stepID, taskID: taskID) == "prose"
+                && store.streamingPreviewManager.isStreamingToolCall(stepID: stepID, taskID: taskID)
+                && store.streamingPreviewManager.streamingThinking(stepID: stepID, taskID: taskID)?.contains("read_file") == true
+        }
+        XCTAssertFalse(
+            store.streamingPreviewManager.streamingContent(stepID: stepID, taskID: taskID)?.hasSuffix("\n") ?? true,
+            "the template's newlines must be held off screen for the whole tool-call window")
+
+        continuation.finish()
+        let result = try await call.value
+        XCTAssertEqual(result.assistantContent, "prose\n\n\n",
+                       "the service forwards every byte; the wire/commit trim is `clean`'s")
+        XCTAssertEqual(result.resolvedToolCalls.map(\.name), ["read_file"])
+        let turn = store.loadedTask(taskID)?.runs.last?.steps
+            .first { $0.id == stepID }?.llmConversation.last { $0.role == .assistant }
+        XCTAssertEqual(turn?.content, "prose", "committed content is byte-identical to what was on screen")
+        XCTAssertNil(store.streamingPreviewManager.streamingContent(stepID: stepID, taskID: taskID))
+    }
+
+    /// The rewind seam, end to end: a stray `<|end|>` before the Harmony marker rides the RAW
+    /// pre-marker text into the manager (the service strips whitespace only), which strips it
+    /// for the screen and keeps the raw bytes as its stream — the bubble reads the prose while
+    /// the envelope is still open, and the committed turn is the same bytes.
+    func testHarmonyRewind_strayTokenBeforeTheMarker_screenShowsTheProse() async throws {
+        let store = makeOrchestrator()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("NanoTeams-harmony-rewind-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        await store.openWorkFolder(root)
+        let taskID = await store.createTask(title: "T", supervisorTask: "x")!
+        let stepID = "ultra_team_change_planner"
+        await store.mutateTask(taskID: taskID) { task in
+            task.runs = [Run(id: 0, steps: [
+                StepExecution(id: stepID, role: .softwareEngineer, title: "Step")
+            ])]
+        }
+        store.llmExecutionService._testRegisterStepTask(stepID: stepID, taskID: taskID)
+
+        let (stream, continuation) = AsyncThrowingStream<StreamEvent, Error>.makeStream()
+        continuation.yield(StreamEvent(contentDelta: "Done thinking.<|end|>\n\n"))
+        continuation.yield(StreamEvent(contentDelta: #"<|call|>{"name":"git_status","arguments":{}}"#))
+        let client = HeldOpenStreamClient(stream: stream)
+        let call = Task { @MainActor in
+            try await store.llmExecutionService.performStreamingCall(
+                stepID: stepID, taskID: taskID, roleForMessage: .softwareEngineer,
+                client: client, config: LLMConfig(), tools: [], conversationMessages: [],
+                networkLogger: nil)
+        }
+
+        await waitUntil("the prose on screen — token and gap stripped by the manager — with the envelope open", timeoutSeconds: 3) {
+            store.streamingPreviewManager.streamingContent(stepID: stepID, taskID: taskID) == "Done thinking."
+                && store.streamingPreviewManager.isStreamingToolCall(stepID: stepID, taskID: taskID)
+        }
+
+        continuation.yield(StreamEvent(contentDelta: "<|end|>"))
+        continuation.finish()
+        let result = try await call.value
+        XCTAssertTrue(result.sawHarmonyMarker)
+        XCTAssertEqual(result.assistantContent, "Done thinking.<|end|>",
+                       "the service keeps the token for the tokens-only diagnostic; only whitespace is trimmed")
+        let turn = store.loadedTask(taskID)?.runs.last?.steps
+            .first { $0.id == stepID }?.llmConversation.last { $0.role == .assistant }
+        XCTAssertEqual(turn?.content, "Done thinking.", "committed content is what was on screen")
     }
 }
