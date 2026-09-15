@@ -47,7 +47,7 @@ final class TeamEngineStateDisplayTests: XCTestCase {
 
     /// Consistency pin: the engine-state color must resolve to the SAME value as
     /// the corresponding `TaskStatus` token, proving one shared semantic.
-    func testColors_consistentWithTaskStatus() {
+    @MainActor func testColors_consistentWithTaskStatus() async {
         XCTAssertSameColor(TeamEngineState.display(for: .running).color, TaskStatus.running.tintColor)
         XCTAssertSameColor(TeamEngineState.display(for: .failed).color, TaskStatus.failed.tintColor)
         XCTAssertSameColor(TeamEngineState.display(for: .needsSupervisorInput).color,

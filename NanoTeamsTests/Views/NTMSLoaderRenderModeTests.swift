@@ -60,7 +60,7 @@ final class NTMSLoaderRenderModeTests: XCTestCase {
         XCTAssertEqual(
             NTMSLoader.renderMode(isVisible: true, isResizing: false, reduceMotion: false),
             .live,
-            "Default state with no suppressors must drive the TimelineView."
+            "Default state with no suppressors must play the Core Animation script."
         )
     }
 

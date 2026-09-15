@@ -167,9 +167,10 @@ struct SidebarView: View {
                 }
             }
             .onAppear { refreshRecentProjects() }
-            // The URL flips at the START of an open, so it says which folder was ASKED for,
-            // not which one loaded. Cancelling a generation is right on that signal — it
-            // belongs to the folder being left either way.
+            // The URL flips when an open's read returns — on success and on failure alike, before
+            // either outcome is applied — so it says which folder was ASKED for, not which one
+            // loaded. Cancelling a generation is right on that signal — it belongs to the folder
+            // being left either way.
             .onChange(of: store.workFolderURL) { _, _ in
                 store.cancelWorkFolderContextGeneration()
             }

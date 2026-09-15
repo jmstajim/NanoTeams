@@ -12,7 +12,7 @@ nonisolated struct TeammateConsultationService {}
 
 // MARK: - Consultation Management
 
-extension TeammateConsultationService {
+nonisolated extension TeammateConsultationService {
 
     /// Check if a consultation limit has been reached
     static func hasReachedLimit(

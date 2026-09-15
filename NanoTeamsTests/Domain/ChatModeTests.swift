@@ -276,19 +276,19 @@ final class ChatModeTests: XCTestCase {
 
     // MARK: - StatusDisplayExtensions (chat mode overrides)
 
-    func testTaskStatus_displayLabel_chatMode() {
+    @MainActor func testTaskStatus_displayLabel_chatMode() async {
         XCTAssertEqual(TaskStatus.running.displayLabel(isChatMode: true), "Chat")
         XCTAssertEqual(TaskStatus.needsSupervisorInput.displayLabel(isChatMode: true), "Chat")
         XCTAssertEqual(TaskStatus.paused.displayLabel(isChatMode: true), "Chat", "Paused chat tasks show Chat")
         XCTAssertEqual(TaskStatus.failed.displayLabel(isChatMode: true), "Failed", "Failed should not change in chat mode")
     }
 
-    func testTaskStatus_displayLabel_nonChatMode() {
+    @MainActor func testTaskStatus_displayLabel_nonChatMode() async {
         XCTAssertEqual(TaskStatus.running.displayLabel(isChatMode: false), "Working")
         XCTAssertEqual(TaskStatus.needsSupervisorInput.displayLabel(isChatMode: false), "Needs Supervisor")
     }
 
-    func testTaskStatus_systemImageName_chatMode() {
+    @MainActor func testTaskStatus_systemImageName_chatMode() async {
         let chatIcon = "bubble.left.and.bubble.right"
         XCTAssertEqual(TaskStatus.running.systemImageName(isChatMode: true), chatIcon)
         XCTAssertEqual(TaskStatus.needsSupervisorInput.systemImageName(isChatMode: true), chatIcon)
@@ -296,7 +296,7 @@ final class ChatModeTests: XCTestCase {
         XCTAssertEqual(TaskStatus.paused.systemImageName(isChatMode: true), chatIcon)
     }
 
-    func testTaskStatus_tintColor_chatMode_isNeutral() {
+    @MainActor func testTaskStatus_tintColor_chatMode_isNeutral() async {
         // Theme-aware `Color` tokens are fresh-per-access, so compare by resolved
         // value (XCTAssertSameColor/DifferentColor), not identity.
         let chatColor = TaskStatus.running.tintColor(isChatMode: true)
@@ -320,12 +320,12 @@ final class ChatModeTests: XCTestCase {
         )
     }
 
-    func testTaskStatus_displayLabel_nonChatMode_pausedUnchanged() {
+    @MainActor func testTaskStatus_displayLabel_nonChatMode_pausedUnchanged() async {
         XCTAssertEqual(TaskStatus.paused.displayLabel(isChatMode: false), "Paused",
                        "Non-chat paused should still show Paused")
     }
 
-    func testTaskStatus_systemImageName_nonChatMode_pausedUnchanged() {
+    @MainActor func testTaskStatus_systemImageName_nonChatMode_pausedUnchanged() async {
         XCTAssertEqual(TaskStatus.paused.systemImageName(isChatMode: false), "pause.circle",
                        "Non-chat paused should keep pause icon")
     }

@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import XCTest
 
@@ -7,7 +8,7 @@ import XCTest
 /// and completeness assertions can distinguish "swept every locale" from
 /// "bailed on the first miss". Only `isInstalled` matters to the planner; the
 /// other two requirements are inert.
-private final class ScriptedStartInventory: DictationAssetInventory, @unchecked Sendable {
+nonisolated private final class ScriptedStartInventory: DictationAssetInventory, @unchecked Sendable {
     private let lock = NSLock()
     private let installed: Set<String>
     private var _queried: [Locale] = []
@@ -145,5 +146,125 @@ final class DictationStartPlannerTests: XCTestCase {
         } catch {
             XCTFail("Wrong error type: \(error)")
         }
+    }
+
+    // MARK: - Analyzer feed
+
+    private func pcm(
+        _ common: AVAudioCommonFormat, rate: Double, channels: AVAudioChannelCount = 1
+    ) throws -> AVAudioFormat {
+        try XCTUnwrap(AVAudioFormat(commonFormat: common, sampleRate: rate, channels: channels, interleaved: false))
+    }
+
+    /// The defect this decision was lifted out for (2026-09-15): the engine fed the capture
+    /// format when the analyzer named none, and on macOS 27 `AnalyzerInput(buffer:)` traps on
+    /// the Float32 buffers the input node captures. A slot whose analyzer named no format gets
+    /// no feed at all.
+    func testAnalyzerFeed_whenTheAnalyzerNamesNoFormat_isNil_neverTheCaptureFormat() throws {
+        let capture = try pcm(.pcmFormatFloat32, rate: 48_000)
+
+        XCTAssertNil(DictationStartPlanner.analyzerFeed(bestAvailable: nil, capture: capture))
+    }
+
+    /// The same crash one step later: a named format with no converter to it left the bridge
+    /// without one, and a bridge without a converter yields its input as it is.
+    func testAnalyzerFeed_whenNoConverterCanBeBuilt_isNil_neverAnUnconvertedFeed() throws {
+        let capture = try pcm(.pcmFormatFloat32, rate: 48_000)
+        let named = try pcm(.pcmFormatInt16, rate: 16_000)
+
+        XCTAssertNil(DictationStartPlanner.analyzerFeed(
+            bestAvailable: named, capture: capture, makeConverter: { _, _ in nil }))
+    }
+
+    /// The pair measured on macOS 27 for `DictationTranscriber(en-US)`, through the real
+    /// converter: a Float32 48 kHz capture format, Int16 16 kHz named by the analyzer.
+    func testAnalyzerFeed_whenTheFormatsDiffer_convertsFromTheCaptureToTheNamedFormat() throws {
+        let capture = try pcm(.pcmFormatFloat32, rate: 48_000)
+        let named = try pcm(.pcmFormatInt16, rate: 16_000)
+
+        let feed = try XCTUnwrap(DictationStartPlanner.analyzerFeed(bestAvailable: named, capture: capture))
+
+        XCTAssertEqual(feed.format, named)
+        let converter = try XCTUnwrap(feed.converter)
+        XCTAssertEqual(converter.inputFormat, capture)
+        XCTAssertEqual(converter.outputFormat, named)
+    }
+
+    /// Equality is by value — the analyzer hands back its own instance — and an equal pair never
+    /// reaches the converter factory: a converter between identical formats is pure work on the
+    /// realtime thread.
+    func testAnalyzerFeed_identicalFormatsBuiltSeparately_buildNoConverter() throws {
+        var factoryCalls = 0
+
+        let feed = try XCTUnwrap(DictationStartPlanner.analyzerFeed(
+            bestAvailable: try pcm(.pcmFormatInt16, rate: 16_000),
+            capture: try pcm(.pcmFormatInt16, rate: 16_000),
+            makeConverter: { from, to in
+                factoryCalls += 1
+                return AVAudioConverter(from: from, to: to)
+            }))
+
+        XCTAssertNil(feed.converter)
+        XCTAssertEqual(factoryCalls, 0)
+    }
+
+    /// Each field alone is a difference: sample rate, sample format, channel count.
+    func testAnalyzerFeed_aDifferenceInOneFieldAlone_stillConverts() throws {
+        let capture = try pcm(.pcmFormatInt16, rate: 16_000)
+        let named = [
+            try pcm(.pcmFormatInt16, rate: 48_000),
+            try pcm(.pcmFormatFloat32, rate: 16_000),
+            try pcm(.pcmFormatInt16, rate: 16_000, channels: 2),
+        ]
+
+        for format in named {
+            let feed = try XCTUnwrap(DictationStartPlanner.analyzerFeed(bestAvailable: format, capture: capture))
+            XCTAssertEqual(feed.format, format)
+            XCTAssertNotNil(feed.converter, "\(format) against \(capture)")
+        }
+    }
+
+    /// Reported per slot, so it names the language — by the name the Dictation settings list it
+    /// under (`DictationModelCatalog.ModelInfo.displayName`), not its identifier — and it is not
+    /// the no-model error: the model is installed, and downloading another fixes nothing.
+    func testAudioFormatUnavailable_namesTheLanguage_andIsNotTheNoModelError() throws {
+        let language = try XCTUnwrap(Locale.current.localizedString(forIdentifier: "ru_RU"))
+        let description = DictationStartPlanner.StartError
+            .audioFormatUnavailable(localeIdentifier: "ru_RU").errorDescription ?? ""
+
+        XCTAssertTrue(description.contains(language), description)
+        XCTAssertFalse(description.contains("ru_RU"), description)
+        XCTAssertNotEqual(description, DictationStartPlanner.StartError.noInstalledModel.errorDescription)
+    }
+
+    // MARK: - A start whose every slot failed
+
+    /// `viableLocales` has already found a model for every locale the engine tries, so a start
+    /// whose every slot failed is not a missing model — and the no-model advice overwrote the
+    /// slot's own message in the single-shot error banner (review, 2026-09-15).
+    func testStartError_afterEverySlotFailed_isTheLastSlotsOwnError() {
+        let slotError = DictationStartPlanner.StartError.audioFormatUnavailable(localeIdentifier: "en_US")
+
+        let error = DictationStartPlanner.startError(afterEverySlotFailed: slotError)
+
+        XCTAssertEqual(error as? DictationStartPlanner.StartError, slotError)
+    }
+
+    /// A system error from `prepareToAnalyze` passes through as it is, not re-typed.
+    func testStartError_afterEverySlotFailed_passesASystemErrorThrough() {
+        let systemError = NSError(domain: "SFSpeechErrorDomain", code: 7)
+
+        let error = DictationStartPlanner.startError(afterEverySlotFailed: systemError) as NSError
+
+        XCTAssertEqual(error.domain, "SFSpeechErrorDomain")
+        XCTAssertEqual(error.code, 7)
+    }
+
+    /// Unreachable from the engine — the loop runs whenever `viableLocales` returns — and kept
+    /// only so the type has an answer.
+    func testStartError_withNoSlotErrorRecorded_fallsBackToNoInstalledModel() {
+        let error = DictationStartPlanner.startError(afterEverySlotFailed: nil)
+
+        XCTAssertEqual(error as? DictationStartPlanner.StartError, .noInstalledModel)
     }
 }

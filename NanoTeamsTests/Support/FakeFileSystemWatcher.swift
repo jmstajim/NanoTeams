@@ -12,7 +12,7 @@ import Foundation
 /// `startResult` is what makes the failure arm reachable at all: the real watcher only returns
 /// `false` for an empty path list (which the coordinator never passes) or a kernel-level
 /// `FSEventStreamCreate` failure (which cannot be induced from a test).
-final class FakeFileSystemWatcher: FileSystemWatching, @unchecked Sendable {
+nonisolated final class FakeFileSystemWatcher: FileSystemWatching, @unchecked Sendable {
     private let lock = NSLock()
     private let startResult: Bool
     private var _startCount = 0

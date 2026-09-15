@@ -143,7 +143,7 @@ struct QuickCaptureFormView: View {
     @Environment(StreamingPreviewManager.self) private var streamingManager
     /// Read for one fact: whether the working role is COMPACTING rather than thinking. An
     /// observable projection rather than the streaming manager's own flag, because that one
-    /// is `@ObservationIgnored` (polled by the feed's `TimelineView`) and this overlay has no
+    /// is `@ObservationIgnored` (polled by the feed's `LiveMessageBubble`) and this overlay has no
     /// ticker — it would keep saying "is thinking…" for the whole epoch.
     @Environment(ContextFillProjection.self) private var contextFill
     @Environment(DictationService.self) private var dictation

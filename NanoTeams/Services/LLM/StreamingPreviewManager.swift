@@ -133,7 +133,7 @@ final class StreamingPreviewManager {
 
     /// Per-step state keyed by (taskID, stepID).
     /// @ObservationIgnored — content changes do not trigger view re-evaluation.
-    /// Views poll through the accessors below via `TimelineView` instead.
+    /// Views poll through the accessors below via `LiveMessageBubble`'s poll instead.
     @ObservationIgnored private var states: [TaskStepKey: StepStreamState] = [:]
 
     /// Reverse lookup set for O(1) `isStreaming(messageID:)` checks.
@@ -217,12 +217,12 @@ final class StreamingPreviewManager {
         activeMessageIDs.contains(messageID)
     }
 
-    /// Returns streaming content for a step (polled by TimelineView).
+    /// Returns streaming content for a step (polled by `LiveMessageBubble`).
     func streamingContent(stepID: String, taskID: Int) -> String? {
         states[TaskStepKey(taskID: taskID, stepID: stepID)]?.preview?.content
     }
 
-    /// Returns streaming thinking content for a step (polled by TimelineView); nil while empty.
+    /// Returns streaming thinking content for a step (polled by `LiveMessageBubble`); nil while empty.
     func streamingThinking(stepID: String, taskID: Int) -> String? {
         guard let thinking = states[TaskStepKey(taskID: taskID, stepID: stepID)]?.thinking,
               !thinking.isEmpty else { return nil }

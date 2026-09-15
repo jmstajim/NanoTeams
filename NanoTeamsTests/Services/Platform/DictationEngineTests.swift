@@ -115,7 +115,11 @@ final class DictationEngineTests: XCTestCase {
         try skipIfUnavailable()
         guard #available(macOS 26, iOS 26, visionOS 26, *) else { return }
 
-        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
+        // Int16 16 kHz — the analyzer's own format, the one production feeds. A Float32 buffer
+        // traps inside `AnalyzerInput(buffer:)` on macOS 27 and takes the test host down with
+        // it; see `DictationTapBridgeConversionTests.analyzerFormat()`.
+        let format = try XCTUnwrap(AVAudioFormat(
+            commonFormat: .pcmFormatInt16, sampleRate: 16_000, channels: 1, interleaved: false))
         let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1024))
         buffer.frameLength = 1024
 

@@ -95,7 +95,7 @@ final class StreamingPreviewManagerReplaceContentTests: XCTestCase {
     }
 
     func testReplaceContent_doesNotBumpStructuralVersion_onExistingPreview() {
-        // Content updates are not structural — views poll content via TimelineView.
+        // Content updates are not structural — views poll content via `LiveMessageBubble`.
         // Bumping structuralVersion on a content rewind would cause spurious
         // rebuilds of the entire timeline on every partial-marker pause.
         let stepID = "pm"

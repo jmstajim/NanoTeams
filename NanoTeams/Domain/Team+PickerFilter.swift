@@ -1,6 +1,6 @@
 import Foundation
 
-extension Array where Element == Team {
+nonisolated extension Array where Element == Team {
     /// Teams suitable for surfacing in any user-facing team picker. Filters out
     /// infrastructure teams (the generated-team placeholder and the Autovisor
     /// team) — each reached via its own dedicated entry point; selecting them

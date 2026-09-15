@@ -389,6 +389,11 @@ final class NTMSOrchestrator {
     /// as `agentInstructionsScanGeneration`.
     @ObservationIgnored var roleSkillsScanGeneration: Int = 0
 
+    /// CLAUDE.md #38 generation counter for `openWorkFolder`. The folder is read off the
+    /// main actor, so two opens can overlap; only the latest one may apply its snapshot,
+    /// report its error, or run the rest of the open.
+    @ObservationIgnored var workFolderOpenGeneration: Int = 0
+
     /// The attachment set a catalogue rescan has already been attempted for.
     ///
     /// Bounds the "an attached id is missing → look again" retry to ONCE per set. A

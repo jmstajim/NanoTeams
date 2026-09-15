@@ -42,6 +42,15 @@ final class DictationTapBridgeConversionTests: XCTestCase {
         try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: rate, channels: 1))
     }
 
+    /// The analyzer's side of the bridge: 16 kHz Int16 — the format
+    /// `SpeechAnalyzer.bestAvailableAudioFormat` hands production (measured on macOS 27 for
+    /// `DictationTranscriber(en-US)` given a Float32 48 kHz mic, 2026-09-15). Never a Float32
+    /// standard format: there `AnalyzerInput(buffer:)` traps on Float32 (`EXC_BREAKPOINT` in
+    /// `AnalyzerInput.data(from:)`), which crashed the test host for every case that yields.
+    private func analyzerFormat() throws -> AVAudioFormat {
+        try XCTUnwrap(AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: analyzerRate, channels: 1, interleaved: false))
+    }
+
     private func buffer(_ format: AVAudioFormat, frames: AVAudioFrameCount = 4096) throws -> AVAudioPCMBuffer {
         let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames))
         buffer.frameLength = frames
@@ -96,7 +105,7 @@ final class DictationTapBridgeConversionTests: XCTestCase {
         guard #available(macOS 26, iOS 26, visionOS 26, *) else { return }
 
         let native = try format(nativeRate)
-        let preferred = try format(analyzerRate)
+        let preferred = try analyzerFormat()
         let rig = try makeRig(from: native, to: preferred)
 
         rig.bridge.feed(try buffer(native))
@@ -121,7 +130,7 @@ final class DictationTapBridgeConversionTests: XCTestCase {
         guard #available(macOS 26, iOS 26, visionOS 26, *) else { return }
 
         let native = try format(nativeRate)
-        let preferred = try format(analyzerRate)
+        let preferred = try analyzerFormat()
         let rig = try makeRig(from: native, to: preferred)
 
         for _ in 0..<3 { rig.bridge.feed(try buffer(native)) }
@@ -147,7 +156,7 @@ final class DictationTapBridgeConversionTests: XCTestCase {
         guard #available(macOS 26, iOS 26, visionOS 26, *) else { return }
 
         let native = try format(nativeRate)
-        let preferred = try format(analyzerRate)
+        let preferred = try analyzerFormat()
         let rig = try makeRig(from: native, to: preferred)
 
         rig.bridge.feed(try buffer(try format(foreignRate)))
@@ -160,7 +169,7 @@ final class DictationTapBridgeConversionTests: XCTestCase {
         try skipIfUnavailable()
         guard #available(macOS 26, iOS 26, visionOS 26, *) else { return }
 
-        let rig = try makeRig(from: try format(nativeRate), to: try format(analyzerRate))
+        let rig = try makeRig(from: try format(nativeRate), to: try analyzerFormat())
         let foreign = try format(foreignRate)
 
         for _ in 0..<19 { rig.bridge.feed(try buffer(foreign)) }
@@ -178,7 +187,7 @@ final class DictationTapBridgeConversionTests: XCTestCase {
         try skipIfUnavailable()
         guard #available(macOS 26, iOS 26, visionOS 26, *) else { return }
 
-        let rig = try makeRig(from: try format(nativeRate), to: try format(analyzerRate), slotIndex: 7)
+        let rig = try makeRig(from: try format(nativeRate), to: try analyzerFormat(), slotIndex: 7)
         let foreign = try format(foreignRate)
 
         for _ in 0..<19 { rig.bridge.feed(try buffer(foreign)) }
@@ -200,7 +209,7 @@ final class DictationTapBridgeConversionTests: XCTestCase {
         guard #available(macOS 26, iOS 26, visionOS 26, *) else { return }
 
         let native = try format(nativeRate)
-        let rig = try makeRig(from: native, to: try format(analyzerRate))
+        let rig = try makeRig(from: native, to: try analyzerFormat())
         let foreign = try format(foreignRate)
 
         for _ in 0..<19 { rig.bridge.feed(try buffer(foreign)) }
@@ -228,7 +237,7 @@ final class DictationTapBridgeConversionTests: XCTestCase {
         try skipIfUnavailable()
         guard #available(macOS 26, iOS 26, visionOS 26, *) else { return }
 
-        let rig = try makeRig(from: try format(nativeRate), to: try format(analyzerRate), slotIndex: 2)
+        let rig = try makeRig(from: try format(nativeRate), to: try analyzerFormat(), slotIndex: 2)
         let foreign = try format(foreignRate)
         var bad: [AVAudioPCMBuffer] = []
         for _ in 0..<20 { bad.append(try buffer(foreign)) }

@@ -131,9 +131,9 @@ final class TeamActivityFeedImplicitStreamTargetTests: XCTestCase {
         // (CLAUDE.md #105 — the diff shows the source, never the value).
         let flat = code.split(whereSeparator: \.isWhitespace).joined(separator: " ")
         XCTAssertTrue(flat.contains(
-            "let isImplicitStreamTarget = !scheduleIsStreaming "
+            "let isImplicitStreamTarget = !isStreaming "
                 + "&& viewModel.implicitStreamTargetIDs.contains(msg.id)"), """
-        The `!scheduleIsStreaming` short-circuit is gone from the implicit-target term. \
+        The `!isStreaming` short-circuit is gone from the implicit-target term. \
         When the streaming preview manager is actively targeting this bubble the regular \
         `isStreaming` path owns indicator priority; without the guard both fire and the \
         pill conflates with the actively-growing content case.

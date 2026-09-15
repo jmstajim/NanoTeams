@@ -25,7 +25,7 @@ final class LLMTokenFieldErrorPropagationTests: XCTestCase {
     /// Test double that simulates a Keychain write failure (e.g.
     /// `errSecAuthFailed` or `errSecInteractionNotAllowed` when the user's
     /// keychain is locked).
-    private final class FailingSecureTokenStorage: SecureTokenStorage, @unchecked Sendable {
+    nonisolated private final class FailingSecureTokenStorage: SecureTokenStorage, @unchecked Sendable {
         let writeError: Error
         var existingToken: String?
         var setTokenInvocations: Int = 0

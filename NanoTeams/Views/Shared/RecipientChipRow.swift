@@ -98,7 +98,7 @@ struct RecipientChipRow<ID: Hashable & Sendable, Accessory: View>: View {
                         glyph: TerminalGlyph.review, label: badge,
                         color: Colors.warning, bordered: false)
                 }
-                ScrollView(.horizontal, showsIndicators: false) {
+                ScrollView(.horizontal) {
                     HStack(spacing: Spacing.xs) {
                         ForEach(chips) { chip in
                             pill(chip, isSelected: selection == chip.id)
@@ -111,6 +111,7 @@ struct RecipientChipRow<ID: Hashable & Sendable, Accessory: View>: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .scrollTargetLayout()
                 }
+                .scrollIndicators(.never)
                 .scrollPosition($scrollPosition)
                 .onChange(of: selection) { _, current in
                     guard let current else { return }

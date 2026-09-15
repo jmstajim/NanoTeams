@@ -12,7 +12,7 @@ import XCTest
 /// width-drift crash in `VocabVectorIndexBuilder` went unnoticed: no test could
 /// express "the same model name started answering with a different number of
 /// dimensions".
-private final class ESearchWidthEmbedClient: EmbeddingClient, @unchecked Sendable {
+nonisolated private final class ESearchWidthEmbedClient: EmbeddingClient, @unchecked Sendable {
     private let lock = NSLock()
     private var _dims = 3
     private var _throwCancellation = false
@@ -45,7 +45,7 @@ private final class ESearchWidthEmbedClient: EmbeddingClient, @unchecked Sendabl
 
 /// Deterministic slow client — one batch per call, each parked long enough that
 /// a test can observe a build IN FLIGHT and poke the coordinator while it is.
-private final class ESearchSlowEmbedClient: EmbeddingClient, @unchecked Sendable {
+nonisolated private final class ESearchSlowEmbedClient: EmbeddingClient, @unchecked Sendable {
     /// `let`, set at construction: a mutable field read from the embed task
     /// while the test writes it would be the data race `@unchecked` waives.
     private let delay: Duration

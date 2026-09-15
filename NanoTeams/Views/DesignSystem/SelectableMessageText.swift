@@ -5,7 +5,7 @@ import AppKit
 
 /// Read-only `NSTextView` wrapper used for streaming/committed message
 /// content in the Team Activity feed. Replaces SwiftUI `Text(content)` for
-/// long bubbles where re-shaping the entire string per `TimelineView` tick
+/// long bubbles where re-shaping the entire string per streaming poll
 /// would saturate the UI thread, and where unstable intrinsic-height
 /// reporting trips `LazyVStack`'s mismeasurement on cells taller than the
 /// viewport.
@@ -329,7 +329,7 @@ final class SelfSizingTextView: NSTextView {
         // Half-pixel epsilon: SwiftUI/AppKit float math can produce
         // sub-pixel deltas (e.g. 379.999... vs 380.0) that would otherwise
         // trigger spurious `invalidateIntrinsicContentSize`, and combined
-        // with the bubble's TimelineView heartbeat, oscillate layout.
+        // with the bubble's streaming poll, oscillate layout.
         if abs(textContainer.size.width - newSize.width) > 0.5 {
             textContainer.size = NSSize(
                 width: newSize.width,

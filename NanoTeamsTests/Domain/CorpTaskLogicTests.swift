@@ -755,7 +755,7 @@ final class NTMSTaskLogicTests: XCTestCase {
         XCTAssertEqual(summary.status, .paused)
     }
 
-    func testDerivedStatus_chatMode_recoveredTask_returnsPaused() {
+    @MainActor func testDerivedStatus_chatMode_recoveredTask_returnsPaused() async {
         var task = NTMSTask(id: 0, title: "Chat", supervisorTask: "Goal", isChatMode: true)
         task.status = .paused  // Set by StatusRecoveryService
         task.runs = [
@@ -772,7 +772,7 @@ final class NTMSTaskLogicTests: XCTestCase {
         XCTAssertEqual(summary.status.displayLabel(isChatMode: summary.isChatMode), "Chat")
     }
 
-    func testDerivedStatus_nonChatMode_recoveredTask_returnsPaused() {
+    @MainActor func testDerivedStatus_nonChatMode_recoveredTask_returnsPaused() async {
         var task = NTMSTask(id: 0, title: "Task", supervisorTask: "Goal", isChatMode: false)
         task.status = .paused  // Set by StatusRecoveryService
         task.runs = [

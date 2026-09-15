@@ -15,7 +15,7 @@ final class ClientSeamTailCoverageTests: XCTestCase {
 
     /// Records every base URL a resolver was asked about, so a test can prove WHICH provider
     /// clients were built with it.
-    private final class RecordingTokenResolver: LLMTokenResolver, @unchecked Sendable {
+    nonisolated private final class RecordingTokenResolver: LLMTokenResolver, @unchecked Sendable {
         private let lock = NSLock()
         private var asked: [String] = []
         let token: String?

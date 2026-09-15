@@ -10,7 +10,7 @@ final class VocabVectorIndexServiceTests: XCTestCase {
     /// input, encoding the batch offset and call index so tests can tell
     /// vectors apart. Override `scriptedResponses`/`errorsOnCall` to script
     /// specific scenarios.
-    private final class MockEmbeddingClient: EmbeddingClient, @unchecked Sendable {
+    nonisolated private final class MockEmbeddingClient: EmbeddingClient, @unchecked Sendable {
         private let lock = NSLock()
         var callCount = 0
         var capturedTexts: [[String]] = []
@@ -43,7 +43,7 @@ final class VocabVectorIndexServiceTests: XCTestCase {
     /// Variant that sleeps `perCallDelayNanos` between its enter-critical-
     /// section and its return. Used by the cancellation regression to give
     /// the outer `Task.cancel()` time to fire mid-build.
-    private final class SlowMockEmbeddingClient: EmbeddingClient, @unchecked Sendable {
+    nonisolated private final class SlowMockEmbeddingClient: EmbeddingClient, @unchecked Sendable {
         private let lock = NSLock()
         var callCount = 0
         var perCallDelayNanos: UInt64 = 0

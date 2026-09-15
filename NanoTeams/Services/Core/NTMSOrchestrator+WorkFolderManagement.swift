@@ -50,6 +50,8 @@ extension NTMSOrchestrator {
     // MARK: - Open / Close
 
     func openWorkFolder(_ url: URL) async {
+        workFolderOpenGeneration &+= 1
+        let openGeneration = workFolderOpenGeneration
         stopAllEngines()
         stopAutomationScheduler()
         // Clear the previous folder's auto-off deadline BEFORE the new poll loop
@@ -65,10 +67,18 @@ extension NTMSOrchestrator {
         bundledUpdateReport = nil
         llmExecutionService.cancelAllExecutions()
         await tearDownSearchIndexCoordinator()
-        workFolderURL = url
 
         do {
-            var snapshot = try workFolderManagementService.openOrCreateWorkFolder(at: url)
+            var snapshot = try await workFolderManagementService.openOrCreateWorkFolder(at: url)
+            // The read above ran off the main actor. If another open started meanwhile, that
+            // open owns the process now: applying this snapshot would pair ITS folder with
+            // this one's contents, and everything below would run twice.
+            guard openGeneration == workFolderOpenGeneration else { return }
+            // Committed only now, in the same main-actor turn as the snapshot. Assigned before
+            // the read, the suspension rendered the new URL over the previous folder's snapshot,
+            // and anything writing through `workFolderURL` in that window — a context generation
+            // finishing, a click — wrote the old folder's state into the new folder.
+            workFolderURL = url
 
             // Recover stale statuses from a previous session where the app closed
             // while tasks were running. Steps in .running/.needsSupervisorInput → .paused,
@@ -199,9 +209,14 @@ extension NTMSOrchestrator {
                 configuration.lastOpenedWorkFolderPath = url.path
             }
         } catch {
+            // A superseded open reports nothing and discards nothing — the newer open owns both.
+            guard openGeneration == workFolderOpenGeneration else { return }
+            // A failed open commits its URL as well (`closeProject` / `resetAllData` read it as
+            // their "no project open" signal) — paired with the discard below, never with the
+            // previous folder's snapshot.
+            workFolderURL = url
             self.lastErrorMessage = error.localizedDescription
-            // The URL above is already committed and stays committed (`closeProject` /
-            // `resetAllData` read it as their "no project open" signal). Drop everything that
+            // Drop everything that
             // describes the PREVIOUS folder's contents so the process describes exactly one
             // folder — this one, with nothing loaded — instead of pairing a new URL with an old
             // snapshot, which is how `mutateWorkFolder` came to write folder A's teams into

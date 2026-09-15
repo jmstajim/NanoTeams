@@ -75,7 +75,7 @@ private struct ColorPaletteRow: View {
                 .foregroundStyle(Colors.textSecondary)
                 .frame(width: 80, alignment: .leading)
 
-            ScrollView(.horizontal, showsIndicators: false) {
+            ScrollView(.horizontal) {
                 HStack(spacing: Spacing.xs) {
                     ForEach(Colors.pickerPalette, id: \.hex) { item in
                         colorCircle(item: item)
@@ -83,6 +83,7 @@ private struct ColorPaletteRow: View {
                 }
                 .padding(.vertical, Spacing.xxs)
             }
+            .scrollIndicators(.never)
         }
     }
 

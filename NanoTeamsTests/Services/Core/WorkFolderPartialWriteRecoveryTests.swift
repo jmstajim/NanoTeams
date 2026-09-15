@@ -306,10 +306,29 @@ final class SelectivelyFailingRepository: NTMSRepositoryProtocol, @unchecked Sen
         updateTeamsCalls = 0
     }
 
+    /// Seconds an `openOrCreateWorkFolder` of that folder path blocks before reading. The open
+    /// runs off the main actor (`WorkFolderManagementService`), so this makes one read finish
+    /// after a later open's — the overlap `WorkFolderOpenSupersessionTests` needs. Set before
+    /// the open starts; read from the detached task.
+    var openDelays: [String: TimeInterval] = [:]
+    /// Folder paths whose open is refused, where `failOpenOrCreate` refuses every folder.
+    var openFailurePaths: Set<String> = []
+    /// Folder paths whose `openOrCreateWorkFolder` has STARTED, in call order — how a test knows
+    /// an open is inside its read. Appended on the detached task, read on the main actor.
+    var openStarts: [String] { openStartsLock.withLock { _openStarts } }
+    private let openStartsLock = NSLock()
+    private var _openStarts: [String] = []
+
     // MARK: WorkFolderRepository
 
     func openOrCreateWorkFolder(at workFolderRoot: URL) throws -> WorkFolderContext {
-        if failOpenOrCreate { throw Refused(what: "openOrCreateWorkFolder") }
+        openStartsLock.withLock { _openStarts.append(workFolderRoot.path) }
+        if let delay = openDelays[workFolderRoot.path] {
+            Thread.sleep(forTimeInterval: delay)
+        }
+        if failOpenOrCreate || openFailurePaths.contains(workFolderRoot.path) {
+            throw Refused(what: "openOrCreateWorkFolder")
+        }
         return try inner.openOrCreateWorkFolder(at: workFolderRoot)
     }
 

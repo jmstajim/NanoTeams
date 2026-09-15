@@ -350,29 +350,41 @@ final class MonoCellReferenceGlyphTests: XCTestCase {
         )
     }
 
-    /// RED: revert `glyph(_:glitching:)`'s `.font` arm to returning the bare
-    /// `stack` → this fails, and the 16 metric-changing glitch glyphs resume
-    /// reflowing every caption row that carries a spinner.
+    /// Both visible branches — the Core Animation glyph and the frozen `Text` — draw through
+    /// ONE footprint helper, and that helper's font arm is the cell.
+    ///
+    /// RED: revert `inCell(_:)`'s `.font` arm to returning the bare `content` → the first
+    /// assertion fails, and the 16 metric-changing glitch glyphs resume reflowing every caption
+    /// row that carries a spinner. RED: draw the live branch without `inCell(` → the second fails.
     func testLoaderFontFootprint_goesThroughTheCell() throws {
         let text = try source("NanoTeams/Views/DesignSystem/NTMSLoader.swift")
         XCTAssertTrue(
-            text.contains("MonoCell(font: font) { stack }"),
+            text.contains("MonoCell(font: font) { content }"),
             "NTMSLoader's font footprint must draw into a MonoCell so the drawn glyph cannot size the row."
+        )
+        XCTAssertTrue(
+            text.contains("inCell(NTMSLoaderLayerView(") && text.contains("inCell(Text(Self.rotationFrames[0])"),
+            "Both the live and the frozen loader must draw through `inCell(_:)`, or one of them skips the cell."
         )
     }
 
     /// Clipping is the tempting "tidy" follow-up to a fixed cell and it would
     /// silently delete the effect: the RGB-split copies are drawn at ±1px and
-    /// live outside the cell by construction.
+    /// live outside the cell by construction — now as sublayers of the layer view.
     ///
-    /// RED: add `.clipped()` to the loader's glyph stack → this fails, and the
-    /// chromatic-aberration copies the file's own comment calls non-negotiable
-    /// get shaved off.
+    /// RED: add `.clipped()` to the loader's footprint, or `masksToBounds = true` to a loader
+    /// layer → this fails, and the chromatic-aberration copies the file's own comment calls
+    /// non-negotiable get shaved off.
     func testLoader_doesNotClipItsGlyph() throws {
         let text = try source("NanoTeams/Views/DesignSystem/NTMSLoader.swift")
         XCTAssertFalse(
             text.contains(".clipped(" + ")"),
             "NTMSLoader must not clip: the ±1px RGB-split copies are drawn outside the cell on purpose."
+        )
+        let layers = try source("NanoTeams/Views/DesignSystem/NTMSLoaderLayerView.swift")
+        XCTAssertFalse(
+            layers.contains("masksToBounds = " + "true"),
+            "NTMSLoaderLayerView must not mask: the ±1px RGB-split copies are drawn outside the cell on purpose."
         )
     }
 }

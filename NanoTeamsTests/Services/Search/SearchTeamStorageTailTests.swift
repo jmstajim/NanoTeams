@@ -14,7 +14,7 @@ import PDFKit
 /// fails by INPUT CONTENT rather than by call index, which is what lets a test
 /// fail exactly one token's batch without depending on `Set.sorted()` landing it
 /// at a particular call number.
-private final class TailEmbedClient: EmbeddingClient, @unchecked Sendable {
+nonisolated private final class TailEmbedClient: EmbeddingClient, @unchecked Sendable {
     private let lock = NSLock()
     private var _callCount = 0
 

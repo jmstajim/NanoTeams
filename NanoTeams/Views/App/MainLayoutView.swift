@@ -142,9 +142,9 @@ struct MainLayoutView: View {
         }
         .task {
             await store.bootstrapDefaultStorageIfNeeded()
-            // Amortize NSOpenPanel allocation so the first `+` click in
-            // MessageComposer doesn't pay the AppKit/XPC cold-start cost.
-            FilePickerWarmup.warmup()
+            // No `FilePickerWarmup.warmup()` here: creating the NSOpenPanel holds the main
+            // thread ≈0.5 s, and at launch that landed on the board's first frames (measured
+            // 2026-09-15, a 516 ms hitch). The composer's `+` warms it on first hover instead.
         }
         .onReceive(NotificationCenter.default.publisher(for: .navigateToWatchtower)) { _ in
             selectedItem = .watchtower

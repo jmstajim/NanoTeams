@@ -5,21 +5,25 @@ import SwiftUI
 /// The branded loading indicator — a **rotating stick** in the accent color
 /// with occasional hacker-style **glitch bursts**.
 ///
-/// One ticker at 80 ms runs two modes (matching the JS reference):
-/// - **Rotation** — the glyph cycles `│ → ╱ → ─ → ╲` via `tickCount % 4`.
-/// - **Glitch** — each idle tick rolls a ~2% chance to start a burst of 3–6
+/// One 80 ms frame sequence carries two modes (matching the JS reference):
+/// - **Rotation** — the glyph cycles `│ → ╱ → ─ → ╲`.
+/// - **Glitch** — each idle frame rolls a ~2% chance to start a burst of 3–6
 ///   frames (≈ one burst every ~3 seconds).
 ///   While the burst is active a random glyph from the hacker set (`0 1 ⧄ ▒ ≡ ⌗ ₿ ｱ …`)
 ///   replaces the rotation char, the cell gets a 1px diagonal jitter, and an
 ///   RGB-split overlay paints a red copy +1px right and a cyan copy −1px left
-///   (chromatic-aberration / "torn signal" effect). `tickCount` is *not*
-///   advanced during the burst, so rotation resumes from the exact angle it
-///   left off.
+///   (chromatic-aberration / "torn signal" effect). Rotation does not advance
+///   during the burst, so it resumes from the exact angle it left off.
+///
+/// **The animation never touches SwiftUI state.** The sequence is generated once
+/// (`NTMSLoaderAnimationScript`) and played by Core Animation (`NTMSLoaderLayerView`).
+/// A per-tick view-state write is a transaction on the whole window, and a window with a
+/// long activity feed pays for it in full; the script's doc comment carries the measurement.
+/// Pinned by `Ratchet/LoaderAnimationTickPinTests`.
 ///
 /// Rendered in SF Mono so the four rotation glyphs share an advance width.
 /// Reduce Motion → frozen first frame (no rotation, no glitches), same as a
-/// live window resize. The `Size`/`renderMode` API is preserved so the ~19
-/// call sites and pinning tests keep working; only the visual changed.
+/// live window resize.
 ///
 /// Two construction shapes:
 /// - **Sized** (`NTMSLoader(.small)`) — fixed `width × height` footprint from
@@ -105,8 +109,6 @@ struct NTMSLoader: View {
         self.color = color
     }
 
-    /// Tick cadence — 80 ms, drives both rotation and glitch bursts.
-    private static let tickInterval: Duration = .milliseconds(80)
     /// Rotating stick using monospaced box-drawing glyphs (clockwise).
     ///
     /// Internal rather than `private` so `NTMSLoaderRenderModeTests` can assert
@@ -114,11 +116,6 @@ struct NTMSLoader: View {
     /// `inlineCellFootprint` a metric-stable cell — a rotation frame served by a
     /// fallback face would size the cell differently per frame and defeat it.
     static let rotationFrames = ["│", "╱", "─", "╲"]
-    /// Probability that an idle tick starts a glitch burst. Tuned so a burst
-    /// happens roughly every ~3 seconds (~50 idle ticks × 80ms + burst).
-    private static let glitchTriggerProbability: Double = 0.02
-    /// Length of a glitch burst, in ticks.
-    private static let glitchFrameRange: ClosedRange<Int> = 3...6
     /// Hacker-style glyph pool used during a glitch burst.
     ///
     /// Internal rather than `private` so the metrics test can measure it. 16 of
@@ -131,17 +128,6 @@ struct NTMSLoader: View {
         "@", "#", "%", "&", "$", "/", "\\", "{", "}", "<", ">"
     ]
 
-    // RGB-split channels for the chromatic-aberration overlay. NOT design-system
-    // colors — the glitch effect demands the canonical full-saturation R / C
-    // channels; muting them with `Colors.error` etc. kills the look. Cyan has
-    // no semantic token equivalent either. Scoped to this file by design.
-    private static let glitchChannelRed = Color(red: 1.0, green: 0.0, blue: 0.0)
-    private static let glitchChannelCyan = Color(red: 0.0, green: 1.0, blue: 1.0)
-
-    @State private var tickCount: Int = 0
-    @State private var glitchFramesRemaining: Int = 0
-    @State private var currentGlitchChar: String = "0"
-    @State private var shakeOffset: CGSize = .zero
     @Environment(\.windowResizeMonitor) private var resizeMonitor
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// User toggle (Settings → Theme → Effects). `false` suppresses the glitch
@@ -157,7 +143,7 @@ struct NTMSLoader: View {
         case hidden
         /// One frozen frame — Reduce Motion or a live resize.
         case frozen
-        /// Drive the spinner timeline.
+        /// Play the frame sequence on Core Animation.
         case live
     }
 
@@ -174,14 +160,6 @@ struct NTMSLoader: View {
         return .live
     }
 
-    /// Pure decision: should an idle tick start a glitch burst? The glitch is the
-    /// scramble + RGB-split + jitter overlay; `glitchEnabled == false` suppresses
-    /// it entirely (rotation continues). Strict `<` so `roll == probability` never
-    /// fires — matches the inline roll this replaced.
-    static func shouldStartGlitchBurst(glitchEnabled: Bool, roll: Double, probability: Double) -> Bool {
-        glitchEnabled && roll < probability
-    }
-
     var body: some View {
         switch Self.renderMode(
             isVisible: isVisible,
@@ -192,17 +170,9 @@ struct NTMSLoader: View {
             hiddenPlaceholder
         case .frozen:
             // First rotation frame — a single steady glyph.
-            glyph(Self.rotationFrames[0], glitching: false)
+            inCell(Text(Self.rotationFrames[0]).font(glyphFont).foregroundStyle(color))
         case .live:
-            glyph(currentDisplayChar, glitching: glitchEnabled && glitchFramesRemaining > 0)
-                .offset(glitchEnabled ? shakeOffset : .zero)
-                .task {
-                    while !Task.isCancelled {
-                        try? await Task.sleep(for: Self.tickInterval)
-                        if Task.isCancelled { return }
-                        tick()
-                    }
-                }
+            inCell(NTMSLoaderLayerView(font: glyphFont, color: color, glitchEnabled: glitchEnabled))
         }
     }
 
@@ -220,66 +190,12 @@ struct NTMSLoader: View {
         }
     }
 
-    /// Character shown on the next render — glitch glyph during a burst,
-    /// otherwise the rotation frame at the current angle.
-    private var currentDisplayChar: String {
-        if glitchEnabled && glitchFramesRemaining > 0 { return currentGlitchChar }
-        return Self.rotationFrames[tickCount % Self.rotationFrames.count]
-    }
-
-    /// One ticker step. Matches the JS reference:
-    /// - During a burst: swap to a fresh random glitch glyph, jitter 1px diag,
-    ///   decrement the burst counter. `tickCount` is intentionally untouched
-    ///   so rotation resumes from the exact angle when the burst ends.
-    /// - Otherwise: advance rotation by one frame, clear jitter, then roll the
-    ///   2% chance to start a new burst.
-    private func tick() {
-        if glitchFramesRemaining > 0 && glitchEnabled {
-            currentGlitchChar = Self.glitchGlyphs.randomElement() ?? "0"
-            shakeOffset = CGSize(
-                width: Bool.random() ? 1 : -1,
-                height: Bool.random() ? 1 : -1
-            )
-            glitchFramesRemaining -= 1
-        } else {
-            // Idle, or a burst cancelled mid-flight by toggling the effect off —
-            // clear any leftover burst counter so it settles on this tick.
-            glitchFramesRemaining = 0
-            tickCount &+= 1
-            shakeOffset = .zero
-            let roll = Double.random(in: 0..<1)
-            if Self.shouldStartGlitchBurst(
-                glitchEnabled: glitchEnabled,
-                roll: roll,
-                probability: Self.glitchTriggerProbability
-            ) {
-                glitchFramesRemaining = Int.random(in: Self.glitchFrameRange)
-                currentGlitchChar = Self.glitchGlyphs.randomElement() ?? "0"
-            }
-        }
-    }
-
+    /// The footprint both visible branches draw into.
     @ViewBuilder
-    private func glyph(_ s: String, glitching: Bool) -> some View {
-        let stack = ZStack {
-            if glitching {
-                // RGB-split: red copy shifts +1px right, cyan copy −1px left.
-                Text(s)
-                    .font(glyphFont)
-                    .foregroundStyle(Self.glitchChannelRed)
-                    .offset(x: 1)
-                Text(s)
-                    .font(glyphFont)
-                    .foregroundStyle(Self.glitchChannelCyan)
-                    .offset(x: -1)
-            }
-            Text(s)
-                .font(glyphFont)
-                .foregroundStyle(color)
-        }
+    private func inCell<Content: View>(_ content: Content) -> some View {
         switch footprint {
         case .sized(let size):
-            stack
+            content
                 .frame(width: size.width, height: size.height)
                 .accessibilityHidden(true)
         case .font(let font):
@@ -287,21 +203,20 @@ struct NTMSLoader: View {
             // `glitchGlyphs` resolve to a fallback face and change a metric —
             // at 11pt `≀`/`⁊` are Monaco (+1.713pt line height), `／`/`＼` are
             // PingFang SC (+4.136pt advance), the katakana are
-            // CJKSymbolsFallback (−1.520pt). Returning the bare stack here let
+            // CJKSymbolsFallback (−1.520pt). Returning the bare glyph here let
             // each of those reflow the caption row and, through it, the whole
             // message bubble, several times a minute. `MonoCell` pins the cell
             // to the FONT's metrics and paints the glyph over it; a wide glyph
             // spills into the gutter, which is what a torn signal should do,
             // and moves nothing. Deliberately NOT clipped — clipping would
             // shave the ±1px RGB-split copies the effect is made of.
-            MonoCell(font: font) { stack }
+            MonoCell(font: font) { content }
                 .accessibilityHidden(true)
         }
     }
 
-    /// Font used for every Text layer inside `glyph(...)`. Sized footprints
-    /// derive an SF Mono size from the preset; font footprints pass through
-    /// the caller-supplied font verbatim.
+    /// Font used for every glyph. Sized footprints derive an SF Mono size from
+    /// the preset; font footprints pass through the caller-supplied font verbatim.
     private var glyphFont: Font {
         switch footprint {
         case .sized(let size):

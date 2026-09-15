@@ -15,6 +15,9 @@ import Speech
 /// Audio-format note: the mic's native output format usually differs from
 /// what `SpeechAnalyzer` expects. Each analyzer's `bestAvailableAudioFormat`
 /// is queried, and an `AVAudioConverter` is inserted on the audio-tap path.
+/// A locale whose analyzer names no format, or whose converter cannot be
+/// built, is skipped with an error — the native format is never fed on a
+/// guess (`DictationStartPlanner.analyzerFeed`).
 /// The converter state is preserved between buffers by reporting `.noDataNow`
 /// (never `.endOfStream`) after providing each input.
 @available(macOS 26, iOS 26, visionOS 26, *)
@@ -78,10 +81,10 @@ final class DictationEngine: DictationEngineProtocol {
     /// on-device models; downloads happen exclusively from the Dictation
     /// settings UI. Throws if no usable model is present.
     ///
-    /// The decision half — which locales are viable, and which error to throw
-    /// when none are — is `DictationStartPlanner.viableLocales` (Speech-free,
-    /// tested by `DictationStartPlannerTests`). Everything below the planner
-    /// call is hardware assembly.
+    /// The decision half — which locales are viable, how each slot's analyzer
+    /// is fed, and which error a start that built no slot throws — is
+    /// `DictationStartPlanner` (Speech-free, tested by
+    /// `DictationStartPlannerTests`). What stays here is hardware assembly.
     func start(locales: [Locale]) async throws {
         let viable = try await DictationStartPlanner.viableLocales(
             requested: locales, inventory: assetInventory)
@@ -92,6 +95,8 @@ final class DictationEngine: DictationEngineProtocol {
 
         var builtSlots: [Slot] = []
         var tapBridges: [TapBridge] = []
+        // Why the start fails if no slot builds: `startError(afterEverySlotFailed:)`.
+        var lastSlotError: (any Error)?
 
         for locale in viable {
             // Dense over BUILT slots — never the position in `viable`.
@@ -106,10 +111,22 @@ final class DictationEngine: DictationEngineProtocol {
             let slotIndex = builtSlots.count
             let transcriber = DictationTranscriber(locale: locale, preset: .progressiveLongDictation)
 
-            let preferred = await SpeechAnalyzer.bestAvailableAudioFormat(
+            // Only a format the analyzer named, through a converter that exists: the
+            // planner answers nil for either miss, which would otherwise feed the
+            // native format unconverted — and `AnalyzerInput(buffer:)` traps on it
+            // (see `analyzerFeed`). Decided before anything below needs tearing down.
+            let bestAvailable = await SpeechAnalyzer.bestAvailableAudioFormat(
                 compatibleWith: [transcriber],
                 considering: nativeFormat
-            ) ?? nativeFormat
+            )
+            guard let feed = DictationStartPlanner.analyzerFeed(
+                bestAvailable: bestAvailable, capture: nativeFormat
+            ) else {
+                let error = EngineError.audioFormatUnavailable(localeIdentifier: locale.identifier)
+                lastSlotError = error
+                onError?(error.localizedDescription)
+                continue
+            }
 
             let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream(bufferingPolicy: .unbounded)
             // Apple's WWDC25 pattern: init WITHOUT inputSequence, then call
@@ -119,9 +136,10 @@ final class DictationEngine: DictationEngineProtocol {
             let analyzer = SpeechAnalyzer(modules: [transcriber])
 
             do {
-                try await analyzer.prepareToAnalyze(in: preferred)
+                try await analyzer.prepareToAnalyze(in: feed.format)
             } catch {
                 continuation.finish()
+                lastSlotError = error
                 onError?(error.localizedDescription)
                 continue
             }
@@ -163,13 +181,6 @@ final class DictationEngine: DictationEngineProtocol {
                 }
             }
 
-            let converter: AVAudioConverter?
-            if preferred != nativeFormat {
-                converter = AVAudioConverter(from: nativeFormat, to: preferred)
-            } else {
-                converter = nil
-            }
-
             builtSlots.append(
                 Slot(
                     locale: locale,
@@ -182,8 +193,8 @@ final class DictationEngine: DictationEngineProtocol {
             tapBridges.append(
                 TapBridge(
                     continuation: continuation,
-                    converter: converter,
-                    outputFormat: preferred,
+                    converter: feed.converter,
+                    outputFormat: feed.format,
                     slotIndex: slotIndex,
                     onDropsExceeded: { [weak self] slot in
                         Task { @MainActor [weak self] in
@@ -195,7 +206,7 @@ final class DictationEngine: DictationEngineProtocol {
         }
 
         guard !builtSlots.isEmpty else {
-            throw EngineError.noInstalledModel
+            throw DictationStartPlanner.startError(afterEverySlotFailed: lastSlotError)
         }
 
         let box = BridgesBox(bridges: tapBridges)

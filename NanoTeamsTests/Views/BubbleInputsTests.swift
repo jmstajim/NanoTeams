@@ -100,6 +100,6 @@ final class BubbleInputsTests: XCTestCase {
     func testEquatable_differentToolCallFlag_areNotEqual() async {
         let a = BubbleInputs.streaming(content: "x", thinking: nil, processingStatus: nil, hasStreamActivity: true, isStreamingToolCall: false, isCompacting: false)
         let b = BubbleInputs.streaming(content: "x", thinking: nil, processingStatus: nil, hasStreamActivity: true, isStreamingToolCall: true, isCompacting: false)
-        XCTAssertNotEqual(a, b, "Tool-call flag flip must propagate through Equatable — the TimelineView tick relies on it.")
+        XCTAssertNotEqual(a, b, "Tool-call flag flip must propagate through Equatable — the streaming poll relies on it.")
     }
 }

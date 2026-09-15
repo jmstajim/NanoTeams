@@ -33,8 +33,9 @@ struct MessageComposer<SettingsMenu: View>: View {
     /// (`hasAttachments` gates whether the grid renders at all, and `attachmentGrid`
     /// iterates it), and SwiftUI subscribes only to `DynamicProperty` storage — an
     /// undecorated `Binding` is a value it never looks inside, so an external append
-    /// through the same pipe re-evaluated nothing here (swiftui-expert
-    /// `state-management.md:177`). Latent rather than live-broken: every production host
+    /// through the same pipe re-evaluated nothing here (swiftui-expert `state-management.md`
+    /// § "Declare a Binding with @Binding, Not a Plain Property"). Latent rather than
+    /// live-broken: every production host
     /// owned the array in a parent that re-renders anyway. Enforced by
     /// `swiftui_declarations.py` axis v6.
     @Binding var clips: [Clip]
@@ -230,6 +231,11 @@ struct MessageComposer<SettingsMenu: View>: View {
                 }
                 .buttonStyle(.composerIcon)
                 .accessibilityLabel("Attach files")
+                // The panel's cold start (≈0.5 s on the main thread) is paid while the pointer
+                // is on its way to the click, not at launch; `warmup()` is idempotent.
+                .onHover { hovering in
+                    if hovering { FilePickerWarmup.warmup() }
+                }
 
                 if showsSkillsPicker {
                     SkillsPickerButton(projectRoot: skillsProjectRoot, clips: $clips)

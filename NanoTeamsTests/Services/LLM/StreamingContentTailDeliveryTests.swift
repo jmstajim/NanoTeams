@@ -12,7 +12,7 @@ import XCTest
 /// while the model writes the arguments the server sends nothing. MeditationApp task 111: the
 /// Change Planner's preview read "…Now I'll write the" for 118 s while " Change Brief." sat in
 /// the buffer; the Brief Critic's read "…to write the" for 204 s. The batching predated the
-/// poll-driven feed — the preview is `@ObservationIgnored` and read by `TimelineView` every
+/// poll-driven feed — the preview is `@ObservationIgnored` and read by `LiveMessageBubble` every
 /// 0.3 s — so it saved nothing.
 @MainActor
 final class StreamingContentTailDeliveryTests: XCTestCase {

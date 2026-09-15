@@ -209,7 +209,7 @@ extension LLMExecutionService {
         // the stream ended. Native tool calling on Ollama is that provider: it sends nothing
         // while the model writes a call's arguments (MeditationApp task 111, 2026-09-13: the
         // preview stopped at "…Now I'll write the" for 118 s). The batch saved nothing either:
-        // the preview is `@ObservationIgnored`, the feed polls it through `TimelineView`, and
+        // the preview is `@ObservationIgnored`, the feed polls it through `LiveMessageBubble`, and
         // `StreamingPreviewManager.append` costs O(delta).
         func appendAssistant(_ text: String) {
             guard !text.isEmpty else { return }

@@ -2,10 +2,10 @@ import SwiftUI
 
 // MARK: - Streaming Bubble Logic (pure, unit-testable)
 //
-// Extracted from TeamActivityFeedView: the per-tick streaming-bubble
-// resolvers and their value types (BubbleInputs / StreamingSnapshot /
-// BubbleSchedule). All static + pure — no instance state — so the
-// streaming/committed bubble state machine is testable without the view.
+// Extracted from TeamActivityFeedView: the streaming-bubble resolvers and their
+// value types (BubbleInputs / StreamingSnapshot). All static + pure — no
+// instance state — so the streaming/committed bubble state machine is testable
+// without the view. `LiveMessageBubble` is the view that polls them.
 //
 // The implicit-stream-target law ("the ONE message a `.running` step streams
 // into: its latest VISIBLE turn by `createdAt`") no longer lives here — it is
@@ -16,7 +16,7 @@ extension TeamActivityFeedView {
 
     // MARK: - Bubble inputs (testable resolver)
 
-    /// Per-tick inputs for `MessageBubbleView`. The two cases mirror the
+    /// Per-poll inputs for `MessageBubbleView`. The two cases mirror the
     /// two states the dispatcher resolves:
     /// - `.streaming` carries content/thinking + status/activity/tool-call
     ///   indicators; never carries attachments (those belong to the
@@ -148,72 +148,7 @@ extension TeamActivityFeedView {
         let isCompacting: Bool
     }
 
-    /// Adaptive `TimelineSchedule`:
-    /// - Streaming: emits at `streamingInterval` (3.3 Hz at 0.3s). Hot
-    ///   path drives `MessageBubbleView` re-evaluation so token deltas
-    ///   from `StreamingPreviewManager` (which is `@ObservationIgnored`)
-    ///   propagate to the bubble.
-    /// - Committed: emits exactly one entry, then terminates — no timer
-    ///   heartbeat. Body re-evaluations come from parent state changes.
-    ///
-    /// Single concrete schedule type means a single `TimelineView` generic
-    /// across both states, which preserves SwiftUI structural identity at
-    /// the streaming → committed transition. `Equatable` synthesis lets
-    /// SwiftUI's view diff fast-path skip TimelineView re-arming when
-    /// neither field changed.
-    struct BubbleSchedule: TimelineSchedule, Equatable {
-        let isStreaming: Bool
-        let streamingInterval: TimeInterval
-
-        func entries(from startDate: Date, mode: TimelineScheduleMode) -> Entries {
-            Entries(
-                startDate: startDate,
-                isStreaming: isStreaming,
-                interval: streamingInterval
-            )
-        }
-
-        nonisolated struct Entries: Sequence, IteratorProtocol {
-            let startDate: Date
-            let isStreaming: Bool
-            let interval: TimeInterval
-            var iteration: Int = 0
-
-            mutating func next() -> Date? {
-                guard isStreaming else {
-                    // Committed bubbles emit exactly one entry, then end.
-                    if iteration == 0 {
-                        iteration = 1
-                        return startDate
-                    }
-                    return nil
-                }
-                let entry = startDate.addingTimeInterval(Double(iteration) * interval)
-                iteration += 1
-                return entry
-            }
-        }
-    }
-
-    /// Streaming tick interval for `BubbleSchedule`. Three-way table:
-    ///
-    /// | isResizing | reduceMotion | interval                  | rationale |
-    /// |------------|--------------|---------------------------|-----------|
-    /// | true       | any          | `.greatestFiniteMagnitude`| Freeze: TimelineView arm preserved (structural identity invariant) but no new ticks fire while the user drags the window. |
-    /// | false      | true         | 1.0                       | Slower tick (1 Hz) for users with Reduce Motion — visible streaming progress without churn. |
-    /// | false      | false        | 0.3                       | Default 3.3 Hz heartbeat — fast enough that token deltas feel live, slow enough to avoid LazyVStack thrash. |
-    ///
-    /// `nonisolated` because the math is pure — tests pin the truth table
-    /// without instantiating the view. Pinned by `StreamingIntervalResolverTests`.
-    nonisolated static func resolveStreamingInterval(
-        isResizing: Bool,
-        reduceMotion: Bool
-    ) -> TimeInterval {
-        if isResizing { return .greatestFiniteMagnitude }
-        return reduceMotion ? 1.0 : 0.3
-    }
-
-    /// Resolves a per-tick `BubbleInputs` from `(msg, streaming snapshot)`.
+    /// Resolves a `BubbleInputs` from `(msg, streaming snapshot)`.
     /// Static + injectable snapshot so it's callable from XCTest.
     ///
     /// For `.supervisorMessage` turns (queued chat delivery +

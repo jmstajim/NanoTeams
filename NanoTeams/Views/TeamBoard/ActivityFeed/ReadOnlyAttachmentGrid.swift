@@ -35,7 +35,7 @@ struct ReadOnlyAttachmentGrid: View {
             .map { Clip.derived(text: $0.element, ordinal: $0.offset, seed: clipSeed) }
 
         if !resolvedFiles.isEmpty || !nonEmptyClips.isEmpty {
-            ScrollView(.horizontal, showsIndicators: false) {
+            ScrollView(.horizontal) {
                 HStack(spacing: Spacing.s) {
                     ForEach(nonEmptyClips) { clip in
                         ClipCell(text: clip.text)
@@ -46,6 +46,7 @@ struct ReadOnlyAttachmentGrid: View {
                 }
                 .padding(Spacing.s)
             }
+            .scrollIndicators(.never)
             .frame(height: 80)
             .background(
                 RoundedRectangle.squircle(CornerRadius.small)

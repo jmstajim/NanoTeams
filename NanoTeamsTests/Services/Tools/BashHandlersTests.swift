@@ -152,9 +152,12 @@ final class BashHandlersTests: XCTestCase {
         }
 
         let outputTool = BashOutputTool()
-        // Poll up to ~3s for the background process to flush and exit.
+        // Poll until the background process's output arrives. The bound is a deadline for a hung
+        // process, not a latency expectation: a fixed ~3 s window failed inside the full parallel
+        // suite (11 test hosts) and passed alone (2026-09-15).
         var sawOutput = false
-        for _ in 0..<30 {
+        let deadline = ContinuousClock.now + .seconds(20)
+        while ContinuousClock.now < deadline {
             let read = await outputTool.handle(context: context(), args: ["command_id": commandID])
             let data = successData(read.outputJSON)
             let out = (data?["output"] as? String ?? "")

@@ -2,16 +2,18 @@ import AppKit
 import UniformTypeIdentifiers
 
 /// Pre-instantiated, reusable `NSOpenPanel` so the first `+` click in
-/// `MessageComposer` doesn't pay the AppKit/XPC cold-start cost. Call
-/// `warmup()` once at app launch (after the main window is up) so the
-/// allocation runs while the user is reading the watchtower.
+/// `MessageComposer` doesn't pay the AppKit/XPC cold-start cost. The composer
+/// calls `warmup()` when the pointer first enters its `+`, so the ≈0.5 s allocation
+/// happens on the way to the click. It used to run at launch, where it landed on the
+/// board's first frames as a 516 ms hitch (trace, 2026-09-15).
 ///
 /// `present(...)` is the only sanctioned entry point for callers; it
 /// resets per-call state, guards against re-entry inside the nested
 /// modal event loop, and returns the user's selection.
 @MainActor
 enum FilePickerWarmup {
-    /// Forces lazy initialization of `sharedPanel`. Call from app startup.
+    /// Forces lazy initialization of `sharedPanel`. Idempotent — called on every hover
+    /// over a composer's `+`.
     static func warmup() {
         _ = sharedPanel
     }

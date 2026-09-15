@@ -373,32 +373,12 @@ struct TeamActivityFeedView: View {
     /// transient mid-commit content-size — the burst-resets below still gate every
     /// fire to AFTER a commit's spike→collapse settles.
     @State private var scrollPosition = ScrollPosition(edge: .bottom)
-    @State private var scrollSettleTask: Task<Void, Never>?
-    /// Start of the current coalesced follow burst — drives the max-wait force-fire.
-    @State private var settleBurstStart: Date?
-    /// Exact bottom content-offset computed from the accurate SwiftUI geometry each tick;
-    /// the deferred scroll sets this directly so it can't land short/over from the
-    /// NSScrollView's lagging content-size. `nil` until the first geometry tick after a
-    /// task switch — the settle falls back to `scrollTo(edge: .bottom)` then, so a
-    /// stale target stashed from the PREVIOUS task's feed can never fly the offset
-    /// past the new (shorter) feed's end.
-    @State private var lastBottomTargetY: CGFloat?
-    /// Debounce for releasing the bottom-pin — a transient container/cH blip must NOT
-    /// drop follow; only a sustained departure does.
-    @State private var gateReleaseTask: Task<Void, Never>?
-
-    /// How long `dist` must stay past the threshold before the pin releases (filters
-    /// transient layout-negotiation blips from a real scroll-up).
-    private static let gateReleaseDelayMs = 160
-
-    /// Quiet window (ms) the layout must hold before the deferred scroll fires — above
-    /// the dense intra-commit tick spacing (~1-15ms) so a commit's spike→collapse burst
-    /// coalesces into ONE post-settle scroll.
-    private static let scrollSettleQuietMs = 70
-    /// Hard ceiling (ms) on the coalesce: during FAST continuous streaming geometry
-    /// ticks never leave a quiet window, so force-fire at least this often or the feed
-    /// drifts up and the gate latches out of follow (the observed "stuck" failure).
-    private static let scrollSettleMaxWaitMs = 220
+    /// The follow bookkeeping — last bottom target and distance, settle burst, pending settle
+    /// and gate-release tasks. No body reads it, so it is a reference rather than `@State`
+    /// values: the geometry action writes it on every tick, and a `@State` write schedules a
+    /// transaction on the window whether or not anything reads it. The timing constants and
+    /// the fire-time decision live there too.
+    @State private var scrollFollow = ScrollFollowState()
 
     /// Top padding for one feed row — two tiers plus a zero.
     ///
@@ -407,7 +387,7 @@ struct TeamActivityFeedView: View {
     /// change (`ActivityFeedBuilder.continuesTurn` rejects it), and the header
     /// row supplies its own separation on top of the gap.
     ///
-    /// Pinned by `ActivityFeedTurnGroupingTests`.
+    /// Pinned by `ActivityFeedBuilderTests.testRowTopPadding_tiers`.
     static func rowTopPadding(isFirst: Bool, continuesTurn: Bool) -> CGFloat {
         if isFirst { return 0 }
         return continuesTurn
@@ -525,9 +505,12 @@ struct TeamActivityFeedView: View {
             )
         } action: { old, new in
             // Stash the scroll-to-bottom target (= resting offset + insTop; see
-            // `bottomTargetY`). Writing @State here in the ACTION is valid; doing it
-            // in the transform would be dropped as "state mutation during view update".
-            lastBottomTargetY = new.bottomTargetY
+            // `bottomTargetY`) and the distance the settle decides on. Written in the
+            // ACTION, never the transform (that would be dropped as "state mutation during
+            // view update") — and into `scrollFollow`, a reference, so this per-tick write
+            // schedules no transaction.
+            scrollFollow.lastBottomTargetY = new.bottomTargetY
+            scrollFollow.lastDistanceFromBottom = new.distanceFromBottom
             // A content-growth-under-pinned-scroll tick keeps the pin; otherwise the
             // pin is recomputed from the (real-offset) geometry — that's where a
             // deliberate user scroll up/down flips it.
@@ -541,22 +524,25 @@ struct TeamActivityFeedView: View {
             let nowNear = new.distanceFromBottom <= TeamActivityFeedViewModel.nearBottomThreshold
             if follow || nowNear {
                 // Following growth, or back within the band → engage/keep the pin NOW.
-                gateReleaseTask?.cancel()
-                gateReleaseTask = nil
+                scrollFollow.gateReleaseTask?.cancel()
+                scrollFollow.gateReleaseTask = nil
                 if !viewModel.isNearBottom {
                     viewModel.isNearBottom = true
                 }
-            } else if viewModel.isNearBottom, gateReleaseTask == nil {
+            } else if viewModel.isNearBottom, scrollFollow.gateReleaseTask == nil {
                 // dist > threshold and not a growth tick. This is EITHER a deliberate
                 // scroll-up OR a transient layout-negotiation blip (e.g. a commit's
                 // spike→collapse, or a settle-scroll briefly landing off). Debounce the
                 // release so only a SUSTAINED departure drops follow — a blip that
                 // recovers within the window is cancelled above by a near/growth tick.
-                gateReleaseTask = Task { @MainActor in
-                    try? await Task.sleep(for: .milliseconds(Self.gateReleaseDelayMs))
+                scrollFollow.gateReleaseTask = Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(ScrollFollowState.gateReleaseDelayMs))
                     guard !Task.isCancelled else { return }
-                    gateReleaseTask = nil
-                    viewModel.isNearBottom = false
+                    scrollFollow.gateReleaseTask = nil
+                    // Guarded: an `@Observable` setter notifies on every write, equal or not.
+                    if viewModel.isNearBottom {
+                        viewModel.isNearBottom = false
+                    }
                 }
             }
             // A SHRINK means we're inside a commit's spike→collapse oscillation (a fast
@@ -564,7 +550,7 @@ struct TeamActivityFeedView: View {
             // on the QUIET settle (after the collapse), never via a mid-transient
             // force-fire — that mid-transient fire is what left the scroll past the
             // collapsed bottom (dist≈-550) until the next settle corrected it.
-            if new.contentHeight < old.contentHeight { settleBurstStart = nil }
+            if new.contentHeight < old.contentHeight { scrollFollow.settleBurstStart = nil }
             // Reschedule the deferred scroll on EVERY geometry change so it fires only
             // after the layout quiesces (the commit spike→collapse fully settles).
             requestSettleScroll()
@@ -589,14 +575,13 @@ struct TeamActivityFeedView: View {
             // glitch. Reset the max-wait burst so the follow can't force-fire mid-spike —
             // it waits for the QUIET settle after the spike→collapse, where the edge
             // content-size is correct (no overshoot).
-            settleBurstStart = nil
+            scrollFollow.settleBurstStart = nil
             viewModel.scheduleStructuralRebuild(context: buildContext())
         }
         .onChange(of: store.activeTaskID) { _, _ in
-            scrollSettleTask?.cancel()
-            gateReleaseTask?.cancel()
-            settleBurstStart = nil
-            lastBottomTargetY = nil
+            // Cancels both pending tasks AND drops the stashed geometry: a target from the
+            // previous task's feed must never be applied to this one.
+            scrollFollow.resetForTaskSwitch()
             viewModel.resetForTaskSwitch()
         }
         .onReceive(NotificationCenter.default.publisher(for: .scrollFeedToBottom)) { _ in
@@ -604,9 +589,7 @@ struct TeamActivityFeedView: View {
             requestSettleScroll()
         }
         .onDisappear {
-            scrollSettleTask?.cancel()
-            gateReleaseTask?.cancel()
-            settleBurstStart = nil
+            scrollFollow.cancelPending()
             viewModel.cancelStructuralRebuild()
         }
     }
@@ -615,31 +598,35 @@ struct TeamActivityFeedView: View {
     /// notification surfaces) calls this; it reschedules a single scroll for
     /// `scrollSettleQuietMs` after the LAST tick — so a commit's spike→collapse burst
     /// collapses to ONE scroll — but never later than `scrollSettleMaxWaitMs` after the
-    /// burst began, so FAST continuous streaming (no quiet window) still follows. At
-    /// fire it re-checks the pin and edge-scrolls to the bottom. A commit additionally
-    /// resets the burst (geo-action shrink + the `structuralVersion` onChange), so the
-    /// fire always lands AFTER the spike→collapse settles — where the edge content-size
-    /// is correct, so no overshoot.
+    /// burst began, so FAST continuous streaming (no quiet window) still follows. A commit
+    /// additionally resets the burst (geo-action shrink + the `structuralVersion` onChange),
+    /// so the fire always lands AFTER the spike→collapse settles — where the content size is
+    /// correct, so no overshoot. What the fire does is `ScrollFollowState.settleScroll`:
+    /// the exact bottom offset from live geometry (not the edge, which lags), the edge only
+    /// when no tick has stashed a target yet, and nothing at all when the feed already sits
+    /// at its bottom — a `ScrollPosition` write is a transaction and a scroll commit even
+    /// when it moves nothing.
     private func requestSettleScroll() {
-        scrollSettleTask?.cancel()
+        scrollFollow.scrollSettleTask?.cancel()
         let now = Date()
-        let burstStart = settleBurstStart ?? now
-        settleBurstStart = burstStart
-        let quietFireAt = now.addingTimeInterval(Double(Self.scrollSettleQuietMs) / 1000)
-        let maxFireAt = burstStart.addingTimeInterval(Double(Self.scrollSettleMaxWaitMs) / 1000)
-        let delayMs = Int(max(0, min(quietFireAt, maxFireAt).timeIntervalSince(now) * 1000))
-        scrollSettleTask = Task { @MainActor in
+        let burstStart = scrollFollow.settleBurstStart ?? now
+        scrollFollow.settleBurstStart = burstStart
+        let delayMs = ScrollFollowState.settleDelayMs(now: now, burstStart: burstStart)
+        scrollFollow.scrollSettleTask = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(delayMs))
             guard !Task.isCancelled else { return }
-            settleBurstStart = nil
-            guard viewModel.isNearBottom else { return }
-            // Set the EXACT bottom offset from accurate geometry (not edge, which
-            // lags). Edge-scroll only when no tick has stashed a target yet (fresh
-            // task switch) — a stale cross-task target must never be applied.
-            if let targetY = lastBottomTargetY {
+            scrollFollow.settleBurstStart = nil
+            switch ScrollFollowState.settleScroll(
+                isNearBottom: viewModel.isNearBottom,
+                bottomTargetY: scrollFollow.lastBottomTargetY,
+                distanceFromBottom: scrollFollow.lastDistanceFromBottom
+            ) {
+            case .toY(let targetY):
                 scrollPosition.scrollTo(y: targetY)
-            } else {
+            case .toBottomEdge:
                 scrollPosition.scrollTo(edge: .bottom)
+            case nil:
+                break
             }
         }
     }
@@ -764,19 +751,11 @@ struct TeamActivityFeedView: View {
 
     // MARK: - Message Bubble (streaming wrapper)
 
-    @ViewBuilder
     private func messageBubble(msg: LLMMessage, role: Role, stepID: String, originTaskID: Int, showHeader: Bool) -> some View {
-        // Hoisted outside the TimelineView closure — these don't change per
-        // tick. Pulling them inside would re-walk role/team lookups at 3.3Hz.
-        let tap = showHeader ? avatarTap(for: role, originTaskID: originTaskID) : nil
-        let labelOverride = childRoleLabel(for: role, originTaskID: originTaskID)
-        let teamSuffix = childTeamSuffix(for: originTaskID)
-        let resolvedDef = findRoleDefinition(for: role, originTaskID: originTaskID)
-        // Schedule re-arms only on parent body re-eval; capture-at-parent
-        // is correct here. The per-tick `snapshot.isStreaming` below reads
-        // live so the streaming → committed transition doesn't lag behind
-        // `streamingManager.commit` for up to one tick.
-        let scheduleIsStreaming = streamingManager.isStreaming(messageID: msg.id)
+        // Read on the parent pass. `structuralVersion` — which this body observes through its
+        // `onChange` key — moves when a stream begins or commits, so the flip reaches here and
+        // becomes a new poll id below; within a stream the bubble's own poll reads live.
+        let isStreaming = streamingManager.isStreaming(messageID: msg.id)
         // O(1) set membership. This used to call `resolveImplicitStreamTarget`,
         // which walks the step's whole conversation — once per rendered bubble,
         // inside a non-lazy `VStack`, i.e. Θ(M²) per body pass in chat mode. The
@@ -785,69 +764,31 @@ struct TeamActivityFeedView: View {
         // `isPreviewTarget` stays live at the call site: it flips between
         // rebuilds, and freezing it into the set would lag the streaming →
         // committed transition by a tick.
-        let isImplicitStreamTarget = !scheduleIsStreaming
+        let isImplicitStreamTarget = !isStreaming
             && viewModel.implicitStreamTargetIDs.contains(msg.id)
-        // During NSWindow live-resize, stretch the streaming heartbeat to
-        // effectively infinity so the TimelineView arm is preserved (per
-        // the structural-identity invariant documented below) but no new
-        // ticks are queued. Per-bubble width re-measure via
-        // `SelectableMessageText.sizeThatFits` still runs on every resize
-        // delta, but the bubble's content snapshot stays frozen — no
-        // streaming churn compounding the resize cost.
-        let streamingInterval = Self.resolveStreamingInterval(
-            isResizing: resizeMonitor.isResizing,
-            reduceMotion: reduceMotion
-        )
-        let schedule = BubbleSchedule(
-            isStreaming: scheduleIsStreaming,
-            streamingInterval: streamingInterval
-        )
 
         // Empty `.supervisorMessage` C4-race turns are filtered at
-        // `ActivityFeedBuilder.shouldSuppressEmptySupervisorMessage` so the
-        // dispatcher renders one structural slot — `MessageBubbleView` —
-        // unconditionally. Crossing two `_ConditionalContent` arms would
-        // remount `SelectableMessageText` on the streaming → committed flip
-        // and defeat the append-only optimization.
-        TimelineView(schedule) { _ in
-            let snapshot = Self.makeStreamingSnapshot(
-                manager: streamingManager,
-                messageID: msg.id,
-                stepID: stepID,
-                taskID: originTaskID
+        // `ActivityFeedBuilder.shouldSuppressEmptySupervisorMessage`, so every message renders
+        // through this one slot; `LiveMessageBubble` keeps `MessageBubbleView` unconditional
+        // inside it, so the streaming → committed flip never remounts `SelectableMessageText`.
+        return LiveMessageBubble(
+            message: msg,
+            role: role,
+            roleDefinition: findRoleDefinition(for: role, originTaskID: originTaskID),
+            stepID: stepID,
+            originTaskID: originTaskID,
+            isImplicitStreamTarget: isImplicitStreamTarget,
+            showHeader: showHeader,
+            onAvatarTap: showHeader ? avatarTap(for: role, originTaskID: originTaskID) : nil,
+            roleLabelOverride: childRoleLabel(for: role, originTaskID: originTaskID),
+            roleTeamSuffix: childTeamSuffix(for: originTaskID),
+            workFolderURL: store.workFolderURL,
+            pollInterval: LiveMessageBubble.pollInterval(
+                isStreaming: isStreaming,
+                isResizing: resizeMonitor.isResizing,
+                reduceMotion: reduceMotion
             )
-            let inputs = Self.resolveBubbleInputs(msg: msg, streaming: snapshot)
-            // `.equatable()` applied unconditionally rather than gated on
-            // `inputs.isStreaming`. Reason: gating would require a
-            // `_ConditionalContent` branch around the bubble, which would
-            // remount `SelectableMessageText` on the streaming → committed
-            // flip and defeat the append-only optimization (see the
-            // structural-identity comment above). The cost of an extra
-            // `==` per streaming tick is a handful of string compares;
-            // the cost of remounting NSTextView is full TextKit re-shape.
-            // For committed bubbles `==` returns true and SwiftUI skips
-            // the entire subtree — the actual goal of this change.
-            MessageBubbleView(
-                message: msg, role: role,
-                roleDefinition: resolvedDef,
-                content: inputs.contentForBubble,
-                thinking: inputs.thinkingForBubble,
-                processingStatus: inputs.processingStatus,
-                hasStreamActivity: inputs.hasStreamActivity,
-                isStreamingToolCall: inputs.isStreamingToolCall,
-                isCompacting: inputs.isCompacting,
-                isStreaming: inputs.isStreaming,
-                isImplicitStreamTarget: isImplicitStreamTarget,
-                showHeader: showHeader,
-                onAvatarTap: tap,
-                roleLabelOverride: labelOverride,
-                roleTeamSuffix: teamSuffix,
-                attachmentPaths: inputs.attachmentPaths,
-                clippedTexts: inputs.clippedTexts,
-                workFolderURL: store.workFolderURL
-            )
-            .equatable()
-        }
+        )
     }
 
 }

@@ -273,7 +273,7 @@ final class TeamRoleDefinitionTests: XCTestCase {
         XCTAssertEqual(decoded.iconBackground, RoleColorDefaults.defaultBackgroundHex(for: "productManager"), "Should default to productManager color")
     }
 
-    func testResolvedTintColor_CustomBackground() {
+    @MainActor func testResolvedTintColor_CustomBackground() async {
         let role = TeamRoleDefinition(
             id: "test_custom",
             name: "Custom",
@@ -287,7 +287,7 @@ final class TeamRoleDefinitionTests: XCTestCase {
         let _ = role.resolvedTintColor
     }
 
-    func testResolvedTintColor_DefaultBackground() {
+    @MainActor func testResolvedTintColor_DefaultBackground() async {
         let role = TeamRoleDefinition(
             id: "test_pm_default",
             name: "PM",
@@ -301,7 +301,7 @@ final class TeamRoleDefinitionTests: XCTestCase {
         let _ = role.resolvedTintColor
     }
 
-    func testResolvedIconColor_CustomForeground() {
+    @MainActor func testResolvedIconColor_CustomForeground() async {
         let role = TeamRoleDefinition(
             id: "test_custom_fg",
             name: "Custom",
@@ -324,17 +324,17 @@ final class TeamRoleDefinitionTests: XCTestCase {
 
     // MARK: - Hex Conversion Tests
 
-    func testHexToColor_Valid() {
+    @MainActor func testHexToColor_Valid() async {
         XCTAssertNotNil(Color(hex: "#FF5733"))
         XCTAssertNotNil(Color(hex: "#000000"))
         XCTAssertNotNil(Color(hex: "#FFFFFF"))
     }
 
-    func testHexToColor_WithoutHash() {
+    @MainActor func testHexToColor_WithoutHash() async {
         XCTAssertNotNil(Color(hex: "FF5733"))
     }
 
-    func testHexToColor_Invalid() {
+    @MainActor func testHexToColor_Invalid() async {
         XCTAssertNil(Color(hex: "invalid"))
         XCTAssertNil(Color(hex: "#GGG"))
         XCTAssertNil(Color(hex: "#FF"))

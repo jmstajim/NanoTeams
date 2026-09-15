@@ -249,7 +249,7 @@ final class TeamMeetingServiceTests: XCTestCase {
 
     // MARK: - generateMeetingResultForConversation Tests
 
-    func testGenerateMeetingResultForConversation_WithDecision_IncludesDecision() {
+    @MainActor func testGenerateMeetingResultForConversation_WithDecision_IncludesDecision() async {
         var meeting = createBasicMeeting()
         meeting.start()
         TeamMeetingService.concludeMeeting(
@@ -268,7 +268,7 @@ final class TeamMeetingServiceTests: XCTestCase {
         XCTAssertTrue(result.contains("Engineer implements Redis cache"))
     }
 
-    func testGenerateMeetingResultForConversation_WithoutDecision_IncludesKeyPoints() {
+    @MainActor func testGenerateMeetingResultForConversation_WithoutDecision_IncludesKeyPoints() async {
         var meeting = createBasicMeeting()
         meeting.start()
 
@@ -294,7 +294,7 @@ final class TeamMeetingServiceTests: XCTestCase {
     /// enum `displayName` is a roster the model cannot match against `## Team` or the
     /// `ask_teammate` schema ("as listed under Members"), so every name resolves through the
     /// team — the rule every other meeting line already followed.
-    func testGenerateMeetingResultForConversation_namesParticipantsAsTheTeamDoes() {
+    @MainActor func testGenerateMeetingResultForConversation_namesParticipantsAsTheTeamDoes() async {
         var team = TeamTemplateFactory.faang()
         guard var designer = team.roles.first(where: { $0.systemRoleID == "uxDesigner" }) else {
             return XCTFail("FAANG has a UX Designer")

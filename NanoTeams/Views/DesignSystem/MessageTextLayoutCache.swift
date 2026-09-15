@@ -4,7 +4,8 @@ import Foundation
 // MARK: - MessageTextLayoutCache
 
 /// Persistent measure-side `NSLayoutManager` + `NSTextContainer` pair that
-/// memoizes `usedRect(for:)` height by `(textStorage.length, ceil(width))`.
+/// memoizes `usedRect(for:)` height for the current `textStorage.length` at up
+/// to `widthMemoCapacity` distinct `ceil(width)` values.
 ///
 /// Used by both an append-only streaming bubble (`SelectableMessageText`)
 /// and an editable composer field (`EditableMessageTextView`). One
@@ -20,11 +21,20 @@ import Foundation
 /// With this cache, the second through Nth proposal at the same width
 /// hit a stored height and skip TextKit entirely.
 ///
+/// **Why several widths, not one.** One instance is asked at more than one width
+/// in ordinary layout — `sizeThatFits` at its proposal, and `intrinsicContentSize`'s
+/// fallback at the feed's last real width — and a single `(length, width)` slot turns
+/// every alternation into a miss: `setSize` on the measure container, then a full
+/// `ensureLayout`. Measured 2026-09-15 on an idle run (no tokens arriving, so no
+/// length changed): 65–110 ms/s of main thread in `measure → ensureLayout`, with
+/// `-[NSTextContainer setSize:]` under it — only a width change calls that.
+///
 /// Invalidation:
-/// - Width change → re-ensureLayout with the new container size.
-/// - `textStorage.length` change → re-ensureLayout, natural cost.
+/// - Width not in the memo → re-ensureLayout at that width; the least recently
+///   used width is evicted past `widthMemoCapacity`.
+/// - `textStorage.length` change → the whole memo is dropped, natural cost.
 /// - Sub-string-equivalent edits at the same length wrap differently
-///   but share the `(length, width)` key. Append-only callers never
+///   but share the key. Append-only callers never
 ///   hit this case (length always changes). Editable callers MUST call
 ///   `markStale()` on every text mutation to force the next `measure`
 ///   to re-shape.
@@ -39,17 +49,31 @@ import Foundation
 @MainActor
 final class MessageTextLayoutCache {
 
+    /// Distinct widths remembered for one length. Two is what one instance is asked
+    /// at in steady state; the headroom absorbs a transient proposal (a scroller
+    /// appearing, a split-view drag settling) without evicting either of those.
+    static let widthMemoCapacity = 4
+
+    private struct Measurement {
+        let width: CGFloat
+        let height: CGFloat
+    }
+
     private let measureLayoutManager: NSLayoutManager
     private let measureContainer: NSTextContainer
     private weak var attachedStorage: NSTextStorage?
 
-    private var lastLength: Int = -1
-    private var lastWidth: CGFloat = -1
-    private var lastHeight: CGFloat = 0
+    /// The length every entry of `memo` was measured at; -1 = nothing memoized.
+    private var memoLength: Int = -1
+    /// Least recently used first.
+    private var memo: [Measurement] = []
 
     #if DEBUG
     private(set) var computeCount: Int = 0
     private(set) var hitCount: Int = 0
+    /// Every snapped width a miss measured at, in order — the evidence a layout-pass test
+    /// prints when a relayout at an unchanged width measures again.
+    private(set) var computedWidthsForTesting: [CGFloat] = []
     #endif
 
     init() {
@@ -65,31 +89,36 @@ final class MessageTextLayoutCache {
 
     /// Returns the height (ceiled) needed to render `textStorage` at
     /// `width`. Idempotent: attaches to `textStorage` on first call,
-    /// rebinds (and resets the height cache) if a different storage is
-    /// passed.
+    /// rebinds (and resets the memo) if a different storage is passed.
     func measure(textStorage: NSTextStorage, width: CGFloat) -> CGFloat {
         if attachedStorage !== textStorage {
             attachedStorage?.removeLayoutManager(measureLayoutManager)
             textStorage.addLayoutManager(measureLayoutManager)
             attachedStorage = textStorage
-            // Invalidate height cache — new storage means a different
-            // string and probably a different length.
-            lastLength = -1
-            lastWidth = -1
+            // New storage means a different string and probably a different length.
+            forget()
         }
 
         let snappedWidth = ceil(width)
         let currentLength = textStorage.length
 
-        if lastLength == currentLength, lastWidth == snappedWidth {
+        if memoLength != currentLength {
+            memo.removeAll(keepingCapacity: true)
+            memoLength = currentLength
+        }
+
+        if let index = memo.firstIndex(where: { $0.width == snappedWidth }) {
             #if DEBUG
             hitCount += 1
             #endif
-            return lastHeight
+            let hit = memo.remove(at: index)
+            memo.append(hit)
+            return hit.height
         }
 
         #if DEBUG
         computeCount += 1
+        computedWidthsForTesting.append(snappedWidth)
         #endif
 
         if measureContainer.size.width != snappedWidth {
@@ -101,25 +130,24 @@ final class MessageTextLayoutCache {
         measureLayoutManager.ensureLayout(for: measureContainer)
         let height = ceil(measureLayoutManager.usedRect(for: measureContainer).height)
 
-        lastLength = currentLength
-        lastWidth = snappedWidth
-        lastHeight = height
+        memo.append(Measurement(width: snappedWidth, height: height))
+        if memo.count > Self.widthMemoCapacity {
+            memo.removeFirst()
+        }
         return height
     }
 
-    /// Invalidates the memoized height so the next `measure` call
+    /// Invalidates every memoized height so the next `measure` call
     /// re-runs `ensureLayout` even if `(length, width)` haven't changed.
     ///
     /// Read-only callers (streaming bubbles) edit append-only — length
-    /// always changes — so the `lastLength` check alone protects them.
+    /// always changes — so the length check alone protects them.
     /// Editable callers can perform sub-string-equivalent rewrites
     /// (paste, replace selection) where the new string wraps differently
     /// at the same length, and need an explicit invalidation hook to
     /// avoid stale heights surviving the edit.
     func markStale() {
-        lastLength = -1
-        lastWidth = -1
-        lastHeight = 0
+        forget()
     }
 
     /// Detaches the measure-LM from its bound `textStorage`. Called from
@@ -129,8 +157,11 @@ final class MessageTextLayoutCache {
             storage.removeLayoutManager(measureLayoutManager)
         }
         attachedStorage = nil
-        lastLength = -1
-        lastWidth = -1
-        lastHeight = 0
+        forget()
+    }
+
+    private func forget() {
+        memoLength = -1
+        memo.removeAll(keepingCapacity: true)
     }
 }

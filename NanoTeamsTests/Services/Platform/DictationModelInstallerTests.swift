@@ -5,7 +5,7 @@ import XCTest
 /// Scripted install request. `downloadAndInstall` blocks on a continuation the test
 /// releases, so a cancellation can be delivered while the download is genuinely in flight
 /// rather than merely before or after it.
-private final class ScriptedInstallRequest: DictationInstallRequest, @unchecked Sendable {
+nonisolated private final class ScriptedInstallRequest: DictationInstallRequest, @unchecked Sendable {
     enum Behaviour {
         /// Return normally, immediately.
         case succeedImmediately
@@ -69,7 +69,7 @@ private final class ScriptedInstallRequest: DictationInstallRequest, @unchecked 
 
 /// Scripted inventory. Records every `release` so the rollback assertions can distinguish
 /// "rolled back once" from "never" and from "twice".
-private final class ScriptedAssetInventory: DictationAssetInventory, @unchecked Sendable {
+nonisolated private final class ScriptedAssetInventory: DictationAssetInventory, @unchecked Sendable {
     private let lock = NSLock()
     private var _released: [Locale] = []
     private var _isInstalled: Bool

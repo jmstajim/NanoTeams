@@ -26,8 +26,20 @@ final class WorkFolderManagementService {
         self.xcodebuildRunner = xcodebuildRunner
     }
 
-    func openOrCreateWorkFolder(at url: URL) throws -> WorkFolderContext {
-        try repository.openOrCreateWorkFolder(at: url)
+    /// Reads, migrates and hydrates the folder OFF the main actor.
+    ///
+    /// The open decodes `workfolder.json` / `settings.json` / `teams.json`, the tasks index
+    /// and the active task with its step logs (`hydrateStreams`). On the main thread that
+    /// was 165 ms at launch on a long task (trace, 2026-09-15), on top of the first frames.
+    /// The repository is `Sendable` and touches only the file system, so the whole call
+    /// detaches — the same shape as `mutateTask`'s detached write. Callers must treat the
+    /// suspension as a window in which a newer open can start (`openWorkFolder` checks a
+    /// generation counter after it).
+    func openOrCreateWorkFolder(at url: URL) async throws -> WorkFolderContext {
+        let repository = self.repository
+        return try await Task.detached(priority: .userInitiated) {
+            try repository.openOrCreateWorkFolder(at: url)
+        }.value
     }
 
     /// `activeTask` is the caller's in-memory copy, threaded rather than re-read: see the

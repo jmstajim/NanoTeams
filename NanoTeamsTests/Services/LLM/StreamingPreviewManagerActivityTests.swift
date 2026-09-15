@@ -276,7 +276,7 @@ final class StreamingPreviewManagerActivityTests: XCTestCase {
     // MARK: - structuralVersion discipline (timeline-rebuild churn guard)
 
     /// `structuralVersion` increments ONLY on preview add/remove — flag sets
-    /// and thinking appends are polled by TimelineView and must NOT trigger
+    /// and thinking appends are polled by `LiveMessageBubble` and must NOT trigger
     /// timeline rebuilds. The tool-call flag flips at marker-detection
     /// frequency; bumping the version there would churn `recomputeAndRebuild`
     /// mid-stream.

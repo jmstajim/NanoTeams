@@ -28,7 +28,7 @@ final class StepStatusTests: XCTestCase {
         XCTAssertEqual(StepStatus.done.rawValue, "done")
     }
 
-    func testStepStatusDisplayLabel() {
+    @MainActor func testStepStatusDisplayLabel() async {
         XCTAssertEqual(StepStatus.pending.displayLabel, "Pending")
         XCTAssertEqual(StepStatus.running.displayLabel, "Running")
         XCTAssertEqual(StepStatus.paused.displayLabel, "Paused")
@@ -38,7 +38,7 @@ final class StepStatusTests: XCTestCase {
         XCTAssertEqual(StepStatus.done.displayLabel, "Done")
     }
 
-    func testStepStatusShortDisplayLabel() {
+    @MainActor func testStepStatusShortDisplayLabel() async {
         // Most cases return the same as displayLabel
         XCTAssertEqual(StepStatus.pending.shortDisplayLabel, "Pending")
         XCTAssertEqual(StepStatus.running.shortDisplayLabel, "Running")
@@ -51,7 +51,7 @@ final class StepStatusTests: XCTestCase {
         XCTAssertEqual(StepStatus.needsApproval.shortDisplayLabel, "Needs review")
     }
 
-    func testStepStatusSystemImageName() {
+    @MainActor func testStepStatusSystemImageName() async {
         XCTAssertEqual(StepStatus.pending.systemImageName, "circle.dotted")
         XCTAssertEqual(StepStatus.running.systemImageName, "circle.inset.filled")
         XCTAssertEqual(StepStatus.paused.systemImageName, "pause.circle")

@@ -178,7 +178,7 @@ final class TeamMeetingExtendedTests: XCTestCase {
 
     // MARK: - generateMeetingResultForConversation Edge Cases
 
-    func testGenerateMeetingResult_EmptyMeetingNoDecisions() {
+    @MainActor func testGenerateMeetingResult_EmptyMeetingNoDecisions() async {
         let meeting = createMeeting(participants: [.uxDesigner])
 
         let result = TeamMeetingService.generateMeetingResultForConversation(meeting: meeting, context: makeContext())
@@ -189,7 +189,7 @@ final class TeamMeetingExtendedTests: XCTestCase {
         XCTAssertFalse(result.contains("Decision:"))
     }
 
-    func testGenerateMeetingResult_WithKeyMessages_NoDecisions() {
+    @MainActor func testGenerateMeetingResult_WithKeyMessages_NoDecisions() async {
         var meeting = createMeeting(participants: [.uxDesigner, .softwareEngineer])
         meeting.start()
 
@@ -210,7 +210,7 @@ final class TeamMeetingExtendedTests: XCTestCase {
         XCTAssertTrue(result.contains("Software Engineer"))
     }
 
-    func testGenerateMeetingResult_LongMessages_Truncated() {
+    @MainActor func testGenerateMeetingResult_LongMessages_Truncated() async {
         var meeting = createMeeting(participants: [.uxDesigner])
         meeting.start()
 
