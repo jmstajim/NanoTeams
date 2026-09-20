@@ -246,11 +246,13 @@ final class BenchmarkDeletionTests: XCTestCase {
             generationTokensPerSecond: 40,
             generationRateSource: .serverDecodeWindow,
             bestGenerationTokensPerSecond: 40,
+            bestSampleCount: 1,
             timeToFirstTokenMs: 600,
             prefillTokensPerSecond: 2000,
             prefillSource: .serverPromptEval,
             runCount: 1,
             failedRunCount: 0,
+            ceilingRunCount: 0,
             lastMeasuredAt: Date(timeIntervalSince1970: 1000),
             isThrottled: false)
     }

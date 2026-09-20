@@ -667,7 +667,7 @@ private struct HealthyClient: LLMClient {
         logger _: NetworkLogger?, stepID _: String?, roleName _: String?
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         AsyncThrowingStream { continuation in
-            for index in 0..<(BenchmarkWarmUpPolicy.sufficientDeltas + 4) {
+            for index in 0..<(BenchmarkWarmUpPolicy.outputCeiling + 4) {
                 continuation.yield(StreamEvent(contentDelta: "t\(index)"))
             }
             continuation.yield(

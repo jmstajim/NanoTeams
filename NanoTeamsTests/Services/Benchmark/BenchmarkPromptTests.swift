@@ -23,15 +23,15 @@ final class BenchmarkPromptTests: XCTestCase {
     /// do is change the workload and leave the version alone, which silently mixes two regimes in
     /// one ranked column.
     ///
-    /// RED: edit one word of `BenchmarkPrompt.text`, or move `maxOutputTokens`, while leaving
+    /// RED: edit one word of `BenchmarkPrompt.text`, or move `outputCeiling`, while leaving
     /// `version` alone → the fingerprint assertion fails and names both edits it needs.
     func testWorkloadFingerprint_cannotMoveWithoutTheVersion() {
         XCTAssertEqual(
-            BenchmarkPrompt.version, 4,
+            BenchmarkPrompt.version, 5,
             "the version moved — update the fingerprint below in the same edit")
         XCTAssertEqual(
             Self.workloadFingerprint(),
-            "fe38c9fb8774fbc6f46963c89eaace6d177d0f608f633bef2200995215b8fca0",
+            "57cfd4dc875145366ccffab4ee1bfa9ad241a9a7ff80af5d8da124c33f187bf5",
             """
             The benchmark's workload changed. Old rows measured a different amount of work, so \
             they are no longer comparable — bump `BenchmarkPrompt.version` (the leaderboard drops \
@@ -43,10 +43,10 @@ final class BenchmarkPromptTests: XCTestCase {
     /// alone → the cap could be halved with the version untouched, and every existing row would
     /// keep being ranked beside samples measuring half the work.
     func testWorkloadFingerprint_coversTheCeilingAndNotOnlyTheText() {
-        let withCap = Self.digest(BenchmarkPrompt.text + "|cap=512")
-        let withOther = Self.digest(BenchmarkPrompt.text + "|cap=256")
+        let withCap = Self.digest(BenchmarkPrompt.text + "|cap=8192")
+        let withOther = Self.digest(BenchmarkPrompt.text + "|cap=4096")
         XCTAssertNotEqual(withCap, withOther)
-        XCTAssertEqual(withCap, Self.workloadFingerprint(), "512 is the shipped ceiling")
+        XCTAssertEqual(withCap, Self.workloadFingerprint(), "8192 is the shipped ceiling")
     }
 
     // MARK: - Properties the prompt's own doc comment claims
@@ -102,13 +102,29 @@ final class BenchmarkPromptTests: XCTestCase {
     /// run reports nothing while looking configured.
     func testCeiling_clearsTheMetricsFloorsByAWideMargin() {
         XCTAssertGreaterThan(
-            BenchmarkPrompt.maxOutputTokens, BenchmarkMetricsPolicy.minimumTokensForRate * 10)
+            BenchmarkPrompt.outputCeiling, BenchmarkMetricsPolicy.minimumTokensForRate * 10)
+    }
+
+    /// The ceiling is a runaway guard, and a guard that a healthy answer trips is not a guard —
+    /// it is the old measurement window wearing a new name, and it reinstates the defect that
+    /// made this version necessary.
+    ///
+    /// The margin is measured, not chosen: on LM Studio 0.4.25 / `qwen3.8-27b-splash` this prompt
+    /// reaches its own end at 2 626 output tokens. RED — and this is the specific regression this
+    /// pin exists for — someone walks the ceiling back to "save time": at 2 048 the measured
+    /// answer no longer fits, every sample voids, and the fingerprint pin above is the only other
+    /// obstacle, which a one-line paste satisfies.
+    func testCeiling_leavesRoomForTheMeasuredAnswer_soAHealthySampleNeverTripsIt() {
+        let measuredAnswerTokens = 2626
+        XCTAssertGreaterThan(
+            BenchmarkPrompt.outputCeiling, measuredAnswerTokens * 2,
+            "a guard has to sit clear of the work, not next to it")
     }
 
     // MARK: - Fingerprint
 
     static func workloadFingerprint() -> String {
-        digest(BenchmarkPrompt.text + "|cap=\(BenchmarkPrompt.maxOutputTokens)")
+        digest(BenchmarkPrompt.text + "|cap=\(BenchmarkPrompt.outputCeiling)")
     }
 
     private static func digest(_ value: String) -> String {

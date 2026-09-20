@@ -37,9 +37,20 @@ nonisolated enum BenchmarkLeaderboard {
         /// figure the server measured with one the app timed invites a comparison neither
         /// supports.
         var generationRateSource: GenerationRateSource?
-        /// The best run's rate, shown beside the median so both are visible and neither has to
-        /// stand in for the other.
+        /// The fastest single SAMPLE behind this row, shown beside the median so both are
+        /// visible and neither has to stand in for the other.
+        ///
+        /// A sample, not a run's median — changed 2026-09-20, and the change is what makes this
+        /// column mean something a reader can check against another tool. A chat window's footer
+        /// reports ONE generation; the median reports the middle of many; a max over run medians
+        /// reported neither, and on a two-run row it was simply the better of two medians.
+        ///
+        /// `max` grows with the number of samples drawn, so this figure is NOT comparable between
+        /// rows whose `bestSampleCount` differ, and the column prints that count beside it rather
+        /// than leaving the reader to assume equal bases.
         var bestGenerationTokensPerSecond: Double?
+        /// How many usable samples `bestGenerationTokensPerSecond` was the maximum of.
+        var bestSampleCount: Int
         var timeToFirstTokenMs: Double?
         var prefillTokensPerSecond: Double?
         /// The source every contributing run agreed on, or `nil` when they disagreed. A row whose
@@ -56,6 +67,13 @@ nonisolated enum BenchmarkLeaderboard {
         /// nothing" are different facts, and only the second is about the model. Without this the
         /// row said `2` after five attempts and nothing said what became of the other three.
         var failedRunCount: Int
+        /// Contributing runs whose every sample ran into `BenchmarkPrompt.outputCeiling`.
+        ///
+        /// Separate from `failedRunCount` because it is a different sentence: nothing failed, the
+        /// model simply never stopped writing, and the honest report is "not measured" rather than
+        /// a rate over the slice the ceiling admitted. Folding the two together would tell a user
+        /// their server is broken when their model is merely verbose.
+        var ceilingRunCount: Int
         var lastMeasuredAt: Date
         /// Every contributing run was measured while the machine was throttled or in low-power
         /// mode, so these numbers describe the thermal state as much as the model.
@@ -97,22 +115,80 @@ nonisolated enum BenchmarkLeaderboard {
         "\(provider.rawValue)|\(baseURLString.normalizedBaseURL)|\(modelName)"
     }
 
+    /// A model that was measured on the current prompt and STILL produced no rankable row.
+    ///
+    /// Exists because "no row" and "no measurement" look identical on screen and have opposite
+    /// fixes. The counters on `Row` — `failedRunCount`, `ceilingRunCount` — can only describe a
+    /// model that kept at least one usable sample; a model whose every run was voided is dropped
+    /// before those are computed, so without this it left the table with nothing said about it.
+    struct Unranked: Equatable, Sendable {
+        var modelName: String
+        /// Contributing runs behind the model — the number the card's sentence names.
+        var runCount: Int
+        var reason: Reason
+
+        /// The two reasons point at different fixes, which is the whole reason they are apart:
+        /// one says the model writes too much, the other says the measurement broke.
+        enum Reason: Equatable, Sendable {
+            /// EVERY contributing run produced only samples an output bound cut short. Not a
+            /// failure — the server answered and the model wrote; it simply never stopped.
+            case everyRunHitTheCeiling
+            /// EVERY contributing run was cut by the SERVER's own context window, below the
+            /// ceiling the app asked for. A different fix from the one above — `num_ctx` on the
+            /// server rather than a verbose model — and the likeliest of the three on a default
+            /// Ollama install (DEBTS Q-6).
+            case everyRunHitTheContextWindow
+            /// Everything else, mixtures included. A model with one run cut by the ceiling and
+            /// one that returned HTTP 500 is not a verbose-model story, so it lands here.
+            case noUsableSample
+        }
+    }
+
+    /// The ranked rows AND the models that could not be ranked, from one pass over one input.
+    ///
+    /// Two values rather than two functions: the second answer is a by-product of computing the
+    /// first, and a separate entry point would have to redo the grouping, the throttle fallback
+    /// and the summarising — three rules that would then have two homes to drift between.
+    struct Table: Equatable, Sendable {
+        var rows: [Row]
+        /// Sorted by model name, because the source is a Dictionary and an unstable order would
+        /// reshuffle a sentence on screen between renders.
+        var unranked: [Unranked]
+    }
+
     /// Builds the ranked rows.
     ///
-    /// - Parameters:
-    ///   - currentPromptVersion: runs measured with any other prompt are dropped entirely. The
-    ///     prompt version exists precisely so that a change of wording cannot silently place
-    ///     incomparable numbers side by side.
-    ///   - includeThrottled: when `false` (the default view), throttled runs do not contribute to
-    ///     a model that also has clean ones. A model with ONLY throttled runs still produces a row,
-    ///     marked — silently dropping it would hide that the measurement exists at all, the same
-    ///     reason void samples are recorded rather than discarded.
+    /// A view onto `table` — see there for the parameters. Kept because ranking is what almost
+    /// every caller wants, and because it is the signature the tests and the card already speak.
     static func rows(
         runs: [GenerationBenchmarkRun],
         samples: [GenerationBenchmarkSample],
         currentPromptVersion: Int,
         includeThrottled: Bool = false
     ) -> [Row] {
+        table(
+            runs: runs, samples: samples, currentPromptVersion: currentPromptVersion,
+            includeThrottled: includeThrottled
+        ).rows
+    }
+
+    /// Builds the ranked rows, and names the models that could not be ranked.
+    ///
+    /// - Parameters:
+    ///   - currentPromptVersion: runs measured with any other prompt are dropped entirely. The
+    ///     prompt version exists precisely so that a change of wording cannot silently place
+    ///     incomparable numbers side by side. Such a model is NOT reported as unranked — it is
+    ///     out of scope rather than unrankable, and the card has its own sentence for it.
+    ///   - includeThrottled: when `false` (the default view), throttled runs do not contribute to
+    ///     a model that also has clean ones. A model with ONLY throttled runs still produces a row,
+    ///     marked — silently dropping it would hide that the measurement exists at all, the same
+    ///     reason void samples are recorded rather than discarded.
+    static func table(
+        runs: [GenerationBenchmarkRun],
+        samples: [GenerationBenchmarkSample],
+        currentPromptVersion: Int,
+        includeThrottled: Bool = false
+    ) -> Table {
         let samplesByRun = Dictionary(grouping: samples, by: \.runID)
 
         let comparable = runs.filter { $0.promptVersion == currentPromptVersion }
@@ -120,25 +196,50 @@ nonisolated enum BenchmarkLeaderboard {
             groupKey(provider: $0.provider, baseURLString: $0.baseURLString, modelName: $0.modelName)
         }
 
-        return grouped.compactMap { key, groupRuns -> Row? in
+        var rows: [Row] = []
+        var unranked: [Unranked] = []
+
+        for (key, groupRuns) in grouped {
             // Prefer clean runs; fall back to the throttled ones rather than dropping the model.
             let clean = groupRuns.filter { !$0.wasThrottled }
             let contributing = (includeThrottled || clean.isEmpty) ? groupRuns : clean
-            guard !contributing.isEmpty else { return nil }
+            guard !contributing.isEmpty else { continue }
 
             let summaries = contributing.map {
                 BenchmarkMetricsPolicy.summarize(samplesByRun[$0.id] ?? [])
             }
             // A run with no usable sample contributes no rate; it must not silently count as one.
             let priced = summaries.filter { !$0.isFailed }
-            guard !priced.isEmpty else { return nil }
+            guard !priced.isEmpty else {
+                // Measured, and still no figure. Which of the two reasons decides what the user
+                // should do about it, so the answer is carried out rather than re-guessed by the
+                // view from a run count it can see but cannot interpret.
+                // All-or-nothing on each: a MIXTURE of causes is not a story about either
+                // bound, and saying it is would send the user to change the wrong setting.
+                let cut = summaries.count { $0.everySampleHitCeiling }
+                let windowed = summaries.count { $0.everySampleHitTheContextWindow }
+                let reason: Unranked.Reason =
+                    cut == summaries.count ? .everyRunHitTheCeiling
+                        : windowed == summaries.count ? .everyRunHitTheContextWindow
+                        : .noUsableSample
+                unranked.append(Unranked(
+                    modelName: contributing[0].modelName,
+                    runCount: contributing.count,
+                    reason: reason))
+                continue
+            }
 
             let generationRates = priced.map(\.generationTokensPerSecond)
+            // Every usable sample of every contributing run, so `best` is a real generation
+            // somebody could reproduce rather than the better of two medians.
+            let sampleRates = contributing
+                .flatMap { BenchmarkMetricsPolicy.usableSamples(samplesByRun[$0.id] ?? []) }
+                .compactMap { BenchmarkMetricsPolicy.generationRate(for: $0)?.rate }
             let sources = Set(priced.compactMap(\.prefillSource))
             let rateSources = Set(priced.compactMap(\.generationRateSource))
             let newest = contributing.max { $0.startedAt < $1.startedAt }
 
-            return Row(
+            rows.append(Row(
                 id: key,
                 provider: contributing[0].provider,
                 modelName: contributing[0].modelName,
@@ -148,21 +249,24 @@ nonisolated enum BenchmarkLeaderboard {
                 quantization: newest?.quantization,
                 generationTokensPerSecond: BenchmarkMetricsPolicy.median(generationRates),
                 generationRateSource: rateSources.count == 1 ? rateSources.first : nil,
-                bestGenerationTokensPerSecond: generationRates.compactMap { $0 }.max(),
+                bestGenerationTokensPerSecond: sampleRates.max(),
+                bestSampleCount: sampleRates.count,
                 timeToFirstTokenMs: BenchmarkMetricsPolicy.median(priced.map(\.timeToFirstTokenMs)),
                 prefillTokensPerSecond: BenchmarkMetricsPolicy.median(
                     priced.map(\.prefillTokensPerSecond)),
                 prefillSource: sources.count == 1 ? sources.first : nil,
                 runCount: priced.count,
                 failedRunCount: summaries.count - priced.count,
+                ceilingRunCount: summaries.count { $0.isFailed && $0.everySampleHitCeiling },
                 // `contributing` is guarded non-empty three statements above, so `newest` cannot
                 // be nil and this fallback cannot fire. It reads `contributing[0]` rather than
                 // 1 Jan 1970 because the field is drawn now: an unreachable branch that would
                 // print a plausible-looking date from the Unix epoch is the kind of thing that
                 // only becomes visible once someone changes the guard above it.
                 lastMeasuredAt: newest?.startedAt ?? contributing[0].startedAt,
-                isThrottled: contributing.allSatisfy(\.wasThrottled))
+                isThrottled: contributing.allSatisfy(\.wasThrottled)))
         }
+        return Table(rows: rows, unranked: unranked.sorted { $0.modelName < $1.modelName })
     }
 
     /// Every run behind a row, by that row's id.

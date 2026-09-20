@@ -66,14 +66,15 @@ final class BenchmarkWireBodyTests: XCTestCase {
         XCTAssertTrue(body.contains("\"role\":\"user\""), String(body.prefix(200)))
     }
 
-    /// RED: drop `maxOutputTokens` from the config or the request builder → runs stop being cut at
-    /// the ceiling the leaderboard's comparability rests on, and nothing on screen would say so.
+    /// RED: drop `maxOutputTokens` from the config or the request builder → the runaway guard is
+    /// gone from the wire, a model that never stops is measured to the end of its context instead
+    /// of being voided, and nothing on screen would say so.
     func testBothBodies_carryTheOutputCeiling() throws {
         for provider in LLMProvider.allCases {
             let body = try XCTUnwrap(BenchmarkWireBody.json(config: config(provider: provider)))
             XCTAssertTrue(
-                body.contains("\(BenchmarkPrompt.maxOutputTokens)"),
-                "\(provider) body does not carry the 512-token ceiling")
+                body.contains("\(BenchmarkPrompt.outputCeiling)"),
+                "\(provider) body does not carry the \(BenchmarkPrompt.outputCeiling)-token ceiling")
         }
     }
 

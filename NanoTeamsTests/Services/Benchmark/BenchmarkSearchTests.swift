@@ -188,11 +188,13 @@ final class BenchmarkSearchTests: XCTestCase {
             generationTokensPerSecond: generation,
             generationRateSource: .serverDecodeWindow,
             bestGenerationTokensPerSecond: generation,
+            bestSampleCount: 1,
             timeToFirstTokenMs: 600,
             prefillTokensPerSecond: 2000,
             prefillSource: .serverPromptEval,
             runCount: 1,
             failedRunCount: 0,
+            ceilingRunCount: 0,
             lastMeasuredAt: Date(timeIntervalSince1970: 1000),
             isThrottled: false)
     }

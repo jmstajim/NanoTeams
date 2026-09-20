@@ -162,11 +162,18 @@ nonisolated enum AppDefaults {
     /// Five is the smallest count whose median is not moved by a single unlucky sample: at three,
     /// one thermal blip IS the median.
     ///
-    /// The cost is now bounded rather than hoped for: each sample stops at
-    /// `BenchmarkPrompt.maxOutputTokens`, so five of them is five ceilings' worth of decoding plus
-    /// prefill — about a minute on a local model at ~50 tok/s. This line used to promise that
-    /// minute with no ceiling behind it, and against a thinking model the promise was off by more
-    /// than an order of magnitude: one uncapped sample of this benchmark's prompt measured 233 s.
+    /// What a run COSTS is decided by how long the model answers, not by a ceiling — version 5
+    /// measures the whole answer, because truncating it measures the truncation
+    /// (`BenchmarkPrompt.outputCeiling`). Measured 2026-09-20 on LM Studio 0.4.25 /
+    /// `qwen3.8-27b-splash`: ~53 s a sample (4.9 s prefill, ~2 600 tokens), so five of them plus
+    /// the warm-up is **~4.7 minutes**. A model that answers in a few hundred tokens still costs
+    /// what it always did — the whole increase falls on the models whose honest measurement
+    /// requires it.
+    ///
+    /// This line promised "about a minute" under the old 512-token ceiling, and before any
+    /// ceiling existed it promised the same minute with nothing behind it: one uncapped sample of
+    /// this benchmark's prompt measured 233 s. The guard against that case is still there, it is
+    /// simply three times the size of a real answer rather than a fifth of one.
     static let benchmarkRepeats = 5
 
     /// Two is the floor because a median needs something to be a median OF, and one sample is a

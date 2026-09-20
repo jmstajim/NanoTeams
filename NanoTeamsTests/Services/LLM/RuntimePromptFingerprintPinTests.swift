@@ -280,6 +280,19 @@ final class RuntimePromptFingerprintPinTests: XCTestCase {
     // tool-calling mode: before, 15 of 30 producing steps wrote the deliverable as a plain reply
     // first (tasks 95–98; the same habit on a second brief, tasks 103–106); after — the entry
     // in train-first-prompt/RUN_HISTORY.md (Audit 2026-09-13, the reminder entry).
+    //
+    // 1.9.32, 2026-09-20 — bumped WITHOUT moving this value, and the note spans back to
+    // `5b79b329`: 1.9.31 recorded nothing in either ledger, so the gap is stated rather than
+    // left to read as continuity. The last entry above is 1.9.11's, which is how long it has
+    // been since a runtime prompt text moved.
+    //   Проверка — the registry's own input set over the whole span:
+    //     git diff --stat 5b79b329..HEAD -- \
+    //       NanoTeams/Services/LLM/RuntimePromptRegistry.swift \
+    //       NanoTeams/Domain/SystemTemplates.swift → EMPTY.
+    //   The range is the benchmark-accuracy wave; it changed no nudge, no Harmony preamble, no
+    //   error-note direction and no one-shot prompt. The half that cannot be vacuous is this
+    //   test: `RuntimePromptFingerprint.current` folds `RuntimePromptRegistry.entries`, and the
+    //   value below still matches on the release tree.
     private static let expectedFingerprint = "7d26d97335ae62ff"
 
     func testRuntimePromptText_hasNotChangedWithoutRecordingIt() {

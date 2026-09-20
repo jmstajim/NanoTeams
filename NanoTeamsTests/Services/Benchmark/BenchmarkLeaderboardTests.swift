@@ -588,6 +588,290 @@ final class BenchmarkLeaderboardTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(rows.first).lastMeasuredAt, recent)
     }
 
+    // MARK: - Best is a sample, not a run
+
+    /// The defect this changed: `max` over run MEDIANS can never report a number any single
+    /// generation produced, so the column could not be compared with what a chat window shows.
+    ///
+    /// Two runs: one whose samples are 30 and 50 tok/s (median 40), one whose samples are both
+    /// 41 (median 41). The old rule answered 41 — the better of the two medians. The honest
+    /// answer is 50, which is a generation that really happened.
+    ///
+    /// RED: take the max over `priced.map(\.generationTokensPerSecond)` again → the column
+    /// answers 41, a number no generation produced.
+    func testBest_isTheFastestSample_notTheFastestRunsMedian() throws {
+        let spread = run(model: "m", startedAt: Date(timeIntervalSince1970: 1000))
+        let flat = run(model: "m", startedAt: Date(timeIntervalSince1970: 2000))
+        let rows = BenchmarkLeaderboard.rows(
+            runs: [spread, flat],
+            samples: samples(for: spread, rates: [30, 50]) + samples(for: flat, rates: [41, 41]),
+            currentPromptVersion: promptVersion)
+
+        let row = try XCTUnwrap(rows.first)
+        XCTAssertEqual(row.bestGenerationTokensPerSecond, 50)
+        XCTAssertEqual(
+            try XCTUnwrap(row.generationTokensPerSecond), 40.5, accuracy: 0.001,
+            "the median of the two run medians, 40 and 41 — unchanged by this")
+    }
+
+    /// `max` grows with the number of draws, so the figure is meaningless without its base. RED:
+    /// drop the count → two rows sampled 2 and 20 times are ranked against each other on a column
+    /// where the second is expected to win for no reason to do with the model.
+    func testBest_carriesTheNumberOfSamplesItWasTheBestOf() throws {
+        let only = run(model: "m")
+        let rows = BenchmarkLeaderboard.rows(
+            runs: [only],
+            samples: samples(for: only, rates: [30, 50, 40]),
+            currentPromptVersion: promptVersion)
+
+        XCTAssertEqual(try XCTUnwrap(rows.first).bestSampleCount, 3)
+    }
+
+    /// A run every sample of which ran into the output ceiling is not a failure, and the row has
+    /// to be able to say so. RED: fold it into `failedRunCount` → the cell reads "1 of 2" and a
+    /// user goes looking for a broken server instead of a verbose model.
+    func testCeilingRuns_areCountedApartFromFailures() throws {
+        let good = run(model: "m", startedAt: Date(timeIntervalSince1970: 1000))
+        let verbose = run(model: "m", startedAt: Date(timeIntervalSince1970: 2000))
+        let cut = samples(for: verbose, rates: [30, 30]).map { sample -> GenerationBenchmarkSample in
+            var voided = sample
+            voided.void = .outputCeilingReached
+            return voided
+        }
+        let rows = BenchmarkLeaderboard.rows(
+            runs: [good, verbose],
+            samples: samples(for: good, rates: [40]) + cut,
+            currentPromptVersion: promptVersion)
+
+        let row = try XCTUnwrap(rows.first)
+        XCTAssertEqual(row.runCount, 1)
+        XCTAssertEqual(row.ceilingRunCount, 1)
+        XCTAssertEqual(row.bestSampleCount, 1, "a voided sample is behind no figure at all")
+    }
+
+    // MARK: - Models that produced no row at all
+
+    /// The case the ceiling counters could never reach: when EVERY contributing run was cut by
+    /// the guard, the group is dropped before `ceilingRunCount` is ever computed, so the model
+    /// left the table without a word. RED: return only rows → the model vanishes and the card
+    /// falls back to "no comparable run produced a usable sample", which names the wrong cause.
+    func testEveryRunHitTheCeiling_leavesNoRowButIsReportedAsUnranked() throws {
+        let verbose = run(model: "m")
+        let cut = samples(for: verbose, rates: [30, 30]).map { sample -> GenerationBenchmarkSample in
+            var voided = sample
+            voided.void = .outputCeilingReached
+            return voided
+        }
+        let table = BenchmarkLeaderboard.table(
+            runs: [verbose], samples: cut, currentPromptVersion: promptVersion)
+
+        XCTAssertTrue(table.rows.isEmpty)
+        XCTAssertEqual(
+            table.unranked,
+            [BenchmarkLeaderboard.Unranked(
+                modelName: "m", runCount: 1, reason: .everyRunHitTheCeiling)])
+    }
+
+    /// The two reasons point at different fixes — a verbose model against a broken server — so
+    /// they must not collapse. RED: report `.everyRunHitTheCeiling` for any unrankable model →
+    /// an HTTP 500 is described to the user as a model that writes too much.
+    func testEveryRunFailedOutright_isUnrankedForTheOtherReason() throws {
+        let broken = run(model: "m")
+        let failed = samples(for: broken, rates: [30]).map { sample -> GenerationBenchmarkSample in
+            var voided = sample
+            voided.void = .httpError
+            return voided
+        }
+        let table = BenchmarkLeaderboard.table(
+            runs: [broken], samples: failed, currentPromptVersion: promptVersion)
+
+        XCTAssertEqual(table.unranked.map(\.reason), [.noUsableSample])
+    }
+
+    /// The third reason, and the one a default Ollama install hits: the SERVER cut every
+    /// answer at its own context window. RED: collapse it into `.noUsableSample` → the emptiest
+    /// possible leaderboard on the commonest possible misconfiguration explains nothing, and
+    /// the one setting that would fix it is never named.
+    func testEveryRunCutByTheContextWindow_isItsOwnUnrankedReason() throws {
+        let narrow = run(model: "m")
+        let cut = samples(for: narrow, rates: [30, 30]).map { sample -> GenerationBenchmarkSample in
+            var voided = sample
+            voided.void = .contextWindowReached
+            return voided
+        }
+        let table = BenchmarkLeaderboard.table(
+            runs: [narrow], samples: cut, currentPromptVersion: promptVersion)
+
+        XCTAssertTrue(table.rows.isEmpty)
+        XCTAssertEqual(table.unranked.map(\.reason), [.everyRunHitTheContextWindow])
+    }
+
+    /// The two bounds mixed across runs is a story about neither. RED: test the window arm
+    /// before checking it covers every run → a single narrow-window run relabels a model that
+    /// is also genuinely runaway.
+    func testCeilingAndContextWindowMixed_fallBackToTheGeneralReason() throws {
+        let a = run(model: "m", startedAt: Date(timeIntervalSince1970: 1000))
+        let b = run(model: "m", startedAt: Date(timeIntervalSince1970: 2000))
+        func voided(_ r: GenerationBenchmarkRun, _ reason: BenchmarkVoidReason) -> [GenerationBenchmarkSample] {
+            samples(for: r, rates: [30]).map { sample in
+                var s = sample
+                s.void = reason
+                return s
+            }
+        }
+        let table = BenchmarkLeaderboard.table(
+            runs: [a, b],
+            samples: voided(a, .outputCeilingReached) + voided(b, .contextWindowReached),
+            currentPromptVersion: promptVersion)
+
+        XCTAssertEqual(table.unranked.map(\.reason), [.noUsableSample])
+    }
+
+    /// A mixture is not a ceiling story: one run cut by the guard and one that failed outright
+    /// means the honest answer is the general one. RED: test `ceiling > 0` instead of
+    /// `ceiling == all` → a single verbose run relabels a genuinely broken server.
+    func testMixedFailures_areNotReportedAsACeilingStory() throws {
+        let verbose = run(model: "m", startedAt: Date(timeIntervalSince1970: 1000))
+        let broken = run(model: "m", startedAt: Date(timeIntervalSince1970: 2000))
+        let cut = samples(for: verbose, rates: [30]).map { sample -> GenerationBenchmarkSample in
+            var voided = sample
+            voided.void = .outputCeilingReached
+            return voided
+        }
+        let failed = samples(for: broken, rates: [30]).map { sample -> GenerationBenchmarkSample in
+            var voided = sample
+            voided.void = .transportError
+            return voided
+        }
+        let table = BenchmarkLeaderboard.table(
+            runs: [verbose, broken], samples: cut + failed,
+            currentPromptVersion: promptVersion)
+
+        XCTAssertEqual(table.unranked.map(\.reason), [.noUsableSample])
+    }
+
+    /// The defect in its real shape: a POPULATED table silently missing a model. RED: report
+    /// unranked models only when the table is empty → the all-ceiling model disappears beside
+    /// rows that rank fine, and nothing on screen says a model was left out.
+    func testAnUnrankableModel_isReportedEvenWhenOtherModelsRank() throws {
+        let good = run(model: "fast")
+        let verbose = run(model: "verbose", startedAt: Date(timeIntervalSince1970: 2000))
+        let cut = samples(for: verbose, rates: [30]).map { sample -> GenerationBenchmarkSample in
+            var voided = sample
+            voided.void = .outputCeilingReached
+            return voided
+        }
+        let table = BenchmarkLeaderboard.table(
+            runs: [good, verbose],
+            samples: samples(for: good, rates: [40]) + cut,
+            currentPromptVersion: promptVersion)
+
+        XCTAssertEqual(table.rows.map(\.modelName), ["fast"])
+        XCTAssertEqual(table.unranked.map(\.modelName), ["verbose"])
+    }
+
+    /// The list is sorted by model name because its source is a Dictionary, whose order is not
+    /// stable between renders. RED: return `unranked` unsorted → the sentence naming the missing
+    /// models reshuffles itself on screen for no reason, and this fails intermittently rather
+    /// than never, which is worse.
+    func testUnrankedModels_areSortedByName() throws {
+        func allCut(_ model: String, at seconds: TimeInterval) -> ([GenerationBenchmarkRun], [GenerationBenchmarkSample]) {
+            let r = run(model: model, startedAt: Date(timeIntervalSince1970: seconds))
+            let cut = samples(for: r, rates: [30]).map { sample -> GenerationBenchmarkSample in
+                var voided = sample
+                voided.void = .outputCeilingReached
+                return voided
+            }
+            return ([r], cut)
+        }
+        let (r1, s1) = allCut("zeta", at: 1000)
+        let (r2, s2) = allCut("alpha", at: 2000)
+        let (r3, s3) = allCut("mu", at: 3000)
+
+        let table = BenchmarkLeaderboard.table(
+            runs: r1 + r2 + r3, samples: s1 + s2 + s3, currentPromptVersion: promptVersion)
+
+        XCTAssertEqual(table.unranked.map(\.modelName), ["alpha", "mu", "zeta"])
+    }
+
+    /// The anti-vacuum twin: a model that ranks must never appear in the unranked list, or the
+    /// footer accuses a healthy row of being missing. RED: append unconditionally → every model
+    /// is reported as both ranked and unranked.
+    func testARankableModel_isNotReportedAsUnranked() throws {
+        let (runs, samples) = history([(model: "m", rate: 40.0)])
+        let table = BenchmarkLeaderboard.table(
+            runs: runs, samples: samples, currentPromptVersion: promptVersion)
+
+        XCTAssertEqual(table.rows.count, 1)
+        XCTAssertTrue(table.unranked.isEmpty)
+    }
+
+    /// `rows` is now a view onto `table`, and every existing caller goes through it. RED: let the
+    /// two compute the ranking separately → they drift, and the card's footer describes a table
+    /// the card did not draw.
+    func testRowsIsTheTablesRows() throws {
+        let (runs, samples) = history([(model: "a", rate: 40.0), (model: "b", rate: 20.0)])
+        XCTAssertEqual(
+            Set(BenchmarkLeaderboard.rows(
+                runs: runs, samples: samples, currentPromptVersion: promptVersion).map(\.id)),
+            Set(BenchmarkLeaderboard.table(
+                runs: runs, samples: samples, currentPromptVersion: promptVersion)
+                .rows.map(\.id)))
+    }
+
+    /// A model measured only on an older prompt is not "unrankable" — it is out of scope, and the
+    /// card already has a sentence for it. RED: count dropped prompt versions as unranked → the
+    /// upgrade that retires the old rows reads as every model being broken at once.
+    func testAnOlderPromptVersion_isNotReportedAsUnranked() throws {
+        let stale = run(model: "m", promptVersion: promptVersion - 1)
+        let table = BenchmarkLeaderboard.table(
+            runs: [stale], samples: samples(for: stale, rates: [40]),
+            currentPromptVersion: promptVersion)
+
+        XCTAssertTrue(table.rows.isEmpty)
+        XCTAssertTrue(table.unranked.isEmpty)
+    }
+
+    /// The anti-vacuum twin: an ordinary failure must NOT be counted as a ceiling run, or the new
+    /// count says "verbose model" about a server that returned HTTP 500.
+    func testOrdinaryFailures_areNotCountedAsCeilingRuns() throws {
+        let good = run(model: "m", startedAt: Date(timeIntervalSince1970: 1000))
+        let broken = run(model: "m", startedAt: Date(timeIntervalSince1970: 2000))
+        let failed = samples(for: broken, rates: [30]).map { sample -> GenerationBenchmarkSample in
+            var voided = sample
+            voided.void = .httpError
+            return voided
+        }
+        let rows = BenchmarkLeaderboard.rows(
+            runs: [good, broken],
+            samples: samples(for: good, rates: [40]) + failed,
+            currentPromptVersion: promptVersion)
+
+        let row = try XCTUnwrap(rows.first)
+        XCTAssertEqual(row.failedRunCount, 1)
+        XCTAssertEqual(row.ceilingRunCount, 0)
+    }
+
+    /// Samples at named rates, one per entry. `clientRate` divides `tokens - 1` by the window, so
+    /// a 10 s window needs `rate * 10 + 1` tokens to land on `rate` exactly.
+    private func samples(
+        for run: GenerationBenchmarkRun, rates: [Double]
+    ) -> [GenerationBenchmarkSample] {
+        rates.enumerated().map { index, rate in
+            GenerationBenchmarkSample(
+                runID: run.id,
+                recordedAt: run.startedAt.addingTimeInterval(Double(index)),
+                phase: .measured,
+                sampleIndex: index,
+                inputTokens: 800,
+                outputTokens: Int(rate * 10) + 1,
+                timeToFirstTokenMs: 600,
+                generationMs: 10_000,
+                prefillMs: 400,
+                prefillSource: .serverPromptEval)
+        }
+    }
+
     private func run(
         model: String,
         provider: LLMProvider = .lmStudio,
@@ -665,11 +949,13 @@ final class BenchmarkLeaderboardTests: XCTestCase {
             generationTokensPerSecond: generation,
             generationRateSource: .serverDecodeWindow,
             bestGenerationTokensPerSecond: generation,
+            bestSampleCount: 1,
             timeToFirstTokenMs: timeToFirstToken,
             prefillTokensPerSecond: 2000,
             prefillSource: .serverPromptEval,
             runCount: runCount,
             failedRunCount: 0,
+            ceilingRunCount: 0,
             lastMeasuredAt: Date(timeIntervalSince1970: 1000),
             isThrottled: throttled)
     }

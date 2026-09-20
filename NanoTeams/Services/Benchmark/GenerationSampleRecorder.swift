@@ -37,6 +37,15 @@ nonisolated struct GenerationSampleRecorder {
 
     let requestSentAt: ContinuousClock.Instant
 
+    /// The token ceiling this request was sent with, or `nil` where reaching it is not a defect.
+    ///
+    /// Required rather than defaulted: a caller that forgot it would silently disable the guard
+    /// and the run would go back to reporting truncated samples, which is exactly the failure the
+    /// guard exists to catch and exactly the shape CLAUDE.md #49 is about. The warm-up passes
+    /// `nil` on purpose — it is deliberately short, so its ceiling is a design choice rather than
+    /// a runaway, and it never enters a median anyway.
+    let outputCeiling: Int?
+
     private(set) var firstDeltaAt: ContinuousClock.Instant?
     private(set) var lastDeltaAt: ContinuousClock.Instant?
     private(set) var promptProcessingStartedAt: ContinuousClock.Instant?
@@ -56,8 +65,9 @@ nonisolated struct GenerationSampleRecorder {
     /// The consumer stopped reading on purpose rather than the stream ending.
     private(set) var wasStoppedEarly = false
 
-    init(requestSentAt: ContinuousClock.Instant) {
+    init(requestSentAt: ContinuousClock.Instant, outputCeiling: Int?) {
         self.requestSentAt = requestSentAt
+        self.outputCeiling = outputCeiling
     }
 
     /// Records that nobody waited for the rest of this stream.
@@ -111,9 +121,16 @@ nonisolated struct GenerationSampleRecorder {
 
     /// The finished measurement.
     ///
-    /// `void` is resolved here rather than by the caller so the three "the stream ran but said
-    /// nothing usable" cases are decided in one place, in a fixed order: no output at all beats no
-    /// token count, which beats a window too short to divide by.
+    /// `void` is resolved here rather than by the caller so the "the stream ran but said nothing
+    /// usable" cases are decided in one place, in a fixed order: no output at all beats no token
+    /// count, which beats a window too short to divide by, which beats a sample the ceiling cut.
+    ///
+    /// The two OUTPUT-BOUND rungs are last on purpose. They are the only ones that fire on an
+    /// otherwise complete, countable measurement — "a well-formed measurement of the wrong thing"
+    /// — so putting either earlier would relabel outcomes that already have truer names. Between
+    /// the two, the app's own ceiling is named first: `outputTokens >= ceiling` is an observation
+    /// that holds on both providers, while `doneReason` is the server's word and absent on LM
+    /// Studio's native route, so the weaker evidence must not pre-empt the stronger.
     func measurements(endedAt: ContinuousClock.Instant) -> Measurements {
         var result = Measurements()
         result.inputTokens = usage?.inputTokens
@@ -151,6 +168,16 @@ nonisolated struct GenerationSampleRecorder {
             result.void = .noTokensReported
         } else if (result.generationMs ?? 0) < BenchmarkMetricsPolicy.minimumWindowMs {
             result.void = .windowTooShort
+        } else if let ceiling = outputCeiling, let produced = result.outputTokens,
+                  produced >= ceiling {
+            result.void = .outputCeilingReached
+        } else if outputCeiling != nil, doneReason == StreamEvent.lengthDoneReason {
+            // Below our own ceiling and still cut for length: a bound we did not set ended the
+            // answer. Last, because it is the weakest evidence of the three output rungs — it is
+            // the server's word rather than an observation, and it exists only on the provider
+            // that offers one. The `outputCeiling != nil` guard is what keeps the warm-up out:
+            // that request asks for sixteen tokens and is MEANT to stop at them.
+            result.void = .contextWindowReached
         }
         return result
     }

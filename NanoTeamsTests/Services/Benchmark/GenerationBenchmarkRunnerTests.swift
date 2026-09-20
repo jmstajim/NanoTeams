@@ -36,9 +36,18 @@ final class GenerationBenchmarkRunnerTests: XCTestCase, @unchecked Sendable {
         // FINISHES did so because the delta policy or a cancellation ended the warm-up, never
         // because a deadline quietly rescued it. The two tests that are about the deadline pass
         // their own.
-        warmUpDeadline: Duration = .seconds(60)
+        warmUpDeadline: Duration = .seconds(60),
+        /// Defaults to the live reading, so the tests that are not about thermal state read as
+        /// they did. The ones that are hand it a script.
+        thermal: (@MainActor () -> String)? = nil
     ) -> GenerationBenchmarkRunner {
         let clock = clock!
+        if let thermal {
+            return GenerationBenchmarkRunner(
+                client: client, probe: probe, store: store, isBusy: isBusy,
+                appVersion: "1.8.8", now: { clock.next() }, warmUpDeadline: warmUpDeadline,
+                thermal: thermal)
+        }
         return GenerationBenchmarkRunner(
             client: client, probe: probe, store: store, isBusy: isBusy,
             appVersion: "1.8.8", now: { clock.next() }, warmUpDeadline: warmUpDeadline)
@@ -254,37 +263,53 @@ final class GenerationBenchmarkRunnerTests: XCTestCase, @unchecked Sendable {
 
     // MARK: - The warm-up is bounded
 
-    /// The change this file exists to defend. Measured on LM Studio 0.4.21 / qwen3.5-9b: read to
-    /// the end, one warm-up ran 233 s and produced 12 040 tokens (11 561 of them reasoning) — for
-    /// a sample every median then discards.
+    /// The warm-up is bounded on the WIRE, and that is the change this block exists to defend.
     ///
-    /// RED: read the warm-up to the end → its row carries the terminal frame's token counts and no
-    /// void, which is exactly what a four-minute warm-up looks like in the record.
-    func testWarmUp_stopsOnceTheModelIsDecoding_ratherThanReadingTheWholeAnswer() async throws {
-        let deltas = BenchmarkWarmUpPolicy.sufficientDeltas * 3
-        let runner = makeRunner(client: LongStreamClient(deltas: deltas))
-        await runner.run(config: config(), repeats: 1, otherServers: [])
+    /// RED: send the measured config through unchanged → the warm-up asks for
+    /// `BenchmarkPrompt.outputCeiling` tokens, and the only way to end it early is to abandon a
+    /// generation the server may well keep decoding — the overlap DEBTS D-B1 §3 could never rule
+    /// out, and the reason the client-side stop was removed rather than measured.
+    func testWarmUp_asksTheServerForAShortAnswer_ratherThanAbandoningALongOne() async throws {
+        let client = LongStreamClient(deltas: 48)
+        let runner = makeRunner(client: client)
+        // The ceiling has to come from the CONFIG for the second assertion to mean anything: the
+        // runner's job is to override it for the warm-up and pass it through otherwise, and a
+        // config carrying no ceiling could not tell "passed through" from "dropped".
+        var target = config()
+        target.maxOutputTokens = BenchmarkPrompt.outputCeiling
+        await runner.run(config: target, repeats: 2, otherServers: [])
 
-        let warmUp = try XCTUnwrap(store.loadSamples().first { $0.phase == .warmup })
-        XCTAssertEqual(warmUp.void, .stoppedEarly)
-        XCTAssertNil(
-            warmUp.outputTokens,
-            "the terminal usage frame comes after the answer, so a stopped warm-up cannot have it")
-        // WHERE it stopped, not just that it did. The injected clock advances a fixed step per
-        // read, so the window between the first and last delta counts the deltas consumed:
-        // stopping at the policy spans `sufficientDeltas − 1` steps, reading to the end would span
-        // `deltas − 1`. Without this the test passes for a warm-up truncated anywhere at all.
         XCTAssertEqual(
-            warmUp.generationMs,
-            Double(BenchmarkWarmUpPolicy.sufficientDeltas - 1) * Self.clockStepMs)
+            client.requestedCeilings.first,
+            BenchmarkWarmUpPolicy.outputCeiling,
+            "the warm-up asks for its own short ceiling")
+        XCTAssertEqual(
+            Array(client.requestedCeilings.dropFirst()),
+            Array(repeating: BenchmarkPrompt.outputCeiling, count: 2),
+            "and every measured sample keeps the benchmark's own")
     }
 
-    /// The anti-vacuum twin: truncation must be gated on the PHASE, not applied to every stream.
-    /// RED: stop every sample at the policy → the measured rows lose the server's token counts and
-    /// the whole benchmark reports nothing, which the test above would not notice.
+    /// What the wire ceiling buys. A warm-up the SERVER ends receives its terminal frame, so the
+    /// row is a small complete measurement instead of a hole.
+    ///
+    /// RED: cancel the warm-up at a delta count again → no terminal frame arrives, the row loses
+    /// its token counts, and `.stoppedEarly` goes back to being the normal state of every healthy
+    /// run rather than the name of something that really went wrong.
+    func testWarmUp_endedByTheServer_keepsItsTokenCounts_andIsNotVoid() async throws {
+        let runner = makeRunner(client: LongStreamClient(deltas: 48))
+        await runner.run(config: config(), repeats: 0, otherServers: [])
+
+        let warmUp = try XCTUnwrap(store.loadSamples().first { $0.phase == .warmup })
+        XCTAssertNil(warmUp.void, "nobody cut it off — the server answered the ceiling it was given")
+        XCTAssertEqual(warmUp.outputTokens, BenchmarkWarmUpPolicy.outputCeiling)
+    }
+
+    /// The anti-vacuum twin: the short ceiling must be gated on the PHASE, not applied to every
+    /// stream. RED: cap every sample at the warm-up's ceiling → the measured rows measure sixteen
+    /// tokens each and the whole benchmark reports the wrong thing, which the tests above would
+    /// not notice.
     func testMeasuredSamples_areReadToTheEnd_howeverLongTheAnswer() async throws {
-        let deltas = BenchmarkWarmUpPolicy.sufficientDeltas * 3
-        let runner = makeRunner(client: LongStreamClient(deltas: deltas))
+        let runner = makeRunner(client: LongStreamClient(deltas: 48))
         await runner.run(config: config(), repeats: 2, otherServers: [])
 
         let measured = store.loadSamples().filter { $0.phase == .measured }
@@ -293,24 +318,24 @@ final class GenerationBenchmarkRunnerTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(try XCTUnwrap(runner.summary).usableCount, 2)
     }
 
-    /// Stopping has to mean the REQUEST stops, not just that we look away: a server left generating
-    /// an answer nobody reads is still holding the machine the next sample is about to be measured
-    /// on. The stream here never finishes, so cancellation is the only thing that can terminate it.
+    /// A server that keeps talking forever is the one case a wire ceiling cannot cover — it is a
+    /// promise the server broke — so the watchdog is what ends it, and ending it has to terminate
+    /// the REQUEST rather than merely the reading: a server left generating for nobody is still
+    /// holding the machine the next sample is about to be measured on.
     ///
-    /// RED: read to the end → the run never returns at all, because this stream has no end.
-    func testWarmUp_cancelsTheRequest_ratherThanLeavingItToGenerate() async throws {
-        let client = UnendingStreamClient(deltas: BenchmarkWarmUpPolicy.sufficientDeltas * 2)
-        let runner = makeRunner(client: client)
-        await runner.run(config: config(), repeats: 0, otherServers: [])
+    /// RED: drop the watchdog → this run never returns, because this stream has no end.
+    func testWarmUp_thatNeverEnds_isCancelledByTheDeadline() async throws {
+        let client = UnendingStreamClient(deltas: 64)
+        let runner = makeRunner(client: client, warmUpDeadline: .milliseconds(50))
+        let target = config()
+        let finished = await Self.withTimeout(seconds: 10) {
+            await runner.run(config: target, repeats: 0, otherServers: [])
+            return true
+        }
+        XCTAssertEqual(finished, true, "only the watchdog can end a stream with no end")
 
         XCTAssertEqual(client.terminations, ["cancelled"])
         XCTAssertEqual(store.loadSamples().first?.void, .stoppedEarly)
-        // The stop came from the POLICY, not from the deadline rescuing a runaway read: this
-        // runner's deadline is a minute, and the window says exactly `sufficientDeltas` deltas
-        // were taken.
-        XCTAssertEqual(
-            store.loadSamples().first?.generationMs,
-            Double(BenchmarkWarmUpPolicy.sufficientDeltas - 1) * Self.clockStepMs)
     }
 
     /// The other exit. A model that never produces a token never satisfies the delta policy, and
@@ -620,6 +645,67 @@ final class GenerationBenchmarkRunnerTests: XCTestCase, @unchecked Sendable {
         }
     }
 
+    // MARK: - Thermal state, per sample
+
+    /// Every sample carries the reading taken WHEN IT RAN. Schema version 2 added the field
+    /// (2026-09-20) and nothing exercised the runner seam that fills it. RED: stop stamping
+    /// samples → the field is nil on every row, the run falls back to a single final reading,
+    /// and a run that throttled in the middle and cooled by the end records `nominal`.
+    func testRun_stampsEverySampleWithTheReadingTakenWhileItRan() async {
+        var readings = [
+            BenchmarkThermalState.nominal,
+            BenchmarkThermalState.fair,
+            BenchmarkThermalState.serious,
+            BenchmarkThermalState.nominal,
+        ]
+        let runner = makeRunner(
+            client: ScriptedClient(events: Self.healthyStream()),
+            thermal: { readings.isEmpty ? BenchmarkThermalState.nominal : readings.removeFirst() })
+        await runner.run(config: config(), repeats: 3, otherServers: [])
+
+        let stamped = store.loadSamples().compactMap(\.thermalState)
+        XCTAssertEqual(stamped.count, 4, "warm-up plus three measured samples")
+        XCTAssertTrue(
+            stamped.contains(BenchmarkThermalState.serious),
+            "the worst moment must survive on the sample that saw it: \(stamped)")
+    }
+
+    /// The run's own label is the WORST moment in it, not the last. That is what decides
+    /// `wasThrottled`, and therefore which runs the leaderboard shows by default. RED: label the
+    /// run from the final reading alone → a run that ran hot in the middle and cooled by the end
+    /// is recorded `nominal` and silently ranks beside clean ones.
+    func testRun_isLabelledByItsWorstMoment_notItsLast() async throws {
+        var readings = [
+            BenchmarkThermalState.nominal,
+            BenchmarkThermalState.serious,
+            BenchmarkThermalState.nominal,
+            BenchmarkThermalState.nominal,
+            BenchmarkThermalState.nominal,
+        ]
+        let runner = makeRunner(
+            client: ScriptedClient(events: Self.healthyStream()),
+            thermal: { readings.isEmpty ? BenchmarkThermalState.nominal : readings.removeFirst() })
+        await runner.run(config: config(), repeats: 3, otherServers: [])
+
+        let run = try XCTUnwrap(store.loadRuns().last)
+        XCTAssertEqual(run.thermalState, BenchmarkThermalState.serious)
+        XCTAssertTrue(run.wasThrottled)
+    }
+
+    /// The anti-vacuum twin: a run that was cool throughout must NOT be marked throttled, or the
+    /// default view hides everything and the toggle becomes mandatory. RED: return the worst of
+    /// the severity table rather than of the readings → every run reads as throttled.
+    func testRun_thatStayedCool_isNotThrottled() async throws {
+        let runner = makeRunner(
+            client: ScriptedClient(events: Self.healthyStream()),
+            thermal: { BenchmarkThermalState.nominal })
+        await runner.run(config: config(), repeats: 2, otherServers: [])
+
+        let run = try XCTUnwrap(store.loadRuns().last)
+        XCTAssertEqual(run.thermalState, BenchmarkThermalState.nominal)
+        XCTAssertFalse(run.wasThrottled)
+    }
+
     // MARK: - Fixtures
 
     /// Two deltas and a terminal usage event — enough for a measurable window once the stepping
@@ -670,7 +756,9 @@ final class GenerationBenchmarkRunnerTests: XCTestCase, @unchecked Sendable {
             promptVersion: BenchmarkPrompt.version, repeats: 1,
             thermalState: BenchmarkThermalState.nominal, lowPowerMode: false,
             modelWasResident: true, appVersion: "1.0")
-        let summary = BenchmarkMetricsPolicy.RunSummary(usableCount: 1, voidedCount: 0)
+        let summary = BenchmarkMetricsPolicy.RunSummary(
+            usableCount: 1, voidedCount: 0, ceilingVoidedCount: 0,
+            contextWindowVoidedCount: 0)
 
         XCTAssertNotNil(BenchmarkRunOutcome(run: run, summary: summary).recorded)
         XCTAssertNil(
@@ -721,22 +809,36 @@ private struct ScriptedClient: LLMClient {
     func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
 }
 
-/// A long answer: many more deltas than the warm-up policy needs, then the terminal usage frame.
-/// "Read to the end" and "stopped once it was decoding" therefore produce visibly different rows —
-/// one has the server's token counts, the other cannot.
-private struct LongStreamClient: LLMClient {
+/// A long answer that OBEYS the ceiling it is given, the way a server does, and records what it
+/// was asked for. That is what lets a test tell the warm-up's request apart from a measured one
+/// now that the bound lives on the wire rather than in the consumer.
+///
+/// The terminal frame's `outputTokens` is deliberately not the delta count when the answer ran to
+/// its end (401 against 48): the token count must come from the frame, never from counting what
+/// we saw. When the ceiling BINDS it reports the ceiling, which is what a real server reports.
+private final class LongStreamClient: LLMClient, @unchecked Sendable {
     let deltas: Int
+    private let lock = NSLock()
+    private var _requestedCeilings: [Int?] = []
+
+    init(deltas: Int) { self.deltas = deltas }
+
+    var requestedCeilings: [Int?] { lock.withLock { _requestedCeilings } }
 
     func streamChat(
-        config _: LLMConfig, messages _: [ChatMessage], tools _: [ToolSchema],
+        config: LLMConfig, messages _: [ChatMessage], tools _: [ToolSchema],
         logger _: NetworkLogger?, stepID _: String?, roleName _: String?
     ) -> AsyncThrowingStream<StreamEvent, Error> {
-        AsyncThrowingStream { continuation in
-            for index in 0..<deltas {
+        lock.withLock { _requestedCeilings.append(config.maxOutputTokens) }
+        let produced = min(deltas, config.maxOutputTokens ?? deltas)
+        return AsyncThrowingStream { continuation in
+            for index in 0..<produced {
                 continuation.yield(StreamEvent(contentDelta: "t\(index)"))
             }
             continuation.yield(
-                StreamEvent(tokenUsage: TokenUsage(inputTokens: 800, outputTokens: 401)))
+                StreamEvent(
+                    tokenUsage: TokenUsage(
+                        inputTokens: 800, outputTokens: produced < deltas ? produced : 401)))
             continuation.finish()
         }
     }
@@ -976,7 +1078,7 @@ private final class WarmThenHangingClient: LLMClient, @unchecked Sendable {
             // throwing, and only a check AFTER the loop can tell that apart from "the model said
             // nothing".
             guard isWarmUp else { return }
-            for index in 0..<(BenchmarkWarmUpPolicy.sufficientDeltas + 2) {
+            for index in 0..<(BenchmarkWarmUpPolicy.outputCeiling + 2) {
                 continuation.yield(StreamEvent(contentDelta: "t\(index)"))
             }
             // Deliberately never finished.

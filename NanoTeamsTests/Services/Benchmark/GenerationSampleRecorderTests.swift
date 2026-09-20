@@ -22,8 +22,11 @@ final class GenerationSampleRecorderTests: XCTestCase {
         origin.advanced(by: .milliseconds(Int(ms)))
     }
 
-    private func makeRecorder() -> GenerationSampleRecorder {
-        GenerationSampleRecorder(requestSentAt: origin)
+    /// `outputCeiling` defaults to nil — "reaching the end of the answer is not a defect" — so
+    /// the tests that are not about the ceiling read as they did, and the ones that are pass it
+    /// explicitly.
+    private func makeRecorder(outputCeiling: Int? = nil) -> GenerationSampleRecorder {
+        GenerationSampleRecorder(requestSentAt: origin, outputCeiling: outputCeiling)
     }
 
     // MARK: - Stopped on purpose
@@ -377,5 +380,177 @@ final class GenerationSampleRecorderTests: XCTestCase {
         sut.note(StreamEvent(serverGenerationTokensPerSecond: 70), at: at(2200))
 
         XCTAssertEqual(sut.measurements(endedAt: at(2200)).void, .noTokensReported)
+    }
+
+    // MARK: - The output ceiling
+
+    /// A sample the ceiling cut measures its own truncation. RED: drop the rung → the truncated
+    /// rate enters the median, which is exactly the 35-vs-54 defect version 5 exists to fix.
+    func testOutputCeilingReached_whenTheServerStoppedAtTheCeiling() {
+        var sut = makeRecorder(outputCeiling: 512)
+        sut.note(StreamEvent(contentDelta: "a"), at: at(100))
+        sut.note(StreamEvent(contentDelta: "b"), at: at(2100))
+        sut.note(
+            StreamEvent(tokenUsage: TokenUsage(inputTokens: 2480, outputTokens: 512)), at: at(2100))
+
+        XCTAssertEqual(sut.measurements(endedAt: at(2200)).void, .outputCeilingReached)
+    }
+
+    /// The boundary, and the reason it is `>=` rather than `==`: one token short is an answer
+    /// that ENDED, and ending is the whole thing being measured. RED: use `>` on a server that
+    /// overshoots by a token, or `==` on one that stops a token early, and a healthy sample is
+    /// thrown away — or a truncated one kept.
+    func testOneTokenBelowTheCeiling_isAUsableSample() {
+        var sut = makeRecorder(outputCeiling: 512)
+        sut.note(StreamEvent(contentDelta: "a"), at: at(100))
+        sut.note(StreamEvent(contentDelta: "b"), at: at(2100))
+        sut.note(
+            StreamEvent(tokenUsage: TokenUsage(inputTokens: 2480, outputTokens: 511)), at: at(2100))
+
+        XCTAssertNil(sut.measurements(endedAt: at(2200)).void)
+    }
+
+    /// No ceiling means reaching the end of the answer is not a defect — the warm-up's case.
+    /// RED: default the ceiling to anything but nil → the warm-up, which is capped short on
+    /// purpose, voids on every healthy run.
+    func testWithoutACeiling_aLongAnswerIsNotVoided() {
+        var sut = makeRecorder()
+        sut.note(StreamEvent(contentDelta: "a"), at: at(100))
+        sut.note(StreamEvent(contentDelta: "b"), at: at(2100))
+        sut.note(
+            StreamEvent(tokenUsage: TokenUsage(inputTokens: 2480, outputTokens: 99_999)),
+            at: at(2100))
+
+        XCTAssertNil(sut.measurements(endedAt: at(2200)).void)
+    }
+
+    /// Ladder placement, downward: a stream with no usage frame has no token count to compare
+    /// against the ceiling, so the truer name wins. RED: move the rung above `noTokensReported`
+    /// and it cannot fire here at all — but the ordering would be untested, and the next rung
+    /// added below it would inherit the mistake.
+    func testMissingUsageFrame_outranksTheCeiling() {
+        var sut = makeRecorder(outputCeiling: 512)
+        sut.note(StreamEvent(contentDelta: "a"), at: at(100))
+        sut.note(StreamEvent(contentDelta: "b"), at: at(2100))
+
+        XCTAssertEqual(sut.measurements(endedAt: at(2200)).void, .noTokensReported)
+    }
+
+    /// Ladder placement, upward: a sample the APP cut off is `stoppedEarly` even if the server
+    /// had already written a ceiling's worth. RED: put the ceiling rung first → a cancelled run
+    /// is reported as a verbose model.
+    func testStoppedEarly_outranksTheCeiling() {
+        var sut = makeRecorder(outputCeiling: 512)
+        sut.note(StreamEvent(contentDelta: "a"), at: at(100))
+        sut.note(StreamEvent(contentDelta: "b"), at: at(2100))
+        sut.note(
+            StreamEvent(tokenUsage: TokenUsage(inputTokens: 2480, outputTokens: 512)), at: at(2100))
+        sut.stopEarly()
+
+        XCTAssertEqual(sut.measurements(endedAt: at(2200)).void, .stoppedEarly)
+    }
+
+    // MARK: - A bound the app never asked for
+
+    /// The server stopped for LENGTH below the ceiling the app sent, so something cut the answer
+    /// that the app did not choose — in practice a context window narrower than prompt plus
+    /// answer. The rate then describes that truncation, which is the defect
+    /// `outputCeilingReached` refuses, arriving by the one route a token count cannot see. RED:
+    /// drop the rung → an Ollama server on its default 4 096 window ranks every model on ~1 600
+    /// truncated tokens, and the table reads as a slow machine rather than a small window.
+    func testContextWindowReached_whenTheServerSaysLengthBelowOurCeiling() {
+        var sut = makeRecorder(outputCeiling: 8192)
+        sut.note(StreamEvent(contentDelta: "a"), at: at(100))
+        sut.note(StreamEvent(contentDelta: "b"), at: at(2100))
+        sut.note(
+            StreamEvent(
+                tokenUsage: TokenUsage(inputTokens: 2480, outputTokens: 1600),
+                serverDoneReason: "length"),
+            at: at(2100))
+
+        XCTAssertEqual(sut.measurements(endedAt: at(2200)).void, .contextWindowReached)
+    }
+
+    /// The healthy answer on the same provider: the model finished on its own, well inside the
+    /// ceiling. RED: fire on any `doneReason` rather than on `length` → every clean Ollama
+    /// sample is thrown away and the provider loses its entire leaderboard.
+    func testDoneReasonStop_belowTheCeiling_isAUsableSample() {
+        var sut = makeRecorder(outputCeiling: 8192)
+        sut.note(StreamEvent(contentDelta: "a"), at: at(100))
+        sut.note(StreamEvent(contentDelta: "b"), at: at(2100))
+        sut.note(
+            StreamEvent(
+                tokenUsage: TokenUsage(inputTokens: 2480, outputTokens: 2626),
+                serverDoneReason: "stop"),
+            at: at(2100))
+
+        XCTAssertNil(sut.measurements(endedAt: at(2200)).void)
+    }
+
+    /// Absence is not a verdict. LM Studio's native route — the one the benchmark takes there —
+    /// reports no stop reason at all, so a nil must read as "no opinion". RED: treat nil as
+    /// `length` → every LM Studio sample voids and the provider's table empties. (The opposite
+    /// mistake, reading nil as `stop`, changes nothing, which is why only this direction is
+    /// worth pinning.)
+    func testNoDoneReason_belowTheCeiling_isAUsableSample() {
+        var sut = makeRecorder(outputCeiling: 8192)
+        sut.note(StreamEvent(contentDelta: "a"), at: at(100))
+        sut.note(StreamEvent(contentDelta: "b"), at: at(2100))
+        sut.note(
+            StreamEvent(tokenUsage: TokenUsage(inputTokens: 2480, outputTokens: 2626)),
+            at: at(2100))
+
+        XCTAssertNil(sut.measurements(endedAt: at(2200)).void)
+    }
+
+    /// Both bounds are visible at once when the app's own ceiling is what the server hit. The
+    /// app's bound is the truer name: it is an observation on BOTH providers, while `doneReason`
+    /// is absent on one of them. RED: order this rung first → a genuinely runaway model is
+    /// reported as a narrow context window, sending the user to change the wrong setting.
+    func testOutputCeilingReached_outranksTheContextWindow() {
+        var sut = makeRecorder(outputCeiling: 512)
+        sut.note(StreamEvent(contentDelta: "a"), at: at(100))
+        sut.note(StreamEvent(contentDelta: "b"), at: at(2100))
+        sut.note(
+            StreamEvent(
+                tokenUsage: TokenUsage(inputTokens: 2480, outputTokens: 512),
+                serverDoneReason: "length"),
+            at: at(2100))
+
+        XCTAssertEqual(sut.measurements(endedAt: at(2200)).void, .outputCeilingReached)
+    }
+
+    /// The warm-up asks the SERVER for sixteen tokens and is MEANT to be cut at them, so
+    /// `length` there is the healthy outcome — and passing no ceiling is what says so. RED: fire
+    /// on `doneReason == "length"` without requiring a ceiling → every warm-up row in the
+    /// history is voided for doing exactly its job, which is the state 2026-09-20 removed.
+    func testWithoutACeiling_doneReasonLength_isNotVoided() {
+        var sut = makeRecorder()
+        sut.note(StreamEvent(contentDelta: "a"), at: at(100))
+        sut.note(StreamEvent(contentDelta: "b"), at: at(2100))
+        sut.note(
+            StreamEvent(
+                tokenUsage: TokenUsage(inputTokens: 2480, outputTokens: 16),
+                serverDoneReason: "length"),
+            at: at(2100))
+
+        XCTAssertNil(sut.measurements(endedAt: at(2200)).void)
+    }
+
+    /// Ladder placement, upward: a window too short to divide by is named before either output
+    /// bound, because a rate that cannot be computed at all is the more basic fact. RED: place
+    /// the context rung above `windowTooShort` → a two-millisecond sample is reported as a
+    /// context-window problem, and the user goes looking at server settings for a fence-post.
+    func testWindowTooShort_outranksTheContextWindow() {
+        var sut = makeRecorder(outputCeiling: 8192)
+        sut.note(StreamEvent(contentDelta: "a"), at: at(100))
+        sut.note(StreamEvent(contentDelta: "b"), at: at(101))
+        sut.note(
+            StreamEvent(
+                tokenUsage: TokenUsage(inputTokens: 2480, outputTokens: 1600),
+                serverDoneReason: "length"),
+            at: at(101))
+
+        XCTAssertEqual(sut.measurements(endedAt: at(200)).void, .windowTooShort)
     }
 }

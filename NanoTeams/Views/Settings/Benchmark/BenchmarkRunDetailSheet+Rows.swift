@@ -120,13 +120,32 @@ extension BenchmarkRunDetailSheet {
         return app + " · srv " + BenchmarkMetricsPolicy.formatDuration(server)
     }
 
+    /// The first schema version recorded after the warm-up stopped being cut by the app
+    /// (2026-09-20). Spelled as its own number rather than read off `currentSchemaVersion` so a
+    /// later bump cannot silently re-date the change this discriminates.
+    /// `nonisolated` because its only reader, `outcome(_:)`, is — and this file is in the app
+    /// target, where the default isolation is `@MainActor`. Without the marker the reference
+    /// from that function's autoclosure is a main-actor-isolation warning today and an error
+    /// under a future language mode.
+    private nonisolated static let serverBoundedWarmUpSchemaVersion = 2
+
     /// What became of a sample. Empty for one that counted — a word there would put "ok" on every
     /// healthy row and bury the one row that says something.
+    ///
+    /// `stoppedEarly` on a WARM-UP means two different things either side of 2026-09-20, and the
+    /// schema version is the only thing that separates them. Before it, the app cut the warm-up
+    /// itself the moment the model was decoding: the void was the expected state of every healthy
+    /// run, and "stopped once warm" is what those rows still mean. Since then the SERVER bounds it
+    /// (`BenchmarkWarmUpPolicy`), a healthy warm-up carries no void at all, and `stoppedEarly`
+    /// means the twenty-second deadline fired or the user cancelled — possibly mid-load. Printing
+    /// the old reassurance over the new meaning would tell a reader that a warm-up which never
+    /// started is the healthy outcome.
     nonisolated static func outcome(_ sample: GenerationBenchmarkSample) -> String {
         guard let void = sample.void else { return "" }
-        let reason = sample.phase == .warmup && void == .stoppedEarly
-            ? "stopped once warm"
-            : void.rawValue
+        let isLegacyWarmUpStop = sample.phase == .warmup
+            && void == .stoppedEarly
+            && sample.schemaVersion < serverBoundedWarmUpSchemaVersion
+        let reason = isLegacyWarmUpStop ? "stopped once warm" : void.rawValue
         guard let detail = sample.voidDetail, !detail.isEmpty else { return reason }
         return "\(reason) — \(detail)"
     }
@@ -203,9 +222,9 @@ extension BenchmarkRunDetailSheet {
 
     nonisolated static let samplesHelp =
         "Every sample this run took, including the warm-up and every one the medians excluded — "
-            + "with the reason. The warm-up pays for loading the model and is stopped as soon as "
-            + "it is decoding, so it is the only place the load cost is visible, and its "
-            + "\"stopped once warm\" note is the healthy outcome rather than a failure."
+            + "with the reason. The warm-up pays for loading the model, so it is the only place "
+            + "the load cost is visible; it asks the server for just a few tokens and reads the "
+            + "answer to the end, so a healthy one carries no reason at all."
 
     nonisolated static let conditionsHelp =
         "What was asked for and what the machine was doing at the time. A run measured while "

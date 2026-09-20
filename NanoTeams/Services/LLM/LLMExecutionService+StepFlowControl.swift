@@ -15,10 +15,6 @@ extension LLMExecutionService {
     }
 
 
-    /// The `done_reason` / `finish_reason` both providers use for "cut off at the output
-    /// ceiling" — Ollama and the OpenAI shape agree on the word.
-    nonisolated static let lengthDoneReason = "length"
-
     /// True when the step has a pending supervisor-feedback revision. Reads the
     /// freshest task from the delegate so mid-iteration mutations are observed.
     func isStepInRevision(stepID: String, taskID: Int) -> Bool {
@@ -139,7 +135,7 @@ extension LLMExecutionService {
         // turn truncated at a few hundred tokens never reaches that threshold while failing
         // the same way every time (a model reasoning in circles about a tool the schema does
         // not carry). First → the cut named and one action; second consecutive → escalate.
-        if result.serverDoneReason == LLMExecutionService.lengthDoneReason {
+        if result.serverDoneReason == StreamEvent.lengthDoneReason {
             if isStepInRevision(stepID: stepID, taskID: task.id) {
                 executionStates[stepKey]?.consecutiveTruncatedTurns = 0
             } else {

@@ -225,10 +225,10 @@ nonisolated extension OllamaClient {
         /// reader wondering "is it the model or my machine" needs to see.
         var totalDurationNs: Double?
         /// Why generation stopped: `"stop"` when the model finished, `"length"` when it hit the
-        /// requested ceiling. The benchmark asks for a fixed 512-token cap, and until this was
-        /// decoded nothing could say whether a run had been cut off at it — `outputCapField` could
-        /// only catch the opposite case, a server returning MORE than it was asked for, by reading
-        /// the token counts back.
+        /// requested ceiling. Corroboration for the benchmark's own verdict rather than its
+        /// source: `BenchmarkVoidReason.outputCeilingReached` is decided from the token counts,
+        /// because LM Studio sends no stop reason at all and a detector keyed on this field would
+        /// be blind there. Ollama saying it anyway is a second opinion worth decoding.
         var doneReason: String?
         var error: String?
 

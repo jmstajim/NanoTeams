@@ -105,16 +105,30 @@ final class BenchmarkRunDetailTests: XCTestCase {
         XCTAssertTrue(row.outcome.contains(BenchmarkVoidReason.httpError.rawValue), row.outcome)
     }
 
-    /// The warm-up carries `stoppedEarly` on every healthy run — it is stopped on purpose the
-    /// moment it has done its job. RED: print the raw reason for it too → every successful run
-    /// shows a row that reads as a failure.
-    func testSampleRows_readTheWarmUpsOwnStopAsTheHealthyOutcomeItIs() {
-        let warmUp = BenchmarkRunDetailSheet.sampleRows(
-            for: [Self.sample(phase: .warmup, void: .stoppedEarly)])[0]
+    /// A warm-up recorded BEFORE 2026-09-20 was cut by the app the moment the model was
+    /// decoding, so `stoppedEarly` was its healthy outcome and those rows still mean that. RED:
+    /// print the raw reason for them too → every archived successful run shows a row that reads
+    /// as a failure.
+    func testSampleRows_readALegacyWarmUpsOwnStopAsTheHealthyOutcomeItWas() {
+        var legacy = Self.sample(phase: .warmup, void: .stoppedEarly)
+        legacy.schemaVersion = 1
+        let warmUp = BenchmarkRunDetailSheet.sampleRows(for: [legacy])[0]
         let measured = BenchmarkRunDetailSheet.sampleRows(
             for: [Self.sample(void: .stoppedEarly)])[0]
         XCTAssertEqual(warmUp.outcome, "stopped once warm")
         XCTAssertEqual(measured.outcome, BenchmarkVoidReason.stoppedEarly.rawValue)
+    }
+
+    /// Since 2026-09-20 the SERVER bounds the warm-up and a healthy one carries no void at all,
+    /// so `stoppedEarly` on a current row means the deadline fired or the user cancelled —
+    /// possibly before the model finished loading. RED: keep the reassurance keyed on the phase
+    /// alone → a warm-up that never started is reported as the healthy outcome, which is the one
+    /// row that would have said the run is broken.
+    func testSampleRows_doNotCallACurrentWarmUpsStopHealthy() {
+        let warmUp = BenchmarkRunDetailSheet.sampleRows(
+            for: [Self.sample(phase: .warmup, void: .stoppedEarly)])[0]
+        XCTAssertEqual(warmUp.outcome, BenchmarkVoidReason.stoppedEarly.rawValue)
+        XCTAssertFalse(warmUp.outcome.contains("once warm"), warmUp.outcome)
     }
 
     /// RED: print a bare number for both → the app's own measurement and the server's are two

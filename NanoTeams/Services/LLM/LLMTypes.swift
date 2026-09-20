@@ -79,7 +79,7 @@ nonisolated struct LLMConfig: Hashable {
     /// for every role step: an agent turn cut off mid-thought produces a truncated tool call and a
     /// step that can never complete.
     ///
-    /// The ONLY production writer is the generation benchmark (`BenchmarkPrompt.maxOutputTokens`)
+    /// The ONLY production writer is the generation benchmark (`BenchmarkPrompt.outputCeiling`)
     /// — same shape as `temperature`, and for the same reason: a measurement is allowed to demand
     /// determinism that real work is not. There it replaces an UNCONTROLLED variable with a
     /// controlled one. Measured on LM Studio 0.4.21 / qwen3.5-9b: one uncapped sample of this
@@ -206,13 +206,24 @@ nonisolated struct StreamEvent: Hashable {
     /// transport and scheduling — which is the difference between "the model is slow" and "this
     /// machine is busy", and neither number can say that alone.
     var serverTotalNs: Double?
-    /// Why the server stopped generating — Ollama `done_reason`: `"stop"` when the model finished
-    /// on its own, `"length"` when it hit the requested ceiling. Nil on LM Studio.
+    /// Why the server stopped generating — Ollama `done_reason` / the OpenAI shape's
+    /// `finish_reason`: `"stop"` when the model finished on its own, `lengthDoneReason` when
+    /// something bounded it. Nil on LM Studio's NATIVE route (`/api/v1/chat`), which reports no
+    /// stop reason at all; its OpenAI-compat route (`/v1/chat/completions`, taken only for a
+    /// native-tool-calling request) does report one.
     ///
     /// Recorded verbatim rather than mapped onto a Bool. `"stop"` and `"length"` are today's two
     /// values; a server that adds a third would be flattened into "not length" by a Bool, and the
     /// string costs nothing to keep.
     var serverDoneReason: String?
+
+    /// The `done_reason` / `finish_reason` both providers use for "something stopped this before
+    /// the model was finished" — Ollama and the OpenAI shape agree on the word.
+    ///
+    /// Lives on the type that CARRIES the field rather than on a consumer of it: two unrelated
+    /// readers act on this word — the step loop's truncation branch and the benchmark's void
+    /// ladder — and a literal copied to the second one is how the two would drift apart.
+    nonisolated static let lengthDoneReason = "length"
 
     init(
         contentDelta: String = "",

@@ -114,6 +114,21 @@ nonisolated enum BenchmarkMetricsPolicy {
         return (present[mid - 1] + present[mid]) / 2
     }
 
+    /// The generation rate of ONE sample, from whichever source answered.
+    ///
+    /// The four-operand `generationRate` is the policy; this is the only place that knows which
+    /// four fields of a sample feed it. Both the per-run median and the leaderboard's best-sample
+    /// column go through here, so the two cannot end up disagreeing about what a sample's rate is.
+    static func generationRate(
+        for sample: GenerationBenchmarkSample
+    ) -> (rate: Double, source: GenerationRateSource)? {
+        generationRate(
+            outputTokens: sample.outputTokens,
+            clientWindowMs: sample.generationMs,
+            serverWindowMs: sample.serverGenerationMs,
+            reportedRate: sample.serverGenerationTokensPerSecond)
+    }
+
     /// The samples a figure may be computed from: measured phase only, no void reason.
     ///
     /// Two filters, not one. Dropping only voids would fold the warm-up — which paid for model
@@ -148,8 +163,32 @@ nonisolated enum BenchmarkMetricsPolicy {
         var reasoningTokenShare: Double?
         var usableCount: Int
         var voidedCount: Int
+        /// Measured samples voided because they ran into `BenchmarkPrompt.outputCeiling`.
+        var ceilingVoidedCount: Int
+        /// Measured samples the SERVER cut for length below that ceiling — its own context
+        /// window. Counted apart from `ceilingVoidedCount` because the two point at different
+        /// settings: one is the app's guard, the other is `num_ctx` on the server.
+        var contextWindowVoidedCount: Int
 
         var isFailed: Bool { usableCount == 0 }
+        /// Nothing was measurable, and the reason was the ceiling every single time.
+        ///
+        /// A run in this state is not a failure to report — the server answered, the model wrote,
+        /// and it simply never stopped. It earns "not measured" rather than a low number, and the
+        /// leaderboard counts it apart from a run that produced nothing at all.
+        var everySampleHitCeiling: Bool {
+            usableCount == 0 && ceilingVoidedCount > 0 && ceilingVoidedCount == voidedCount
+        }
+        /// Nothing was measurable, and the server's own window ended every answer.
+        ///
+        /// The likeliest whole-run failure on a default Ollama install: its context tier is 4k
+        /// below 24 GiB of VRAM (DEBTS Q-6), this prompt is ~2 480 tokens and its answer ~2 600,
+        /// so every sample is cut. That earns a sentence naming `num_ctx` rather than the
+        /// generic "no usable sample", which points at nothing the user can change.
+        var everySampleHitTheContextWindow: Bool {
+            usableCount == 0 && contextWindowVoidedCount > 0
+                && contextWindowVoidedCount == voidedCount
+        }
         var prefillIsApproximate: Bool { prefillSource?.isApproximate ?? true }
         /// Unknown source reads as approximate, same rule as `prefillIsApproximate`: an unlabelled
         /// mixture is exactly the case a reader must not take at face value.
@@ -158,21 +197,17 @@ nonisolated enum BenchmarkMetricsPolicy {
 
     static func summarize(_ samples: [GenerationBenchmarkSample]) -> RunSummary {
         let usable = usableSamples(samples)
-        // MEASURED samples only, and the reason is the warm-up: it is stopped on purpose the
-        // moment it has done its job, so it carries a void every healthy run. Counting it here
-        // would tell the user "1 sample could not be used and was excluded from the medians" after
-        // every single successful run — about a sample that was never going to be in a median.
-        let voided = samples.count { $0.phase == .measured && $0.void != nil }
+        // MEASURED samples only. A warm-up is not a measurement — it pays for model load and KV
+        // materialisation and is dropped from every median by construction — so whatever becomes
+        // of it must never be reported as "1 sample could not be used". That mattered doubly
+        // while the warm-up was client-cancelled and carried `.stoppedEarly` on every healthy run;
+        // it is now a complete short sample, and the filter is still the right one.
+        let measured = samples.filter { $0.phase == .measured }
+        let voided = measured.count { $0.void != nil }
 
         let sources = Set(usable.compactMap(\.prefillSource))
 
-        let rates = usable.map {
-            generationRate(
-                outputTokens: $0.outputTokens,
-                clientWindowMs: $0.generationMs,
-                serverWindowMs: $0.serverGenerationMs,
-                reportedRate: $0.serverGenerationTokensPerSecond)
-        }
+        let rates = usable.map { generationRate(for: $0) }
         let rateSources = Set(rates.compactMap { $0?.source })
 
         return RunSummary(
@@ -186,7 +221,9 @@ nonisolated enum BenchmarkMetricsPolicy {
             prefillSource: sources.count == 1 ? sources.first : nil,
             reasoningTokenShare: median(usable.map(reasoningShare)),
             usableCount: usable.count,
-            voidedCount: voided)
+            voidedCount: voided,
+            ceilingVoidedCount: measured.count { $0.void == .outputCeilingReached },
+            contextWindowVoidedCount: measured.count { $0.void == .contextWindowReached })
     }
 
     /// Share of one sample's output the server called reasoning, 0…1.

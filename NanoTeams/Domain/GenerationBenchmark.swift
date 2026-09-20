@@ -82,6 +82,43 @@ nonisolated enum BenchmarkVoidReason: String, Codable, Hashable, Sendable, CaseI
     /// therefore counts voids on MEASURED samples only — a deliberate stop must never be reported
     /// to the user as a sample that "could not be used".
     case stoppedEarly
+    /// The model was still writing when `BenchmarkPrompt.outputCeiling` cut it off, so this sample
+    /// measures its own truncation rather than the model.
+    ///
+    /// Void rather than marked, because the column RANKS. On a serving that decodes speculatively
+    /// the rate depends on how predictable the generated text is, so a truncated sample is a rate
+    /// over whichever slice of the answer the ceiling happened to admit — measured 2026-09-20 on
+    /// LM Studio 0.4.25 / `qwen3.8-27b-splash`: 35.6 tok/s cut at 512, 54.6 run to the end, same
+    /// prompt and same instance. Averaging those two into one column is the defect this reason
+    /// exists to refuse.
+    ///
+    /// The detector needs no `doneReason`, which is what makes it work on BOTH providers: the
+    /// server stops exactly at the ceiling it was given, so `outputTokens >= requested` is an
+    /// observation. LM Studio reports no stop reason at all on this route (`stats` carries
+    /// `input_tokens`, `total_output_tokens`, `reasoning_output_tokens`, `tokens_per_second` and
+    /// `time_to_first_token_seconds`, and nothing else), so an inference from `doneReason` would
+    /// have been blind on the provider where this was found.
+    case outputCeilingReached
+    /// The SERVER stopped for length at a point the app never asked it to stop at, so a bound
+    /// the app does not control cut the answer short — in practice a context window narrower
+    /// than prompt plus answer (Ollama's default 4 096 against this prompt's ~2 480 leaves room
+    /// for roughly 1 600 output tokens, far below `BenchmarkPrompt.outputCeiling`).
+    ///
+    /// Kept apart from `outputCeilingReached` because the two name different bounds and point at
+    /// different fixes: that one says the model is verbose, this one says the server's window is
+    /// too small. Merged, they would send a user to raise a ceiling the app already sets three
+    /// times higher than the answer needs.
+    ///
+    /// Read from `doneReason`, which is the ONLY signal that can see it: the cut lands wherever
+    /// the window runs out rather than at a number the app chose, so no token count can imply it
+    /// — which is the exact inverse of `outputCeilingReached`, whose whole point is that it needs
+    /// no stop reason. That makes this rung provider-shaped, deliberately: Ollama reports
+    /// `done_reason`, LM Studio's native route — the one the benchmark takes there
+    /// (`LLMClientRouter.usesOpenAICompatEndpoint`, false for a tool-less call) — reports no stop
+    /// reason at all, so it never fires on that provider. A void that fires where the evidence
+    /// exists beats one that fires nowhere; without it the sample is ranked as an honest
+    /// measurement of its own truncation, which is the defect prompt version 5 exists to refuse.
+    case contextWindowReached
 }
 
 // MARK: - Sample
@@ -93,16 +130,21 @@ nonisolated struct GenerationBenchmarkSample: Codable, Hashable, Identifiable, S
     /// aggregated — the same split `benchmark_prompt_processing.sh` makes with its two throwaway
     /// warmup rows.
     ///
-    /// A warm-up is also STOPPED as soon as it has paid those costs (`BenchmarkWarmUpPolicy`), so
-    /// its row normally carries `void == .stoppedEarly` and no token counts. Measured on
-    /// LM Studio 0.4.21 / qwen3.5-9b: read to the end, one warm-up ran 233 s and produced 12 040
+    /// A warm-up is also kept SHORT — `BenchmarkWarmUpPolicy.outputCeiling` tokens, asked for on
+    /// the wire — so its row is a complete little measurement with real token counts, not a void.
+    /// It was client-cancelled until 2026-09-20, which is why `void == .stoppedEarly` used to be
+    /// its normal state; see that type for why the cancel was removed. Measured on LM Studio
+    /// 0.4.21 / qwen3.5-9b before any bound existed: one warm-up ran 233 s and produced 12 040
     /// tokens, 11 561 of them reasoning — four minutes of output that exists only to be discarded.
     enum Phase: String, Codable, Hashable, Sendable {
         case warmup
         case measured
     }
 
-    static let currentSchemaVersion = 1
+    /// 2 — `thermalState` (2026-09-20). Bumped rather than added silently because its absence
+    /// carries two different meanings a reader must be able to separate: "this row predates
+    /// per-sample thermal" and "the OS did not say". Only the version can tell them apart.
+    static let currentSchemaVersion = 2
 
     var schemaVersion: Int
     var id: UUID
@@ -162,11 +204,21 @@ nonisolated struct GenerationBenchmarkSample: Codable, Hashable, Identifiable, S
     /// Why the server stopped generating — `"stop"` when the model finished, `"length"` when it
     /// hit the requested ceiling. Nil where the provider does not say.
     ///
-    /// The benchmark asks for a fixed 512-token cap, and this is the only direct answer to
-    /// whether a sample was cut off at it. `BenchmarkProvenance.outputCapField` could previously
-    /// only detect the opposite — a server returning MORE than it was asked for — by reading the
-    /// token counts back, which is an inference about a fact the server was already stating.
+    /// Corroboration only, never the detector. The benchmark's own answer to "was this cut off"
+    /// is `BenchmarkVoidReason.outputCeilingReached`, decided from the token counts, because
+    /// LM Studio sends no stop reason at all on its streaming route — keying the decision on this
+    /// field would have been blind on the provider where the defect was found.
     var doneReason: String?
+
+    /// `ProcessInfo.ThermalState` at the moment this sample was taken, as a string.
+    ///
+    /// Per SAMPLE, not per run, and that is the whole point: the run-level reading used to be
+    /// taken once, AFTER the loop, so a run that throttled in the middle and cooled by the time
+    /// it was read recorded `nominal` and dragged the median down with nothing to show for it,
+    /// while a run merely warm at that instant was marked throttled and excluded whole. Both
+    /// errors were silent. The run's label is now the worst of these
+    /// (`BenchmarkThermalState.worst(of:)`).
+    var thermalState: String?
 
     var void: BenchmarkVoidReason?
     /// Free-text detail for `void` — an HTTP status, an error message. Separate from the reason
@@ -196,6 +248,7 @@ nonisolated struct GenerationBenchmarkSample: Codable, Hashable, Identifiable, S
         totalMs: Double? = nil,
         serverTotalMs: Double? = nil,
         doneReason: String? = nil,
+        thermalState: String? = nil,
         void: BenchmarkVoidReason? = nil,
         voidDetail: String? = nil
     ) {
@@ -219,6 +272,7 @@ nonisolated struct GenerationBenchmarkSample: Codable, Hashable, Identifiable, S
         self.totalMs = totalMs
         self.serverTotalMs = serverTotalMs
         self.doneReason = doneReason
+        self.thermalState = thermalState
         self.void = void
         self.voidDetail = voidDetail
     }
@@ -260,6 +314,7 @@ nonisolated struct GenerationBenchmarkSample: Codable, Hashable, Identifiable, S
         // `modelFormat` / `quantization` addition.
         sample.serverTotalMs = try c.decodeIfPresent(Double.self, forKey: .serverTotalMs)
         sample.doneReason = try c.decodeIfPresent(String.self, forKey: .doneReason)
+        sample.thermalState = try c.decodeIfPresent(String.self, forKey: .thermalState)
         sample.void = try c.decodeIfPresent(BenchmarkVoidReason.self, forKey: .void)
         sample.voidDetail = try c.decodeIfPresent(String.self, forKey: .voidDetail)
         return sample
@@ -465,5 +520,21 @@ nonisolated enum BenchmarkThermalState {
         case .critical: critical
         @unknown default: unknown
         }
+    }
+
+    /// Severity order, so a run can be labelled by the worst moment in it rather than the last.
+    ///
+    /// `unknown` sits ABOVE `nominal` on purpose. It is not a measurement, and the one thing it
+    /// must not do is let a run claim it was cool; `GenerationBenchmarkRun.wasThrottled` already
+    /// reads anything other than `nominal` as throttled, so this ordering agrees with the
+    /// predicate rather than inventing a second opinion. It sits below `fair` because overstating
+    /// an absent reading as a real one is the mirror of the same mistake.
+    private static let severity: [String: Int] = [
+        nominal: 0, unknown: 1, fair: 2, serious: 3, critical: 4,
+    ]
+
+    /// The worst of the readings taken during a run, or `unknown` when there were none.
+    static func worst(of labels: [String]) -> String {
+        labels.max { (severity[$0] ?? 1) < (severity[$1] ?? 1) } ?? unknown
     }
 }

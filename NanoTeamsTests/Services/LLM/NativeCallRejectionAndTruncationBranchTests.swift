@@ -137,20 +137,20 @@ final class NativeCallRejectionAndTruncationBranchTests: XCTestCase {
     /// The rejection is the most specific claim a turn can carry: it wins over a `length`
     /// reason on the same turn, and the truncation counter is not touched by it.
     func testRejection_outranksATruncationReason_onTheSameTurn() async {
-        let (stop, appended) = await turn(rejection: "peg-native", doneReason: LLMExecutionService.lengthDoneReason)
+        let (stop, appended) = await turn(rejection: "peg-native", doneReason: StreamEvent.lengthDoneReason)
         guard case .continueLoop = stop else { return XCTFail("\(stop)") }
         XCTAssertTrue((appended[0].content ?? "").contains("could not parse"))
         XCTAssertEqual(parseFailures, 1)
 
         // Only ONE truncation has been seen after this — no escalation.
-        let (second, _) = await turn(doneReason: LLMExecutionService.lengthDoneReason)
+        let (second, _) = await turn(doneReason: StreamEvent.lengthDoneReason)
         guard case .continueLoop = second else { return XCTFail("the rejected turn did not count as a truncation: \(second)") }
     }
 
     // MARK: - Output truncated at the ceiling, no call
 
     func testTruncation_firstStrike_nudges_secondConsecutiveEscalates() async {
-        let (first, appended) = await turn(doneReason: LLMExecutionService.lengthDoneReason)
+        let (first, appended) = await turn(doneReason: StreamEvent.lengthDoneReason)
         guard case .continueLoop = first else { return XCTFail("\(first)") }
         XCTAssertEqual(appended.count, 1)
         XCTAssertEqual(
@@ -159,7 +159,7 @@ final class NativeCallRejectionAndTruncationBranchTests: XCTestCase {
         XCTAssertFalse((appended[0].content ?? "").contains("<|call|>"))
         XCTAssertEqual(parseFailures, 0, "a truncation is not a parse failure")
 
-        let (second, appended2) = await turn(doneReason: LLMExecutionService.lengthDoneReason)
+        let (second, appended2) = await turn(doneReason: StreamEvent.lengthDoneReason)
         guard case .needsSupervisorInput(let question, _) = second else {
             return XCTFail("second consecutive truncation must escalate, got \(second)")
         }
@@ -173,16 +173,16 @@ final class NativeCallRejectionAndTruncationBranchTests: XCTestCase {
 
     /// Consecutive means consecutive: an untruncated no-call turn between two cuts resets.
     func testTruncation_counterResets_onAnUntruncatedTurnBetween() async {
-        let (a, _) = await turn(doneReason: LLMExecutionService.lengthDoneReason)
+        let (a, _) = await turn(doneReason: StreamEvent.lengthDoneReason)
         guard case .continueLoop = a else { return XCTFail("\(a)") }
         let (b, _) = await turn(doneReason: "stop", content: "I will read the file next.")
         guard case .continueLoop = b else { return XCTFail("\(b)") }
-        let (c, _) = await turn(doneReason: LLMExecutionService.lengthDoneReason)
+        let (c, _) = await turn(doneReason: StreamEvent.lengthDoneReason)
         guard case .continueLoop = c else { return XCTFail("a reset counter must not escalate on the next cut: \(c)") }
     }
 
     func testTruncation_underPromptTaught_illustratesTheEnvelope() async {
-        let (stop, appended) = await turn(doneReason: LLMExecutionService.lengthDoneReason, mode: .promptTaught)
+        let (stop, appended) = await turn(doneReason: StreamEvent.lengthDoneReason, mode: .promptTaught)
         guard case .continueLoop = stop else { return XCTFail("\(stop)") }
         XCTAssertTrue((appended[0].content ?? "").contains("<|call|>"),
                       "the prompt-taught clause shows the shape; the native one only names a tool")
@@ -191,7 +191,7 @@ final class NativeCallRejectionAndTruncationBranchTests: XCTestCase {
     func testTruncation_duringRevision_nudgesWithoutCounting() async {
         delegate.taskToMutate?.runs[0].steps[0].revisionComment = "Supervisor: again"
         for _ in 0..<3 {
-            let (stop, _) = await turn(doneReason: LLMExecutionService.lengthDoneReason)
+            let (stop, _) = await turn(doneReason: StreamEvent.lengthDoneReason)
             guard case .continueLoop = stop else { return XCTFail("\(stop)") }
         }
     }
@@ -223,9 +223,9 @@ final class NativeCallRejectionAndTruncationBranchTests: XCTestCase {
     }
 
     func testTruncation_secondStrike_whenTheQuestionCannotPersist_failsTheStep() async {
-        _ = await turn(doneReason: LLMExecutionService.lengthDoneReason)
+        _ = await turn(doneReason: StreamEvent.lengthDoneReason)
         delegate.taskToMutate = nil
-        let (stop, _) = await turn(doneReason: LLMExecutionService.lengthDoneReason)
+        let (stop, _) = await turn(doneReason: StreamEvent.lengthDoneReason)
         guard case .toolFailure(let message) = stop else { return XCTFail("\(stop)") }
         XCTAssertTrue(message.contains("Output-truncation cap exceeded"), message)
     }
@@ -264,9 +264,9 @@ final class NativeCallRejectionAndTruncationBranchTests: XCTestCase {
     /// before every dispatch (`resetCountersOnParseableToolCall`) must clear this counter as
     /// well: `length` → a real call → `length` is two cuts, not two consecutive ones.
     func testTruncation_aParseableCallBetweenTwoCuts_resetsTheCounter() async {
-        _ = await turn(doneReason: LLMExecutionService.lengthDoneReason)
+        _ = await turn(doneReason: StreamEvent.lengthDoneReason)
         service.resetCountersOnParseableToolCall(stepID: stepID, taskID: task.id)
-        let (stop, appended) = await turn(doneReason: LLMExecutionService.lengthDoneReason)
+        let (stop, appended) = await turn(doneReason: StreamEvent.lengthDoneReason)
         guard case .continueLoop = stop else { return XCTFail("\(stop)") }
         XCTAssertEqual(appended.count, 1, "the first-strike nudge again, not the escalation")
         XCTAssertNil(delegate.taskToMutate?.runs[0].steps[0].supervisorQuestion)

@@ -158,7 +158,7 @@ struct BenchmarkPromptSheet: View {
             "one user turn",
             "no system prompt",
             "no tools",
-            "output capped at \(BenchmarkPrompt.maxOutputTokens) tokens",
+            "answered in full, guard at \(BenchmarkPrompt.outputCeiling) tokens",
         ].joined(separator: " · ")
     }
 

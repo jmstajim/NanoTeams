@@ -457,8 +457,8 @@ struct BenchmarkSweepCard: View {
     static func footer(blockedBy reason: BenchmarkBlockReason?) -> String {
         if let reason { return reason.explanation }
         return "Everything is unloaded on every server listed here — both providers draw on the "
-            + "same memory — then each model is loaded, warmed up and sampled alone: minutes per "
-            + "model, and your loaded models will be gone. Switch a server off to leave it "
-            + "untouched."
+            + "same memory — then each model is loaded, warmed up and sampled alone. Several "
+            + "minutes per model, and more for a verbose one since the whole answer is measured "
+            + "— and your loaded models will be gone. Switch a server off to leave it untouched."
     }
 }

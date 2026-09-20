@@ -150,9 +150,12 @@ final class BenchmarkMetricsPolicyTests: XCTestCase {
 
     // MARK: - summarize
 
-    /// The warm-up is stopped on purpose in every healthy run, so it always carries a void. RED:
-    /// count voids across every phase → each successful run reports "1 sample could not be used
-    /// and was excluded from the medians", about a sample that was never eligible for one.
+    /// The warm-up is not a measurement and is dropped from every median by construction, so
+    /// whatever becomes of it must never be counted as a lost sample. It carried a void on every
+    /// healthy run until 2026-09-20 and carries none now; the filter is by PHASE precisely so
+    /// that it is right either way. RED: count voids across every phase → an archived successful
+    /// run reports "1 sample could not be used and was excluded from the medians", about a
+    /// sample that was never eligible for one.
     func testSummarize_doesNotCountTheWarmUpsDeliberateStopAsAnUnusableSample() {
         let samples = [
             sample(index: 0, phase: .warmup, outputTokens: nil, generationMs: nil,
@@ -280,6 +283,107 @@ final class BenchmarkMetricsPolicyTests: XCTestCase {
     }
 
     // MARK: - Helpers
+
+    // MARK: - The output ceiling
+
+    /// A truncated sample is excluded from the median and counted as what it was. RED: leave it
+    /// usable → its rate, which is the rate of the truncation, moves the ranked figure.
+    func testSummarize_ceilingVoidedSample_isExcludedAndCounted() {
+        let summary = BenchmarkMetricsPolicy.summarize([
+            sample(index: 0, phase: .measured, outputTokens: 401, generationMs: 10_000),
+            sample(
+                index: 1, phase: .measured, outputTokens: 8192, generationMs: 10_000,
+                void: .outputCeilingReached),
+        ])
+
+        XCTAssertEqual(summary.usableCount, 1)
+        XCTAssertEqual(summary.voidedCount, 1)
+        XCTAssertEqual(summary.ceilingVoidedCount, 1)
+        XCTAssertFalse(summary.everySampleHitCeiling, "one sample was measured, so this is not it")
+    }
+
+    /// The whole-run verdict: nothing measurable, and the ceiling every time. That earns "not
+    /// measured", which is a different sentence from "the server failed".
+    func testSummarize_everySampleAtTheCeiling_isReportedAsSuch() {
+        let summary = BenchmarkMetricsPolicy.summarize([
+            sample(
+                index: 0, phase: .measured, outputTokens: 8192, generationMs: 10_000,
+                void: .outputCeilingReached),
+            sample(
+                index: 1, phase: .measured, outputTokens: 8192, generationMs: 10_000,
+                void: .outputCeilingReached),
+        ])
+
+        XCTAssertTrue(summary.isFailed)
+        XCTAssertTrue(summary.everySampleHitCeiling)
+    }
+
+    /// The other whole-run verdict, and the likeliest one on a default Ollama install: the
+    /// SERVER ended every answer at its own context window, below the ceiling the app asked
+    /// for. RED: fold it into `ceilingVoidedCount` → the card tells the user their model is
+    /// verbose when the fix is `num_ctx` on the server.
+    func testSummarize_everySampleCutByTheContextWindow_isItsOwnVerdict() {
+        let summary = BenchmarkMetricsPolicy.summarize([
+            sample(
+                index: 0, phase: .measured, outputTokens: 1600, generationMs: 10_000,
+                void: .contextWindowReached),
+            sample(
+                index: 1, phase: .measured, outputTokens: 1600, generationMs: 10_000,
+                void: .contextWindowReached),
+        ])
+
+        XCTAssertTrue(summary.isFailed)
+        XCTAssertTrue(summary.everySampleHitTheContextWindow)
+        XCTAssertFalse(summary.everySampleHitCeiling, "a different bound, and a different fix")
+        XCTAssertEqual(summary.contextWindowVoidedCount, 2)
+        XCTAssertEqual(summary.ceilingVoidedCount, 0)
+    }
+
+    /// The anti-vacuum twin of the twin: the two bounds mixed is a story about neither. RED:
+    /// test `contextWindowVoidedCount > 0` → a run with one of each claims the window is the
+    /// cause, and raising `num_ctx` would not fix the ceiling half.
+    func testSummarize_bothBoundsMixed_claimsNeither() {
+        let summary = BenchmarkMetricsPolicy.summarize([
+            sample(
+                index: 0, phase: .measured, outputTokens: 8192, generationMs: 10_000,
+                void: .outputCeilingReached),
+            sample(
+                index: 1, phase: .measured, outputTokens: 1600, generationMs: 10_000,
+                void: .contextWindowReached),
+        ])
+
+        XCTAssertTrue(summary.isFailed)
+        XCTAssertFalse(summary.everySampleHitCeiling)
+        XCTAssertFalse(summary.everySampleHitTheContextWindow)
+    }
+
+    /// The anti-vacuum twin (CLAUDE.md #59): a run that failed for an ordinary reason must not
+    /// claim the model was merely verbose. RED: test `ceilingVoidedCount > 0` alone → an HTTP
+    /// error alongside one truncated sample reads as "not measured" instead of "it broke".
+    func testSummarize_mixedFailures_doNotCountAsACeilingRun() {
+        let summary = BenchmarkMetricsPolicy.summarize([
+            sample(
+                index: 0, phase: .measured, outputTokens: 8192, generationMs: 10_000,
+                void: .outputCeilingReached),
+            sample(index: 1, phase: .measured, void: .httpError),
+        ])
+
+        XCTAssertTrue(summary.isFailed)
+        XCTAssertFalse(summary.everySampleHitCeiling)
+    }
+
+    /// A warm-up is not a measurement, so whatever becomes of it is never reported as a lost
+    /// sample. RED: count every phase → a healthy run announces one unusable sample.
+    func testSummarize_warmUpVoid_isNotCounted() {
+        let summary = BenchmarkMetricsPolicy.summarize([
+            sample(index: 0, phase: .warmup, outputTokens: 16, generationMs: 400),
+            sample(index: 1, phase: .measured, outputTokens: 401, generationMs: 10_000),
+        ])
+
+        XCTAssertEqual(summary.voidedCount, 0)
+        XCTAssertEqual(summary.ceilingVoidedCount, 0)
+        XCTAssertEqual(summary.usableCount, 1)
+    }
 
     private func sample(
         index: Int,

@@ -76,7 +76,9 @@ struct BenchmarkResultsCard: View {
         // Each list is built once per render and handed to whoever needs it: the footer has to
         // describe the table that is actually on screen, and re-deriving it there would be a
         // second answer to the same question.
-        let ranked = mode == .leaderboard ? rankedRows : []
+        let table = mode == .leaderboard ? leaderboardTable : BenchmarkLeaderboard.Table(
+            rows: [], unranked: [])
+        let ranked = mode == .leaderboard ? rankedRows(table) : []
         let entries = mode == .history ? historyEntries : []
 
         return SettingsCard(
@@ -84,14 +86,15 @@ struct BenchmarkResultsCard: View {
             systemImage: "list.number",
             footer: Self.footer(
                 mode: mode, hiddenRunCount: hiddenRunCount,
-                hasRows: mode == .leaderboard ? !ranked.isEmpty : !entries.isEmpty)
+                hasRows: mode == .leaderboard ? !ranked.isEmpty : !entries.isEmpty,
+                unranked: table.unranked)
         ) {
             TerminalSegmentedPicker(
                 selection: $mode,
                 options: Mode.allCases.map { ($0, $0.rawValue) })
 
             switch mode {
-            case .leaderboard: leaderboardSection(ranked)
+            case .leaderboard: leaderboardSection(ranked, unranked: table.unranked)
             case .history: historySection(entries)
             }
 
@@ -189,13 +192,15 @@ struct BenchmarkResultsCard: View {
     /// clear the field.
     @ViewBuilder
     private func leaderboardSection(
-        _ ranked: [(rank: Int, row: BenchmarkLeaderboard.Row)]
+        _ ranked: [(rank: Int, row: BenchmarkLeaderboard.Row)],
+        unranked: [BenchmarkLeaderboard.Unranked]
     ) -> some View {
         let visible = ranked.filter { BenchmarkSearch.matches($0.row, query: query) }
 
         if ranked.isEmpty {
             emptyText(
-                Self.emptyLeaderboardText(runCount: runs.count, hiddenRunCount: hiddenRunCount))
+                Self.emptyLeaderboardText(
+                    runCount: runs.count, hiddenRunCount: hiddenRunCount, unranked: unranked))
         } else {
             filterField(visible: visible.count, total: ranked.count)
             if visible.isEmpty {
@@ -210,15 +215,22 @@ struct BenchmarkResultsCard: View {
     /// Ranks are taken from the UNFILTERED order and carried into the filtered view, so a search
     /// that leaves one row still says "#4". Renumbering the survivor to #1 would turn a claim
     /// about the whole table into a claim about the query — a filter is not a race.
-    private var rankedRows: [(rank: Int, row: BenchmarkLeaderboard.Row)] {
-        BenchmarkLeaderboard.sorted(
-            BenchmarkLeaderboard.rows(
-                runs: runs, samples: samples,
-                currentPromptVersion: BenchmarkPrompt.version,
-                includeThrottled: includeThrottled),
-            by: sortColumn, descending: sortDescending)
+    private func rankedRows(
+        _ table: BenchmarkLeaderboard.Table
+    ) -> [(rank: Int, row: BenchmarkLeaderboard.Row)] {
+        BenchmarkLeaderboard.sorted(table.rows, by: sortColumn, descending: sortDescending)
             .enumerated()
             .map { (rank: $0.offset + 1, row: $0.element) }
+    }
+
+    /// The ranking and the models it could not rank, from ONE pass. Both the footer and the
+    /// empty state describe this same answer, and re-deriving it for each would be two answers
+    /// to one question — the reason `body` hoists its lists in the first place.
+    private var leaderboardTable: BenchmarkLeaderboard.Table {
+        BenchmarkLeaderboard.table(
+            runs: runs, samples: samples,
+            currentPromptVersion: BenchmarkPrompt.version,
+            includeThrottled: includeThrottled)
     }
 
     /// `Spacing.m` between columns rather than `Spacing.l`, and that is a consequence of spelling
@@ -292,12 +304,13 @@ struct BenchmarkResultsCard: View {
                         rate: row.generationTokensPerSecond,
                         approximate: row.generationRateIsApproximate,
                         tip: BenchmarkRunCard.generationTip(for: row.generationRateSource)))
-                    // Best run is the SAME quantity from the SAME runs, so it inherits
-                    // Generation's provenance and therefore Generation's marker. It shipped bare
-                    // in the cell next to a marked one, printing `~47 | 51` on a single row.
+                    // Best is the SAME quantity from the SAME runs, so it inherits Generation's
+                    // provenance and therefore Generation's marker. It shipped bare in the cell
+                    // next to a marked one, printing `~47 | 51` on a single row.
                     rateView(
-                        Self.rateCell(
+                        Self.bestCell(
                             rate: row.bestGenerationTokensPerSecond,
+                            sampleCount: row.bestSampleCount,
                             approximate: row.generationRateIsApproximate,
                             tip: BenchmarkRunCard.generationTip(for: row.generationRateSource)),
                         showsTip: false)
@@ -306,7 +319,10 @@ struct BenchmarkResultsCard: View {
                         rate: row.prefillTokensPerSecond,
                         approximate: row.prefillIsApproximate,
                         tip: BenchmarkRunCard.prefillTip(for: row.prefillSource)))
-                    value(Self.runsCell(priced: row.runCount, failed: row.failedRunCount))
+                    value(Self.runsCell(
+                        priced: row.runCount,
+                        failed: row.failedRunCount,
+                        hitCeiling: row.ceilingRunCount))
                     value(Self.runTimestamp(
                         row.lastMeasuredAt, now: renderedAt, includingTime: false))
                     deleteButton(
@@ -692,7 +708,7 @@ struct BenchmarkResultsCard: View {
 
     /// Draws what `Self.rateCell` decided. Every rate on both tables goes through here.
     ///
-    /// `showsTip: false` is the one sanctioned opt-out, and `Best run` is its only caller: it
+    /// `showsTip: false` is the one sanctioned opt-out, and `Best` is its only caller: it
     /// carries the same `~` for the same reason as the `Generation` cell beside it, so a second
     /// identical popover on every row explains the same thing twice. The MARKER is never
     /// optional — only the repeated icon.
@@ -770,7 +786,7 @@ struct BenchmarkResultsCard: View {
         column: .generation, title: "Generation", unit: "median tok/s", help: generationHelp)
 
     nonisolated static let bestColumn = Column(
-        column: .best, title: "Best run", unit: "tok/s", help: bestHelp)
+        column: .best, title: "Best", unit: "tok/s (samples)", help: bestHelp)
 
     /// The one abbreviation everybody in the field uses for this quantity, with its expansion
     /// underneath. No unit line: `formatDuration` prints "410 ms" / "1.4 s", so the cell carries it.
@@ -927,9 +943,11 @@ struct BenchmarkResultsCard: View {
 
     nonisolated static let bestHelp =
         "The same quantity as Generation — tokens per second of writing — but from the single "
-            + "FASTEST run instead of the median of them. It is shown beside the median rather than "
-            + "instead of it: the gap between the two is how much this model's speed varies between "
-            + "runs, and neither number can say that alone."
+            + "FASTEST sample instead of the median of them all, with the size of the set it won "
+            + "in brackets. This is the figure to compare against what a chat window shows you: a "
+            + "chat footer also reports one generation, never a median. Read the bracket before "
+            + "comparing two rows — the maximum of a larger set is expected to be higher, so rows "
+            + "drawn from different sample counts are not comparable here. Generation is."
 
     nonisolated static let firstTokenHelp =
         "TTFT — time to first token: how long from sending the request to the first token "
@@ -947,7 +965,9 @@ struct BenchmarkResultsCard: View {
     nonisolated static let runsHelp =
         "How many RUNS this row's medians were taken over — not how many samples. A median over one "
             + "run must not read as a median over seven. \"2 of 5\" means three of the five runs "
-            + "produced no usable sample at all and are behind none of these figures."
+            + "are behind none of these figures; \"2 of 5, 3 unfinished\" says why — those runs did "
+            + "not fail, the model simply never stopped writing and every sample ran into the "
+            + "output ceiling, so there is nothing honest to rank them on."
 
     nonisolated static let lastRunHelp =
         "When the most recent run behind this row was measured. It is also the run that supplied "
@@ -1011,7 +1031,7 @@ struct BenchmarkResultsCard: View {
     /// A value rather than four hand-written `HStack`s, and that is the whole point. The `~` rides
     /// the VALUE and not the column heading — inside one column some rows are exact and some
     /// inferred — which means every site that formats a rate has to remember the marker, and four
-    /// of the five did not. `Best run` shipped bare in the cell NEXT to a marked `Generation`
+    /// of the five did not. `Best` shipped bare in the cell NEXT to a marked `Generation`
     /// holding the same quantity from the same runs, so one row printed `~47 | 51`; the Runs tab
     /// shipped a bare `47` for the identical client-timed figure the leaderboard marked; the sweep
     /// card passed a literal `false`. A rule remembered at each site is remembered at one of them
@@ -1057,15 +1077,35 @@ struct BenchmarkResultsCard: View {
     /// describing a model that failed three times, and the count alone says the opposite of that.
     /// A clean row stays a bare `"2"`: `"2 of 2"` is the noise this must not add, and a reader who
     /// sees the long form anywhere learns that the short form means nothing went wrong.
-    nonisolated static func runsCell(priced: Int, failed: Int) -> String {
-        failed > 0 ? "\(priced) of \(priced + failed)" : "\(priced)"
+    /// `hitCeiling` is a SUBSET of `failed`, named rather than merged: a run whose every sample
+    /// ran past `BenchmarkPrompt.outputCeiling` produced no figure, so it is counted in the gap —
+    /// but it did not fail. The server answered and the model wrote; it simply never stopped.
+    /// Merging the two would tell the user their setup is broken when their model is verbose, so
+    /// the cell prints the gap and then says how much of it was this.
+    nonisolated static func runsCell(priced: Int, failed: Int, hitCeiling: Int) -> String {
+        let base = failed > 0 ? "\(priced) of \(priced + failed)" : "\(priced)"
+        return hitCeiling > 0 ? "\(base), \(hitCeiling) unfinished" : base
+    }
+
+    /// The `Best` cell: the fastest single sample, and the size of the set it was the best of.
+    ///
+    /// The count rides the cell rather than the heading because it varies per row, and it must be
+    /// visible rather than hovered: `max` grows with the number of draws, so a bare maximum
+    /// silently rewards whichever row happened to be sampled more. Absent when there is no rate
+    /// for it to qualify.
+    nonisolated static func bestCell(
+        rate: Double?, sampleCount: Int, approximate: Bool, tip: String
+    ) -> RateCell {
+        let cell = rateCell(rate: rate, approximate: approximate, tip: tip)
+        guard cell.text != BenchmarkMetricsPolicy.noValue, sampleCount > 0 else { return cell }
+        return RateCell(text: "\(cell.text) (\(sampleCount))", tip: cell.tip)
     }
 
     /// The `Samples` cell, by the same rule and for the same reason one level down: usable samples,
     /// and the attempt count only when some attempt produced nothing.
     ///
-    /// The warm-up is never in either number — it is stopped on purpose the moment it has done its
-    /// job, so counting it would report a lost sample after every healthy run.
+    /// The warm-up is never in either number — it is not a measurement at all, so counting it
+    /// would report a lost sample after every healthy run.
     nonisolated static func samplesCell(usable: Int, voided: Int) -> String {
         voided > 0 ? "\(usable) of \(usable + voided)" : "\(usable)"
     }
@@ -1105,7 +1145,11 @@ struct BenchmarkResultsCard: View {
     /// "No results yet. Run the benchmark above" is only true of an untouched history. Delete the
     /// last comparable run and it becomes a lie sitting an inch above a footer that says N runs
     /// are listed under Runs — two sentences contradicting each other on one card.
-    nonisolated static func emptyLeaderboardText(runCount: Int, hiddenRunCount: Int) -> String {
+    nonisolated static func emptyLeaderboardText(
+        runCount: Int,
+        hiddenRunCount: Int,
+        unranked: [BenchmarkLeaderboard.Unranked] = []
+    ) -> String {
         guard runCount > 0 else { return noResultsYet }
         if hiddenRunCount == runCount {
             return "Nothing to rank: "
@@ -1113,6 +1157,28 @@ struct BenchmarkResultsCard: View {
                     ? "the one run on record uses an older prompt"
                     : "all \(runCount) runs on record use an older prompt")
                 + ". They are listed under Runs."
+        }
+        // The one state that had no honest sentence: every model measured fine and every sample
+        // ran past the output bound, so there is nothing to time. `unranked` comes from
+        // `BenchmarkLeaderboard`, which is the only thing that knows — this view can see a run
+        // count but cannot tell a verbose model from a broken server.
+        let cut = unranked.filter { $0.reason == .everyRunHitTheCeiling }
+        if !unranked.isEmpty, cut.count == unranked.count {
+            return "Nothing to rank: "
+                + (cut.count == 1
+                    ? "every run of \(cut[0].modelName)"
+                    : "every run of all \(cut.count) models")
+                + " kept writing past the output ceiling, so no sample can be timed. "
+                + "They are listed under Runs."
+        }
+        // The likeliest whole-leaderboard emptiness on a default Ollama install, and the only
+        // one whose fix is a server setting the user can actually change.
+        let windowed = unranked.filter { $0.reason == .everyRunHitTheContextWindow }
+        if !unranked.isEmpty, windowed.count == unranked.count {
+            return "Nothing to rank: the server cut every answer short before the model "
+                + "finished, so no sample can be timed. Its context window has to hold the "
+                + "prompt and the whole answer — raise it and measure again. "
+                + "The runs are listed under Runs."
         }
         return "Nothing to rank: no comparable run produced a usable sample. "
             + "Everything on record is listed under Runs."
@@ -1124,16 +1190,44 @@ struct BenchmarkResultsCard: View {
     ///
     /// `nil` when there is no table: a footer describing columns that are not on screen is the
     /// same defect as an empty state describing a history that is not empty.
-    nonisolated static func footer(mode: Mode, hiddenRunCount: Int, hasRows: Bool) -> String? {
+    nonisolated static func footer(
+        mode: Mode,
+        hiddenRunCount: Int,
+        hasRows: Bool,
+        unranked: [BenchmarkLeaderboard.Unranked] = []
+    ) -> String? {
         guard hasRows else { return nil }
         switch mode {
         case .leaderboard:
-            let base = "One row per model and server. Generation is the median of a model's runs "
-                + "and ranks it; Best run is its fastest."
-            guard hiddenRunCount > 0 else { return base }
-            return base + " \(hiddenRunCount) "
-                + (hiddenRunCount == 1 ? "run uses" : "runs use")
-                + " an older prompt — under Runs only."
+            // "Best is its fastest single sample", not "Best run is its fastest": the column is
+            // `Best` and the figure is the fastest SAMPLE, both since 2026-09-20. The old wording
+            // named a column that no longer exists and a quantity the card computes nowhere, and
+            // it survived the rename because the test pinned the substring rather than the claim.
+            var text = "One row per model and server. Generation is the median of a model's runs "
+                + "and ranks it; Best is its fastest single sample."
+            if hiddenRunCount > 0 {
+                text += " \(hiddenRunCount) "
+                    + (hiddenRunCount == 1 ? "run uses" : "runs use")
+                    + " an older prompt — under Runs only."
+            }
+            // A model can be measured, comparable, and still absent from the table — every run
+            // voided. Saying so here is the difference between a table with a gap and a table a
+            // reader believes is complete.
+            if !unranked.isEmpty {
+                let allCut = unranked.allSatisfy { $0.reason == .everyRunHitTheCeiling }
+                let allWindowed = unranked.allSatisfy {
+                    $0.reason == .everyRunHitTheContextWindow
+                }
+                text += " \(unranked.count) "
+                    + (unranked.count == 1 ? "model is" : "models are")
+                    + " missing: "
+                    + (allCut
+                        ? "every run kept writing past the output ceiling."
+                        : allWindowed
+                        ? "the server cut every answer short of its own end."
+                        : "no run produced a usable sample.")
+            }
+            return text
         case .history:
             return "Every run, newest first, including ones that cannot be ranked."
         }

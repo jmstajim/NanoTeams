@@ -234,6 +234,24 @@ final class BenchmarkProvenanceTests: XCTestCase {
             outputTokens: outputTokens, doneReason: doneReason)
     }
 
+    /// The provider-independent arm, and the one that matters on LM Studio: it sends no stop
+    /// reason at all, so the field has to read the benchmark's own verdict.
+    ///
+    /// RED: key this on `doneReason` alone → an LM Studio run whose every sample was cut by the
+    /// guard prints a bare "8192 tokens", and the provenance says nothing about why the row has
+    /// no number in it.
+    func testOutputCap_reportsTheGuard_withoutAnyStopReason() {
+        var cutSample = capSample(outputTokens: 8192, doneReason: nil)
+        cutSample.void = .outputCeilingReached
+        let fields = BenchmarkProvenance.outputCapField(
+            requested: 8192,
+            measuredSamples: [cutSample, capSample(outputTokens: 2626, doneReason: nil)])
+
+        XCTAssertEqual(
+            fields["Output cap"],
+            "8192 tokens — reached by 1 of 2 samples, which are therefore not measured")
+    }
+
     /// RED: ignore `doneReason` and keep the bare "512 tokens" → a run cut off AT the ceiling
     /// reads exactly like one the model finished on its own, and those are different workloads.
     func testOutputCap_saysWhenTheCeilingActuallyBoundTheRun() {
@@ -260,6 +278,58 @@ final class BenchmarkProvenanceTests: XCTestCase {
             requested: 512,
             measuredSamples: [capSample(outputTokens: 400, doneReason: nil)])
         XCTAssertEqual(fields["Output cap"], "512 tokens")
+    }
+
+    /// A sample the SERVER cut for length FAR below the ceiling the app asked for was bounded by
+    /// something the app did not set — its context window. RED: let it fall through to the
+    /// `doneReason` arm → the field says an 8 192-token cap was "reached" by a sample that
+    /// stopped at 1 600, which is the contradiction this card printed beside an unvoided row
+    /// before the rung existed.
+    func testOutputCap_namesTheContextWindowWhenTheServerCutFarBelowTheCeiling() {
+        var windowed = capSample(outputTokens: 1600, doneReason: "length")
+        windowed.void = .contextWindowReached
+        let fields = BenchmarkProvenance.outputCapField(
+            requested: 8192,
+            measuredSamples: [windowed, capSample(outputTokens: 2626, doneReason: "stop")])
+
+        XCTAssertEqual(
+            fields["Output cap"],
+            "8192 tokens — not reached; the server ended 1 of 2 samples at its own context "
+                + "window, which are therefore not measured")
+    }
+
+    /// Precedence between the two output bounds, mirroring the recorder's ladder: the app's own
+    /// ceiling is the stronger claim, so a run showing both reports the ceiling. RED: test the
+    /// context arm first → a genuinely runaway model is reported as a small window and the user
+    /// changes the wrong setting.
+    func testOutputCap_theCeilingOutranksTheContextWindow() {
+        var cut = capSample(outputTokens: 8192, doneReason: "length")
+        cut.void = .outputCeilingReached
+        var windowed = capSample(outputTokens: 1600, doneReason: "length")
+        windowed.void = .contextWindowReached
+
+        let fields = BenchmarkProvenance.outputCapField(
+            requested: 8192, measuredSamples: [cut, windowed])
+
+        XCTAssertEqual(
+            fields["Output cap"],
+            "8192 tokens — reached by 1 of 2 samples, which are therefore not measured")
+    }
+
+    /// A legacy row: the server said `length`, the sample is well below the ceiling, and nothing
+    /// voided it — rows recorded before either rung existed look exactly like this. The field
+    /// must not claim the cap was "reached" when the count says it was not, so it reports what it
+    /// can defend: something below this ceiling ended the answer. RED: keep the unconditional
+    /// "reached" wording → the card asserts an 8 192-token cap was hit by a 1 600-token sample.
+    func testOutputCap_legacyLengthRowBelowTheCeiling_doesNotClaimItWasReached() {
+        let fields = BenchmarkProvenance.outputCapField(
+            requested: 8192,
+            measuredSamples: [capSample(outputTokens: 1600, doneReason: "length")])
+
+        XCTAssertEqual(
+            fields["Output cap"],
+            "8192 tokens — not reached; a sample stopped at 1600 and the server reported it as "
+                + "cut off, so something below this ceiling bounded it")
     }
 
     /// The violation branch still wins: a server returning MORE than it was asked for is a

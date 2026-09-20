@@ -2,48 +2,55 @@ import XCTest
 
 @testable import NanoTeams
 
-/// The policy is two constants and a comparison, and every one of them is load-bearing: the
-/// threshold decides when a warm-up stops, and the deadline is the only thing bounding a warm-up
+/// The policy is two constants, and both are load-bearing: the ceiling decides how much the
+/// warm-up asks the server to write, and the deadline is the only thing bounding a warm-up
 /// against a model that never starts.
 final class BenchmarkWarmUpPolicyTests: XCTestCase {
 
-    /// RED: `>` instead of `>=` → the warm-up runs one delta past the policy every time, which no
-    /// other assertion here would notice.
-    func testIsSatisfied_atExactlyTheThreshold() {
-        XCTAssertTrue(
-            BenchmarkWarmUpPolicy.isSatisfied(
-                deltaCount: BenchmarkWarmUpPolicy.sufficientDeltas))
+    /// A ceiling of one would be defensible — the model is loaded and the first decode step has
+    /// compiled its graph — and a ceiling of thousands would not: at that point the warm-up is
+    /// an answer again, and the deadline rather than the ceiling is what ends every run.
+    ///
+    /// RED: raise the constant to a "safer" larger number → silently reinstates the multi-minute
+    /// warm-up this replaced (measured: 233 s, 12 040 tokens, on this very prompt).
+    func testOutputCeiling_isASmallMargin_notAnAnswerLength() {
+        XCTAssertGreaterThan(BenchmarkWarmUpPolicy.outputCeiling, 0)
+        XCTAssertLessThanOrEqual(BenchmarkWarmUpPolicy.outputCeiling, 64)
     }
 
-    func testIsSatisfied_belowTheThreshold() {
-        XCTAssertFalse(
-            BenchmarkWarmUpPolicy.isSatisfied(
-                deltaCount: BenchmarkWarmUpPolicy.sufficientDeltas - 1))
+    /// The whole point of the 2026-09-20 change: the warm-up must be bounded far BELOW the
+    /// measured workload, and by the same mechanism — a number on the wire.
+    ///
+    /// RED: set the warm-up's ceiling to `BenchmarkPrompt.outputCeiling` → the warm-up becomes a
+    /// full measured sample that nothing reads, which is the cost the client-side stop existed to
+    /// avoid and which this design has to keep avoiding without abandoning a generation.
+    func testOutputCeiling_isFarBelowTheMeasuredWorkload() {
+        XCTAssertLessThan(BenchmarkWarmUpPolicy.outputCeiling, BenchmarkPrompt.outputCeiling / 10)
     }
 
-    /// The degenerate end: a stream that has produced nothing has warmed nothing. RED: a policy
-    /// satisfied at zero would cut the warm-up before the model had even loaded, which is the one
-    /// outcome that makes the FIRST measured sample pay for the load instead.
-    func testIsSatisfied_isFalseBeforeAnyOutput() {
-        XCTAssertFalse(BenchmarkWarmUpPolicy.isSatisfied(deltaCount: 0))
-    }
-
-    func testIsSatisfied_wellPastTheThreshold() {
-        XCTAssertTrue(BenchmarkWarmUpPolicy.isSatisfied(deltaCount: 10_000))
-    }
-
-    /// A threshold of one would be defensible and a threshold of thousands would not: at that
-    /// point the deadline, not the policy, is what ends every warm-up. RED: raise the constant to
-    /// a "safer" larger number → silently reinstates the multi-minute warm-up this replaced.
-    func testSufficientDeltas_isASmallMargin_notAnAnswerLength() {
-        XCTAssertGreaterThan(BenchmarkWarmUpPolicy.sufficientDeltas, 0)
-        XCTAssertLessThanOrEqual(BenchmarkWarmUpPolicy.sufficientDeltas, 64)
-    }
-
-    /// The ceiling exists to be short enough that a user notices nothing. RED: a deadline of
+    /// The deadline exists to be short enough that a user notices nothing. RED: a deadline of
     /// minutes reads as a bound while bounding nothing a person would sit through.
     func testDeadline_isSecondsRatherThanMinutes() {
         XCTAssertGreaterThan(BenchmarkWarmUpPolicy.deadline, .seconds(1))
         XCTAssertLessThanOrEqual(BenchmarkWarmUpPolicy.deadline, .seconds(30))
+    }
+
+    /// The deadline has to cover a cold prefill of the benchmark prompt plus the ceiling's worth
+    /// of decoding, or it fires on healthy runs and every warm-up records `.stoppedEarly`.
+    ///
+    /// The reading that matters is the COLD one, and it is not the typical one: measured on
+    /// LM Studio 0.4.25 / `qwen3.8-27b-splash`, a warm-up against an idle model reported TTFT
+    /// 9.29 s where the measured samples behind it reported 5.0–5.6 s. The warm-up is by
+    /// definition the first request after idle, so it is the sample that pays that gap.
+    ///
+    /// RED: set the deadline against the warm figure (10 s was the shipped value until
+    /// 2026-09-20) → it fires on a healthy run, the warm-up records `.stoppedEarly`, and the
+    /// first measured sample pays the model load the warm-up existed to absorb.
+    func testDeadline_clearsTheMeasuredColdWarmUp() {
+        let measuredColdTimeToFirstToken = 9.29
+        let decodeSeconds = Double(BenchmarkWarmUpPolicy.outputCeiling) / 35
+        XCTAssertGreaterThan(
+            BenchmarkWarmUpPolicy.deadline,
+            .seconds(measuredColdTimeToFirstToken + decodeSeconds))
     }
 }

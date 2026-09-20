@@ -292,6 +292,23 @@ final class BundledContentFingerprintPinTests: XCTestCase {
     //   The half that cannot be vacuous is this test: `compute` folds `Team.defaultTeams`, the
     //   Autovisor, `templateConfigs` and `ToolDefinitionRecord.defaultDefinitions()`, and the
     //   value below still matches on the release tree.
+    // 1.9.32, 2026-09-20 — bumped WITHOUT moving this value. The note covers the WHOLE span
+    // since the last recorded one, because 1.9.31 recorded nothing here at all: it was a
+    // two-line `MARKETING_VERSION` bump (`git show 5b79b329 --stat`) and left both ledgers
+    // untouched, so a reader must not read this sequence as unbroken.
+    //   Проверка — the full input set, spelled from the root, over the whole span:
+    //     git diff --stat 5b79b329..HEAD -- 'NanoTeams/Domain/SystemTemplates*.swift' \
+    //       NanoTeams/Domain/Team.swift NanoTeams/Domain/TeamRoleDefinition.swift \
+    //       NanoTeams/Domain/TeamTemplateFactory.swift \
+    //       NanoTeams/Domain/ToolDefinitionRecord.swift \
+    //       NanoTeams/Services/Tools/Handlers → EMPTY.
+    //   The range is the benchmark-accuracy wave plus a marketing-version catch-up; the only
+    //   `Domain/` file it touched that comes near this fingerprint is `AppDefaults.swift`,
+    //   whose hunk is entirely the `benchmarkRepeats` doc comment, and `AppDefaults` is not in
+    //   `compute`'s input set in the first place.
+    //   The half that cannot be vacuous is this test: `compute` folds `Team.defaultTeams`, the
+    //   Autovisor, `templateConfigs` and `ToolDefinitionRecord.defaultDefinitions()`, and the
+    //   value below still matches on the release tree.
     private static let expectedFingerprint = "32337af25e41c6eb"
 
     func testBundledContent_hasNotChangedWithoutAVersionBump() {

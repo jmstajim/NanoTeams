@@ -32,7 +32,7 @@ nonisolated struct BenchmarkTarget: Codable, Hashable, Sendable {
     /// real work would measure a different thing than it claims to.
     ///
     /// The output ceiling is the opposite case and therefore comes from the WORKLOAD
-    /// (`BenchmarkPrompt.maxOutputTokens`), never from settings: it defines what is being
+    /// (`BenchmarkPrompt.outputCeiling`), never from settings: it defines what is being
     /// compared, and a user-tunable ceiling would let two rows of the same leaderboard be measured
     /// over different sequence lengths with nothing on screen saying so.
     func llmConfig(requestTimeoutSeconds: Int, keepAliveSeconds: Int?) -> LLMConfig {
@@ -41,7 +41,7 @@ nonisolated struct BenchmarkTarget: Codable, Hashable, Sendable {
             baseURLString: baseURLString,
             modelName: modelName,
             temperature: nil,
-            maxOutputTokens: BenchmarkPrompt.maxOutputTokens,
+            maxOutputTokens: BenchmarkPrompt.outputCeiling,
             requestTimeoutSeconds: requestTimeoutSeconds,
             keepAliveSeconds: keepAliveSeconds)
     }

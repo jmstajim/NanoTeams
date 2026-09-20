@@ -28,6 +28,12 @@ struct BenchmarkWorkloadSection: View {
             range: AppDefaults.benchmarkRepeatsRange,
             zeroLabel: nil)
 
+        Text(Self.costCaption)
+            .font(Typography.caption)
+            .foregroundStyle(Colors.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
         HStack {
             Text("Prompt")
                 .font(Typography.subheadline)
@@ -48,7 +54,19 @@ struct BenchmarkWorkloadSection: View {
         }
     }
 
-    /// What `prose-en v4` means for the table below, and nothing about the prompt's own anatomy:
+    /// What a run costs, next to the control that multiplies it.
+    ///
+    /// A caption rather than a tooltip because it changes a decision the user is making right
+    /// here, and because nothing else on either screen says it: since version 5 the whole answer
+    /// is measured, so a run costs whatever the model writes. It names a measured reference
+    /// instead of a flat number — a single figure would be a lie about every other model
+    /// (`AppDefaults.benchmarkRepeats` carries the measurement).
+    static let costCaption =
+        "What a run costs depends on how much the model writes, because the whole answer is "
+            + "measured. Five samples of a 27B reasoning model took about 4.7 minutes; a model "
+            + "that answers briefly takes far less."
+
+    /// What `prose-en v5` means for the table below, and nothing about the prompt's own anatomy:
     /// the sheet shows the text, and a fact described in two places drifts in the copy that is not
     /// beside the thing it describes (CLAUDE.md #55).
     static let promptTip =

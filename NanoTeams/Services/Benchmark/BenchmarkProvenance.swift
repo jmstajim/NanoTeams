@@ -132,23 +132,56 @@ nonisolated enum BenchmarkProvenance {
         if highest > requested {
             return ["Output cap": "\(requested) requested — NOT honoured (a sample returned \(highest))"]
         }
-        // Where the server SAYS why it stopped, say that instead of inferring it. Reading the
-        // counts back can only ever catch a server exceeding the ceiling; it cannot tell a run
-        // that finished on its own from one cut off exactly at the limit, and those are different
-        // workloads. `"length"` on any measured sample means the cap bound the run.
+        // The benchmark's OWN verdict first, because it is the one that works on both providers:
+        // a sample the guard cut is voided `.outputCeilingReached`, decided from the token counts
+        // in `GenerationSampleRecorder`. LM Studio sends no stop reason at all on its streaming
+        // route, so a field keyed on `doneReason` was blind exactly where the truncation defect
+        // was found.
+        let cut = measuredSamples.count { $0.void == .outputCeilingReached }
+        if cut > 0 {
+            return [
+                "Output cap": "\(requested) tokens — reached by \(cut) of "
+                    + "\(measuredSamples.count) samples, which are therefore not measured",
+            ]
+        }
+        // Then the OTHER output bound, and it is a different fact with a different fix: the
+        // server stopped for length somewhere below the ceiling this run asked for, so what
+        // ended the answer is the server's own context window. Reporting it as the cap being
+        // "reached" — which is what this field did until the rung existed — points the user at
+        // a ceiling that was never touched.
+        let windowed = measuredSamples.count { $0.void == .contextWindowReached }
+        if windowed > 0 {
+            return [
+                "Output cap": "\(requested) tokens — not reached; the server ended \(windowed) of "
+                    + "\(measuredSamples.count) samples at its own context window, which are "
+                    + "therefore not measured",
+            ]
+        }
+        // Where the server SAYS why it stopped, say that too — a second opinion on the same fact,
+        // and the only one available for a sample that stopped at the ceiling without being
+        // voided (a provider that overshoots, or a legacy row recorded before either rung).
+        //
+        // `highest == requested` is what licenses the word "reached": by here no sample was
+        // voided for either bound, so a bare `length` alone cannot say WHICH bound it hit, and
+        // on a legacy row it is the only evidence there is.
         let reasons = Set(measuredSamples.compactMap(\.doneReason))
         guard !reasons.isEmpty else { return ["Output cap": "\(requested) tokens"] }
+        if !reasons.contains(StreamEvent.lengthDoneReason) {
+            return ["Output cap": "\(requested) tokens — not reached, the model stopped on its own"]
+        }
         return [
-            "Output cap": reasons.contains("length")
+            "Output cap": highest == requested
                 ? "\(requested) tokens — reached, generation was cut off there"
-                : "\(requested) tokens — not reached, the model stopped on its own",
+                : "\(requested) tokens — not reached; a sample stopped at \(highest) and the "
+                + "server reported it as cut off, so something below this ceiling bounded it",
         ]
     }
 
     // Residency deliberately has no function here. It used to be inferred from the warm-up's
-    // reported load time, as a fallback for a server that would not answer a listing; since the
-    // warm-up is stopped as soon as it is decoding (`BenchmarkWarmUpPolicy`) it never reaches the
-    // terminal frame that number rides in, so the inference could only ever have returned its
-    // no-evidence answer. `GenerationBenchmarkRunner` records what `BenchmarkResidencyPreparer`
-    // saw on the server instead — a measurement rather than an inference from a missing one.
+    // reported load time, as a fallback for a server that would not answer a listing. Since
+    // 2026-09-20 the warm-up is bounded on the wire rather than cancelled, so it DOES reach the
+    // terminal frame that number rides in and the inference is available again — and it is still
+    // not taken. `GenerationBenchmarkRunner` records what `BenchmarkResidencyPreparer` saw on the
+    // server: a measurement of residency beats an inference from a load time, which reads the
+    // same whether a model was absent or merely slow to warm.
 }

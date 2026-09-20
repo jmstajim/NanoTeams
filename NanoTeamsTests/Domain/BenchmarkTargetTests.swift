@@ -50,7 +50,7 @@ final class BenchmarkTargetTests: XCTestCase {
             provider: .lmStudio, baseURLString: "http://127.0.0.1:1234", modelName: "m")
         let config = target.llmConfig(requestTimeoutSeconds: 600, keepAliveSeconds: nil)
 
-        XCTAssertEqual(config.maxOutputTokens, BenchmarkPrompt.maxOutputTokens)
+        XCTAssertEqual(config.maxOutputTokens, BenchmarkPrompt.outputCeiling)
         XCTAssertNotNil(config.maxOutputTokens, "a nil ceiling is no ceiling")
     }
 

@@ -252,13 +252,45 @@ final class BenchmarkViewLogicTests: XCTestCase, @unchecked Sendable {
     /// The footer answers what no single column can: what a row IS, and which of the two rate
     /// columns the ranking uses. RED: cut it to "one row per model and server" → the two adjacent
     /// tok/s columns are again indistinguishable without hovering either.
+    ///
+    /// The `Best` assertion names the COLUMN and the quantity, not the old `"Best run"` phrase.
+    /// That substring is what let the stale copy survive the 2026-09-20 rename: the column became
+    /// `Best` and the figure became the fastest single SAMPLE, while the footer went on saying
+    /// "Best run is its fastest" — and this pin, matching a substring of the old sentence rather
+    /// than the claim, stayed green and actively guarded it.
     func testResultsFooter_leaderboard_namesBothRateColumnsAndWhichOneRanks() async {
         let text = BenchmarkResultsCard.footer(
             mode: .leaderboard, hiddenRunCount: 0, hasRows: true) ?? ""
         XCTAssertTrue(text.contains("Generation"), text)
-        XCTAssertTrue(text.contains("Best run"), text)
+        XCTAssertTrue(text.contains("Best is"), text)
+        XCTAssertTrue(text.contains("sample"), text)
         XCTAssertTrue(text.contains("median"), text)
         XCTAssertTrue(text.contains("per model and server"), text)
+        XCTAssertFalse(
+            text.contains("Best run"),
+            "the column is `Best` and the figure is a sample, not a run: \(text)")
+    }
+
+    /// A model can be measured, comparable, and still absent from a POPULATED table — every run
+    /// voided by the output bound. RED: leave the footer describing only the rows → the table
+    /// reads as complete while a model is silently missing from it.
+    func testResultsFooter_saysWhenAModelIsMissingFromTheTable() async {
+        let text = BenchmarkResultsCard.footer(
+            mode: .leaderboard, hiddenRunCount: 0, hasRows: true,
+            unranked: [.init(modelName: "verbose", runCount: 2, reason: .everyRunHitTheCeiling)])
+            ?? ""
+        XCTAssertTrue(text.contains("1 model is missing"), text)
+        XCTAssertTrue(text.contains("output ceiling"), text)
+    }
+
+    /// The mirror, and its own mutation (CLAUDE.md #59): a broken server must not be described as
+    /// a verbose model. RED: return the ceiling wording unconditionally → fails.
+    func testResultsFooter_missingModelForAnotherReason_doesNotBlameTheCeiling() async {
+        let text = BenchmarkResultsCard.footer(
+            mode: .leaderboard, hiddenRunCount: 0, hasRows: true,
+            unranked: [.init(modelName: "broken", runCount: 1, reason: .noUsableSample)]) ?? ""
+        XCTAssertTrue(text.contains("no run produced a usable sample"), text)
+        XCTAssertFalse(text.contains("output ceiling"), text)
     }
 
     /// The columns explain themselves on hover; the footer is not a second copy of those
@@ -295,10 +327,10 @@ final class BenchmarkViewLogicTests: XCTestCase, @unchecked Sendable {
     // MARK: - Prompt sheet
 
     /// RED: type the ceiling into `factsLine` as a literal, then move
-    /// `BenchmarkPrompt.maxOutputTokens` → the sheet advertises a cap the runs no longer use.
+    /// `BenchmarkPrompt.outputCeiling` → the sheet advertises a cap the runs no longer use.
     func testPromptSheetFacts_carryTheShippedCeilingRatherThanACopyOfIt() async {
         XCTAssertTrue(
-            BenchmarkPromptSheet.factsLine.contains("\(BenchmarkPrompt.maxOutputTokens)"),
+            BenchmarkPromptSheet.factsLine.contains("\(BenchmarkPrompt.outputCeiling)"),
             BenchmarkPromptSheet.factsLine)
     }
 
@@ -371,6 +403,55 @@ final class BenchmarkViewLogicTests: XCTestCase, @unchecked Sendable {
     func testEmptyLeaderboardText_singularWhenOneRunIsOnRecord() async {
         let text = BenchmarkResultsCard.emptyLeaderboardText(runCount: 1, hiddenRunCount: 1)
         XCTAssertTrue(text.contains("the one run"), text)
+    }
+
+    /// The state the output guard creates and nothing had a sentence for: every run measured,
+    /// every sample cut, so the model is comparable and still unrankable. RED: fall through to
+    /// "no comparable run produced a usable sample" → the card blames the measurement for a
+    /// model that simply never stopped writing, and names no model at all.
+    func testEmptyLeaderboardText_namesTheCeilingAndTheModelWhenThatIsWhyNothingRanks() async {
+        let text = BenchmarkResultsCard.emptyLeaderboardText(
+            runCount: 2, hiddenRunCount: 0,
+            unranked: [.init(modelName: "verbose", runCount: 2, reason: .everyRunHitTheCeiling)])
+        XCTAssertTrue(text.contains("verbose"), text)
+        XCTAssertTrue(text.contains("output ceiling"), text)
+        XCTAssertTrue(text.contains("Runs"), text)
+    }
+
+    /// The emptiest leaderboard on the commonest misconfiguration: a default Ollama context
+    /// tier is 4k below 24 GiB of VRAM, this prompt is ~2 480 tokens and its answer ~2 600, so
+    /// every sample is cut and NOTHING ranks. RED: fall through to "no comparable run produced
+    /// a usable sample" → the user sees an empty table and is pointed at nothing, when the one
+    /// setting that fixes it is the server's context window.
+    func testEmptyLeaderboardText_namesTheServersWindowWhenThatIsWhatCutEveryAnswer() async {
+        let text = BenchmarkResultsCard.emptyLeaderboardText(
+            runCount: 3, hiddenRunCount: 0,
+            unranked: [.init(modelName: "m", runCount: 3, reason: .everyRunHitTheContextWindow)])
+        XCTAssertTrue(text.contains("context window"), text)
+        XCTAssertTrue(text.contains("prompt and the whole answer"), text)
+        XCTAssertFalse(text.contains("output ceiling"), text)
+    }
+
+    /// And the footer's arm for the same cause, when other models DO rank. RED: reuse the
+    /// ceiling wording → the footer blames a verbose model for a narrow server window.
+    func testResultsFooter_missingModelCutByTheServer_saysSo() async {
+        let text = BenchmarkResultsCard.footer(
+            mode: .leaderboard, hiddenRunCount: 0, hasRows: true,
+            unranked: [.init(modelName: "m", runCount: 2,
+                             reason: .everyRunHitTheContextWindow)]) ?? ""
+        XCTAssertTrue(text.contains("cut every answer short"), text)
+        XCTAssertFalse(text.contains("output ceiling"), text)
+    }
+
+    /// The anti-vacuum twin: a mixture of causes is not a ceiling story, and an unrankable model
+    /// that failed outright must keep the general wording. RED: key on `!unranked.isEmpty` alone
+    /// → an HTTP 500 is reported to the user as a verbose model.
+    func testEmptyLeaderboardText_keepsTheGeneralWordingWhenTheCauseIsNotTheCeiling() async {
+        let text = BenchmarkResultsCard.emptyLeaderboardText(
+            runCount: 2, hiddenRunCount: 0,
+            unranked: [.init(modelName: "broken", runCount: 2, reason: .noUsableSample)])
+        XCTAssertTrue(text.contains("usable sample"), text)
+        XCTAssertFalse(text.contains("output ceiling"), text)
     }
 
     // MARK: - Copy feedback
@@ -1037,11 +1118,32 @@ final class BenchmarkViewLogicTests: XCTestCase, @unchecked Sendable {
 
     /// RED: print a duration estimate → it would have to come from somewhere, and neither provider
     /// reports anything a first-run estimate could be built from.
+    ///
+    /// Since version 5 measures the whole answer, the cost also depends on how much the model
+    /// writes, and the footer says so rather than leaving "minutes per model" to carry a figure
+    /// that roughly quintupled for a reasoning model.
     func testSweepFooter_saysWhatItCostsWithoutInventingANumber() async {
         let footer = BenchmarkSweepCard.footer(blockedBy: nil)
 
         XCTAssertTrue(footer.contains("minutes per model"), footer)
+        XCTAssertTrue(footer.contains("whole answer is measured"), footer)
         XCTAssertTrue(footer.contains("every server listed here"), footer)
         XCTAssertTrue(footer.contains("Switch a server off"), footer)
+    }
+
+    /// The sample stepper multiplies a cost nothing on either screen stated. RED: drop the
+    /// caption → the only public sentence about run length is the sweep footer, which is on the
+    /// other tab, and a user raising 5 to 15 has nothing telling them what that buys.
+    ///
+    /// It must NOT harden into a flat number: the cost is the model's verbosity, so the caption
+    /// names a measured reference and says what moves it.
+    func testWorkloadCostCaption_namesAMeasuredReferenceRatherThanAFlatDuration() async {
+        let caption = BenchmarkWorkloadSection.costCaption
+
+        XCTAssertTrue(caption.contains("whole answer is measured"), caption)
+        XCTAssertTrue(caption.contains("4.7 minutes"), caption)
+        XCTAssertTrue(
+            caption.contains("depends on how much the model writes"),
+            "a flat duration would be a lie about every other model: \(caption)")
     }
 }

@@ -20,8 +20,9 @@ final class GenerationBenchmarkRunner {
         case idle
         /// Collecting provenance (server version, model metadata) before the first request.
         case preparing
-        /// The throwaway request that pays for model load and KV materialisation, stopped as soon
-        /// as it has (`BenchmarkWarmUpPolicy`) rather than read to the end.
+        /// The throwaway request that pays for model load and KV materialisation. Bounded by the
+        /// SERVER at `BenchmarkWarmUpPolicy.outputCeiling` tokens and read through to its terminal
+        /// frame, rather than cut by the app — so it yields a complete short measurement.
         case warmingUp
         case measuring(sample: Int, of: Int)
         case finished
@@ -59,6 +60,11 @@ final class GenerationBenchmarkRunner {
     /// arguments whose `nil` resolves OUTWARD).
     private let warmUpDeadline: Duration
 
+    /// Reads the machine's thermal state. Defaulted like `now`, and a seam for the same reason:
+    /// the run's label is the WORST reading across its samples, and an invariant about "worst"
+    /// cannot be tested against a source that returns one constant on a cool machine.
+    private let thermal: @MainActor () -> String
+
     /// Whether a measurement is in flight, derived from `phase`.
     ///
     /// Read for RENDERING only, never as a start guard. `phase` is assigned inside `run`, so two
@@ -79,7 +85,10 @@ final class GenerationBenchmarkRunner {
         isBusy: @escaping @MainActor () -> Bool,
         appVersion: String = AppVersion.current,
         now: @escaping @MainActor () -> ContinuousClock.Instant = { ContinuousClock.now },
-        warmUpDeadline: Duration = BenchmarkWarmUpPolicy.deadline
+        warmUpDeadline: Duration = BenchmarkWarmUpPolicy.deadline,
+        thermal: @escaping @MainActor () -> String = {
+            BenchmarkThermalState.label(for: ProcessInfo.processInfo.thermalState)
+        }
     ) {
         self.client = client
         self.probe = probe
@@ -88,6 +97,7 @@ final class GenerationBenchmarkRunner {
         self.appVersion = appVersion
         self.now = now
         self.warmUpDeadline = warmUpDeadline
+        self.thermal = thermal
     }
 
     // MARK: - Run
@@ -192,13 +202,20 @@ final class GenerationBenchmarkRunner {
             promptID: BenchmarkPrompt.id,
             promptVersion: BenchmarkPrompt.version,
             repeats: repeats,
-            thermalState: BenchmarkThermalState.label(for: ProcessInfo.processInfo.thermalState),
+            // The WORST reading taken during the run, not the last one. Read once after the
+            // loop, a run that throttled in the middle and cooled by then recorded `nominal` and
+            // dragged the median down unmarked, while a run merely warm at that instant was
+            // excluded whole. The final read joins the samples' so a run with no samples at all
+            // still records something rather than `unknown`.
+            thermalState: BenchmarkThermalState.worst(
+                of: samples.compactMap(\.thermalState) + [thermal()]),
             lowPowerMode: ProcessInfo.processInfo.isLowPowerModeEnabled,
             // The preparer's answer, and only it. It asked the server directly, before anything
-            // was measured. The alternative was to infer residency from the warm-up's reported
-            // load time — which a warm-up that stops as soon as decoding begins never receives,
-            // since every provider puts that number in the terminal frame. An inference whose
-            // input is structurally absent is not a fallback, it is a constant wearing one.
+            // was measured. Inferring residency from the warm-up's reported load time is now
+            // POSSIBLE — since 2026-09-20 the warm-up reaches the terminal frame that number
+            // rides in — and it is still not taken: a load time reads the same whether a model
+            // was absent or merely slow to warm, so a measurement of residency beats an
+            // inference from it. Same reasoning as `BenchmarkProvenance`'s closing note.
             modelWasResident: residency.targetWasResident,
             appVersion: appVersion)
 
@@ -242,7 +259,19 @@ final class GenerationBenchmarkRunner {
         // cancellation the caller had not already caught. A cancel that lands DURING the stream is
         // caught by `Task.checkCancellation()` below and classified as `.cancelled`, which is the
         // one path that can actually happen.
-        var recorder = GenerationSampleRecorder(requestSentAt: now())
+        // A warm-up is bounded by the SERVER, not by the app dropping the stream. Asking for
+        // `BenchmarkWarmUpPolicy.outputCeiling` tokens buys the same warm decode loop the old
+        // client-side stop bought, and costs nothing that has to be abandoned — see that type for
+        // why an abandoned generation was worth removing rather than measuring.
+        var effectiveConfig = config
+        if samplePhase == .warmup {
+            effectiveConfig.maxOutputTokens = BenchmarkWarmUpPolicy.outputCeiling
+        }
+        // No ceiling on the warm-up's recorder: it is short by design, so reaching its cap is the
+        // plan rather than a runaway, and it never enters a median.
+        var recorder = GenerationSampleRecorder(
+            requestSentAt: now(),
+            outputCeiling: samplePhase == .measured ? effectiveConfig.maxOutputTokens : nil)
         do {
             // No logger: a benchmark is not part of any task's run, and writing it into a task's
             // network log would put synthetic traffic in an audit trail of real work.
@@ -255,7 +284,7 @@ final class GenerationBenchmarkRunner {
             // suspect either: the runner refuses to sample while any task is streaming
             // (`isBusy`), so it never interleaves with a caller that does hold a warm prefix.
             let stream = client.streamChat(
-                config: config,
+                config: effectiveConfig,
                 messages: BenchmarkPrompt.messages(nonce: BenchmarkPrompt.freshNonce()),
                 tools: [],
                 logger: nil,
@@ -303,17 +332,19 @@ final class GenerationBenchmarkRunner {
         }
     }
 
-    /// Reads a warm-up only as far as it needs to be read, then stops the request.
+    /// Reads a warm-up to its end, under a watchdog.
     ///
-    /// Two exits, and the second is the reason this is not a `break` inside the loop above:
-    /// `BenchmarkWarmUpPolicy.isSatisfied` fires once the model is demonstrably decoding, but a
-    /// stream that never produces a token would sit in `await` forever, and there is no suspension
-    /// to check a deadline on. So the read runs in its own task with a watchdog that cancels it at
-    /// `BenchmarkWarmUpPolicy.deadline`.
+    /// The warm-up is bounded on the WIRE (`BenchmarkWarmUpPolicy.outputCeiling`), so the normal
+    /// path here is an ordinary complete read: the server writes sixteen tokens, sends its
+    /// terminal frame, and nothing is abandoned. This is not a `for await` inline in `measure`
+    /// only because of the abnormal path — a stream that never produces a token would sit in
+    /// `await` forever, and there is no suspension to check a deadline on. So the read runs in its
+    /// own task with a watchdog that cancels it at `BenchmarkWarmUpPolicy.deadline`.
     ///
-    /// Stopping IS the cancellation: dropping the iterator fires the stream's `onTermination`,
-    /// which cancels the underlying URLSession task on both clients. That is the identical seam
-    /// in-stream loop detection uses to stop a model mid-answer (`LLMExecutionService+Streaming`).
+    /// Cancelling IS dropping the iterator: that fires the stream's `onTermination`, which cancels
+    /// the underlying URLSession task on both clients. Same seam in-stream loop detection uses to
+    /// stop a model mid-answer (`LLMExecutionService+Streaming`). It now runs only on the deadline
+    /// and on a user cancel, which is why `stopped` still exists and still means what it says.
     ///
     /// The read task is unstructured, so the run's own cancellation does not reach it by descent —
     /// `withTaskCancellationHandler` is what forwards it. Without that, cancelling a run during
@@ -333,10 +364,6 @@ final class GenerationBenchmarkRunner {
             do {
                 for try await event in stream {
                     recorder.note(event, at: now())
-                    if BenchmarkWarmUpPolicy.isSatisfied(deltaCount: recorder.deltaCount) {
-                        stopped = true
-                        break
-                    }
                 }
                 // A cancelled `AsyncThrowingStream` does NOT throw: its cancellation handler
                 // finishes the continuation, so `next()` returns nil and the loop above exits as
@@ -367,9 +394,9 @@ final class GenerationBenchmarkRunner {
         } onCancel: {
             reader.cancel()
         }
-        // Only when it really was cut short. A model whose whole answer fits inside the policy
-        // window ends the stream by itself, terminal frame included, and that row is a complete
-        // record — labelling it "stopped early" would describe a decision nobody made.
+        // Only when it really was cut short — the deadline, or the user. The ordinary warm-up
+        // ends at its wire ceiling with a terminal frame, and that row is a complete record;
+        // labelling it "stopped early" would describe a decision nobody made.
         if stopped { result.stopEarly() }
         return (result, failure.map { (reason: $0.0, detail: $0.1) })
     }
@@ -399,6 +426,7 @@ final class GenerationBenchmarkRunner {
             totalMs: measurements.totalMs,
             serverTotalMs: measurements.serverTotalMs,
             doneReason: measurements.doneReason,
+            thermalState: thermal(),
             void: measurements.void)
     }
 
@@ -414,17 +442,23 @@ final class GenerationBenchmarkRunner {
             recordedAt: Date(),
             phase: phase,
             sampleIndex: index,
+            thermalState: thermal(),
             void: reason,
             voidDetail: detail)
     }
 
+    /// Read at the moment a sample finishes, so the run can be labelled by its worst moment.
+    ///
+    /// A voided sample is stamped too: a run that fell over because the machine was cooking is
+    /// exactly the run whose thermal history a reader needs, and that is also the run with the
+    /// fewest usable samples to carry it.
     /// Names the dominant reason rather than saying "failed". A run that produced nothing is a
     /// question ("why?"), and the answer is already in the samples.
     ///
-    /// Measured samples only. The warm-up is stopped on purpose in every healthy run, so including
-    /// it would let "the warm-up was stopped once it had done its job" become the stated cause of
-    /// a failure it had nothing to do with — and with `repeats: 0` it would be the ONLY reason
-    /// there is.
+    /// Measured samples only, because the warm-up is not a measurement: it exists to pay the
+    /// first request's costs and is dropped from every median by construction. Including it would
+    /// let whatever became of the warm-up become the stated cause of a failure it had nothing to
+    /// do with — and with `repeats: 0` it would be the ONLY reason there is.
     static func failureMessage(for samples: [GenerationBenchmarkSample]) -> String {
         let reasons = samples.filter { $0.phase == .measured }.compactMap(\.void)
         guard let dominant = reasons.mostFrequent() else {
@@ -442,7 +476,11 @@ final class GenerationBenchmarkRunner {
         case .noOutput: "the model produced no output"
         case .concurrentActivity: "another LLM stream was running"
         case .windowTooShort: "the responses were too short to time"
-        case .stoppedEarly: "the sample was stopped once it had done its job"
+        case .stoppedEarly: "the sample was stopped before it finished"
+        case .outputCeilingReached:
+            "the model was still writing when the output ceiling was reached"
+        case .contextWindowReached:
+            "the server's context window ended the answer before the output ceiling"
         }
     }
 }

@@ -39,14 +39,57 @@ final class BenchmarkRunsTabTests: XCTestCase {
     /// RED: return `"\(priced)"` always → a row built from two runs after five attempts reads
     /// exactly like a row where nothing failed.
     func testRunsCell_namesTheRunsThatProducedNothing() {
-        XCTAssertEqual(BenchmarkResultsCard.runsCell(priced: 2, failed: 3), "2 of 5")
+        XCTAssertEqual(
+            BenchmarkResultsCard.runsCell(priced: 2, failed: 3, hitCeiling: 0), "2 of 5")
     }
 
     /// The other half, and its own mutation (CLAUDE.md #59): the long form must NOT appear when
     /// nothing failed. RED: always print "N of N" → every healthy row grows noise, and the form
     /// that means "something went wrong" stops meaning anything.
     func testRunsCell_staysBareWhenNothingFailed() {
-        XCTAssertEqual(BenchmarkResultsCard.runsCell(priced: 2, failed: 0), "2")
+        XCTAssertEqual(
+            BenchmarkResultsCard.runsCell(priced: 2, failed: 0, hitCeiling: 0), "2")
+    }
+
+    /// A run the ceiling cut is in the gap but is not a failure, and the cell has to say which
+    /// part of the gap it was. RED: print only "1 of 2" → the reader goes looking for a broken
+    /// server instead of reading "this model does not stop writing".
+    func testRunsCell_namesTheRunsTheCeilingCut() {
+        XCTAssertEqual(
+            BenchmarkResultsCard.runsCell(priced: 1, failed: 1, hitCeiling: 1), "1 of 2, 1 unfinished")
+    }
+
+    /// And the suffix must stay off a row where nothing was cut — the same noise rule as the
+    /// bare "2". RED: always append it → every healthy row carries ", 0 unfinished".
+    func testRunsCell_saysNothingAboutTheCeilingWhenItNeverFired() {
+        XCTAssertEqual(
+            BenchmarkResultsCard.runsCell(priced: 2, failed: 1, hitCeiling: 0), "2 of 3")
+    }
+
+    /// `max` grows with the number of draws, so the base rides the cell. RED: drop the bracket →
+    /// a row sampled twenty times outranks one sampled twice on a column that is supposed to
+    /// describe the model.
+    func testBestCell_carriesTheSizeOfTheSetItWon() {
+        let cell = BenchmarkResultsCard.bestCell(
+            rate: 54.6, sampleCount: 10, approximate: false, tip: "t")
+        XCTAssertEqual(cell.text, "55 (10)")
+    }
+
+    /// Nothing to qualify, nothing to print. RED: append "(0)" to a dash → the empty cell grows
+    /// a number that describes no measurement at all.
+    func testBestCell_withoutARate_staysADash() {
+        let cell = BenchmarkResultsCard.bestCell(
+            rate: nil, sampleCount: 0, approximate: false, tip: "t")
+        XCTAssertEqual(cell.text, BenchmarkMetricsPolicy.noValue)
+    }
+
+    /// The marker belongs to the rate, not to the bracket. RED: build the text and then decorate
+    /// → the `~` lands in front of the sample count instead of the figure it qualifies.
+    func testBestCell_keepsTheApproximateMarkerOnTheRate() {
+        let cell = BenchmarkResultsCard.bestCell(
+            rate: 54.6, sampleCount: 3, approximate: true, tip: "t")
+        XCTAssertTrue(cell.text.hasPrefix("~"), "the marker qualifies the rate: \(cell.text)")
+        XCTAssertTrue(cell.text.hasSuffix("(3)"), "and the base still rides the cell")
     }
 
     func testSamplesCell_namesTheVoidedOnes() {
@@ -212,7 +255,9 @@ final class BenchmarkRunsTabTests: XCTestCase {
             generationTokensPerSecond: rate,
             generationRateSource: source,
             usableCount: 5,
-            voidedCount: 0)
+            voidedCount: 0,
+            ceilingVoidedCount: 0,
+            contextWindowVoidedCount: 0)
     }
 
     /// The sweep card passed a literal `approximate: false`, on the one screen that measures a

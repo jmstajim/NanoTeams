@@ -190,7 +190,8 @@ final class GenerationBenchmarkCodingTests: XCTestCase {
         XCTAssertEqual(
             Set(BenchmarkVoidReason.allCases.map(\.rawValue)),
             ["httpError", "transportError", "cancelled", "noTokensReported", "noOutput",
-             "concurrentActivity", "windowTooShort", "stoppedEarly"])
+             "concurrentActivity", "windowTooShort", "stoppedEarly", "outputCeilingReached",
+             "contextWindowReached"])
     }
 
     // MARK: - The two facts added after rows already existed on disk
@@ -222,5 +223,84 @@ final class GenerationBenchmarkCodingTests: XCTestCase {
         XCTAssertNil(decoded.serverTotalMs)
         XCTAssertNil(decoded.doneReason)
         XCTAssertEqual(decoded.totalMs, 18_000)
+    }
+
+    // MARK: - Thermal state
+
+    /// A run is labelled by its WORST moment, not its last. RED: return the last reading → a run
+    /// that throttled in the middle and cooled by the end is recorded clean, and drags the median
+    /// down with nothing in the row to say why.
+    func testWorstThermalState_picksTheMostSevereReading() {
+        XCTAssertEqual(
+            BenchmarkThermalState.worst(of: [
+                BenchmarkThermalState.nominal,
+                BenchmarkThermalState.serious,
+                BenchmarkThermalState.nominal,
+            ]),
+            BenchmarkThermalState.serious)
+    }
+
+    /// `unknown` must outrank `nominal`: it is the absence of a reading, and the one thing it
+    /// must not do is let a run claim it was cool. RED: order it below → a run whose readings all
+    /// failed reports `nominal` and `wasThrottled` says false about a machine nobody measured.
+    func testWorstThermalState_unknownOutranksNominal() {
+        XCTAssertEqual(
+            BenchmarkThermalState.worst(of: [
+                BenchmarkThermalState.nominal, BenchmarkThermalState.unknown,
+            ]),
+            BenchmarkThermalState.unknown)
+    }
+
+    /// And it must not outrank a real reading, which would be the mirror mistake — overstating an
+    /// absent measurement as a worse one than a measurement that happened.
+    func testWorstThermalState_unknownDoesNotOutrankARealReading() {
+        XCTAssertEqual(
+            BenchmarkThermalState.worst(of: [
+                BenchmarkThermalState.unknown, BenchmarkThermalState.fair,
+            ]),
+            BenchmarkThermalState.fair)
+    }
+
+    /// No readings at all is not `nominal`. RED: default to nominal → a run with no samples
+    /// claims a clean machine it never looked at.
+    func testWorstThermalState_withNoReadings_isUnknown() {
+        XCTAssertEqual(BenchmarkThermalState.worst(of: []), BenchmarkThermalState.unknown)
+    }
+
+    /// A label the table does not know — a future `ProcessInfo.ThermalState` case, or a row
+    /// written by a build that spelled one differently — ranks like `unknown`, never like
+    /// `nominal`. Two unrecognised labels, so BOTH sides of the comparison take that path.
+    ///
+    /// RED: fall back to 0 instead of `unknown`'s rank → an unreadable reading claims the machine
+    /// was cool, which is the same lie `unknown` is ordered above `nominal` to prevent.
+    func testWorstThermalState_unrecognisedLabels_rankLikeUnknown() {
+        XCTAssertEqual(
+            BenchmarkThermalState.worst(of: ["klingon", "esperanto"]),
+            "klingon",
+            "neither is known, so the comparison is a wash and `max` keeps the FIRST maximal")
+        XCTAssertEqual(
+            BenchmarkThermalState.worst(of: [BenchmarkThermalState.nominal, "klingon"]),
+            "klingon",
+            "an unreadable reading must outrank a clean one")
+        XCTAssertEqual(
+            BenchmarkThermalState.worst(of: ["klingon", BenchmarkThermalState.serious]),
+            BenchmarkThermalState.serious,
+            "and must not outrank a real one")
+    }
+
+    /// A per-sample field added under schema 2: a row written before it decodes as "not recorded"
+    /// rather than as a reading, and re-encodes at the current version (CLAUDE.md #48).
+    func testSample_withoutThermalState_decodesAsAbsent_andUpgradesItsVersion() throws {
+        let legacy = """
+        {"schemaVersion":1,"id":"\(UUID().uuidString)","runID":"\(UUID().uuidString)",\
+        "recordedAt":"2026-08-19T21:00:00.000Z","phase":"measured","sampleIndex":0,\
+        "outputTokens":401}
+        """
+        let decoded = try decoder.decode(
+            GenerationBenchmarkSample.self, from: Data(legacy.utf8))
+
+        XCTAssertNil(decoded.thermalState)
+        XCTAssertEqual(decoded.schemaVersion, GenerationBenchmarkSample.currentSchemaVersion)
+        XCTAssertEqual(decoded.outputTokens, 401)
     }
 }

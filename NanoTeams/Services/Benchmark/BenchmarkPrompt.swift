@@ -7,7 +7,7 @@ import Foundation
 /// text moves. `BenchmarkLeaderboard` drops rows from other versions rather than ranking them
 /// beside the current ones — which only works if the version is bumped whenever `text` changes.
 ///
-/// **Bump `version` whenever the WORKLOAD changes — the text or `maxOutputTokens`. That is the
+/// **Bump `version` whenever the WORKLOAD changes — the text or `outputCeiling`. That is the
 /// whole contract.** The version exists because "changing the wording changes how many tokens the
 /// model produces and in what regime"; a ceiling on those tokens changes the same thing more
 /// directly than any rewording could, so it lives under the same version.
@@ -23,39 +23,61 @@ import Foundation
 ///   of the shipped text and contradicted by this file's own note 60 lines below.
 /// - **Prose, no tools, no lists.** A tool call ends the turn after a handful of tokens, and a
 ///   rate measured over a handful of tokens is dominated by its own fence-post.
-/// - **A length instruction AND a token cap.** The text still asks for ~400 words, because a
-///   request that reads like real work produces a real answer; the cap is what makes the ASK
-///   non-binding. Asking alone was measured to be worthless as a bound: on qwen3.5-9b this exact
-///   prompt returned 12 040 tokens (96 % reasoning) against its request for 400 words, and the
-///   same model spent 625 reasoning tokens on "Say OK". A thinking model decides its own length,
-///   so a benchmark that only asks is measuring over a sequence it does not control.
+/// - **A length instruction AND a runaway guard.** The text still asks for ~400 words, because a
+///   request that reads like real work produces a real answer. Asking alone was measured to be
+///   worthless as a BOUND: on qwen3.5-9b this exact prompt returned 12 040 tokens (96 % reasoning)
+///   against its request for 400 words, and the same model spent 625 reasoning tokens on "Say OK".
+///   So `outputCeiling` bounds the damage — but it is a guard, not the window the rate is measured
+///   over. A thinking model decides its own length, and version 5 measures that length rather than
+///   cutting it: see `outputCeiling` for why cutting selects a slice instead of bounding one.
 nonisolated enum BenchmarkPrompt {
 
     static let id = "prose-en"
-    /// 4 — the token ceiling (2026-08-19). Rows measured before it are not comparable with rows
-    /// measured after: per-token decode cost grows with the sequence being attended to, so a run
-    /// cut at 512 tokens reports a slightly higher rate than the same model left to produce
-    /// 12 000. Dropping the old rows from the leaderboard is the honest outcome and the mechanism
-    /// already exists — they stay visible under Runs.
-    static let version = 4
+    /// 5 — the ceiling stopped being the measurement window (2026-09-20). Rows measured before
+    /// it are not comparable with rows measured after, and by a wide margin: on LM Studio 0.4.25 /
+    /// `qwen3.8-27b-splash` (MLX 4bit, SPLASH engine, M5 Pro) the SAME prompt on the SAME loaded
+    /// instance reported **35.6 tok/s cut at 512, 44.7 cut at 4 096, and 54.6 run to its own end**
+    /// at 2 626 tokens. Dropping the old rows from the leaderboard is the honest outcome and the
+    /// mechanism already exists — they stay visible under Runs.
+    ///
+    /// 4 — the token ceiling (2026-08-19). Its note claimed the bias ran the OTHER way: "a run cut
+    /// at 512 tokens reports a slightly higher rate than the same model left to produce 12 000",
+    /// reasoning that per-token decode cost grows with the sequence being attended to. Measured
+    /// false in both sign and magnitude — the cut run reported 56 % LOWER, and depth moved the
+    /// figure 3 % in the opposite direction (a 61-token prompt gave 35.0 tok/s against a
+    /// 2 478-token prompt's 36.2, both cut at 512). Retracted here rather than deleted, because
+    /// that claim is what shaped the ceiling.
+    static let version = 5
 
-    /// Hard ceiling on each sample's generated tokens, sent on the wire
-    /// (`LLMConfig.maxOutputTokens`).
+    /// Ceiling on each sample's generated tokens, sent on the wire (`LLMConfig.maxOutputTokens`).
     ///
-    /// Lives beside the prompt because it is part of the same thing: the WORKLOAD one sample
-    /// measures. A rate is only comparable across models if the sequence it was measured over is
-    /// comparable too, and before this the sequence was whatever each model felt like producing.
-    /// The cap replaces that uncontrolled variable with a stated one — the number becomes "decode
-    /// rate over the first 512 tokens", which is a claim a reader can check, rather than "decode
-    /// rate over an unknown number of tokens".
+    /// A RUNAWAY GUARD, not the window the rate is measured over — and that distinction is the
+    /// whole of version 5. The invariant: a healthy sample never reaches it. This prompt's own
+    /// answer runs ~2 600 tokens on a 27B reasoning model, so 8 192 is three times the room it
+    /// needs. A sample that DOES reach it is not measured but voided
+    /// (`BenchmarkVoidReason.outputCeilingReached`), because a truncated sample reports the rate
+    /// of its own truncation.
     ///
-    /// 512 rather than something smaller: it must clear `BenchmarkMetricsPolicy`'s floors by a
-    /// wide margin (a rate needs ≥ 8 tokens and a window ≥ 50 ms, and the reported-rate branch is
-    /// exactly where a handful of tokens lets the server's own arithmetic dominate — measured:
-    /// LM Studio answers 1 000 000 tok/s for a one-token completion). Rather than something
-    /// larger: at the ~50 tok/s of a local 9B this is ten seconds a sample, so a five-sample run
-    /// stays the "about a minute" `AppDefaults.benchmarkRepeats` promises.
-    static let maxOutputTokens = 512
+    /// **Why a window is the wrong idea here**, measured 2026-09-20 on LM Studio 0.4.25 /
+    /// `qwen3.8-27b-splash`: on a serving that decodes speculatively, the rate follows how
+    /// PREDICTABLE the generated text is. Same server, same model, same loaded instance — a prompt
+    /// asking for one line repeated verbatim decodes at 88.8 tok/s across its first 128 tokens and
+    /// 93–94 tok/s thereafter, while a prompt asking for unpredictable hex digits runs 38–60 and
+    /// never climbs. Truncating the output therefore does not BOUND the measurement, it SELECTS a
+    /// slice of it, and which slice depends on the model's own verbosity: a 512-token cut on this
+    /// model landed entirely inside the slow opening, and on 2 of 3 samples never reached the
+    /// answer at all (`reasoning_output_tokens == total_output_tokens`). The only stated window
+    /// that survives speculative decoding is "the whole answer".
+    ///
+    /// 8 192 rather than no guard at all: `BenchmarkWarmUpPolicy` records a measured 12 040-token,
+    /// 233-second sample of THIS prompt on qwen3.5-9b. That is what the guard is for, and a model
+    /// that hits it on every sample now gets an honest "not measured" instead of a low number.
+    ///
+    /// It clears `BenchmarkMetricsPolicy`'s floors by three orders of magnitude (a rate needs
+    /// ≥ 8 tokens and a window ≥ 50 ms — measured: LM Studio answers 1 000 000 tok/s for a
+    /// one-token completion), which was the binding constraint on the old value and is not one
+    /// here. What a run now costs is in `AppDefaults.benchmarkRepeats`.
+    static let outputCeiling = 8192
 
     /// How many times the reference paragraph is repeated to reach a realistic prompt depth.
     ///
@@ -71,10 +93,16 @@ nonisolated enum BenchmarkPrompt {
     /// enough for the throughput term to dominate the fixed cost, and cheap to READ: at those
     /// 449 tok/s the prefill of one sample is a few seconds.
     ///
-    /// What a run costs is decided by `maxOutputTokens`, not by this number. Until that ceiling
-    /// existed this comment claimed a five-sample run "stays around a minute", which was true of
-    /// the prompt and false of the run: nothing bounded the ANSWER, and one measured sample of
-    /// this very prompt ran 233 s.
+    /// What a run costs is decided by how long the model ANSWERS, not by this number — see
+    /// `AppDefaults.benchmarkRepeats`. Until `outputCeiling` existed this comment claimed a
+    /// five-sample run "stays around a minute", which was true of the prompt and false of the run:
+    /// nothing bounded the answer, and one measured sample of this very prompt ran 233 s.
+    ///
+    /// Depth is NOT what makes this model's figure what it is, and the measurement is here rather
+    /// than in prose elsewhere because this is the constant that sets depth. Cut at 512 tokens on
+    /// LM Studio 0.4.25 / `qwen3.8-27b-splash`: a 61-token prompt reported 35.0 tok/s, this
+    /// 2 478-token prompt 36.2, and a 20 171-token prompt 29.8. Across two orders of magnitude of
+    /// depth the decode rate moves a few per cent, against the 56 % the output window moves it.
     private static let referenceRepeats = 52
 
     /// The depth `referenceRepeats` actually produces, measured on `qwen3.8:27b-mlx`.

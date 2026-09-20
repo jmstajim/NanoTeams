@@ -5,7 +5,7 @@ import XCTest
 /// The `~` marker is a property of the FIGURE, not of the table that happens to draw it — so the
 /// rule has to hold everywhere a rate is rendered, not wherever someone remembered it.
 ///
-/// It was remembered in one place out of four. `Best run` shipped bare in the cell NEXT to a
+/// It was remembered in one place out of four. `Best` shipped bare in the cell NEXT to a
 /// marked `Generation` holding the same quantity from the same runs, so one leaderboard row read
 /// `~47 | 51`. The Runs tab printed a bare `47` for the identical client-timed figure the
 /// leaderboard marked `~47`. The sweep card passed a literal `false` on the one screen that
@@ -23,7 +23,7 @@ final class BenchmarkRateProvenancePinTests: XCTestCase {
     ]
 
     /// RED: revert the Runs generation cell to `value(BenchmarkMetricsPolicy.formatRate(…))`, or
-    /// drop the marker on `Best run` → either one puts the bare shape back and fails here.
+    /// drop the marker on `Best` → either one puts the bare shape back and fails here.
     func testNoRateIsRenderedWithoutItsProvenance() throws {
         for file in Self.rateBearingFiles {
             let code = try Self.strippedSource(file)
