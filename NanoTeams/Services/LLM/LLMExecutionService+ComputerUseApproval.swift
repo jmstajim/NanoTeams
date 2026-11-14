@@ -25,10 +25,6 @@ nonisolated struct ComputerUseApprovalRequest: Identifiable, Hashable, Sendable 
     var id: String { "\(taskID):\(stepID):\(actionKey)" }
 }
 
-/// One-shot approval bridge for computer-use — the generic `ApprovalWaiter` specialized to a
-/// `ComputerUseApprovalDecision` (see `ApprovalWaiter` for the lock/race semantics).
-typealias ComputerUseApprovalWaiter = ApprovalWaiter<ComputerUseApprovalDecision>
-
 extension LLMExecutionService {
 
     /// Suspends the tool loop until the human approves or denies the action — or the step is
@@ -36,8 +32,7 @@ extension LLMExecutionService {
     /// unapproved action). Publishes a `ComputerUseApprovalRequest` to the UI for the duration.
     func awaitComputerUseApproval(request: ComputerUseApprovalRequest) async -> ComputerUseApprovalDecision {
         let key = TaskStepKey(taskID: request.taskID, stepID: request.stepID)
-        let waiter = ComputerUseApprovalWaiter()
-        computerUseApprovalWaiters[key, default: [:]][request.actionKey] = waiter
+        let waiter = computerUseApprovalWaiters.register(key, holdKey: request.actionKey)
 
         delegate?.computerUseApprovalDidBegin(request)
 
@@ -50,8 +45,7 @@ extension LLMExecutionService {
             waiter.resolve(.cancelled)
         }
 
-        computerUseApprovalWaiters[key]?[request.actionKey] = nil
-        if computerUseApprovalWaiters[key]?.isEmpty == true { computerUseApprovalWaiters[key] = nil }
+        computerUseApprovalWaiters.release(key, holdKey: request.actionKey)
         delegate?.computerUseApprovalDidEnd(
             taskID: request.taskID, stepID: request.stepID,
             actionKey: request.actionKey, createdAt: request.createdAt)
@@ -63,15 +57,14 @@ extension LLMExecutionService {
     func resolveComputerUseApproval(
         taskID: Int, stepID: String, actionKey: String, decision: ComputerUseApprovalDecision
     ) {
-        computerUseApprovalWaiters[TaskStepKey(taskID: taskID, stepID: stepID)]?[actionKey]?.resolve(decision)
+        computerUseApprovalWaiters.resolve(
+            TaskStepKey(taskID: taskID, stepID: stepID), holdKey: actionKey, with: decision)
     }
 
     /// Resumes every still-pending computer-use waiter for a step with `.cancelled` (teardown
     /// safety). Idempotent — a human's decision that landed first is not overwritten.
     func failPendingComputerUseApprovals(stepID: String, taskID: Int) {
-        let key = TaskStepKey(taskID: taskID, stepID: stepID)
-        computerUseApprovalWaiters[key]?.values.forEach { $0.resolve(.cancelled) }
-        computerUseApprovalWaiters[key] = nil
+        computerUseApprovalWaiters.failAll(TaskStepKey(taskID: taskID, stepID: stepID), with: .cancelled)
     }
 
     /// Records a per-run "always allow in this app" grant (runtime only, not persisted).

@@ -1,6 +1,6 @@
 import Foundation
 
-/// Compile-time string constants for all 50 tool names.
+/// Compile-time string constants for all 51 tool names.
 /// Use these instead of string literals to get compile-time checking on tool identifiers.
 nonisolated enum ToolNames {
     // File System (7)

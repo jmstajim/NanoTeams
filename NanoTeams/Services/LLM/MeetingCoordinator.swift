@@ -13,10 +13,20 @@ enum MeetingCoordinator {
     }
 
     /// Filters tool schemas to exclude collaborative tools not allowed in meetings.
+    ///
+    /// Every MCP tool goes with them, and this one is a SECURITY rule rather than a
+    /// collaboration one. A meeting turn has no approval card and no step to park: the
+    /// speaker is one of several roles taking turns inside another role's step, so a held
+    /// call would have nobody to hold it and no surface to show it. Withholding here is the
+    /// structural half of that — the meeting tool executor runs no MCP gate at all, so a
+    /// tool that reached the schema would be a call with no gate in front of it.
+    ///
+    /// The predicate, not a registry set: an MCP tool is not a `ToolHandler`, so
+    /// `meetingExcluded` cannot name one (`MCPToolNaming.isMCPName`).
     /// `nonisolated`: pure filter, no MainActor state touched.
     nonisolated static func filterMeetingTools(_ tools: [ToolSchema]) -> [ToolSchema] {
         let excluded = meetingExcludedTools
-        return tools.filter { !excluded.contains($0.name) }
+        return tools.filter { !excluded.contains($0.name) && !MCPToolNaming.isMCPName($0.name) }
     }
 
     /// The tools only the meeting COORDINATOR holds, and only inside a meeting turn:

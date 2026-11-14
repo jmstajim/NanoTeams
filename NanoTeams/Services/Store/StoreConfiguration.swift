@@ -678,7 +678,14 @@ final class StoreConfiguration {
     }
     /// Confine commands in a macOS Seatbelt sandbox. Default on.
     var bashSandboxEnabled: Bool {
-        didSet { storage.set(bashSandboxEnabled, forKey: Keys.bashSandboxEnabled) }
+        didSet {
+            storage.set(bashSandboxEnabled, forKey: Keys.bashSandboxEnabled)
+            // A background command started while the sandbox was off runs unconfined for its
+            // whole life; switching the sandbox on must not leave it so (review 2026-11-08).
+            if bashSandboxEnabled, !oldValue {
+                BackgroundBashRegistry.shared.stopUnconfinedCommands()
+            }
+        }
     }
     /// Per-folder read/write grants for the sandbox. Persisted as JSON.
     var bashSandboxPermissions: BashSandboxPermissions {
@@ -776,6 +783,21 @@ final class StoreConfiguration {
             gateFirstCaptureOnly: computerUseGateFirstCaptureOnly,
             judgeOverride: computerUseJudgeLLMOverride
         )
+    }
+
+    // MARK: - MCP Judge
+
+    /// Optional dedicated LLM override for the MCP Auto judge and the approval card's
+    /// "Ask AI" advisory (token via Keychain by URL). `nil` = use the role's / global config.
+    var mcpJudgeLLMOverride: LLMOverride? {
+        didSet {
+            if let o = mcpJudgeLLMOverride, !o.isEmpty,
+               let data = try? JSONCoderFactory.makePersistenceEncoder().encode(o) {
+                storage.set(data, forKey: Keys.mcpJudgeLLMOverride)
+            } else {
+                storage.removeObject(forKey: Keys.mcpJudgeLLMOverride)
+            }
+        }
     }
 
     // MARK: - App Update
@@ -976,6 +998,64 @@ final class StoreConfiguration {
     var dictationLocaleIdentifiers: [String] {
         didSet {
             storage.set(dictationLocaleIdentifiers, forKey: Keys.dictationLocales)
+        }
+    }
+
+    // MARK: - External Agents (§6, §7.1)
+
+    /// Optional hook wired by `NTMSOrchestrator` so toggling `externalAgentsEnabled` or changing
+    /// `externalAgentsPort` starts, stops, or rebinds the hosted MCP listener.
+    @ObservationIgnored
+    var onExternalAgentsSettingsChanged: (() -> Void)?
+
+    /// Which beta features the person has acknowledged — `BetaFeature.rawValue` strings, so a
+    /// feature that stops being beta simply stops being asked about and its entry is inert.
+    /// Written through `acknowledgeBeta`, never emptied by the app: an acknowledgement the person
+    /// gave is theirs until they reset all settings.
+    var acknowledgedBetaFeatures: Set<String> {
+        didSet {
+            guard acknowledgedBetaFeatures != oldValue else { return }
+            // Empty REMOVES rather than storing `[]`: retiring the last beta feature should
+            // leave no key behind, and a reset must not re-create one it just deleted.
+            if acknowledgedBetaFeatures.isEmpty {
+                storage.removeObject(forKey: Keys.acknowledgedBetaFeatures)
+            } else {
+                storage.set(Array(acknowledgedBetaFeatures).sorted(), forKey: Keys.acknowledgedBetaFeatures)
+            }
+        }
+    }
+
+    func hasAcknowledgedBeta(_ feature: BetaFeature) -> Bool {
+        acknowledgedBetaFeatures.contains(feature.rawValue)
+    }
+
+    func acknowledgeBeta(_ feature: BetaFeature) {
+        acknowledgedBetaFeatures.insert(feature.rawValue)
+    }
+
+    /// Whether the loopback External Agents MCP server is enabled (`false` by default — opt-in,
+    /// §6).
+    var externalAgentsEnabled: Bool {
+        didSet {
+            guard externalAgentsEnabled != oldValue else { return }
+            storage.set(externalAgentsEnabled, forKey: Keys.externalAgentsEnabled)
+            onExternalAgentsSettingsChanged?()
+        }
+    }
+
+    /// Loopback TCP port for the hosted External Agents MCP server (`1024...65535`, default
+    /// `47321`).
+    var externalAgentsPort: Int {
+        didSet {
+            let clamped = min(max(externalAgentsPort, AppDefaults.externalAgentsPortMin), AppDefaults.externalAgentsPortMax)
+            if clamped != externalAgentsPort {
+                externalAgentsPort = clamped
+                return
+            }
+            guard externalAgentsPort != oldValue else { return }
+            storage.set(externalAgentsPort, forKey: Keys.externalAgentsPort)
+            MCPEndpointPolicy.setConfiguredHostedServerPort(UInt16(externalAgentsPort))
+            onExternalAgentsSettingsChanged?()
         }
     }
 
@@ -1194,6 +1274,26 @@ final class StoreConfiguration {
         } else {
             self.computerUseJudgeLLMOverride = nil
         }
+        if let data = storage.data(forKey: Keys.mcpJudgeLLMOverride),
+           let decoded = try? JSONCoderFactory.makeDateDecoder().decode(LLMOverride.self, from: data), !decoded.isEmpty {
+            self.mcpJudgeLLMOverride = decoded
+        } else {
+            self.mcpJudgeLLMOverride = nil
+        }
+        self.acknowledgedBetaFeatures = Set(
+            (storage.object(forKey: Keys.acknowledgedBetaFeatures) as? [String]) ?? [])
+        self.externalAgentsEnabled = (storage.object(forKey: Keys.externalAgentsEnabled) as? Bool)
+            ?? AppDefaults.externalAgentsEnabled
+        let explicitStoredPort = storage.object(forKey: Keys.externalAgentsPort) as? Int
+        let rawExternalAgentsPort = explicitStoredPort ?? AppDefaults.externalAgentsPort
+        let clampedExternalAgentsPort = min(
+            max(rawExternalAgentsPort, AppDefaults.externalAgentsPortMin),
+            AppDefaults.externalAgentsPortMax
+        )
+        self.externalAgentsPort = clampedExternalAgentsPort
+        if explicitStoredPort != nil {
+            MCPEndpointPolicy.setConfiguredHostedServerPort(UInt16(clampedExternalAgentsPort))
+        }
     }
 
     // MARK: - Migration
@@ -1305,6 +1405,11 @@ final class StoreConfiguration {
         storage.removeObject(forKey: Keys.computerUseRaiseTargetWindowBeforeClick)
         storage.removeObject(forKey: Keys.computerUseGateFirstCaptureOnly)
         storage.removeObject(forKey: Keys.computerUseJudgeLLMOverride)
+        storage.removeObject(forKey: Keys.mcpJudgeLLMOverride)
+        storage.removeObject(forKey: Keys.externalAgentsEnabled)
+        acknowledgedBetaFeatures = []
+        storage.removeObject(forKey: Keys.acknowledgedBetaFeatures)
+        storage.removeObject(forKey: Keys.externalAgentsPort)
 
         let provider = LLMProvider.lmStudio
         // Wipe BEFORE the provider assignment (whose didSet would re-remember
@@ -1380,6 +1485,9 @@ final class StoreConfiguration {
         computerUseRaiseTargetWindowBeforeClick = true
         computerUseGateFirstCaptureOnly = true
         computerUseJudgeLLMOverride = nil
+        mcpJudgeLLMOverride = nil
+        externalAgentsEnabled = AppDefaults.externalAgentsEnabled
+        externalAgentsPort = AppDefaults.externalAgentsPort
         // The URL and model above were reset programmatically. `llmProvider`'s
         // `didSet` bumps only when the provider actually CHANGED, so a reset that
         // leaves the provider alone would otherwise strand endpoint-keyed views on

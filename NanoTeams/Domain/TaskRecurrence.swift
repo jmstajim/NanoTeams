@@ -30,6 +30,12 @@ nonisolated struct TaskRecurrence: Codable, Hashable {
         self.lastFiredAt = try c.decodeIfPresent(Date.self, forKey: .lastFiredAt)
     }
 
+    /// The next fire while the schedule is armed, `nil` otherwise — the moment every reader
+    /// reports (the index row's `nextRecurrenceFireAt`, the external agent's `next_run_at` on
+    /// `list_tasks` and `task_status`). A disabled rule keeps its stale `nextFireAt`, which no
+    /// reader may report as a run to come.
+    var armedNextFireAt: Date? { isEnabled ? nextFireAt : nil }
+
     /// Recompute `nextFireAt` from the rule, anchored strictly after `reference`.
     /// Any rule that resolves to no future occurrence self-disables — a past
     /// `.once` (expected), but also a degenerate repeating rule that can never

@@ -1,16 +1,18 @@
 import Foundation
 
-/// What a run can do with a tool family whose actions need approval — `bash` (per command)
-/// and computer-use (per action) — given the family's execution mode and whether a human is
-/// there to approve (`ApprovalPresence`).
+/// What a run can do with a tool family whose actions need approval — `bash` (per command),
+/// computer-use (per action) and one MCP server (per call) — given the family's execution
+/// mode and whether a human is there to approve (`ApprovalPresence`).
 ///
-/// The shape is the same for both families because their modes are: Off / Manual /
-/// Semi-automatic / Auto. What differs is what a READER does with `.readOnlyUnattended`,
-/// because the families differ in granularity: `bash` is one tool whose commands are
-/// classified one by one (the read-only ones run, the rest are refused), so the schema keeps
-/// the tool; computer-use is five tools whose read-only tier is two of them
-/// (`screen_capture`, `ui_scroll`), so the schema keeps those and withholds the mutating trio
-/// (`ToolHandlerRegistry.computerUseMutatingTools`).
+/// The shape is shared because the modes line up: Off / Manual / Semi-automatic / Auto for
+/// the first two, Manual / Semi-automatic / Auto for the third (a switched-off MCP server is absent,
+/// not Off). What differs is what a READER does with `.readOnlyUnattended`, because the
+/// families differ in granularity: `bash` is one tool whose commands are classified one by
+/// one (the read-only ones run, the rest are refused), so the schema keeps the tool;
+/// computer-use is five tools whose read-only tier is two of them (`screen_capture`,
+/// `ui_scroll`), so the schema keeps those and withholds the mutating trio
+/// (`ToolHandlerRegistry.computerUseMutatingTools`); an MCP server is a catalogue split tool
+/// by tool on `MCPToolsSnapshot.Entry.runsUnattended`.
 ///
 /// `.withheld` means no call of the family could ever run in this run — the schema resolver
 /// strips it (advertising a tool every call of which is refused burns a model turn per
@@ -63,27 +65,39 @@ nonisolated enum ApprovalGatedAvailability: Hashable, Sendable {
 }
 
 /// Both families' availabilities for one run, computed from the two execution modes and one
-/// `ApprovalPresence` answer. Threaded, never defaulted: a caller that passes nothing here is
-/// a caller that did not decide, and an implicit "feature off" once hid a preview↔wire
+/// `ApprovalPresence` answer — and that answer itself, which the MCP catalogue is split on
+/// (`MCPGrantCatalogue.resolvedTools(humanPresent:)`) because an MCP server's tools are decided
+/// one by one rather than per family. Threaded, never defaulted: a caller that passes nothing
+/// here is a caller that did not decide, and an implicit "feature off" once hid a preview↔wire
 /// divergence (`FirstPromptRendererConfig`'s post-mortem on `computerUseEnabled`).
 nonisolated struct ToolApprovalAvailability: Hashable, Sendable {
     let bash: ApprovalGatedAvailability
     let computerUse: ApprovalGatedAvailability
+    /// Whether a human is there to approve a held call in this run
+    /// (`ApprovalPresence.humanPresent(supervisorMode:underAutovisor:)`). Carried beside the two
+    /// families because a third reader needs the answer itself rather than a family's reading of
+    /// it: the role editor asks the MCP catalogue which tools a run of this team would ship. It
+    /// used to ask with `true` "by construction" — the person at the editor is not the run's
+    /// approver, and on an Autonomous team every Manual server's tool read as available while the
+    /// runtime withheld it (F46).
+    let humanPresent: Bool
 
-    init(bash: ApprovalGatedAvailability, computerUse: ApprovalGatedAvailability) {
+    init(bash: ApprovalGatedAvailability, computerUse: ApprovalGatedAvailability, humanPresent: Bool) {
         self.bash = bash
         self.computerUse = computerUse
+        self.humanPresent = humanPresent
     }
 
     init(bashMode: BashExecutionMode, computerUseMode: ComputerUseMode, humanPresent: Bool) {
         self.bash = .forBash(mode: bashMode, humanPresent: humanPresent)
         self.computerUse = .forComputerUse(mode: computerUseMode, humanPresent: humanPresent)
+        self.humanPresent = humanPresent
     }
 
     /// A human is present and neither family is Off — what a role editor, a preview or a test
     /// means by "nothing is withheld for want of approval". Spelled out at every site; not a
     /// parameter default.
-    static let available = ToolApprovalAvailability(bash: .available, computerUse: .available)
+    static let available = ToolApprovalAvailability(bash: .available, computerUse: .available, humanPresent: true)
 
     /// The folder-level reading for surfaces that hold a TEAM but no task: the role editor,
     /// the wire preview, the role-list badge. `humanPresent` comes from the team's Supervisor
@@ -98,7 +112,10 @@ nonisolated struct ToolApprovalAvailability: Hashable, Sendable {
     ) -> ToolApprovalAvailability {
         let underAutovisor = workFolderSettings.map {
             AutovisorPolicy.supervisesTopLevelTasks(
-                autovisorEnabled: $0.autovisorEnabled, activation: $0.autovisorActivation)
+                autovisorEnabled: $0.autovisorEnabled,
+                activation: $0.autovisorActivation,
+                driver: $0.autovisorDriver
+            )
         } ?? false
         return ToolApprovalAvailability(
             bashMode: bashMode,

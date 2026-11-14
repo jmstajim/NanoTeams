@@ -26,6 +26,7 @@ struct RoleContextDisclosureSection<Content: View>: View {
                     if let count {
                         Text("(\(count))")
                             .font(Typography.caption2)
+                            .lineLimit(1)
                             .foregroundStyle(Colors.textSecondary)
                     }
                     Spacer()

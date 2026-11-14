@@ -288,6 +288,9 @@ extension LLMExecutionService {
         conversationMessages: inout [ChatMessage],
         tracker: ToolCallTracker? = nil
     ) async {
+        // The handler's placeholder is replaced here; its warnings are not (`carryingWarnings`).
+        let envelope = Self.appendingRepairNote(
+            result.argumentRepairNote, to: carryingWarnings(from: result.outputJSON, into: envelope))
         conversationMessages.append(ChatMessage(
             role: .tool, content: envelope, toolCallID: result.providerID
         ))

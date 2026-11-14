@@ -64,6 +64,14 @@ nonisolated enum SupervisorFormPayload {
     /// neither object nor string. Those are not diagnoses: `ToolErrorHandler.execute`
     /// classifies them, and reporting "Missing" for an argument the model just sent would send
     /// it hunting for a phantom omission.
+    /// runtime-prompt
+    ///
+    /// A top-level `questions` sent beside `form`: the form's questions were asked, these were
+    /// not. Worded through `ToolArgumentVocabulary.ignoredNote`, so the form trainer counts it
+    /// as no decoder repair (`ToolArgumentVocabulary.isNote`).
+    static let strayQuestionsNote = ToolArgumentVocabulary.ignoredNote(
+        key: "questions", reason: "the questions inside `form` were asked, and these beside it were not")
+
     static func read(args: [String: Any]) throws -> Outcome {
         // Both argument shapes, exactly as `CreateTeamTool` accepts them. The OBJECT is
         // the declared one since 2026-09-12; the string is tolerance for a model that
@@ -219,6 +227,13 @@ nonisolated enum SupervisorFormPayload {
         // number in a label is read for the intent it spells and reported alongside.
         let labels = SupervisorInquiryLabelRepair.apply(to: decoded.inquiry)
         repairs += labels.notes
+        // `form` is the declared argument and wins over a stray top-level `questions` (the lift
+        // above reads it only when `form` is absent) — but the stray copy is said to be ignored,
+        // not dropped in silence (2026-11-09; until then the model never learned its second
+        // copy of the questions was not asked).
+        if let form = args["form"], !(form is NSNull), let stray = args["questions"], !(stray is NSNull) {
+            repairs.append(strayQuestionsNote)
+        }
 
         // Syntax is not completeness. A tolerant parse can turn a truncated emission into
         // a document that decodes — the closer rung closes the object the model abandoned

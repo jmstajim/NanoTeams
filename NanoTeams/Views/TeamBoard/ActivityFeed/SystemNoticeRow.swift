@@ -164,5 +164,6 @@ private let systemNoticeRowPreviewAutovisorEvent: String =
 private func systemNoticeRowPreviewLabel(_ text: String) -> some View {
     Text(text)
         .font(Typography.caption2.weight(.bold))
+        .lineLimit(1)
         .foregroundStyle(Colors.textTertiary)
 }

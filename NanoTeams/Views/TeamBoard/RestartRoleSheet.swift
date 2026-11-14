@@ -25,7 +25,7 @@ struct RestartRoleSheet: View {
                     .accessibilityLabel("Instructions for restart")
 
                 Text("Provide instructions for the role on restart.")
-                    .font(Typography.caption2)
+                    .font(Typography.caption)
                     .foregroundStyle(Colors.textTertiary)
             }
 

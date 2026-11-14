@@ -354,7 +354,9 @@ final class PromptBuilderTests: XCTestCase {
         """)
     }
 
-    func testBuildWFC_mainContentNotCapped_contextCapped() {
+    /// Neither is cut since 2026-11-13: the context was capped at 2000 characters while the
+    /// instruction files beside it went in whole, and no writer of the context was told.
+    func testBuildWFC_neitherMainContentNorContextIsCapped() {
         let bigContext = String(repeating: "c", count: 3000)
         let bigMain = String(repeating: "m", count: 5000)
         let result = PromptBuilder.buildWorkFolderContextMessage(
@@ -364,9 +366,37 @@ final class PromptBuilderTests: XCTestCase {
 
         XCTAssertNotNil(result)
         XCTAssertTrue(result!.contains(bigMain), "main content must NOT be capped")
-        XCTAssertTrue(result!.contains("..."), "context beyond 2000 chars is capped with ellipsis")
-        XCTAssertFalse(result!.contains(String(repeating: "c", count: 2001)),
-                       "context is capped at maxDescriptionChars (2000)")
+        XCTAssertTrue(result!.contains(bigContext), "the context reaches a role whole")
+        XCTAssertFalse(result!.contains(bigContext + "..."), "and is not marked as cut")
+    }
+
+    /// A character that makes a renderer lie never reaches a role, whoever stored it: the person
+    /// reads the context in Settings, the role in its prompt, and they must read one text.
+    /// Everything else — directional marks, a joiner inside an emoji — comes through as stored.
+    func testBuildWFC_contextIsSanitizedOfRenderingControls() throws {
+        let stored = "Swift app\u{202E}evil\u{202C}. Uses \u{200E}RTL\u{200F} marks 👨\u{200D}💻 \u{1B}[2Jdone"
+        let result = try XCTUnwrap(PromptBuilder.buildWorkFolderContextMessage(
+            workFolder: wf(context: stored), agentInstructions: nil, toolNames: []))
+
+        XCTAssertFalse(result.unicodeScalars.contains("\u{202E}"), "a bidi override is removed")
+        XCTAssertFalse(result.unicodeScalars.contains("\u{1B}"), "an escape sequence is removed")
+        // Since 2026-11-13 the marks go too: around each word they lay a left-to-right line out
+        // right-to-left in the person's editor, and a model needs none of them to read the words.
+        XCTAssertFalse(result.unicodeScalars.contains("\u{200E}"), "a left-to-right mark is removed")
+        XCTAssertFalse(result.unicodeScalars.contains("\u{200F}"), "a right-to-left mark is removed")
+        XCTAssertTrue(result.contains("RTL marks"), result)
+        XCTAssertTrue(result.contains("👨\u{200D}💻"), "the joiner inside an emoji is kept")
+        XCTAssertTrue(result.contains(MCPTextSanitizer.sanitizeDisplayedData(stored)), result)
+    }
+
+    func testBuildWFC_theArabicLetterMarkIsRemovedToo_andTheJoinersStay() throws {
+        let stored = "ab\u{061C}c نام\u{200C}خانوادگی"
+        let result = try XCTUnwrap(PromptBuilder.buildWorkFolderContextMessage(
+            workFolder: wf(context: stored), agentInstructions: nil, toolNames: []))
+
+        XCTAssertFalse(result.unicodeScalars.contains("\u{061C}"), result)
+        XCTAssertTrue(result.contains("abc"), result)
+        XCTAssertTrue(result.contains("نام\u{200C}خانوادگی"), "the Persian ZWNJ is part of the word")
     }
 
     func testBuildWFC_nilSnapshot_byteIdenticalToLegacy() {

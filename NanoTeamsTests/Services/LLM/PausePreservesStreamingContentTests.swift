@@ -883,6 +883,11 @@ private final class StreamPersistingMockDelegate: LLMExecutionDelegate {
     var maxLLMRetries: Int = 0
     var visionLLMConfig: LLMConfig?
     var bashPolicy: BashPolicy = BashPolicy()
+    var seatbeltGuardedLoopbackPorts: [UInt16] = SeatbeltSandbox.effectiveGuardedPorts([])
+    var mcpTools: MCPToolsSnapshot?
+    func mcpApprovalDidBegin(_ request: MCPApprovalRequest) {}
+    func mcpApprovalDidEnd(taskID: Int, stepID: String, callKey: String, createdAt: Date) {}
+    func clearAllMCPApprovalRequests() {}
     var computerUsePolicy: ComputerUsePolicy = ComputerUsePolicy()
     func bashApprovalDidBegin(_ request: BashApprovalRequest) {}
     func bashApprovalDidEnd(taskID: Int, stepID: String, commandKey: String, createdAt: Date) {}
@@ -1055,7 +1060,9 @@ private final class StreamPersistingMockDelegate: LLMExecutionDelegate {
 
     var lastErrorMessages: [String] = []
     func setLastErrorMessageForUI(_ message: String) { lastErrorMessages.append(message) }
-    func holdDownstreamForRevision(taskID _: Int, runningRoleIDs _: [String], requesterRoleID _: String) async {}
+    func holdDownstreamForRevision(
+        taskID _: Int, runningRoleIDs _: [String], requesterRoleID _: String, within _: WorkFolderLifecycle
+    ) async {}
 
     var scriptedAwaitOutcomes: [TaskCompletionAwaiter.WaitOutcome] = []
     var awaitedTaskIDs: [Int] = []
@@ -1108,11 +1115,17 @@ private final class StreamPersistingMockDelegate: LLMExecutionDelegate {
     }
 
     var answerSupervisorCalls: [(taskID: Int, stepID: String, answer: String)] = []
-    func answerSupervisorQuestion(taskID: Int, stepID: String, answer: String) async -> Bool {
+    func answerSupervisorQuestion(
+        taskID: Int, stepID: String, answer: String, within _: WorkFolderLifecycle
+    ) async -> Bool {
         answerSupervisorCalls.append((taskID, stepID, answer))
         return true
     }
-    func performAutovisorAction(_ action: AutovisorAction) async -> AutovisorActionResult { .success("ok") }
+    var currentFolderLifecycle: WorkFolderLifecycle { WorkFolderLifecycle(generation: 0) }
+    func isCurrentFolderLifecycle(_ lifecycle: WorkFolderLifecycle) -> Bool { lifecycle.generation == 0 }
+    func performAutovisorAction(
+        _ action: AutovisorAction, within lifecycle: WorkFolderLifecycle
+    ) async -> AutovisorActionResult { .success("ok") }
     func persistAutovisorMemory(_ text: String) async -> Bool { true }
     func autovisorLoadTask(_ taskID: Int) async -> NTMSTask? { loadedTask(taskID) }
 }

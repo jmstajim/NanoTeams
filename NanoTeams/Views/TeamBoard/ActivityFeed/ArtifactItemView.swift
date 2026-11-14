@@ -49,7 +49,8 @@ struct ArtifactItemView: View {
                         Text("produced artifact").font(Typography.termXs).foregroundStyle(Colors.textSecondary)
                         Spacer()
                         Text(artifact.createdAt.formatted(date: .omitted, time: .shortened))
-                            .font(Typography.term2xs).foregroundStyle(Colors.textTertiary)
+                            .font(Typography.term2xs)
+                            .lineLimit(1).foregroundStyle(Colors.textTertiary)
                     }
                 }
 
@@ -93,7 +94,7 @@ struct ArtifactItemView: View {
                 Text(artifact.name)
                     .font(Typography.termSm.weight(.medium))
                     .foregroundStyle(Colors.textPrimary)
-                Text(artifact.mimeType).font(Typography.term2xs).foregroundStyle(Colors.textTertiary)
+                Text(artifact.mimeType).font(Typography.term2xs).lineLimit(1).foregroundStyle(Colors.textTertiary)
             }
             Spacer()
         }

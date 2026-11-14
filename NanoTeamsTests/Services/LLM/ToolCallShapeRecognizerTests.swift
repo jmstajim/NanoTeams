@@ -152,6 +152,103 @@ final class ToolCallShapeRecognizerTests: XCTestCase {
         XCTAssertNil(ToolCallShapeRecognizer.synthesizeArgumentsFromTopLevel([:]))
     }
 
+    // MARK: - Promotion reads the tool's vocabulary (2026-11-09)
+    //
+    // A key written BESIDE the call is promoted into its arguments only when the tool reads it
+    // (`ToolArgumentVocabulary.acceptedKeys`). Anything else — a `thought`, a `reasoning` — is
+    // commentary: left out and reported, never promoted into a call the runtime would then
+    // refuse for a key the model never put in its arguments.
+
+    func testTopLevelSynthesis_promotesOnlyWhatTheToolReads() throws {
+        let dict: [String: Any] = ["name": "read_file", "path": "a.txt", "thought": "look first"]
+        let r = try XCTUnwrap(ToolCallShapeRecognizer.resolve(from: dict))
+        XCTAssertEqual(argsJSON(r), #"{"path":"a.txt"}"#)
+        XCTAssertEqual(ToolCallShapeRecognizer.strandedKeys(from: dict, delivered: r.arguments), ["thought"])
+    }
+
+    func testTopLevelSynthesis_promotesTheToolsOtherSpellingsToo() throws {
+        let dict: [String: Any] = ["name": "search", "pattern": "x", "path": "a.js"]
+        let r = try XCTUnwrap(ToolCallShapeRecognizer.resolve(from: dict))
+        XCTAssertEqual(argsJSON(r), #"{"path":"a.js","pattern":"x"}"#, "renamed later, by the runtime's reading")
+        XCTAssertTrue(ToolCallShapeRecognizer.strandedKeys(from: dict, delivered: r.arguments).isEmpty)
+    }
+
+    func testSpilledSiblings_mergeTheToolsArguments_andLeaveCommentaryOut() throws {
+        let dict: [String: Any] = [
+            "name": "edit_file", "arguments": ["new_text": "b"],
+            "old_text": "a", "path": "p.swift", "reasoning": "fix the typo",
+        ]
+        let r = try XCTUnwrap(ToolCallShapeRecognizer.resolve(from: dict))
+        XCTAssertEqual(argsJSON(r), #"{"new_text":"b","old_text":"a","path":"p.swift"}"#)
+        XCTAssertEqual(ToolCallShapeRecognizer.spilledSiblingKeys(from: dict, forTool: r.name), ["old_text", "path"])
+        XCTAssertEqual(ToolCallShapeRecognizer.strandedKeys(from: dict, delivered: r.arguments), ["reasoning"])
+    }
+
+    func testFlatCreateArtifact_keepsOnlyTheArtifactsOwnKeys() throws {
+        let dict: [String: Any] = ["name": "Release Notes", "content": "# Notes", "type": "function", "id": "c1"]
+        let r = try XCTUnwrap(ToolCallShapeRecognizer.resolve(from: dict))
+        XCTAssertEqual(r.name, ToolNames.createArtifact)
+        XCTAssertEqual(argsJSON(r), ##"{"content":"# Notes","name":"Release Notes"}"##,
+                       "envelope framing never becomes an argument")
+    }
+
+    /// A tool the vocabulary does not describe (an MCP tool) is promoted as before: nothing may
+    /// be assumed about what its server reads.
+    func testAToolTheVocabularyDoesNotDescribe_promotesEverythingAsBefore() throws {
+        let dict: [String: Any] = ["name": "mcp__srv__tool", "anything": 1, "else": "x"]
+        let r = try XCTUnwrap(ToolCallShapeRecognizer.resolve(from: dict))
+        XCTAssertEqual(argsJSON(r), #"{"anything":1,"else":"x"}"#)
+        XCTAssertTrue(ToolCallShapeRecognizer.strandedKeys(from: dict, delivered: r.arguments).isEmpty)
+    }
+
+    /// A spill beside a tool the vocabulary does not describe merges every sibling, as before.
+    func testASpillBesideAToolTheVocabularyDoesNotDescribe_mergesEverySibling() {
+        let dict: [String: Any] = ["name": "mcp__srv__tool", "arguments": ["a": 1], "b": 2]
+        XCTAssertEqual(ToolCallShapeRecognizer.spilledSiblingKeys(from: dict, forTool: "mcp__srv__tool"), ["b"])
+        XCTAssertEqual(ToolHandlerRegistry.undeclaredArguments(named: "mcp__srv__tool").count, 0)
+    }
+
+    func testTheStrandedNote_namesTheKeysAndTheTool_orIsNil() {
+        XCTAssertNil(ToolCallParsingHelpers.strandedArgumentsNote(keys: [], tool: ToolNames.readFile))
+        let note = ToolCallParsingHelpers.strandedArgumentsNote(keys: ["thought"], tool: "functions.read_file")
+        XCTAssertEqual(
+            note, "`thought` stood outside `arguments`, so it was left out of the `read_file` call — put every argument inside `arguments`")
+    }
+
+    /// Which supervisor ask runs is decided by the ARGUMENTS, after this — so a `form` written
+    /// beside a call misnamed `ask_supervisor` reaches the routing (the live shape of
+    /// 2026-09-10), and a `question` beside one misnamed `ask_supervisor_form` does too.
+    func testAMisnamedSupervisorAsk_keepsTheKeysThatDecideWhichAskRuns() throws {
+        let flatForm: [String: Any] = ["name": "ask_supervisor", "headline": "Scheme", "form": ["questions": []]]
+        let r1 = try XCTUnwrap(ToolCallShapeRecognizer.resolve(from: flatForm))
+        XCTAssertNotNil((r1.arguments as? [String: Any])?["form"], "the form reaches the routing")
+        XCTAssertTrue(ToolCallShapeRecognizer.strandedKeys(from: flatForm, delivered: r1.arguments).isEmpty)
+
+        let spilled: [String: Any] = ["name": "ask_supervisor", "arguments": ["headline": "h"], "form": ["questions": []]]
+        let r2 = try XCTUnwrap(ToolCallShapeRecognizer.resolve(from: spilled))
+        XCTAssertNotNil((r2.arguments as? [String: Any])?["form"])
+
+        let plain: [String: Any] = ["name": "ask_supervisor_form", "question": "Which?"]
+        let r3 = try XCTUnwrap(ToolCallShapeRecognizer.resolve(from: plain))
+        XCTAssertEqual((r3.arguments as? [String: Any])?["question"] as? String, "Which?")
+    }
+
+    /// A real argument beside a wrapper written as a STRING cannot be merged into text — it is
+    /// reported as left out, never dropped in silence.
+    func testASiblingBesideAStringWrapper_isReportedAsLeftOut() throws {
+        let dict: [String: Any] = ["name": "read_lines", "arguments": #"{"path":"a"}"#, "start_line": 40]
+        let r = try XCTUnwrap(ToolCallShapeRecognizer.resolve(from: dict))
+        XCTAssertEqual(ToolCallShapeRecognizer.strandedKeys(from: dict, delivered: r.arguments), ["start_line"])
+    }
+
+    /// An envelope nested a level too deep runs its INNER call; an outer sibling did not reach it.
+    func testASiblingBesideANestedEnvelope_isReportedAsLeftOut() throws {
+        let dict: [String: Any] = ["arguments": ["name": "read_lines", "arguments": ["path": "a"]], "start_line": 40]
+        let r = try XCTUnwrap(ToolCallShapeRecognizer.resolve(from: dict))
+        XCTAssertEqual(r.name, ToolNames.readLines)
+        XCTAssertEqual(ToolCallShapeRecognizer.strandedKeys(from: dict, delivered: r.arguments), ["start_line"])
+    }
+
     // MARK: - inferToolNameFromShape
 
     func testInfer_createArtifact_fromWrappedArgs() {

@@ -39,7 +39,13 @@ nonisolated struct SearchIndex: Codable, Equatable {
     ///
     /// v2 (2026-09-11): `tokens` + `postings` → `vocabulary`; `signature` became computed;
     /// `changedSinceFullBuild` added.
-    static let currentVersion: Int = 2
+    ///
+    /// v3 (2026-11-08): the walk stopped indexing credential stores and agent token
+    /// files (#375/#376) — a shape-identical change that nonetheless has to discard what is on
+    /// disk, because words harvested from a store BEFORE it are in the vocabulary and the walk
+    /// can no longer reach the files that would retire them. One full rebuild per folder
+    /// (~4.7 s for this repository) drops them.
+    static let currentVersion: Int = 3
 
     let version: Int
     let generatedAt: Date
@@ -158,5 +164,25 @@ nonisolated struct IndexSignature: Codable, Equatable, Hashable {
             totalSize += file.size
         }
         self.init(fileCount: files.count, maxMTime: maxMTime, totalSize: totalSize)
+    }
+}
+
+nonisolated extension SearchIndex {
+    /// The newest modification time among the folder's own files — every indexed file outside
+    /// NanoTeams' `.nanoteams/` trees (`isNanoTeamsOwn`) — or nil when there is none (§5.5). What `folder_status`
+    /// compares the Work Folder Context's stamp with. A task's artifacts and attachments live
+    /// under `.nanoteams/tasks/` and are indexed for search, so until 2026-11-13 every file a
+    /// team wrote there made the context read as stale although no project file had moved, and an
+    /// agent allowed to replace the context would rewrite a text nothing had overtaken.
+    var maxProjectFileMTime: Date? {
+        files.lazy.filter { !Self.isNanoTeamsOwn($0.path) }.map(\.mTime).max()
+    }
+
+    /// Whether `relativePath` is in a tree NanoTeams writes for itself rather than in the
+    /// project's files: this folder's `.nanoteams/`, or that of a folder inside it opened as a
+    /// work folder of its own — a sandbox a team trains in, a headless run's scratch folder. The
+    /// index does not read `.gitignore`, so those trees are walked like any other.
+    static func isNanoTeamsOwn(_ relativePath: String) -> Bool {
+        relativePath.split(separator: "/").contains { $0 == NTMSPaths.nanoteamsDirName }
     }
 }

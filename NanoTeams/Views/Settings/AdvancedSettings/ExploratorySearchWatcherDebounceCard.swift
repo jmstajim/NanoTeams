@@ -15,8 +15,7 @@ struct ExploratorySearchWatcherDebounceCard: View {
         let lower = Int(AppDefaults.searchIndexWatcherDebounceSecondsMin.rounded(.up))
         let upper = Int(AppDefaults.searchIndexWatcherDebounceSecondsMax.rounded(.down))
         SettingsCard(
-            header: "Update Delay",
-            systemImage: "clock"
+            header: "Update Delay"
         ) {
             VStack(spacing: 0) {
                 SettingsStepperRow(

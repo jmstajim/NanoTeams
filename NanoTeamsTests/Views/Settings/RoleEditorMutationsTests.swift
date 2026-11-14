@@ -364,8 +364,8 @@ final class RoleEditorMutationsTests: XCTestCase {
     /// `team.roles` diffs the binding, an unchanged `updatedAt` makes the
     /// team compare equal even after a role's nested fields changed — the
     /// View tree skips re-render, ForEach row closures stay bound to the
-    /// PRE-edit role, and the tap handler `showingEditRole = role` then
-    /// stamps the stale role into state. Symptom (the user-reported bug):
+    /// PRE-edit role, and the tap handler (then `showingEditRole = role`, now
+    /// `openRoleEditor(.edit(role))`) stamps the stale role into state. Symptom (the user-reported bug):
     /// after Save, reopening the role editor in the SAME session shows the
     /// pre-edit whitelist. A full app reload reads fresh data from disk,
     /// so the disk persisted correctly — only the in-memory observer chain

@@ -77,6 +77,76 @@ final class StatusRecoveryServiceTests: XCTestCase {
     private static let finalOnly = team(TeamSettings(defaultAcceptanceMode: .finalOnly))
     private static let afterEachRole = team(TeamSettings(defaultAcceptanceMode: .afterEachRole))
 
+    // MARK: - The cause of a recovery pause (`Run.pauseCause`)
+
+    /// Parking a run the quit interrupted is a pause of its own: its cause is the recovery, even
+    /// for a run whose timeout fired earlier and was resumed — otherwise the next reader takes the
+    /// recovery pause for the timeout's.
+    ///
+    /// RED before 2026-11-07: recovery recorded no cause.
+    func testParkingAnInterruptedRun_recordsTheRecoveredCause() {
+        var task = makePairedTask(stepStatus: .running, roleStatus: .working)
+        task.runs[0].timedOutAt = Date(timeIntervalSince1970: 1_799_971_200)
+        task.runs[0].pauseCause = .runTimedOut
+
+        StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
+
+        XCTAssertEqual(task.runs[0].steps[0].status, .paused, "premise: the interrupted step was parked")
+        XCTAssertEqual(task.runs[0].pauseCause, .recovered)
+        XCTAssertFalse(task.runs[0].latestPauseIsItsTimeout)
+    }
+
+    /// A run that was already paused when the app quit is not parked again, and keeps the cause
+    /// of the pause it stands in.
+    func testARunAlreadyPausedByItsTimeout_keepsItsCause() {
+        var task = makePairedTask(stepStatus: .paused, roleStatus: .working)
+        task.runs[0].timedOutAt = Date(timeIntervalSince1970: 1_799_971_200)
+        task.runs[0].pauseCause = .runTimedOut
+
+        StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
+
+        XCTAssertEqual(task.runs[0].pauseCause, .runTimedOut)
+        XCTAssertTrue(task.runs[0].latestPauseIsItsTimeout)
+    }
+
+    // MARK: - A vote the quit interrupted (F6 D2, C5)
+
+    /// `handleChangeRequest` records a request `.pending` before its vote runs. A vote the app
+    /// quit during — or one a folder switch overtook, whose handler cannot write the folder it
+    /// left — left that record `.pending` for ever: no engine runs at recovery, so no vote is in
+    /// flight, and the record is closed as a vote that ended without a decision.
+    /// RED before D2: `.pending` survived the launch.
+    func testRecovery_closesAPendingChangeRequestAsFailed() {
+        var task = makePairedTask(stepStatus: .done, roleStatus: .done)
+        let decidedAt = Date(timeIntervalSince1970: 1_799_971_200)
+        task.runs[0].changeRequests = [
+            ChangeRequest(requestingRoleID: "r", targetRoleID: "software_engineer",
+                          changes: "c", reasoning: "r", status: .pending),
+            ChangeRequest(requestingRoleID: "r", targetRoleID: "software_engineer",
+                          changes: "c", reasoning: "r", status: .approved, resolvedAt: decidedAt),
+        ]
+
+        let changed = StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly)
+
+        XCTAssertTrue(changed)
+        XCTAssertEqual(task.runs[0].changeRequests[0].status, .failed)
+        XCTAssertNotNil(task.runs[0].changeRequests[0].resolvedAt)
+        XCTAssertEqual(task.runs[0].changeRequests[1].status, .approved, "a decided vote is left alone")
+        XCTAssertEqual(task.runs[0].changeRequests[1].resolvedAt, decidedAt)
+        XCTAssertNil(task.runs[0].pauseCause, "closing a record parks nothing")
+    }
+
+    /// Nothing to close is no change.
+    func testRecovery_withNoPendingChangeRequest_changesNothing() {
+        var task = makePairedTask(stepStatus: .done, roleStatus: .done)
+        task.runs[0].changeRequests = [
+            ChangeRequest(requestingRoleID: "r", targetRoleID: "software_engineer",
+                          changes: "c", reasoning: "r", status: .rejected),
+        ]
+        XCTAssertFalse(StatusRecoveryService.recoverStaleStatuses(in: &task, team: Self.finalOnly))
+        XCTAssertEqual(task.runs[0].changeRequests[0].status, .rejected)
+    }
+
     // MARK: - Torn-pair Settling (the restart-review bug)
 
     /// The exact shape the app quits into: the step finished, the engine never got to

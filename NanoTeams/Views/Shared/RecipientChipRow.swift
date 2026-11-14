@@ -166,6 +166,7 @@ struct RecipientChipRow<ID: Hashable & Sendable, Accessory: View>: View {
                         // label does — the fill underneath it is the tint.
                         Text(TerminalGlyph.bullet)
                             .font(Typography.term2xs)
+                            .lineLimit(1)
                             .foregroundStyle(isSelected ? Colors.textOnAccent : Colors.warning)
                     }
                 }

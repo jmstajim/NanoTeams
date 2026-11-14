@@ -82,7 +82,7 @@ final class OneShotPromptTrainerConfigTests: XCTestCase {
     func testJudge_failClosedDeny_neverPasses_evenOnADenyWorthyRow() {
         for reason in [JudgeFailClosedReason.bashNoVerdict,
                        JudgeFailClosedReason.actionUnparseable,
-                       JudgeFailClosedReason.callFailed(subject: "Command", message: "Network error"),
+                       JudgeFailClosedReason.callFailed(subject: .command, message: "Network error"),
                        JudgeReplyChannelPolicy.reasoningOnlyAllowReason] {
             let v = OneShotPromptVerdicts.judge(expectedAllowed: false, allowed: false, reason: reason)
             XCTAssertFalse(v.passed, reason)
@@ -179,5 +179,32 @@ final class OneShotPromptTrainerConfigTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let names = try FileManager.default.contentsOfDirectory(atPath: root.path).sorted()
         XCTAssertTrue(names.contains("README.md") && names.contains("Package.swift"), "\(names)")
+    }
+
+    func testMCPJudgeFixtures_coverFiveCanonicalCasesWithExpectedVerdicts() throws {
+        let c = try decode(#"{"outputPath":"/o","services":["mcp_judge"]}"#)
+        XCTAssertEqual(c.resolvedServices, [.mcpJudge])
+
+        let cases = OneShotPromptFixtures.mcpJudgeCases
+        XCTAssertEqual(
+            cases.map(\.tag),
+            [
+                "mcp_judge_safe_read",
+                "mcp_judge_safe_scoped_write",
+                "mcp_judge_destructive_delete",
+                "mcp_judge_exfiltration",
+                "mcp_judge_prompt_injection_in_description",
+            ])
+        XCTAssertEqual(cases.map(\.expectedAllowed), [true, true, false, false, false])
+
+        for reason in [
+            JudgeFailClosedReason.mcpNoVerdict,
+            JudgeFailClosedReason.mcpUnparseable,
+            JudgeFailClosedReason.callFailed(subject: .mcp, message: "Network error"),
+        ] {
+            let v = OneShotPromptVerdicts.judge(expectedAllowed: false, allowed: false, reason: reason)
+            XCTAssertFalse(v.passed, reason)
+            XCTAssertTrue(v.flags.contains(.failClosedDeny), reason)
+        }
     }
 }

@@ -79,6 +79,12 @@ nonisolated struct SourceContext {
 /// One pasteboard item's data, keyed by type — everything needed to put it back.
 nonisolated struct PasteboardItemSnapshot: Sendable, Equatable {
     let dataByType: [NSPasteboard.PasteboardType: Data]
+
+    /// The de-facto convention (nspasteboard.org) by which a writer says "this is a secret":
+    /// clipboard managers that honour it do not record the item. One source, read by whoever
+    /// WRITES a secret (`ExternalAgentsPasteboard.copySecret`) and by whoever puts one BACK
+    /// (`SystemPasteboard.write`, which must keep such a generation local to this Mac).
+    static let concealedType = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
 }
 
 /// The system pasteboard, as an injectable seam.
@@ -458,8 +464,12 @@ nonisolated enum ClipboardCaptureService {
         _ action: PasteboardRestoreAction, to pasteboard: any PasteboardAccessing
     ) -> Bool {
         guard case .rewrite(let items) = action else { return true }
-        pasteboard.clear()
-        guard !items.isEmpty else { return true }
+        // `write` begins the new generation itself (and chooses its options), so an empty
+        // restore is the only case that still needs the bare clear.
+        guard !items.isEmpty else {
+            pasteboard.clear()
+            return true
+        }
         return pasteboard.write(items)
     }
 }
@@ -467,10 +477,20 @@ nonisolated enum ClipboardCaptureService {
 // MARK: - Live conformances
 
 nonisolated struct SystemPasteboard: PasteboardAccessing {
-    var changeCount: Int { NSPasteboard.general.changeCount }
+    /// `.general` in the app. A test names a pasteboard of its own (`withUniqueName()`): the
+    /// general one is shared by every process on the Mac, and a parallel runner's writes moved
+    /// its change count under an assertion (CLAUDE.md #395). A name and not the `NSPasteboard`
+    /// itself, because this conformance is `Sendable` and the class is not.
+    let name: NSPasteboard.Name
+
+    init(name: NSPasteboard.Name = .general) { self.name = name }
+
+    private var board: NSPasteboard { NSPasteboard(name: name) }
+
+    var changeCount: Int { board.changeCount }
 
     func snapshotItems() -> [PasteboardItemSnapshot]? {
-        guard let items = NSPasteboard.general.pasteboardItems else { return nil }
+        guard let items = board.pasteboardItems else { return nil }
         return items.map { item in
             var dataByType: [NSPasteboard.PasteboardType: Data] = [:]
             for type in item.types {
@@ -480,18 +500,30 @@ nonisolated struct SystemPasteboard: PasteboardAccessing {
         }
     }
 
-    func string() -> String? { NSPasteboard.general.string(forType: .string) }
+    func string() -> String? { board.string(forType: .string) }
 
     func fileURLs() -> [URL] {
-        (NSPasteboard.general.readObjects(
+        (board.readObjects(
             forClasses: [NSURL.self],
             options: [.urlReadingFileURLsOnly: NSNumber(value: true)]) as? [URL]) ?? []
     }
 
-    func clear() { NSPasteboard.general.clearContents() }
+    func clear() { board.clearContents() }
 
+    /// A restore begins its own generation, and it begins it LOCAL when any item it puts back
+    /// is marked concealed (`org.nspasteboard.ConcealedType` — the convention a password
+    /// manager and NanoTeams's own token copy both set). `.currentHostOnly` is a property of the
+    /// generation, not of the items, so a plain `writeObjects` after `clearContents()` published
+    /// a concealed item Universal-Clipboard-eligible — including the agent token, in the
+    /// minute between a Copy and the clear (#376).
     func write(_ items: [PasteboardItemSnapshot]) -> Bool {
-        NSPasteboard.general.writeObjects(items.map { snapshot in
+        let concealed = items.contains {
+            $0.dataByType.keys.contains(PasteboardItemSnapshot.concealedType)
+        }
+        // One pasteboard object for the generation it begins and the write that fills it.
+        let board = board
+        board.prepareForNewContents(with: concealed ? [.currentHostOnly] : [])
+        return board.writeObjects(items.map { snapshot in
             let item = NSPasteboardItem()
             for (type, data) in snapshot.dataByType { item.setData(data, forType: type) }
             return item

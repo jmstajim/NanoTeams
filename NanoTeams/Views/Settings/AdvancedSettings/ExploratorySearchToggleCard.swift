@@ -7,7 +7,6 @@ struct ExploratorySearchToggleCard: View {
     var body: some View {
         SettingsCard(
             header: "Exploratory Search",
-            systemImage: "magnifyingglass.circle",
             footer: "When ON, the `search` tool can broaden your query with synonyms, translations, and camelCase/snake_case variants via a local vocabulary vector index of all tokens in the work folder. Costs one local embedding call per exploratory search."
         ) {
             VStack(alignment: .leading, spacing: Spacing.standard) {

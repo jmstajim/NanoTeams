@@ -27,7 +27,8 @@ extension NTMSOrchestrator {
     ) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let id = autovisorTaskID,
-              let formState = quickCaptureFormState,
+              !isDormantAutovisorManagerTask(id),
+              let formState = messageQueue.activeFormState,
               let message = QuickCaptureFormState.QueuedChatMessage(
                   text: trimmed, attachments: attachments, clippedTexts: clippedTexts, targetRoleID: autovisorRole?.id
               ) else { return false }
@@ -36,17 +37,15 @@ extension NTMSOrchestrator {
         case .nextIteration:
             break // Drained by `injectQueuedSupervisorMessage` on the next iteration.
         case .flushParked:
-            // Reaches the process-wide singleton (the orchestrator has no DI handle
-            // for the controller — see `notifyQueuedMessageBackstop`). The wiring
-            // (`QuickCaptureController.shared.setup` + `store.quickCaptureFormState`)
-            // happens in `NanoTeamsApp` before any UI path can get here. If the
-            // singleton isn't wired (unit tests; hypothetical headless callers),
-            // the flush no-ops and the message STAYS QUEUED — delivered by the
-            // next supersede-driven fresh pass instead of the same-conversation
-            // continuation. Degraded, never lost.
-            QuickCaptureController.shared.tryFlushQueuedMessages()
+            messageQueue.tryFlushQueuedMessages(formState: formState)
         case .startRun:
-            Task { await startRun(taskID: id) }
+            // The start belongs to the folder the message was sent in; a transition that begins
+            // before the task runs ends it.
+            let lifecycle = currentFolderLifecycle
+            Task {
+                guard isCurrentFolderLifecycle(lifecycle) else { return }
+                await startRun(taskID: id)
+            }
         }
         return true
     }
@@ -143,7 +142,7 @@ extension NTMSOrchestrator {
     /// Autovisor's own `message_task`) are excluded — they must NOT block a supersede.
     func autovisorHasPendingHumanContinuation(_ managerID: Int) -> Bool {
         if Self.taskHasPendingHumanAnswer(loadedTask(managerID)) { return true }
-        return (quickCaptureFormState?.queuedMessages(for: managerID) ?? [])
+        return (messageQueue.activeFormState?.queuedMessages(for: managerID) ?? [])
             .contains { !$0.isFromAutomatedSupervisor }
     }
 
@@ -198,10 +197,28 @@ extension NTMSOrchestrator {
     /// the per-minute poll backstop. The hot engine-state observer leaves it `false`
     /// so the per-running-task loop/LCS detector never runs on that high-frequency
     /// path; a hung role runs forever anyway, so ≤~60 s latency is immaterial.
-    func wakeAutovisorForEvents(now: Date = MonotonicClock.shared.now(), includeStuck: Bool = false) async {
-        guard hasRealWorkFolder,
-              let settings = snapshot?.workFolder.settings,
+    ///
+    /// `lifecycle` is the caller's: the poll loop's, or the one `scheduleAutovisorWake` captured
+    /// when the transition that asks for the wake happened. A wake whose lifecycle is over does
+    /// nothing — no notice queued, no bookkeeping written, no pass started — since the folder it
+    /// would read is the one being left (or, once the next commits, not the one it was asked
+    /// about). The one suspension below is the pass's start, whose claim asks again.
+    func wakeAutovisorForEvents(
+        now: Date = MonotonicClock.shared.now(), includeStuck: Bool = false,
+        within lifecycle: WorkFolderLifecycle
+    ) async {
+        guard isCurrentFolderLifecycle(lifecycle),
+              hasRealWorkFolder else { return }
+
+        if includeStuck {
+            let feedWatchable = autovisorWatchableTasks(excluding: autovisorTaskID)
+            let feedStuck = computeStuckTaskIDs(watchable: feedWatchable, now: now)
+            autovisorEventFeed.recordStuckTasks(feedStuck, now: now)
+        }
+
+        guard let settings = snapshot?.workFolder.settings,
               settings.autovisorEnabled,
+              settings.autovisorDriver == .builtInModel,
               let managerID = autovisorTaskID else { return }
 
         let act = settings.autovisorActivation
@@ -275,7 +292,7 @@ extension NTMSOrchestrator {
             // also safe: the queue backstops flush into the parked conversation or
             // a fresh run's iteration 1.
             guard !fresh.isEmpty,
-                  let formState = quickCaptureFormState,
+                  let formState = messageQueue.activeFormState,
                   let message = QuickCaptureFormState.QueuedChatMessage(
                       text: Self.composeAutovisorEventNotice(fresh),
                       attachments: [], clippedTexts: [],
@@ -355,7 +372,9 @@ extension NTMSOrchestrator {
     /// NOT re-seed — the continued conversation never observed mid-park arrivals,
     /// so injecting them there is correct.
     func seedAutovisorNotifiedKeysForPassStart() {
-        guard let settings = snapshot?.workFolder.settings, settings.autovisorEnabled,
+        guard let settings = snapshot?.workFolder.settings,
+              settings.autovisorEnabled,
+              settings.autovisorDriver == .builtInModel,
               let managerID = autovisorTaskID else { return }
         let watchable = autovisorWatchableTasks(excluding: managerID)
         let act = settings.autovisorActivation
@@ -472,8 +491,14 @@ extension NTMSOrchestrator {
     /// in the deliver-once baseline bails at `hasFreshCondition`. The synchronous record
     /// before `startAutovisorPass`'s `await` is what keeps two concurrent wakes from
     /// double-starting a pass, and it covers this caller like any other.
+    ///
+    /// The wake runs later, so it is handed the lifecycle current NOW: the engine transitions of
+    /// a folder boundary (`stopAllEngines` at `beginFolderTransition`, after the old lifecycle
+    /// ended) schedule wakes under an ended lifecycle that do nothing, and `apply(_:)` stops any
+    /// stray engine registered during the read stretch before the new folder's state is seeded.
     func scheduleAutovisorWake() {
-        Task { await wakeAutovisorForEvents() }
+        let lifecycle = currentFolderLifecycle
+        Task { await wakeAutovisorForEvents(within: lifecycle) }
     }
 
     /// Roll back the attention baseline a pass never earned, once.
@@ -515,7 +540,7 @@ extension NTMSOrchestrator {
     /// the pass-start seed MUST see the same set as the wake (the seed absorbs the
     /// condition that triggered the pass only if both compute identical watchables),
     /// and the open-time seen-seed keys `onTaskCreated` off the same population.
-    func autovisorWatchableTasks(excluding managerID: Int) -> [TaskSummary] {
+    func autovisorWatchableTasks(excluding managerID: Int?) -> [TaskSummary] {
         (snapshot?.tasksIndex.tasks ?? []).filter { $0.parentTaskID == nil && $0.id != managerID }
     }
 
@@ -763,10 +788,12 @@ extension NTMSOrchestrator {
     }
 
     /// Renders the mid-review event notice delivered into the manager's live
-    /// conversation — one bullet per condition with the actionable tool hint.
+    /// conversation — one bullet per condition with the actionable tool hint. Worded by
+    /// `AutovisorReply.eventNotice`, the builder `RuntimePromptRegistry` versions with every
+    /// other text the manager is told about its folder.
     ///
     /// The opening line comes from `MessageSourceContext.autovisorEventNoticeHeader` rather
-    /// than a literal here, because two other places depend on its exact text: the notice
+    /// than a literal in the builder, because two other places depend on its exact text: the notice
     /// ships UNMARKED (no `Supervisor:` badge, like every other system notice), so that line
     /// is what identifies it on a wire both providers flatten — and the feed's collapsed row
     /// skips it when building its one-line preview, so the glance shows a bullet instead of
@@ -779,26 +806,7 @@ extension NTMSOrchestrator {
     /// planning phase to cross. A still-standing condition re-notifies on the fresh-pass wake
     /// regardless (`testFailedDeliveredMidPass_unaddressed_freshWakeFiresAfterPassEnds`).
     nonisolated static func composeAutovisorEventNotice(_ items: [AutovisorAttentionItem]) -> String {
-        let bullets = items.map { item -> String in
-            let task = "Task #\(item.taskID) \"\(item.title)\""
-            switch item.trigger {
-            case .needsSupervisor:
-                return "- \(task) is waiting for a supervisor answer (answer_task_question)."
-            case .failed:
-                return "- \(task) failed (task_status to triage)."
-            case .completed:
-                return "- \(task) finished and awaits review (review it, then control_task close)."
-            case .acceptanceGate:
-                return "- \(task) has a role waiting for acceptance and its pipeline is "
-                    + "stalled until you decide (task_status, then manage_role accept)."
-            case .created:
-                return "- New task: \(task) was created."
-            case .stuck:
-                return "- \(task) looks stuck or looping (task_status / manage_role)."
-            }
-        }
-        return ([MessageSourceContext.autovisorEventNoticeHeader] + bullets)
-            .joined(separator: "\n")
+        AutovisorReply.eventNotice(items).text
     }
 
     /// Top-level, currently-`.running` tasks whose latest run has a looping or hung
@@ -828,3 +836,15 @@ extension NTMSOrchestrator {
         return stuck
     }
 }
+
+#if DEBUG
+extension NTMSOrchestrator {
+    /// Test seam: a wake begun NOW, in the folder the process describes — what a suite that
+    /// stages a condition and wakes the manager by hand means. Production hands every wake the
+    /// lifecycle of the poll loop or of the transition that scheduled it.
+    func wakeAutovisorForEvents(now: Date = MonotonicClock.shared.now(), includeStuck: Bool = false) async {
+        let lifecycle = currentFolderLifecycle
+        await wakeAutovisorForEvents(now: now, includeStuck: includeStuck, within: lifecycle)
+    }
+}
+#endif

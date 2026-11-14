@@ -94,6 +94,15 @@ nonisolated struct NTMSTask: Codable, Identifiable, Hashable {
     /// so the display always reflects whether Supervisor has any incoming artifacts.
     private var storedIsChatMode: Bool
 
+    /// Records which Autovisor driver created this task (`nil` for human or delegated child tasks).
+    var origin: TaskOrigin?
+
+    /// The `request_key` an external agent created this task with — what makes its retry of a
+    /// create whose answer it lost name this task instead of creating another. Stored on the task
+    /// and its index row, so it outlives the process (`AutovisorCreationLedger` does not) and the
+    /// folder switch that empties that ledger. `nil` for a task created without one.
+    var requestKey: String?
+
     /// Whether this task operates in open-ended chat mode.
     /// Derived from the supervisor's incoming artifacts in the resolved team:
     /// `generatedTeam.isChatMode` if a team was generated, otherwise the value stored
@@ -174,6 +183,7 @@ nonisolated struct NTMSTask: Codable, Identifiable, Hashable {
         self.runTimeoutSeconds = runTimeoutSeconds
         self.storedIsChatMode = isChatMode
         self.generatedTeam = generatedTeam
+        self.origin = nil
         // Aggregate the three legacy parentage parameters into the typed
         // enum. The factory enforces the invariant
         // `(parent==nil)↔(role==nil)↔(depth==0)` AND clamps depth to
@@ -186,6 +196,56 @@ nonisolated struct NTMSTask: Codable, Identifiable, Hashable {
             parentRoleID: parentRoleID,
             depth: delegationDepth
         )
+    }
+
+    init(
+        id: Int,
+        title: String,
+        supervisorTask: String,
+        clippedTexts: [Clip] = [],
+        status: TaskStatus = .running,
+        createdAt: Date = MonotonicClock.shared.now(),
+        updatedAt: Date = MonotonicClock.shared.now(),
+        runs: [Run] = [],
+        closedAt: Date? = nil,
+        acceptanceMode: AcceptanceMode? = nil,
+        acceptanceCheckpoints: Set<String>? = nil,
+        preferredTeamID: NTMSID? = nil,
+        attachmentPaths: [String] = [],
+        recurrence: TaskRecurrence? = nil,
+        runTimeoutSeconds: TimeInterval? = nil,
+        isChatMode: Bool = false,
+        generatedTeam: Team? = nil,
+        parentTaskID: Int? = nil,
+        parentRoleID: String? = nil,
+        delegationDepth: Int = 0,
+        origin: TaskOrigin?,
+        requestKey: String? = nil
+    ) {
+        self.init(
+            id: id,
+            title: title,
+            supervisorTask: supervisorTask,
+            clippedTexts: clippedTexts,
+            status: status,
+            createdAt: createdAt,
+            updatedAt: updatedAt,
+            runs: runs,
+            closedAt: closedAt,
+            acceptanceMode: acceptanceMode,
+            acceptanceCheckpoints: acceptanceCheckpoints,
+            preferredTeamID: preferredTeamID,
+            attachmentPaths: attachmentPaths,
+            recurrence: recurrence,
+            runTimeoutSeconds: runTimeoutSeconds,
+            isChatMode: isChatMode,
+            generatedTeam: generatedTeam,
+            parentTaskID: parentTaskID,
+            parentRoleID: parentRoleID,
+            delegationDepth: delegationDepth
+        )
+        self.origin = origin
+        self.requestKey = requestKey
     }
 
     enum CodingKeys: String, CodingKey {
@@ -207,6 +267,8 @@ nonisolated struct NTMSTask: Codable, Identifiable, Hashable {
         case runTimeoutSeconds
         case isChatMode
         case generatedTeam
+        case origin
+        case requestKey
         // New aggregated shape (preferred on encode + decode).
         case lineage
         // Legacy flat keys (decode-only fallback for files written by
@@ -258,6 +320,8 @@ nonisolated struct NTMSTask: Codable, Identifiable, Hashable {
         self.runTimeoutSeconds = try container.decodeIfPresent(TimeInterval.self, forKey: .runTimeoutSeconds)
         self.storedIsChatMode = try container.decodeIfPresent(Bool.self, forKey: .isChatMode) ?? false
         self.generatedTeam = try container.decodeIfPresent(Team.self, forKey: .generatedTeam)
+        self.origin = (try? container.decodeIfPresent(TaskOrigin.self, forKey: .origin)) ?? nil
+        self.requestKey = try container.decodeIfPresent(String.self, forKey: .requestKey)
         // Lineage: prefer the new bundled shape, fall back to the three
         // legacy keys for files written by earlier builds. The factory
         // clamps malformed combinations (e.g. depth=5 with parent==nil)
@@ -295,6 +359,8 @@ nonisolated struct NTMSTask: Codable, Identifiable, Hashable {
         try container.encodeIfPresent(runTimeoutSeconds, forKey: .runTimeoutSeconds)
         try container.encode(storedIsChatMode, forKey: .isChatMode)
         try container.encodeIfPresent(generatedTeam, forKey: .generatedTeam)
+        try container.encodeIfPresent(origin, forKey: .origin)
+        try container.encodeIfPresent(requestKey, forKey: .requestKey)
         // Encode the new bundled shape only when non-root — keeps top-level
         // tasks' JSON concise (no nested lineage block to mean "root").
         // Legacy flat keys are no longer written (decode-only fallback).
@@ -401,6 +467,46 @@ nonisolated extension TaskStatus {
 
     var displayLabel: String {
         Self.displayLabelMap[self] ?? rawValue
+    }
+
+    /// The status as an external agent reads it — every field of the hosted MCP surface that
+    /// carries one (`list_tasks`, `task_status`, `task_result`). The names a condition also has as
+    /// an event are the event's (`question`, `review`, `closed`), the rest are snake_case; until
+    /// 2026-11-09 the surface sent the camelCase raw value, so a task in Review read
+    /// `needsSupervisorAcceptance` in a status beside a `review` event. The built-in manager
+    /// keeps the raw value.
+    var externalName: String { ExternalTaskStatus(self).rawValue }
+}
+
+/// Every status an external agent can read for a task: the hosted MCP surface's `status` in
+/// `list_tasks`, `task_status`, `task_result` and the `wait_for_events` heartbeat. Seven are a
+/// `TaskStatus`'s (`init(_:)`); `acceptanceGate` is the external mapper's own word for a run
+/// whose every role is complete or waiting for its decision, with nobody's pause
+/// (`NTMSOrchestrator.externalTaskStatus`). The mapper returns this type, so it cannot send a
+/// value outside it, and the two descriptions list exactly these
+/// (`ExternalAutovisorReadSurfaceTests.testTheDescriptions_listExactlyTheStatusesSent`). Until
+/// 2026-11-12 (review R6) the mapper returned a `String`, and both descriptions listed seven
+/// values without `acceptance_gate`.
+nonisolated enum ExternalTaskStatus: String, CaseIterable, Codable, Hashable, Sendable {
+    case running
+    case waiting
+    case question
+    case acceptanceGate = "acceptance_gate"
+    case review
+    case paused
+    case failed
+    case closed
+
+    init(_ status: TaskStatus) {
+        switch status {
+        case .running: self = .running
+        case .waiting: self = .waiting
+        case .paused: self = .paused
+        case .needsSupervisorInput: self = .question
+        case .needsSupervisorAcceptance: self = .review
+        case .failed: self = .failed
+        case .done: self = .closed
+        }
     }
 }
 
@@ -744,8 +850,21 @@ nonisolated struct TaskSummary: Codable, Identifiable, Hashable {
     /// could re-fire, so #48 does not apply — rows converge individually. Same argument as
     /// `hasGeneratedTeam` above.
     var hasRolesAwaitingAcceptance: Bool?
+    var origin: TaskOrigin?
+    /// `NTMSTask.requestKey`, mirrored so a retried create finds the task it made without loading
+    /// a single task blob. `nil` for a task created without one — and for a row written before
+    /// 2026-11-09, which only a task created then could have needed (the retry it guards is one
+    /// call later).
+    var requestKey: String?
+    /// Whether the task has ever had a run (`!runs.isEmpty`), mirrored so the external status
+    /// mapper can say `waiting` of a scheduled task that never ran from its row alone
+    /// (`NTMSOrchestrator.externalTaskStatus`) — the domain status of that task is its stored one.
+    ///
+    /// **Tri-state on purpose** (CLAUDE.md #91): `nil` means "this index row was written
+    /// before the field existed".
+    var hasRuns: Bool?
 
-    init(id: Int, title: String, status: TaskStatus, updatedAt: Date = MonotonicClock.shared.now(), isChatMode: Bool = false, parentTaskID: Int? = nil, nextRecurrenceFireAt: Date? = nil, pinnedTeamID: NTMSID? = nil, hasPendingSupervisorInput: Bool? = nil, pendingSupervisorQuestionCount: Int? = nil, hasGeneratedTeam: Bool? = nil, preferredTeamID: NTMSID? = nil, hasRolesAwaitingAcceptance: Bool? = nil) {
+    init(id: Int, title: String, status: TaskStatus, updatedAt: Date = MonotonicClock.shared.now(), isChatMode: Bool = false, parentTaskID: Int? = nil, nextRecurrenceFireAt: Date? = nil, pinnedTeamID: NTMSID? = nil, hasPendingSupervisorInput: Bool? = nil, pendingSupervisorQuestionCount: Int? = nil, hasGeneratedTeam: Bool? = nil, preferredTeamID: NTMSID? = nil, hasRolesAwaitingAcceptance: Bool? = nil, hasRuns: Bool? = nil) {
         self.id = id
         self.title = title
         self.status = status
@@ -759,6 +878,29 @@ nonisolated struct TaskSummary: Codable, Identifiable, Hashable {
         self.hasGeneratedTeam = hasGeneratedTeam
         self.preferredTeamID = preferredTeamID
         self.hasRolesAwaitingAcceptance = hasRolesAwaitingAcceptance
+        self.origin = nil
+        self.hasRuns = hasRuns
+    }
+
+    init(id: Int, title: String, status: TaskStatus, updatedAt: Date = MonotonicClock.shared.now(), isChatMode: Bool = false, parentTaskID: Int? = nil, nextRecurrenceFireAt: Date? = nil, pinnedTeamID: NTMSID? = nil, hasPendingSupervisorInput: Bool? = nil, pendingSupervisorQuestionCount: Int? = nil, hasGeneratedTeam: Bool? = nil, preferredTeamID: NTMSID? = nil, hasRolesAwaitingAcceptance: Bool? = nil, origin: TaskOrigin?, requestKey: String? = nil, hasRuns: Bool? = nil) {
+        self.init(
+            id: id,
+            title: title,
+            status: status,
+            updatedAt: updatedAt,
+            isChatMode: isChatMode,
+            parentTaskID: parentTaskID,
+            nextRecurrenceFireAt: nextRecurrenceFireAt,
+            pinnedTeamID: pinnedTeamID,
+            hasPendingSupervisorInput: hasPendingSupervisorInput,
+            pendingSupervisorQuestionCount: pendingSupervisorQuestionCount,
+            hasGeneratedTeam: hasGeneratedTeam,
+            preferredTeamID: preferredTeamID,
+            hasRolesAwaitingAcceptance: hasRolesAwaitingAcceptance,
+            hasRuns: hasRuns
+        )
+        self.origin = origin
+        self.requestKey = requestKey
     }
 
     init(from decoder: Decoder) throws {
@@ -778,6 +920,9 @@ nonisolated struct TaskSummary: Codable, Identifiable, Hashable {
         self.preferredTeamID = try container.decodeIfPresent(String.self, forKey: .preferredTeamID)
         self.hasRolesAwaitingAcceptance =
             try container.decodeIfPresent(Bool.self, forKey: .hasRolesAwaitingAcceptance)
+        self.origin = (try? container.decodeIfPresent(TaskOrigin.self, forKey: .origin)) ?? nil
+        self.requestKey = try container.decodeIfPresent(String.self, forKey: .requestKey)
+        self.hasRuns = try container.decodeIfPresent(Bool.self, forKey: .hasRuns)
     }
 }
 
@@ -814,6 +959,11 @@ nonisolated extension NTMSTask {
     func derivedStatusFromActiveRun() -> TaskStatus {
         // A task closed before it ever created a run is still terminal — closing is
         // the Supervisor's explicit "done", regardless of the stored `status`.
+        //
+        // A scheduled task that never ran is NOT `.waiting` here: that is the external agent's
+        // word (`NTMSOrchestrator.externalTaskStatus`, read off `TaskSummary.hasRuns`). F4 put it
+        // here, which changed the sidebar, the built-in manager's `list_tasks` and the engine
+        // seeding after a restart as well — none of which it meant to (F6 C6, 2026-11-12).
         guard let run = runs.last else { return closedAt != nil ? .done : status }
         guard !run.steps.isEmpty else {
             // A Supervisor-closed run that never created steps is still terminal.
@@ -856,13 +1006,7 @@ nonisolated extension NTMSTask {
                 let allRolesComplete = run.roleStatuses.values.allSatisfy { $0.isComplete }
                 if !allRolesComplete {
                     // Distinguish "roles still working" from "roles waiting for acceptance"
-                    let onlyAcceptanceOrComplete = run.roleStatuses.values.allSatisfy {
-                        $0.isComplete || $0 == .needsAcceptance
-                    }
-                    if onlyAcceptanceOrComplete {
-                        return .needsSupervisorAcceptance
-                    }
-                    return .running
+                    return run.everyRoleIsCompleteOrAwaitingAcceptance ? .needsSupervisorAcceptance : .running
                 }
             }
             return .needsSupervisorAcceptance
@@ -937,13 +1081,16 @@ nonisolated extension NTMSTask {
             updatedAt: updatedAt,
             isChatMode: isChatMode,
             parentTaskID: parentTaskID,
-            nextRecurrenceFireAt: recurrence.flatMap { $0.isEnabled ? $0.nextFireAt : nil },
+            nextRecurrenceFireAt: recurrence?.armedNextFireAt,
             pinnedTeamID: runs.last?.teamID,
             hasPendingSupervisorInput: waitingQuestions > 0,
             pendingSupervisorQuestionCount: waitingQuestions,
             hasGeneratedTeam: generatedTeam != nil,
             preferredTeamID: preferredTeamID,
-            hasRolesAwaitingAcceptance: hasRolesAwaitingAcceptance
+            hasRolesAwaitingAcceptance: hasRolesAwaitingAcceptance,
+            origin: origin,
+            requestKey: requestKey,
+            hasRuns: !runs.isEmpty
         )
     }
 }

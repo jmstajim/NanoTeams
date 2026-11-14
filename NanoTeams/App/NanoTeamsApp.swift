@@ -22,7 +22,6 @@ nonisolated extension Notification.Name {
 
 // MARK: - App
 
-@main
 struct NanoTeamsApp: App {
     /// True when the process is hosted by XCTest — skip heavy init to avoid crashes on CI.
     private static let isRunningTests = NSClassFromString("XCTestCase") != nil
@@ -57,6 +56,10 @@ struct NanoTeamsApp: App {
     /// view loses its progress the first time the user looks at anything else.
     /// Closing Settings deliberately does not stop it.
     @State private var benchmarkSweep: BenchmarkSweepRunner
+    /// The Work Folder Context editor's draft and autosave, owned here for the same reason: held
+    /// by `WorkFolderSettingsView`, a tab switch or a closed Settings window dropped the edits
+    /// behind a "replaced while you were editing" choice (`WorkFolderContextEditor`).
+    @State private var workFolderContextEditor: WorkFolderContextEditor
     /// Single source of truth for the active theme — System / Light / Dark /
     /// OLED / Arctic / ... Observed at app root so a switch invalidates every
     /// descendant `body`; `Colors.themed(...)` reads `Theme.current` per
@@ -74,7 +77,10 @@ struct NanoTeamsApp: App {
         // orchestrator reference. SwiftUI's `@State` default-value initializers
         // can't reference each other, so we build them here and inject via
         // `State(initialValue:)`.
-        let orchestrator = NTMSOrchestrator(repository: NTMSRepository())
+        // `.live` is named HERE and nowhere else — the mirror of `computerUse: .system` one
+        // seam over. Every other construction site (tests, previews, the headless runner)
+        // takes the `.inert` default, which cannot open a socket or reach the Keychain.
+        let orchestrator = NTMSOrchestrator(repository: NTMSRepository(), mcpEnvironment: .live, hostedMCPEnvironment: .live)
         _store = State(initialValue: orchestrator)
         _appUpdateState = State(initialValue: AppUpdateState(config: orchestrator.configuration))
         _dictation = State(initialValue: DictationService(
@@ -86,6 +92,7 @@ struct NanoTeamsApp: App {
         _embeddingModelCatalog = State(initialValue: EmbeddingModelCatalog())
         _benchmarkSweep = State(initialValue: Self.makeBenchmarkSweep(
             store: orchestrator, catalog: catalog))
+        _workFolderContextEditor = State(initialValue: WorkFolderContextEditor(store: orchestrator))
 
         // Last, because reading the adaptor's value requires every stored property to be
         // initialized. Quitting with a folder open is the second of the two ways the index
@@ -93,7 +100,7 @@ struct NanoTeamsApp: App {
         // incremental vocabulary died with the process and the next launch re-tokenized
         // everything edited since the last full rebuild.
         appDelegate.onTerminate = { [weak orchestrator] in
-            await orchestrator?.tearDownSearchIndexCoordinator()
+            await orchestrator?.shutdownForTermination()
         }
     }
 
@@ -235,6 +242,7 @@ struct NanoTeamsApp: App {
                 .environment(embeddingModelCatalog)
 
                 .environment(benchmarkSweep)
+                .environment(workFolderContextEditor)
                 // Without this, Test Connection can report SUCCESS while the status
                 // strip keeps saying OFFLINE until the next poll tick.
                 .environment(llmStatusMonitor)

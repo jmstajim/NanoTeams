@@ -101,6 +101,15 @@ final class HeadlessRunnerTests: XCTestCase {
         let runner = HeadlessRunner(config: config)
         let result = await runner.run()
 
+        // A folder another NanoTeams holds was never opened: the receipt becomes `failed` with
+        // the refusal, and no `headless_result.json` is written into a folder this process
+        // does not hold.
+        if let refused = HeadlessConfigLocator.Receipt.afterRun(result, configPath: configURL.path) {
+            HeadlessConfigLocator.writeReceipt(refused)
+            XCTFail(refused.detail)
+            return
+        }
+
         // Print summary
         printResult(result)
 

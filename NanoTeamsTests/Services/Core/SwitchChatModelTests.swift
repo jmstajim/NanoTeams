@@ -192,6 +192,40 @@ final class SwitchChatModelTests: NTMSOrchestratorTestBase, @unchecked Sendable 
         XCTAssertEqual(unloadedIDs(client), ["cu-judge"])
     }
 
+    func testReconcile_mcpJudgeActiveAndDisabled_keepsThenReclaimsItsOverrideModel() async throws {
+        let client = RecordingLLMClient()
+        client.listLoadedInstancesResults = resident(["mcp-judge"])
+        sut.configuration.llmBaseURLString = baseURL
+        sut.configuration.llmModelName = "chat-model"
+        sut.configuration.mcpJudgeLLMOverride = LLMOverride(modelName: "mcp-judge")
+        let ensurer = await managed(["mcp-judge"], client: client)
+
+        let slug = try XCTUnwrap(MCPServerSlug("desk"))
+        var serverConfig = MCPServerConfig(
+            slug: slug,
+            displayName: "Desk",
+            transport: .http(MCPHTTPConfig(urlString: "http://127.0.0.1:9999/mcp")),
+            isEnabled: true,
+            approvalMode: .auto,
+            judgeStrictness: .standard)
+        try sut.mcpCatalogueStore.save(MCPServerCatalogueFile(servers: [serverConfig]))
+        await sut.setUpMCPServerManager()
+
+        XCTAssertTrue(sut.mcpJudgeIsActive)
+        XCTAssertEqual(sut.mcpJudgeOverride?.modelName, "mcp-judge")
+        await sut.reconcileAndReportResidency(client: client, ensurer: ensurer)
+        XCTAssertEqual(unloadedIDs(client), [], "An active Auto MCP server still needs the MCP judge model")
+
+        let beforeFingerprint = sut.residencyRelevantSettings
+        serverConfig.approvalMode = .semiAutomatic
+        try await sut.mcpServerManager?.save(serverConfig, secrets: MCPServerSecretEdit())
+        XCTAssertFalse(sut.mcpJudgeIsActive)
+        XCTAssertNotEqual(sut.residencyRelevantSettings, beforeFingerprint)
+
+        await sut.reconcileAndReportResidency(client: client, ensurer: ensurer)
+        XCTAssertEqual(unloadedIDs(client), ["mcp-judge"])
+    }
+
     // MARK: - Ownership: only what the app manages
 
     /// The core of "NanoTeams tracks what IT loaded". A model resident because

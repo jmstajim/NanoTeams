@@ -57,18 +57,27 @@ final class SupervisorInquiryParkPinTests: XCTestCase {
                           + "and nothing is persisted for the card to re-render")
     }
 
-    /// The two parked automated answerers reach the questionnaire through a `String`, and
-    /// each has exactly one place to render it. Sending the headline instead is not an error
-    /// anywhere — it is a form whose options nobody was offered.
+    /// The two parked automated answerers reach the questionnaire through a `String`:
+    /// `LLMExecutionService+Autovisor.swift` via `StepExecution.formattedSupervisorQuestion`
+    /// (`StepExecution+SupervisorInput.swift`) and `DelegatedSupervisorAnswerService.swift`
+    /// directly. Sending the headline instead is not an error anywhere — it is a form whose
+    /// options nobody was offered.
     func testBothParkedAnswerersAreShownTheQuestionnaire() throws {
-        for path in [
-            "NanoTeams/Services/LLM/LLMExecutionService+Autovisor.swift",
-            "NanoTeams/Services/LLM/DelegatedSupervisorAnswerService.swift",
-        ] {
-            XCTAssertTrue(
-                try source(path).contains("SupervisorInquiryReply.questionnaire(for:)"),
-                "\(path) hands its answerer the headline alone — it cannot choose among "
-                    + "options it was never shown, and every choice comes back defaulted")
-        }
+        XCTAssertTrue(
+            try source("NanoTeams/Domain/StepExecution+SupervisorInput.swift")
+                .contains("SupervisorInquiryReply.questionnaire(for:)"),
+            "StepExecution.formattedSupervisorQuestion no longer formats questionnaires via SupervisorInquiryReply.questionnaire(for:)"
+        )
+        XCTAssertTrue(
+            try source("NanoTeams/Services/LLM/LLMExecutionService+Autovisor.swift")
+                .contains(".formattedSupervisorQuestion"),
+            "LLMExecutionService+Autovisor.swift no longer routes pending questions through .formattedSupervisorQuestion"
+        )
+        XCTAssertTrue(
+            try source("NanoTeams/Services/LLM/DelegatedSupervisorAnswerService.swift")
+                .contains("SupervisorInquiryReply.questionnaire(for:)"),
+            "DelegatedSupervisorAnswerService.swift hands its answerer the headline alone — it cannot choose among "
+                + "options it was never shown, and every choice comes back defaulted"
+        )
     }
 }

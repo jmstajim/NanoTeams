@@ -46,22 +46,37 @@ extension NTMSOrchestrator {
             toolSchemaText: "")
     }
 
-    func runStep(stepID: String, taskID: Int) async {
+    /// Marks a step running and starts its execution — for every caller: a resume's branches,
+    /// the engine's role start, a correction.
+    ///
+    /// `TaskEngineStoreAdapter` passes the lifecycle the engine was created in (`within:`), while
+    /// direct callers pass `callerLifecycle` (or default to `currentFolderLifecycle`). The step
+    /// starts in that lifecycle, asked before the mark and again
+    /// between the mark and the execution: the mark awaits its write, and an execution started
+    /// after a folder transition began would run for a folder whose engines that transition has
+    /// stopped — writing through whatever folder is open, under a `TaskStepKey` the next folder's
+    /// same-numbered task may hold.
+    func runStep(stepID: String, taskID: Int, within callerLifecycle: WorkFolderLifecycle? = nil) async {
+        let lifecycle = callerLifecycle ?? currentFolderLifecycle
+        guard isCurrentFolderLifecycle(lifecycle) else { return }
         guard let task = loadedTask(taskID) else { return }
         guard let runIndex = task.runs.indices.last else { return }
-        guard let stepIndex = task.runs[runIndex].steps.firstIndex(where: { $0.id == stepID }) else { return }
+        guard task.runs[runIndex].steps.contains(where: { $0.id == stepID }) else { return }
 
         await mutateTask(taskID: taskID) { task in
             StepExecutionService.markStepRunning(stepID: stepID, in: &task)
         }
+        guard isCurrentFolderLifecycle(lifecycle) else { return }
 
-        if let updatedTask = loadedTask(taskID) {
+        if let updatedTask = loadedTask(taskID),
+           let updatedRunIndex = updatedTask.runs.indices.last,
+           let updatedStepIndex = updatedTask.runs[updatedRunIndex].steps.firstIndex(where: { $0.id == stepID }) {
             llmExecutionService.startStepExecution(
                 stepID: stepID,
                 taskID: taskID,
                 task: updatedTask,
-                runIndex: runIndex,
-                stepIndex: stepIndex
+                runIndex: updatedRunIndex,
+                stepIndex: updatedStepIndex
             )
         }
     }
@@ -93,8 +108,32 @@ extension NTMSOrchestrator {
         answer: String,
         attachments: [StagedAttachment] = [],
         origin: SupervisorAnswerOrigin = .supervisor,
-        submission: SupervisorInquirySubmission? = nil
+        submission: SupervisorInquirySubmission? = nil,
+        author: String? = nil,
+        by answerer: ControlActor? = nil,
+        within callerLifecycle: WorkFolderLifecycle? = nil
     ) async -> Bool {
+        // The answer belongs to the folder described now. Its write suspends, and once a folder
+        // transition has ended this lifecycle the task id names the next folder's task of the
+        // same number: the answer stands where it was given, and nothing follows it — no
+        // banner, no resume, no ledger, no dismissal retired. The unread marker is keyed by the
+        // folder's own id, taken here, so it is retired for the right task either way.
+        let lifecycle = callerLifecycle ?? currentFolderLifecycle
+        guard isCurrentFolderLifecycle(lifecycle),
+              !isDormantAutovisorManagerTask(taskID)
+        else { return false }
+        let workFolderID = snapshot?.projection.id
+        // Who answers, for the Resume the answer may cause: the person unless an automated path
+        // answered — the Autovisor names itself, any other automated answerer is the app's.
+        let answerer = answerer ?? (origin == .automated ? .builtInAutovisor : .person)
+        // Read before the answer lands: an automated answer delivered into a task paused in the
+        // app leaves it paused (`isPausedInTheApp`).
+        let leavesThePauseStanding = answerer.isAutomated && isPausedInTheApp(taskID: taskID)
+        // Into a task that stands paused for any reason the answer lands in the PARKED step, and
+        // the Resume below — or the person's, later — lifts the pause. Turning the step `.pending`
+        // here lifted it before `resumeRun` could read it, and the Resume went unrecorded: no
+        // timeline event, and no `resumed` for the agent (the review of W1, 2026-11-09).
+        let pauseStands = loadedTask(taskID).flatMap { autovisorPauseReason(of: $0) } != nil
         // Bash approvals are NOT answered here — they are held in-loop by the gate
         // and resolved DIRECTLY via the Allow/Deny buttons (`resolveBashApproval`),
         // bypassing the model. This path handles only normal `ask_supervisor`.
@@ -143,10 +182,13 @@ extension NTMSOrchestrator {
                 attachmentPaths: finalPaths,
                 origin: origin,
                 submission: submission,
+                author: author,
+                keepingPause: pauseStands,
                 in: &task
             )
         }
         guard applied else {
+            guard isCurrentFolderLifecycle(lifecycle) else { return false }
             // Race scenario: the step was restarted, removed, or rebuilt between
             // when the composer rendered the Answer chip and when the user
             // submitted. Set a specific `lastErrorMessage` so the Supervisor
@@ -168,16 +210,18 @@ extension NTMSOrchestrator {
         // and the unread dot never lights for a question nobody has read. The
         // mounted mirror (`TaskManagementState`) converges through that same
         // observer; this write covers the unmounted window.
-        if let workFolderID = snapshot?.projection.id {
+        if let workFolderID {
             configuration.unmarkTaskSeen(workFolderID: workFolderID, taskID: taskID)
         }
-
         // Same event, same reason, for the Watchtower dismissal of THIS question — the
         // one the sampling GC cannot reach (see `retireSupervisorInputDismissal`). Nil
-        // means the step produced no banner, so there is nothing to retire.
+        // means the step produced no banner, so there is nothing to retire. Keyed by
+        // `workFolderID` (captured at entry, before `mutateTask` suspended), so even if a
+        // folder transition overtook the write, the origin folder's dismissal is retired.
         if let answeredBannerKey {
-            retireSupervisorInputDismissal(key: answeredBannerKey)
+            retireSupervisorInputDismissal(key: answeredBannerKey, workFolderID: workFolderID)
         }
+        guard isCurrentFolderLifecycle(lifecycle) else { return true }
 
         // Same reason, for the Autovisor's deliver-once ledgers: the answer is the durable
         // "question consumed" event, and a key that outlives the question it names makes
@@ -186,7 +230,11 @@ extension NTMSOrchestrator {
 
         let engineState = taskEngineStates[taskID] ?? .pending
         if engineState == .paused || engineState == .needsSupervisorInput {
-            await resumeRun(taskID: taskID)
+            // An automated answer into a task paused in the app leaves it paused: the role
+            // continues with the answer when the person resumes it. Asked again here, after the
+            // write's suspension: a Pause the person pressed meanwhile stands too.
+            let pausedMeanwhile = answerer.isAutomated && isPausedInTheApp(taskID: taskID)
+            if !leavesThePauseStanding && !pausedMeanwhile { await resumeRun(taskID: taskID, by: answerer) }
         } else if engineState != .done && engineState != .failed {
             taskEngines[taskID]?.notifyExternalEvent()
         }
@@ -217,9 +265,9 @@ extension NTMSOrchestrator {
     func requestQuestionnaire(stepID: String, taskID: Int, note: String? = nil) async -> Bool {
         guard
             let step = loadedTask(taskID)
-            .flatMap({ task in
-                task.locateStepInLatestRun(stepID: stepID).flatMap(task.step(at:))
-            })
+                .flatMap({ task in
+                    task.locateStepInLatestRun(stepID: stepID).flatMap(task.step(at:))
+                })
         else {
             lastErrorMessage =
                 "This question is no longer active — the role may have been restarted."
@@ -255,7 +303,11 @@ extension NTMSOrchestrator {
 
     // MARK: - Step Creation (used by TaskEngineStoreAdapter)
 
-    func findOrCreateStep(taskID: Int, roleID: String) async -> String? {
+    func findOrCreateStep(
+        taskID: Int, roleID: String, within callerLifecycle: WorkFolderLifecycle? = nil
+    ) async -> String? {
+        let lifecycle = callerLifecycle ?? currentFolderLifecycle
+        guard isCurrentFolderLifecycle(lifecycle) else { return nil }
         guard let task = loadedTask(taskID) else { return nil }
         guard let runIndex = task.runs.indices.last else { return nil }
 
@@ -313,6 +365,7 @@ extension NTMSOrchestrator {
         await mutateTask(taskID: taskID) { task in
             task.runs[task.runs.count - 1].steps.append(step)
         }
+        guard isCurrentFolderLifecycle(lifecycle) else { return nil }
 
         return stepID
     }

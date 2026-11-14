@@ -21,6 +21,7 @@ struct FinalReviewArtifactsPane: View {
                 Spacer()
                 Text("\(reviewItems.count)")
                     .font(Typography.term2xs.monospacedDigit())
+                    .lineLimit(1)
                     .foregroundStyle(Colors.textTertiary)
             }
             .padding(.horizontal, Spacing.m)

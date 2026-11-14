@@ -35,10 +35,6 @@ nonisolated struct BashApprovalRequest: Identifiable, Hashable, Sendable {
     }
 }
 
-/// One-shot approval bridge for `bash` — the generic `ApprovalWaiter` specialized to a
-/// `BashApprovalDecision` (see `ApprovalWaiter` for the lock/race semantics).
-typealias BashApprovalWaiter = ApprovalWaiter<BashApprovalDecision>
-
 extension LLMExecutionService {
 
     /// Suspends the tool loop until the human approves or denies `command` — or the
@@ -59,8 +55,7 @@ extension LLMExecutionService {
         judgePolicy: BashPolicy
     ) async -> BashApprovalDecision {
         let key = TaskStepKey(taskID: taskID, stepID: stepID)
-        let waiter = BashApprovalWaiter()
-        bashApprovalWaiters[key, default: [:]][commandKey] = waiter
+        let waiter = bashApprovalWaiters.register(key, holdKey: commandKey)
 
         // ONE timestamp identifies this specific hold instance — shared by the
         // pending record, the published UI request, and the matching `didEnd` below,
@@ -97,8 +92,7 @@ extension LLMExecutionService {
             waiter.resolve(.cancelled)
         }
 
-        bashApprovalWaiters[key]?[commandKey] = nil
-        if bashApprovalWaiters[key]?.isEmpty == true { bashApprovalWaiters[key] = nil }
+        bashApprovalWaiters.release(key, holdKey: commandKey)
         pendingBashApprovals[key] = nil
         delegate?.bashApprovalDidEnd(
             taskID: taskID, stepID: stepID, commandKey: commandKey, createdAt: createdAt)
@@ -111,15 +105,14 @@ extension LLMExecutionService {
     func resolveBashApproval(
         taskID: Int, stepID: String, commandKey: String, decision: BashApprovalDecision
     ) {
-        bashApprovalWaiters[TaskStepKey(taskID: taskID, stepID: stepID)]?[commandKey]?.resolve(decision)
+        bashApprovalWaiters.resolve(
+            TaskStepKey(taskID: taskID, stepID: stepID), holdKey: commandKey, with: decision)
     }
 
     /// Resumes every still-pending waiter for a step with `.cancelled` (teardown safety —
     /// called from `clearBashState`). Idempotent: an already-settled waiter no-ops, so a
     /// human's `.deny` that landed first is never overwritten by this.
     func failPendingBashApprovals(stepID: String, taskID: Int) {
-        let key = TaskStepKey(taskID: taskID, stepID: stepID)
-        bashApprovalWaiters[key]?.values.forEach { $0.resolve(.cancelled) }
-        bashApprovalWaiters[key] = nil
+        bashApprovalWaiters.failAll(TaskStepKey(taskID: taskID, stepID: stepID), with: .cancelled)
     }
 }

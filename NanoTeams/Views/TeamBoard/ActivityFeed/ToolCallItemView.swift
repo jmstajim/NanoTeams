@@ -58,6 +58,7 @@ struct ToolCallItemView: View {
                         Spacer()
                         Text(call.createdAt.formatted(date: .omitted, time: .shortened))
                             .font(Typography.term2xs)
+                            .lineLimit(1)
                             .foregroundStyle(Colors.textTertiary)
                     }
                     toolCard(model)

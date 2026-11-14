@@ -130,7 +130,7 @@ final class PersistenceDefaultsCoverageTests: XCTestCase {
     func testDailyAtWithAnUnmatchableWeekdaySet_resolvesToNoNextDate() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC")!
-        let reference = Date(timeIntervalSince1970: 1_786_000_000)
+        let reference = Date(timeIntervalSince1970: 1_785_974_800)
 
         // Weekday 9 does not exist (Calendar weekdays are 1...7), so no candidate can ever match.
         let impossible = RecurrenceRule.dailyAt(hour: 21, minute: 0, weekdays: [9])

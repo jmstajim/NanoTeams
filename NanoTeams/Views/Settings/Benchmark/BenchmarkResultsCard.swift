@@ -83,7 +83,6 @@ struct BenchmarkResultsCard: View {
 
         return SettingsCard(
             header: mode == .leaderboard ? "Leaderboard" : "Runs",
-            systemImage: "list.number",
             footer: Self.footer(
                 mode: mode, hiddenRunCount: hiddenRunCount,
                 hasRows: mode == .leaderboard ? !ranked.isEmpty : !entries.isEmpty,
@@ -660,6 +659,7 @@ struct BenchmarkResultsCard: View {
                 if let unit = spec.unit {
                     Text(unit)
                         .font(Typography.caption2)
+                        .lineLimit(1)
                         .foregroundStyle(Colors.textTertiary)
                 }
             }
@@ -687,7 +687,7 @@ struct BenchmarkResultsCard: View {
         VStack(alignment: .leading, spacing: 0) {
             Text(spec.title).font(Typography.caption).foregroundStyle(Colors.textTertiary)
             if let unit = spec.unit {
-                Text(unit).font(Typography.caption2).foregroundStyle(Colors.textTertiary)
+                Text(unit).font(Typography.caption2).lineLimit(1).foregroundStyle(Colors.textTertiary)
             }
         }
         .help(spec.help)
@@ -1052,7 +1052,7 @@ struct BenchmarkResultsCard: View {
     /// CLAUDE.md #81 warns about.
     ///
     /// The year appears only when it is not the current one. The old cell spelled
-    /// `"Aug 21, 2026 at 2:03 PM"` in full on every row — 23 characters, the widest single-line
+    /// `"Aug 21, 2026 at h:mm PM"` in full on every row — 23 characters, the widest single-line
     /// cell in either table, and 5 of them repeating the same year down the column. The full form
     /// survives in `runTimestampFull`, where nothing has to fit.
     nonisolated static func runTimestamp(_ date: Date, now: Date, includingTime: Bool) -> String {

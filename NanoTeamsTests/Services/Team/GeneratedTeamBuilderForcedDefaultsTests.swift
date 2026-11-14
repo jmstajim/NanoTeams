@@ -112,7 +112,7 @@ final class GeneratedTeamBuilderForcedDefaultsTests: XCTestCase {
 
     /// A generated role may hold only what a TEAM ROLE may hold. The ten Autovisor management
     /// tools define the manager — their signals are interpreted by its step loop alone, and
-    /// `set_work_folder_context` rewrites what every role of every task reads — so a config
+    /// `set_work_folder_context` rewrites what the roles of every reading team read — so a config
     /// naming one is corrected with a warning, exactly like an unknown name. Until
     /// 2026-09-06 the whole registry was valid here.
     func testBuild_dropsManagerOnlyAndDelegationTools_withAWarning() {

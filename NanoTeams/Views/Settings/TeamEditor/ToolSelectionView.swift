@@ -66,6 +66,11 @@ struct ToolSelectionView: View {
     /// hidden (can't be added). Used by the Autovisor manager role. `lockedTools`
     /// are shown separately and need not appear here.
     var restrictToTools: Set<String>? = nil
+    /// Every configured MCP server and what it publishes. Rendered as its own sections after
+    /// the built-in categories, and deliberately OUTSIDE `editableToolNames`: the counter and
+    /// Select All stay about the tools this app ships, because one click that hands a role a
+    /// broker's order-placing tools is not a convenience.
+    var mcpGrants: MCPGrantCatalogue = .empty
     @State private var searchText: String = ""
     @State private var showDescriptions: Bool = false
 
@@ -86,6 +91,23 @@ struct ToolSelectionView: View {
             locked: lockedTools,
             restrictTo: restrictToTools
         )
+    }
+
+    private var mcpSections: [MCPToolSection] { mcpSections(matching: searchText) }
+
+    /// The MCP sections for `query`, read under the team's own availability (`approval`,
+    /// `ToolApprovalAvailability.forTeam`) — the presence a RUN of this team would have, never a
+    /// fixed one: the person at the editor is not the run's approver (F46). Not private, and
+    /// the query a parameter rather than the `@State`, so a test reads what this view hands the
+    /// builder.
+    func mcpSections(matching query: String) -> [MCPToolSection] {
+        MCPToolSectionBuilder.sections(
+            catalogue: mcpGrants, selected: selectedTools, searchText: query, approval: approval)
+    }
+
+    private var unplaceableMCPGrants: [String] {
+        MCPToolSectionBuilder.unplaceableGrants(
+            catalogue: mcpGrants, selected: selectedTools, searchText: searchText)
     }
 
     private var filteredCategories: [ToolConstants.ToolCategoryDisplay] {
@@ -193,7 +215,9 @@ struct ToolSelectionView: View {
             TerminalDivider()
 
             // Categories
-            if filteredCategories.isEmpty && visibleAutoInjectedTools.isEmpty && visibleLockedTools.isEmpty {
+            if filteredCategories.isEmpty && visibleAutoInjectedTools.isEmpty
+                && visibleLockedTools.isEmpty && mcpSections.isEmpty
+                && unplaceableMCPGrants.isEmpty {
                 NTMSSearchEmptyState(searchText: searchText)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -220,6 +244,23 @@ struct ToolSelectionView: View {
                                 toolHints: toolHints,
                                 toolDescriptions: toolDescriptions,
                                 showDescriptions: showDescriptions
+                            )
+                        }
+
+                        // After the built-ins, never among them: an MCP tool comes from
+                        // somewhere else and the person granting it should see whose it is.
+                        ForEach(mcpSections) { section in
+                            MCPToolSectionView(
+                                section: section,
+                                selectedTools: $selectedTools,
+                                showDescriptions: showDescriptions
+                            )
+                        }
+
+                        if !unplaceableMCPGrants.isEmpty {
+                            MCPUnplaceableGrantsSection(
+                                names: unplaceableMCPGrants,
+                                selectedTools: $selectedTools
                             )
                         }
                     }
@@ -413,6 +454,7 @@ private struct ToolCategorySection: View {
                     } label: {
                         Text(allSelected ? "Clear" : "All")
                             .font(Typography.term2xs)
+                            .lineLimit(1)
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(Colors.accent)
@@ -522,7 +564,7 @@ private struct ToolRow: View {
         selectedTools: $selected,
         producedArtifacts: [],
         isVisionConfigured: false,
-        approval: ToolApprovalAvailability(bash: .withheld(.switchedOff), computerUse: .withheld(.switchedOff)),
+        approval: ToolApprovalAvailability(bash: .withheld(.switchedOff), computerUse: .withheld(.switchedOff), humanPresent: true),
         autoInjectedTools: [ToolNames.askSupervisor, ToolNames.askSupervisorForm],
         delegationHint: ""
     )
@@ -555,7 +597,7 @@ private struct ToolRow: View {
         selectedTools: $selected,
         producedArtifacts: [],
         isVisionConfigured: false,
-        approval: ToolApprovalAvailability(bash: .withheld(.switchedOff), computerUse: .withheld(.switchedOff)),
+        approval: ToolApprovalAvailability(bash: .withheld(.switchedOff), computerUse: .withheld(.switchedOff), humanPresent: true),
         autoInjectedTools: [ToolNames.askSupervisor, ToolNames.askSupervisorForm],
         delegationHint: ""
     )

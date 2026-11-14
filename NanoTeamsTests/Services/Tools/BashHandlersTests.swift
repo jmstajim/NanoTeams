@@ -29,15 +29,14 @@ final class BashHandlersTests: XCTestCase {
         BashTool(
             workFolderRoot: workDir,
             resolver: SandboxPathResolver(workFolderRoot: workDir),
-            fileManager: .default,
-            sandboxEnabled: false,
-            sandboxPermissions: BashSandboxPermissions(),
-            allowUnsandboxedFallback: false)
+            fileManager: .default)
     }
 
+    /// Unconfined by default, as the handler used to be built here — the switch now rides the
+    /// batch (`ToolExecutionContext.bashSandbox`).
     private func context(isPlanningPhase: Bool = false) -> ToolExecutionContext {
         ToolExecutionContext(workFolderRoot: workDir, taskID: 1, runID: 0, roleID: "r",
-                             isPlanningPhase: isPlanningPhase)
+                             isPlanningPhase: isPlanningPhase, bashSandbox: BashPolicy.Sandbox(enabled: false))
     }
 
     private func errorEnvelope(_ json: String) -> [String: Any]? {
@@ -69,6 +68,22 @@ final class BashHandlersTests: XCTestCase {
         XCTAssertEqual(data?["exit_code"] as? Int, 0)
         XCTAssertTrue((data?["stdout"] as? String ?? "").contains("hello"))
         XCTAssertEqual(data?["sandboxed"] as? Bool, false)
+    }
+
+    /// The sandbox is the BATCH's, not the handler's: the same instance runs one command
+    /// unconfined and the next confined, as the context says (`ToolExecutionContext.bashSandbox`).
+    /// Until 2026-11-08 the switch was a field baked into the handler at step entry.
+    func testTheSandboxComesWithTheBatch_notTheHandler() async throws {
+        try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: BashConstants.sandboxExecPath))
+        let tool = makeTool()
+        let off = await tool.handle(context: context(), args: ["command": "echo off"])
+        XCTAssertEqual(successData(off.outputJSON)?["sandboxed"] as? Bool, false)
+
+        var confined = context()
+        confined.bashSandbox = BashPolicy.Sandbox(enabled: true)
+        let on = await tool.handle(context: confined, args: ["command": "echo on"])
+        XCTAssertEqual(successData(on.outputJSON)?["sandboxed"] as? Bool, true, "\(on.outputJSON)")
+        XCTAssertTrue((successData(on.outputJSON)?["stdout"] as? String ?? "").contains("on"))
     }
 
     func testNonZeroExit_isNotToolError() async {
@@ -107,12 +122,16 @@ final class BashHandlersTests: XCTestCase {
         XCTAssertTrue(r.isError)
     }
 
-    func testAlternativeKeyCommand_runs() async {
-        // The handler resolves the command via the shared resolver, so a command
-        // under `text` (no `command` key) still runs — and the gate sees the same.
-        let r = await makeTool().handle(context: context(), args: ["text": "echo viaText"])
+    func testAlternativeKeyCommand_runs() async throws {
+        // `text` reaches the handler renamed to `command` — by the runtime's reading, which the
+        // gate reads too (`ToolCallArguments`). The handler itself reads only `command`.
+        let call = try XCTUnwrap(ToolCallArguments.prepare(
+            rawJSON: #"{"text":"echo viaText"}"#, emittedName: ToolNames.bash).dispatched)
+        let r = await makeTool().handle(context: context(), args: call.args)
         XCTAssertFalse(r.isError)
         XCTAssertTrue((successData(r.outputJSON)?["stdout"] as? String ?? "").contains("viaText"))
+        let direct = await makeTool().handle(context: context(), args: ["text": "echo viaText"])
+        XCTAssertTrue(direct.isError, "an undeclared key never reaches the handler; if it did, it is not a command")
     }
 
     // MARK: - Timeout

@@ -362,142 +362,32 @@ final class ToolArgumentHelpersTests: XCTestCase {
         }
     }
 
-    // MARK: - Alias chains
+    // MARK: - requiredStringArray: one key, its faults told apart
     //
-    // Tools accept several spellings of the same argument (`paths`/`files`/`path`,
-    // `participants`/`members`). Expressing that as `try? requiredStringArray(a)`
-    // then `try? requiredStringArray(b)` cannot tell "this key is absent, try the
-    // next alias" from "this key is present but malformed", so a malformed first
-    // alias falls through and the model is told about a key it never sent.
+    // Other spellings of the argument (`files` for `paths`, `members` for `participants`)
+    // arrive renamed before the handler runs (`ToolArgumentVocabulary`); two spellings at once
+    // are refused there, never picked here. What is left to this helper is telling a value it
+    // cannot read from a value that is not there.
 
-    func testRequiredStringArrayAliases_usesFirstPresentKey() throws {
-        XCTAssertEqual(
-            try requiredStringArray(["files": ["a.swift"]], aliases: ["paths", "files"]),
-            ["a.swift"]
-        )
+    func testRequiredStringArray_bareString_coercesToOneElement() throws {
+        XCTAssertEqual(try requiredStringArray(["paths": "a.swift"], "paths"), ["a.swift"])
     }
 
-    func testRequiredStringArrayAliases_prefersEarlierAlias() throws {
-        XCTAssertEqual(
-            try requiredStringArray(["paths": ["a"], "files": ["b"]], aliases: ["paths", "files"]),
-            ["a"]
-        )
-    }
-
-    func testRequiredStringArrayAliases_bareStringUnderAnyAlias_coerces() throws {
-        XCTAssertEqual(
-            try requiredStringArray(["path": "a.swift"], aliases: ["paths", "files", "path"]),
-            ["a.swift"]
-        )
-    }
-
-    func testRequiredStringArrayAliases_malformedFirstAlias_namesThatKeyNotTheChain() {
-        // The model sent `paths`. Reporting the whole alias list as missing — or
-        // worse, naming a later alias it never used — is the misdiagnosis this
-        // whole seam exists to remove.
-        XCTAssertThrowsError(
-            try requiredStringArray(["paths": 5], aliases: ["paths", "files"], display: "paths (or files)")
-        ) { error in
+    func testRequiredStringArray_presentButUnreadable_namesTheKeyAndTheTypeSent() {
+        XCTAssertThrowsError(try requiredStringArray(["paths": 5], "paths")) { error in
             let message = (error as? ToolArgumentError)?.localizedDescription ?? ""
-            XCTAssertFalse(message.contains("Missing"), "a present-but-malformed alias is not an omission; got: \(message)")
-            XCTAssertTrue(message.contains("paths"), "the error must name the key the model actually sent; got: \(message)")
-            XCTAssertFalse(message.contains("files"), "it must not name an alias the model never sent; got: \(message)")
+            XCTAssertFalse(message.contains("Missing"), "a value that arrived is not an omission: \(message)")
+            XCTAssertTrue(message.contains("paths") && message.contains("list of strings"), message)
         }
     }
 
-    func testRequiredStringArrayAliases_malformedLaterAlias_stillNamesTheKeySent() {
-        XCTAssertThrowsError(
-            try requiredStringArray(["files": 5], aliases: ["paths", "files"])
-        ) { error in
-            let message = (error as? ToolArgumentError)?.localizedDescription ?? ""
-            XCTAssertFalse(message.contains("Missing"), "got: \(message)")
-            XCTAssertTrue(message.contains("files"), "got: \(message)")
+    func testRequiredStringArray_absentOrNull_isMissing() {
+        for args in [[:], ["paths": NSNull()]] as [[String: Any]] {
+            XCTAssertThrowsError(try requiredStringArray(args, "paths")) { error in
+                XCTAssertEqual(
+                    (error as? ToolArgumentError)?.localizedDescription, "Missing required argument: paths")
+            }
         }
-    }
-
-    func testRequiredStringArrayAliases_malformedEarlyButValidLater_succeeds() throws {
-        // A usable value anywhere in the chain wins over an unusable one: the
-        // model gave us something we can act on, so acting beats complaining.
-        XCTAssertEqual(
-            try requiredStringArray(["paths": 5, "files": ["b.swift"]], aliases: ["paths", "files"]),
-            ["b.swift"]
-        )
-    }
-
-    func testRequiredStringArrayAliases_allAbsent_reportsDisplayName() {
-        XCTAssertThrowsError(
-            try requiredStringArray([:], aliases: ["paths", "files"], display: "paths (or files)")
-        ) { error in
-            XCTAssertEqual(
-                (error as? ToolArgumentError)?.localizedDescription,
-                "Missing required argument: paths (or files)"
-            )
-        }
-    }
-
-    func testRequiredStringArrayAliases_nullValue_countsAsAbsent() {
-        // JSON null is an omission, so it must fall through to the next alias.
-        XCTAssertEqual(
-            try? requiredStringArray(["paths": NSNull(), "files": ["b"]], aliases: ["paths", "files"]),
-            ["b"]
-        )
-    }
-
-    func testRequiredStringArray_missing_throws() {
-        let args: [String: Any] = [:]
-        XCTAssertThrowsError(try requiredStringArray(args, "paths"))
-    }
-
-    // MARK: - resolveContentString
-
-    func testResolveContentString_exactContentKey() {
-        let args: [String: Any] = ["content": "hello world"]
-        XCTAssertEqual(resolveContentString(args), "hello world")
-    }
-
-    func testResolveContentString_alternativeText() {
-        let args: [String: Any] = ["text": "hello text"]
-        XCTAssertEqual(resolveContentString(args), "hello text")
-    }
-
-    func testResolveContentString_alternativeBody() {
-        let args: [String: Any] = ["body": "hello body"]
-        XCTAssertEqual(resolveContentString(args), "hello body")
-    }
-
-    func testResolveContentString_alternativeFileContent() {
-        let args: [String: Any] = ["file_content": "file data"]
-        XCTAssertEqual(resolveContentString(args), "file data")
-    }
-
-    func testResolveContentString_singleRemainingStringFallback() {
-        let args: [String: Any] = ["my_custom_key": "fallback value"]
-        XCTAssertEqual(resolveContentString(args), "fallback value")
-    }
-
-    func testResolveContentString_multipleRemainingStrings_returnsNil() {
-        let args: [String: Any] = ["key1": "val1", "key2": "val2"]
-        XCTAssertNil(resolveContentString(args))
-    }
-
-    func testResolveContentString_nonContentKeysExcluded() {
-        // "path" is in nonContentKeys, should not be treated as content
-        let args: [String: Any] = ["path": "/src/file.swift"]
-        XCTAssertNil(resolveContentString(args))
-    }
-
-    func testResolveContentString_excludeKeysRespected() {
-        let args: [String: Any] = ["custom": "value"]
-        XCTAssertNil(resolveContentString(args, excludeKeys: ["custom"]))
-    }
-
-    func testResolveContentString_contentKeyTakesPrecedence() {
-        let args: [String: Any] = ["content": "primary", "text": "secondary"]
-        XCTAssertEqual(resolveContentString(args), "primary")
-    }
-
-    func testResolveContentString_emptyArgs_returnsNil() {
-        XCTAssertNil(resolveContentString([:]))
     }
 
     // MARK: - unwrapReentrantEnvelope (Run 6 regression)

@@ -95,8 +95,14 @@ nonisolated enum ConversationTranscriptRenderer {
         lines: inout [String]
     ) {
         switch item {
-        case let .supervisorTask(brief, taskCreatedAt, supervisorTask, clippedTexts, attachmentPaths, _, _):
-            let anchor = makeAnchor(time: taskCreatedAt, roleName: "Supervisor", stepID: nil)
+        case let .supervisorTask(brief, taskCreatedAt, supervisorTask, clippedTexts, attachmentPaths, _, _, authorLabel):
+            let supervisorRoleName: String = {
+                if let authorLabel, !authorLabel.isEmpty {
+                    return "Supervisor (\(authorLabel))"
+                }
+                return "Supervisor"
+            }()
+            let anchor = makeAnchor(time: taskCreatedAt, roleName: supervisorRoleName, stepID: nil)
             lines.append("\(anchor) Task")
             let body = supervisorTask.isEmpty ? brief : supervisorTask
             lines.append(quote(body))
@@ -163,7 +169,7 @@ nonisolated enum ConversationTranscriptRenderer {
             let name = roleName(for: stepID, fallback: role, teamRoles: teamRoles)
             let anchor = makeAnchor(time: createdAt, roleName: name, stepID: stepID)
             switch type {
-            case let .supervisorInput(question, answer, answerAttachmentPaths, answerClippedTexts, _, _, wasAutoAnswered, inquiry):
+            case let .supervisorInput(question, answer, answerAttachmentPaths, answerClippedTexts, _, _, wasAutoAnswered, inquiry, answerAuthor):
                 lines.append("\(anchor) \(type.title(for: role, isChatMode: isChatMode))")
                 lines.append(quote(question))
                 if let inquiry {
@@ -171,13 +177,20 @@ nonisolated enum ConversationTranscriptRenderer {
                     // audit log one 200-character line with the rest cut off — the first three
                     // questions and an ellipsis where the fourth answer was. One line per pair
                     // instead, from the same renderer the model reads.
-                    appendInquiry(inquiry, wasAutoAnswered: wasAutoAnswered, into: &lines)
+                    appendInquiry(inquiry, wasAutoAnswered: wasAutoAnswered, answerAuthor: answerAuthor, into: &lines)
                     appendAttachments(paths: answerAttachmentPaths, clips: answerClippedTexts, into: &lines)
                 } else if let answer, !answer.isEmpty {
-                    let who = wasAutoAnswered ? "answer (auto)" : "answer"
+                    let who: String = {
+                        if let answerAuthor = answerAuthor?.trimmingCharacters(in: .whitespacesAndNewlines), !answerAuthor.isEmpty {
+                            return "answer (by \(answerAuthor))"
+                        }
+                        return wasAutoAnswered ? "answer (\(LLMMessage.automatedSupervisorLabel))" : "answer"
+                    }()
                     lines.append("  \(who): \(singleLine(answer))")
                     appendAttachments(paths: answerAttachmentPaths, clips: answerClippedTexts, into: &lines)
                 }
+            case let .supervisorEvent(event, roleName):
+                lines.append("\(anchor) ✓ \(event.summaryText(roleName: roleName))")
             case let .failed(errorMessage):
                 lines.append("\(anchor) ⚠️ error")
                 if let errorMessage, !errorMessage.isEmpty {
@@ -218,7 +231,10 @@ nonisolated enum ConversationTranscriptRenderer {
     /// function that renders the wire — so the audit log and the model cannot disagree about
     /// what was decided.
     private static func appendInquiry(
-        _ inquiry: AnsweredInquiry, wasAutoAnswered: Bool, into lines: inout [String]
+        _ inquiry: AnsweredInquiry,
+        wasAutoAnswered: Bool,
+        answerAuthor: String? = nil,
+        into lines: inout [String]
     ) {
         // Rendered whether or not it was answered. A questionnaire nobody answered — a closed
         // task, an abandoned run — used to print as its headline alone, which in the file whose
@@ -231,9 +247,15 @@ nonisolated enum ConversationTranscriptRenderer {
         // suffix. What the asking role was told to DO about those absences
         // (`SupervisorInquiryRenderer.unansweredDirection`) is wire text and is not repeated
         // here: this loop calls `renderAnswer` per row, never `render`.
+        let answerHeading: String = {
+            if let answerAuthor = answerAuthor?.trimmingCharacters(in: .whitespacesAndNewlines), !answerAuthor.isEmpty {
+                return "answer (by \(answerAuthor))"
+            }
+            return wasAutoAnswered ? "answer (\(LLMMessage.automatedSupervisorLabel))" : "answer"
+        }()
         lines.append(inquiry.answer == nil
             ? "  asked:"
-            : "  \(wasAutoAnswered ? "answer (auto)" : "answer"):")
+            : "  \(answerHeading):")
         if let note = inquiry.answer?.note, !note.isEmpty {
             lines.append("    note: \(singleLine(note))")
         }

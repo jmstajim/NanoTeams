@@ -4,6 +4,14 @@ import Foundation
 /// AI-agent convention directories, in the open work folder and under the
 /// user's home dir.
 nonisolated struct AgentSkillsSnapshot: Codable, Hashable, Sendable {
+    nonisolated struct MCPPromptReference: Codable, Hashable, Sendable {
+        let serverID: UUID
+        let slug: String
+        let serverDisplayName: String
+        let promptName: String
+        let pinHash: String
+    }
+
     nonisolated struct Item: Codable, Hashable, Sendable, Identifiable {
         /// Collision-proof across agents, origins, and roots:
         /// `"<agentID>|<origin>|<relPathUnderRoot>"`. A project skill and a global
@@ -20,6 +28,33 @@ nonisolated struct AgentSkillsSnapshot: Codable, Hashable, Sendable {
         /// Human-friendly path shown in the picker tooltip
         /// (`.claude/skills/x/SKILL.md` or `~/.codex/prompts/x.md`).
         let displayPath: String
+        /// Present when this item represents an approved MCP prompt (`prompts/get`) rather than a
+        /// local skill file (`DEBTS.md` D-M3).
+        let mcpPrompt: MCPPromptReference?
+
+        init(
+            id: String,
+            name: String,
+            description: String?,
+            agentID: String,
+            agentLabel: String,
+            kindLabel: String,
+            origin: AgentSkillOrigin,
+            fileURL: URL,
+            displayPath: String,
+            mcpPrompt: MCPPromptReference? = nil
+        ) {
+            self.id = id
+            self.name = name
+            self.description = description
+            self.agentID = agentID
+            self.agentLabel = agentLabel
+            self.kindLabel = kindLabel
+            self.origin = origin
+            self.fileURL = fileURL
+            self.displayPath = displayPath
+            self.mcpPrompt = mcpPrompt
+        }
     }
 
     let items: [Item]

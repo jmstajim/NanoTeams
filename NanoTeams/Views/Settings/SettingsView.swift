@@ -14,6 +14,13 @@ struct SettingsView: View {
         case llm = "LLM"
         case workFolder = "Work Folder"
         case autovisor = "Autovisor"
+        /// "Agent Access" until 2026-11-08. A cold read of the sidebar took that name for what
+        /// this app's OWN roles may reach — 3 of 3 readers, with Agent Tools right below — and
+        /// none for the server an outside agent connects to. The name follows Xcode's ("Allow
+        /// external agents to use Xcode tools"); the subtitle says which way it points. The raw
+        /// value is also the stored `selectedSettingsTab`: a stored "Agent Access" no longer
+        /// decodes, so Settings opens once on LLM after the upgrade.
+        case externalAgents = "External Agents"
         case general = "General"
         case theme = "Theme"
         case dictation = "Dictation"
@@ -27,6 +34,7 @@ struct SettingsView: View {
         case teams = "Teams"
         case generateTeam = "Generate Team"
         case tools = "Tools"
+        case mcpServers = "MCP Servers"
         case help = "Help"
         case updates = "Updates"
 
@@ -34,7 +42,9 @@ struct SettingsView: View {
 
         private static let iconMap: [SettingsTab: String] = [
             .llm: "brain", .benchmark: "speedometer", .workFolder: "folder",
-            .autovisor: AutovisorConstants.symbolName, .general: "gearshape",
+            .autovisor: AutovisorConstants.symbolName,
+            .externalAgents: HostedMCPConstants.symbolName,
+            .general: "gearshape",
             .theme: "paintbrush.pointed",
             .dictation: "mic", .vision: "eye", .exploratorySearch: "binoculars",
             .toolBehavior: "slider.horizontal.3",
@@ -43,11 +53,22 @@ struct SettingsView: View {
             .debug: "ladybug",
             .teams: "rectangle.3.group",
             .generateTeam: "wand.and.stars",
-            .tools: "wrench.and.screwdriver", .help: "questionmark.circle",
+            .tools: "wrench.and.screwdriver", .mcpServers: "server.rack",
+            .help: "questionmark.circle",
             .updates: "sparkles",
         ]
 
         var icon: String { Self.iconMap[self] ?? "questionmark" }
+
+        /// A second line under the tab's name, for a tab whose name alone reads the wrong way
+        /// round; `nil` for the rest. External Agents is the one: under its name alone 1 of 3
+        /// cold readers got who uses whom, with this line 3 of 3 (2026-11-08). The LLM row's
+        /// second line is live state and comes from its own row.
+        var subtitle: String? { Self.subtitleMap[self] }
+
+        private static let subtitleMap: [SettingsTab: String] = [
+            .externalAgents: "Let Claude Code, Codex… use NanoTeams",
+        ]
     }
 
     nonisolated struct SettingsSection: Identifiable {
@@ -66,10 +87,13 @@ struct SettingsView: View {
     ///   `SettingsSidebarSectionsTests` — a pinned group that grows stops being pinned.
     /// - Workspace: who does the work in this folder — the folder itself, its teams, and the
     ///   automation supervising them
-    /// - Capabilities: optional model-powered add-ons the app can switch on, each with its own
-    ///   server/model (Vision, Exploratory Search, Generate Team — the last is app-scoped
-    ///   generation defaults + LLM override, capability-shaped rather than folder-shaped).
-    ///   The app's primary model endpoint is pinned at the top, not here.
+    /// - Capabilities: optional add-ons the app can switch on, app-scoped. Three are
+    ///   model-powered, each with its own server/model (Vision, Exploratory Search, Generate
+    ///   Team — the last is generation defaults + LLM override, capability-shaped rather than
+    ///   folder-shaped); External Agents is the fourth — an external agent may drive the app —
+    ///   with a port and tokens instead of a model. The app's primary model endpoint is pinned
+    ///   at the top, not here. (The tab sat under Application until 2026-11-08, for being
+    ///   app-wide; it is no app-shell preference.)
     /// - Agent Tools: governs what agents may execute and how far tools reach (gates → caps → registry)
     /// - Application: personal app-shell preferences (Dictation is input, not a model)
     /// - Support: maintenance and diagnostics — Benchmark lives here because it measures the
@@ -77,13 +101,20 @@ struct SettingsView: View {
     nonisolated static let sidebarSections: [SettingsSection] = [
         SettingsSection(id: "pinned", title: nil, tabs: [.updates, .llm]),
         SettingsSection(id: "workspace", title: "Workspace", tabs: [.workFolder, .teams, .autovisor]),
-        SettingsSection(id: "capabilities", title: "Capabilities", tabs: [.vision, .exploratorySearch, .generateTeam]),
-        SettingsSection(id: "agentTools", title: "Agent Tools", tabs: [.bash, .computerUse, .toolBehavior, .tools]),
+        SettingsSection(id: "capabilities", title: "Capabilities",
+                        tabs: [.vision, .exploratorySearch, .generateTeam, .externalAgents]),
+        SettingsSection(id: "agentTools", title: "Agent Tools",
+                        tabs: [.bash, .computerUse, .toolBehavior, .tools, .mcpServers]),
         SettingsSection(id: "application", title: "Application", tabs: [.general, .theme, .dictation]),
         SettingsSection(id: "support", title: "Support", tabs: [.benchmark, .debug, .help]),
     ]
 
     @AppStorage(UserDefaultsKeys.selectedSettingsTab) private var storedTab: SettingsTab = .llm
+    /// External Agents' Add agent / Reissue sheet. Presented HERE, above the tab switch: a button
+    /// in the main window retargets `storedTab` while the sheet is up
+    /// (`SettingsNavigation.open(tab:)`), and a sheet the tab presented went down with the tab,
+    /// taking a token nobody had copied (review 2026-11-08).
+    @State private var externalAgentSheet: ExternalAgentSheet.Entry?
 
     var body: some View {
         // Custom flat sidebar + detail (mirrors MainLayoutView) — replaces the
@@ -112,6 +143,9 @@ struct SettingsView: View {
         .background(Colors.surfacePrimary)
         .preferredColorScheme(activeTheme.preferredColorScheme)
         .toggleStyle(.terminal)
+        .sheet(item: $externalAgentSheet) { entry in
+            ExternalAgentSheetHost(entry: entry)
+        }
     }
 
     // MARK: - Sidebar
@@ -171,6 +205,12 @@ struct SettingsView: View {
                 WorkFolderSettingsView()
             case .autovisor:
                 AutovisorSettingsView()
+            case .externalAgents:
+                // Wrapped at the DISPATCH, not inside the tab: one place decides that a beta
+                // surface is gated, and no future entry point into the tab can skip it.
+                BetaGate(feature: .externalAgents) {
+                    ExternalAgentsSettingsView(agentSheet: $externalAgentSheet)
+                }
             case .general:
                 GeneralSettingsView()
             case .theme:
@@ -197,6 +237,10 @@ struct SettingsView: View {
                 GenerateTeamSettingsView()
             case .tools:
                 ToolDefinitionEditorView()
+            case .mcpServers:
+                BetaGate(feature: .mcpServers) {
+                    MCPServersSettingsView()
+                }
             case .help:
                 HelpSettingsView()
             case .updates:
@@ -305,19 +349,32 @@ private struct SettingsRowView: View {
 
     var body: some View {
         Button(action: onSelect) {
-            HStack(spacing: Spacing.m) {
+            // A subtitled row keeps its icon on the NAME's line: centred, the icon would float
+            // beside the subtitle's wrap. A plain row stays centred, as it always was.
+            HStack(alignment: tab.subtitle == nil ? .center : .firstTextBaseline, spacing: Spacing.m) {
                 Image(systemName: tab.icon)
                     .font(Typography.subheadlineSemibold)
                     .foregroundStyle(isSelected ? Colors.textPrimary : Colors.textSecondary)
                     .frame(width: iconWidth)
 
-                Text(tab.rawValue)
-                    // Fixed weight across selected / unselected so the cell
-                    // height + glyph metrics don't reflow on selection — DS
-                    // signals selection through the accentTint fill, not
-                    // through type-weight emphasis.
-                    .font(Typography.subheadlineMedium)
-                    .foregroundStyle(isSelected ? Colors.textPrimary : Colors.textSecondary)
+                VStack(alignment: .leading, spacing: Spacing.xxs) {
+                    Text(tab.rawValue)
+                        // Fixed weight across selected / unselected so the cell
+                        // height + glyph metrics don't reflow on selection — DS
+                        // signals selection through the accentTint fill, not
+                        // through type-weight emphasis.
+                        .font(Typography.subheadlineMedium)
+                        .foregroundStyle(isSelected ? Colors.textPrimary : Colors.textSecondary)
+                    if let subtitle = tab.subtitle {
+                        Text(subtitle)
+                            .font(Typography.caption)
+                            // textSecondary, like the LLM row's second line: this line carries
+                            // the meaning, and textTertiary measures 2.5–3.8:1 on the sidebar
+                            // in the light themes.
+                            .foregroundStyle(Colors.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
 
                 Spacer()
             }
@@ -347,6 +404,7 @@ private struct SettingsRowView: View {
     @Previewable @State var embeddingCatalog = PreviewStore.embeddingCatalog()
     @Previewable @State var dictation = DictationService()
     @Previewable @State var llmStatusMonitor = LLMStatusMonitor()
+    @Previewable @State var contextEditor = WorkFolderContextEditor(save: { _, _ in .noFolder }, openFolder: { nil })
     SettingsView()
         .environment(store)
         .environment(store.engineState)
@@ -357,5 +415,6 @@ private struct SettingsRowView: View {
         .environment(dictation)
         .environment(AppUpdateState(config: store.configuration))
         .environment(llmStatusMonitor)
+        .environment(contextEditor)
         .frame(width: 900, height: 700)
 }

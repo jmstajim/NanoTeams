@@ -47,6 +47,11 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
         var maxLLMRetries: Int { 0 }
         var visionLLMConfig: LLMConfig? { nil }
         var bashPolicy: BashPolicy { BashPolicy() }
+        var seatbeltGuardedLoopbackPorts: [UInt16] { SeatbeltSandbox.effectiveGuardedPorts([]) }
+        var mcpTools: MCPToolsSnapshot? { nil }
+        func mcpApprovalDidBegin(_ request: MCPApprovalRequest) {}
+        func mcpApprovalDidEnd(taskID: Int, stepID: String, callKey: String, createdAt: Date) {}
+        func clearAllMCPApprovalRequests() {}
         var computerUsePolicy: ComputerUsePolicy { ComputerUsePolicy() }
         func bashApprovalDidBegin(_ request: BashApprovalRequest) {}
         func bashApprovalDidEnd(taskID: Int, stepID: String, commandKey: String, createdAt: Date) {}
@@ -85,7 +90,9 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
         func setLastInfoMessageForUI(_ message: String) { lastInfoMessages.append(message) }
         var lastErrorMessages: [String] = []
         func setLastErrorMessageForUI(_ message: String) { lastErrorMessages.append(message) }
-        func holdDownstreamForRevision(taskID _: Int, runningRoleIDs _: [String], requesterRoleID _: String) async {}
+        func holdDownstreamForRevision(
+            taskID _: Int, runningRoleIDs _: [String], requesterRoleID _: String, within _: WorkFolderLifecycle
+        ) async {}
         func notifyQueuedMessageBackstop(taskID _: Int) {}
 
         // Delegation hooks
@@ -103,12 +110,18 @@ final class DelegatedSupervisorAnswerServiceTests: XCTestCase {
         func activeDelegationChildID(taskID _: Int, roleID _: String) -> Int? { nil }
 
         @discardableResult
-        func answerSupervisorQuestion(taskID: Int, stepID: String, answer: String) async -> Bool {
+        func answerSupervisorQuestion(
+            taskID: Int, stepID: String, answer: String, within _: WorkFolderLifecycle
+        ) async -> Bool {
             answerSupervisorCalls.append((taskID, stepID, answer))
             return answerSupervisorReturn
         }
 
-        func performAutovisorAction(_ action: AutovisorAction) async -> AutovisorActionResult { .success("ok") }
+        var currentFolderLifecycle: WorkFolderLifecycle { WorkFolderLifecycle(generation: 0) }
+        func isCurrentFolderLifecycle(_ lifecycle: WorkFolderLifecycle) -> Bool { lifecycle.generation == 0 }
+        func performAutovisorAction(
+            _ action: AutovisorAction, within lifecycle: WorkFolderLifecycle
+        ) async -> AutovisorActionResult { .success("ok") }
         func persistAutovisorMemory(_ text: String) async -> Bool { true }
         func autovisorLoadTask(_ taskID: Int) async -> NTMSTask? { loadedTask(taskID) }
 

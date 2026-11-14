@@ -80,7 +80,7 @@ final class TaskStreamStoreTests: XCTestCase {
         _ = TaskStreamStore.flush(streams, to: url)
         let before = try lineCount(url)
 
-        streams.toolCalls[0].resultJSON = #"{"ok":true}"#
+        streams.toolCalls[0].recordResult(#"{"ok":true}"#)
         _ = TaskStreamStore.flush(streams, to: url)
 
         XCTAssertEqual(try lineCount(url), before + 1, "an in-place edit is one record")

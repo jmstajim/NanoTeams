@@ -161,10 +161,10 @@ struct RoleEditorDelegationTab: View {
         VStack(alignment: .leading, spacing: 6) {
             MonoLabel(text: "Constraints")
             Text("• Chat-mode teams cannot be delegated to (they never auto-complete).")
-                .font(Typography.caption2)
+                .font(Typography.caption)
                 .foregroundStyle(Colors.textSecondary)
             Text("• Per-delegation timeout: \(Int(DelegationConstants.delegationTimeoutSeconds / 60)) minutes.")
-                .font(Typography.caption2)
+                .font(Typography.caption)
                 .foregroundStyle(Colors.textSecondary)
         }
         .padding(Spacing.s)

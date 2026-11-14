@@ -48,9 +48,11 @@ nonisolated enum FinishedReplyToolCallResolver {
         // Repair a mangled opening sentinel before looking for one, the way the parser
         // does internally — the marker search below must see the same bytes the parser
         // will, or the prose cut and the parse disagree about where the envelope starts.
-        let normalized = HarmonySentinelNormalizer.normalize(content)
+        let knownNames = HarmonyToolCallParser.knownNames(advertising: advertised)
+        let normalized = HarmonySentinelNormalizer.normalize(content, knownNames: knownNames)
         if let marker = earliestMarker(in: normalized) {
-            let calls = HarmonyToolCallParser().extractAllToolCalls(from: normalized)
+            let calls = HarmonyToolCallParser().extractAllToolCalls(
+                from: normalized, knownNames: knownNames)
             guard !calls.isEmpty else {
                 // A marker with no parseable envelope: the turn resolves nothing, and the
                 // text stays whole so the reader sees what the model actually wrote.

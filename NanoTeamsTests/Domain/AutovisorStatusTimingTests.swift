@@ -133,6 +133,67 @@ final class AutovisorStatusTimingTests: XCTestCase {
         XCTAssertEqual(AutovisorStatus.taskElapsedSeconds(run: run, now: now), 120)
     }
 
+    // The count stops when the run's work does (2026-11-09). Until then it ran to `now` forever:
+    // a task closed yesterday reported a day of work, one in Review kept growing while nobody
+    // worked on it.
+
+    func testTaskElapsed_stopsAtTheClose() {
+        let run = Run(id: 0, createdAt: now.addingTimeInterval(-600), steps: [
+            step(createdAt: now.addingTimeInterval(-600), completedAt: now.addingTimeInterval(-500), status: .done),
+        ])
+        XCTAssertEqual(
+            AutovisorStatus.taskElapsedSeconds(run: run, closedAt: now.addingTimeInterval(-300), now: now), 300,
+            "the close is when the task ended, whatever the steps say")
+    }
+
+    /// A close before the run began (a clock that moved back, a hand-edited file) is no negative
+    /// duration.
+    func testTaskElapsed_aCloseBeforeTheRun_isZero() {
+        let run = Run(id: 0, createdAt: now)
+        XCTAssertEqual(AutovisorStatus.taskElapsedSeconds(run: run, closedAt: now.addingTimeInterval(-60), now: now), 0)
+    }
+
+    /// Every step finished — done, failed, or done and awaiting acceptance — stops the count at
+    /// the last of them to finish: the task is waiting for a decision, and nobody is working.
+    func testTaskElapsed_everyStepFinished_stopsAtTheLastCompletion() {
+        let start = now.addingTimeInterval(-1000)
+        let run = Run(id: 0, createdAt: start, steps: [
+            step(createdAt: start, completedAt: now.addingTimeInterval(-700), status: .done),
+            step(createdAt: start, completedAt: now.addingTimeInterval(-400), status: .needsApproval),
+            step(createdAt: start, completedAt: now.addingTimeInterval(-900), status: .failed),
+        ])
+        XCTAssertEqual(AutovisorStatus.taskElapsedSeconds(run: run, now: now), 600)
+    }
+
+    /// A step still to do — running, waiting on a question, paused, not started — keeps the
+    /// count going: the run timeout counts those too.
+    func testTaskElapsed_aStepStillToDo_keepsCounting() {
+        let start = now.addingTimeInterval(-1000)
+        for open in [StepStatus.running, .needsSupervisorInput, .paused, .pending] {
+            let run = Run(id: 0, createdAt: start, steps: [
+                step(createdAt: start, completedAt: now.addingTimeInterval(-700), status: .done),
+                step(createdAt: start, status: open),
+            ])
+            XCTAssertEqual(AutovisorStatus.taskElapsedSeconds(run: run, now: now), 1000, "\(open)")
+        }
+    }
+
+    /// A finished step with no completion stamp says nothing about when the work ended — the
+    /// count does not invent a moment for it.
+    func testTaskElapsed_aFinishedStepWithoutAStamp_keepsCounting() {
+        let start = now.addingTimeInterval(-1000)
+        let run = Run(id: 0, createdAt: start, steps: [
+            step(createdAt: start, completedAt: now.addingTimeInterval(-700), status: .done),
+            step(createdAt: start, completedAt: nil, status: .done),
+        ])
+        XCTAssertEqual(AutovisorStatus.taskElapsedSeconds(run: run, now: now), 1000)
+    }
+
+    /// A run with no step yet has no finished work to stop at.
+    func testTaskElapsed_aRunWithNoStep_keepsCounting() {
+        XCTAssertEqual(AutovisorStatus.taskElapsedSeconds(run: Run(id: 0, createdAt: now.addingTimeInterval(-45)), now: now), 45)
+    }
+
     /// The third member of this trio was the one without the clock default — inert only
     /// because its single caller passes `MonotonicClock.shared.now()`. This pins the
     /// signature, not that caller.

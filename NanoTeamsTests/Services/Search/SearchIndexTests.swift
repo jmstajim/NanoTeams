@@ -34,8 +34,12 @@ final class SearchIndexTests: XCTestCase {
         XCTAssertNotEqual(a, b)
     }
 
-    func testCurrentVersion_isTwo() {
-        XCTAssertEqual(SearchIndex.currentVersion, 2)
+    /// v3 (2026-11-08): the walk stopped indexing credential stores and token files, so what is
+    /// on disk has to be discarded — words harvested from a store before cannot be retired by a
+    /// walk that no longer reaches it (#376). Bump this pin with the constant, and only with a
+    /// line in `SearchIndex.currentVersion`'s own history saying why.
+    func testCurrentVersion_isThree() {
+        XCTAssertEqual(SearchIndex.currentVersion, 3)
     }
 
     /// The signature is derived from the roster, so it can never disagree with it.

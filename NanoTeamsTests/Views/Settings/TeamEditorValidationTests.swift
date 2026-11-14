@@ -13,7 +13,7 @@ final class TeamEditorValidationTests: XCTestCase {
     private static let liveValidators = [
         "validateDelegationPolicy", "validateAttachedSkills",
         "validateMeetingCoordinator", "validateSupervisorMode",
-        "validateSupervisorAskTools",
+        "validateSupervisorAskTools", "validateMCPTools",
     ]
 
     /// Comment-stripped source (CLAUDE.md #89): `issues`' own doc comment names both members.
@@ -144,5 +144,56 @@ final class TeamEditorValidationTests: XCTestCase {
         let declared = service.components(separatedBy: "static func validate").count - 1
         XCTAssertEqual(declared, Self.liveValidators.count,
                        "a validator the banner does not call is either dead code or a banner decision")
+    }
+
+    // MARK: - The banner's rows
+
+    /// The rows that report a write that did not land are rebuilt on every body pass. Their
+    /// identity must be what they report, so `ForEach` keeps them across renders.
+    ///
+    /// RED: give the failure rows `UUID()` ids again → two builds of the same rows differ.
+    func testFailureRows_keepTheirIdentityAcrossBuilds() {
+        let build = {
+            TeamEditorValidation.bannerIssues(
+                writeFailure: (teamID: "startup", reason: "teams.json: disk full"),
+                actionFailure: "Failed to persist work folder changes (teams.json): disk full",
+                validation: [])
+        }
+        XCTAssertEqual(build().map(\.id), build().map(\.id))
+    }
+
+    /// A different failure is a different row — the identity is the team and the reason.
+    func testFailureRows_differByTeamAndReason() {
+        let one = TeamEditorValidation.Issue.writeFailure(teamID: "startup", reason: "disk full")
+        XCTAssertNotEqual(one.id, TeamEditorValidation.Issue.writeFailure(teamID: "faang", reason: "disk full").id)
+        XCTAssertNotEqual(one.id, TeamEditorValidation.Issue.writeFailure(teamID: "startup", reason: "read-only").id)
+        XCTAssertNotEqual(one.id, TeamEditorValidation.Issue.actionFailure(reason: "disk full").id)
+    }
+
+    /// The write of the team shown first, then a refused action, then validation as it was
+    /// passed — its rows keep the ids the editor's `@State` holds.
+    func testBannerRows_areTheWriteFailure_thenTheActionFailure_thenValidation() {
+        let validation = [
+            TeamEditorValidation.Issue(isError: false, message: "Whitelist contains an unknown team."),
+            TeamEditorValidation.Issue(isError: false, message: "Whitelist contains an unknown team."),
+        ]
+
+        let rows = TeamEditorValidation.bannerIssues(
+            writeFailure: (teamID: "startup", reason: "write refused"),
+            actionFailure: "delete refused",
+            validation: validation)
+
+        XCTAssertEqual(rows.map(\.message), [
+            "write refused", "delete refused",
+            "Whitelist contains an unknown team.", "Whitelist contains an unknown team.",
+        ])
+        XCTAssertEqual(rows.prefix(2).map(\.isError), [true, true])
+        XCTAssertEqual(Array(rows.suffix(2).map(\.id)), validation.map(\.id))
+        XCTAssertNotEqual(validation[0].id, validation[1].id, "same text, still two rows")
+    }
+
+    /// Nothing failed: the banner is validation alone, and empty when that is.
+    func testBannerRows_withNoFailures_areValidationAlone() {
+        XCTAssertTrue(TeamEditorValidation.bannerIssues(writeFailure: nil, actionFailure: nil, validation: []).isEmpty)
     }
 }

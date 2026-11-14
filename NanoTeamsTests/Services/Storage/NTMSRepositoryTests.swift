@@ -627,7 +627,7 @@ final class NTMSRepositoryTests: XCTestCase {
         let initial = try sut.openOrCreateWorkFolder(at: root)
         XCTAssertEqual(initial.workFolder.settings.context, "", "Initial context should be empty")
 
-        let updated = try sut.updateWorkFolderContext(at: root, context: "A cool project", activeTask: nil)
+        let updated = try sut.updateSettings(at: root, activeTask: nil) { $0.context = "A cool project" }
         XCTAssertEqual(updated.workFolder.settings.context, "A cool project",
                        "Context should be updated")
 
@@ -644,7 +644,7 @@ final class NTMSRepositoryTests: XCTestCase {
         _ = try sut.openOrCreateWorkFolder(at: root)
 
         // Modify the work folder context so we can detect a reset
-        _ = try sut.updateWorkFolderContext(at: root, context: "Custom context", activeTask: nil)
+        _ = try sut.updateSettings(at: root, activeTask: nil) { $0.context = "Custom context" }
 
         // Create a task so there is data to reset
         _ = try sut.createTask(at: root, title: "Will be lost", supervisorTask: "Goal")

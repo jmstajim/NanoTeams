@@ -36,6 +36,17 @@ struct MainLayoutView: View {
         }
     }
 
+    /// The selection once the folder's task list changed, or once a task was selected: a task
+    /// that is no longer listed was removed — by the person, by an external agent, by the
+    /// manager — and the board falls back to the Watchtower instead of a loader waiting for a
+    /// task that will never load.
+    static func selection(
+        _ item: NavigationItem?, afterTaskListChange taskIsListed: (Int) -> Bool
+    ) -> NavigationItem? {
+        guard case .task(let taskID) = item, !taskIsListed(taskID) else { return item }
+        return .watchtower
+    }
+
     // MARK: - Body
 
     var body: some View {
@@ -140,6 +151,15 @@ struct MainLayoutView: View {
             // bootstrap completes.
             taskState.loadSeenSet(for: newID)
         }
+        .onChange(of: store.taskFacts.rowsRevision) { _, _ in
+            // A removal that did not come from this window's sidebar — `control_task delete`,
+            // the manager's — leaves the selection on the removed id, and the detail would keep
+            // its loader up for it.
+            let next = Self.selection(selectedItem) { taskID in
+                store.taskFacts.summary(for: taskID) != nil
+            }
+            if next != selectedItem { selectedItem = next }
+        }
         .task {
             await store.bootstrapDefaultStorageIfNeeded()
             // No `FilePickerWarmup.warmup()` here: creating the NSOpenPanel holds the main
@@ -179,6 +199,16 @@ struct MainLayoutView: View {
             // `markSupervisorInputSeen` / `.scrollFeedToBottom` once at launch. Merging would
             // therefore need an "is this the initial call" guard around half the closure — more
             // state than the second observer costs.
+            //
+            // A selection of a task the folder no longer lists — a palette row or a banner taken
+            // a moment before someone else removed it — goes where the list-change observer
+            // above sends it: the switch to it does nothing (D-M18), and nothing else would move
+            // the loader, since the list already changed before the selection did.
+            let listed = Self.selection(newValue) { taskID in store.taskFacts.summary(for: taskID) != nil }
+            if listed != newValue {
+                selectedItem = listed
+                return
+            }
             if case .task(let taskID) = newValue {
                 Task {
                     await store.switchTask(to: taskID)
@@ -311,7 +341,8 @@ struct MainLayoutView: View {
               let task = store.loadedTask(taskID) else { return }
         let notifications = WatchtowerInboxBuilder.build(
             [.init(task: task, teamRoles: store.resolvedTeam(for: task).roles)],
-            bashApprovals: Array(store.bashApprovalRequests.values)
+            bashApprovals: Array(store.bashApprovalRequests.values),
+            mcpApprovals: Array(store.mcpApprovalRequests.values)
         )
         for notification in notifications where predicate(notification.type) {
             config.dismissNotification(workFolderID: workFolderID, key: notification.dismissKey)
@@ -342,18 +373,26 @@ struct MainLayoutView: View {
         }
     }
 
-    /// The Autovisor's activity feed — its hidden task rendered through the
-    /// standard TeamBoard (switchTask makes it active; the sidebar still hides it).
-    /// Shows the setup pane (goal field + Enable) whenever the manager isn't running
-    /// — `store.autovisorShowsSetupPane`: never created, OR created but disabled.
-    /// A disabled manager keeps its task, so without that rule this would render a
-    /// chat nothing can drive, with no visible way to turn it back on. On enable,
-    /// `setAutovisorEnabled(true)` creates/re-enables the manager; the next body
-    /// evaluation falls into the loader/switchTask branch and lands on the chat,
-    /// prior conversation intact.
+    /// The Autovisor destination, routed by `store.autovisorDetailPane` — the rule the
+    /// sidebar's "Open Setup" / "Open Chat" label reads too.
+    ///
+    /// • **Setup** (driver, goal, Enable) whenever the Autovisor is off, for both drivers:
+    ///   the driver is chosen there. A disabled manager keeps its task, so without that
+    ///   rule this would render a chat nothing can drive, with no visible way to turn it
+    ///   back on.
+    /// • **External agent** — `ExternalAutovisorPane` while an enabled agent drives.
+    /// • **Manager chat** — its hidden task rendered through the standard TeamBoard
+    ///   (switchTask makes it active; the sidebar still hides it). On enable,
+    ///   `setAutovisorEnabled(true)` creates/re-enables the manager; the next body
+    ///   evaluation lands here, prior conversation intact.
     @ViewBuilder
     private var autovisorDetail: some View {
-        if !store.autovisorShowsSetupPane, let id = store.autovisorTaskID {
+        switch store.autovisorDetailPane {
+        case .setup:
+            AutovisorSetupView()
+        case .externalAgent:
+            ExternalAutovisorPane(selectedItem: $selectedItem)
+        case .managerChat(let id):
             if store.activeTask?.id == id {
                 TeamBoardView(workFolder: store.workFolder).id(id)
             } else {
@@ -363,8 +402,6 @@ struct MainLayoutView: View {
                     .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
                     .task { await store.switchTask(to: id) }
             }
-        } else {
-            AutovisorSetupView()
         }
     }
 }

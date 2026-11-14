@@ -144,6 +144,33 @@ final class AutovisorSendMessageTests: NTMSOrchestratorTestBase, @unchecked Send
         sut.stopEngineForTask(mgrID)  // tidy the spawned run
     }
 
+    /// Sending to an idle (`.done`) manager takes the `.startRun` wake branch: if a folder
+    /// transition begins before the spawned task runs, it does nothing; in the same folder
+    /// lifecycle it starts a fresh run.
+    ///
+    /// RED: drop `guard isCurrentFolderLifecycle(lifecycle)` from `sendMessageToAutovisor`'s
+    /// `.startRun` branch → the superseded send still starts a run.
+    func testSend_idleManager_startsRunInSameFolderAndSkipsWhenFolderChanged() async {
+        let mgrID = await pinRunningManager()
+        sut.engineState[mgrID] = .done
+        let runsBefore = sut.loadedTask(mgrID)?.runs.count ?? 0
+
+        let okSuperseded = sut.sendMessageToAutovisor("superseded wake", attachments: [])
+        sut.workFolderOpenGeneration += 1
+        for _ in 0..<10 { await Task.yield() }
+        XCTAssertTrue(okSuperseded)
+        XCTAssertEqual(sut.loadedTask(mgrID)?.runs.count ?? 0, runsBefore,
+                       "A wake overtaken by a folder transition must not start a run")
+
+        sut.workFolderOpenGeneration -= 1
+        let okLive = sut.sendMessageToAutovisor("live wake", attachments: [])
+        XCTAssertTrue(okLive)
+        await waitUntil("idle manager startRun") {
+            (self.sut.loadedTask(mgrID)?.runs.count ?? 0) > runsBefore
+        }
+        sut.stopEngineForTask(mgrID)
+    }
+
     /// Pure wake-routing table for `sendMessageToAutovisor`: running → next-iteration
     /// injection; parked → flush into the parked conversation; everything else →
     /// fresh `startRun`.

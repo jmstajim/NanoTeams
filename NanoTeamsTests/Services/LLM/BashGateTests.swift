@@ -320,13 +320,87 @@ final class BashGateTests: XCTestCase {
         XCTAssertEqual(errorCode(results[0]?.outputJSON ?? ""), ToolErrorCode.bashDenied.rawValue)
     }
 
-    func testContentDecoy_gatedOnExecutedCommand() async {
-        // {"command":"ls","content":"rm -rf /"} — the handler executes `content`,
-        // so the gate must judge `content` (the real command), not the `command` decoy.
+    func testContentDecoy_isRefusedBeforeAnyJudgement() async {
+        // {"command":"ls","content":"…"} — two spellings of one argument. Until 2026-11-09 the
+        // handler ran `content` and the gate judged `content`; now neither is chosen: the
+        // reading refuses the call, the gate holds no card for it, and the runtime answers
+        // `INVALID_ARGS` naming both — nothing runs.
+        let raw = #"{"command":"ls","content":"touch pwned.txt"}"#
+        let results = await gate([rawBashCall(raw)], policy: BashPolicy(denyRules: ["touch"]), supervisorMode: .autonomous)
+        XCTAssertNil(results[0], "no card for a call the runtime refuses itself")
+        guard case .invalid(_, _, let message) = ToolCallArguments.prepare(rawJSON: raw, emittedName: ToolNames.bash)
+        else { return XCTFail("two spellings of `command` are refused") }
+        XCTAssertTrue(message.contains("`command` and `content`"), message)
+    }
+
+    // MARK: - Gate-bypass regressions (the gate reads the runtime's own reading)
+    //
+    // Until 2026-11-09 the gate parsed the raw text with a bare `JSONSerialization` while the
+    // runtime normalised it (`ToolRuntime.dispatchedArguments`), so these four shapes were
+    // judged as one command and run as another — or run with no judgement at all, because
+    // the gate skipped what it could not read. Each is now judged on exactly what runs.
+    //
+    // The payload is always `touch pwned.txt`: harmless, and observable — a regression that
+    // lets one of these run shows up as a file in a temporary folder, never as damage. And the
+    // run is `.autonomous`: a regression that sends a call to `.ask` fails fast with
+    // `APPROVAL_UNAVAILABLE` instead of holding a card nobody will answer.
+
+    func testNonJSONArguments_areJudgedAsTheCommandTheHandlerRuns() async {
+        // The runtime wraps prose as `__raw_input__` and the handler runs it; the gate used to
+        // read nothing and `continue` — the command ran with no approval at all.
+        let results = await gate([rawBashCall("touch pwned.txt")], policy: BashPolicy(denyRules: ["touch"]), supervisorMode: .autonomous)
+        XCTAssertEqual(
+            errorCode(results[0]?.outputJSON ?? ""), ToolErrorCode.bashDenied.rawValue,
+            "a command sent as prose must be judged, not skipped")
+    }
+
+    func testReentrantEnvelope_isJudgedOnTheInnerCommand() async {
+        // The runtime unwraps `{name, arguments}` and runs the inner command; the gate used to
+        // judge the outer `name` — the string "bash".
         let results = await gate(
-            [rawBashCall(#"{"command":"ls","content":"rm -rf /"}"#)], policy: BashPolicy(denyRules: ["rm"]))
-        XCTAssertEqual(results[0]?.isError, true, "a benign `command` decoy must not hide the executed `content`")
-        XCTAssertEqual(errorCode(results[0]?.outputJSON ?? ""), ToolErrorCode.bashDenied.rawValue)
+            [rawBashCall(#"{"name":"bash","arguments":{"command":"touch pwned.txt"}}"#)],
+            policy: BashPolicy(denyRules: ["touch"]), supervisorMode: .autonomous)
+        XCTAssertEqual(
+            errorCode(results[0]?.outputJSON ?? ""), ToolErrorCode.bashDenied.rawValue,
+            "the command inside a reentrant envelope is the one that runs")
+    }
+
+    func testRawControlCharacterInsideTheCommand_isStillJudged() async {
+        // A literal TAB inside a JSON string: `JSONSerialization` refuses the document, the
+        // runtime sanitises it and runs it — the gate used to skip it.
+        let results = await gate(
+            [rawBashCall("{\"command\":\"touch pwned.txt\tx\"}")], policy: BashPolicy(denyRules: ["touch"]), supervisorMode: .autonomous)
+        XCTAssertEqual(
+            errorCode(results[0]?.outputJSON ?? ""), ToolErrorCode.bashDenied.rawValue,
+            "a raw control character must not make the command unjudgeable")
+    }
+
+    func testTwoKeysThatTrimToCommand_areRefused_neverJudgedOnTheDecoy() async throws {
+        // `"\ncommand"` trims to `command`: the gate judged the bare `ls` and allowed it, then
+        // the runtime's key trim overwrote `command` with the other value and ran that. Which
+        // of the two survived the trim depended on dictionary order. Now neither is chosen:
+        // the reading refuses the document, the gate holds no card for it, and the runtime
+        // answers the same refusal — nothing runs.
+        let raw = #"{"command":"ls","\ncommand":"touch pwned.txt"}"#
+        let results = await gate([rawBashCall(raw)], policy: BashPolicy(denyRules: ["touch"]), supervisorMode: .autonomous)
+        XCTAssertNil(results[0], "a call the runtime refuses holds no card and no judgement")
+
+        let workDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BashGateDuplicateKey-\(UUID().uuidString)", isDirectory: true)
+            .standardizedFileURL
+        try FileManager.default.createDirectory(at: workDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workDir) }
+        let runtime = ToolRegistry.defaultRegistry(workFolderRoot: workDir, toolCallsLogURL: nil).runtime
+        let executed = await runtime.executeAll(
+            context: ToolExecutionContext(workFolderRoot: workDir, taskID: 1, runID: 0, roleID: "r"),
+            toolCalls: [rawBashCall(raw)])
+        XCTAssertEqual(executed.first?.isError, true)
+        XCTAssertTrue(
+            executed.first?.outputJSON.contains("`command`") ?? false,
+            "the refusal names the duplicated argument, got: \(executed.first?.outputJSON ?? "nil")")
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: workDir.appendingPathComponent("pwned.txt").path),
+            "neither spelling may run")
     }
 
     // MARK: - Auto judge
@@ -344,6 +418,100 @@ final class BashGateTests: XCTestCase {
         let results = await gate(
             [bashCall("npm run build")], policy: BashPolicy(mode: .auto), client: client)
         XCTAssertTrue(results.isEmpty, "judge-approved command passes through")
+    }
+
+    /// A Pause while the Auto judge is being asked: nobody ruled, so the command gets the
+    /// cancellation envelope, never `BASH_DENIED` — twin of
+    /// `testManualHumanApproval_cancellation_resolvesAsCancelled`. Until 2026-09-23 the
+    /// cut-short call read as an empty reply: "Judge returned no verdict; denied for safety."
+    func testAutoMode_judgeCutShortByCancellation_synthesizesCancelledNotDenied() async {
+        delegate.bashPolicy = BashPolicy(mode: .auto)
+        let client = ScriptedToolCallClient(script: [.hang])
+        let call = bashCall("rm -rf build")
+        let gateTask = Task { [service, delegateTask = task()] in
+            await service!.gateBashCalls(
+                resolvedToolCalls: [call], allowedToolNames: [ToolNames.bash],
+                stepID: "step1", taskID: 1, supervisorMode: .manual, task: delegateTask,
+                client: client, config: LLMConfig(), networkLogger: nil)
+        }
+        for _ in 0..<500 where client.callCount < 1 { try? await Task.sleep(for: .milliseconds(2)) }
+        XCTAssertEqual(client.callCount, 1, "premise: the judge was being asked")
+        gateTask.cancel()
+        let results = await gateTask.value
+
+        XCTAssertEqual(errorCode(results[0]?.outputJSON ?? ""), ToolErrorCode.cancelled.rawValue)
+        XCTAssertEqual(results[0]?.providerID, "call_1", "the synthetic result still answers the call")
+        let message = errorMessage(results[0]?.outputJSON ?? "")
+        XCTAssertFalse(message.lowercased().contains("denied"), "nobody denied, got: \(message)")
+        XCTAssertFalse(message.lowercased().contains("judge"), "no judge ruled, got: \(message)")
+    }
+
+    /// A batch with two commands that need a verdict, paused while the FIRST is being judged:
+    /// the gate's loop goes on under the cancelled task, and the second must be answered as
+    /// cancelled without a judge request of its own.
+    func testAutoMode_pauseDuringTheFirstJudge_asksNoFurtherJudgeInTheBatch() async {
+        delegate.bashPolicy = BashPolicy(mode: .auto)
+        let client = ScriptedToolCallClient(script: [.hang, .text(#"{"decision":"OK"}"#)])
+        let calls = [bashCall("rm -rf build", providerID: "call_1"), bashCall("rm -rf dist", providerID: "call_2")]
+        let gateTask = Task { [service, delegateTask = task()] in
+            await service!.gateBashCalls(
+                resolvedToolCalls: calls, allowedToolNames: [ToolNames.bash],
+                stepID: "step1", taskID: 1, supervisorMode: .manual, task: delegateTask,
+                client: client, config: LLMConfig(), networkLogger: nil)
+        }
+        for _ in 0..<500 where client.callCount < 1 { try? await Task.sleep(for: .milliseconds(2)) }
+        XCTAssertEqual(client.callCount, 1, "premise: the first judge was being asked")
+        gateTask.cancel()
+        let results = await gateTask.value
+
+        XCTAssertEqual(client.callCount, 1, "a stopped run asks no further judge")
+        for (idx, providerID) in [(0, "call_1"), (1, "call_2")] {
+            XCTAssertEqual(errorCode(results[idx]?.outputJSON ?? ""), ToolErrorCode.cancelled.rawValue, providerID)
+            XCTAssertEqual(results[idx]?.providerID, providerID, "each call is still answered")
+        }
+    }
+
+    /// Reached with the run already stopped: no judge is asked AND none is noted on the
+    /// prompt-prefix ledger — a noted judge is a suspect `serverDroppedCache` can name, for a
+    /// call that never went out.
+    func testAutoMode_runAlreadyStopped_notesNoJudgeOnTheLedger_andAsksNone() async {
+        delegate.bashPolicy = BashPolicy(mode: .auto)
+        let client = ScriptedToolCallClient(script: [.text(#"{"decision":"OK"}"#)])
+        await recordStepRequest()
+        let results = await Task { [service, delegateTask = task(), call = bashCall("rm -rf build")] in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await service!.gateBashCalls(
+                resolvedToolCalls: [call], allowedToolNames: [ToolNames.bash],
+                stepID: "step1", taskID: 1, supervisorMode: .manual, task: delegateTask,
+                client: client, config: LLMConfig(), networkLogger: nil)
+        }.value
+
+        XCTAssertEqual(errorCode(results[0]?.outputJSON ?? ""), ToolErrorCode.cancelled.rawValue)
+        XCTAssertEqual(client.callCount, 0, "a stopped run asks no judge")
+        let suspect = await recordStepRequest()
+        XCTAssertNil(suspect, "a judge that was never asked was noted on the ledger as \(suspect ?? "")")
+    }
+
+    /// The other side of the guard: a judge that IS asked is noted, under its own label.
+    func testAutoMode_judgeAsked_isNotedOnTheLedger() async {
+        let client = ScriptedToolCallClient(script: [.text(#"{"decision":"OK"}"#)])
+        await recordStepRequest()
+        _ = await gate([bashCall("rm -rf build")], policy: BashPolicy(mode: .auto), client: client)
+        XCTAssertEqual(client.callCount, 1, "premise: the judge was asked")
+        let suspect = await recordStepRequest()
+        XCTAssertEqual(suspect, LLMCallOwner.oneShot(label: "bash judge").key)
+    }
+
+    /// Records one request of this test's step on the ledger, on the (server, model) the gate
+    /// is handed, and returns who else the ledger saw on it since the step's previous request.
+    @discardableResult
+    private func recordStepRequest() async -> String? {
+        let config = LLMConfig()
+        return await service.prefixLedger.record(
+            baseURL: config.baseURLString, model: config.modelName,
+            owner: .step(taskID: 1, stepID: "step1"),
+            messages: [ChatMessage(role: .user, content: "brief")], toolSchemaText: ""
+        ).suspect
     }
 
     // MARK: - Error guidance (anti-retry)

@@ -313,7 +313,7 @@ nonisolated enum ToolCallParsingHelpers {
     /// close lands mid-payload and everything after it is dropped in silence.
     ///
     /// Observed live from `google/gemma-4-26b-a4b-qat` twice in one step
-    /// (`network_log.json`, 2026-08-13, 19:53:20 and 19:53:28):
+    /// (`network_log.json`, 2026-08-13, two responses in a row):
     ///
     ///     {"name":"edit_file","arguments":{"new_text":"…"},"old_text":"…"},"path":"…"}}
     ///
@@ -650,7 +650,9 @@ nonisolated enum ToolCallParsingHelpers {
         "commentary", "analysis", "final", "thinking",
     ]
 
-    static func parseToolCallFromJSON(_ jsonText: String) -> StepToolCall? {
+    static func parseToolCallFromJSON(
+        _ jsonText: String, knownNames: Set<String> = ToolNames.allNames
+    ) -> StepToolCall? {
         let sanitized = JSONUtilities.sanitizeJSONControlCharacters(jsonText)
         guard let data = sanitized.data(using: .utf8) else { return nil }
         let dict: [String: Any]
@@ -696,22 +698,33 @@ nonisolated enum ToolCallParsingHelpers {
         // by `ToolCallShapeRecognizer`. The repair/recovery above turned the
         // (possibly broken) bytes into this clean dict; here we only dispatch on
         // its shape and serialize the resolved arguments.
-        guard let resolved = ToolCallShapeRecognizer.resolve(from: dict) else { return nil }
+        guard let resolved = ToolCallShapeRecognizer.resolve(from: dict, knownNames: knownNames)
+        else { return nil }
 
         // Parameters the model wrote OUTSIDE its `arguments` wrapper were merged back in
         // by the shape recognizer. Tell the model, once, on the result of the call it
         // just made: a repair nobody reports is a defect the model re-emits for the rest
         // of the run — which is exactly what the 2026-08-13 gemma run did, eight seconds
         // apart, after being told only "Fix the arguments and retry".
-        let recovered = ToolCallShapeRecognizer.spilledSiblingKeys(from: dict)
+        // Reported off what the call actually GOT: a sibling counts as recovered only when it
+        // reached the arguments (a nested envelope or a string wrapper merges nothing).
+        let deliveredArguments = resolved.arguments as? [String: Any] ?? [:]
+        let recovered = ToolCallShapeRecognizer.spilledSiblingKeys(from: dict, forTool: resolved.name)
+            .filter { deliveredArguments[$0] != nil }
         if !recovered.isEmpty { _bumpRepairFireCount() }
+        // Keys written beside the call that did not reach it were left out — said once, so the
+        // model stops writing them, rather than refused as arguments it never sent.
+        let stranded = ToolCallShapeRecognizer.strandedKeys(from: dict, delivered: resolved.arguments)
 
         return StepToolCall(
             providerID: providerID,
             name: resolved.name,
             argumentsJSON: normalizeArgumentsJSON(resolved.arguments),
             argumentRepairNote: mergedRepairNote(
-                repairNotes + [spilledArgumentsNote(recoveredKeys: recovered)].compactMap { $0 }))
+                repairNotes + [
+                    spilledArgumentsNote(recoveredKeys: recovered),
+                    strandedArgumentsNote(keys: stranded, tool: resolved.name),
+                ].compactMap { $0 }))
     }
 
     /// One `format_note` line out of however many repairs fired, or nil when none did.
@@ -743,6 +756,18 @@ nonisolated enum ToolCallParsingHelpers {
             + recoveredKeys.joined(separator: ", ")
             + " were outside it and had to be recovered; put every parameter inside "
             + "`arguments`"
+    }
+
+    /// runtime-prompt
+    ///
+    /// One line for the model, or nil when nothing was left out: keys written beside the call
+    /// that the tool does not read. The call goes without them — they were never inside
+    /// `arguments`, so refusing the call for them would name a fault the model did not make.
+    static func strandedArgumentsNote(keys: [String], tool: String) -> String? {
+        guard !keys.isEmpty else { return nil }
+        let quoted = keys.map { "`\($0)`" }.joined(separator: ", ")
+        return quoted + " stood outside `arguments`, so " + (keys.count == 1 ? "it was" : "they were")
+            + " left out of the `\(ToolRegistry.resolveToolName(tool))` call — put every argument inside `arguments`"
     }
 
     private static func normalizeArgumentsJSON(_ value: Any?) -> String {
@@ -1055,7 +1080,7 @@ nonisolated enum ToolCallParsingHelpers {
     /// `ornith-1.0-35b` defect: the closing quote of a NUMERIC string value and the member
     /// comma are TRANSPOSED — `"end_line":"588,"include_line_numbers":false` where the model
     /// meant `"end_line":"588","include_line_numbers":false`. Verbatim from CastleSurvivors
-    /// task 5 run 0, response 2026-09-08T14:30:32.536Z: every argument was present and the
+    /// task 5 run 0, a response of 2026-09-08: every argument was present and the
     /// braces balanced, but the stray byte inverts string parity for the rest of the payload,
     /// so the walker ends inside a string with no `}` ever seen outside one — `lastCloseEnd`
     /// stays nil and BOTH EOF-salvage arms decline. The raw-body fallback then hands these
@@ -1068,7 +1093,7 @@ nonisolated enum ToolCallParsingHelpers {
     /// (`ToolArgumentHelpers`), so the second reading dispatches a call that cannot run.
     ///
     /// That argument holds for a key the schema coerces to `Int` and for NO other key. Gating
-    /// on the VALUE being digits — the shape this repair shipped with for one afternoon on
+    /// on the VALUE being digits — the shape this repair shipped with for a few hours on
     /// 2026-09-08 — reaches `{"old_text":"588","new_text":"600,"path":"x.gd"}` and silently
     /// writes `600` where the model wrote `600,`: for a free-text argument both readings ARE
     /// executable, so the wrong one lands in the user's file under `ok:true` with a note
@@ -1267,7 +1292,9 @@ nonisolated enum ToolCallParsingHelpers {
     /// Scans the assistant's text for the first `<|call|>…<|end|>` block and
     /// reports the nature of the parse failure. Safe to call on responses where
     /// only `<|channel|>` markers appear (returns `.noCallEnvelope`).
-    static func classifyHarmonyCallIssue(in text: String) -> HarmonyCallIssue {
+    static func classifyHarmonyCallIssue(
+        in text: String, knownNames: Set<String> = ToolNames.allNames
+    ) -> HarmonyCallIssue {
         // Same repair the parser applies, for the same reason: `postCallJSON` is gated on
         // a literal `<|call|>`, so a mangled sentinel would be classified `.noCallEnvelope`
         // ("you never attempted a call") when the model plainly did.
@@ -1276,7 +1303,7 @@ nonisolated enum ToolCallParsingHelpers {
         // the marker was first detected — and appends every later content delta RAW, so a
         // second mangled sentinel in the same reply arrives here untouched. Must stay in
         // lockstep with `malformedJSONDiagnostic`, which the caller pairs with this verdict.
-        let text = HarmonySentinelNormalizer.normalize(text)
+        let text = HarmonySentinelNormalizer.normalize(text, knownNames: knownNames)
         if containsOnlyRoleMarkerStarts(in: text) {
             return .noEnvelopeAttempt
         }
@@ -1313,7 +1340,7 @@ nonisolated enum ToolCallParsingHelpers {
         // `resolve`'s key precedence by hand, with no shared constant and no test asserting
         // the two agreed — one edit away from reporting a missing name for a payload the
         // parser had dispatched.
-        switch ToolCallShapeRecognizer.toolNamePosition(in: dict) {
+        switch ToolCallShapeRecognizer.toolNamePosition(in: dict, knownNames: knownNames) {
         case .topLevel:
             // A recognised name field is present, so the parser should have succeeded —
             // either the name was reserved (e.g. `commentary`) or something novel tripped
@@ -1349,7 +1376,9 @@ nonisolated enum ToolCallParsingHelpers {
     /// (`LLMExecutionService+StepFlowControl` wraps them as `parser error: …` inside the
     /// malformed-JSON nudge), so they are versioned like a nudge; the third is Foundation's
     /// own message about the model's bytes and varies per payload.
-    static func malformedJSONDiagnostic(in text: String) -> String? {
+    static func malformedJSONDiagnostic(
+        in text: String, knownNames: Set<String> = ToolNames.allNames
+    ) -> String? {
         // Same normalization as `classifyHarmonyCallIssue`, and for the same reason: both
         // build on `postCallJSON`, whose marker test is an exact substring. Normalizing
         // only the classifier would have let the pair DISAGREE — classify sees `<|call|>`
@@ -1364,7 +1393,7 @@ nonisolated enum ToolCallParsingHelpers {
         // version of this note blamed the reasoning-channel branch of `envelopeSource`;
         // that branch is unreachable, because `sawHarmonyMarker` is only ever set together
         // with a non-empty `harmonyBuffer`.)
-        let text = HarmonySentinelNormalizer.normalize(text)
+        let text = HarmonySentinelNormalizer.normalize(text, knownNames: knownNames)
         let jsonText: String
         switch postCallJSON(in: text) {
         case .noCallMarker:

@@ -35,11 +35,19 @@ extension NTMSOrchestrator {
     /// join `runStartTask(for:)`. Concurrency is unchanged: the launch keeps holding
     /// the run-start claim, so a competing `startRun` is refused for its whole
     /// duration exactly as before.
+    ///
+    /// The create-and-start belongs to the folder described when it began (after the bootstrap,
+    /// for a first launch): the create asks that lifecycle (`createTask(…, within:)`), and so do
+    /// the steps after the attachments write, which suspends. A folder transition that began
+    /// inside that write leaves the task created where the person asked for it and NOT started —
+    /// no switch, no claim, no run — and the person is told: switching then would promote the
+    /// next folder's task of the same id, and the start would run there.
     @discardableResult
     func createPreparedTaskAndStart(request: TaskCreationRequest) async -> Int? {
         if workFolderURL == nil {
             await bootstrapDefaultStorageIfNeeded()
         }
+        let lifecycle = currentFolderLifecycle
         guard let workFolderRoot = workFolderURL else { return nil }
 
         let trimmedTask = request.rawSupervisorTask.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -58,11 +66,19 @@ extension NTMSOrchestrator {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
 
-        guard let newTaskID = await createTask(
+        let newTaskID: Int
+        switch await createTask(
             title: trimmedTitle,
             supervisorTask: trimmedTask,
-            preferredTeamID: request.preferredTeamID
-        ) else {
+            preferredTeamID: request.preferredTeamID,
+            within: lifecycle
+        ) {
+        case .created(let created):
+            newTaskID = created
+        case .folderChanged:
+            lastErrorMessage = Self.createTaskFolderChangedMessage
+            return nil
+        case .notCreated:
             return nil
         }
         #if DEBUG
@@ -83,28 +99,46 @@ extension NTMSOrchestrator {
                 task.attachmentPaths = finalAttachmentPaths
             }
         } catch {
-            await removeTask(newTaskID)
-            lastErrorMessage = error.localizedDescription
+            // The removal flushes the pending active-task write first, and a folder transition can
+            // begin inside that flush: then the task stays, unstarted, in the folder it was created
+            // in, and the person is told that rather than a failure from a folder no longer open.
+            let removal = await removeTask(newTaskID, within: lifecycle, by: .person)
+            lastErrorMessage = removal == .folderChanged
+                ? Self.createdNotStartedFolderChangedMessage : error.localizedDescription
             return nil
         }
         #if DEBUG
         SubmitLatencyProbe.mark("attachments")
         #endif
+        // The attachments write suspended.
+        guard isCurrentFolderLifecycle(lifecycle) else {
+            lastErrorMessage = Self.createdNotStartedFolderChangedMessage
+            return nil
+        }
 
         // No-op today — `createTask(makeActive:)` already promoted this id — but kept
         // so the "the active task is this one" precondition the board renders against
         // is stated here rather than inherited from another method's default argument.
         await switchTask(to: newTaskID)
+        guard isCurrentFolderLifecycle(lifecycle) else {
+            lastErrorMessage = Self.createdNotStartedFolderChangedMessage
+            return nil
+        }
 
         // Phase 1 inline, phase 2 behind the chat. `claimRunStart` is the same guard
         // `startRun` takes, so a Play click or a queue-flush wake arriving during the
         // background launch is refused exactly as it would have been mid-`startRun`.
-        if let generation = claimRunStart(taskID: newTaskID) {
+        if let claim = claimRunStart(taskID: newTaskID) {
             await materializeRun(taskID: newTaskID)
-            spawnBackgroundRunLaunch(taskID: newTaskID, generation: generation)
+            spawnBackgroundRunLaunch(taskID: newTaskID, claim: claim)
         }
         return newTaskID
     }
+
+    /// What the person is told when the work folder changed while their new task's attachments
+    /// were written: the task exists, in the folder they created it in, and was not started.
+    static let createdNotStartedFolderChangedMessage =
+        "The task was created in the previous work folder but not started: the work folder changed while it was being created."
 
     func stageAttachment(url: URL, draftID: UUID) -> StagedAttachment? {
         guard let workFolderRoot = workFolderURL else {
@@ -209,6 +243,10 @@ extension NTMSOrchestrator {
             workFolderRoot.appendingPathComponent($0, isDirectory: false)
         }
         guard !urls.isEmpty else { return }
-        NSWorkspace.shared.activateFileViewerSelecting(urls)
+        if let revealInFileViewer {
+            revealInFileViewer(urls)
+        } else {
+            NSWorkspace.shared.activateFileViewerSelecting(urls)
+        }
     }
 }

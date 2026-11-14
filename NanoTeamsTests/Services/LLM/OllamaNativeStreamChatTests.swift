@@ -72,9 +72,9 @@ final class OllamaNativeStreamChatTests: XCTestCase {
     }
 
     /// Recorded 2026-09-13 (`ornith-1.5:35b`, Ollama 0.34.0): the call rides the `done:true`
-    /// chunk itself.
+    /// chunk itself. `created_at`'s wall-clock time was normalised to the start of the day.
     private static let callOnTheTerminalChunk = """
-    {"model":"ornith-1.5:35b","created_at":"2026-09-13T08:37:45.632588Z","message":{"role":"assistant","content":"","tool_calls":[{"id":"Aeu8czDi2vLdHojVqS7dgemauTBH7qxh","function":{"index":0,"name":"read_file","arguments":{"path":"MeditationApp/App.swift"}}}]},"done":true,"done_reason":"stop","total_duration":7741185750,"load_duration":6966900917,"prompt_eval_count":368,"prompt_eval_cached_count":0,"prompt_eval_duration":363373000,"eval_count":30,"eval_duration":385566000}
+    {"model":"ornith-1.5:35b","created_at":"2026-09-13T00:00:00.000000Z","message":{"role":"assistant","content":"","tool_calls":[{"id":"Aeu8czDi2vLdHojVqS7dgemauTBH7qxh","function":{"index":0,"name":"read_file","arguments":{"path":"MeditationApp/App.swift"}}}]},"done":true,"done_reason":"stop","total_duration":7741185750,"load_duration":6966900917,"prompt_eval_count":368,"prompt_eval_cached_count":0,"prompt_eval_duration":363373000,"eval_count":30,"eval_duration":385566000}
     """
 
     func testNative_callOnTheTerminalChunk_arrivesWithTheUsageAndPrefill() async {

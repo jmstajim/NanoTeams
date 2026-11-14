@@ -79,6 +79,13 @@ struct ActivityDetailWindowView: View {
                     isError: isError,
                     createdAt: createdAt
                 )
+            case .externalAgentCall(let id, let toolName, let isError, let createdAt):
+                ExternalAgentCallDetailBody(
+                    toolName: toolName,
+                    isError: isError,
+                    createdAt: createdAt,
+                    load: { await store.externalActivityLog.fullCall(id: id) }
+                )
             case .artifact(_, let artifactName, let mimeType, let relativePath, let createdAt):
                 ArtifactDetailBody(
                     artifactName: artifactName,
@@ -217,7 +224,10 @@ private struct DetailHeader: View {
 /// distinct from raw — Pretty pretty-prints via `JSONSerialization`, Raw
 /// shows the original wire string verbatim. Sections that aren't valid
 /// JSON show their raw form regardless of mode.
-private struct ToolCallDetailBody: View {
+///
+/// `internal`, not `private`: `ExternalAgentCallDetailBody` (its own file) shows an external
+/// agent's call through this same body once it has loaded it.
+struct ToolCallDetailBody: View {
     let toolName: String
     let argumentsJSON: String
     let resultJSON: String?
@@ -515,6 +525,7 @@ private struct MeetingToolDetailBody: View {
                 Spacer()
                 Text(summary.createdAt.formatted(date: .omitted, time: .standard))
                     .font(Typography.term2xs)
+                    .lineLimit(1)
                     .foregroundStyle(Colors.textTertiary)
             }
             if !summary.arguments.isEmpty {

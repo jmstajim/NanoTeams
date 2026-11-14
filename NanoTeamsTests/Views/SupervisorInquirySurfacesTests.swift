@@ -240,7 +240,7 @@ final class SupervisorInquirySurfacesTests: XCTestCase {
             isStreaming: { _ in false }
         ).compactMap { tagged -> AnsweredInquiry?? in
             guard case .notification(_, _, let type, _, _) = tagged.item,
-                  case .supervisorInput(_, _, _, _, _, _, _, let inquiry) = type
+                  case .supervisorInput(_, _, _, _, _, _, _, let inquiry, _) = type
             else { return nil }
             return .some(inquiry)
         }

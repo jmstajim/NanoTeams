@@ -19,6 +19,12 @@ nonisolated struct WriteFileTool: ToolHandler {
         )
     )
     static let category: ToolCategory = .fileWrite
+    /// `create_dirs` was this tool's own argument until 2026-09-06 (missing parents have been
+    /// created unconditionally since), and models that learned it still send it.
+    static let undeclaredArguments: [String: UndeclaredArgument] = [
+        "file_path": .alias(of: "path"),
+        "create_dirs": .ignored(reason: "missing parent folders are always created"),
+    ]
     static let blockedInDefaultStorage = true
 
     let resolver: SandboxPathResolver
@@ -61,7 +67,9 @@ nonisolated struct WriteFileTool: ToolHandler {
             }
 
             let fileExisted = fileManager.fileExists(atPath: fileURL.path)
-            try content.write(to: fileURL, atomically: true, encoding: .utf8)
+            // Written through a directory this holds open and has verified, so neither the
+            // directory nor the name can be swapped for a link under the write (#376).
+            try VerifiedFile.writeAtomically(Data(content.utf8), to: fileURL, resolver: resolver)
 
             struct WriteFileData: Codable {
                 var path: String
@@ -99,6 +107,12 @@ nonisolated struct EditFileTool: ToolHandler {
         )
     )
     static let category: ToolCategory = .fileWrite
+    /// The agent-harness spellings (`ToolArgumentVocabulary.filePath`), all three.
+    static let undeclaredArguments: [String: UndeclaredArgument] = [
+        "file_path": .alias(of: "path"),
+        "old_string": .alias(of: "old_text"),
+        "new_string": .alias(of: "new_text"),
+    ]
     static let blockedInDefaultStorage = true
 
     let resolver: SandboxPathResolver
@@ -135,7 +149,15 @@ nonisolated struct EditFileTool: ToolHandler {
                 )
             }
 
-            let content = try String(contentsOf: fileURL, encoding: .utf8)
+            guard let content = String(
+                data: try VerifiedFile.readData(fileURL, resolver: resolver), encoding: .utf8)
+            else {
+                return makeErrorResult(
+                    toolName: Self.name, args: args,
+                    code: .commandFailed,
+                    message: "File is not valid UTF-8 — appears to be binary or in another encoding: \(path). Choose a text file, or use write_file to replace this one whole."
+                )
+            }
 
             // Each repair is paired with the replacement it belongs to, and a repaired
             // anchor is only ever used together with its repaired replacement.
@@ -238,7 +260,8 @@ nonisolated struct EditFileTool: ToolHandler {
                 }
             }
 
-            try newContent.write(to: fileURL, atomically: true, encoding: .utf8)
+            try VerifiedFile.writeAtomically(
+                Data(newContent.utf8), to: fileURL, resolver: resolver)
 
             struct EditFileData: Codable {
                 var path: String
@@ -1162,6 +1185,7 @@ nonisolated struct DeleteFileTool: ToolHandler {
         )
     )
     static let category: ToolCategory = .fileWrite
+    static let undeclaredArguments = ToolArgumentVocabulary.filePath
     static let blockedInDefaultStorage = true
 
     let resolver: SandboxPathResolver
@@ -1213,7 +1237,7 @@ nonisolated struct DeleteFileTool: ToolHandler {
                 )
             }
 
-            try fileManager.removeItem(at: fileURL)
+            try VerifiedFile.removeFile(fileURL, resolver: resolver)
 
             return makeSuccessResult(
                 toolName: Self.name, args: args,

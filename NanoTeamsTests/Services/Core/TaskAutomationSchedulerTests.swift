@@ -69,7 +69,7 @@ final class TaskAutomationSchedulerTests: NTMSOrchestratorTestBase, @unchecked S
         }
         let runsBefore = sut.loadedTask(taskID)?.runs.count ?? 0
 
-        await sut.reconcileMissedRecurrences(now: now)
+        await sut.reconcileMissedRecurrences(now: now, lifecycle: sut.currentFolderLifecycle)
 
         let rec = sut.loadedTask(taskID)?.recurrence
         XCTAssertNotNil(rec?.nextFireAt)
@@ -149,6 +149,54 @@ final class TaskAutomationSchedulerTests: NTMSOrchestratorTestBase, @unchecked S
         XCTAssertEqual(sut.loadedTask(taskID)?.runs.last?.timedOutAt, stamp, "fires once per run — no re-pause")
     }
 
+    func testRunTimeout_reArmsWatchdogWhenLimitIncreasedWithoutClearingTimedOutAt() async {
+        await sut.openWorkFolder(tempDir)
+        let taskID = await sut.createTask(title: "T", supervisorTask: "x")!
+        let start = Date()
+        await sut.mutateTask(taskID: taskID) { task in
+            task.runTimeoutSeconds = 60
+            task.runs = [Run(
+                id: 0,
+                createdAt: start,
+                steps: [StepExecution(id: "assistant", role: .custom(id: "assistant"), title: "Chat", status: .running)],
+                roleStatuses: ["assistant": .working]
+            )]
+        }
+        sut.engineState[taskID] = .running
+
+        // 1. Fire timeout at 70s (> 60s)
+        await sut.evaluateRunTimeouts(now: start.addingTimeInterval(70))
+        let initialTimedOutAt = sut.loadedTask(taskID)?.runs.last?.timedOutAt
+        XCTAssertNotNil(initialTimedOutAt, "initial timeout must set timedOutAt")
+        XCTAssertEqual(sut.loadedTask(taskID)?.runs.last?.pauseCause, .runTimedOut)
+
+        // 2. Increase timeout to 120s while still paused
+        await sut.setTaskRunTimeout(taskID: taskID, seconds: 120)
+
+        // Historical stamp must NOT be erased!
+        XCTAssertEqual(sut.loadedTask(taskID)?.runs.last?.timedOutAt, initialTimedOutAt,
+                       "timedOutAt must be preserved as historical stamp, never erased")
+        XCTAssertFalse(sut.isPausedInTheApp(taskID: taskID),
+                       "Task must NOT be misclassified as human-paused after timeout increase")
+
+        // 3. Resume run
+        await sut.resumeRun(taskID: taskID)
+        sut.engineState[taskID] = .running
+
+        // 4. At 100s (> 60s, < 120s), watchdog must NOT fire
+        await sut.evaluateRunTimeouts(now: start.addingTimeInterval(100))
+        XCTAssertNotEqual(sut.loadedTask(taskID)?.runs.last?.pauseCause, .runTimedOut,
+                          "Must not timeout below new 120s limit")
+
+        // 5. At 130s (> 120s), watchdog MUST re-fire!
+        await sut.evaluateRunTimeouts(now: start.addingTimeInterval(130))
+        let secondTimedOutAt = sut.loadedTask(taskID)?.runs.last?.timedOutAt
+        XCTAssertNotNil(secondTimedOutAt)
+        XCTAssertGreaterThan(secondTimedOutAt!, initialTimedOutAt!,
+                             "Watchdog must re-arm and fire when exceeding new limit")
+        XCTAssertEqual(sut.loadedTask(taskID)?.runs.last?.pauseCause, .runTimedOut)
+    }
+
     func testRunTimeout_underBudget_noPause() async {
         await sut.openWorkFolder(tempDir)
         let taskID = await sut.createTask(title: "T", supervisorTask: "x")!
@@ -200,7 +248,7 @@ final class TaskAutomationSchedulerTests: NTMSOrchestratorTestBase, @unchecked S
             $0.recurrence = TaskRecurrence(rule: .interval(seconds: 3_600), isEnabled: true, nextFireAt: future)
         }
 
-        await sut.reconcileMissedRecurrences(now: now)
+        await sut.reconcileMissedRecurrences(now: now, lifecycle: sut.currentFolderLifecycle)
 
         XCTAssertEqual(sut.loadedTask(taskID)?.recurrence?.nextFireAt, future, "a future slot must be left exactly as-is")
         XCTAssertTrue(sut.loadedTask(taskID)?.recurrence?.isEnabled == true)
@@ -214,7 +262,7 @@ final class TaskAutomationSchedulerTests: NTMSOrchestratorTestBase, @unchecked S
             $0.recurrence = TaskRecurrence(rule: .once(date: now.addingTimeInterval(-100)), isEnabled: true, nextFireAt: now.addingTimeInterval(-100))
         }
 
-        await sut.reconcileMissedRecurrences(now: now)
+        await sut.reconcileMissedRecurrences(now: now, lifecycle: sut.currentFolderLifecycle)
 
         let rec = sut.loadedTask(taskID)?.recurrence
         XCTAssertEqual(rec?.isEnabled, false, "a missed one-shot disables itself rather than firing late")
@@ -367,7 +415,7 @@ final class TaskAutomationSchedulerTests: NTMSOrchestratorTestBase, @unchecked S
         XCTAssertEqual(sut.activeTaskID, idB)
         XCTAssertNotNil(sut.loadedTask(idA), "A is still loaded as a background task")
 
-        await sut.reconcileMissedRecurrences(now: now)
+        await sut.reconcileMissedRecurrences(now: now, lifecycle: sut.currentFolderLifecycle)
 
         XCTAssertNil(sut.loadedTask(idA), "reconcile evicts the touched background task to bound memory")
         // …but the rescheduled recurrence is persisted to disk.
@@ -384,7 +432,7 @@ final class TaskAutomationSchedulerTests: NTMSOrchestratorTestBase, @unchecked S
             $0.recurrence = TaskRecurrence(rule: .interval(seconds: 3_600), isEnabled: true, nextFireAt: now.addingTimeInterval(-100))
         }
 
-        await sut.reconcileMissedRecurrences(now: now)
+        await sut.reconcileMissedRecurrences(now: now, lifecycle: sut.currentFolderLifecycle)
 
         XCTAssertNotNil(sut.loadedTask(idA), "the active task is never evicted")
         XCTAssertGreaterThan(sut.loadedTask(idA)!.recurrence!.nextFireAt!, now)
@@ -701,7 +749,7 @@ final class TaskAutomationSchedulerTests: NTMSOrchestratorTestBase, @unchecked S
         let first = sut.automationPollTask
         XCTAssertNotNil(first, "open started a loop")
 
-        await sut.startAutomationScheduler()
+        await sut.startAutomationScheduler(lifecycle: sut.currentFolderLifecycle)
 
         XCTAssertEqual(first?.isCancelled, true, "re-starting cancels the prior loop — no double poll")
         XCTAssertNotNil(sut.automationPollTask, "a fresh loop is running after re-start")
@@ -842,7 +890,7 @@ final class TaskAutomationSchedulerTests: NTMSOrchestratorTestBase, @unchecked S
         _ = await sut.createTask(title: "B", supervisorTask: "y")! // A → background
         XCTAssertTrue(sut.beginTeamGeneration(taskID: idA), "sanity: A is generating")
 
-        await sut.reconcileMissedRecurrences(now: now)
+        await sut.reconcileMissedRecurrences(now: now, lifecycle: sut.currentFolderLifecycle)
 
         XCTAssertNotNil(sut.loadedTask(idA), "a generating task must not be evicted mid-generation")
         sut.endTeamGeneration(taskID: idA)

@@ -271,6 +271,13 @@ extension LLMExecutionService {
         /// re-capture instead of probing stale coordinates.
         var computerUseActionsSinceCapture: Int = 0
 
+        /// MCP servers (`serverID → serverDisplayName`) already contacted during the current
+        /// conversation of this step. Used by the MCP gate under `.semiAutomatic` to hold calls to
+        /// a second server for human approval (`D-M4`). Cleared at the planning→implementation
+        /// boundary (`resetConversationScopedState`) because the planning conversation and its
+        /// raw tool results are discarded there, and on step teardown (`cleanup`).
+        var mcpServersContactedInStep: [UUID: String] = [:]
+
         // MARK: Context compaction
 
         /// A compaction epoch this step owes, set by a trigger and consumed at the top of the
@@ -401,6 +408,9 @@ extension LLMExecutionService {
             // A fresh epoch may run against a differently-loaded model, and the answer that
             // was unobtainable while it was cold is obtainable now.
             windowReprobeSpent = false
+            // Tool results from the replaced conversation are no longer in the prompt, so the
+            // new phase starts with no prior MCP server contact in its conversation.
+            mcpServersContactedInStep = [:]
             // `autoCompactExhausted` and `lastCompactionServerPromptTokens` are deliberately
             // NOT here: this function runs AT an epoch, and both fields record what that epoch
             // established. Clearing them would let the next iteration re-run the epoch that

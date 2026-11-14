@@ -75,7 +75,10 @@ extension ToggleStyle where Self == TerminalToggleStyle {
 /// fit a 7-cell strip. This style renders the label itself as a squircle chip
 /// — accent fill + textOnAccent when ON, surfaceElevated + hairline border
 /// when OFF. Same accessibilityRepresentation so VO still reads the row as a
-/// native Toggle.
+/// native Toggle. The label is 10pt micro type and never wraps: offered less
+/// than its one line it keeps that line (`TerminalChipToggleStyleTests`) — the
+/// server page's "Always allow" folded into two lines at the Settings window's
+/// minimum width until 2026-10-28.
 struct TerminalChipToggleStyle: ToggleStyle {
     func makeBody(configuration: Configuration) -> some View {
         StyleBody(configuration: configuration)
@@ -91,10 +94,14 @@ struct TerminalChipToggleStyle: ToggleStyle {
             configuration.label
                 .font(Typography.term2xs.weight(.medium))
                 .tracking(Typography.labelTracking)
+                .lineLimit(1)
                 .foregroundStyle(foreground)
                 .padding(.horizontal, Spacing.s)
                 .padding(.vertical, Spacing.xs)
                 .frame(minWidth: 28)
+                // The whole chip at its ideal size — its fill and border included, which a
+                // label fixed alone would overflow.
+                .fixedSize()
                 .background(
                     RoundedRectangle.squircle(CornerRadius.small).fill(background)
                 )

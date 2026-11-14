@@ -131,6 +131,44 @@ final class KeychainQueryCoverageTests: XCTestCase {
                      "a read must not restate the accessibility class")
     }
 
+    // MARK: - List
+
+    /// The listing names the accounts of ONE service and reads none of their values: every
+    /// match's attributes (`kSecMatchLimitAll`), never its bytes — so a server's secrets are
+    /// not pulled into memory to learn which accounts exist, and a corrupt entry is listed like
+    /// any other. The same class and no-sync scope as every other query.
+    ///
+    /// RED: add `kSecReturnData`, drop `kSecMatchLimitAll`, or drop the service → a matching
+    /// assertion fails.
+    func testList_asksForEveryItemsAttributesAndNeverItsBytes() {
+        let query = KeychainQuery.list(service: service)
+
+        XCTAssertEqual(query[kSecClass as String] as? String, kSecClassGenericPassword as String)
+        XCTAssertEqual(string(query, kSecAttrService), service)
+        XCTAssertNil(query[kSecAttrAccount as String], "a listing matches every account of the service")
+        XCTAssertEqual(query[kSecAttrSynchronizable as String] as? Bool, false)
+        XCTAssertEqual(query[kSecReturnAttributes as String] as? Bool, true)
+        XCTAssertNil(query[kSecReturnData as String], "a listing must not read a single secret")
+        XCTAssertEqual(query[kSecMatchLimit as String] as? String, kSecMatchLimitAll as String)
+    }
+
+    /// The listing's answer is an array of attribute dictionaries. Anything else is a lookup
+    /// problem, not "no accounts"; the names are cut to the prefix and sorted.
+    func testAccountNames_readsTheAccountOfEachMatchAndKeepsThePrefix() throws {
+        let items = [
+            [kSecAttrAccount as String: "b/bearer"],
+            [kSecAttrAccount as String: "a/header/X"],
+            [kSecAttrAccount as String: "a/bearer"],
+            [kSecAttrService as String: "no account"],
+        ] as CFArray
+        XCTAssertEqual(try KeychainSecureTokenStorage.accountNames(
+            in: items, status: errSecSuccess, withPrefix: "a/"), ["a/bearer", "a/header/X"])
+        XCTAssertThrowsError(try KeychainSecureTokenStorage.accountNames(
+            in: Data("x".utf8) as CFTypeRef, status: errSecSuccess, withPrefix: "a/")) {
+                XCTAssertEqual($0 as? KeychainError, .unhandled(errSecSuccess))
+            }
+    }
+
     // MARK: - Status classification
 
     /// RED: make `write` return `.failed` for `errSecDuplicateItem` → the update path is

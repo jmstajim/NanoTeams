@@ -20,7 +20,8 @@ nonisolated extension MemoryTagStore {
         let endLine = data["end_line"] as? Int ?? 0
 
         let tag = nextTag(.read)
-        let taggedContent = "{\"tag\":\"\(tag)\",\"path\":\(jsonEscape(path)),\"lines\":\"\(startLine)-\(endLine)\",\"content\":\(jsonEscape(content))}"
+        let taggedContent = "{\"tag\":\"\(tag)\",\"path\":\(jsonEscape(path)),\"lines\":\"\(startLine)-\(endLine)\",\"content\":\(jsonEscape(content))"
+            + warningsMember(of: result.outputJSON) + "}"
         return .tagged(content: taggedContent, tag: tag)
     }
 }
@@ -90,11 +91,7 @@ nonisolated extension MemoryTagStore {
         if data?["matched_ignoring_interior_whitespace"] as? Bool == true {
             taggedContent += ",\"matched_ignoring_interior_whitespace\":true"
         }
-        let warnings = (envelope?["meta"] as? [String: Any])?["warnings"] as? [String] ?? []
-        if !warnings.isEmpty {
-            taggedContent +=
-                ",\"warnings\":[" + warnings.map(jsonEscape).joined(separator: ",") + "]"
-        }
+        taggedContent += warningsMember(of: result.outputJSON)
         taggedContent += "}"
         return .tagged(content: taggedContent, tag: tag)
     }
@@ -116,7 +113,8 @@ nonisolated extension MemoryTagStore {
         for byte in newContent.utf8 where byte == 0x0A { lines += 1 }
 
         let tag = nextTag(.write)
-        let taggedContent = "{\"tag\":\"\(tag)\",\"status\":\"success\",\"path\":\(jsonEscape(path)),\"lines\":\(lines)}"
+        let taggedContent = "{\"tag\":\"\(tag)\",\"status\":\"success\",\"path\":\(jsonEscape(path)),\"lines\":\(lines)"
+            + warningsMember(of: result.outputJSON) + "}"
         return .tagged(content: taggedContent, tag: tag)
     }
 }

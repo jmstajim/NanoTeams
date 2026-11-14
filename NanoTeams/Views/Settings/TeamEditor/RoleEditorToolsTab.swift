@@ -18,6 +18,9 @@ struct RoleEditorToolsTab: View {
     var lockedTools: [String] = []
     /// When non-nil, only these tools are offered as toggles (Autovisor manager).
     var restrictToTools: Set<String>? = nil
+    /// The MCP catalogue, read once by `RoleEditorSheet`. Empty for the Autovisor manager,
+    /// whose toolset is template-owned — and which gets no MCP by design.
+    var mcpGrants: MCPGrantCatalogue = .empty
     @Environment(StoreConfiguration.self) private var config
 
     /// Hint text describing the delegation configuration. Surfaces target count
@@ -45,7 +48,8 @@ struct RoleEditorToolsTab: View {
             autoInjectedTools: autoInjectedTools,
             delegationHint: delegationHint,
             lockedTools: lockedTools,
-            restrictToTools: restrictToTools
+            restrictToTools: restrictToTools,
+            mcpGrants: mcpGrants
         )
         .onAppear {
             // Safety: ensure the mandatory tools are always selected (persisted to

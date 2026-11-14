@@ -18,6 +18,7 @@ nonisolated struct GitAddTool: ToolHandler {
         )
     )
     static let category: ToolCategory = .gitWrite
+    static let undeclaredArguments = ToolArgumentVocabulary.aliases(["files", "path", "file"], of: "paths")
     static let blockedInDefaultStorage = true
 
     let workFolderRoot: URL
@@ -29,15 +30,13 @@ nonisolated struct GitAddTool: ToolHandler {
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
         await ToolErrorHandler.execute(toolName: Self.name, args: args) {
-            // I4: surface every accepted alias so a model that emits an
-            // unrecognized argument shape ({"foos": [...]}) sees the full set of
-            // acceptable keys instead of just `paths`. The single-valued aliases
-            // ride the same resolver — a bare string coerces to a one-element list.
-            let paths = try requiredStringArray(
-                args,
-                aliases: ["paths", "files", "path", "file"],
-                display: "paths (or files / path / file)"
-            )
+            // A work folder that IS a credential store (`~/.ssh`, `~/.claude` opened as a
+            // project) is no more git's to touch than the file tools' — asked by every git tool,
+            // not only by the five that take paths (#382).
+            if resolver.hidesRoot { throw SandboxPathError.protectedWorkFolder }
+            // `files` / `path` / `file` arrive here as `paths` (`undeclaredArguments`); a bare
+            // string coerces to a one-element list.
+            let paths = try requiredStringArray(args, "paths")
 
             // `{"paths": []}` reaches here intact (coerceStringArray keeps an explicitly
             // empty list), and a bare `git add` exits 0 — so the model asked to stage
@@ -49,36 +48,113 @@ nonisolated struct GitAddTool: ToolHandler {
                     detail: "is empty — name at least one file, or \".\" to stage everything.")
             }
 
-            // Tolerate absolute + redundant-work-folder-name path forms (globs/pathspec
-            // magic pass through untouched) so git_add behaves like the file tools.
-            let normalizedPaths = paths.map { resolver.relativizePathspec($0) }
-            var gitArgs = ["add"]
-            gitArgs.append(contentsOf: normalizedPaths)
-
-            let result = try ProcessRunner.runGit(gitArgs, in: workFolderRoot)
-
-            guard result.success else {
-                if GitErrorClassifier.isNotARepository(stderr: result.stderr) {
+            // Absolute and redundant-work-folder-name forms are tolerated, as in the file
+            // tools; a path those tools REFUSE is refused here too (#378).
+            //
+            // The positives are EXPANDED here rather than handed to git with the hidden
+            // locations as `:(exclude)` beside them: measured on git 2.54, an exclude next to a
+            // directory positive makes `git add` stage NOTHING for some directory names and
+            // everything for others, silently, under exit 0 — and the envelope then reported
+            // what the caller asked for rather than what git did. Expanding means every path
+            // staged is one this tool judged and can name (#378).
+            let positives = try resolver.gitPositives(forPaths: paths)
+            let found = try Self.filesToStage(
+                positives: positives, resolver: resolver, in: workFolderRoot)
+            switch found {
+            case .gitRefused(let failure):
+                if GitErrorClassifier.isNotARepository(stderr: failure) {
                     return GitErrorClassifier.notARepositoryError(toolName: Self.name, args: args)
                 }
                 return makeErrorResult(
                     toolName: Self.name, args: args,
                     code: .commandFailed,
-                    message: result.stderr.isEmpty
+                    message: failure.isEmpty
                         ? "git add failed with no output — check that the paths exist inside the work folder."
-                        : result.stderr
-                )
+                        : failure)
+            case .found(let files):
+                struct AddData: Codable {
+                    var staged: [String]
+                }
+                guard !files.isEmpty else {
+                    // A path the caller NAMED that matches nothing is a fault it can repair —
+                    // git said so before this tool expanded the positives itself, and the
+                    // sentence is the same one. A bare `.` over a clean tree is not: nothing to
+                    // stage is the whole truth about it.
+                    guard paths.allSatisfy({ $0.trimmingCharacters(in: .whitespaces) == "." })
+                    else {
+                        return makeErrorResult(
+                            toolName: Self.name, args: args,
+                            code: .commandFailed,
+                            message: "did not match any files that are new, changed or deleted: "
+                                + positives.joined(separator: ", ")
+                                + ". Check the path with list_files, or pass \".\" to stage the whole work folder.")
+                    }
+                    return makeSuccessResult(
+                        toolName: Self.name, args: args,
+                        data: AddData(staged: []),
+                        meta: ToolResultMeta(
+                            truncated: false,
+                            warnings: ["Nothing to stage under \(positives.joined(separator: ", "))"
+                                + " — no file there is new, changed or deleted."]))
+                }
+                var gitArgs = ["add", "--"]
+                gitArgs.append(contentsOf: files.map(resolver.gitLiteral))
+                let result = try ProcessRunner.runRoleGit(gitArgs, in: workFolderRoot)
+                guard result.success else {
+                    // No not-a-repository arm here: the expansion above already ran two git
+                    // queries successfully, so there IS a repository, and the only thing left
+                    // to say is what git said.
+                    return makeErrorResult(
+                        toolName: Self.name, args: args,
+                        code: .commandFailed,
+                        message: result.stderr.isEmpty
+                            ? "git add failed with no output — check that the paths exist inside the work folder."
+                            : result.stderr)
+                }
+                return makeSuccessResult(
+                    toolName: Self.name, args: args, data: AddData(staged: files))
             }
-
-            struct AddData: Codable {
-                var staged: [String]
-            }
-
-            return makeSuccessResult(
-                toolName: Self.name, args: args,
-                data: AddData(staged: normalizedPaths)
-            )
         }
+    }
+}
+
+extension GitAddTool {
+    /// Every file under `positives` that `git add` would touch — new, changed or deleted — as
+    /// work-folder-relative paths the resolver permits.
+    ///
+    /// Two queries, because they answer different halves and disagree about their root:
+    /// `ls-files --others` prints paths relative to the CWD, `diff --name-only` relative to the
+    /// REPOSITORY (measured), so the diff side takes `--relative`. Both are read-only.
+    enum StageCandidates {
+        case found([String])
+        /// git's own first line — the arm `git add` had before, kept so a broken repository
+        /// still reports what git said rather than an empty stage.
+        case gitRefused(String)
+    }
+
+    static func filesToStage(
+        positives: [String], resolver: SandboxPathResolver, in root: URL
+    ) throws -> StageCandidates {
+        var found: Set<String> = []
+        for positive in positives {
+            let spec = resolver.gitLiteral(positive)
+            for query in [
+                ["ls-files", "--others", "--exclude-standard", "--", spec],
+                ["diff", "--relative", "--name-only", "--", spec],
+            ] {
+                let result = try ProcessRunner.runRoleGit(query, in: root)
+                guard result.success else { return .gitRefused(result.stderr) }
+                found.formUnion(
+                    result.stdout.split(separator: "\n", omittingEmptySubsequences: true)
+                        .map(String.init))
+            }
+        }
+        // Judged one by one, so nothing hidden can ride in on a directory the caller named.
+        let permitted = found.filter { relative in
+            let path = (root.path as NSString).appendingPathComponent(relative)
+            return resolver.permits(canonicalPath: SandboxPathResolver.canonicalPath(path))
+        }
+        return .found(permitted.sorted())
     }
 }
 
@@ -101,14 +177,18 @@ nonisolated struct GitCommitTool: ToolHandler {
     static let blockedInDefaultStorage = true
 
     let workFolderRoot: URL
+    let resolver: SandboxPathResolver
 
-    
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self {
-        Self(workFolderRoot: dependencies.workFolderRoot)
+        Self(workFolderRoot: dependencies.workFolderRoot, resolver: dependencies.resolver)
     }
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
         await ToolErrorHandler.execute(toolName: Self.name, args: args) {
+            // A work folder that IS a credential store (`~/.ssh`, `~/.claude` opened as a
+            // project) is no more git's to touch than the file tools' — asked by every git tool,
+            // not only by the five that take paths (#382).
+            if resolver.hidesRoot { throw SandboxPathError.protectedWorkFolder }
             let message = try requiredString(args, "message")
             let amend = optionalBool(args, "amend", default: false)
 
@@ -117,7 +197,7 @@ nonisolated struct GitCommitTool: ToolHandler {
                 gitArgs.append("--amend")
             }
 
-            let result = try ProcessRunner.runGit(gitArgs, in: workFolderRoot)
+            let result = try ProcessRunner.runRoleGit(gitArgs, in: workFolderRoot)
 
             guard result.success else {
                 let errorMsg = result.stderr + result.stdout
@@ -150,7 +230,7 @@ nonisolated struct GitCommitTool: ToolHandler {
                 )
             }
 
-            let hashResult = try ProcessRunner.runGit(["rev-parse", "HEAD"], in: workFolderRoot)
+            let hashResult = try ProcessRunner.runRoleGit(["rev-parse", "HEAD"], in: workFolderRoot)
             let hash =
                 hashResult.success
                     ? hashResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines) : ""
@@ -187,28 +267,40 @@ nonisolated struct GitPullTool: ToolHandler {
     static let blockedInDefaultStorage = true
 
     let workFolderRoot: URL
+    let resolver: SandboxPathResolver
 
-    
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self {
-        Self(workFolderRoot: dependencies.workFolderRoot)
+        Self(workFolderRoot: dependencies.workFolderRoot, resolver: dependencies.resolver)
     }
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
         await ToolErrorHandler.execute(toolName: Self.name, args: args) {
+            // A work folder that IS a credential store (`~/.ssh`, `~/.claude` opened as a
+            // project) is no more git's to touch than the file tools' — asked by every git tool,
+            // not only by the five that take paths (#382).
+            if resolver.hidesRoot { throw SandboxPathError.protectedWorkFolder }
             let remote = optionalString(args, "remote") ?? "origin"
             let branch = optionalString(args, "branch")
             let rebase = optionalBool(args, "rebase", default: false)
+
+            let checkedRemote = GitErrorClassifier.validatedOperand(
+                remote, named: "remote", toolName: Self.name, args: args)
+            if let rejection = checkedRemote.rejection { return rejection }
+            let checkedBranch = branch.map {
+                GitErrorClassifier.validatedOperand($0, named: "branch", toolName: Self.name, args: args)
+            }
+            if let rejection = checkedBranch?.rejection { return rejection }
 
             var gitArgs = ["pull"]
             if rebase {
                 gitArgs.append("--rebase")
             }
-            gitArgs.append(remote)
-            if let branch = branch {
+            gitArgs.append(checkedRemote.value)
+            if let branch = checkedBranch?.value {
                 gitArgs.append(branch)
             }
 
-            let result = try ProcessRunner.runGit(gitArgs, in: workFolderRoot)
+            let result = try ProcessRunner.runRoleGit(gitArgs, in: workFolderRoot)
 
             let output = result.stdout + result.stderr
 
@@ -273,7 +365,7 @@ nonisolated struct GitPullTool: ToolHandler {
             // tool log. The index is the authoritative answer and costs one cheap call;
             // a text probe is not, which is the whole reason the exit status is consulted
             // first above.
-            let unmerged = (try? ProcessRunner.runGit(["ls-files", "-u"], in: workFolderRoot))
+            let unmerged = (try? ProcessRunner.runRoleGit(["ls-files", "-u"], in: workFolderRoot))
                 .map { GitConflictParser.unmergedPaths(inLsFilesOutput: $0.stdout) } ?? []
             if !unmerged.isEmpty {
                 return makeErrorResult(
@@ -321,14 +413,18 @@ nonisolated struct GitStashTool: ToolHandler {
     }
 
     let workFolderRoot: URL
+    let resolver: SandboxPathResolver
 
-    
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self {
-        Self(workFolderRoot: dependencies.workFolderRoot)
+        Self(workFolderRoot: dependencies.workFolderRoot, resolver: dependencies.resolver)
     }
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
         await ToolErrorHandler.execute(toolName: Self.name, args: args) {
+            // A work folder that IS a credential store (`~/.ssh`, `~/.claude` opened as a
+            // project) is no more git's to touch than the file tools' — asked by every git tool,
+            // not only by the five that take paths (#382).
+            if resolver.hidesRoot { throw SandboxPathError.protectedWorkFolder }
             let action = try requiredEnum(args, "action", as: StashAction.self)
             let message = optionalString(args, "message")
             let index = optionalInt(args, "index")
@@ -364,6 +460,11 @@ nonisolated struct GitStashTool: ToolHandler {
                     gitArgs.append("-m")
                     gitArgs.append(message)
                 }
+                // Scoped, like every other git tool: an unscoped `stash push` reaches the whole
+                // repository, so it would revert a hidden file NanoTeams itself maintains —
+                // an agent token file inside a versioned client folder (#376).
+                gitArgs.append("--")
+                gitArgs.append(contentsOf: try resolver.gitPathspecs(forPaths: nil))
 
             case .pop:
                 gitArgs.append("pop")
@@ -387,7 +488,7 @@ nonisolated struct GitStashTool: ToolHandler {
                 }
             }
 
-            let result = try ProcessRunner.runGit(gitArgs, in: workFolderRoot)
+            let result = try ProcessRunner.runRoleGit(gitArgs, in: workFolderRoot)
 
             guard result.success else {
                 return makeErrorResult(

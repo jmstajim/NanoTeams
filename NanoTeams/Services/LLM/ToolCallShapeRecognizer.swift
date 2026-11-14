@@ -29,7 +29,14 @@ nonisolated enum ToolCallShapeRecognizer {
     /// `arguments` is `Any?` (dict / array / string / nil) — the caller runs it
     /// through its own normalizer. Returning the raw value (rather than a
     /// serialized string) keeps this enum free of the serialization concern.
-    static func resolve(from dict: [String: Any]) -> (name: String, arguments: Any?)? {
+    /// - Parameter knownNames: every name that IS a tool on this call. Defaults to the
+    ///   app's own registry; a step that advertised MCP tools passes the union, because
+    ///   `ToolNames.allNames` is a compile-time list and cannot hold a tool an external
+    ///   server published a moment ago. Three branches below read it, and each of them
+    ///   turns on "is this string a tool" rather than on "is this string allowed".
+    static func resolve(
+        from dict: [String: Any], knownNames: Set<String> = ToolNames.allNames
+    ) -> (name: String, arguments: Any?)? {
         // Flat create_artifact emission: `{"content":…,"format":…,"name":"<Artifact>"}`
         // with NO `arguments` wrapper. Here the top-level `name` is the ARTIFACT
         // name (a create_artifact parameter), NOT the tool name — some models
@@ -55,9 +62,9 @@ nonisolated enum ToolCallShapeRecognizer {
             || dict["parameters"] != nil || dict["params"] != nil
         if !hasArgsWrapper,
            let topLevelName = ToolCallParsingHelpers.stringValue(dict["name"]),
-           !ToolNames.allNames.contains(topLevelName),
+           !knownNames.contains(topLevelName),
            recognizeToolFromArguments(dict) == ToolNames.createArtifact {
-            return (name: ToolNames.createArtifact, arguments: dict)
+            return (name: ToolNames.createArtifact, arguments: keepingAccepted(dict, forTool: ToolNames.createArtifact))
         }
 
         if let explicit = resolveExplicitName(in: dict) {
@@ -75,7 +82,7 @@ nonisolated enum ToolCallShapeRecognizer {
         // The tool id written INSIDE the model's own `arguments` wrapper. Last, so every
         // shape that resolved before this branch existed resolves to the same bytes — only
         // payloads that used to return nil can reach here.
-        if let nested = toolNameInsideArgumentsWrapper(dict) {
+        if let nested = toolNameInsideArgumentsWrapper(dict, knownNames: knownNames) {
             return nested
         }
 
@@ -117,13 +124,13 @@ nonisolated enum ToolCallShapeRecognizer {
     /// id and stay silent about the position, so the model would fix the id and keep
     /// misplacing it.
     private static func toolNameInsideArgumentsWrapper(
-        _ dict: [String: Any]
+        _ dict: [String: Any], knownNames: Set<String>
     ) -> (name: String, arguments: Any?)? {
         guard let wrapper = dict["arguments"] ?? dict["args"] ?? dict["parameters"]
             ?? dict["params"],
             let inner = wrapper as? [String: Any],
             let resolved = resolveExplicitName(in: inner),
-            ToolNames.allNames.contains(resolved.name)
+            knownNames.contains(resolved.name)
         else { return nil }
         return resolved
     }
@@ -149,14 +156,16 @@ nonisolated enum ToolCallShapeRecognizer {
         }
 
         if let name = ToolCallParsingHelpers.stringValue(dict["name"]).flatMap(acceptingName) {
-            let args = mergingSpilledSiblings(dict) ?? synthesizeArgumentsFromTopLevel(dict)
+            let args = mergingSpilledSiblings(dict, forTool: name)
+                ?? synthesizeArgumentsFromTopLevel(dict, forTool: name)
             return (name: name, arguments: args)
         }
 
         if let toolName = (ToolCallParsingHelpers.stringValue(dict["tool_name"])
             ?? ToolCallParsingHelpers.stringValue(dict["tool"])
             ?? ToolCallParsingHelpers.stringValue(dict["function_name"])).flatMap(acceptingName) {
-            let args = mergingSpilledSiblings(dict) ?? synthesizeArgumentsFromTopLevel(dict)
+            let args = mergingSpilledSiblings(dict, forTool: toolName)
+                ?? synthesizeArgumentsFromTopLevel(dict, forTool: toolName)
             return (name: toolName, arguments: args)
         }
 
@@ -212,9 +221,36 @@ nonisolated enum ToolCallShapeRecognizer {
     /// the normalizer's nil-guard and falls through to `String(describing:)` — producing
     /// the literal string `"nil"` as `argumentsJSON`. Keeping the return `Any?` avoids
     /// that subtle double-wrap.
-    static func synthesizeArgumentsFromTopLevel(_ dict: [String: Any]) -> Any? {
-        let promoted = dict.filter { !reservedEnvelopeKeys.contains($0.key) }
+    ///
+    /// With `toolName`, only the keys that tool reads are promoted
+    /// (`ToolArgumentVocabulary.acceptedKeys`): a `thought` or `reasoning` written beside the
+    /// call is commentary, not an argument, and promoting it got the call refused for a key
+    /// the model never put in its arguments. The rest are reported (`strandedKeys`).
+    static func synthesizeArgumentsFromTopLevel(_ dict: [String: Any], forTool toolName: String? = nil) -> Any? {
+        let promoted = keepingAccepted(
+            dict.filter { !reservedEnvelopeKeys.contains($0.key) }, forTool: toolName)
         return promoted.isEmpty ? nil : promoted
+    }
+
+    /// `dict` narrowed to the keys `toolName` reads, or whole when the tool is not one the
+    /// vocabulary describes (an MCP tool) or no tool is named.
+    private static func keepingAccepted(_ dict: [String: Any], forTool toolName: String?) -> [String: Any] {
+        guard let toolName, let accepted = ToolArgumentVocabulary.acceptedKeys(toolName: toolName) else { return dict }
+        return dict.filter { accepted.contains($0.key) }
+    }
+
+    /// Keys the model wrote OUTSIDE its arguments that the call did not get — reported, never
+    /// dropped in silence (`strandedArgumentsNote`). Read off what `resolve` DELIVERED, not off
+    /// why: a key the tool does not read (a `thought` beside the call), a real argument beside a
+    /// wrapper written as a string (nothing can be merged into text), or one beside an envelope
+    /// nested a level too deep (the inner call is what runs). Sorted; envelope framing
+    /// (`reservedEnvelopeKeys`) is never reported.
+    static func strandedKeys(from dict: [String: Any], delivered arguments: Any?) -> [String] {
+        let delivered = arguments as? [String: Any] ?? [:]
+        let inner = (dict["arguments"] ?? dict["args"] ?? dict["parameters"] ?? dict["params"]) as? [String: Any]
+        return dict.keys
+            .filter { !reservedEnvelopeKeys.contains($0) && delivered[$0] == nil && inner?[$0] == nil }
+            .sorted()
     }
 
     /// Keys that identify or wrap the call envelope itself — never promote them into a
@@ -246,13 +282,14 @@ nonisolated enum ToolCallShapeRecognizer {
     /// model put a value where values belong, and a stray outer copy must not overwrite
     /// it. Callers use the returned list to tell the model what it mis-emitted; an empty
     /// list means nothing was recovered, so nothing is said.
-    static func spilledSiblingKeys(from dict: [String: Any]) -> [String] {
+    static func spilledSiblingKeys(from dict: [String: Any], forTool toolName: String? = nil) -> [String] {
         guard let wrapper = dict["arguments"] ?? dict["args"] ?? dict["parameters"]
             ?? dict["params"],
             let inner = wrapper as? [String: Any]
         else { return [] }
+        let accepted = toolName.flatMap { ToolArgumentVocabulary.acceptedKeys(toolName: $0) }
         return dict.keys
-            .filter { !reservedEnvelopeKeys.contains($0) && inner[$0] == nil }
+            .filter { !reservedEnvelopeKeys.contains($0) && inner[$0] == nil && accepted?.contains($0) ?? true }
             .sorted()
     }
 
@@ -260,12 +297,12 @@ nonisolated enum ToolCallShapeRecognizer {
     /// carries no wrapper at all (so `resolve` falls through to top-level synthesis).
     /// A non-dictionary wrapper — a model that serialised its arguments as a string — is
     /// returned untouched, because there is nothing to fold into.
-    private static func mergingSpilledSiblings(_ dict: [String: Any]) -> Any? {
+    private static func mergingSpilledSiblings(_ dict: [String: Any], forTool toolName: String) -> Any? {
         guard let wrapper = dict["arguments"] ?? dict["args"] ?? dict["parameters"]
             ?? dict["params"]
         else { return nil }
         guard var inner = wrapper as? [String: Any] else { return wrapper }
-        for key in spilledSiblingKeys(from: dict) { inner[key] = dict[key] }
+        for key in spilledSiblingKeys(from: dict, forTool: toolName) { inner[key] = dict[key] }
         return inner
     }
 
@@ -291,7 +328,9 @@ nonisolated enum ToolCallShapeRecognizer {
     /// Mirrors `resolve`'s precedence exactly — explicit keys, then shape inference, then
     /// the nested unwrap — so a payload that DISPATCHES can never be described here as one
     /// that failed to name a tool.
-    static func toolNamePosition(in dict: [String: Any]) -> ToolNamePosition {
+    static func toolNamePosition(
+        in dict: [String: Any], knownNames: Set<String> = ToolNames.allNames
+    ) -> ToolNamePosition {
         if let explicit = explicitToolName(in: dict) {
             return .topLevel(explicit)
         }
@@ -300,7 +339,7 @@ nonisolated enum ToolCallShapeRecognizer {
         }
         if let nested = nestedExplicitToolName(in: dict) {
             return .insideArguments(
-                name: nested, isRegisteredTool: ToolNames.allNames.contains(nested))
+                name: nested, isRegisteredTool: knownNames.contains(nested))
         }
         return .absent(inferredToolName: nil)
     }

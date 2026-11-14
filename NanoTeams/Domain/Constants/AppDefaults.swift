@@ -222,4 +222,11 @@ nonisolated enum AppDefaults {
     /// first measurement. A hundred is the ceiling because the budget is a share of a window,
     /// and "the whole window" is where the server's own refusal takes over.
     static let autoCompactBudgetPercentRange = 5...100
+
+    /// Default state for the hosted loopback External Agents server (`false` — opt-in, §6).
+    static let externalAgentsEnabled = false
+    /// Default loopback port for the hosted External Agents server (`47321`, §7.1).
+    static let externalAgentsPort = Int(HostedMCPConstants.defaultPort)
+    static let externalAgentsPortMin = HostedMCPConstants.minValidPort
+    static let externalAgentsPortMax = HostedMCPConstants.maxValidPort
 }

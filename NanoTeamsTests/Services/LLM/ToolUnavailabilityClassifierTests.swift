@@ -151,7 +151,7 @@ final class ToolUnavailabilityClassifierTests: XCTestCase {
                 isDefaultStorage: false,
                 isVisionConfigured: true,
                 selectedScheme: "Foo",
-                approval: ToolApprovalAvailability(bash: .available, computerUse: .withheld(.switchedOff)),
+                approval: ToolApprovalAvailability(bash: .available, computerUse: .withheld(.switchedOff), humanPresent: true),
                 fileManager: fm
             )
             XCTAssertEqual(reason, .computerUseDisabled, "expected .computerUseDisabled for \(tool)")
@@ -172,7 +172,7 @@ final class ToolUnavailabilityClassifierTests: XCTestCase {
             isDefaultStorage: true,
             isVisionConfigured: true,
             selectedScheme: nil,
-            approval: ToolApprovalAvailability(bash: .available, computerUse: .withheld(.switchedOff)),
+            approval: ToolApprovalAvailability(bash: .available, computerUse: .withheld(.switchedOff), humanPresent: true),
             fileManager: fm
         )
         XCTAssertEqual(reason, .computerUseDisabled)
@@ -187,7 +187,7 @@ final class ToolUnavailabilityClassifierTests: XCTestCase {
             isDefaultStorage: false,
             isVisionConfigured: false,
             selectedScheme: nil,
-            approval: ToolApprovalAvailability(bash: .available, computerUse: .withheld(.switchedOff)),
+            approval: ToolApprovalAvailability(bash: .available, computerUse: .withheld(.switchedOff), humanPresent: true),
             fileManager: fm
         )
         XCTAssertEqual(reason, .computerUseDisabled)
@@ -680,10 +680,12 @@ final class ToolUnavailabilityClassifierTests: XCTestCase {
             XCTAssertEqual(dict?["error"] as? String, reason.errorCode, "\(reason)")
             XCTAssertTrue(envelope.isError, "\(reason)")
         }
-        // The three reasons whose remedy differs from their family's carry their own code.
+        // The reasons whose remedy differs from their family's carry their own code.
         let codes = Set(LLMExecutionService.ToolUnavailabilityReason.allCases.map(\.errorCode))
         XCTAssertEqual(codes, ["unknown_tool", "tool_not_authorized", "precondition_failed",
-                               "approval_unavailable", "plan_required", "work_superseded"])
+                               "approval_unavailable", "plan_required", "work_superseded",
+                               "mcp_tool_changed", "mcp_server_not_connected",
+                               "mcp_server_needs_attention", "mcp_tools_being_reread"])
     }
 
     // MARK: - A superseded role's runners

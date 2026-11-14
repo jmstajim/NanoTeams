@@ -6,10 +6,14 @@ import SwiftUI
 /// Double-tap a node to open the role editor sheet.
 struct TeamGraphEditorView: View {
     @Binding var team: Team
+    /// What a role sheet opened from the graph saves into — handed to it by the double-click.
+    let session: TeamEditCommitQueue.Session
     @Binding var selectedRoleID: String?
     let onSave: () -> Void
 
-    @State private var editingRole: TeamRoleDefinition? = nil
+    /// The role sheet a double-click asked for, with the session that click captured
+    /// (`TeamEditSheetRequest`).
+    @State private var roleSheet: TeamEditSheetRequest<TeamRoleDefinition>? = nil
     @State private var nodeSizes: [String: CGSize] = [:]
     @State private var layoutCache = TeamGraphLayoutCache()
     private static let editorNodeHeight: CGFloat = GraphTokens.nodeHeight
@@ -116,7 +120,7 @@ struct TeamGraphEditorView: View {
                                 // restricted editor — Prompt + Tools). Only structural
                                 // graph removal is locked for the singleton.
                                 onDoubleTap: {
-                                    editingRole = role
+                                    roleSheet = TeamEditSheetRequest(mode: .edit(role), session: session)
                                 },
                                 onRemoveFromGraph: (isReadOnly || isSupervisor(role)) ? nil : {
                                     handleHideRole(role)
@@ -189,10 +193,11 @@ struct TeamGraphEditorView: View {
         .onChange(of: team.roles.count) { _, _ in
             ensureAllRolesHavePositions()
         }
-        .sheet(item: $editingRole) { role in
+        .sheet(item: $roleSheet) { request in
             RoleEditorSheet(
                 team: $team,
-                mode: .edit(role),
+                session: request.session,
+                mode: request.mode,
                 onSave: onSave
             )
         }
@@ -283,15 +288,23 @@ struct TeamGraphEditorView: View {
 // MARK: - Previews
 
 #Preview("Graph Editor") {
+    @Previewable @State var store = PreviewStore.make()
     @Previewable @State var team = Team.default
     @Previewable @State var selectedRoleID: String? = nil
-    TeamGraphEditorView(team: $team, selectedRoleID: $selectedRoleID, onSave: {})
+    let lifecycle = store.currentFolderLifecycle
+    TeamGraphEditorView(
+        team: $team, session: TeamEditCommitQueue.Session(team: team, lifecycle: lifecycle),
+        selectedRoleID: $selectedRoleID, onSave: {})
         .frame(width: 700, height: 500)
 }
 
 #Preview("Graph Editor — Selected") {
+    @Previewable @State var store = PreviewStore.make()
     @Previewable @State var team = Team.default
     @Previewable @State var selectedRoleID: String? = Team.default.roles.first(where: { !$0.isSupervisor })?.id
-    TeamGraphEditorView(team: $team, selectedRoleID: $selectedRoleID, onSave: {})
+    let lifecycle = store.currentFolderLifecycle
+    TeamGraphEditorView(
+        team: $team, session: TeamEditCommitQueue.Session(team: team, lifecycle: lifecycle),
+        selectedRoleID: $selectedRoleID, onSave: {})
         .frame(width: 700, height: 500)
 }

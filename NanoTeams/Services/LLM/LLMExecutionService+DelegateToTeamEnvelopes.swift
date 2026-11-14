@@ -32,6 +32,42 @@ extension LLMExecutionService {
         return makeSuccessEnvelope(data: data)
     }
 
+    /// runtime-prompt
+    /// Envelope shape for the `child_paused` outcome when a delegated child task pauses
+    /// on its own (run timeout or iteration limit reached) without a parent-initiated
+    /// pause cascade. Keeps `activeDelegationChildID` set so the parent role can choose
+    /// `cancel_delegation` / `resume_delegation` / `forward_to_team`.
+    static func renderChildPausedEnvelope(
+        childTID: Int,
+        targetTeamName: String,
+        reason: TaskCompletionAwaiter.ChildPauseReason
+    ) -> String {
+        struct ChildPausedData: Codable {
+            var status: String
+            var child_task_id: Int
+            var team: String
+            var pause_reason: String
+            var next_actions: String
+        }
+        let pauseReason: String
+        switch reason {
+        case .runTimedOut(let seconds):
+            pauseReason = seconds > 0
+                ? "Run timeout reached (\(seconds)s)"
+                : "Run timeout reached"
+        case .iterationLimitReached(let limit):
+            pauseReason = "Iteration limit (\(limit)) reached"
+        }
+        let data = ChildPausedData(
+            status: "child_paused",
+            child_task_id: childTID,
+            team: targetTeamName,
+            pause_reason: pauseReason,
+            next_actions: "Choose one: `cancel_delegation` (abort), `resume_delegation` (resume the child and continue waiting), or `forward_to_team` (inject guidance, resume, and continue waiting)."
+        )
+        return makeSuccessEnvelope(data: data)
+    }
+
     /// Removes `delegate_to_team` from every role's toolset and zeroes the
     /// per-role delegation whitelist + generated-team allowance. Applied to
     /// teams synthesized inside `delegate_to_team` so they cannot themselves

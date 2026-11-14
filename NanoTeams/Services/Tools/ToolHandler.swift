@@ -48,14 +48,11 @@ nonisolated struct ToolHandlerDependencies {
     let searchContextBefore: Int
     /// Default `context_after` for `search` when the LLM omits the argument.
     let searchContextAfter: Int
-    /// Whether `bash` confines commands in a macOS Seatbelt sandbox. From the
-    /// user's `BashPolicy`, surfaced at registry-build time.
-    let bashSandboxEnabled: Bool
-    /// Per-folder read/write grants for the `bash` Seatbelt sandbox. From the
-    /// user's `BashPolicy`, surfaced at registry-build time.
-    let bashSandboxPermissions: BashSandboxPermissions
-    /// Whether `bash` may retry unsandboxed if the Seatbelt wrapper fails to launch.
-    let bashAllowUnsandboxedFallback: Bool
+    // Nothing of the `bash` sandbox is a dependency: the loopback ports it reserves and the
+    // sandbox settings (switch, grants, fallback) are read per tool batch and ride
+    // `ToolExecutionContext.guardedLoopbackPorts` / `.bashSandbox` — a step-entry value baked in
+    // here left a server configured mid-step unguarded, and a sandbox switched on mid-step
+    // unapplied, for the rest of the step (review 2026-11-08).
 
     init(
         workFolderRoot: URL,
@@ -66,10 +63,7 @@ nonisolated struct ToolHandlerDependencies {
         readFileMaxLines: Int,
         searchMaxResults: Int,
         searchContextBefore: Int,
-        searchContextAfter: Int,
-        bashSandboxEnabled: Bool = BashConstants.defaultSandboxEnabled,
-        bashSandboxPermissions: BashSandboxPermissions = BashSandboxPermissions(),
-        bashAllowUnsandboxedFallback: Bool = false
+        searchContextAfter: Int
     ) {
         self.workFolderRoot = workFolderRoot
         self.resolver = resolver
@@ -80,9 +74,6 @@ nonisolated struct ToolHandlerDependencies {
         self.searchMaxResults = searchMaxResults
         self.searchContextBefore = searchContextBefore
         self.searchContextAfter = searchContextAfter
-        self.bashSandboxEnabled = bashSandboxEnabled
-        self.bashSandboxPermissions = bashSandboxPermissions
-        self.bashAllowUnsandboxedFallback = bashAllowUnsandboxedFallback
     }
 }
 
@@ -122,6 +113,13 @@ nonisolated protocol ToolHandler: Sendable {
     /// (e.g. `create_team`, called via `TeamGenerationService` rather than the runtime).
     static var availableToRoles: Bool { get }
 
+    /// What the tool does with an argument its schema does not declare: another spelling of a
+    /// declared one, a key the handler reads itself, or one it ignores with a reason. Every
+    /// other undeclared key refuses the call (`ToolArgumentVocabulary`), so the table is where
+    /// a tolerated foreign key is decided — once, for the runtime, the approval gates and the
+    /// card alike — instead of inside one handler's body.
+    static var undeclaredArguments: [String: UndeclaredArgument] { get }
+
     /// Factory — constructs an instance bound to a specific work folder. Called
     /// from `ToolHandlerRegistry.buildHandlers`. Handlers ignore the fields they
     /// don't need.
@@ -142,4 +140,5 @@ nonisolated extension ToolHandler {
     static var excludedInMeetings: Bool { false }
     static var blockedInDefaultStorage: Bool { false }
     static var availableToRoles: Bool { true }
+    static var undeclaredArguments: [String: UndeclaredArgument] { [:] }
 }

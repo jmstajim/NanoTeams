@@ -71,6 +71,16 @@ struct HeadlessConfig: Codable {
     /// Typed like `provider` and `bashMode`: a typo fails at config load.
     var toolCallingPreference: ToolCallingPreference?
 
+    // MARK: - MCP
+
+    /// External MCP servers this run may use. Omitted ⇒ none, and the orchestrator stays on
+    /// `MCPEnvironment.inert`, which cannot open a socket — so a config that says nothing
+    /// about MCP produces a run byte-identical to one from before the feature existed.
+    ///
+    /// Carries no credential by construction (`HeadlessMCPServer`): a headless config is a
+    /// file on disk, usually a generated one.
+    var mcpServers: [HeadlessMCPServer]?
+
     // MARK: - Resolved Helpers
 
     var resolvedProvider: LLMProvider {
@@ -99,6 +109,7 @@ struct HeadlessConfig: Codable {
         case visionModel, visionBaseURL, selectedScheme
         case bashMode
         case toolCallingPreference
+        case mcpServers
         // Legacy: pre-rename configs used `projectDescription` for the same payload.
         case legacyProjectDescription = "projectDescription"
     }
@@ -153,6 +164,7 @@ struct HeadlessConfig: Codable {
         } else {
             self.toolCallingPreference = nil
         }
+        self.mcpServers = try c.decodeIfPresent([HeadlessMCPServer].self, forKey: .mcpServers)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -172,6 +184,7 @@ struct HeadlessConfig: Codable {
         try c.encodeIfPresent(selectedScheme, forKey: .selectedScheme)
         try c.encodeIfPresent(bashMode, forKey: .bashMode)
         try c.encodeIfPresent(toolCallingPreference, forKey: .toolCallingPreference)
+        try c.encodeIfPresent(mcpServers, forKey: .mcpServers)
         // Intentionally NOT writing `legacyProjectDescription` — re-encoding a
         // legacy file completes the migration in-place.
     }

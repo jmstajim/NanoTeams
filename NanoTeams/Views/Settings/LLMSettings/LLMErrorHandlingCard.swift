@@ -11,8 +11,7 @@ struct LLMErrorHandlingCard: View {
 
     var body: some View {
         SettingsCard(
-            header: "Network & Error Handling",
-            systemImage: "arrow.counterclockwise"
+            header: "Network & Error Handling"
         ) {
             VStack(alignment: .leading, spacing: Spacing.m) {
                 LLMStepperSettingsRow(

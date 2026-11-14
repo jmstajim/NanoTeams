@@ -11,28 +11,30 @@ import Foundation
 /// call `command(...)` here so they can never drift.
 nonisolated enum BashArguments {
 
-    /// Structural keys that are never the command body — excluded from the
-    /// resilient content fallback in `resolveContentString`.
-    static let nonCommandKeys: Set<String> = ["timeout", "working_directory", "run_in_background"]
-
-    /// Resolves the shell command EXACTLY as `BashTool` executes it: the resilient
-    /// `content`/alias/single-remaining resolver first, then an explicit `command`
-    /// key. Returns `nil` when no non-empty command is present.
+    /// Resolves the shell command EXACTLY as `BashTool` executes it, from the arguments as the
+    /// runtime dispatches them: the declared `command` — its other spellings arrive renamed to
+    /// it (`BashTool.undeclaredArguments`), and two spellings refuse the call before it gets
+    /// here — or the prose a document that was not JSON carried (`__raw_input__`, through
+    /// `requiredString`'s recovery). Returns `nil` when no non-empty command is present.
+    ///
+    /// Until 2026-11-09 a resilient resolver ran FIRST — eleven body names, then any single
+    /// remaining string — so `{"command":"ls","content":"…"}` ran the `content`.
     static func command(from args: [String: Any]) -> String? {
-        if let c = resolveContentString(args, excludeKeys: nonCommandKeys),
-           !c.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return c
-        }
-        if let c = optionalString(args, "command"),
-           !c.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return c
-        }
-        return nil
+        guard let command = try? requiredString(args, "command"),
+              !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return nil }
+        return command
     }
 
-    /// JSON convenience for the gate (which holds `argumentsJSON`, not a dict).
+    /// The command the HANDLER would run for this document, for the gate (which holds the
+    /// call's text, not the handler's dictionary). Read through the runtime's own reading
+    /// (`ToolCallArguments.prepare`) — never a separate parse: the gate's bare
+    /// `JSONSerialization` read nothing from prose, a raw control character or a reentrant
+    /// envelope that the runtime then ran, and judged one of two keys that trim to `command`
+    /// while the runtime ran the other (2026-11-09). `nil` when nothing would run: the
+    /// runtime refuses the document, or the handler finds no command in it.
     static func command(fromJSON argumentsJSON: String) -> String? {
-        decode(argumentsJSON).flatMap(command(from:))
+        dispatchedArguments(argumentsJSON).flatMap(command(from:))
     }
 
     static func workingDirectory(from args: [String: Any]) -> String? {
@@ -40,7 +42,7 @@ nonisolated enum BashArguments {
     }
 
     static func workingDirectory(fromJSON argumentsJSON: String) -> String? {
-        decode(argumentsJSON).flatMap(workingDirectory(from:))
+        dispatchedArguments(argumentsJSON).flatMap(workingDirectory(from:))
     }
 
     /// Validated foreground timeout in SECONDS. Returns `nil` for a non-positive
@@ -54,10 +56,7 @@ nonisolated enum BashArguments {
         return max(Double(clamped) / 1000.0, 1)
     }
 
-    private static func decode(_ json: String) -> [String: Any]? {
-        guard let data = json.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return nil }
-        return obj
+    private static func dispatchedArguments(_ json: String) -> [String: Any]? {
+        ToolCallArguments.prepare(rawJSON: json, emittedName: ToolNames.bash).dispatched?.args
     }
 }

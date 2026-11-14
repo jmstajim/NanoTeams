@@ -49,6 +49,22 @@ extension StoreConfiguration {
         return llmModelName.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    // MARK: - Servers the app may dial
+
+    /// Every LLM server base URL the settings name — switched on or not, since switching one on
+    /// dials it at once — and each provider's documented default, which a provider switch falls
+    /// back to and the benchmark sweep proposes before any setting names it. What the `bash`
+    /// sandbox reserves the local ports of (`NTMSOrchestrator.seatbeltLLMServerPorts`, which adds
+    /// the roles' own overrides from teams.json). A blank override inherits the global URL, which
+    /// is already in the list.
+    var llmServerBaseURLStrings: [String] {
+        var urls = LLMProvider.allCases.flatMap { knownLLMEndpoints(for: $0) + [$0.defaultBaseURL] }
+        urls += [visionBaseURLString, effectiveEmbeddingConfig.baseURLString]
+        urls += [bashJudgeLLMOverride, computerUseJudgeLLMOverride, mcpJudgeLLMOverride, teamGenLLMOverride]
+            .compactMap { $0?.baseURLString }
+        return urls.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
+
     // MARK: - Slot references
 
     /// Every (model, server) pair a chat request could target from persisted
@@ -57,7 +73,7 @@ extension StoreConfiguration {
     /// Deliberately excludes per-role overrides: those live in `teams.json`,
     /// not in settings, so the orchestrator contributes them separately from
     /// the work-folder snapshot.
-    var referencedModelSlots: Set<ModelSlotReference> {
+    func referencedModelSlots(mcpJudgeIsActive: Bool) -> Set<ModelSlotReference> {
         var slots: Set<ModelSlotReference> = [
             ModelSlotReference(
                 modelName: llmModelName.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -85,6 +101,7 @@ extension StoreConfiguration {
         // `visionLLMConfig`'s `isVisionConfigured` gate.
         if bashJudgeIsActive { insertOverrideSlot(bashJudgeLLMOverride, into: &slots) }
         if computerUseJudgeIsActive { insertOverrideSlot(computerUseJudgeLLMOverride, into: &slots) }
+        if mcpJudgeIsActive { insertOverrideSlot(mcpJudgeLLMOverride, into: &slots) }
         // Team generation has no on/off toggle — a configured override is
         // always a live slot.
         insertOverrideSlot(teamGenLLMOverride, into: &slots)
@@ -127,9 +144,9 @@ extension StoreConfiguration {
     /// True when some settings slot still resolves to this (base, model) pair.
     /// Such a model must survive a sibling slot's switch — unloading it would
     /// break the slot that still points at it.
-    func referencesModel(_ model: String, base: String) -> Bool {
+    func referencesModel(_ model: String, base: String, mcpJudgeIsActive: Bool = false) -> Bool {
         let normalizedBase = base.normalizedBaseURL
-        return referencedModelSlots.contains { slot in
+        return referencedModelSlots(mcpJudgeIsActive: mcpJudgeIsActive).contains { slot in
             slot.normalizedBase == normalizedBase
                 && ChatModelEnsurer.sameModel(slot.modelName, model)
         }

@@ -28,6 +28,17 @@ extension LLMExecutionService {
         guard isExecutionLive(stepID: stepID, taskID: parentTID) else {
             return makeErrorEnvelope(code: .commandFailed, message: "no task context for step \(stepID)")
         }
+        // The folder lifecycle the delegation runs in, read before its first suspension: this is
+        // entered synchronously from the dispatcher, past its cancellation gate. Every write below
+        // that follows a suspension — the generation's card, the child's creation and team, the
+        // parent's marker, the child's start, the wait — asks it with the step's registration
+        // (`stillLive`): the step's key alone can name the next folder's step once a transition
+        // commits, and its parent task of the same id.
+        let lifecycle = delegate.currentFolderLifecycle
+        func stillLive() -> Bool {
+            delegate.isCurrentFolderLifecycle(lifecycle) && isExecutionLive(stepID: stepID, taskID: parentTID)
+        }
+        let folderChanged = makeErrorEnvelope(code: .commandFailed, message: DeferredCallReplies.folderChanged)
 
         // 1. Pre-flight: depth cap + eligibility (top-level role)
         if task.delegationDepth >= DelegationConstants.maxDelegationDepth {
@@ -118,7 +129,8 @@ extension LLMExecutionService {
                 // was torn down mid-generation (pause/cancel/remove), creating and
                 // starting a child task now would spawn an orphan engine for a dead
                 // parent, and the placeholder flip below would be an orphan write.
-                guard isExecutionLive(stepID: stepID, taskID: parentTID) else {
+                guard delegate.isCurrentFolderLifecycle(lifecycle) else { return folderChanged }
+                guard stillLive() else {
                     return makeErrorEnvelope(
                         code: .commandFailed,
                         message: "Parent task was torn down during team generation; delegation aborted."
@@ -144,32 +156,53 @@ extension LLMExecutionService {
                     guard let runIdx = task.runs.indices.last,
                           let stepIdx = task.runs[runIdx].steps.firstIndex(where: { $0.id == stepID }),
                           let tcIdx = task.runs[runIdx].steps[stepIdx].toolCalls
-                          .firstIndex(where: { $0.id == placeholderToolCallID })
+                              .firstIndex(where: { $0.id == placeholderToolCallID })
                     else { return }
-                    task.runs[runIdx].steps[stepIdx].toolCalls[tcIdx].resultJSON = successEnvelope
-                    task.runs[runIdx].steps[stepIdx].toolCalls[tcIdx].isError = false
+                    task.runs[runIdx].steps[stepIdx].toolCalls[tcIdx].recordResult(
+                        successEnvelope,
+                        isError: false,
+                        at: MonotonicClock.shared.now()
+                    )
                 }
             } catch {
                 // Flip the placeholder's spinner → ✗ with the error envelope
                 // BEFORE returning so the UI doesn't strand a forever-spinning
                 // create_team row. The setLastErrorMessageForUI call below
                 // independently surfaces the human banner.
+                let isCancellation = CancellationClassifier.isCancellation(error)
                 let errorEnvelope = TeamGenerationEnvelopes.makeErrorEnvelope(
-                    message: error.localizedDescription
+                    message: isCancellation
+                        ? "Team generation was cancelled."
+                        : error.localizedDescription
                 )
-                // Liveness barrier: a generation failing BECAUSE the parent was
-                // cancelled mid-await must not flip a tool call on whatever now
-                // answers to the captured parentTID.
-                if isExecutionLive(stepID: stepID, taskID: parentTID) {
-                    await delegate.mutateTask(taskID: parentTID) { task in
-                        guard let runIdx = task.runs.indices.last,
-                              let stepIdx = task.runs[runIdx].steps.firstIndex(where: { $0.id == stepID }),
-                              let tcIdx = task.runs[runIdx].steps[stepIdx].toolCalls
+                // Folder barrier before liveness: a generation that a folder transition overtook
+                // must neither flip a tool call in the next folder nor report its failure there.
+                // If the folder is later reopened, StatusRecoveryService closes the stranded
+                // `status: "generating"` placeholder on the parked step.
+                guard delegate.isCurrentFolderLifecycle(lifecycle) else { return folderChanged }
+                guard stillLive() else {
+                    return makeErrorEnvelope(
+                        code: .commandFailed,
+                        message: "Failed to generate a delegated team: \(ToolErrorHandler.classify(error).message)"
+                    )
+                }
+                await delegate.mutateTask(taskID: parentTID) { task in
+                    guard let runIdx = task.runs.indices.last,
+                          let stepIdx = task.runs[runIdx].steps.firstIndex(where: { $0.id == stepID }),
+                          let tcIdx = task.runs[runIdx].steps[stepIdx].toolCalls
                               .firstIndex(where: { $0.id == placeholderToolCallID })
-                        else { return }
-                        task.runs[runIdx].steps[stepIdx].toolCalls[tcIdx].resultJSON = errorEnvelope
-                        task.runs[runIdx].steps[stepIdx].toolCalls[tcIdx].isError = true
-                    }
+                    else { return }
+                    task.runs[runIdx].steps[stepIdx].toolCalls[tcIdx].recordResult(
+                        errorEnvelope,
+                        isError: true,
+                        at: MonotonicClock.shared.now()
+                    )
+                }
+                guard !isCancellation else {
+                    return makeErrorEnvelope(
+                        code: .commandFailed,
+                        message: "Failed to generate a delegated team: \(ToolErrorHandler.classify(error).message)"
+                    )
                 }
                 // Surface to the user banner, not just the LLM envelope —
                 // generation failures are real (LLM unreachable, model
@@ -214,7 +247,9 @@ extension LLMExecutionService {
             )
         }
 
-        // 4. Create child task with parentage stamped on.
+        // 4. Create child task with parentage stamped on — in the folder the delegation runs in,
+        // asked again after the generation card's write above.
+        guard stillLive() else { return folderChanged }
         let title = isGeneratedFlow
             ? "Delegated · \(targetTeam.name) (generated)"
             : "Delegated · \(targetTeam.name)"
@@ -246,10 +281,13 @@ extension LLMExecutionService {
         // refuse and transition to `.failed`, but we abort the delegation
         // here so the parent gets a clear error envelope rather than a generic
         // "child failed" message.
+        // The child's creation suspended (its load, its team-id restore).
+        guard stillLive() else { return folderChanged }
         if isGeneratedFlow {
             await delegate.mutateTask(taskID: childTID) { task in
                 task.adoptGeneratedTeam(targetTeam)
             }
+            guard stillLive() else { return folderChanged }
             let postMutationTeam = delegate.loadedTask(childTID)?.generatedTeam
             if postMutationTeam == nil {
                 // Symmetric with the `activeDelegationChildID` guard below
@@ -293,6 +331,7 @@ extension LLMExecutionService {
             // history if not already there). Idempotent on duplicates.
             task.runs[runIdx].steps[stepIdx].setActiveDelegation(childID: childTID)
         }
+        guard stillLive() else { return folderChanged }
         let postMarker = delegate.loadedTask(parentTID)?.runs.last?
             .steps.first(where: { $0.id == stepID })?.activeDelegationChildID
         if postMarker != childTID {
@@ -306,6 +345,7 @@ extension LLMExecutionService {
 
         // 5. Start child engine — non-blocking; we observe via the awaiter.
         await delegate.startRunForTask(taskID: childTID)
+        guard stillLive() else { return folderChanged }
 
         // 6. Block on the awaiter loop until child reaches a terminal state
         // (or the Supervisor interrupts via queued chat message — see
@@ -354,6 +394,13 @@ extension LLMExecutionService {
         delegate: any LLMStateDelegate,
         networkLogger: NetworkLogger? = nil
     ) async -> String {
+        // The folder lifecycle the wait belongs to: every caller asks its own right before it
+        // calls this, so the one read here is the delegation's. Asked at the top of every turn of
+        // the loop and after every await in it: the boundary of a folder transition cancels every
+        // waiter (`stopAllEngines` → `completionAwaiter.cancelAll()`), and an arm that then went on
+        // would stop, close, pause or clear the marker of the next folder's tasks of these ids.
+        let lifecycle = delegate.currentFolderLifecycle
+        let folderChanged = makeErrorEnvelope(code: .commandFailed, message: DeferredCallReplies.folderChanged)
         let deadlineDate = Date().addingTimeInterval(delegationTimeoutSeconds)
         // Snapshot the global `lastErrorMessage` BEFORE the awaiter starts.
         // V1 limitation (per docs): error messages are not partitioned
@@ -365,6 +412,7 @@ extension LLMExecutionService {
         // started) as evidence the child caused it.
         let baselineErrorAtEntry = delegate.lastErrorMessageForTask(childTID)
         while true {
+            guard delegate.isCurrentFolderLifecycle(lifecycle) else { return folderChanged }
             // Defensive timeout — if the child wedges, surface it instead of hanging the parent.
             if Date() >= deadlineDate {
                 delegate.stopEngineForTask(childTID)
@@ -383,6 +431,7 @@ extension LLMExecutionService {
             }
 
             let outcome = await delegate.awaitTaskTerminalState(taskID: childTID)
+            guard delegate.isCurrentFolderLifecycle(lifecycle) else { return folderChanged }
             switch outcome {
             case .needsSupervisorInput:
                 let answered = await DelegatedSupervisorAnswerService.handleChildQuestion(
@@ -396,6 +445,7 @@ extension LLMExecutionService {
                     delegate: delegate,
                     logger: networkLogger
                 )
+                guard delegate.isCurrentFolderLifecycle(lifecycle) else { return folderChanged }
                 if !answered {
                     // Tear the child down BEFORE dropping the marker, like both sibling
                     // abort arms. Skipping it strands the child permanently: it stays
@@ -420,6 +470,7 @@ extension LLMExecutionService {
                 // `.needsAcceptance` and we loop tight until the 30-min timeout.
                 // Force the engine down and abort with a clear envelope instead.
                 let closed = await delegate.closeTask(taskID: childTID)
+                guard delegate.isCurrentFolderLifecycle(lifecycle) else { return folderChanged }
                 if !closed {
                     delegate.stopEngineForTask(childTID)
                     await clearDelegationFields(parentTID: parentTID, stepID: stepID, delegate: delegate)
@@ -474,6 +525,7 @@ extension LLMExecutionService {
                 // and short-circuit to the corresponding terminal outcome
                 // when that happened.
                 let childPaused = await delegate.pauseRun(taskID: childTID)
+                guard delegate.isCurrentFolderLifecycle(lifecycle) else { return folderChanged }
                 if let childTask = delegate.loadedTask(childTID), childTask.closedAt != nil {
                     await clearDelegationFields(parentTID: parentTID, stepID: stepID, delegate: delegate)
                     return await buildSuccessEnvelope(
@@ -516,6 +568,16 @@ extension LLMExecutionService {
                     childTID: childTID,
                     targetTeamName: targetTeam.name,
                     supervisorMessage: trimmed
+                )
+
+            case .paused(let reason):
+                // Child paused on its own (run timeout or iteration limit reached).
+                // Keep `activeDelegationChildID` set on the parent step so the parent role
+                // can choose `cancel_delegation` / `resume_delegation` / `forward_to_team`.
+                return Self.renderChildPausedEnvelope(
+                    childTID: childTID,
+                    targetTeamName: targetTeam.name,
+                    reason: reason
                 )
             }
         }

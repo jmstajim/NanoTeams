@@ -86,7 +86,15 @@ nonisolated enum ToolErrorNotePolicy {
     /// rewording any arm moves `runtimePromptVersion`. `RuntimePromptRegistryTests` pins
     /// that every `case "…"` literal below has its row.
     /// runtime-prompt
-    static func direction(for result: ToolExecutionResult, allowedToolNames: Set<String>) -> String? {
+    ///
+    /// - Parameter dynamicSchemas: tools that have no type in `ToolHandlerRegistry` — the MCP
+    ///   tools this step advertised. Without them a failed MCP call gets no required-argument
+    ///   list, which is the one thing this note buys over the envelope beside it.
+    static func direction(
+        for result: ToolExecutionResult,
+        allowedToolNames: Set<String>,
+        dynamicSchemas: [ToolSchema] = []
+    ) -> String? {
         let escalation = LoopRecoveryPolicy.escalationChannel(in: allowedToolNames)
         let dict = JSONUtilities.parseJSONDictionary(result.outputJSON)
 
@@ -133,6 +141,46 @@ nonisolated enum ToolErrorNotePolicy {
             // `precondition_failed`: that direction blames the work folder and offers
             // "proceed without this step", the permission this family withdraws.
             return nil
+
+        case "mcp_tool_changed":
+            // Nothing to add, for the same reason as `work_superseded`: the envelope carries
+            // both halves — what is withheld, why, and what to do instead. The default arm
+            // would invite a retry ("if the message indicates bad arguments, fix them"),
+            // and this is the one withholding a retry cannot clear: the schema goes on
+            // listing the tool for the rest of the step by design, so the same refusal is
+            // all a second call can earn.
+            return nil
+
+        case "mcp_server_not_connected":
+            // Nothing to add: the envelope carries both halves — the server has no session
+            // right now, and the call may be made again later in the step, after other work.
+            // The default arm would blame the arguments; `mcp_server_unavailable`'s direction
+            // ("Do not retry") would forbid the one retry that can succeed, since a server
+            // between sessions comes back at the same hash (R1.8.5).
+            return nil
+
+        case "mcp_tools_being_reread":
+            // Nothing to add, for the reason `mcp_server_not_connected` gives: the envelope
+            // carries both halves — why the call did not run, and the later call that may work,
+            // with the outcome the re-read can produce instead. The default arm would blame
+            // the arguments, and a "Do not retry" would forbid the retry that succeeds once the
+            // list is read — a tool the last committed listing approved comes back within the
+            // step at the same hash.
+            return nil
+
+        case "mcp_server_needs_attention":
+            // The server cannot be used until a person changes its settings — a refused
+            // credential, a refused address — and the connection retries neither. The envelope
+            // says so and carries the gap forward; what it does not say is that no call reaches
+            // the blocker, which is the whole recovery. Modelled on `mcp_server_unavailable`:
+            // the escalation channel IS offered, because a person can change the settings.
+            // Not that arm's text: this server is not "not answering" — nobody may ask it
+            // until the settings change. It names no server noun either: the pin forbids a
+            // direction from claiming another blocker's (`its server` is `mcp_tool_changed`'s).
+            let channel = escalation.map { " If the step cannot proceed without it, call \($0)." } ?? ""
+            return "Do not retry — the server needs a person to change its settings, and "
+                + "nothing in the call changes that. Carry what it would have settled forward "
+                + "as unknown rather than assuming a result.\(channel)"
 
         case "plan_required":
             // Nothing to add. The only rejection that is temporal rather than
@@ -189,6 +237,33 @@ nonisolated enum ToolErrorNotePolicy {
             // (KNOWN_ISSUES A15). The envelope already says what runs without approval.
             return "Do NOT retry — no one in this run can approve it, and nothing you send "
                 + "changes that. Take a different step."
+
+        case "mcp_server_unavailable":
+            // Nothing ran. The envelope carries the server's reachability failure in this
+            // app's own words; what it does not say is that no argument is at fault, which
+            // is the whole recovery. The escalation channel IS offered, and unlike
+            // `approval_unavailable` it can actually help: a person can start the server
+            // the run is missing, or correct its address.
+            let channel = escalation.map { " If the step cannot proceed without it, call \($0)." } ?? ""
+            return "Do not retry — the server is not answering, and nothing in the call "
+                + "changes that. Carry what it would have settled forward as unknown rather "
+                + "than assuming a result.\(channel)"
+
+        case "mcp_denied":
+            // A person or the Auto judge was asked about THIS call and said no. A decision,
+            // like `bash_denied`, so the same two halves: the block is not in the arguments,
+            // and a decision can be revisited by whoever holds the channel.
+            let channel = escalation.map { ", or call \($0)" } ?? ""
+            return "Do not retry this call — a person reviewed it and declined. Take a "
+                + "different step\(channel)."
+
+        case "mcp_judge_unavailable":
+            // The Auto judge failed closed (transport failure, unparseable reply, or oversized
+            // prompt) rather than issuing a DENY verdict. Do not tell the model a person
+            // reviewed and declined the call — tell it the Auto judge could not verify the call.
+            let channel = escalation.map { ", or call \($0)" } ?? ""
+            return "Do not retry this call — the Auto judge could not verify it, and re-sending "
+                + "the call will not fix the judge. Take a different step\(channel)."
 
         case "questionnaire_required":
             // Nothing to add: the envelope states the defect (a questionnaire sent as prose)
@@ -281,7 +356,8 @@ nonisolated enum ToolErrorNotePolicy {
                 // and the model is never told which of the ones it DID send arrived. The
                 // schema is the authority; `result.argumentsJSON` is what actually landed.
                 let hint = Self.requiredArgumentsHint(
-                    toolName: result.toolName, argumentsJSON: result.argumentsJSON)
+                    toolName: result.toolName, argumentsJSON: result.argumentsJSON,
+                    dynamicSchemas: dynamicSchemas)
                 // Silent when the envelope already carries a `next` and every required
                 // argument arrived: `next.reason` IS the instruction, written for that one
                 // failure, and "Fix the arguments and retry." is the same sentence with the
@@ -313,7 +389,7 @@ nonisolated enum ToolErrorNotePolicy {
     /// lean does not apply. What it buys is the difference between one corrective
     /// round-trip and one per missing argument.
     static func requiredArgumentsHint(
-        toolName: String, argumentsJSON: String
+        toolName: String, argumentsJSON: String, dynamicSchemas: [ToolSchema] = []
     ) -> String {
         // `nil` and `[]` mean the same thing here — a tool that declares nothing required —
         // and one guard says so. The pair `?? []` + `!isEmpty` left an autoclosure no test
@@ -321,7 +397,9 @@ nonisolated enum ToolErrorNotePolicy {
         // the registry passes a list or omits the argument on an object with no properties,
         // so the nil arm is unreachable through `allSchemas` while being indistinguishable
         // from the empty one on the very next line.
-        guard let schema = ToolHandlerRegistry.allSchemas.first(where: { $0.name == toolName }),
+        let known = ToolHandlerRegistry.allSchemas.first { $0.name == toolName }
+            ?? dynamicSchemas.first { $0.name == toolName }
+        guard let schema = known,
               let required = schema.parameters.required,
               !required.isEmpty
         else { return "" }

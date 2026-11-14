@@ -60,6 +60,11 @@ extension LLMExecutionService {
         tracker _: ToolCallTracker,
         roleDefinition: TeamRoleDefinition?,
         allowedToolNames: Set<String>,
+        /// Every name that IS a tool this step — the registry plus what the step
+        /// advertised. Distinct from `allowedToolNames`, which is what the step may
+        /// DISPATCH: the two branches below ask "was this an attempt at a call", and a real
+        /// tool the role happens to lack still is one.
+        knownNames: Set<String> = ToolNames.allNames,
         wireIsMidPlanning: Bool,
         runtime: ToolRuntime?,
         conversationMessages: inout [ChatMessage]
@@ -351,7 +356,8 @@ extension LLMExecutionService {
             // this branch must not blame on the wrong channel.
             let envelopeSource: String = result.harmonyBuffer.isEmpty
                 ? result.assistantContent : result.harmonyBuffer
-            let issue = ToolCallParsingHelpers.classifyHarmonyCallIssue(in: envelopeSource)
+            let issue = ToolCallParsingHelpers.classifyHarmonyCallIssue(
+                in: envelopeSource, knownNames: knownNames)
             // Surface the failed attempt as a visible, errored feed card. Without this the
             // model's malformed / name-missing tool call never becomes a `StepToolCall` and is
             // invisible in Team Activity (only a retry nudge appears in the conversation).
@@ -424,7 +430,8 @@ extension LLMExecutionService {
                 // that sees "unescaped control character around character 217"
                 // can fix THAT; the generic brace/quote/comma guesses stay as
                 // the fallback for envelopes with no single nameable defect.
-                let defect = ToolCallParsingHelpers.malformedJSONDiagnostic(in: envelopeSource)
+                let defect = ToolCallParsingHelpers.malformedJSONDiagnostic(
+                    in: envelopeSource, knownNames: knownNames)
                     .map { "parser error: \($0)" }
                     ?? "e.g. a missing closing brace `}`, an unescaped quote inside a string, or a trailing comma"
                 // Name a tool the role actually holds, exactly as the `.missingToolName`
@@ -525,7 +532,7 @@ extension LLMExecutionService {
             // shape task 39 run 8 recorded as its plan: the marker crossed the phase boundary
             // inside the seed turn and rode every later request as the freshest example in
             // the fresh conversation's first USER turn.
-            if nearMissSentinel != nil || BareToolCallSalvage.looksLikeToolCallAttempt(cleanedContent) {
+            if nearMissSentinel != nil || BareToolCallSalvage.looksLikeToolCallAttempt(cleanedContent, knownNames: knownNames) {
                 // Anchored to the note, not to "That" — re-read on every later request, a
                 // demonstrative points at whatever turn is nearest (R3.8.4). And a real id
                 // from the phase's narrowed schema, as the `.malformedJSON` arm resolves —
@@ -862,10 +869,11 @@ extension LLMExecutionService {
             maxRetries: LLMConstants.maxThinkingLoopBreaks,
             supervisorMode: supervisorMode,
             isChatMode: team?.isChatMode ?? false,
-            // Only the Autovisor manager has a waker (its recurrence + the event
-            // wakes). Resolved here rather than inside the pure policy so no team
-            // identity leaks into it.
-            canParkForSupervisor: team?.templateID == AutovisorConstants.teamTemplateID,
+            // Only the Autovisor manager or an external-agent-owned task has a waker
+            // (its recurrence + event wakes, or the external agent answering). Resolved
+            // here rather than inside the pure policy so no team identity leaks into it.
+            canParkForSupervisor: team?.templateID == AutovisorConstants.teamTemplateID
+                || task.origin?.isExternalAgent == true,
             roleName: roleForMessage.displayName,
             allowedToolNames: allowedToolNames
         )

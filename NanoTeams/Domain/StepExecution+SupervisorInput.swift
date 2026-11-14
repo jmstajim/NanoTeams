@@ -138,6 +138,28 @@ nonisolated extension StepExecution {
     var canReceiveSupervisorAnswer: Bool {
         hasActiveSupervisorInput && status.acceptsSupervisorAnswer
     }
+
+    /// Formatted question string for `task_status` (`pending_question` / `pending_questions`),
+    /// nil when the step cannot currently receive a Supervisor answer or has no question text.
+    var formattedSupervisorQuestion: String? {
+        guard canReceiveSupervisorAnswer,
+              let q = supervisorQuestion, !q.isEmpty
+        else { return nil }
+        return supervisorInquiry.map(SupervisorInquiryReply.questionnaire(for:)) ?? q
+    }
+
+    /// Whether an automated path — not the person — wrote Supervisor turn `msg` of this step
+    /// (DEBTS D-M15). The one reader of the turn's `isFromAutomatedSupervisor`, shared by the
+    /// feed's answered cards and `task_log`.
+    ///
+    /// A turn persisted before 2026-11-07 recorded no author, and reads the way every surface
+    /// read it until then: an answer by the step's `supervisorAnswerWasAuto`, everything else as
+    /// the person's. That flag describes only the step's LATEST answer, which is why a recorded
+    /// turn never consults it.
+    func supervisorTurnWasAutomated(_ msg: LLMMessage) -> Bool {
+        if let recorded = msg.isFromAutomatedSupervisor { return recorded }
+        return msg.sourceContext == .supervisorAnswer && supervisorAnswerWasAuto
+    }
 }
 
 nonisolated extension StepStatus {
@@ -186,6 +208,13 @@ nonisolated extension Run {
     var activeSupervisorQuestionIDs: Set<UUID> {
         Set(steps.compactMap(\.activeSupervisorQuestionID))
     }
+
+    /// Steps currently owed a Supervisor answer AND in a status that can receive one,
+    /// in run-step order. Single deterministic selector shared by `task_status` and
+    /// `answer_task_question`.
+    var answerableSupervisorSteps: [StepExecution] {
+        steps.filter(\.canReceiveSupervisorAnswer)
+    }
 }
 
 nonisolated extension NTMSTask {
@@ -216,6 +245,13 @@ nonisolated extension NTMSTask {
     var activeSupervisorQuestionIDs: Set<UUID> {
         guard closedAt == nil else { return [] }
         return runs.last?.activeSupervisorQuestionIDs ?? []
+    }
+
+    /// Steps on the active run that can currently receive a Supervisor answer —
+    /// empty for a closed task.
+    var answerableSupervisorSteps: [StepExecution] {
+        guard closedAt == nil else { return [] }
+        return runs.last?.answerableSupervisorSteps ?? []
     }
 }
 

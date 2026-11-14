@@ -49,9 +49,13 @@ class NTMSOrchestratorTestBase: XCTestCase, @unchecked Sendable {
         // backgrounds the run's LAUNCH phase (see `spawnBackgroundRunLaunch`), so a suspended
         // launch would resume AFTER the loop below tore its engines down and create a fresh
         // one — the very class the comment there describes, arriving by a route that verb
-        // cannot see. `stopAllEngines` cancels those launches, but cancellation is
-        // cooperative: only the drain proves none is left running into the next test.
+        // cannot see. `stopAllEngines` abandons those launches (`abortRunStart`), but they
+        // unwind on their own time: only the drain proves none is left running into the next
+        // test.
         await sut?.drainRunStartLaunches()
+        // A Team Editor write leaves the residency reconcile owed on a task of the queue's; awaited
+        // here so it cannot run into the next test (`TeamEditCommitQueue.settleAll`).
+        await sut?.teamEdits.settleAll()
         // The role-control primitives now perform a TOTAL wake (create + start the engine), so a
         // test that exercises one leaves a real run loop alive — `TestOrchestrator.make` injects
         // a real `TeamEngine`. Left running, it would keep mutating shared state into the next

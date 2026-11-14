@@ -21,6 +21,8 @@ struct SkillsPickerButton: View {
     let projectRoot: URL?
     @Binding var clips: [Clip]
 
+    @Environment(NTMSOrchestrator.self) private var store: NTMSOrchestrator?
+
     @State private var isShowing = false
     @State private var snapshot: AgentSkillsSnapshot?   // nil = loading
     @State private var scanTask: Task<Void, Never>?
@@ -57,6 +59,7 @@ struct SkillsPickerButton: View {
         pickError = nil
         snapshot = nil
         let root = projectRoot
+        let mcpEntries = store?.mcpServerManager?.promptsSnapshot.entries ?? []
         scanTask?.cancel()
         scanTask = Task {
             let loaded = await Task.detached(priority: .userInitiated) {
@@ -66,7 +69,8 @@ struct SkillsPickerButton: View {
                     : store.loadOrScan(projectRoot: root).snapshot
             }.value
             guard !Task.isCancelled else { return }
-            snapshot = loaded
+            let mcpItems = mcpEntries.map(SkillsPickerLogic.mcpPromptItem(from:))
+            snapshot = AgentSkillsSnapshot(items: loaded.items + mcpItems)
         }
     }
 
@@ -74,6 +78,25 @@ struct SkillsPickerButton: View {
         // Duplicate pick of an already-staged skill is a no-op.
         if SkillsPickerLogic.isStaged(item, in: clips.texts) {
             isShowing = false
+            return
+        }
+        if item.mcpPrompt != nil {
+            guard let registry = store?.mcpServerManager?.registry else {
+                pickError = "Could not load \(item.name) — the MCP server is not connected."
+                return
+            }
+            Task {
+                do {
+                    var staged = clips.texts
+                    try await SkillsPickerLogic.stageMCPPrompt(item, into: &staged, registry: registry)
+                    if let last = staged.last, staged.count > clips.count {
+                        clips.append(Clip(text: last))
+                    }
+                    isShowing = false
+                } catch {
+                    pickError = "Could not load \(item.name) — \(error.localizedDescription)"
+                }
+            }
             return
         }
         let fileURL = item.fileURL
@@ -300,5 +323,55 @@ nonisolated enum SkillsPickerLogic {
         hasProjectRoot
             ? "No agent skills found in this work folder or your home directory (~/.claude/skills, ~/.codex/prompts, …)."
             : "No agent skills found in your home directory (~/.claude/skills, ~/.codex/prompts, …). Open a work folder to include project skills."
+    }
+
+    // MARK: - MCP prompts (D-M3)
+
+    /// Projects an approved MCP prompt entry into a `/` picker item under `<Server> — MCP Prompts`.
+    static func mcpPromptItem(from entry: MCPPromptsSnapshot.Entry) -> AgentSkillsSnapshot.Item {
+        let slug = entry.slug.rawValue
+        let promptName = entry.descriptor.promptName
+        let description = entry.descriptor.displayDescription.isEmpty ? nil : entry.descriptor.displayDescription
+        return AgentSkillsSnapshot.Item(
+            id: "mcp-prompt|\(entry.serverID.uuidString)|\(promptName)",
+            name: "\(slug):\(promptName)",
+            description: description,
+            agentID: "mcp-prompt-\(slug)",
+            agentLabel: entry.serverDisplayName,
+            kindLabel: "MCP Prompt",
+            origin: .global,
+            fileURL: URL(fileURLWithPath: "/dev/null"),
+            displayPath: "mcp://\(slug)/prompts/\(promptName)",
+            mcpPrompt: AgentSkillsSnapshot.MCPPromptReference(
+                serverID: entry.serverID,
+                slug: slug,
+                serverDisplayName: entry.serverDisplayName,
+                promptName: promptName,
+                pinHash: entry.descriptor.pinHash)
+        )
+    }
+
+    /// Invokes `prompts/get` through `registry` (enforcing the approved pin hash) and appends the
+    /// rendered prompt messages as a `SkillClip` into `clips`.
+    static func stageMCPPrompt(
+        _ item: AgentSkillsSnapshot.Item,
+        arguments: [String: String] = [:],
+        into clips: inout [String],
+        registry: MCPClientRegistry
+    ) async throws {
+        guard !isStaged(item, in: clips), let ref = item.mcpPrompt else { return }
+        let result = try await registry.getPrompt(
+            serverID: ref.serverID,
+            promptName: ref.promptName,
+            expectedHash: ref.pinHash,
+            arguments: arguments)
+        let clip = SkillClip(
+            id: item.id,
+            name: item.name,
+            agentLabel: item.agentLabel,
+            origin: item.origin,
+            body: result.renderedText
+        ).encoded()
+        clips.append(clip)
     }
 }

@@ -9,8 +9,17 @@ import XCTest
 final class ActivityFeedArtifactCacheTests: XCTestCase {
 
     private var tempDir: URL!
+    private var memoStore: [String: String] = [:]
+
+    private var memo: ActivityFeedBuilder.ArtifactContentMemo {
+        ActivityFeedBuilder.ArtifactContentMemo(
+            get: { [weak self] key in self?.memoStore[key] },
+            set: { [weak self] value, key in self?.memoStore[key] = value }
+        )
+    }
 
     override func setUpWithError() throws {
+        memoStore = [:]
         tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("NanoTeamsTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -19,6 +28,7 @@ final class ActivityFeedArtifactCacheTests: XCTestCase {
     override func tearDownWithError() throws {
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
         tempDir = nil
+        memoStore = [:]
     }
 
     private func writeArtifactFile(relativePath: String, content: String) throws {
@@ -66,9 +76,11 @@ final class ActivityFeedArtifactCacheTests: XCTestCase {
         let s = step(artifacts: [artifact])
 
         XCTAssertTrue(ActivityFeedBuilder.loadArtifactContentsForStepSync(
-            s, workFolderURL: tempDir).contains("V1"))
+            s, workFolderURL: tempDir, memo: memo).contains("V1"))
+        XCTAssertEqual(memoStore.count, 1)
         try writeArtifactFile(relativePath: rel, content: "V2")
-        let again = ActivityFeedBuilder.loadArtifactContentsForStepSync(s, workFolderURL: tempDir)
+        let again = ActivityFeedBuilder.loadArtifactContentsForStepSync(
+            s, workFolderURL: tempDir, memo: memo)
         XCTAssertTrue(again.contains("V1"), "same (path, updatedAt) must serve the memo")
         XCTAssertFalse(again.contains("V2"))
     }
@@ -81,13 +93,13 @@ final class ActivityFeedArtifactCacheTests: XCTestCase {
         var artifact = Artifact(name: "Memo", relativePath: rel)
         let s1 = step(artifacts: [artifact])
         XCTAssertTrue(ActivityFeedBuilder.loadArtifactContentsForStepSync(
-            s1, workFolderURL: tempDir).contains("V1"))
+            s1, workFolderURL: tempDir, memo: memo).contains("V1"))
 
         try writeArtifactFile(relativePath: rel, content: "V2")
         artifact.updatedAt = MonotonicClock.shared.now()
         let s2 = step(artifacts: [artifact])
         XCTAssertTrue(ActivityFeedBuilder.loadArtifactContentsForStepSync(
-            s2, workFolderURL: tempDir).contains("V2"))
+            s2, workFolderURL: tempDir, memo: memo).contains("V2"))
     }
 
     /// A failed read must stay retryable — the artifact file may simply not have
@@ -97,11 +109,11 @@ final class ActivityFeedArtifactCacheTests: XCTestCase {
         let artifact = Artifact(name: "Memo", relativePath: rel)
         let s = step(artifacts: [artifact])
         XCTAssertTrue(ActivityFeedBuilder.loadArtifactContentsForStepSync(
-            s, workFolderURL: tempDir).isEmpty)
+            s, workFolderURL: tempDir, memo: memo).isEmpty)
 
         try writeArtifactFile(relativePath: rel, content: "LATE")
         XCTAssertTrue(ActivityFeedBuilder.loadArtifactContentsForStepSync(
-            s, workFolderURL: tempDir).contains("LATE"))
+            s, workFolderURL: tempDir, memo: memo).contains("LATE"))
     }
 
     func testNilWorkFolder_returnsEmpty() {

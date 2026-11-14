@@ -162,4 +162,23 @@ final class EndToEndResetWorkFolderSettingsTests: NTMSOrchestratorTestBase, @unc
         XCTAssertEqual(sut.workFolder?.settings.context, "",
                        "Settings restored to defaults")
     }
+
+    // MARK: - Scenario 8: The confirmation says what the reset does
+
+    /// Until 2026-10-28 the dialog promised "Existing tasks and runs will be preserved"
+    /// while the reset deleted them, contradicting the Danger Zone caption beside it.
+    func testTheConfirmationSaysTheResetDeletesTasks() async {
+        await sut.openWorkFolder(tempDir)
+        _ = await sut.createTask(title: "Task A", supervisorTask: "x")!
+
+        await sut.resetWorkFolderSettings()
+
+        XCTAssertEqual(sut.snapshot?.tasksIndex.tasks.count, 0, "the reset deletes every task")
+        let message = WorkFolderSettingsView.resetConfirmationMessage
+        XCTAssertFalse(message.localizedCaseInsensitiveContains("preserved"),
+                       "the dialog must not promise to keep what the reset deletes")
+        XCTAssertTrue(message.hasPrefix(WorkFolderSettingsView.resetConsequences),
+                      "the dialog states the same consequences as the Danger Zone caption")
+        XCTAssertTrue(message.hasSuffix("This action cannot be undone."))
+    }
 }

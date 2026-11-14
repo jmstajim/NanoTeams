@@ -718,6 +718,81 @@ final class DelegateToTeamEntryResolutionTests: XCTestCase {
                       "A phantom 'generating…' card on an existing-team delegation would misreport what happened")
     }
 
+    /// Folder-lifecycle guards in `handleDelegateToTeam` and `awaitDelegationCompletion`
+    /// (`D-M11 чтение-3`): advancing `delegate.folderTransitions` at each suspension point —
+    /// child creation, child start, waiting for child completion, auto-accept close, and
+    /// supervisor-interrupt pause — returns `folderChanged` and stops before writing,
+    /// auto-accepting, or clearing markers in the next folder.
+    func testFolderTransitionAcrossDelegationStepsAndAwaiterReturnsFolderChangedWithoutActingInNextFolder() async {
+        enum TransitionSite: CaseIterable {
+            case duringCreateChild
+            case duringStartChild
+            case duringAwaitCompletion
+            case duringNeedsAcceptanceClose
+            case duringParentMessagePause
+        }
+
+        for site in TransitionSite.allCases {
+            service = LLMExecutionService(repository: NTMSRepository())
+            delegate = MockLLMExecutionDelegate()
+            service.attach(delegate: delegate)
+            let task = seedParentTask(allowedDelegationTeamIDs: [dtTargetTeamID])
+            service._testRegisterStepTask(stepID: dtStepID, taskID: dtParentTID)
+            delegate.createDelegatedTaskStub = dtChildTID
+
+            switch site {
+            case .duringCreateChild:
+                delegate.onCreateDelegatedTask = { [weak delegate] in delegate?.folderTransitions += 1 }
+            case .duringStartChild:
+                delegate.onStartRunForTask = { [weak delegate] in delegate?.folderTransitions += 1 }
+            case .duringAwaitCompletion:
+                delegate.scriptedAwaitOutcomes = [.terminal(.needsAcceptance)]
+                delegate.onAwaitTaskTerminalState = { [weak delegate] in delegate?.folderTransitions += 1 }
+            case .duringNeedsAcceptanceClose:
+                delegate.scriptedAwaitOutcomes = [.terminal(.needsAcceptance)]
+                delegate.onCloseTask = { [weak delegate] in delegate?.folderTransitions += 1 }
+            case .duringParentMessagePause:
+                delegate.scriptedAwaitOutcomes = [.parentMessageQueued(text: "hold on")]
+                delegate.onPauseRun = { [weak delegate] in delegate?.folderTransitions += 1 }
+            }
+
+            let envelope = await service.handleDelegateToTeam(
+                stepID: dtStepID,
+                teamIDRaw: dtTargetTeamID,
+                taskBrief: "ship the feature",
+                initiatingRole: .codingAgent,
+                task: task,
+                runIndex: 0,
+                stepIndex: 0,
+                client: DTSilentClient(),
+                config: dtConfig()
+            )
+
+            XCTAssertTrue(
+                envelope.contains(DeferredCallReplies.folderChanged),
+                "\(site): expected folderChanged envelope, got \(envelope)"
+            )
+            switch site {
+            case .duringCreateChild:
+                XCTAssertTrue(delegate.startedRunForTaskIDs.isEmpty,
+                              "\(site): must not start child after folder transition")
+            case .duringStartChild:
+                XCTAssertTrue(delegate.awaitedTaskIDs.isEmpty,
+                              "\(site): must not await child after folder transition")
+            case .duringAwaitCompletion:
+                XCTAssertTrue(delegate.closedTaskIDs.isEmpty,
+                              "\(site): must not auto-accept/close child after folder transition")
+                XCTAssertTrue(delegate.stopEngineCalls.isEmpty)
+            case .duringNeedsAcceptanceClose:
+                XCTAssertEqual(delegate.awaitedTaskIDs.count, 1,
+                               "\(site): must not loop for a second await turn after folder transition")
+            case .duringParentMessagePause:
+                XCTAssertFalse(envelope.contains("paused_by_supervisor"),
+                               "\(site): must not report paused_by_supervisor after folder transition")
+            }
+        }
+    }
+
     // MARK: - Fixtures
 
     /// Builds and installs a parent task + snapshot in the shape the handler

@@ -41,7 +41,9 @@ final class ClipboardCaptureFlowCoverageTests: XCTestCase {
             env.pasteboard.writes, [[original]],
             "a ⌘C that changed the pasteboard MUST be undone even when we could not read what it "
                 + "produced — otherwise copying an image silently eats the clipboard")
-        XCTAssertEqual(env.pasteboard.clearCount, 1)
+        // The restore's own `write` begins the new generation (#376), so the only `clear` left
+        // in this flow is the one the synthesized copy needs.
+        XCTAssertEqual(env.pasteboard.clearCount, 0)
         XCTAssertFalse(result.restoreFailed)
     }
 
@@ -548,12 +550,23 @@ final class ClipboardCaptureFlowCoverageTests: XCTestCase {
         XCTAssertTrue(board.writes.isEmpty)
     }
 
-    func testApplyRestore_rewriteItems_clearsThenWrites() {
+    /// `write` begins the generation itself — and chooses its options, which is how a concealed
+    /// item comes back local to this Mac (#376) — so a non-empty restore no longer clears first.
+    func testApplyRestore_rewriteItems_writesWithoutABareClear() {
         let board = FakePasteboard()
         let items = [FakePasteboard.item("a"), FakePasteboard.item("b")]
         XCTAssertTrue(ClipboardCaptureService.applyRestore(.rewrite(items), to: board))
-        XCTAssertEqual(board.clearCount, 1)
+        XCTAssertEqual(board.clearCount, 0)
         XCTAssertEqual(board.writes, [items])
+    }
+
+    /// An EMPTY restore is the one case with nothing to write: the clipboard was genuinely empty
+    /// before, so clearing is the faithful restore.
+    func testApplyRestore_emptyItems_clearsAndWritesNothing() {
+        let board = FakePasteboard()
+        XCTAssertTrue(ClipboardCaptureService.applyRestore(.rewrite([]), to: board))
+        XCTAssertEqual(board.clearCount, 1)
+        XCTAssertEqual(board.writes, [])
     }
 
     func testApplyRestore_refusedWrite_reportsFailure() {

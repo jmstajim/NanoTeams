@@ -141,7 +141,7 @@ final class AskCallIndexTests: XCTestCase {
         XCTAssertEqual(index.lastParkedPosition(in: calls), 4)
 
         // The refusal lands after the scan: same index, new answer.
-        calls[4].isError = true
+        calls[4].recordResult(#"{"ok":false}"#, isError: true)
         XCTAssertEqual(index.parkedPositions(in: calls), [1])
         XCTAssertEqual(index.lastParkedPosition(in: calls), 1)
     }
@@ -163,9 +163,9 @@ final class AskCallIndexTests: XCTestCase {
     /// in-flight ask IS the question the composer owns, and a pre-field record never refused.
     func testNilAndFalseIsError_bothCountAsParked() {
         var pending = ask()
-        pending.isError = nil
+        pending.recordResult(nil, isError: nil)
         var succeeded = form()
-        succeeded.isError = false
+        succeeded.recordResult(#"{"ok":true}"#, isError: false)
         let calls = [pending, succeeded]
         XCTAssertEqual(AskCallIndex(toolCalls: calls).parkedPositions(in: calls), [0, 1])
         XCTAssertEqual(AskCallIndex(toolCalls: calls).lastParkedPosition(in: calls), 1)
@@ -382,21 +382,9 @@ final class AskCallIndexTests: XCTestCase {
         // Scan 2 — element-field writers: which FIELDS, from which FILES.
         let writtenFields = Set(fieldWrites.map(\.field))
         let fieldWriterFiles = Set(fieldWrites.map(\.file))
-        XCTAssertFalse(fieldWrites.isEmpty, "anti-vacuum: the scan must see the result-field writers")
-        XCTAssertEqual(writtenFields, ["resultJSON", "isError", "argumentsJSON"], """
-        A `toolCalls` element field outside `resultJSON` / `isError` / `argumentsJSON` is written \
-        somewhere in the app target. `name` and `id` are what `AskCallIndex.isPrefix` reads — a \
-        rewrite of either breaks (count, last id) validation. Written fields: \
-        \(writtenFields.sorted()); sites: \(fieldWrites.map { "\($0.file): .\($0.field)" }.sorted())
-        """)
-        XCTAssertEqual(fieldWriterFiles, [
-            "NanoTeams/Services/Task/TaskMutationService.swift",
-            "NanoTeams/Services/LLM/LLMExecutionService+DelegateToTeam.swift",
-            "NanoTeams/Services/Core/NTMSOrchestrator+TeamGeneration.swift",
-            "NanoTeams/Services/Task/StatusRecoveryService.swift",
-        ], """
-        The files that write result fields of a `toolCalls` element changed — harmless to \
-        `AskCallIndex`, but the enumeration at `StepExecution.toolCalls` names them; update both.
-        """)
+        XCTAssertFalse(writtenFields.contains("resultJSON"), "Direct assignment to resultJSON is forbidden; use StepToolCall.recordResult(_:isError:at:)")
+        XCTAssertFalse(writtenFields.contains("isError"), "Direct assignment to isError is forbidden; use StepToolCall.recordResult(_:isError:at:)")
+        XCTAssertTrue(writtenFields.isEmpty, "No toolCalls element fields should be directly assigned; found: \(writtenFields)")
+        XCTAssertTrue(fieldWriterFiles.isEmpty, "Direct assignment of toolCalls element fields is forbidden; all writers must use StepToolCall.recordResult")
     }
 }

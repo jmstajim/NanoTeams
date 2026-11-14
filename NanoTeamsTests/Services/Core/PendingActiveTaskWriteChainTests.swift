@@ -30,9 +30,30 @@ final class PendingActiveTaskWriteChainTests: NTMSOrchestratorTestBase, @uncheck
         // Schedule the unblock concurrently with the flush — if `flush`
         // returned without awaiting, `didComplete` would still be false.
         Task { await gate.open() }
-        await sut.flushPendingActiveTaskWrite()
+        let survived = await sut.flushPendingActiveTaskWrite(within: sut.currentFolderLifecycle)
         XCTAssertTrue(didComplete.value,
                       "flushPendingActiveTaskWrite must await the in-flight Task before returning")
+        XCTAssertTrue(survived, "no folder transition began during the flush, so its lifecycle survived")
+    }
+
+    /// The flush's answer is the decision a flush-then-write site makes: a folder transition
+    /// begun while the flush waited ends the caller's lifecycle, and the flush says so.
+    ///
+    /// RED until the flush answered: every flush-then-write site wrote after it regardless, and a
+    /// switch or a removal applied the folder it captured under the URL of the one opened since.
+    func testFlushPendingActiveTaskWrite_answersWhetherTheCallersLifecycleSurvivedTheWait() async {
+        await sut.openWorkFolder(tempDir)
+        let lifecycle = sut.currentFolderLifecycle
+        let gate = AsyncGate()
+        sut.pendingActiveTaskWrite = Task<Void, Error> { await gate.wait() }
+        let flushing = Task { await self.sut.flushPendingActiveTaskWrite(within: lifecycle) }
+        let other = tempDir.appendingPathComponent("other", isDirectory: true)
+        try? FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        await sut.openWorkFolder(other)
+        await gate.open()
+        let survived = await flushing.value
+        XCTAssertFalse(survived, "a transition begun during the flush did not end the caller's lifecycle")
+        XCTAssertTrue(sut.isCurrentFolderLifecycle(sut.currentFolderLifecycle), "premise: the other folder committed")
     }
 
     // MARK: - C5: predecessor-throws → flush still returns
@@ -42,10 +63,10 @@ final class PendingActiveTaskWriteChainTests: NTMSOrchestratorTestBase, @uncheck
         sut.pendingActiveTaskWrite = Task<Void, Error> { throw Boom() }
         // Must not propagate the thrown error; `flushPendingActiveTaskWrite`
         // is marked non-throwing precisely so callers don't have to care.
-        await sut.flushPendingActiveTaskWrite()
+        let survived = await sut.flushPendingActiveTaskWrite(within: sut.currentFolderLifecycle)
         // Reaching this line is the assertion — if the implementation
         // changed to `try await`, the test would fail to compile or hang.
-        XCTAssertTrue(true)
+        XCTAssertTrue(survived, "a predecessor's failure is not a folder transition")
     }
 
     /// Fast-path switchTask uses the same `try? await previous?.value`
@@ -102,7 +123,7 @@ final class PendingActiveTaskWriteChainTests: NTMSOrchestratorTestBase, @uncheck
         _ = await sut.createTask(title: "T", supervisorTask: "Goal")
 
         XCTAssertTrue(chainSawCreate.value,
-                      "createTask must `await flushPendingActiveTaskWrite()` before invoking repository.createTask")
+                      "createTask must `await flushPendingActiveTaskWrite(within:)` before invoking repository.createTask")
     }
 
     // MARK: - C8: removeTask flushes the chain before its sync write
@@ -125,7 +146,7 @@ final class PendingActiveTaskWriteChainTests: NTMSOrchestratorTestBase, @uncheck
         await sut.removeTask(id)
 
         XCTAssertTrue(chainSawRemove.value,
-                      "removeTask must `await flushPendingActiveTaskWrite()` before invoking repository.deleteTask")
+                      "removeTask must `await flushPendingActiveTaskWrite(within:)` before invoking repository.deleteTask")
     }
 
     // MARK: - C6: slow-path switchTask flushes the chain before its sync write
@@ -155,7 +176,7 @@ final class PendingActiveTaskWriteChainTests: NTMSOrchestratorTestBase, @uncheck
         await sut.switchTask(to: bID)
 
         XCTAssertTrue(chainSawSwitch.value,
-                      "Slow-path switchTask must `await flushPendingActiveTaskWrite()` before invoking repository.setActiveTask")
+                      "Slow-path switchTask must `await flushPendingActiveTaskWrite(within:)` before invoking repository.setActiveTask")
     }
 
     // NB: I2 (`closeProject` / `resetAllData` cancel the pending chain) is

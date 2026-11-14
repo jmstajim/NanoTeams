@@ -12,7 +12,13 @@ import Foundation
 enum RuntimePromptFingerprint {
 
     /// Computed once per process, on the main actor — the composers are main-actor code.
-    static let current: String = compute(RuntimePromptRegistry.entries)
+    static let current: String = compute(RuntimePromptRegistry.entries, audience: .localModel)
+
+    /// Fingerprint of `.externalAgent` texts (`agentTextVersion` in Hosted MCP `_meta` and
+    /// `ExternalAutovisorActivityLog`). Separate from `current` so adding or editing MCP
+    /// instructions, tool descriptions, or external-only replies never invalidates the
+    /// provenance of local model runs.
+    static let externalAgent: String = compute(RuntimePromptRegistry.entries, audience: .externalAgent)
 
     /// What the logger seam reads. `NetworkLogger.noteProvenanceIfNeeded` runs inside a
     /// client's stream task, off the main actor, so the value crosses over once:
@@ -35,9 +41,12 @@ enum RuntimePromptFingerprint {
     #endif
 
     /// Order-independent (sorted by name) so a registry reshuffle cannot move the value.
-    static func compute(_ entries: [RuntimePromptRegistry.Entry]) -> String {
+    static func compute(
+        _ entries: [RuntimePromptRegistry.Entry],
+        audience: RuntimePromptRegistry.Audience = .localModel
+    ) -> String {
         var hash: UInt64 = 0xcbf5_2913_1c93_1e00
-        for entry in entries.sorted(by: { $0.name < $1.name }) {
+        for entry in entries.filter({ $0.audience == audience }).sorted(by: { $0.name < $1.name }) {
             for byte in Data((entry.name + "\u{1}" + entry.render() + "\u{2}").utf8) {
                 hash ^= UInt64(byte)
                 hash = hash &* 0x1000_0000_01b3

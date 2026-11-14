@@ -75,6 +75,15 @@ extension LLMExecutionService {
         allowedToolNames: Set<String>,
         phaseWithheldToolNames: Set<String> = [],
         supersededToolNames: Set<String> = [],
+        /// MCP tools this step advertised that the live catalogue no longer answers for on the
+        /// same terms, split by why — see `MCPResolvedTools.drift(against:)`.
+        mcpDrift: MCPToolDrift = .none,
+        /// MCP tools the role holds that never reached the schema, because no call of them
+        /// could reach a decision in a run with nobody to approve.
+        mcpWithheldToolNames: Set<String> = [],
+        /// Every MCP tool the LIVE catalogue holds, granted to this role or not — so a call
+        /// to someone else's tool is answered "not issued to you", not "no such tool".
+        mcpKnownToolNames: Set<String> = [],
         isPlanningPhase: Bool = false,
         runtime: ToolRuntime,
         tracker: ToolCallTracker,
@@ -89,6 +98,7 @@ extension LLMExecutionService {
 
         let expectedArtifacts = task.runs[runIndex].steps
             .first(where: { $0.id == roleID })?.expectedArtifacts ?? []
+        let runsBash = resolvedToolCalls.contains { ToolRegistry.resolveToolName($0.name) == ToolNames.bash }
         let context = ToolExecutionContext(
             workFolderRoot: delegate.workFolderURL ?? Self.noWorkFolderSandboxRoot,
             taskID: task.id,
@@ -98,7 +108,17 @@ extension LLMExecutionService {
             isPlanningPhase: isPlanningPhase,
             // The same set the batch is authorized against below: the plain ask refuses a
             // questionnaire only when the form is there to receive it.
-            questionnaireAvailable: allowedToolNames.contains(ToolNames.askSupervisorForm)
+            questionnaireAvailable: allowedToolNames.contains(ToolNames.askSupervisorForm),
+            // Read now, per batch: a server added, switched on or re-pointed since the step
+            // began is dialled at once, and this batch's `bash` must already refuse its port.
+            // Only for a batch that runs `bash` — nothing else reads it, and the list costs a
+            // read of the MCP catalogue and of the interface addresses.
+            guardedLoopbackPorts: runsBash
+                ? delegate.seatbeltGuardedLoopbackPorts
+                : SeatbeltSandbox.effectiveGuardedPorts([]),
+            // The sandbox settings too — the switch, the grants, the fallback — so what the
+            // person set since the step began governs this batch's command.
+            bashSandbox: runsBash ? delegate.bashPolicy.sandbox : BashPolicy.Sandbox()
         )
 
         var results: [ToolExecutionResult] = []
@@ -155,7 +175,10 @@ extension LLMExecutionService {
                     xcodeSchemeKnown: snapshot != nil,
                     approval: approval,
                     phaseWithheldToolNames: phaseWithheldToolNames,
-                    supersededToolNames: supersededToolNames
+                    supersededToolNames: supersededToolNames,
+                    mcpDrift: mcpDrift,
+                    mcpWithheldToolNames: mcpWithheldToolNames,
+                    mcpKnownToolNames: mcpKnownToolNames
                 )
                 let rejected = Self.makeUnavailableToolResult(
                     call: call, canonicalName: name, scope: "for this role", reason: reason
@@ -295,6 +318,58 @@ extension LLMExecutionService {
         /// `precondition_failed`'s direction blames the work folder and offers "proceed
         /// without this step" — the permission this whole family exists to withdraw.
         case workSuperseded
+        /// The role holds this MCP tool and the step advertised it — but between the step's
+        /// entry and this call its connected server changed the tool's description or schema
+        /// or dropped it, a person withdrew its approval, the server was removed, or the name
+        /// now belongs to another server (`MCPLiveCatalogueIndex.standing(of:)`). Gone for the
+        /// rest of the step in every case — also while its server's tool list is being read
+        /// again, which is answered from the listing the app last committed. A tool that listing
+        /// still approved at the called text is NOT this case — the re-read may find it
+        /// unchanged and bring it back within the step — and has its own
+        /// (`.mcpToolsBeingReread`). The
+        /// SCHEMA still promises it,
+        /// deliberately: the tool list is rendered into segment 0 of the prompt and the wire is
+        /// append-only, so narrowing it mid-step would re-prefill every remaining request. So
+        /// the promise is kept honest here instead — on the one call that hits it — and the
+        /// next step resolves against the new catalogue. Own code: `precondition_failed`
+        /// blames the work folder, and nothing about this blocker is local.
+        case mcpToolChanged
+        /// The role holds this MCP tool and the step advertised it, and nothing about the tool
+        /// changed — its server has no live session right now: reconnecting after a dropped
+        /// session, failing, switched off. Every tool of a server leaves the live catalogue
+        /// while it has no session and comes back, at the same hash, when it reconnects — often
+        /// seconds later. Until 2026-09-23 this was `.mcpToolChanged`, whose text says the
+        /// server changed what the tool does and withholds it for the rest of the step: false
+        /// on both counts, and a model believing it abandons a tool that works again a turn
+        /// later (R1.8.5). Own code, and one of the two MCP refusals that leave a later call
+        /// open (`.mcpToolsBeingReread` is the other).
+        case mcpServerNotConnected
+        /// The role holds this MCP tool and the step advertised it, and nothing about the tool
+        /// changed — its server cannot be used until a person changes its settings: its
+        /// credential was refused, its address is one this client will not talk to, it speaks
+        /// nothing this client can read (an incompatible server), or a person switched it off.
+        /// The connection retries none of them (`MCPServerConnection.recordFailure(_:)`; a
+        /// switched-off server has no connection at all), so unlike `.mcpServerNotConnected` no
+        /// later call in the step can succeed, and the refusal invites none. Until 2026-09-23 (A2 verification) both states read as
+        /// `.mcpServerNotConnected`, whose "call it again later in this step" sent the model
+        /// back to a server that would not come back without a person (R1.8.5). Own code,
+        /// because the remedy differs from both neighbours: nothing in the call is at fault and
+        /// no wait clears it, but a person CAN — so the direction offers the escalation channel.
+        case mcpServerNeedsAttention
+        /// The role holds this MCP tool and the step advertised it, and nothing says the tool
+        /// changed — its server's tool list is being read again: a listing asked after its
+        /// `list_changed`, or once its stated catalogue lifetime ran out, failed
+        /// (`MCPServerConnection.catalogueUnverified`), and the listing the app last committed
+        /// approved the tool at the text the step froze (one it did not is `.mcpToolChanged`
+        /// throughout). The connection lists again on its own,
+        /// and the first listing that commits brings back, at the same hash and within the
+        /// step, every tool it did not change; one it DID change is `.mcpToolChanged` from then
+        /// on. Until 2026-09-24 (group C) this state read as `.mcpToolChanged`, whose text
+        /// withholds the tool for the remainder of the step — false the moment the re-read
+        /// commits, and a model believing it abandons a tool that works again a turn later
+        /// (R1.8.5). Own code: the second MCP refusal that leaves a later call open, and the
+        /// only one that names the case in which that later call is refused instead.
+        case mcpToolsBeingReread
 
         /// The executor's lowercase error code for this reason — the ONE spelling both
         /// `makeUnavailableToolResult` (which writes it) and `ToolErrorNotePolicy.direction`
@@ -318,6 +393,21 @@ extension LLMExecutionService {
             case .approverUnavailable: return "approval_unavailable"
             case .withheldUntilPlanRecorded: return "plan_required"
             case .workSuperseded: return "work_superseded"
+            case .mcpToolChanged: return "mcp_tool_changed"
+            case .mcpServerNotConnected: return "mcp_server_not_connected"
+            case .mcpServerNeedsAttention: return "mcp_server_needs_attention"
+            case .mcpToolsBeingReread: return "mcp_tools_being_reread"
+            }
+        }
+
+        /// The reason a call the MCP invoker stopped at dispatch is refused with — the same one
+        /// the classifier gives the same fact when the iteration's drift check already saw it.
+        init(_ refusal: MCPDispatchRefusal) {
+            switch refusal {
+            case .toolChanged: self = .mcpToolChanged
+            case .serverNotConnected: self = .mcpServerNotConnected
+            case .serverNeedsAttention: self = .mcpServerNeedsAttention
+            case .toolsBeingReread: self = .mcpToolsBeingReread
             }
         }
 
@@ -335,6 +425,7 @@ extension LLMExecutionService {
             switch self {
             case .unknownToolName: return .dropTheName
             case .withheldUntilPlanRecorded: return .retryAfter(ToolNames.updateScratchpad)
+            case .mcpServerNotConnected, .mcpToolsBeingReread: return .retryLater
             default: return .terminalCarryForward
             }
         }
@@ -354,6 +445,10 @@ extension LLMExecutionService {
             case .computerUseDisabled, .bashDisabled: return .sessionPolicy
             case .approverUnavailable: return .noHumanInTheRun
             case .withheldUntilPlanRecorded, .workSuperseded: return .thisStepSoFar
+            case .mcpToolChanged: return .theServer
+            case .mcpServerNotConnected: return .serverConnection
+            case .mcpServerNeedsAttention: return .serverSettings
+            case .mcpToolsBeingReread: return .serverToolList
             }
         }
     }
@@ -367,6 +462,10 @@ extension LLMExecutionService {
         case dropTheName
         /// The one temporal arm: do the named thing, then repeat the identical call.
         case retryAfter(String)
+        /// Nothing the model does clears it, and time may: carry on with what it holds, and the
+        /// identical call may be made again later in the step — not straight away, when it
+        /// would meet the same state.
+        case retryLater
 
         /// The phrases that SPELL this contract. Closed and short on purpose — widening the
         /// list so a new message passes is how a measured detector goes hollow, which is why
@@ -382,6 +481,8 @@ extension LLMExecutionService {
                 return ["is not a tool"]
             case .retryAfter(let tool):
                 return ["then call"] + [tool]
+            case .retryLater:
+                return ["again later in this step"]
             case .terminalCarryForward:
                 return [
                     "as unverified",
@@ -402,6 +503,21 @@ extension LLMExecutionService {
         case sessionPolicy
         case noHumanInTheRun
         case thisStepSoFar
+        /// An external MCP server: it changed what it publishes, or stopped publishing.
+        /// Nothing in the work folder, the session or this step is in the way.
+        case theServer
+        /// An external MCP server's CONNECTION: it has no live session at the moment. Nothing
+        /// about the tool changed.
+        case serverConnection
+        /// An external MCP server's SETTINGS: it cannot be used until a person changes them —
+        /// a refused credential, a refused address, an incompatible server, a server switched
+        /// off. Nothing about the tool changed, and no wait brings it back.
+        case serverSettings
+        /// An external MCP server's TOOL LIST: a listing that should have read a change — after
+        /// its `list_changed`, or once its stated catalogue lifetime ran out — failed, and the
+        /// list is being read again. Nothing about the connection, the settings or the tool is
+        /// known to be wrong.
+        case serverToolList
 
         /// Nouns that assert THIS blocker. A direction shared by several reasons may carry
         /// none of them.
@@ -412,6 +528,10 @@ extension LLMExecutionService {
             case .sessionPolicy: return ["turned off for this session", "disabled by policy"]
             case .noHumanInTheRun: return ["approval", "has none"]
             case .thisStepSoFar: return ["plan is recorded", "remainder of this step"]
+            case .theServer: return ["its server", "approved"]
+            case .serverConnection: return ["not connected"]
+            case .serverSettings: return ["its settings"]
+            case .serverToolList: return ["being read again"]
             }
         }
     }
@@ -424,8 +544,16 @@ extension LLMExecutionService {
     /// classifier's tail and by `MeetingToolExecutor`, which until the evening of
     /// 2026-09-11 handed every rejected meeting call `.notInRoleConfig` — and so told a
     /// participant that `submit_vote` "did not run and returned nothing".
-    nonisolated static func nameShapedReason(canonical: String) -> ToolUnavailabilityReason {
-        ToolHandlerRegistry.schema(named: canonical) == nil ? .unknownToolName : .notInRoleConfig
+    /// - Parameter dynamicKnownNames: names that ARE tools without being in
+    ///   `ToolHandlerRegistry` — the live MCP catalogue. Without it, every external tool a
+    ///   role was not granted reads as `.unknownToolName` ("no variant of this name is a
+    ///   tool"), which is false and sends the model to drop a name it could legitimately be
+    ///   issued.
+    nonisolated static func nameShapedReason(
+        canonical: String, dynamicKnownNames: Set<String> = []
+    ) -> ToolUnavailabilityReason {
+        if ToolHandlerRegistry.schema(named: canonical) != nil { return .notInRoleConfig }
+        return dynamicKnownNames.contains(canonical) ? .notInRoleConfig : .unknownToolName
     }
 
     /// Maps a rejected tool name to the most-specific precondition that
@@ -450,9 +578,28 @@ extension LLMExecutionService {
         approval: ToolApprovalAvailability,
         phaseWithheldToolNames: Set<String> = [],
         supersededToolNames: Set<String> = [],
+        mcpDrift: MCPToolDrift = .none,
+        mcpWithheldToolNames: Set<String> = [],
+        mcpKnownToolNames: Set<String> = [],
         fileManager: FileManager = .default
     ) -> ToolUnavailabilityReason {
         let registry = ToolHandlerRegistry.self
+        // The MCP sets lead, and all five outrank the phase for the same reason the bash
+        // and computer-use arms below it do: recording a plan re-enables nothing here. A
+        // changed tool needs the server put back the way it was approved, a server between
+        // sessions needs to reconnect, a tool list being read again needs the read to
+        // succeed, a server waiting for a person needs its settings changed, and a withheld
+        // tool needs a person in the run — none is a condition the boundary resolves, so
+        // `plan_required`'s "call it again after recording your plan" would name the wrong
+        // thing to wait for. The four drift sets are disjoint (one standing per tool), so
+        // their order among themselves decides nothing.
+        if mcpDrift.changed.contains(toolName) { return .mcpToolChanged }
+        if mcpDrift.serverNotConnected.contains(toolName) { return .mcpServerNotConnected }
+        if mcpDrift.toolsBeingReread.contains(toolName) { return .mcpToolsBeingReread }
+        // Ahead of the approver arm too: a person present to approve could not make this call
+        // run either, so "this run has none" would name the wrong thing to fix.
+        if mcpDrift.serverNeedsAttention.contains(toolName) { return .mcpServerNeedsAttention }
+        if mcpWithheldToolNames.contains(toolName) { return .approverUnavailable }
         // ABOVE the phase check, and the exception proves that check's rule. Everything else in
         // `phaseWithheldToolNames` is withheld by a condition the BOUNDARY resolves, which is
         // what makes `plan_required`'s "call it again after recording your plan" true. A bash
@@ -511,7 +658,7 @@ extension LLMExecutionService {
         // at the call site, which lowercases), so a namespaced, aliased or differently
         // cased emission of a REAL tool resolves before this and is correctly
         // `.notInRoleConfig`, never "no such tool".
-        return nameShapedReason(canonical: toolName)
+        return nameShapedReason(canonical: toolName, dynamicKnownNames: mcpKnownToolNames)
     }
 
     /// Builds a tool-unavailable error envelope with cause-specific code and
@@ -586,6 +733,51 @@ extension LLMExecutionService {
                 : "Tool '\(call.name)' is withheld in this run: this action would need a human's approval, and this run has none. Continue without it."
         case .workSuperseded:
             msg = "Tool '\(call.name)' is withheld for the remainder of this step: an approved change request is rewriting the tree a build would read, and this step's output will be superseded by your own re-run, which holds the runners again. Finish this step from what you already have, without further builds."
+        case .mcpToolsBeingReread:
+            // States what holds whichever way the state was reached — the list is being read
+            // again, and no call of that server runs until the read succeeds (the route refuses
+            // every one while its catalogue is unverified, `MCPClientRegistry.callTool`) — and
+            // names no cause: a `list_changed` is the server announcing a change, but a stated
+            // catalogue lifetime running out announces nothing, and "its server announced a
+            // change" was false for it until C-5 (2026-09-24). Nor does it say the tool changed
+            // or what the change is (either would put the server's word in front of the model,
+            // the rug pull's own channel). Leaves a later call open, after other work, as
+            // `.mcpServerNotConnected` does; and it names the outcome the re-read itself can
+            // produce, so a later `mcp_tool_changed` is the promise kept rather than a
+            // contradiction (R1.8.5). A person revoking the tool meanwhile refuses it the same
+            // way; the text claims no exclusivity, so it stays true then too.
+            msg = "Tool '\(call.name)' did not run: the list of tools its server offers is being read again, and none of that server's tools runs until the read succeeds. Nothing in the call is at fault, and it returned nothing. Continue with the tools you hold; if this step still needs it, call it again later in this step, after other work — if the re-read list changed this tool, it will be withheld for the rest of the step instead. Until it answers, treat what it would have settled as unverified."
+        case .mcpToolChanged:
+            // States the fact and the one honest remedy. No retry is invited: the schema
+            // still lists this tool for the rest of the step, so "try again" would be an
+            // invitation to loop against a refusal that cannot change until the next step.
+            // Nor is the change described — the difference is between two server-authored
+            // texts, and putting either in front of the model is the rug pull's own channel.
+            //
+            // "or its approval was withdrawn" since 2026-09-23: the dispatch check now refuses a
+            // call to a tool a person revoked mid-step with this text, and without the clause
+            // it blamed the server for a decision the server never made (R1.8.5).
+            // "or how it is called" since 2026-10-28: a tool whose schema carries
+            // `x-mcp-header` (`callShapeDependsOnEra`), header parameters or not, is refused this
+            // way once its server's session speaks another protocol revision than the one the
+            // step's calls are assembled for — the tool's text did not change, the shape of a call
+            // of it did (`MCPToolCall.era`).
+            msg = "Tool '\(call.name)' is withheld for the remainder of this step: since this step was set up, its server changed what this tool does or how it is called, or stopped offering it, or its approval was withdrawn. The call did not run and returned nothing. Name what you wanted it to settle as unverified in your own output, and continue with the tools you hold."
+        case .mcpServerNotConnected:
+            // States what is known — the server has no session NOW — and nothing it cannot
+            // know: it does not say the server is reconnecting, only that it may be, because
+            // `.connecting` and a retrying `.failed` both reach this arm and neither promises
+            // that the next attempt succeeds (a server switched off reaches
+            // `.mcpServerNeedsAttention` instead). One of the two MCP refusals that
+            // leave a later call open, and it says when: after other work, not on the next
+            // turn, when the same call would meet the same state.
+            msg = "Tool '\(call.name)' did not run: its server is not connected right now, and it may be reconnecting. Nothing in the call is at fault, and it returned nothing. Continue with the tools you hold; if this step still needs it, call it again later in this step, after other work, when its server may be back. Until it answers, treat what it would have settled as unverified."
+        case .mcpServerNeedsAttention:
+            // States what is known — the server cannot be used until a person changes its
+            // settings — and invites no retry: nothing retries a refused credential, a refused
+            // address, an incompatible server or one a person switched off, so a later call in
+            // this step meets the same state. The escalation channel, when the role holds one, rides the direction.
+            msg = "Tool '\(call.name)' did not run: its server cannot be used until a person changes its settings in this app. Nothing in the call is at fault, and it returned nothing. Name what you wanted it to settle as unverified in your own output, and continue with the tools you hold."
         case .withheldUntilPlanRecorded:
             // Distinct code so `ToolErrorNotePolicy.direction` can steer toward the
             // retry. `precondition_failed` would tell the model the blocker is
@@ -645,7 +837,9 @@ extension LLMExecutionService {
     /// `(path, content)` already attempted in this step. The model sees this in its tool-call
     /// history; recovery guidance lives in the role prompt and the `write_file` schema, not here.
     nonisolated static func makeIdenticalWriteLoopResult(call: StepToolCall) -> ToolExecutionResult {
-        let parsed = (ToolCallDataUtils.parseJSON(call.argumentsJSON)?["path"] as? String)
+        // The path the fingerprint matched on — read the way the runtime reads it.
+        let parsed = (ToolCallArguments.prepare(rawJSON: call.argumentsJSON, emittedName: call.name)
+            .dispatched?.args["path"] as? String)
             .flatMap { $0.isEmpty ? nil : $0 }
         // `"?"` stays the STRUCTURED field's sentinel (its shape is pinned), but it must not
         // reach the MESSAGE: the model reads that as a literal path. `ToolErrorNotePolicy`

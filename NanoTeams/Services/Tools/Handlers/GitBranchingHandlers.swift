@@ -58,6 +58,44 @@ nonisolated enum GitErrorClassifier {
             || lower.contains("warning: not a git repository")
     }
 
+    /// Whether this folder has no repository, ASKED rather than read off a message.
+    ///
+    /// `git diff` outside a repository, given two or more path operands, chooses `--no-index`
+    /// mode instead of saying so, and then reports a pathspec it could not stat — the shape
+    /// every git read now has, since each carries `.` plus one `:(exclude)` per hidden location
+    /// (#378). The text it prints is not stable enough to match (git rewrites the operand before
+    /// quoting it, measured), and a file NAMED like that message would make any match a lie. One
+    /// extra process, only on the failure path.
+    static func hasNoRepository(in root: URL) -> Bool {
+        guard let result = try? ProcessRunner.runRoleGit(["rev-parse", "--git-dir"], in: root) else {
+            return false
+        }
+        // Only git's OWN "not a repository" counts: `rev-parse` fails for a broken `.git/config`
+        // too, and answering that with "skip all git tools" would hide the one sentence that
+        // says what to repair.
+        return !result.success && isNotARepository(stderr: result.stderr)
+    }
+
+    /// A branch, remote or ref the caller supplied, checked before it reaches git as an
+    /// OPERAND — because git reads a leading `-` as an OPTION, and some of those options run
+    /// commands: `git pull '--upload-pack=sh -c …' .` executes that text in the app's own
+    /// process tree, outside Seatbelt, with the person's full rights (measured, git 2.54).
+    /// The refusal is the whole guard: `--end-of-options` cannot be used here, because the
+    /// flags these tools pass (`-b`, `-d`, `-m`) take the operand as their own argument and a
+    /// separator in that position becomes the branch name (#382).
+    static func validatedOperand(
+        _ raw: String, named: String, toolName: String, args: [String: Any]
+    ) -> (value: String, rejection: ToolExecutionResult?) {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.hasPrefix("-") else {
+            return (trimmed, makeErrorResult(
+                toolName: toolName, args: args,
+                code: .invalidArgs,
+                message: "\(named) may not begin with \"-\": git would read \(trimmed) as an option, and some options run commands. Name the branch or remote itself."))
+        }
+        return (trimmed, nil)
+    }
+
     /// Helpful error envelope for non-git folders. Tells the model to skip git operations
     /// and continue with the actual work.
     static func notARepositoryError(toolName: String, args: [String: Any]) -> ToolExecutionResult {
@@ -89,14 +127,18 @@ nonisolated struct GitCheckoutTool: ToolHandler {
     static let blockedInDefaultStorage = true
 
     let workFolderRoot: URL
+    let resolver: SandboxPathResolver
 
-    
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self {
-        Self(workFolderRoot: dependencies.workFolderRoot)
+        Self(workFolderRoot: dependencies.workFolderRoot, resolver: dependencies.resolver)
     }
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
         await ToolErrorHandler.execute(toolName: Self.name, args: args) {
+            // A work folder that IS a credential store (`~/.ssh`, `~/.claude` opened as a
+            // project) is no more git's to touch than the file tools' — asked by every git tool,
+            // not only by the five that take paths (#382).
+            if resolver.hidesRoot { throw SandboxPathError.protectedWorkFolder }
             let branch = try requiredString(args, "branch")
             let create = optionalBool(args, "create", default: false)
             let from = optionalString(args, "from")
@@ -116,19 +158,27 @@ nonisolated struct GitCheckoutTool: ToolHandler {
                 )
             }
 
-            let currentResult = try ProcessRunner.runGit(["branch", "--show-current"], in: workFolderRoot)
+            let currentResult = try ProcessRunner.runRoleGit(["branch", "--show-current"], in: workFolderRoot)
             let previousBranch = currentResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            let checkedBranch = GitErrorClassifier.validatedOperand(
+                branch, named: "branch", toolName: Self.name, args: args)
+            if let rejection = checkedBranch.rejection { return rejection }
+            let checkedFrom = from.map {
+                GitErrorClassifier.validatedOperand($0, named: "from", toolName: Self.name, args: args)
+            }
+            if let rejection = checkedFrom?.rejection { return rejection }
 
             var gitArgs = ["checkout"]
             if create {
                 gitArgs.append("-b")
             }
-            gitArgs.append(branch)
-            if let from {
+            gitArgs.append(checkedBranch.value)
+            if let from = checkedFrom?.value {
                 gitArgs.append(from)
             }
 
-            let result = try ProcessRunner.runGit(gitArgs, in: workFolderRoot)
+            let result = try ProcessRunner.runRoleGit(gitArgs, in: workFolderRoot)
 
             guard result.success else {
                 if let classified = GitErrorClassifier.classify(
@@ -176,17 +226,25 @@ nonisolated struct GitMergeTool: ToolHandler {
     static let blockedInDefaultStorage = true
 
     let workFolderRoot: URL
+    let resolver: SandboxPathResolver
 
-    
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self {
-        Self(workFolderRoot: dependencies.workFolderRoot)
+        Self(workFolderRoot: dependencies.workFolderRoot, resolver: dependencies.resolver)
     }
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
         await ToolErrorHandler.execute(toolName: Self.name, args: args) {
+            // A work folder that IS a credential store (`~/.ssh`, `~/.claude` opened as a
+            // project) is no more git's to touch than the file tools' — asked by every git tool,
+            // not only by the five that take paths (#382).
+            if resolver.hidesRoot { throw SandboxPathError.protectedWorkFolder }
             let branch = try requiredString(args, "branch")
             let noFf = optionalBool(args, "no_ff", default: false)
             let squash = optionalBool(args, "squash", default: false)
+
+            let checkedBranch = GitErrorClassifier.validatedOperand(
+                branch, named: "branch", toolName: Self.name, args: args)
+            if let rejection = checkedBranch.rejection { return rejection }
 
             var gitArgs = ["merge"]
             if noFf {
@@ -195,9 +253,9 @@ nonisolated struct GitMergeTool: ToolHandler {
             if squash {
                 gitArgs.append("--squash")
             }
-            gitArgs.append(branch)
+            gitArgs.append(checkedBranch.value)
 
-            let result = try ProcessRunner.runGit(gitArgs, in: workFolderRoot)
+            let result = try ProcessRunner.runRoleGit(gitArgs, in: workFolderRoot)
 
             // The EXIT STATUS decides, and it is consulted first. `git merge` exits non-zero on
             // a conflict, so a merge that SUCCEEDED cannot be one no matter what its output
@@ -254,7 +312,7 @@ nonisolated struct GitMergeTool: ToolHandler {
             // Exit 0 is not proof of a merged tree — `merge.autoStash` completes the merge,
             // conflicts applying the stash, and still exits 0 (measured on `git_pull`, which
             // merges the same way). The index is authoritative; a text probe is not.
-            let unmerged = (try? ProcessRunner.runGit(["ls-files", "-u"], in: workFolderRoot))
+            let unmerged = (try? ProcessRunner.runRoleGit(["ls-files", "-u"], in: workFolderRoot))
                 .map { GitConflictParser.unmergedPaths(inLsFilesOutput: $0.stdout) } ?? []
             if !unmerged.isEmpty {
                 return makeErrorResult(
@@ -303,14 +361,18 @@ nonisolated struct GitBranchTool: ToolHandler {
     }
 
     let workFolderRoot: URL
+    let resolver: SandboxPathResolver
 
-    
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self {
-        Self(workFolderRoot: dependencies.workFolderRoot)
+        Self(workFolderRoot: dependencies.workFolderRoot, resolver: dependencies.resolver)
     }
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
         await ToolErrorHandler.execute(toolName: Self.name, args: args) {
+            // A work folder that IS a credential store (`~/.ssh`, `~/.claude` opened as a
+            // project) is no more git's to touch than the file tools' — asked by every git tool,
+            // not only by the five that take paths (#382).
+            if resolver.hidesRoot { throw SandboxPathError.protectedWorkFolder }
             let action = try requiredEnum(args, "action", as: BranchAction.self)
             let name = try requiredString(args, "name")
             let from = optionalString(args, "from")
@@ -337,6 +399,19 @@ nonisolated struct GitBranchTool: ToolHandler {
             // argument accepted and ignored is the mirror of advertise-then-reject.
             // Rejections live inside each arm; a verb outside the enum never reaches the
             // switch — `requiredEnum` refuses it first, naming the three that exist.
+            // Every caller-supplied operand first: git reads a leading `-` as an option (#382).
+            let checkedName = GitErrorClassifier.validatedOperand(
+                name, named: "name", toolName: Self.name, args: args)
+            if let rejection = checkedName.rejection { return rejection }
+            let checkedFrom = from.map {
+                GitErrorClassifier.validatedOperand($0, named: "from", toolName: Self.name, args: args)
+            }
+            if let rejection = checkedFrom?.rejection { return rejection }
+            let checkedNewName = newName.map {
+                GitErrorClassifier.validatedOperand($0, named: "new_name", toolName: Self.name, args: args)
+            }
+            if let rejection = checkedNewName?.rejection { return rejection }
+
             switch action {
             case .create:
                 if let rejection = rejectInapplicable("new_name", supplied: newName != nil, appliesTo: ["rename"], toolName: Self.name, args: args) {
@@ -345,8 +420,8 @@ nonisolated struct GitBranchTool: ToolHandler {
                 if force {
                     gitArgs.append("--force")
                 }
-                gitArgs.append(name)
-                if let from = from {
+                    gitArgs.append(checkedName.value)
+                if let from = checkedFrom?.value {
                     gitArgs.append(from)
                 }
 
@@ -358,7 +433,7 @@ nonisolated struct GitBranchTool: ToolHandler {
                     return rejection
                 }
                 gitArgs.append(force ? "-D" : "-d")
-                gitArgs.append(name)
+                    gitArgs.append(checkedName.value)
 
             case .rename:
                 if let rejection = rejectInapplicable("from", supplied: from != nil, appliesTo: ["create"], toolName: Self.name, args: args) {
@@ -371,11 +446,11 @@ nonisolated struct GitBranchTool: ToolHandler {
                     )
                 }
                 gitArgs.append(force ? "-M" : "-m")
-                gitArgs.append(name)
-                gitArgs.append(newName)
+                    gitArgs.append(checkedName.value)
+                gitArgs.append(checkedNewName?.value ?? newName)
             }
 
-            let result = try ProcessRunner.runGit(gitArgs, in: workFolderRoot)
+            let result = try ProcessRunner.runRoleGit(gitArgs, in: workFolderRoot)
 
             guard result.success else {
                 if let classified = GitErrorClassifier.classify(

@@ -65,11 +65,14 @@ nonisolated struct SearchDirectoryWalker {
 
     private let fileManager: FileManager
     private let workFolderRoot: URL
-    /// Canonical root for the symlink-containment check. Resolved on BOTH sides of the
-    /// comparison because `resolvingSymlinksInPath()` normalises `/private/var` back to `/var`.
-    private let canonicalRoot: URL
-    private let internalCanonical: URL?
+    /// The root's REAL path for the symlink-containment check — a string compared as text, which
+    /// is the only form that answers for a target that does not exist. URL normalisation strips
+    /// `/private` from an existing path and keeps it on a missing one, so the two sides disagree
+    /// exactly when the link dangles (#384).
+    private let canonicalRootReal: String
+    private let internalCanonicalReal: String?
     private let internalRelPrefix: String?
+    private let hidden: Hidden
     private let compiledGlob: CompiledGlob?
     /// List mode enumerates instead of grepping, so the walker owns its own stop condition
     /// (`rosterTruncated`) rather than waiting on a budget the driver computes from matches.
@@ -104,14 +107,45 @@ nonisolated struct SearchDirectoryWalker {
         var index = 0
     }
 
+    /// The resolver the search runs under, asked about one entry at a time: a credential store
+    /// or an agent token inside the work folder is walked past silently, like the
+    /// internal directory (#375).
+    ///
+    /// Every entry is judged by its REAL path, which is what `list_files` does and what the
+    /// relative-path rule this replaces could not do: a link to a non-hidden ANCESTOR of a
+    /// hidden location (`AAlink -> ~/Library/Application Support`) gives its whole subtree
+    /// fresh name chains that match no hidden path, and the token file under it was grepped
+    /// and indexed (#376).
+    struct Hidden {
+        let resolver: SandboxPathResolver?
+        /// The whole work folder is hidden: walk nothing.
+        let hidesRoot: Bool
+
+        init(resolver: SandboxPathResolver?) {
+            self.resolver = resolver
+            self.hidesRoot = resolver?.hidesRoot ?? false
+        }
+
+        /// `true` when the entry at this REAL path may be walked. No resolver (the walk's own
+        /// tests) permits everything, as it did before there was one.
+        func permits(realPath: String) -> Bool {
+            resolver?.permits(canonicalPath: realPath) ?? true
+        }
+
+        func hides(realPath: String) -> Bool {
+            resolver?.hides(canonicalPath: realPath) ?? false
+        }
+    }
+
     // MARK: - Init
 
     init(
         fileManager: FileManager,
         workFolderRoot: URL,
-        canonicalRoot: URL,
-        internalCanonical: URL?,
+        canonicalRootReal: String,
+        internalCanonicalReal: String?,
         internalRelPrefix: String?,
+        hidden: Hidden = Hidden(resolver: nil),
         compiledGlob: CompiledGlob?,
         listMode: Bool,
         collectTarget: Int,
@@ -119,13 +153,14 @@ nonisolated struct SearchDirectoryWalker {
     ) {
         self.fileManager = fileManager
         self.workFolderRoot = workFolderRoot
-        self.canonicalRoot = canonicalRoot
-        self.internalCanonical = internalCanonical
+        self.canonicalRootReal = canonicalRootReal
+        self.internalCanonicalReal = internalCanonicalReal
         self.internalRelPrefix = internalRelPrefix
+        self.hidden = hidden
         self.compiledGlob = compiledGlob
         self.listMode = listMode
         self.collectTarget = collectTarget
-        self.roots = roots
+        self.roots = hidden.hidesRoot ? [] : roots
     }
 
     // MARK: - Iteration
@@ -266,11 +301,23 @@ nonisolated struct SearchDirectoryWalker {
 
         var entries: [(name: String, url: URL, isDir: Bool)] = []
         entries.reserveCapacity(urls.count)
+        // This directory's REAL path, for judging its entries by where they actually are. Not
+        // `canonical` above: that comes from `resolvingSymlinksInPath()`, which also drops a
+        // leading `/private`, so it cannot be compared against the hidden locations — those are
+        // `realpath` output, and a temporary work folder lives under `/private/var`.
+        let realDir = SandboxPathResolver.canonicalPath(url.path)
         for itemURL in urls {
             // A nil `isDirectory` means the entry vanished or is unreadable.
             guard let rv = try? itemURL.resourceValues(
                 forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
                 let isDir = rv.isDirectory
+            else { continue }
+
+            // Where this entry really is: one string join, no syscall — `realDir` is already
+            // link-free, and a name cannot introduce one. For a symlink this is the LINK's own
+            // location; its target is judged separately below.
+            guard hidden.permits(
+                realPath: (realDir as NSString).appendingPathComponent(itemURL.lastPathComponent))
             else { continue }
 
             var isDirValue = isDir
@@ -291,7 +338,9 @@ nonisolated struct SearchDirectoryWalker {
                 // sandboxed away from — the walk is the one path that never consults
                 // `SandboxPathResolver` per entry, so restoring "follow symlinks" without this
                 // check would re-open an escape (`outside -> /etc` resolves and reads).
-                let target = itemURL.resolvingSymlinksInPath().standardizedFileURL
+                // One `realpath` of the LINK, then text compares — see `canonicalRootReal`.
+                let realTarget = SandboxPathResolver.canonicalPath(itemURL.path)
+                let target = URL(fileURLWithPath: realTarget)
                 let name = itemURL.lastPathComponent
                 // `.nanoteams/internal` is excluded by RELATIVE path prefix, and that exclusion
                 // rests on an assumption following symlinks breaks: `itemPath` is built from
@@ -301,11 +350,15 @@ nonisolated struct SearchDirectoryWalker {
                 // Silent, matching `SandboxPathResolver.restrictedPath` (which reports internal
                 // paths as "not found"): a notice here would tell the model the internal
                 // directory exists and is worth probing.
-                if let internalCanonical,
-                   SandboxPathResolver.isWithin(candidate: target, container: internalCanonical) {
+                if let internalCanonicalReal,
+                   SandboxPathResolver.isWithin(
+                       realPath: realTarget, realContainer: internalCanonicalReal) {
                     continue
                 }
-                guard SandboxPathResolver.isWithin(candidate: target, container: canonicalRoot)
+                // A hidden location reached through a link: silent, like the internal directory.
+                if hidden.hides(realPath: realTarget) { continue }
+                guard SandboxPathResolver.isWithin(
+                    realPath: realTarget, realContainer: canonicalRootReal)
                 else {
                     enqueue(.skip(SkippedFile(
                         path: relativePath.isEmpty ? name : "\(relativePath)/\(name)",

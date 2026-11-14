@@ -15,7 +15,7 @@ import Foundation
 /// The `"status":"generating"` substring is a single source of truth that
 /// `StepToolCall.isGeneratingTeam` matches against — pinned by
 /// `TeamGenerationOrchestratorTests.testGeneratingEnvelope_matchesIsGeneratingTeamMarker`.
-enum TeamGenerationEnvelopes {
+nonisolated enum TeamGenerationEnvelopes {
 
     static func makeGenerationArgsJSON(taskDescription: String) -> String {
         let payload: [String: Any] = ["task": taskDescription]

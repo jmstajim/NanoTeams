@@ -2,8 +2,8 @@ import XCTest
 
 @testable import NanoTeams
 
-/// Source-level pins for three guards in `NTMSOrchestrator+WorkFolderManagement` whose window
-/// cannot be opened deterministically from a test.
+/// Source-level pins for three guards in `NTMSOrchestrator+WorkFolderManagement` and for the
+/// run-timeout watchdog in `NTMSOrchestrator+Scheduling`.
 ///
 /// Each protects the same shape: a value captured before a LONG `await`, used after it, where
 /// the thing it names may have moved. `switchTeam` captures a task id and a team id, then
@@ -14,13 +14,18 @@ import XCTest
 /// `setAgentInstructionInjected` draws a conclusion from a scan another refresh may have
 /// superseded.
 ///
-/// Why pinned in source rather than behaviourally: every seam that could open those windows is
-/// closed. `TeamEngine` and `LLMExecutionService` are both `final`, so neither `pause()` nor
-/// `cancelStepExecution` can be overridden to switch folders mid-suspension; the repository IS
-/// injectable, but `mutateTask`'s disk write runs on a `Task.detached` whose ordering against
-/// the caller's resumption is not defined, so a hook there proves nothing. Adding a production
-/// seam for the sole benefit of these three tests would be worse than the structural pin — and
-/// a behavioural test built on "the scheduler will probably interleave" is the flake this
+/// A held task write does open a window of this shape deterministically: `mutateTask` commits in
+/// memory and then awaits its detached write, so the caller resumes only when that write returns,
+/// and the test repository's `TaskWriteHold` holds the write until the test releases it. That is
+/// how `WorkFolderOpenStraddleTests` opens the watchdog's two windows, and the watchdog's pin
+/// below is the second mechanism beside those tests — the one that names the moved line in
+/// milliseconds (CLAUDE.md #60). The three work-folder guards stay source-only pins for reasons of
+/// their own: the coordinator's window is `start()` and the promotion's is a detached rescan,
+/// neither of them a task write, and `switchTeam` re-checks behind `pauseRun`, most of whose
+/// suspensions run through `TeamEngine` and `LLMExecutionService` — both `final`, so neither
+/// `pause()` nor `cancelStepExecution` can be overridden to switch folders mid-suspension. Adding
+/// a production seam for the sole benefit of those tests would be worse than the structural pin —
+/// and a behavioural test built on "the scheduler will probably interleave" is the flake this
 /// project has already paid for twice (CLAUDE.md, 2026-07-18 and 2026-08-09).
 ///
 /// So these assert the guard EXISTS and sits between the suspension and the write. That is
@@ -100,7 +105,7 @@ final class WorkFolderRaceGuardPinTests: XCTestCase {
     /// folder's roster while executing against another.
     func testCoordinatorInstall_reChecksTheFolderAfterStart() throws {
         let text = try body(
-            of: "setUpSearchIndexCoordinatorIfEnabled()", in: workFolderManagementSource())
+            of: "setUpSearchIndexCoordinatorIfEnabled(lifecycle:", in: workFolderManagementSource())
         guard let startIdx = text.range(of: "await coordinator.start()")?.upperBound,
               let assignIdx = text.range(of: "searchIndexCoordinator = coordinator")?.lowerBound
         else { return XCTFail("the install anchors are missing") }
@@ -158,29 +163,33 @@ final class WorkFolderRaceGuardPinTests: XCTestCase {
 
     // MARK: - Run-timeout watchdog
 
-    /// The fourth site of the same shape, and the one the guard was never generalized to.
-    /// `fireRecurrence` and `reconcileMissedRecurrences` — same file, same poll tick, same
-    /// cooperative cancellation — both capture the folder at entry and re-check it after every
-    /// suspension, with a comment explaining that a resumed pass resolves its captured task id
-    /// against the NEW folder. `evaluateRunTimeouts` samples its ids from `taskEngineStates`
-    /// once, then suspends twice per iteration, and had no re-check at all.
+    /// The fourth site of the same shape. `evaluateRunTimeouts` samples its ids from
+    /// `taskEngineStates` once, then suspends twice per id — the `timedOutAt` write and the pause
+    /// — and it runs in the lifecycle the poll loop hands it, as `fireRecurrence` and
+    /// `reconcileMissedRecurrences` do: the next open ends that lifecycle at its first line, and
+    /// moves the folder's URL only at its commit.
     ///
-    /// RED: delete either `guard workFolderURL == folderURL else { return }` from
-    /// `evaluateRunTimeouts` → a folder switch during `mutateTask` / `pauseRun` lets the next
-    /// iteration stamp `timedOutAt` on, and pause, an unrelated same-numbered task in the new
-    /// folder. Task ids are per-folder sequential ints, so the collision is the norm; the mark
-    /// is persisted, renders as "(timed out)" in the run-history picker for good, and is
-    /// reported to the Autovisor as `timed_out: true`.
+    /// RED: delete either `guard isCurrentFolderLifecycle(lifecycle) else { return }` from the loop
+    /// → a folder switch during `mutateTask` / `pauseRun` lets the pass stamp `timedOutAt` on, and
+    /// pause, an unrelated same-numbered task in the new folder. Task ids are per-folder sequential
+    /// ints, so the collision is the norm; the mark is persisted, renders as "(timed out)" in the
+    /// run-history picker for good, and is reported to the Autovisor as `timed_out: true`. RED:
+    /// make the watchdog read `currentFolderLifecycle` for itself → after the next open has
+    /// committed that read answers for the next folder, and the last assertion fails.
     ///
-    /// Behavioural rather than structural was considered and rejected for the reason stated at
-    /// the top of this file: `mutateTask`'s write runs on a `Task.detached` whose ordering
-    /// against the caller's resumption is undefined, so a repository hook proves nothing.
+    /// The behavioural half is
+    /// `WorkFolderOpenStraddleTests.testTheWatchdogAcrossTheNextOpenPausesAndAnnouncesNothingThere`:
+    /// it holds the pass in its `timedOutAt` write and in its last pause (`TaskWriteHold`) while the
+    /// next open reads and commits.
     func testRunTimeouts_reChecksTheFolderAcrossBothSuspensions() throws {
-        let text = try body(of: "evaluateRunTimeouts(now:", in: schedulingSource())
-        let guardNeedle = "guard workFolderURL == " + "folderURL"
-        XCTAssertTrue(
-            text.contains("let folderURL = " + "workFolderURL"),
-            "the watchdog must capture the folder it sampled its task ids from")
+        guard let text = RatchetSourceScan.functionBody(
+            after: "func evaluateRunTimeouts(now: Date = MonotonicClock.shared.now(), within lifecycle:",
+            in: try schedulingSource())
+        else {
+            return XCTFail("the watchdog no longer takes the poll loop's lifecycle — re-aim this pin "
+                + "at whatever now tells it which folder it runs in")
+        }
+        let guardNeedle = "guard isCurrentFolderLifecycle(" + "lifecycle)"
 
         guard let loopIdx = text.range(of: "for taskID in activeIDs")?.upperBound,
               let mutateIdx = text.range(of: "await mutateTask(")?.lowerBound,
@@ -196,6 +205,10 @@ final class WorkFolderRaceGuardPinTests: XCTestCase {
         XCTAssertTrue(
             String(text[mutateIdx..<pauseIdx]).contains(guardNeedle),
             "a switch during the persist must not be followed by a pause in the new folder")
+        XCTAssertFalse(
+            text.contains("currentFolderLifecycle"),
+            "the watchdog asks the lifecycle it was handed: a lifecycle read after a suspension "
+                + "names whichever folder is current by then")
     }
 
     /// The other half of the same function: which clock its budget is measured on.
@@ -204,13 +217,16 @@ final class WorkFolderRaceGuardPinTests: XCTestCase {
     /// the signature is the whole defence — `RunTimeoutClockCoverageTests` proves the
     /// behaviour, this proves nobody quietly re-defaulted it.
     ///
-    /// RED: change the default back to `Date()` → both assertions here and two behavioural
-    /// tests red together.
+    /// RED: change either default back to `Date()` → its assertion here fails — the poll loop's,
+    /// which production reads, or the begun-now test seam's, which two behavioural tests read.
     func testRunTimeouts_defaultClockIsTheOneThatStampsTheRun() throws {
         let text = try schedulingSource()
         XCTAssertTrue(
-            text.contains("func evaluateRunTimeouts(now: Date = " + "MonotonicClock.shared.now())"),
+            text.contains("func evaluateRunTimeouts(now: Date = " + "MonotonicClock.shared.now(), within lifecycle:"),
             "the budget is measured against `Run.createdAt`, a MonotonicClock stamp")
+        XCTAssertTrue(
+            text.contains("func evaluateRunTimeouts(now: Date = " + "MonotonicClock.shared.now()) async"),
+            "…and so is the test seam's, a pass begun now in the folder described")
         XCTAssertTrue(
             try body(of: "fireRecurrence(taskID:", in: text).contains("recurrence.isDue(now: now)"),
             "the recurrence half still compares wall-clock `now` against a wall-clock "

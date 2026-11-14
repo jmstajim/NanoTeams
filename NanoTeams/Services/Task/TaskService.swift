@@ -19,6 +19,31 @@ final class TaskService {
         delegationDepth: Int = 0,
         makeActive: Bool = true
     ) throws -> (snapshot: WorkFolderContext, taskID: Int) {
+        try createTask(
+            at: url,
+            title: title,
+            supervisorTask: supervisorTask,
+            preferredTeamID: preferredTeamID,
+            parentTaskID: parentTaskID,
+            parentRoleID: parentRoleID,
+            delegationDepth: delegationDepth,
+            makeActive: makeActive,
+            origin: nil
+        )
+    }
+
+    func createTask(
+        at url: URL,
+        title: String,
+        supervisorTask: String,
+        preferredTeamID: NTMSID? = nil,
+        parentTaskID: Int? = nil,
+        parentRoleID: String? = nil,
+        delegationDepth: Int = 0,
+        makeActive: Bool = true,
+        origin: TaskOrigin?,
+        requestKey: String? = nil
+    ) throws -> (snapshot: WorkFolderContext, taskID: Int) {
         try repository.createTask(
             at: url,
             title: title,
@@ -27,7 +52,9 @@ final class TaskService {
             parentTaskID: parentTaskID,
             parentRoleID: parentRoleID,
             delegationDepth: delegationDepth,
-            makeActive: makeActive
+            makeActive: makeActive,
+            origin: origin,
+            requestKey: requestKey
         )
     }
 

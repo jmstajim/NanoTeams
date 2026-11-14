@@ -289,13 +289,16 @@ struct WatchtowerAutovisorPill: View {
             HStack(spacing: Spacing.xs) {
                 Text("AUTOVISOR")
                     .font(Typography.term2xs.weight(.medium))
+                    .lineLimit(1)
                     .tracking(Typography.labelTracking)
                     .foregroundStyle(Colors.textTertiary)
                 Text(enabled ? "[x]" : "[ ]")
                     .font(Typography.term2xs)
+                    .lineLimit(1)
                     .foregroundStyle(enabled ? Colors.accent : Colors.textTertiary)
                 Text(enabled ? "ON" : "OFF")
                     .font(Typography.term2xs.weight(.medium))
+                    .lineLimit(1)
                     .tracking(Typography.labelTracking)
                     .foregroundStyle(enabled ? Colors.accent : Colors.textTertiary)
             }

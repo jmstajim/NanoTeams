@@ -69,12 +69,19 @@ final class BashAdviceServiceTests: XCTestCase {
             commands: ["ls"],
             workingDirectories: [nil],
             policy: policy,
-            config: LLMConfig(modelName: "global-model"),
+            config: LLMConfig(modelName: "global-model", temperature: 0.7),
             client: client)
 
-        // `BashJudgeService.judge` applies `configForJudge` internally, so the
-        // client must receive the overridden model, not the global one.
-        XCTAssertEqual(client.lastConfig?.modelName, "dedicated-judge-model")
+        // Both requests, each read by what it IS: the verdict goes through `JudgeCall`, which
+        // applies `JudgeConfig.forVerdict` (the override, temperature 0); the explain call applies
+        // the override alone. Until 2026-09-23 this read `lastConfig` — the EXPLAIN request's —
+        // under a comment about the judge, so a judge that dropped the override stayed green.
+        XCTAssertEqual(client.systemPrompts, [
+            BashJudgeService.judgeSystemPrompt(policy: policy),
+            BashExplainService.explainSystemPrompt(policy: policy),
+        ], "premise: one verdict request, then one explain request")
+        XCTAssertEqual(client.configs.map(\.modelName), ["dedicated-judge-model", "dedicated-judge-model"])
+        XCTAssertEqual(client.configs.map(\.temperature), [0, 0.7], "the verdict is pinned, the prose is not")
     }
 
     func testAdvise_failsClosedWhenClientErrors() async {
@@ -158,15 +165,41 @@ final class BashAdviceServiceTests: XCTestCase {
         XCTAssertLessThan(advices.count, 5,
                           "a cancelled advise returns only the commands processed before the break")
     }
+
+    /// "Stop" while the judge is being asked about a command: there is no verdict for it, so
+    /// there is no advice for it. Until 2026-09-23 the cut-short call read as an empty reply
+    /// and the command came back "denied for safety" — a refusal nobody made, shown to the
+    /// human beside the very command they were deciding on.
+    func testAdvise_stopWhileTheJudgeIsAsked_yieldsNoAdviceForThatCommand() async {
+        let client = ScriptedToolCallClient(script: [.hang])
+        let task = Task {
+            await BashAdviceService.advise(
+                commands: ["make install", "ls"],
+                workingDirectories: [nil, nil],
+                policy: BashPolicy(),
+                config: LLMConfig(),
+                client: client)
+        }
+        let deadline = Date().addingTimeInterval(5)
+        while client.callCount < 1, Date() < deadline { try? await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertEqual(client.callCount, 1, "premise: the judge's request for the first command went out")
+        task.cancel()
+        let advices = await task.value
+
+        XCTAssertEqual(advices, [], "no verdict, no advice — got \(advices.map(\.reason))")
+        XCTAssertEqual(client.callCount, 1, "the explain call and the second command never ran")
+    }
 }
 
 // MARK: - Stubs
 
 /// Yields a verdict computed from the judge's user prompt (which embeds the
-/// command + working directory), and records the config it was handed + a call count.
+/// command + working directory), and records each request's config and system prompt.
 private final class ScriptedJudgeClient: LLMClient, @unchecked Sendable {
     private let respond: @Sendable (String) -> String
-    private(set) var lastConfig: LLMConfig?
+    /// Every request's config and system prompt, in order.
+    private(set) var configs: [LLMConfig] = []
+    private(set) var systemPrompts: [String] = []
     private(set) var callCount = 0
 
     init(respond: @escaping @Sendable (String) -> String) { self.respond = respond }
@@ -180,7 +213,8 @@ private final class ScriptedJudgeClient: LLMClient, @unchecked Sendable {
         roleName _: String?
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         callCount += 1
-        lastConfig = config
+        configs.append(config)
+        systemPrompts.append(messages.first { $0.role == .system }?.content ?? "")
         let text = respond(messages.last?.content ?? "")
         return AsyncThrowingStream { continuation in
             continuation.yield(StreamEvent(contentDelta: text))

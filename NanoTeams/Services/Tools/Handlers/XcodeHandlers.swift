@@ -13,6 +13,11 @@ nonisolated struct RunXcodebuildTool: ToolHandler {
         parameters: JS.object(properties: [:])
     )
     static let category: ToolCategory = .xcode
+    /// `scheme` is the one argument models send here; the build reads it from the work
+    /// folder's settings instead, so the call runs and says why the value was not used.
+    static let undeclaredArguments: [String: UndeclaredArgument] = [
+        "scheme": .ignored(reason: "the scheme comes from the work folder's settings"),
+    ]
     static let blockedInDefaultStorage = true
 
     let workFolderRoot: URL
@@ -80,6 +85,11 @@ nonisolated struct RunXcodetestsTool: ToolHandler {
         parameters: JS.object(properties: [:])
     )
     static let category: ToolCategory = .xcode
+    /// `scheme` is the one argument models send here; the build reads it from the work
+    /// folder's settings instead, so the call runs and says why the value was not used.
+    static let undeclaredArguments: [String: UndeclaredArgument] = [
+        "scheme": .ignored(reason: "the scheme comes from the work folder's settings"),
+    ]
     static let blockedInDefaultStorage = true
 
     let workFolderRoot: URL

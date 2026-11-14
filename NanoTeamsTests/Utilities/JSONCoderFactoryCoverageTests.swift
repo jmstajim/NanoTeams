@@ -56,7 +56,7 @@ final class JSONCoderFactoryCoverageTests: XCTestCase {
     /// Round-trip through the pair that actually persists work folders, so the throw arm above is
     /// pinned against a decoder that still accepts what we write.
     func testPersistenceEncoderOutputSurvivesTheDateDecoder() throws {
-        let original = Stamped(at: Date(timeIntervalSince1970: 1_786_181_766.46))
+        let original = Stamped(at: Date(timeIntervalSince1970: 1_786_149_366.46))
         let data = try JSONCoderFactory.makePersistenceEncoder().encode(original)
         let restored = try JSONCoderFactory.makeDateDecoder().decode(Stamped.self, from: data)
         XCTAssertEqual(restored.at.timeIntervalSince1970, original.at.timeIntervalSince1970,

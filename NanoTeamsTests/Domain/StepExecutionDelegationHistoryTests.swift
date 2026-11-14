@@ -126,7 +126,7 @@ final class StepExecutionDelegationHistoryTests: XCTestCase {
     /// Pins the append-only contract: every time a new delegation lands on a
     /// step, its child ID is appended to `delegationChildIDs` in chronological
     /// order. Mirrors the actual mutation in
-    /// `LLMExecutionService+DelegateToTeam.swift:165-171`.
+    /// `LLMExecutionService+DelegateToTeam.swift:324-330`.
     func testHistoryAppend_chronologicalOrder_idempotentOnDuplicate() {
         var step = StepExecution(
             id: "role_a",

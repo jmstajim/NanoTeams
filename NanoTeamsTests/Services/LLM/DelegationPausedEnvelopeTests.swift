@@ -237,6 +237,51 @@ final class DelegationPausedEnvelopeTests: XCTestCase {
                 + "named, or the role has no next move: \(envelope)")
     }
 
+    func testAwaitDelegationCompletion_childSelfPaused_returnsPausedEnvelopeAndPreservesMarker() async throws {
+        let parentRoleDef = TeamRoleDefinition(
+            id: "coding_agent_coding_agent", name: "Coding Agent", prompt: "p",
+            toolIDs: [ToolNames.delegateToTeam], usePlanningPhase: false,
+            dependencies: RoleDependencies(), allowDelegationToGeneratedTeams: true)
+        let parentTeam = Team(
+            name: "Parent", roles: [parentRoleDef], artifacts: [],
+            settings: TeamSettings(), graphLayout: TeamGraphLayout())
+        let targetTeam = Team(
+            name: "Engineering Team", roles: [], artifacts: [],
+            settings: TeamSettings(), graphLayout: TeamGraphLayout())
+
+        var parentTask = NTMSTask(id: 1, title: "Parent", supervisorTask: "build")
+        var parentStep = StepExecution(id: "coding_agent_coding_agent", role: .codingAgent, title: "Coding Agent", status: .running)
+        parentStep.setActiveDelegation(childID: 42)
+        parentTask.runs = [Run(id: 0, steps: [parentStep])]
+        delegate.taskToMutate = parentTask
+
+        delegate.scriptedAwaitOutcomes = [.paused(.runTimedOut(seconds: 120))]
+
+        let envelope = await service.awaitDelegationCompletion(
+            childTID: 42, parentTID: 1, stepID: "coding_agent_coding_agent",
+            parentRoleDef: parentRoleDef, parentTeam: parentTeam, targetTeam: targetTeam,
+            isGeneratedFlow: false, generationWarnings: [],
+            client: StubLLMClient(), config: stubConfig(), delegate: delegate)
+
+        let dict = try parseJSON(envelope)
+        XCTAssertEqual(dict["ok"] as? Bool, true, "child self-pause must return a success envelope: \(envelope)")
+        let data = try XCTUnwrap(dict["data"] as? [String: Any])
+        XCTAssertEqual(data["status"] as? String, "child_paused")
+        XCTAssertEqual(data["child_task_id"] as? Int, 42)
+        XCTAssertEqual(data["team"] as? String, "Engineering Team")
+        let pauseReason = try XCTUnwrap(data["pause_reason"] as? String)
+        XCTAssertTrue(pauseReason.contains("120"), "pause_reason must name the timeout: \(pauseReason)")
+        let nextActions = try XCTUnwrap(data["next_actions"] as? String)
+        XCTAssertTrue(nextActions.contains("cancel_delegation"))
+        XCTAssertTrue(nextActions.contains("resume_delegation"))
+        XCTAssertTrue(nextActions.contains("forward_to_team"))
+        XCTAssertEqual(
+            delegate.taskToMutate?.runs.last?.steps.first?.activeDelegationChildID,
+            42,
+            "activeDelegationChildID must stay set on the parent step after child self-pause"
+        )
+    }
+
     // MARK: - Helpers
 
     private func parseJSON(_ s: String) throws -> [String: Any] {

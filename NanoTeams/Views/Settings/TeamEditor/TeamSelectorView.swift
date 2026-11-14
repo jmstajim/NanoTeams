@@ -88,6 +88,7 @@ struct TeamSelectorView: View {
 
                     Text("\(activeTeam?.memberCount ?? 0) members · \(activeTeam?.artifacts.count ?? 0) artifacts")
                         .font(Typography.term2xs)
+                        .lineLimit(1)
                         .foregroundStyle(Colors.textTertiary)
                 }
 

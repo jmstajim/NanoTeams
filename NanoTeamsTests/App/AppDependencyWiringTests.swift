@@ -108,7 +108,138 @@ final class AppDependencyWiringTests: XCTestCase {
         XCTAssertEqual(endpoint.baseURL, "http://127.0.0.1:11434")
     }
 
+    /// RED: return `monitor.isReachable` without the first-probe guard → the first assertion
+    /// fails, and `folder_status` tells an external agent the LLM server is down before
+    /// anything has asked it.
+    func testLLMReachabilityProvider_isUnknownUntilTheFirstProbe_thenFollowsTheMonitor() async {
+        await makeSubjects()
+        let provider = AppDependencyWiring.llmReachabilityProvider(monitor: monitor)
+        let initial = await provider()
+        XCTAssertNil(initial.reachable, "no probe yet — unknown, not unreachable")
+
+        monitor.noteReachable()
+
+        let after = await provider()
+        XCTAssertEqual(after.reachable, true)
+        XCTAssertNotNil(after.checkedAt)
+    }
+
+    // MARK: - 30s Cache Staleness Threshold (§6.9, [A10, C20, D12])
+
+    private final class CountingSession: NetworkSession, @unchecked Sendable {
+        private let lock = NSLock()
+        private var _requestCount = 0
+
+        var requestCount: Int { lock.withLock { _requestCount } }
+
+        func sessionData(for request: URLRequest) async throws -> (Data, URLResponse) {
+            lock.withLock { _requestCount += 1 }
+            let response = HTTPURLResponse(
+                url: request.url ?? URL(string: "http://127.0.0.1:1234")!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (Data("{\"data\":[]}".utf8), response)
+        }
+
+        func sessionBytes(for request: URLRequest) async throws -> (URLSession.AsyncBytes, URLResponse) {
+            fatalError("not used")
+        }
+    }
+
+    func testLLMReachabilityProvider_whenCacheFresh_doesNotProbe() async {
+        let session = CountingSession()
+        let customMonitor = LLMStatusMonitor(session: session)
+        customMonitor.startMonitoring(endpointProvider: { ("http://127.0.0.1:1234", .lmStudio) })
+        defer { customMonitor.stopMonitoring() }
+
+        customMonitor.noteReachable()
+        // The moment the monitor recorded, not one read before it: `Date()` taken first left the
+        // "boundary" interval short of 30 s, and `> 30` → `>= 30` survived (F6 T13).
+        guard let t0 = customMonitor.lastCheckedAt else { return XCTFail("noteReachable records the check") }
+
+        let provider = AppDependencyWiring.llmReachabilityProvider(
+            monitor: customMonitor,
+            now: { t0.addingTimeInterval(25) }
+        )
+        let res = await provider()
+        XCTAssertEqual(session.requestCount, 0, "fresh cache <= 30s must not trigger probe")
+        XCTAssertEqual(res.reachable, true)
+    }
+
+    func testLLMReachabilityProvider_whenCacheAt30sBoundary_doesNotProbe() async {
+        let session = CountingSession()
+        let customMonitor = LLMStatusMonitor(session: session)
+        customMonitor.startMonitoring(endpointProvider: { ("http://127.0.0.1:1234", .lmStudio) })
+        defer { customMonitor.stopMonitoring() }
+
+        customMonitor.noteReachable()
+        // The moment the monitor recorded, not one read before it: `Date()` taken first left the
+        // "boundary" interval short of 30 s, and `> 30` → `>= 30` survived (F6 T13).
+        guard let t0 = customMonitor.lastCheckedAt else { return XCTFail("noteReachable records the check") }
+
+        let provider = AppDependencyWiring.llmReachabilityProvider(
+            monitor: customMonitor,
+            now: { t0.addingTimeInterval(30.0) }
+        )
+        let res = await provider()
+        XCTAssertEqual(session.requestCount, 0, "cache exactly at 30.0s boundary must not trigger probe")
+        XCTAssertEqual(res.reachable, true)
+    }
+
+    func testLLMReachabilityProvider_whenCacheStaleOver30s_triggersProbe() async {
+        let session = CountingSession()
+        let customMonitor = LLMStatusMonitor(session: session)
+        customMonitor.startMonitoring(endpointProvider: { ("http://127.0.0.1:1234", .lmStudio) })
+        defer { customMonitor.stopMonitoring() }
+
+        customMonitor.noteReachable()
+        // The moment the monitor recorded, not one read before it: `Date()` taken first left the
+        // "boundary" interval short of 30 s, and `> 30` → `>= 30` survived (F6 T13).
+        guard let t0 = customMonitor.lastCheckedAt else { return XCTFail("noteReachable records the check") }
+
+        let provider = AppDependencyWiring.llmReachabilityProvider(
+            monitor: customMonitor,
+            now: { t0.addingTimeInterval(35) }
+        )
+        let res = await provider()
+        XCTAssertEqual(session.requestCount, 1, "cache > 30s must trigger probe via checkNow")
+        XCTAssertEqual(res.reachable, true)
+    }
+
+    func testLLMReachabilityProvider_whenUninitialized_triggersProbe() async {
+        let session = CountingSession()
+        let customMonitor = LLMStatusMonitor(session: session)
+        customMonitor.startMonitoring(endpointProvider: { ("http://127.0.0.1:1234", .lmStudio) })
+        defer { customMonitor.stopMonitoring() }
+
+        let provider = AppDependencyWiring.llmReachabilityProvider(
+            monitor: customMonitor,
+            now: { Date() }
+        )
+        let res = await provider()
+        XCTAssertEqual(session.requestCount, 1, "uninitialized monitor (lastCheckedAt == nil) must trigger probe")
+        XCTAssertEqual(res.reachable, true)
+    }
+
     // MARK: - wire
+
+    /// RED: delete the `store.llmReachability = …` line → this fails, and `folder_status`
+    /// never reports whether the LLM server answered.
+    func testWire_installsTheLLMReachabilityReader() async {
+        await makeSubjects()
+        let initial = await store.llmReachability()
+        XCTAssertNil(initial.reachable, "nothing is wired yet")
+
+        AppDependencyWiring.wire(store: store, dictation: dictation,
+                                 quickCapture: quickCapture, statusMonitor: monitor)
+        monitor.stopMonitoring()
+        monitor.noteReachable()
+
+        let after = await store.llmReachability()
+        XCTAssertEqual(after.reachable, true)
+    }
 
     /// RED: delete the `store.quickCaptureFormState = quickCapture.formState` line → this
     /// fails, and every queued Supervisor message is silently dropped.
@@ -176,5 +307,32 @@ final class AppDependencyWiringTests: XCTestCase {
         XCTAssertNotNil(dictation.userSelectedLocalesProvider)
         XCTAssertFalse(monitor.isReachable,
                        "no probe completed — the monitor was cancelled before its task ran")
+    }
+
+    func testLLMReachabilityStatus_initializationAndEquality() async {
+        let now = Date()
+        let trueStatus = LLMReachabilityStatus(reachable: true, checkedAt: now)
+        let falseStatus = LLMReachabilityStatus(reachable: false, checkedAt: now)
+        let nilStatus = LLMReachabilityStatus(reachable: nil, checkedAt: nil)
+        XCTAssertEqual(trueStatus.reachable, true)
+        XCTAssertEqual(falseStatus.reachable, false)
+        XCTAssertNil(nilStatus.reachable)
+        XCTAssertEqual(trueStatus.checkedAt, now)
+        XCTAssertEqual(trueStatus, LLMReachabilityStatus(reachable: true, checkedAt: now))
+        XCTAssertNotEqual(trueStatus, falseStatus)
+    }
+
+    func testLLMReachabilityProvider_handlesNilAndCachedMonitor() async {
+        await makeSubjects()
+        let provider = AppDependencyWiring.llmReachabilityProvider(monitor: monitor)
+        let initial = await provider()
+        XCTAssertNil(initial.reachable)
+
+        var weakMonitor: LLMStatusMonitor? = LLMStatusMonitor()
+        let weakProvider = AppDependencyWiring.llmReachabilityProvider(monitor: weakMonitor!)
+        weakMonitor = nil
+        let deadResult = await weakProvider()
+        XCTAssertNil(deadResult.reachable)
+        XCTAssertNil(deadResult.checkedAt)
     }
 }

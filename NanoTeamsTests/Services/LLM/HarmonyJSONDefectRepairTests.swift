@@ -1147,7 +1147,7 @@ final class HarmonyJSONDefectRepairTests: XCTestCase {
     // MARK: - ornith-1.0-35b: transposed closing quote after a numeric value
 
     /// Verbatim from `CastleSurvivors/.nanoteams/internal/tasks/5/runs/0/network_log.jsonl`,
-    /// response 2026-09-08T14:30:32.536Z (`ornith-1.0-35b`, LM Studio, bundle 1.9.11).
+    /// response of 2026-09-08 (`ornith-1.0-35b`, LM Studio, bundle 1.9.11).
     /// `"end_line":"588,` — the closing quote of the value and the member comma are
     /// TRANSPOSED. Every argument the model meant is present and the braces balance; the one
     /// stray byte inverts string parity for the rest of the payload.
@@ -1348,7 +1348,7 @@ final class HarmonyJSONDefectRepairTests: XCTestCase {
     /// Int. For a free-text argument BOTH readings are executable, and re-validation cannot
     /// separate them — both are valid JSON — so a value-gated repair would write `600` where
     /// the model wrote `600,` into the user's file, under `ok:true`, with a note asserting a
-    /// quote was missing. (Shipped value-gated for one afternoon on 2026-09-08; found by the
+    /// quote was missing. (Shipped value-gated briefly on 2026-09-08; found by the
     /// wave's own adversarial review before commit.)
     func testRepair_digitsOnlyValueUnderAFreeTextKey_isNotTouched() {
         let raw = #"{"name":"edit_file","arguments":{"old_text":"588","new_text":"600,"path":"x.gd"}}"#

@@ -249,6 +249,11 @@ nonisolated struct SearchScanPlan {
     /// False in Turkic locales, where ASCII `I`/`i` fold differently from a plain A–Z table and
     /// the byte fast path is therefore disabled wholesale.
     let asciiFoldMatchesLocale: Bool
+    /// Who judges the file the scan is about to OPEN. The walk already refused every entry whose
+    /// real path is not permitted, but it refused a NAME, and the scan opens that name again —
+    /// so the bytes are read through a verified descriptor and a document extractor is pointed
+    /// at the real path (#376).
+    let resolver: SandboxPathResolver
 }
 
 /// Everything the walk and the per-file scan ACCUMULATE.

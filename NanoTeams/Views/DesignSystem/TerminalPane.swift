@@ -16,6 +16,12 @@ struct TerminalPane<Content: View>: View {
     var contentPadding: CGFloat = Spacing.m
     @ViewBuilder var content: () -> Content
 
+    /// The title label's and the trailing control's heights, read so the content can clear a
+    /// chip taller than its label — see `trailingOverhang`. On a text-only chip
+    /// `trailingHeight` stays 0, so the inset does too.
+    @State private var titleHeight: CGFloat = 0
+    @State private var trailingHeight: CGFloat = 0
+
     init(
         title: String? = nil,
         titleAccent: Bool = false,
@@ -32,9 +38,27 @@ struct TerminalPane<Content: View>: View {
         self.content = content
     }
 
+    /// How much further than the bare label the chip reaches into the content. The chip sits on
+    /// the border by its CENTRE, so a trailing control taller than the label (a pill button —
+    /// Add agent, Copy) grows it equally up and down, and only the lower half is in the
+    /// content's way. A text-only chip — or a trailing control no taller than the label — adds
+    /// nothing, so the gap under the title is the same on every pane (2026-11-08: the first line
+    /// of the AGENTS card touched its Add agent pill).
+    nonisolated static func trailingOverhang(titleHeight: CGFloat, trailingHeight: CGFloat) -> CGFloat {
+        max(0, trailingHeight - titleHeight) / 2
+    }
+
+    /// Lifts the bare 10 pt label so it straddles the top border.
+    private static var labelLift: CGFloat { 6 }
+
+    private var overhang: CGFloat {
+        Self.trailingOverhang(titleHeight: titleHeight, trailingHeight: trailingHeight)
+    }
+
     var body: some View {
         content()
             .padding(contentPadding)
+            .padding(.top, overhang)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(fill, in: RoundedRectangle.squircle(CornerRadius.medium))
             .overlay(
@@ -43,9 +67,13 @@ struct TerminalPane<Content: View>: View {
             )
             .overlay(alignment: .topLeading) {
                 if let title {
+                    // `labelLift` centres the 10 pt label on the top edge; a taller chip is
+                    // lifted by its overhang as well, so its label stays on the line instead of
+                    // hanging below it. (`alignmentGuide(.top)` to the chip's centre was tried
+                    // first and left the chip's TOP on the border in the rendered preview.)
                     titleChip(title)
                         .padding(.leading, Spacing.m)
-                        .offset(y: -6)
+                        .offset(y: -Self.labelLift - overhang)
                 }
             }
     }
@@ -68,7 +96,11 @@ struct TerminalPane<Content: View>: View {
                     .foregroundStyle(titleAccent ? Colors.accent : Colors.textTertiary)
                     .accessibilityLabel(title)
                     .accessibilityAddTraits(.isHeader)
-                if let headerTrailing { headerTrailing }
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { titleHeight = $0 }
+                if let headerTrailing {
+                    headerTrailing
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { trailingHeight = $0 }
+                }
             }
             Text("├")
                 .foregroundStyle(Colors.borderSubtle)

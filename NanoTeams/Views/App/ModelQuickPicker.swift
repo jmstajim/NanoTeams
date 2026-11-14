@@ -291,6 +291,7 @@ struct ModelQuickPicker: View {
                 if row.isMissingFromServer {
                     Text("not on server")
                         .font(Typography.term2xs)
+                        .lineLimit(1)
                         .tracking(Typography.labelTracking)
                         .foregroundStyle(Colors.warning)
                 }

@@ -16,7 +16,25 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
     /// Settable so a test can drive the resolver's three arms; the protocol default is `.auto`.
     var toolCallingPreference: ToolCallingPreference = .auto
     var visionLLMConfig: LLMConfig?
-    var bashPolicy: BashPolicy = BashPolicy()
+    /// What `executeToolCalls` copies into the context of every batch that runs `bash`
+    /// (`BashPolicy.sandbox`), and how many times it was read.
+    var bashPolicyValue: BashPolicy = BashPolicy()
+    private(set) var bashPolicyReads = 0
+    var bashPolicy: BashPolicy {
+        get {
+            bashPolicyReads += 1
+            return bashPolicyValue
+        }
+        set { bashPolicyValue = newValue }
+    }
+    /// What `executeToolCalls` copies into the context of every batch that runs `bash`, and how
+    /// many times it was read — a batch without `bash` must not pay for the list.
+    var seatbeltGuardedLoopbackPortsValue: [UInt16] = SeatbeltSandbox.effectiveGuardedPorts([])
+    private(set) var seatbeltGuardedLoopbackPortsReads = 0
+    var seatbeltGuardedLoopbackPorts: [UInt16] {
+        seatbeltGuardedLoopbackPortsReads += 1
+        return seatbeltGuardedLoopbackPortsValue
+    }
     /// Records in-loop bash-approval requests published by the gate — tests poll
     /// this to know when a command is held, then resolve it.
     var bashApprovalBeganRequests: [BashApprovalRequest] = []
@@ -30,6 +48,25 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
         }
     }
     func clearAllBashApprovalRequests() { bashApprovalBeganRequests.removeAll() }
+    /// Settable so a resolution test can hand the service a catalogue without a manager.
+    var mcpTools: MCPToolsSnapshot?
+    /// Records the gate's in-loop MCP holds — tests poll this to know when a call is held,
+    /// then resolve it.
+    var mcpApprovalBeganRequests: [MCPApprovalRequest] = []
+    var clearAllMCPApprovalRequestsCallCount = 0
+    func mcpApprovalDidBegin(_ request: MCPApprovalRequest) {
+        mcpApprovalBeganRequests.append(request)
+    }
+    func mcpApprovalDidEnd(taskID: Int, stepID: String, callKey: String, createdAt: Date) {
+        mcpApprovalBeganRequests.removeAll {
+            $0.taskID == taskID && $0.stepID == stepID
+                && $0.callKey == callKey && $0.createdAt == createdAt
+        }
+    }
+    func clearAllMCPApprovalRequests() {
+        clearAllMCPApprovalRequestsCallCount += 1
+        mcpApprovalBeganRequests.removeAll()
+    }
     var computerUsePolicy: ComputerUsePolicy = ComputerUsePolicy()
     var computerUseApprovalBeganRequests: [ComputerUseApprovalRequest] = []
     var clearAllComputerUseApprovalRequestsCallCount = 0
@@ -311,7 +348,12 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
     /// Records `holdDownstreamForRevision` invocations (engine-side teardown is not
     /// modelled by the mock — the orchestrator integration tests exercise the real path).
     var heldDownstreamCalls: [(taskID: Int, runningRoleIDs: [String], requesterRoleID: String)] = []
-    func holdDownstreamForRevision(taskID: Int, runningRoleIDs: [String], requesterRoleID: String) async {
+    func holdDownstreamForRevision(
+        taskID: Int,
+        runningRoleIDs: [String],
+        requesterRoleID: String,
+        within _: WorkFolderLifecycle
+    ) async {
         heldDownstreamCalls.append((taskID, runningRoleIDs, requesterRoleID))
     }
 
@@ -322,14 +364,17 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
     /// don't hang forever waiting for a continuation that will never fire.
     var scriptedAwaitOutcomes: [TaskCompletionAwaiter.WaitOutcome] = []
     var awaitedTaskIDs: [Int] = []
+    var onAwaitTaskTerminalState: (() -> Void)?
     func awaitTaskTerminalState(taskID: Int) async -> TaskCompletionAwaiter.WaitOutcome {
         awaitedTaskIDs.append(taskID)
+        onAwaitTaskTerminalState?()
         guard !scriptedAwaitOutcomes.isEmpty else { return .terminal(.failed) }
         return scriptedAwaitOutcomes.removeFirst()
     }
 
     var createDelegatedTaskStub: Int? = nil
     var createdDelegatedTaskRequests: [(parentTaskID: Int, parentRoleID: String, title: String, supervisorTask: String, preferredTeamID: NTMSID?, depth: Int)] = []
+    var onCreateDelegatedTask: (() -> Void)?
     func createDelegatedTask(
         parentTaskID: Int,
         parentRoleID: String,
@@ -339,16 +384,23 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
         depth: Int
     ) async -> Int? {
         createdDelegatedTaskRequests.append((parentTaskID, parentRoleID, title, supervisorTask, preferredTeamID, depth))
+        onCreateDelegatedTask?()
         return createDelegatedTaskStub
     }
 
     var startedRunForTaskIDs: [Int] = []
-    func startRunForTask(taskID: Int) async { startedRunForTaskIDs.append(taskID) }
+    var onStartRunForTask: (() -> Void)?
+    func startRunForTask(taskID: Int) async {
+        startedRunForTaskIDs.append(taskID)
+        onStartRunForTask?()
+    }
 
     var closeTaskStub: Bool = true
     var closedTaskIDs: [Int] = []
+    var onCloseTask: (() -> Void)?
     func closeTask(taskID: Int) async -> Bool {
         closedTaskIDs.append(taskID)
+        onCloseTask?()
         return closeTaskStub
     }
 
@@ -375,8 +427,10 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
     /// honest-result fix (2026-08-25) means callers now BRANCH on it, so the failure arm needs
     /// a way to be reached.
     var pauseRunResult = true
+    var onPauseRun: (() -> Void)?
     func pauseRun(taskID: Int) async -> Bool {
         pauseRunCalls.append(taskID)
+        onPauseRun?()
         return pauseRunResult
     }
 
@@ -389,15 +443,39 @@ final class MockLLMExecutionDelegate: LLMExecutionDelegate {
     }
 
     var answerSupervisorCalls: [(taskID: Int, stepID: String, answer: String)] = []
-    func answerSupervisorQuestion(taskID: Int, stepID: String, answer: String) async -> Bool {
+    func answerSupervisorQuestion(
+        taskID: Int,
+        stepID: String,
+        answer: String,
+        within _: WorkFolderLifecycle
+    ) async -> Bool {
         answerSupervisorCalls.append((taskID, stepID, answer))
         return true
     }
 
+    /// The folder transitions the mock has seen: a test begins one by moving it, which ends
+    /// every lifecycle read before — the orchestrator's generation counter, reduced to what a
+    /// deferred handler asks.
+    var folderTransitions = 0
+    var currentFolderLifecycle: WorkFolderLifecycle { WorkFolderLifecycle(generation: folderTransitions) }
+    func isCurrentFolderLifecycle(_ lifecycle: WorkFolderLifecycle) -> Bool {
+        lifecycle.generation == folderTransitions
+    }
+
     var autovisorActions: [AutovisorAction] = []
     var autovisorActionResult: AutovisorActionResult = .success("ok")
-    func performAutovisorAction(_ action: AutovisorAction) async -> AutovisorActionResult {
+    /// Runs inside each action, after it is recorded — where a test stops the step or begins a
+    /// folder transition while the batch is still being dispatched.
+    var onAutovisorAction: ((AutovisorAction) -> Void)?
+    /// The lifecycle each action was handed — what the service read from `currentFolderLifecycle`
+    /// when it dispatched it.
+    var autovisorActionLifecycles: [WorkFolderLifecycle] = []
+    func performAutovisorAction(
+        _ action: AutovisorAction, within lifecycle: WorkFolderLifecycle
+    ) async -> AutovisorActionResult {
         autovisorActions.append(action)
+        autovisorActionLifecycles.append(lifecycle)
+        onAutovisorAction?(action)
         return autovisorActionResult
     }
     var persistedAutovisorMemory: [String] = []

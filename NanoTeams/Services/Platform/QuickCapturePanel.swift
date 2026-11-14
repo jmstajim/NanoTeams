@@ -516,7 +516,7 @@ class QuickCapturePanel: NSPanel, NSWindowDelegate {
         // once the window is below `minSize` AppKit's live-resize drag won't pull
         // it back up. Clamp here and re-save so the floor sticks across sessions.
         //
-        // Measured 2026-08-10, so nobody re-spends the afternoon: on macOS 26 this block is a
+        // Measured 2026-08-10, so nobody re-spends the hours: on macOS 26 this block is a
         // REDUNDANT second net, which is why its three lines never execute under test. Seed a
         // sub-floor `NSWindow Frame <name>` record, construct the panel, `show` it — the frame
         // comes back at the floor with this block deleted, with `clampSize` neutered to the

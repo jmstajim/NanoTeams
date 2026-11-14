@@ -75,12 +75,13 @@ nonisolated func makeErrorResult(
     code: ToolErrorCode,
     message: String,
     details: [String: String]? = nil,
-    next: NextHint? = nil
+    next: NextHint? = nil,
+    meta: ToolResultMeta = ToolResultMeta()
 ) -> ToolExecutionResult {
     ToolExecutionResult(
         toolName: toolName,
         argumentsJSON: encodeArgsToJSON(args),
-        outputJSON: makeErrorEnvelope(code: code, message: message, details: details, next: next),
+        outputJSON: makeErrorEnvelope(code: code, message: message, details: details, next: next, meta: meta),
         isError: true
     )
 }
@@ -341,6 +342,50 @@ nonisolated extension ToolExecutionResult {
 }
 
 // MARK: - JSON Helpers
+
+/// `json` — a tool result envelope — with `notes` appended to its `meta.warnings`: the ONE way
+/// a layer outside the handler tells the model about something it did to the call (REC.5),
+/// whatever the handler built. `json` unchanged when there is nothing to add or it is not a
+/// JSON object; an envelope without `meta` gets one. Re-encoded key-sorted with slashes
+/// unescaped, the wire encoder's own two choices, so a note costs no change of spelling
+/// anywhere else in the envelope.
+nonisolated func appendingWarnings(_ notes: [String], toEnvelope json: String) -> String {
+    guard !notes.isEmpty, let data = json.data(using: .utf8),
+          var envelope = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    else { return json }
+    var meta = envelope["meta"] as? [String: Any] ?? ["truncated": false]
+    meta["warnings"] = (meta["warnings"] as? [String] ?? []) + notes
+    envelope["meta"] = meta
+    guard JSONSerialization.isValidJSONObject(envelope),
+          let encoded = try? JSONSerialization.data(
+              withJSONObject: envelope, options: [.sortedKeys, .withoutEscapingSlashes]),
+          let text = String(data: encoded, encoding: .utf8)
+    else { return json }
+    return text
+}
+
+/// The `meta.warnings` of a tool envelope — empty when it carries none or is not an envelope.
+/// A non-empty list always spells `"warnings":["` (both encoders are compact), and the large
+/// envelopes — a file read, a build log — usually carry none, so those skip the parse.
+nonisolated func metaWarnings(in json: String) -> [String] {
+    guard json.contains(#""warnings":[""#), let data = json.data(using: .utf8),
+          let envelope = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+          let meta = envelope["meta"] as? [String: Any]
+    else { return [] }
+    return meta["warnings"] as? [String] ?? []
+}
+
+/// `rebuilt` — an envelope built AFTER the handler ran, by a finalizer that replaces the
+/// handler's (an exploratory search, a computer-use action, a collaboration reply, the answer
+/// to a parked question) — carrying the `meta.warnings` of `original`, the handler's envelope.
+/// Without it every warning the handler or the runtime put there — an argument renamed or
+/// ignored (`ToolArgumentVocabulary`), a form's repair — was replaced along with the
+/// placeholder and never reached the model. A warning `rebuilt` already carries is not added
+/// twice.
+nonisolated func carryingWarnings(from original: String, into rebuilt: String) -> String {
+    let already = Set(metaWarnings(in: rebuilt))
+    return appendingWarnings(metaWarnings(in: original).filter { !already.contains($0) }, toEnvelope: rebuilt)
+}
 
 nonisolated private func encodeToJSON<T: Encodable>(_ value: T) -> String {
     let encoder = JSONCoderFactory.makeWireEncoder()

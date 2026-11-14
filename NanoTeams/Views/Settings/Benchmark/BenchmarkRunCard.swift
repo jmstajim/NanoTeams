@@ -42,7 +42,6 @@ struct BenchmarkRunCard: View {
     var body: some View {
         SettingsCard(
             header: "Run",
-            systemImage: "speedometer",
             footer: Self.footer(blockedBy: blockReason)
         ) {
             if let modePicker { modePicker }

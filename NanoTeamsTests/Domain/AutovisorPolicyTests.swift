@@ -130,6 +130,47 @@ final class AutovisorPolicyTests: XCTestCase {
         XCTAssertFalse(AutovisorPolicy.showsSetupPane(taskExists: true, enabled: true))
     }
 
+    // MARK: - detailPane (the route `MainLayoutView.autovisorDetail` takes)
+
+    /// Built-in driver: the chat only for an existing, enabled manager; every other state is
+    /// the start page.
+    func testDetailPane_builtIn_chatOnlyForAnEnabledManager() {
+        XCTAssertEqual(AutovisorPolicy.detailPane(managerTaskID: nil, enabled: false, driver: .builtInModel), .setup)
+        XCTAssertEqual(AutovisorPolicy.detailPane(managerTaskID: nil, enabled: true, driver: .builtInModel), .setup,
+                       "an enabled flag with no manager behind it has no chat to show")
+        XCTAssertEqual(AutovisorPolicy.detailPane(managerTaskID: 7, enabled: false, driver: .builtInModel), .setup)
+        XCTAssertEqual(AutovisorPolicy.detailPane(managerTaskID: 7, enabled: true, driver: .builtInModel),
+                       .managerChat(taskID: 7))
+    }
+
+    /// External driver: the agent's pane while enabled, with or without a built-in manager on
+    /// disk; the start page while off — where the driver can be changed back. Until
+    /// 2026-11-08 a switched-off external Autovisor opened the agent's pane, whose only
+    /// control was the power switch, while the sidebar's menu named the destination "Open
+    /// Setup".
+    func testDetailPane_external_agentPaneOnlyWhileEnabled() {
+        XCTAssertEqual(AutovisorPolicy.detailPane(managerTaskID: nil, enabled: true, driver: .externalAgent), .externalAgent)
+        XCTAssertEqual(AutovisorPolicy.detailPane(managerTaskID: 7, enabled: true, driver: .externalAgent), .externalAgent,
+                       "a parked built-in manager is not the destination while an agent drives")
+        XCTAssertEqual(AutovisorPolicy.detailPane(managerTaskID: nil, enabled: false, driver: .externalAgent), .setup)
+        XCTAssertEqual(AutovisorPolicy.detailPane(managerTaskID: 7, enabled: false, driver: .externalAgent), .setup)
+    }
+
+    /// The route and the sidebar's label ("Open Setup" / "Open Chat") are one rule: over the
+    /// whole matrix, the route is the start page exactly when `showsSetupPane` says so.
+    func testDetailPane_isSetupExactlyWhenShowsSetupPane() {
+        for driver in AutovisorDriver.allCases {
+            for managerTaskID in [nil, 3] as [Int?] {
+                for enabled in [false, true] {
+                    XCTAssertEqual(
+                        AutovisorPolicy.detailPane(managerTaskID: managerTaskID, enabled: enabled, driver: driver) == .setup,
+                        AutovisorPolicy.showsSetupPane(taskExists: managerTaskID != nil, enabled: enabled, driver: driver),
+                        "(driver: \(driver), task: \(String(describing: managerTaskID)), enabled: \(enabled))")
+                }
+            }
+        }
+    }
+
     // MARK: - requiresSetupBeforeEnabling (the pill's OFF→ON intercept)
 
     /// Nothing to turn on yet → the click must land on setup and create it there.

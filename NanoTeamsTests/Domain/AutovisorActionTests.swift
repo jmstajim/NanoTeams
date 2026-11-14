@@ -79,6 +79,73 @@ final class AutovisorActionTests: XCTestCase {
         XCTAssertEqual(try? ControlVerb.parse(action: "set_timeout", arg: "0").get(), .setTimeout(seconds: nil),
                        "0 clears the timeout")
         XCTAssertEqual(try? ControlVerb.parse(action: "set_timeout", arg: nil).get(), .setTimeout(seconds: nil))
+        XCTAssertEqual(try? ControlVerb.parse(action: "set_timeout", arg: nil, timeoutSeconds: 90).get(), .setTimeout(seconds: 90))
+        XCTAssertEqual(try? ControlVerb.parse(action: "set_timeout", arg: nil, timeoutSeconds: 0).get(), .setTimeout(seconds: nil),
+                       "0 in timeoutSeconds clears the timeout")
+        guard case .failure(let errNeg) = ControlVerb.parse(action: "set_timeout", arg: nil, timeoutSeconds: -5) else {
+            return XCTFail("negative timeoutSeconds must fail")
+        }
+        XCTAssertTrue(errNeg.message.contains(">= 0"))
+        guard case .failure(let errRaw) = ControlVerb.parse(action: "set_timeout", arg: nil, timeoutSeconds: nil, rawTimeout: "600s") else {
+            return XCTFail("unparseable rawTimeout must fail")
+        }
+        XCTAssertTrue(errRaw.message.contains("600s"))
+        guard case .failure(let errAction) = ControlVerb.parse(action: "pause", arg: nil, timeoutSeconds: nil, rawTimeout: "600s") else {
+            return XCTFail("rawTimeout on non-set_timeout action must fail")
+        }
+        XCTAssertTrue(errAction.message.contains("timeout_seconds applies only with action: \"set_timeout\"."))
+    }
+
+    /// Every `set_timeout` refusal `parse` writes is the registry row's text, byte for byte — one
+    /// input per row, and every row driven. Until 2026-11-12 (F6 T3) the registry rendered a
+    /// hand-written copy, and `parse` wrote the invalid-value refusal inline, so rewording it
+    /// moved no fingerprint.
+    @MainActor
+    func testControlVerb_parse_refusalsAreTheRegistryRowsText() {
+        let rows = Dictionary(
+            RuntimePromptRegistry.entries.map { ($0.name, $0.render()) }, uniquingKeysWith: { first, _ in first })
+        let produced: [String: Result<ControlVerb, AutovisorVerbError>] = [
+            "actionNotSetTimeout": ControlVerb.parse(action: "pause", arg: nil, timeoutSeconds: 5),
+            "argWithSetTimeout": ControlVerb.parse(action: "set_timeout", arg: "90", surface: .externalMCP),
+            "negativeTimeout": ControlVerb.parse(action: "set_timeout", arg: nil, timeoutSeconds: -5),
+            "invalidValue": ControlVerb.parse(action: "set_timeout", arg: nil, rawTimeout: "abc"),
+            "missingValue": ControlVerb.parse(action: "set_timeout", arg: nil, surface: .externalMCP),
+        ]
+        XCTAssertEqual(Set(produced.keys), Set(ControlVerb.TimeoutRefusal.registrySamples.map(\.name)))
+        for (name, result) in produced {
+            guard case .failure(let error) = result else { XCTFail("\(name) must refuse"); continue }
+            let row = rows["ControlVerb.refusalMessage/\(name)"]
+            XCTAssertNotNil(row, name)
+            XCTAssertEqual(error.message, row, name)
+        }
+    }
+
+    func testControlVerb_parse_externalMCP_strictTypingAndArgRejection() {
+        // 1. Rejection of stray `arg` on .externalMCP
+        guard case .failure(let errArg) = ControlVerb.parse(action: "set_timeout", arg: "90", surface: .externalMCP) else {
+            return XCTFail("set_timeout with `arg` on .externalMCP must be rejected")
+        }
+        XCTAssertTrue(errArg.message.contains("`arg` applies only with `action: \"rename\"`"), errArg.message)
+
+        // 2. Rejection of missing timeout_seconds on .externalMCP
+        guard case .failure(let errMissing) = ControlVerb.parse(action: "set_timeout", arg: nil, timeoutSeconds: nil, rawTimeout: nil, surface: .externalMCP) else {
+            return XCTFail("set_timeout with missing timeout_seconds on .externalMCP must be rejected")
+        }
+        XCTAssertTrue(errMissing.message.contains("set_timeout requires integer `timeout_seconds` (0 to clear)."), errMissing.message)
+
+        // 3. Rejection of non-integer/fractional floats on .externalMCP
+        guard case .failure(let errFloat) = ControlVerb.parse(action: "set_timeout", arg: nil, timeoutSeconds: nil, rawTimeout: 600.5, surface: .externalMCP) else {
+            return XCTFail("set_timeout with float on .externalMCP must be rejected")
+        }
+        XCTAssertTrue(errFloat.message.contains("set_timeout accepts integer `timeout_seconds` (0 to clear)"), errFloat.message)
+
+        // 4. Valid positive integer
+        XCTAssertEqual(try? ControlVerb.parse(action: "set_timeout", arg: nil, timeoutSeconds: 300, surface: .externalMCP).get(),
+                       .setTimeout(seconds: 300))
+
+        // 5. Valid 0 (clears timeout)
+        XCTAssertEqual(try? ControlVerb.parse(action: "set_timeout", arg: nil, timeoutSeconds: 0, surface: .externalMCP).get(),
+                       .setTimeout(seconds: nil))
     }
 
     /// `arg` is read by `rename` and `set_timeout` only. Until 2026-09-06 the six other verbs

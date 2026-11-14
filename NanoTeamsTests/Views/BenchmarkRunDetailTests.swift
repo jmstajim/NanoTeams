@@ -22,7 +22,7 @@ final class BenchmarkRunDetailTests: XCTestCase {
     ) -> GenerationBenchmarkRun {
         GenerationBenchmarkRun(
             id: runID,
-            startedAt: Date(timeIntervalSince1970: 1_755_000_000),
+            startedAt: Date(timeIntervalSince1970: 1_754_956_800),
             provider: provider,
             baseURLString: "http://127.0.0.1:11434",
             modelName: "qwen3.8:27b-mlx",
@@ -58,7 +58,7 @@ final class BenchmarkRunDetailTests: XCTestCase {
         GenerationBenchmarkSample(
             id: UUID(),
             runID: runID,
-            recordedAt: Date(timeIntervalSince1970: 1_755_000_000),
+            recordedAt: Date(timeIntervalSince1970: 1_754_956_800),
             phase: phase,
             sampleIndex: index,
             inputTokens: inputTokens,
@@ -243,7 +243,7 @@ final class BenchmarkRunDetailTests: XCTestCase {
         XCTAssertTrue(subtitle.contains("127.0.0.1:11434"), subtitle)
         XCTAssertTrue(
             subtitle.contains(
-                BenchmarkResultsCard.runTimestampFull(Date(timeIntervalSince1970: 1_755_000_000))),
+                BenchmarkResultsCard.runTimestampFull(Date(timeIntervalSince1970: 1_754_956_800))),
             subtitle)
     }
 

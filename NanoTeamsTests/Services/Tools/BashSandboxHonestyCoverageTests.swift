@@ -55,22 +55,24 @@ final class BashSandboxHonestyCoverageTests: XCTestCase {
         super.tearDown()
     }
 
+    /// The sandbox settings the test asked for reach `handle` the way production's do — on the
+    /// batch's context (`ToolExecutionContext.bashSandbox`), not on the handler.
+    private var sandbox = BashPolicy.Sandbox()
+
     private func makeTool(
         sandboxed: Bool,
         fallback: Bool,
         permissions: BashSandboxPermissions = BashSandboxPermissions()
     ) -> BashTool {
-        BashTool(
+        sandbox = BashPolicy.Sandbox(enabled: sandboxed, permissions: permissions, allowUnsandboxedFallback: fallback)
+        return BashTool(
             workFolderRoot: workDir,
             resolver: SandboxPathResolver(workFolderRoot: workDir),
-            fileManager: .default,
-            sandboxEnabled: sandboxed,
-            sandboxPermissions: permissions,
-            allowUnsandboxedFallback: fallback)
+            fileManager: .default)
     }
 
     private func context() -> ToolExecutionContext {
-        ToolExecutionContext(workFolderRoot: workDir, taskID: 1, runID: 0, roleID: "r")
+        ToolExecutionContext(workFolderRoot: workDir, taskID: 1, runID: 0, roleID: "r", bashSandbox: sandbox)
     }
 
     private func successData(_ json: String) -> [String: Any]? {

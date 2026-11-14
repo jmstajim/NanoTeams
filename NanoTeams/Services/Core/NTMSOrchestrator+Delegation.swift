@@ -39,7 +39,7 @@ extension NTMSOrchestrator {
                 parentRoleID: parentRoleID,
                 delegationDepth: depth
             )
-            apply(snapshot)
+            apply(snapshot, settings: .keepInMemory)
             // CRITICAL: load the freshly-created child task into `loadedTasks`
             // BEFORE returning. Otherwise the immediate next step in
             // `handleDelegateToTeam` —
@@ -123,28 +123,31 @@ extension NTMSOrchestrator {
     func ensureDelegationDescendantsLoaded(of taskID: Int?) async {
         guard let taskID, let index = snapshot?.tasksIndex else { return }
         let baselineBanner = lastErrorMessage
-        let baselineCount = errorSurfaceCount
         var failedIDs: [Int] = []
-        for childID in index.descendantIDs(of: taskID) {
-            await ensureTaskLoaded(childID)
-            // `ensureTaskLoaded` short-circuits when already loaded; failure
-            // is detected by absence of the entry in `loadedTasks` AFTER the
-            // call. This avoids changing the helper's signature and works
-            // whether the underlying error was repository-level or recovery-
-            // persistence-level.
-            if loadedTask(childID) == nil {
-                failedIDs.append(childID)
+        let loopError = await surfacingError {
+            for childID in index.descendantIDs(of: taskID) {
+                await ensureTaskLoaded(childID)
+                // `ensureTaskLoaded` short-circuits when already loaded; failure
+                // is detected by absence of the entry in `loadedTasks` AFTER the
+                // call. This avoids changing the helper's signature and works
+                // whether the underlying error was repository-level or recovery-
+                // persistence-level.
+                if loadedTask(childID) == nil {
+                    failedIDs.append(childID)
+                }
             }
-        }
+        }.error
         // Restore the baseline banner so a per-iteration overwrite from
         // `ensureTaskLoaded` doesn't leak the last error in the
         // success-without-failures case — but only when the loop actually wrote.
-        // An UNCONDITIONAL assignment re-fires `lastErrorMessage`'s `didSet` on every
-        // clean run, fabricating an `errorSurfaceCount` bump for callers that read the
-        // counter to mean "something failed", and re-showing a banner a render had
-        // already consumed. The counter is the exact test for "did the loop write":
-        // comparing the VALUES cannot tell a clean run from a consumed slot.
-        if errorSurfaceCount != baselineCount { lastErrorMessage = baselineBanner }
+        // An UNCONDITIONAL assignment re-shows a banner a render had already consumed on
+        // every clean run. The loop's own scope is the exact test for "did the loop write":
+        // comparing the VALUES cannot tell a clean run from a consumed slot, and the
+        // process-wide count also moves when ANOTHER task surfaces an error meanwhile — the
+        // restore then overwrote that task's banner with the stale baseline (D-M18,
+        // 2026-11-13). `restoreBanner` surfaces nothing: putting back what was on screen is
+        // not a new error, and an enclosing operation must not read the baseline as its own.
+        if loopError != nil { restoreBanner(baselineBanner) }
         guard !failedIDs.isEmpty else { return }
         let list = failedIDs.map { "#\($0)" }.joined(separator: ", ")
         let plural = failedIDs.count == 1 ? "descendant" : "descendants"
@@ -174,14 +177,18 @@ extension NTMSOrchestrator {
     /// loop. Without cascade, depth-2+ stops would leave grandchild
     /// engines orphaned (no awaiter wakeup, no parent to time them out).
     func stopEngineForTask(_ taskID: Int) {
-        stopEngineForTask(taskID, visited: [])
+        stopEngineForTask(taskID, captureSnapshot: true)
+    }
+
+    func stopEngineForTask(_ taskID: Int, captureSnapshot: Bool) {
+        stopEngineForTask(taskID, visited: [], captureSnapshot: captureSnapshot)
     }
 
     /// Internal recursive variant with a `visited: Set<Int>` cycle guard
     /// — mirrors the guards on `pauseRun` / `resumeRun` /
-    /// `removeTaskRecursively` against a corrupted `tasks_index.json`
+    /// `removeTask` against a corrupted `tasks_index.json`
     /// self-cycle.
-    private func stopEngineForTask(_ taskID: Int, visited: Set<Int>) {
+    private func stopEngineForTask(_ taskID: Int, visited: Set<Int>, captureSnapshot: Bool = true) {
         if visited.contains(taskID) { return }
         var nextVisited = visited
         nextVisited.insert(taskID)
@@ -189,9 +196,9 @@ extension NTMSOrchestrator {
         // engine-state transitions that fire awaiter callbacks against
         // already-cancelling continuations.
         for child in childTaskIDs(of: taskID) {
-            stopEngineForTask(child, visited: nextVisited)
+            stopEngineForTask(child, visited: nextVisited, captureSnapshot: false)
         }
-        stopEngine(for: taskID)
+        stopEngine(for: taskID, captureSnapshot: captureSnapshot)
         llmExecutionService.cancelExecutions(forTaskID: taskID)
     }
 
@@ -203,12 +210,26 @@ extension NTMSOrchestrator {
     /// the answer is set on disk.
     // periphery:ignore - protocol conformance (LLMStateDelegate)
     @discardableResult
-    func answerSupervisorQuestion(taskID: Int, stepID: String, answer: String) async -> Bool {
+    func answerSupervisorQuestion(
+        taskID: Int,
+        stepID: String,
+        answer: String,
+        within lifecycle: WorkFolderLifecycle
+    ) async -> Bool {
         // The delegating parent ROLE (an LLM) is answering the child's question —
         // mark it auto so the child's feed shows the "Auto-answered" badge.
         await answerSupervisorQuestion(
-            stepID: stepID, taskID: taskID, answer: answer, origin: .automated)
+            stepID: stepID, taskID: taskID, answer: answer, origin: .automated, within: lifecycle)
     }
+
+    #if DEBUG
+    @discardableResult
+    func answerSupervisorQuestion(taskID: Int, stepID: String, answer: String) async -> Bool {
+        let lifecycle = currentFolderLifecycle
+        return await answerSupervisorQuestion(
+            taskID: taskID, stepID: stepID, answer: answer, within: lifecycle)
+    }
+    #endif
 
     // MARK: - Delegation Interrupt (Supervisor-driven abort)
 
@@ -249,7 +270,7 @@ extension NTMSOrchestrator {
         return true
     }
 
-    // MARK: - Recursive Removal
+    // MARK: - Child Lookup
 
     /// Returns the immediate child task IDs of `parentTaskID`, drawn from the
     /// `tasks_index.json` summary so background-only (not currently loaded)
@@ -257,28 +278,5 @@ extension NTMSOrchestrator {
     func childTaskIDs(of parentTaskID: Int) -> [Int] {
         guard let summaries = snapshot?.tasksIndex.tasks else { return [] }
         return summaries.compactMap { $0.parentTaskID == parentTaskID ? $0.id : nil }
-    }
-
-    /// Recursively removes a task and all its delegated children from disk and memory.
-    /// Engine-stop and queue cleanup happen per-level. Awaiter continuations for any
-    /// in-flight `delegate_to_team` handler are released via `cancelAll`.
-    func removeTaskRecursively(_ taskID: Int) async {
-        await removeTaskRecursively(taskID, visited: [])
-    }
-
-    /// Internal recursive variant with a visited-set cycle guard. Mirrors the
-    /// guards on `pauseRun` / `resumeRun` / `removeTask` against a corrupted
-    /// `tasks_index.json` self-cycle.
-    private func removeTaskRecursively(_ taskID: Int, visited: Set<Int>) async {
-        if visited.contains(taskID) { return }
-        var nextVisited = visited
-        nextVisited.insert(taskID)
-        // Bottom-up traversal so children are gone before their parent's record is dropped
-        // — keeps `childTaskIDs` lookups consistent at every recursion level.
-        let children = childTaskIDs(of: taskID)
-        for child in children {
-            await removeTaskRecursively(child, visited: nextVisited)
-        }
-        await removeTask(taskID)
     }
 }

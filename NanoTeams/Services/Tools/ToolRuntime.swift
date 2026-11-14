@@ -1,6 +1,6 @@
 import Foundation
 
-/// Exactly one case, on purpose (wave 32). Its three former siblings were declared error
+/// Only cases something constructs (wave 32). Three former siblings were declared error
 /// routes the runtime deliberately replaced with RECOVERY, so none could ever fire:
 /// `toolNotFound` → the missing-handler guard builds its own `tool_not_found` envelope
 /// inline; `invalidArgumentsJSON` → unparseable args are wrapped as `__raw_input__` for
@@ -10,6 +10,10 @@ import Foundation
 /// never runs — the `LLMStepStop.needsAcceptance` class.
 nonisolated enum ToolRuntimeError: LocalizedError {
     case argumentsNotObject
+    /// Two keys that are the same name once the whitespace around them is trimmed. Neither
+    /// is chosen: which one survived the trim depended on dictionary order, and the bash gate
+    /// judged one while the runtime ran the other (2026-11-09).
+    case duplicateArgumentKey(String)
 
     var errorDescription: String? {
         switch self {
@@ -18,6 +22,9 @@ nonisolated enum ToolRuntimeError: LocalizedError {
             // a concrete placeholder here is copyable, and one was copied verbatim into
             // `read_file` on 2026-09-08 (playbook R3.8.8).
             "Tool arguments must be a JSON object whose keys are this tool's parameter names."
+        case .duplicateArgumentKey(let key):
+            "The arguments name `\(key)` more than once, with whitespace around one of the names. "
+                + "Send `\(key)` once."
         }
     }
 }
@@ -201,40 +208,51 @@ nonisolated final class ToolRuntime: @unchecked Sendable {
         func elapsedMS() -> Double { (ContinuousClock.now - started).milliseconds }
 
         do {
-            let rawParsedArgs = try parseAndNormalizeArguments(rawArgs)
-            let args = unwrapReentrantEnvelope(rawParsedArgs, expectedToolName: name)
-
-            // The two supervisor-ask tools are told apart by their arguments when the name
-            // and the payload disagree — an alias correction that needs the args, so it lands
-            // here rather than in `resolveToolName`. Re-resolved BEFORE the schema check, or
-            // the payload would be validated against the shape it was misnamed as.
-            var name = name
-            var handler = handler
-            if let corrected = SupervisorAskRouting.correctedName(
-                for: name, argumentKeys: Set(args.keys)),
-                let correctedHandler = registry.handler(for: corrected) {
-                name = corrected
-                handler = correctedHandler
+            // The ONE reading of the arguments — the same function the approval gates and the
+            // write guard read (`ToolCallArguments`), so what was judged is what runs. Through
+            // the REGISTRY's schema lookup, not the static table: an MCP tool's schema is the
+            // projection of what its server published, registered with its handler, and it is
+            // the only thing that can say a call's arguments are the wrong shape before they
+            // leave the machine. For a built-in tool the two return the same schema.
+            let dispatch: ToolCallArguments.Dispatch
+            switch ToolCallArguments.prepare(
+                rawJSON: rawArgs, emittedName: call.name,
+                schema: { [registry] in registry.schema(for: $0) },
+                canRoute: { [registry] in registry.handler(for: $0) != nil }
+            ) {
+            case .dispatch(let prepared):
+                dispatch = prepared
+            case .unreadable(let error):
+                // An argument fault like any other refusal of the reading — `INVALID_ARGS`, so
+                // the model is told to fix the arguments rather than read a bare
+                // `execution_failed`; under the resolved name, the raw document as it came.
+                let message = ToolErrorHandler.classify(error).message
+                let result = ToolExecutionResult(
+                    providerID: providerID,
+                    toolName: name,
+                    argumentsJSON: rawArgs,
+                    outputJSON: makeErrorEnvelope(code: .invalidArgs, message: message),
+                    isError: true)
+                logger?.append(baseRecord.withResult(result: result, errorMessage: message, durationMS: elapsedMS()))
+                appendNetworkRecord(context: context, call: call, result: result, errorMessage: message)
+                return result
+            case .invalid(let toolName, let args, let message):
+                var result = makeErrorResult(
+                    toolName: toolName, args: args, code: .invalidArgs, message: message)
+                result.providerID = providerID
+                let note = "arguments refused: " + message
+                logger?.append(baseRecord.withResult(result: result, errorMessage: note, durationMS: elapsedMS()))
+                appendNetworkRecord(context: context, call: call, result: result, errorMessage: note)
+                return result
             }
-            // A provided argument the shared coercion cannot honour is answered here, as the
-            // argument fault it is, instead of reaching the handler as "absent" and running the
-            // wrong branch under a success envelope (`search {"paths": 5}` walked the whole
-            // tree, 2026-09-07; playbook REC.5).
-            if let schema = ToolHandlerRegistry.schema(named: name) {
-                let violations = argumentTypeViolations(args: args, schema: schema.parameters)
-                if !violations.isEmpty {
-                    var result = makeErrorResult(
-                        toolName: call.name, args: args, code: .invalidArgs,
-                        message: violations.joined(separator: " ") + " Fix the value, or omit the argument.")
-                    result.providerID = providerID
-                    let note = "argument type refused: " + violations.joined(separator: " ")
-                    logger?.append(baseRecord.withResult(result: result, errorMessage: note, durationMS: elapsedMS()))
-                    appendNetworkRecord(context: context, call: call, result: result, errorMessage: note)
-                    return result
-                }
-            }
-            var result = try await handler(context, args)
+            // The supervisor-ask routing may have named a different tool than the one emitted.
+            let handler = registry.handler(for: dispatch.toolName) ?? handler
+            var result = try await handler(context, dispatch.args)
             result.providerID = providerID
+            // What the reading did to the call — a renamed or ignored argument — told to the
+            // model on the result of the call it changed (REC.5). Both logs record it too:
+            // they record this envelope, beside the RAW arguments the model sent.
+            result.outputJSON = appendingWarnings(dispatch.notes, toEnvelope: result.outputJSON)
             logger?.append(baseRecord.withResult(result: result, durationMS: elapsedMS()))
             appendNetworkRecord(context: context, call: call, result: result, errorMessage: nil)
             return result
@@ -311,12 +329,33 @@ nonisolated final class ToolRuntime: @unchecked Sendable {
         ))
     }
 
+    /// The key under which a document that is not JSON reaches a handler whole, so a built-in
+    /// handler reading its arguments leniently can recover it (`requiredString`). An external
+    /// MCP server declared no such key, and is never sent it (`MCPDynamicTool`).
+    static let rawInputKey = "__raw_input__"
+
+    /// The arguments a tool's handler receives for the document the model wrote — the ONE
+    /// reading of it. The runtime dispatches exactly this, and the MCP preflight reads it too
+    /// (`MCPDynamicTool.preflight`), so the approval card built from it and what a server
+    /// receives cannot disagree.
+    nonisolated static func dispatchedArguments(_ rawArgs: String, toolName: String) throws -> [String: Any] {
+        // An envelope's inner object is the model's document too, so its keys are read the
+        // same way — trimmed, and refused when two of them are one name.
+        try normalizedKeys(unwrapReentrantEnvelope(try normalizedArguments(rawArgs), expectedToolName: toolName))
+    }
+
     /// Parses raw JSON arguments string into a normalized [String: Any] dictionary.
-    /// Handles empty args, non-JSON plain strings (wraps as __raw_input__), and sanitizes keys.
-    private func parseAndNormalizeArguments(_ rawArgs: String) throws -> [String: Any] {
+    /// Handles empty args, non-JSON plain strings (wraps as `rawInputKey`), and sanitizes keys.
+    ///
+    /// A `null` document is no arguments, exactly as an empty one is: it is JSON, not prose, and
+    /// JSON's word for nothing. `JSONSerialization` refuses a top-level scalar without
+    /// `.fragmentsAllowed`, so until 2026-10-28 `null` was filed as prose — a built-in tool read
+    /// the text "null" as its first required string, and an MCP server was sent
+    /// `{"__raw_input__":"null"}` while the approval card showed "null".
+    private nonisolated static func normalizedArguments(_ rawArgs: String) throws -> [String: Any] {
         let trimmedArgs = rawArgs.trimmingCharacters(in: .whitespacesAndNewlines)
         let argsAny: Any
-        if trimmedArgs.isEmpty {
+        if trimmedArgs.isEmpty || trimmedArgs == "null" {
             argsAny = [:]
         } else {
             let sanitized = JSONUtilities.sanitizeJSONControlCharacters(trimmedArgs)
@@ -327,29 +366,33 @@ nonisolated final class ToolRuntime: @unchecked Sendable {
             } else {
                 // LLM passed a plain string instead of a JSON object — wrap it so
                 // tool handlers can recover via the __raw_input__ fallback key.
-                argsAny = ["__raw_input__": trimmedArgs] as [String: Any]
+                argsAny = [rawInputKey: trimmedArgs] as [String: Any]
             }
         }
 
-        guard var args = argsAny as? [String: Any] else {
+        guard let args = argsAny as? [String: Any] else {
             throw ToolRuntimeError.argumentsNotObject
         }
 
-        // Sanitize argument keys — LLMs sometimes emit keys with leading/trailing whitespace or newlines
-        // (e.g., "\nnew_text" instead of "new_text"). Auto-fix rather than rejecting.
-        // Some models (gpt-oss-20b) emit {"":""} for no-parameter tools — strip empty keys silently.
-        for key in Array(args.keys) {
-            let trimmedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmedKey.isEmpty {
-                args.removeValue(forKey: key)
-                continue
-            }
-            if key != trimmedKey {
-                args[trimmedKey] = args.removeValue(forKey: key)
-            }
-        }
+        return try normalizedKeys(args)
+    }
 
-        return args
+    /// The keys as a handler reads them. LLMs sometimes emit keys with leading/trailing
+    /// whitespace or newlines (`"\nnew_text"` for `new_text`) — trimmed rather than rejected;
+    /// gpt-oss-20b emits `{"":""}` for no-parameter tools — an empty key is dropped. Two keys
+    /// that are ONE name once trimmed are refused, never resolved: which of them survived used
+    /// to depend on dictionary order, and the bash gate judged one while the runtime ran the
+    /// other (2026-11-09). Rebuilt into a fresh dictionary, so the answer cannot depend on the
+    /// order the source is visited in either.
+    private nonisolated static func normalizedKeys(_ args: [String: Any]) throws -> [String: Any] {
+        var out: [String: Any] = [:]
+        for (key, value) in args {
+            let trimmedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmedKey.isEmpty { continue }
+            guard out[trimmedKey] == nil else { throw ToolRuntimeError.duplicateArgumentKey(trimmedKey) }
+            out[trimmedKey] = value
+        }
+        return out
     }
 
     /// Builds an error JSON string for ToolExecutionResult.outputJSON.

@@ -127,7 +127,7 @@ final class ResolveToolSchemasDefaultsTests: XCTestCase {
             for: Role.fromDefinition(agent),
             team: team,
             allTeams: [team],
-            approval: ToolApprovalAvailability(bash: .available, computerUse: .withheld(.switchedOff))
+            approval: ToolApprovalAvailability(bash: .available, computerUse: .withheld(.switchedOff), humanPresent: true)
         )
         let names = Set(schemas.map(\.name))
         for tool in ToolHandlerRegistry.computerUseTools {

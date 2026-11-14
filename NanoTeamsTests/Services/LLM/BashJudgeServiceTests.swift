@@ -308,78 +308,10 @@ final class BashJudgeServiceTests: XCTestCase {
         XCTAssertEqual(d.reason, "removes files")
     }
 
-    func testConfigForJudge_appliesJudgeModel() {
-        let base = LLMConfig(modelName: "global-model")
-        let p = BashPolicy(judgeOverride: LLMOverride(modelName: "judge-model"))
-        XCTAssertEqual(BashJudgeService.configForJudge(base, policy: p).modelName, "judge-model")
-    }
-
-    func testConfigForJudge_noOverrideKeepsModel() {
-        let base = LLMConfig(modelName: "global-model")
-        let p = BashPolicy(judgeOverride: nil)
-        XCTAssertEqual(BashJudgeService.configForJudge(base, policy: p).modelName, "global-model")
-    }
-
-    func testConfigForJudge_appliesURLAndModel() {
-        let base = LLMConfig(baseURLString: "http://global:1234", modelName: "global-model", temperature: 0.7)
-        let p = BashPolicy(judgeOverride: LLMOverride(
-            baseURLString: "http://judge:9999", modelName: "judge-model"))
-        let jc = BashJudgeService.configForJudge(base, policy: p)
-        XCTAssertEqual(jc.baseURLString, "http://judge:9999")
-        XCTAssertEqual(jc.modelName, "judge-model")
-        XCTAssertEqual(jc.temperature, 0, "The verdict pin always wins — the override carries no sampling")
-    }
-
-    func testConfigForJudge_emptyFieldsKeepGlobal() {
-        let base = LLMConfig(baseURLString: "http://global:1234", modelName: "global-model")
-        // An override that carries only a (whitespace) URL leaves the model global.
-        let p = BashPolicy(judgeOverride: LLMOverride(baseURLString: "   "))
-        let jc = BashJudgeService.configForJudge(base, policy: p)
-        XCTAssertEqual(jc.baseURLString, "http://global:1234")
-        XCTAssertEqual(jc.modelName, "global-model")
-    }
-
-    /// Deterministic extraction: the verdict is one strict JSON object, so with
-    /// no operator override the judge runs at temperature 0 — never inheriting
-    /// a chat/creative value into a security decision.
-    func testConfigForJudge_noOverride_pinsTemperatureToZero() {
-        let base = LLMConfig(modelName: "global-model", temperature: 0.9)
-        let jc = BashJudgeService.configForJudge(base, policy: BashPolicy(judgeOverride: nil))
-        XCTAssertEqual(jc.temperature, 0)
-    }
-
-    func testConfigForJudge_overrideWithoutTemperature_staysZero() {
-        let base = LLMConfig(modelName: "global-model", temperature: 0.9)
-        let p = BashPolicy(judgeOverride: LLMOverride(modelName: "judge-model"))
-        XCTAssertEqual(BashJudgeService.configForJudge(base, policy: p).temperature, 0)
-    }
-
-    /// Alignment canary: both judges resolve through the shared `JudgeConfig`,
-    /// so the same base + override inputs must produce the SAME effective
-    /// config across all override-applied fields — including the whitespace
-    /// trimming, not just temperature.
-    func testConfigForJudge_fullyAlignedWithComputerUseJudge() {
-        let base = LLMConfig(
-            baseURLString: "http://global:1234", modelName: "global-model",
-            temperature: 0.9)
-        let cases: [LLMOverride?] = [
-            nil,
-            LLMOverride(modelName: "judge-model"),
-            LLMOverride(baseURLString: "  http://judge:9999  ", modelName: "  judge-model  "),
-        ]
-        for o in cases {
-            let bash = BashJudgeService.configForJudge(base, policy: BashPolicy(judgeOverride: o))
-            let cu = ComputerUseJudgeService.configForJudge(base, policy: ComputerUsePolicy(judgeOverride: o))
-            XCTAssertEqual(bash.temperature, cu.temperature, "temperature diverged for \(String(describing: o))")
-            XCTAssertEqual(bash.baseURLString, cu.baseURLString, "baseURL diverged for \(String(describing: o))")
-            XCTAssertEqual(bash.modelName, cu.modelName, "model diverged for \(String(describing: o))")
-        }
-        // The trimming semantics themselves (not just pair equality):
-        let padded = BashJudgeService.configForJudge(
-            base, policy: BashPolicy(judgeOverride: LLMOverride(baseURLString: "  http://judge:9999  ")))
-        XCTAssertEqual(padded.baseURLString, "http://judge:9999",
-                       "whitespace-padded override URL must be trimmed (Keychain token resolution is keyed by URL)")
-    }
+    // The verdict config (temperature 0, the policy's `judgeOverride` trimmed over the role's
+    // config, the same for both judges) is pinned on what the request CARRIES —
+    // `JudgeCallTests.testBothJudges_sendTheirPolicysOverride_asTheVerdictConfig` — not on a
+    // helper production does not call.
 
     func testJudgePromptPreview_carriesCommandStrictnessAndWorkingDir() {
         let p = BashPolicy(restrictionLevel: .strict)
@@ -514,8 +446,8 @@ final class BashJudgeServiceTests: XCTestCase {
                        JudgeFailClosedReason.actionNoVerdict,
                        JudgeFailClosedReason.actionUnparseable,
                        JudgeReplyChannelPolicy.reasoningOnlyAllowReason,
-                       JudgeFailClosedReason.callFailed(subject: "Command", message: "Network error"),
-                       JudgeFailClosedReason.callFailed(subject: "Action", message: "timed out")] {
+                       JudgeFailClosedReason.callFailed(subject: .command, message: "Network error"),
+                       JudgeFailClosedReason.callFailed(subject: .action, message: "timed out")] {
             XCTAssertTrue(JudgeFailClosedReason.isFailClosed(reason), reason)
         }
     }

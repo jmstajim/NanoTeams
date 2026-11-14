@@ -17,7 +17,6 @@ struct GenerateTeamLLMOverrideCard: View {
     var body: some View {
         SettingsCard(
             header: "LLM Override",
-            systemImage: "brain",
             footer: "Use a different LLM only for Generate Team. Empty fields fall back to the global configuration."
         ) {
             LLMOverrideEditor(

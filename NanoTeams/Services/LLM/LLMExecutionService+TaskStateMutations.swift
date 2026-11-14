@@ -191,6 +191,7 @@ extension LLMExecutionService {
             // pause/resume of the same step append the answer a SECOND time, which is
             // the defect this flag closes on the parked path.
             task.runs[runIndex].steps[stepIndex].supervisorAnswerPendingDelivery = false
+            task.runs[runIndex].steps[stepIndex].supervisorAnswerAuthor = nil
             task.runs[runIndex].steps[stepIndex].needsSupervisorInput = false
             // Assignment, not a conditional write: a plain ask after a form must CLEAR the
             // previous round's questionnaire, or the feed keeps rendering a card whose
@@ -246,6 +247,7 @@ extension LLMExecutionService {
             task.runs[runIndex].steps[stepIndex].supervisorAnswerAttachmentPaths = []
             task.runs[runIndex].steps[stepIndex].supervisorAnswerWasAuto = false
             task.runs[runIndex].steps[stepIndex].supervisorAnswerPendingDelivery = false
+            task.runs[runIndex].steps[stepIndex].supervisorAnswerAuthor = nil
             task.runs[runIndex].steps[stepIndex].needsSupervisorInput = true
             task.runs[runIndex].steps[stepIndex].status = .needsSupervisorInput
 

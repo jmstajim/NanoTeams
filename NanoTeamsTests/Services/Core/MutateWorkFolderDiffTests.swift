@@ -161,6 +161,29 @@ final class MutateWorkFolderDiffTests: NTMSOrchestratorTestBase, @unchecked Send
         XCTAssertNotEqual(before.teams, after.teams)
     }
 
+    // MARK: - Outcome
+
+    /// The outcome says what happened to the closure's changes — the question a caller that
+    /// waits (a Team Editor Save) asks, and the one the single-shot `lastErrorMessage` slot cannot
+    /// answer (CLAUDE.md Swift Style #5).
+    func testMutateWorkFolder_outcome_persistedWhenSomethingWasWritten() async {
+        await sut.openWorkFolder(tempDir)
+
+        let outcome = await sut.mutateWorkFolder { $0.settings.context = "outcome \(UUID().uuidString)" }
+
+        XCTAssertEqual(outcome, .persisted)
+        XCTAssertNil(outcome.failureReason)
+    }
+
+    func testMutateWorkFolder_outcome_unchangedWhenTheClosureChangedNothing() async {
+        await sut.openWorkFolder(tempDir)
+
+        let outcome = await sut.mutateWorkFolder { _ in }
+
+        XCTAssertEqual(outcome, .unchanged)
+        XCTAssertNil(outcome.failureReason, "nothing to write is not a failure")
+    }
+
     // MARK: - In-memory projection
 
     func testMutateWorkFolder_persistsToMemoryProjection() async {

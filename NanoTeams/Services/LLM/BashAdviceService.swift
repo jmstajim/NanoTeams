@@ -23,7 +23,8 @@ nonisolated struct BashAdvice: Hashable, Sendable, Identifiable {
 /// directory — the same `(command, workingDirectory, config)` inputs the real Auto
 /// gate would feed the judge — so the advice matches what the configured judge
 /// would conclude. Inherits `BashJudgeService`'s fail-closed semantics (a judge
-/// error / uncertainty → `allowed == false` with a reason).
+/// error / uncertainty → `allowed == false` with a reason) — and its cancellation: a verdict
+/// Stop cut short is no verdict, so that command gets no advice and the pass ends.
 ///
 /// Alongside the verdict, each command gets an "Ask AI" advisory from
 /// `BashExplainService` — what it DOES plus an independent safety read. A SEPARATE,
@@ -46,9 +47,8 @@ nonisolated enum BashAdviceService {
         results.reserveCapacity(commands.count)
         for (index, command) in commands.enumerated() {
             // Cooperative cancellation: when the user taps Stop (or Allow/Deny removes
-            // the card), the consuming Task is cancelled. `judge`/`explain` each swallow
-            // CancellationError into a fail-closed / empty result, so the loop can't learn
-            // of cancellation from them — check here so Stop actually stops issuing further
+            // the card), the consuming Task is cancelled. `explain` swallows it into an empty
+            // advisory, so the loop checks here too, and Stop stops issuing further
             // per-command calls instead of draining the whole batch.
             if Task.isCancelled { break }
             // Strictness Off: the configured judge approves everything without
@@ -69,13 +69,16 @@ nonisolated enum BashAdviceService {
             // The verdict comes from the real gate judge (kept identical to what Auto
             // would conclude); the advisory is a SEPARATE, decoupled call — its
             // independent safety read can never alter the gate verdict.
-            let verdict = await BashJudgeService.judge(
+            let ruling = await BashJudgeService.judge(
                 command: command,
                 workingDirectory: workingDirectory,
                 policy: policy,
                 config: config,
                 client: client,
                 logger: logger)
+            // Stopped mid-verdict: there is no advice to show for this command — a fail-closed
+            // "denied" here would be the same refusal-nobody-made the gate no longer writes.
+            guard let verdict = ruling.decision else { break }
             let explanation = await BashExplainService.explain(
                 command: command,
                 workingDirectory: workingDirectory,

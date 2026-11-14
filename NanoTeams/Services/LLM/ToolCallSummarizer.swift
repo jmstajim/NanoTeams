@@ -106,12 +106,9 @@ nonisolated enum ToolCallSummarizer {
             },
             TN.gitCheckout: { ($0["branch"] as? String) ?? "?" },
             TN.gitAdd: { dict in
-                // The handler accepts four spellings (`GitWriteHandlers`: paths / files /
-                // path / file, a bare string coercing to a one-element list). Reading only
-                // `paths` meant a model that staged with `{"file": "A.swift"}` — a shape
-                // the handler acts on — got the literal word "files" and no filename.
-                guard let paths = firstStringArray(dict, ["paths", "files", "path", "file"]),
-                      !paths.isEmpty
+                // `{"file": "A.swift"}` arrives here as `paths` (`GitAddTool.undeclaredArguments`,
+                // read by `summarizeArguments` below), a bare string coercing to one element.
+                guard let paths = optionalStringArray(dict, "paths"), !paths.isEmpty
                 else { return "files" }
                 return paths.count == 1 ? paths[0] : "\(paths.count) files"
             },
@@ -142,7 +139,7 @@ nonisolated enum ToolCallSummarizer {
             // fire is worse than none: it reads as covered. They are zero-argument tools and
             // are listed as such in `toolsWithoutArgumentSummary`.
             TN.updateScratchpad: { dict in
-                let content = resolveContentString(dict) ?? ""
+                let content = (try? requiredString(dict, "content")) ?? ""
                 // `dropFirst(K).isEmpty` == `count <= K` but stops at K graphemes; `String.count` walks
                 // the WHOLE receiver to answer a bounded question (see `ModelTokenCleaner.isTokenSpan`).
                 return content.dropFirst(40).isEmpty ? content : String(content.prefix(40)) + "..."
@@ -205,12 +202,12 @@ nonisolated enum ToolCallSummarizer {
                 return parts.joined(separator: " ")
             },
             TN.uiType: { dict in
-                let text = (dict["text"] as? String) ?? resolveContentString(dict) ?? ""
+                let text = (dict["text"] as? String) ?? ""
                 // `dropFirst(K).isEmpty` == `count <= K` but stops at K graphemes; `String.count` walks
                 // the WHOLE receiver to answer a bounded question (see `ModelTokenCleaner.isTokenSpan`).
                 return text.dropFirst(60).isEmpty ? text : String(text.prefix(60)) + "…"
             },
-            TN.uiKey: { ($0["keys"] as? String) ?? ($0["key"] as? String) ?? "?" },
+            TN.uiKey: { ($0["keys"] as? String) ?? "?" },
             TN.uiScroll: { dict in
                 guard let x = optionalInt(dict, "x"), let y = optionalInt(dict, "y") else { return "?" }
                 let dx = optionalInt(dict, "dx") ?? 0
@@ -288,7 +285,7 @@ nonisolated enum ToolCallSummarizer {
                 guard let minutes = optionalInt(dict, "interval_minutes") else { return taskRef(dict) }
                 return parts(taskRef(dict), minutes <= 0 ? "off" : "every \(minutes)m")
             },
-            TN.setWorkFolderContext: { clip(resolveContentString($0)) },
+            TN.setWorkFolderContext: { clip(try? requiredString($0, "content")) },
 
             // MARK: Supervisor / collaboration
             TN.askSupervisor: { clip(extractString($0, "question")) },
@@ -363,14 +360,6 @@ nonisolated enum ToolCallSummarizer {
         return paths.count == 1 ? paths[0] : "\(paths.count) paths"
     }
 
-    /// First alias that yields a usable list — the read-only mirror of the handlers'
-    /// `requiredStringArray(_:aliases:)`, so the card resolves the same key the tool did.
-    private static func firstStringArray(_ dict: [String: Any], _ aliases: [String]) -> [String]? {
-        for key in aliases {
-            if let value = optionalStringArray(dict, key), !value.isEmpty { return value }
-        }
-        return nil
-    }
 
     /// `team_config.name`, whether the config arrived as an object or as a JSON string.
     private static func teamConfigName(_ dict: [String: Any]) -> String? {
@@ -434,7 +423,10 @@ nonisolated enum ToolCallSummarizer {
     /// of two. `nil` means "unparseable", which is the `"?"` the string form has always
     /// returned for malformed JSON.
     static func summarizeArguments(toolName: String, arguments: [String: Any]?, resolveRoleName: ((String) -> String)? = nil) -> String {
-        guard let dict = arguments else { return "?" }
+        guard let arguments else { return "?" }
+        // Under the tool's own names, as the runtime renames them — a card reading `query`
+        // showed "?" for a `pattern` call the tool ran (2026-11-09).
+        let dict = ToolCallArguments.displayArguments(arguments, toolName: toolName)
 
         // Role-aware summarizers (prefer resolved names when available).
         //
@@ -502,6 +494,8 @@ nonisolated enum ToolCallSummarizer {
         isError: Bool,
         resolveRoleName: ((String) -> String)? = nil
     ) -> String {
+        // Under the tool's own names (`summarizeArguments` below applies the same).
+        let arguments = arguments.map { ToolCallArguments.displayArguments($0, toolName: toolName) }
         if toolName == TN.editFile, !isError, let resultJSON {
             let data = ToolCallDataUtils.parseJSON(resultJSON)?["data"] as? [String: Any]
             if let span = editedLineSpan(data) {
@@ -561,6 +555,25 @@ nonisolated enum ToolCallSummarizer {
             }
             return "ok"
         },
+        // A command's own failure is a SUCCESS envelope — the tool ran, the command did not
+        // pass — so the summary has to say it: exit code, and the last line it printed, which is
+        // where a failing test runner or compiler puts the verdict.
+        TN.bash: { dict in
+            guard let data = dict["data"] as? [String: Any] else { return "ok" }
+            if data["timed_out"] as? Bool == true { return "failed: timed out" }
+            guard let exitCode = data["exit_code"] as? Int else { return "ok" }
+            guard exitCode != 0 else { return "exit 0" }
+            let lastLine = lastPrintedLine(data["stderr"] as? String) ?? lastPrintedLine(data["stdout"] as? String)
+            return lastLine.map { "failed: exit \(exitCode): \($0)" } ?? "failed: exit \(exitCode)"
+        },
+        TN.runXcodetests: { dict in
+            guard let data = dict["data"] as? [String: Any] else { return "ok" }
+            let passed = (data["passed"] as? Int) ?? 0
+            let failed = (data["failed"] as? Int) ?? 0
+            if (data["success"] as? Bool) == true { return "\(passed) passed" }
+            if failed > 0 { return "failed: \(failed) failed, \(passed) passed" }
+            return (data["exit_code"] as? Int).map { "failed: exit \($0)" } ?? "failed"
+        },
         TN.gitCommit: { _ in "committed" },
         TN.gitMerge: { _ in "merged" },
         TN.readFile: { dict in
@@ -572,6 +585,30 @@ nonisolated enum ToolCallSummarizer {
             return "ok"
         },
     ]
+
+    /// The last line `text` printed that has anything on it, whole.
+    private static func lastPrintedLine(_ text: String?) -> String? {
+        text?.split(whereSeparator: \.isNewline)
+            .last { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+    }
+
+    /// The tools whose OUTCOME is the news on a one-line record: a command, a test run, a build.
+    /// For every other tool the arguments say what happened, and `→ ok` on each row is noise.
+    static let toolsWithOutcomeSummary: Set<String> = [TN.bash, TN.runXcodetests, TN.runXcodebuild]
+
+    /// What a call of one of `toolsWithOutcomeSummary` came to, for a one-line record such as
+    /// `task_log`'s — `nil` for every other tool, and for a result that is not an envelope.
+    /// A command that exited non-zero or timed out, a test run with failures and a failed build
+    /// read `failed…`, though each arrives as a success envelope.
+    static func outcomeSummary(toolName: String, resultJSON json: String) -> String? {
+        guard toolsWithOutcomeSummary.contains(toolName),
+              let dict = ToolCallDataUtils.parseJSON(json),
+              dict["error"] == nil || dict["error"] is NSNull,
+              let summarizer = resultSummarizers[toolName]
+        else { return nil }
+        return summarizer(dict)
+    }
 
     static func summarizeResult(toolName: String, json: String) -> String {
         guard let dict = ToolCallDataUtils.parseJSON(json) else { return "parse error" }

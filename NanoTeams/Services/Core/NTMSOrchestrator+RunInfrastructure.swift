@@ -55,6 +55,18 @@ extension NTMSOrchestrator {
     ///   disk index still needs a convergence write.
     @discardableResult
     func ensureTaskLoaded(_ taskID: Int) async -> Bool {
+        ensureTaskLoadedSync(taskID)
+    }
+
+    /// `reportsLoadFailure: false` is a read nobody asked the person about — the external agent's
+    /// `list_tasks` and `wait_for_events` heartbeat reading one row's status
+    /// (`statusBearingTask`): a task.json that cannot be read leaves the row on its index status
+    /// and surfaces nothing. A surfaced error would be the outcome of whatever operation polls —
+    /// its scope sees the poll (`surfacingError(_:)`) — and a poll repeats every few seconds
+    /// (review R2, 2026-11-12). A recovery that loaded but could not be saved
+    /// is still reported: memory and disk then disagree.
+    @discardableResult
+    func ensureTaskLoadedSync(_ taskID: Int, reportsLoadFailure: Bool = true) -> Bool {
         if loadedTask(taskID) != nil { return false }
         guard let url = workFolderURL else { return false }
         do {
@@ -78,7 +90,7 @@ extension NTMSOrchestrator {
             syncEngineStateFromRun(taskID: taskID, task: task)
             return recoveryPersisted
         } catch {
-            self.lastErrorMessage = error.localizedDescription
+            if reportsLoadFailure { self.lastErrorMessage = error.localizedDescription }
             return false
         }
     }

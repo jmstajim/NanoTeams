@@ -84,6 +84,7 @@ struct ActivityFeedActionBar: View {
                         if !normalizedArtifacts.isEmpty {
                             Text("\(readyCount)/\(normalizedArtifacts.count)")
                                 .font(Typography.term2xs.weight(.bold))
+                                .lineLimit(1)
                                 .monospacedDigit()
                                 .foregroundStyle(Colors.textSecondary)
                                 .padding(.horizontal, 5)
@@ -277,6 +278,7 @@ private func previewSection<Content: View>(_ title: String, @ViewBuilder content
     VStack(alignment: .leading, spacing: 4) {
         Text(title)
             .font(Typography.term2xs.weight(.semibold))
+            .lineLimit(1)
             .foregroundStyle(Colors.textTertiary)
             .padding(.leading, Spacing.s)
         content()

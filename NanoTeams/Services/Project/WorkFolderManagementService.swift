@@ -42,19 +42,6 @@ final class WorkFolderManagementService {
         }.value
     }
 
-    /// `activeTask` is the caller's in-memory copy, threaded rather than re-read: see the
-    /// id guard in `NTMSRepository.assembleContext`. Deliberately has no default — a new
-    /// call site must decide, instead of inheriting a full conversation-history re-read by
-    /// omission, which is how all five narrow writers acquired one.
-    func updateWorkFolderContext(_ context: String, at url: URL,
-                                 activeTask: NTMSTask?) throws -> WorkFolderContext {
-        try repository.updateWorkFolderContext(
-            at: url,
-            context: context.trimmingCharacters(in: .whitespacesAndNewlines),
-            activeTask: activeTask
-        )
-    }
-
     func generateWorkFolderContext(
         workFolderRoot: URL,
         config: LLMConfig,
@@ -72,9 +59,5 @@ final class WorkFolderManagementService {
             workFolderRoot: workFolderRoot, runner: xcodebuildRunner)
     }
 
-    func updateSelectedScheme(_ scheme: String?, at url: URL,
-                              activeTask: NTMSTask?) throws -> WorkFolderContext {
-        try repository.updateSelectedScheme(at: url, scheme: scheme, activeTask: activeTask)
-    }
     nonisolated deinit {}
 }

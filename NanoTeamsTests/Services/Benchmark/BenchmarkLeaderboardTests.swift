@@ -580,7 +580,7 @@ final class BenchmarkLeaderboardTests: XCTestCase {
     /// from the Unix epoch. RED: restore `?? Date(timeIntervalSince1970: 0)` and weaken the guard
     /// above it → the Last run column prints 1 Jan 1970.
     func testLastMeasuredAt_isAlwaysARealRunsTimestamp() throws {
-        let recent = Date(timeIntervalSince1970: 1_755_000_000)
+        let recent = Date(timeIntervalSince1970: 1_754_956_800)
         let r = run(model: "m", startedAt: recent)
         let rows = BenchmarkLeaderboard.rows(
             runs: [r], samples: measuredSamples(for: r, rate: 40),

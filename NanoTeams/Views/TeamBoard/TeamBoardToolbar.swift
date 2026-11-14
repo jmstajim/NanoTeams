@@ -35,8 +35,8 @@ extension TeamBoardView {
     /// mid-pass, and a disabled state or a confirm sheet just re-earns it.
     ///
     /// No `autovisorEnabled` check here, but NOT because the board implies enabled —
-    /// it does not. `MainLayoutView.autovisorDetail` gates on
-    /// `!autovisorShowsSetupPane`, yet `detailView`'s `.task` branch renders this
+    /// it does not. `MainLayoutView.autovisorDetail` renders it only for
+    /// `.managerChat` (`autovisorDetailPane`), yet `detailView`'s `.task` branch renders this
     /// same board with no Autovisor gate, and `setAutovisorEnabled(false)` keeps
     /// `autovisorTaskID` — so ⌘3 / the command palette reach it with the feature
     /// OFF once the manager is the active task. The gate lives in
@@ -169,11 +169,7 @@ extension TeamBoardView {
             if let task, !isAutovisorBoard {
                 Button {
                     Task {
-                        let taskState = engineState.taskEngineStates[task.id]
-                        if taskState == .running || taskState == .needsSupervisorInput || taskState == .needsAcceptance {
-                            await store.pauseRun(taskID: task.id)
-                        }
-                        await store.startRun(taskID: task.id)
+                        await store.restartRun(taskID: task.id)
                     }
                 } label: {
                     Label("New Run", systemImage: "arrow.counterclockwise")

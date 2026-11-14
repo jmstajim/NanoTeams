@@ -68,6 +68,40 @@ final class SearchIndexInvariantsTests: XCTestCase {
         XCTAssertEqual(index.signature.maxMTime, maxFileMTime)
     }
 
+    // MARK: - The project's newest file (2026-11-13)
+
+    /// What `folder_status` compares the Work Folder Context's stamp with: the newest file of the
+    /// project's own. A task's artifact or attachment is NanoTeams' output, not a fact of the
+    /// project that moved — here, in a folder nested inside and opened on its own, or anywhere.
+    func testMaxProjectFileMTime_skipsEveryNanoTeamsTree() {
+        func file(_ path: String, _ seconds: TimeInterval) -> IndexedFile {
+            IndexedFile(path: path, mTime: Date(timeIntervalSince1970: seconds), size: 1)
+        }
+        func newest(_ files: [IndexedFile]) -> Date? {
+            SearchIndex(generatedAt: .distantPast, files: files, vocabulary: []).maxProjectFileMTime
+        }
+
+        XCTAssertEqual(newest([
+            file("Sources/App.swift", 100),
+            file(".nanoteams/tasks/3/runs/0/roles/eng/artifact_notes.md", 900),
+            file(".nanoteams/tasks/3/attachments/spec.pdf", 800),
+            file("Sandbox/startup/.nanoteams/tasks/1/runs/0/roles/swe/artifact_notes.md", 950),
+            file(".nanoteamsish/notes.md", 300),
+        ]), Date(timeIntervalSince1970: 300), "a folder whose name only starts with it is the project's")
+        XCTAssertNil(newest([file(".nanoteams/tasks/1/attachments/a.png", 5)]), "nothing of the project's")
+        XCTAssertNil(newest([]))
+    }
+
+    func testIsNanoTeamsOwn_isAnyNanoTeamsTree_andNothingBesideOne() {
+        XCTAssertTrue(SearchIndex.isNanoTeamsOwn(".nanoteams"))
+        XCTAssertTrue(SearchIndex.isNanoTeamsOwn(".nanoteams/tasks/1/attachments/a.png"))
+        XCTAssertTrue(SearchIndex.isNanoTeamsOwn("Sandbox/faang/.nanoteams/tasks/2/task.json"),
+                      "a nested work folder's tree is NanoTeams output too")
+        XCTAssertFalse(SearchIndex.isNanoTeamsOwn(".nanoteamsish/notes.md"))
+        XCTAssertFalse(SearchIndex.isNanoTeamsOwn("docs/nanoteams.md"))
+        XCTAssertFalse(SearchIndex.isNanoTeamsOwn("README.md"))
+    }
+
     // MARK: - Files invariants
 
     /// A roster path is not merely "not absolute" — it must NAME the file from the root, and

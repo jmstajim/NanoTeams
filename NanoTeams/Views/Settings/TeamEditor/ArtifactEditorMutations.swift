@@ -1,26 +1,28 @@
 import Foundation
 
-/// Pure mutation helpers shared by `ArtifactEditorSheet.saveArtifact`.
+/// Pure mutation helpers shared by `ArtifactEditorSheet`'s Save.
 ///
-/// Why this exists: the editor sheet receives `team` through a Binding whose
-/// getter (`TeamEditorView.binding(for:)`) returns a *captured snapshot* and
-/// whose setter spawns an async `mutateWorkFolder` Task. Two consecutive
-/// writes through that Binding race — the second write's read-modify-write
-/// cycle reads the stale captured snapshot and silently overwrites the
-/// first. `saveArtifact` did FIVE such writes (`team.artifacts[i].name`,
-/// `.description`, `.icon`, `.mimeType`, `.updatedAt`), so the last one won
-/// and it carried only `updatedAt`. Symptom: renaming an artifact appeared to
-/// do nothing — and description, icon and MIME type were being dropped too.
+/// Why this exists: the editor sheet receives `team` through
+/// `TeamEditorView.binding(for:)`, whose getter used to return a *captured
+/// snapshot* and whose setter spawned an async `mutateWorkFolder` Task. Two
+/// consecutive writes through that Binding raced — the second write's
+/// read-modify-write cycle read the stale captured snapshot and silently
+/// overwrote the first. `saveArtifact` did FIVE such writes
+/// (`team.artifacts[i].name`, `.description`, `.icon`, `.mimeType`,
+/// `.updatedAt`), so the last one won and it carried only `updatedAt`.
+/// Symptom: renaming an artifact appeared to do nothing — and description,
+/// icon and MIME type were being dropped too.
 ///
-/// Note that hardening the Binding's getter would NOT have fixed this: all
-/// five writes happen in one synchronous turn, before any `Task` body runs,
-/// so a store-reading getter still returns the pre-write value.
+/// A getter that read the STORE would not have fixed this: all five writes
+/// happened in one synchronous turn, before any `Task` body ran. The binding
+/// now reads back the value STAGED in `TeamEditCommitQueue`, which is updated
+/// synchronously — so the seam composes such writes as well.
 ///
-/// Fix: callers compose every mutation on a local `var newTeam = team` and
-/// ship the result via a single Binding write (`team = newTeam`). These
-/// helpers own the composition — including the artifact-name cascade, which
-/// has no counterpart on the role side — so the rules don't drift between
-/// create and edit, and they stay covered by `ArtifactEditorMutationsTests`.
+/// Callers still compose every mutation on a local `var newTeam = team` and
+/// hand the result over once — one Save, one staged value. These helpers own
+/// the composition — including the artifact-name cascade, which has no
+/// counterpart on the role side — so the rules don't drift between create
+/// and edit, and they stay covered by `ArtifactEditorMutationsTests`.
 ///
 /// Mirrors `RoleEditorMutations`.
 nonisolated enum ArtifactEditorMutations {
@@ -38,6 +40,38 @@ nonisolated enum ArtifactEditorMutations {
             self.icon = icon
             self.mimeType = mimeType
         }
+
+        /// The empty form a new artifact opens with.
+        static let new = Draft(name: "", description: "", icon: "doc.text", mimeType: "text/markdown")
+
+        /// The fields of a stored artifact, as the editor opens on them.
+        init(_ artifact: TeamArtifact) {
+            self.init(
+                name: artifact.name, description: artifact.description,
+                icon: artifact.icon, mimeType: artifact.mimeType)
+        }
+    }
+
+    /// The draft the editor opens with — seeded before the first render, so no input can land
+    /// in a window where the fields still hold the empty form (CLAUDE.md #26).
+    static func openingDraft(for mode: EditorMode<TeamArtifact>) -> Draft {
+        switch mode {
+        case .create: return .new
+        case .edit(let artifact): return Draft(artifact)
+        }
+    }
+
+    /// Whether closing the editor now would throw away something the person changed: `draft`
+    /// against the editor as it opened, compared as Save would store it — the name canonicalized,
+    /// so trailing spaces alone ask nothing. What Cancel and Escape ask (`EditorSheetClosePolicy`).
+    static func hasUnsavedChanges(_ draft: Draft, mode: EditorMode<TeamArtifact>) -> Bool {
+        asSaved(draft) != asSaved(openingDraft(for: mode))
+    }
+
+    private static func asSaved(_ draft: Draft) -> Draft {
+        var saved = draft
+        saved.name = canonicalName(draft.name)
+        return saved
     }
 
     /// Why an artifact's name cannot be edited. `nil` = freely renameable.

@@ -109,6 +109,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
         run: Run? = nil,
         supervisorBrief: String? = nil,
         supervisorBriefDate: Date? = nil,
+        supervisorAuthorLabel: String? = nil,
         cache: [String: Set<String>] = [:],
         debug: Bool = false,
         questionsRenderedElsewhere: Bool = true,
@@ -119,6 +120,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
             run: run,
             supervisorBrief: supervisorBrief,
             supervisorBriefDate: supervisorBriefDate,
+            supervisorAuthorLabel: supervisorAuthorLabel,
             stepArtifactContentCache: cache,
             debugModeEnabled: debug,
             activeQuestionsRenderedElsewhere: questionsRenderedElsewhere,
@@ -551,7 +553,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
         // NOT iter 2's question (the stale `supervisorAnswer` could be
         // mis-pinned to ask 2 if the indexing logic regressed — see the
         // screenshot bug from the original report).
-        guard case let .supervisorInput(question, answer, _, _, _, _, _, _) = notifications[0] else {
+        guard case let .supervisorInput(question, answer, _, _, _, _, _, _, _) = notifications[0] else {
             return XCTFail("Expected .supervisorInput notification")
         }
         XCTAssertEqual(question, "first?", "Card must carry iter 1's question, NOT iter 2's")
@@ -578,7 +580,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
                 if case .notification(_, _, let type, _, _) = $0.item { return type }
                 return nil
             }
-            guard case let .supervisorInput(_, _, _, _, _, _, wasAutoAnswered, _) = notifications.first else {
+            guard case let .supervisorInput(_, _, _, _, _, _, wasAutoAnswered, _, _) = notifications.first else {
                 return XCTFail("Expected .supervisorInput notification")
             }
             XCTAssertEqual(wasAutoAnswered, flag,
@@ -586,11 +588,10 @@ final class ActivityFeedBuilderTests: XCTestCase {
         }
     }
 
-    /// Documented granularity limit of `wasAutoAnswered` (step-latest flag): on a
-    /// step whose history holds MULTIPLE resolved Q&As, every card carries the
-    /// LATEST answer's attribution — per-question fidelity is not stored. This
-    /// test makes the limitation explicit so a future "fix" that changes the
-    /// behavior does so consciously, updating the docs with it.
+    /// Answer turns persisted before 2026-11-07 recorded no author, and those still read the
+    /// step-latest flag: on a step whose history holds MULTIPLE such Q&As, every card carries the
+    /// LATEST answer's attribution, exactly as before. Pinned so an old run keeps rendering as it
+    /// did; a recorded turn is read per card (the next test, DEBTS D-M15).
     func testMultiAskStep_allResolvedCards_carryLatestAttribution() {
         let ask1 = makeToolCall(name: TN.askSupervisor, at: date(100), argumentsJSON: #"{"question":"first?"}"#)
         let answer1 = makeMessage(role: .user, content: "Supervisor answer: by hand", at: date(150),
@@ -607,7 +608,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
         )
 
         let flags: [Bool] = build(steps: [step]).compactMap {
-            if case .notification(_, _, .supervisorInput(_, _, _, _, _, _, let wasAuto, _), _, _) = $0.item {
+            if case .notification(_, _, .supervisorInput(_, _, _, _, _, _, let wasAuto, _, _), _, _) = $0.item {
                 return wasAuto
             }
             return nil
@@ -615,6 +616,62 @@ final class ActivityFeedBuilderTests: XCTestCase {
 
         XCTAssertEqual(flags, [true, true],
                        "Step-latest flag stamps BOTH resolved cards — including the human-answered first Q&A")
+    }
+
+    /// DEBTS D-M15: each answered card shows who answered IT. RED before 2026-11-07: both cards
+    /// carried the step's flag — the person's answer read "auto-answered" once the model answered
+    /// later, and the model's read as the person's once the person answered later.
+    func testMultiAskStep_eachRecordedCard_carriesItsOwnAnswerer() {
+        func answer(_ text: String, at offset: TimeInterval, automated: Bool) -> LLMMessage {
+            LLMMessage(createdAt: date(offset), role: .user, content: "Supervisor answer: \(text)",
+                       sourceRole: .supervisor, sourceContext: .supervisorAnswer,
+                       authorLabel: nil, isFromAutomatedSupervisor: automated)
+        }
+        for (first, second) in [(false, true), (true, false)] {
+            let step = makeStep(
+                messages: [answer("one", at: 150, automated: first), answer("two", at: 250, automated: second)],
+                toolCalls: [
+                    makeToolCall(name: TN.askSupervisor, at: date(100), argumentsJSON: #"{"question":"first?"}"#),
+                    makeToolCall(name: TN.askSupervisor, at: date(200), argumentsJSON: #"{"question":"second?"}"#),
+                ],
+                status: .done,
+                supervisorAnswer: "two",
+                supervisorAnswerWasAuto: second)
+
+            let flags: [Bool] = build(steps: [step]).compactMap {
+                if case .notification(_, _, .supervisorInput(_, _, _, _, _, _, let wasAuto, _, _), _, _) = $0.item {
+                    return wasAuto
+                }
+                return nil
+            }
+
+            XCTAssertEqual(flags, [first, second], "each card reads its own answer turn")
+        }
+    }
+
+    /// The built-in Autovisor's `request_changes` is shown before the step re-enters with it,
+    /// as an external agent's always was — unsigned, so `auto`. RED before 2026-11-07: only a
+    /// SIGNED pending revision got a bubble, so the built-in manager's was invisible until the
+    /// re-entry turn — and that turn then read as the person's words.
+    func testAPendingRevisionByTheBuiltInAutovisor_isShownAsAutomated() {
+        var step = makeStep(status: .done)
+        step.revisionComment = "Handle empty keys."
+        step.revisionCommentIsFromAutomatedSupervisor = true
+
+        let bubbles: [LLMMessage] = build(steps: [step]).compactMap {
+            if case let .llmMessage(msg, _, _, _) = $0.item, msg.sourceContext == .supervisorFeedback { return msg }
+            return nil
+        }
+
+        XCTAssertEqual(bubbles.map(\.displayContent), ["Handle empty keys."])
+        XCTAssertEqual(bubbles.first?.sourceContextDisplayLabel, LLMMessage.automatedSupervisorLabel)
+
+        step.revisionCommentIsFromAutomatedSupervisor = false
+        let personsBubbles = build(steps: [step]).filter {
+            if case let .llmMessage(msg, _, _, _) = $0.item { return msg.sourceContext == .supervisorFeedback }
+            return false
+        }
+        XCTAssertTrue(personsBubbles.isEmpty, "the person's own pending revision draws nothing new, as before")
     }
 
     /// Earlier `ask_supervisor` calls in the same step (i.e. non-trailing) are
@@ -760,7 +817,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
             supervisorQuestion: "Details")
 
         let cards = build(steps: [step]).compactMap { tagged -> (question: String, answer: String?)? in
-            if case let .notification(_, _, .supervisorInput(question, answer, _, _, _, _, _, _), _, _) = tagged.item {
+            if case let .notification(_, _, .supervisorInput(question, answer, _, _, _, _, _, _, _), _, _) = tagged.item {
                 return (question, answer)
             }
             return nil
@@ -793,7 +850,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
             supervisorAnswer: "continue")
 
         let questions = build(steps: [step]).compactMap { tagged -> String? in
-            if case let .notification(_, _, .supervisorInput(question, _, _, _, _, _, _, _), _, _) = tagged.item {
+            if case let .notification(_, _, .supervisorInput(question, _, _, _, _, _, _, _, _), _, _) = tagged.item {
                 return question
             }
             return nil
@@ -838,7 +895,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
         let result = build(steps: [step])
 
         let supervisorNotifs: [(question: String, answer: String?)] = result.compactMap {
-            if case let .notification(_, _, .supervisorInput(question, answer, _, _, _, _, _, _), _, _) = $0.item {
+            if case let .notification(_, _, .supervisorInput(question, answer, _, _, _, _, _, _, _), _, _) = $0.item {
                 return (question, answer)
             }
             return nil
@@ -987,7 +1044,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
             return false
         }) else { return XCTFail("Expected a supervisorInput notification") }
 
-        if case let .notification(_, _, .supervisorInput(_, _, _, _, _, thinking, _, _), _, _) = card.item {
+        if case let .notification(_, _, .supervisorInput(_, _, _, _, _, thinking, _, _, _), _, _) = card.item {
             XCTAssertEqual(
                 thinking, "Nothing left to do — parking for events.",
                 "Thinking must be bounded by the answer timestamp — post-answer reasoning belongs to the resumed turn, not this card"
@@ -1076,7 +1133,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
             return false
         }) else { return XCTFail("Expected a supervisorInput notification") }
 
-        if case let .notification(_, _, .supervisorInput(_, _, _, _, _, thinking, _, _), createdAt, _) = card.item {
+        if case let .notification(_, _, .supervisorInput(_, _, _, _, _, thinking, _, _, _), createdAt, _) = card.item {
             XCTAssertEqual(
                 createdAt, date(500),
                 "Card must anchor on the LATEST answer message, not the first"
@@ -1197,7 +1254,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
             return false
         }) else { return XCTFail("Expected a supervisorInput notification") }
 
-        if case let .notification(_, _, .supervisorInput(_, _, _, _, _, thinking, _, _), _, _) = card.item {
+        if case let .notification(_, _, .supervisorInput(_, _, _, _, _, thinking, _, _, _), _, _) = card.item {
             XCTAssertNil(
                 thinking,
                 "No pre-answer thinking exists — the card must not borrow post-answer reasoning"
@@ -1242,7 +1299,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
             return false
         }) else { return XCTFail("Expected a supervisorInput notification") }
 
-        if case let .notification(_, _, .supervisorInput(_, _, _, _, _, thinking, _, _), _, _) = card.item {
+        if case let .notification(_, _, .supervisorInput(_, _, _, _, _, thinking, _, _, _), _, _) = card.item {
             XCTAssertEqual(
                 thinking, "Same-tick reasoning.",
                 "The bound must be inclusive — a thinking turn stamped exactly at the anchor belongs to the question"
@@ -1288,7 +1345,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
             return false
         }) else { return XCTFail("Expected a supervisorInput notification") }
 
-        if case let .notification(_, _, .supervisorInput(_, _, _, _, _, thinking, _, _), _, _) = card.item {
+        if case let .notification(_, _, .supervisorInput(_, _, _, _, _, thinking, _, _, _), _, _) = card.item {
             XCTAssertEqual(
                 thinking, "Late reasoning.",
                 "Legacy fallback anchors on updatedAt (latest stamp) — the bound filters nothing, latest thinking wins"
@@ -1665,6 +1722,92 @@ final class ActivityFeedBuilderTests: XCTestCase {
         XCTAssertTrue(result[2].showSectionHeader, "TL gets header — different role")
     }
 
+    // MARK: - 8b. Section headers follow the Supervisor turn's AUTHOR
+
+    /// A Supervisor message, as the queue delivers it: one turn per author run
+    /// (`NTMSOrchestrator+QueuedMessages`), so a mixed batch persists back to back.
+    private func supervisorTurn(
+        _ body: String, at timestamp: Date, author: String? = nil, automated: Bool = false
+    ) -> LLMMessage {
+        LLMMessage(
+            createdAt: timestamp, role: .user,
+            content: MessageSourceContext.supervisorMessagePrefix + body,
+            sourceRole: .supervisor, sourceContext: .supervisorMessage,
+            authorLabel: author, isFromAutomatedSupervisor: automated)
+    }
+
+    private func headers(_ items: [ActivityFeedBuilder.TaggedItem]) -> [Bool] {
+        items.map(\.showSectionHeader)
+    }
+
+    /// The header carries the only mark of who wrote a Supervisor turn. Grouped under the
+    /// person's header, an agent's words read as the person's.
+    func testSupervisorTurns_personThenAgent_eachGetsAHeader() {
+        let step = makeStep(messages: [
+            supervisorTurn("Mine", at: date(100)),
+            supervisorTurn("The agent's", at: date(200), author: "Claude Code", automated: true),
+        ])
+        XCTAssertEqual(headers(build(steps: [step])), [true, true])
+    }
+
+    func testSupervisorTurns_agentThenPerson_eachGetsAHeader() {
+        let step = makeStep(messages: [
+            supervisorTurn("The agent's", at: date(100), author: "Claude Code", automated: true),
+            supervisorTurn("Mine", at: date(200)),
+        ])
+        XCTAssertEqual(headers(build(steps: [step])), [true, true])
+    }
+
+    func testSupervisorTurns_unsignedAutomatedThenAgent_eachGetsAHeader() {
+        let step = makeStep(messages: [
+            supervisorTurn("The manager's", at: date(100), automated: true),
+            supervisorTurn("The agent's", at: date(200), author: "Claude Code", automated: true),
+        ])
+        XCTAssertEqual(headers(build(steps: [step])), [true, true])
+    }
+
+    func testSupervisorTurns_sameAuthorTwice_stillGroup() {
+        let agentStep = makeStep(messages: [
+            supervisorTurn("One", at: date(100), author: "Claude Code", automated: true),
+            supervisorTurn("Two", at: date(200), author: " Claude Code ", automated: true),
+        ])
+        XCTAssertEqual(headers(build(steps: [agentStep])), [true, false],
+                       "the author is compared trimmed, the way the mark shows it")
+
+        let personStep = makeStep(messages: [
+            supervisorTurn("One", at: date(100)),
+            supervisorTurn("Two", at: date(200)),
+        ])
+        XCTAssertEqual(headers(build(steps: [personStep])), [true, false])
+    }
+
+    func testAgentTaskCard_thenPersonsMessage_getsAHeader() {
+        let step = makeStep(messages: [supervisorTurn("Mine", at: date(100))])
+        let result = build(
+            steps: [step], supervisorBrief: "Do it", supervisorBriefDate: date(10),
+            supervisorAuthorLabel: "Claude Code")
+        XCTAssertEqual(headers(result), [true, true])
+    }
+
+    func testAgentTaskCard_thenSameAgentsMessage_stillGroups() {
+        let step = makeStep(messages: [
+            supervisorTurn("More", at: date(100), author: "Claude Code", automated: true),
+        ])
+        let result = build(
+            steps: [step], supervisorBrief: "Do it", supervisorBriefDate: date(10),
+            supervisorAuthorLabel: "Claude Code")
+        XCTAssertEqual(headers(result), [true, false])
+    }
+
+    /// Role turns carry no author: a role's own run of messages groups exactly as before.
+    func testRoleTurns_groupingIsUnchangedByTheAuthorKey() {
+        let step = makeStep(role: .softwareEngineer, messages: [
+            makeMessage(content: "First", at: date(100)),
+            makeMessage(content: "Second", at: date(200)),
+        ], toolCalls: [makeToolCall(at: date(300))])
+        XCTAssertEqual(headers(build(steps: [step])), [true, false, false])
+    }
+
     // MARK: - 9. Filtering Preserves Order
 
     func testSystemToolMessagesFilteredOrderPreserved() {
@@ -1949,7 +2092,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
         XCTAssertEqual(result.count, 2)
         assertOrdered(result)
 
-        if case .supervisorTask(let brief, let taskDate, _, _, _, _, _) = result[0].item {
+        if case .supervisorTask(let brief, let taskDate, _, _, _, _, _, _) = result[0].item {
             XCTAssertEqual(brief, "Build a sorting algorithm")
             XCTAssertEqual(taskDate, date(10))
         } else {
@@ -2270,7 +2413,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
             isStreaming: { _ in false }
         )
         XCTAssertEqual(result.count, 1)
-        if case .supervisorTask(_, _, let displayText, _, _, _, _) = result[0].item {
+        if case .supervisorTask(_, _, let displayText, _, _, _, _, _) = result[0].item {
             XCTAssertEqual(displayText, "опиши логику")
             XCTAssertFalse(displayText.contains("Attached File"))
             XCTAssertFalse(displayText.contains("offline logic"))
@@ -2299,7 +2442,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
             debugModeEnabled: false,
             isStreaming: { _ in false }
         )
-        guard case .supervisorTask(_, _, let displayText, _, let paths, _, _) = result.first?.item else {
+        guard case .supervisorTask(_, _, let displayText, _, let paths, _, _, _) = result.first?.item else {
             return XCTFail("Expected supervisorTask")
         }
         XCTAssertEqual(displayText, "check this")
@@ -2323,7 +2466,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
             debugModeEnabled: false,
             isStreaming: { _ in false }
         )
-        guard case .supervisorTask(_, _, let displayText, let clips, _, _, _) = result.first?.item else {
+        guard case .supervisorTask(_, _, let displayText, let clips, _, _, _, _) = result.first?.item else {
             return XCTFail("Expected supervisorTask")
         }
         XCTAssertEqual(displayText, "do this")
@@ -2347,7 +2490,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
             debugModeEnabled: false,
             isStreaming: { _ in false }
         )
-        guard case .supervisorTask(_, _, _, let clips, let paths, _, _) = result.first?.item else {
+        guard case .supervisorTask(_, _, _, let clips, let paths, _, _, _) = result.first?.item else {
             return XCTFail("Expected supervisorTask")
         }
         // Structured fields win over stripped-from-text fields
@@ -2367,7 +2510,7 @@ final class ActivityFeedBuilderTests: XCTestCase {
             debugModeEnabled: false,
             isStreaming: { _ in false }
         )
-        guard case .supervisorTask(_, _, let displayText, let clips, let paths, _, _) = result.first?.item else {
+        guard case .supervisorTask(_, _, let displayText, let clips, let paths, _, _, _) = result.first?.item else {
             return XCTFail("Expected supervisorTask")
         }
         XCTAssertEqual(displayText, "simple task description")

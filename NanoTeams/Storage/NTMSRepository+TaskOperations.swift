@@ -10,7 +10,9 @@ nonisolated extension NTMSRepository {
         parentTaskID: Int? = nil,
         parentRoleID: String? = nil,
         delegationDepth: Int = 0,
-        makeActive: Bool = true
+        makeActive: Bool = true,
+        origin: TaskOrigin? = nil,
+        requestKey: String? = nil
     ) throws -> (snapshot: WorkFolderContext, taskID: Int) {
         let paths = try preparePaths(at: workFolderRoot)
 
@@ -57,7 +59,9 @@ nonisolated extension NTMSRepository {
             isChatMode: team.seedChatModeForNewTask,
             parentTaskID: parentTaskID,
             parentRoleID: parentRoleID,
-            delegationDepth: delegationDepth
+            delegationDepth: delegationDepth,
+            origin: origin,
+            requestKey: requestKey
         )
         task.status = task.derivedStatusFromActiveRun()
 

@@ -34,6 +34,17 @@ nonisolated struct BashTool: ToolHandler {
         )
     )
     static let category: ToolCategory = .shell
+    /// The names a command is sent under. A NARROWING of what was accepted before 2026-11-09,
+    /// on purpose: the old resolver took eleven body names and then any single remaining
+    /// string, BEFORE the declared `command` — so `{"command":"ls","content":"…"}` ran the
+    /// `content`. Now two spellings refuse the call, and a key outside this list is refused by
+    /// name instead of run as a command. `description` is the agent-harness habit of saying
+    /// what a command does; it is not part of what runs.
+    static let undeclaredArguments: [String: UndeclaredArgument] = [
+        "content": .alias(of: "command"), "text": .alias(of: "command"), "body": .alias(of: "command"),
+        "code": .alias(of: "command"), "cmd": .alias(of: "command"), "script": .alias(of: "command"),
+        "description": .ignored(reason: "a command's description is not part of what runs"),
+    ]
     // Usable with no work folder open: in default-storage mode the sandbox root is the
     // Application Support dir (a real, bootstrapped directory), and write scope is governed
     // by the existing Settings → Bash sandbox permissions — no work folder is required.
@@ -44,18 +55,13 @@ nonisolated struct BashTool: ToolHandler {
     let resolver: SandboxPathResolver
     // `nonisolated(unsafe)`: see `ToolHandlerDependencies.fileManager`.
     nonisolated(unsafe) let fileManager: FileManager
-    let sandboxEnabled: Bool
-    let sandboxPermissions: BashSandboxPermissions
-    let allowUnsandboxedFallback: Bool
+    // No sandbox settings here: they ride each batch (`ToolExecutionContext.bashSandbox`).
 
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self {
         Self(
             workFolderRoot: dependencies.workFolderRoot,
             resolver: dependencies.resolver,
-            fileManager: dependencies.fileManager,
-            sandboxEnabled: dependencies.bashSandboxEnabled,
-            sandboxPermissions: dependencies.bashSandboxPermissions,
-            allowUnsandboxedFallback: dependencies.bashAllowUnsandboxedFallback
+            fileManager: dependencies.fileManager
         )
     }
 
@@ -69,7 +75,12 @@ nonisolated struct BashTool: ToolHandler {
             }
 
             // Resolve and validate the working directory (stays inside the sandbox).
-            let cwd = try resolver.resolveFileURL(relativePath: optionalString(args, "working_directory"))
+            // Resolved as written: `bash` runs INSIDE Seatbelt, which decides on the path the
+            // kernel resolved, and a `cd` in the command reaches the same place anyway — so
+            // real-path containment here only refused the monorepo and `npm link` layouts that
+            // address a sibling checkout through a link (#376).
+            let cwd = try resolver.resolveWorkingDirectoryURL(
+                relativePath: optionalString(args, "working_directory"))
             var isDir: ObjCBool = false
             guard fileManager.fileExists(atPath: cwd.path, isDirectory: &isDir), isDir.boolValue else {
                 return makeErrorResult(
@@ -105,30 +116,51 @@ nonisolated struct BashTool: ToolHandler {
             }
 
             // Per-call narrowing: during the planning phase the command may read anything the
-            // user's own grants allow and write nothing. It CANNOT ride the handler's stored
-            // fields — those are baked once per step by `ToolHandlerRegistry.buildHandlers`, and
-            // the phase flips mid-step, so `context` is the only channel that carries it.
+            // user's own grants allow and write nothing. The sandbox settings themselves come
+            // with the batch too (`ToolExecutionContext.bashSandbox`): the switch, the grants and
+            // the fallback a person changes mid-step govern the next command, where a handler
+            // field baked once per step by `ToolHandlerRegistry.buildHandlers` carried the old
+            // setting to the task's close in chat mode (review 2026-11-08).
             //
-            // The fallback goes off with it: `allowUnsandboxedFallback` re-runs the command with
-            // NO confinement, which would silently retract the very guarantee that admits `bash`
-            // to the phase.
+            // The fallback goes off with the phase: `allowUnsandboxedFallback` re-runs the
+            // command with NO confinement, which would silently retract the very guarantee that
+            // admits `bash` to the phase.
+            let sandbox = context.bashSandbox
             let effectivePermissions = context.isPlanningPhase
-                ? sandboxPermissions.withWritesDisabled()
-                : sandboxPermissions
-            let effectiveFallback = context.isPlanningPhase ? false : allowUnsandboxedFallback
+                ? sandbox.permissions.withWritesDisabled()
+                : sandbox.permissions
+            let effectiveFallback = context.isPlanningPhase ? false : sandbox.allowUnsandboxedFallback
 
-            let sandboxProfile = sandboxEnabled
+            // The loopback ports NanoTeams's own servers and connections use — read per BATCH,
+            // like the phase above, because a server configured mid-step is dialled at once
+            // (`ToolExecutionContext.guardedLoopbackPorts`) — plus every port a dial has reserved
+            // since, which a batch already in flight did not read (`LoopbackPortReservations`).
+            let guardedPorts = SeatbeltSandbox.effectiveGuardedPorts(
+                context.guardedLoopbackPorts + LoopbackPortReservations.shared.ports)
+            let sandboxProfile = sandbox.enabled
                 ? SeatbeltSandbox.profile(
                     workFolderRoot: workFolderRoot,
-                    permissions: effectivePermissions)
+                    permissions: effectivePermissions,
+                    guardedLoopbackPorts: guardedPorts)
                 : nil
 
             // MARK: Background
             if runInBackground {
                 do {
+                    // The ports go with the entry: the process keeps this profile for its whole
+                    // life, and one launched before a port was reserved is stopped before that
+                    // port is dialled (`LoopbackPortReservations.reserve`) — or right now, when the
+                    // reservation landed while this profile was being built (`enforce`).
+                    let confinement = sandboxProfile.map {
+                        BackgroundBashRegistry.Confinement(profile: $0, guardedPorts: Set(guardedPorts))
+                    }
                     let id = try BackgroundBashRegistry.shared.start(
-                        command: command, directory: cwd, sandboxProfile: sandboxProfile,
+                        command: command, directory: cwd, confinement: confinement,
                         taskID: context.taskID)
+                    if let confinement {
+                        LoopbackPortReservations.shared.enforce(
+                            onBackgroundCommand: id, guardedPorts: confinement.guardedPorts)
+                    }
                     return makeSuccessResult(
                         toolName: Self.name, args: args,
                         data: BashBackgroundData(
@@ -153,9 +185,13 @@ nonisolated struct BashTool: ToolHandler {
 
             // MARK: Foreground
             // ProcessRunnerError.cancelled propagates to ToolErrorHandler → makeCancelledResult.
-            let outcome = try runForeground(
+            let (outcome, reservationStop) = try runForeground(
                 command: command, cwd: cwd, timeout: timeoutSec, sandboxProfile: sandboxProfile,
-                fallbackAllowed: effectiveFallback)
+                guardedPorts: Set(guardedPorts), fallbackAllowed: effectiveFallback)
+            // A reservation stopped it while it ran: its exit is NanoTeams's SIGKILL, not the
+            // command's own failure — nor the clock's, when it was already timing out — and the
+            // role is told so on either arm.
+            let stopWarnings: [String] = reservationStop.map { [$0] } ?? []
 
             switch outcome {
             case .timedOut(let stdout, let stderr, let ranSandboxed):
@@ -165,7 +201,8 @@ nonisolated struct BashTool: ToolHandler {
                     data: BashResult(
                         exit_code: nil, stdout: stdout, stderr: stderr, timed_out: true,
                         sandboxed: ranSandboxed,
-                        writes_blocked: context.isPlanningPhase ? true : nil))
+                        writes_blocked: context.isPlanningPhase ? true : nil),
+                    meta: ToolResultMeta(warnings: stopWarnings))
 
             case .completed(let result, let ranSandboxed, let launch):
                 // The wrapper refused and no fallback was allowed: nothing ran, and now that is
@@ -189,6 +226,10 @@ nonisolated struct BashTool: ToolHandler {
                 var meta = Self.planningWriteDenialMeta(
                     isPlanningPhase: context.isPlanningPhase,
                     exitCode: result.exitCode, stderr: result.stderr)
+                meta.warnings += Self.sandboxDenialWarnings(
+                    ranSandboxed: ranSandboxed, isPlanningPhase: context.isPlanningPhase,
+                    exitCode: result.exitCode, stderr: result.stderr, guardedPorts: guardedPorts)
+                meta.warnings += stopWarnings
                 if ranSandboxed, launch == .confinedBeforeStart {
                     meta.warnings += [
                         "The sandbox profile denied the reads the shell needs to start, so the command never ran. This is the confinement working, not an argument problem — narrow what the command touches, or ask the Supervisor to widen the bash sandbox scopes."
@@ -263,17 +304,81 @@ nonisolated struct BashTool: ToolHandler {
         ])
     }
 
+    /// The same missing explanation outside the planning phase. A sandboxed command refused a
+    /// write outside its scopes, a connection to or a listener on a port NanoTeams reserves, or a
+    /// signal to a process it did not start, reads `Operation not permitted` — which a model takes
+    /// for a file it lacks rights to, or a reason for `sudo` — and the reserved ports are nowhere
+    /// else it could learn them: a dev server on `localhost:3000` breaks the moment a person
+    /// configures an MCP server there (review 2026-11-08). One line naming the scopes, the ports
+    /// and the signal rule, added only when the command ran sandboxed, failed, and said that; the
+    /// planning phase has its own. Worded as the usual cause, not the certain one: TCC, SIP and
+    /// file flags say the same words.
+    /// The refusal every role meets first (D-M19 S8, 2026-11-12): the profile closes
+    /// `.nanoteams/internal` — the node itself, so `stat`/`opendir` of it are refused too — and a
+    /// recursive command from the work folder's root (`find .`, `grep -r`, `du`, `cp -R`) reports
+    /// it and exits non-zero after doing everything else (`SeatbeltInternalDenyRecursionTests`).
+    /// The generic warning sends a model hunting for a write scope or a permission it lacks; this
+    /// one says the rest of the output stands and how to leave the directory out. The profile is
+    /// not narrowed instead: a visible node with closed contents fails the same walks one level
+    /// down, and the deny is what keeps `snapshots.git` and `teams.json` from a role.
+    static let internalDenialWarning =
+        "\(NTMSPaths.internalRelativePath) is NanoTeams' own and closed to commands, so a command "
+        + "that walks into it reports it and exits non-zero after doing the rest — its other output "
+        + "stands. Leave it out: grep -r --exclude-dir=.nanoteams, "
+        + "find . -path ./.nanoteams -prune -o -print, or run on a subdirectory."
+
+    static func sandboxDenialWarnings(
+        ranSandboxed: Bool, isPlanningPhase: Bool, exitCode: Int32, stderr: String,
+        guardedPorts: [UInt16]
+    ) -> [String] {
+        guard ranSandboxed, !isPlanningPhase, exitCode != 0 else { return [] }
+        // Per refused line: one on `.nanoteams/internal` is the deny every recursive walk from the
+        // root meets, and gets its own warning; any other keeps the generic one (D-M19 S8).
+        let refused = stderr.split(whereSeparator: \.isNewline)
+            .filter { $0.lowercased().contains("operation not permitted") }
+        guard !refused.isEmpty else { return [] }
+        var warnings: [String] = []
+        if refused.contains(where: { $0.contains(NTMSPaths.internalRelativePath) }) {
+            warnings.append(internalDenialWarning)
+        }
+        guard refused.contains(where: { !$0.contains(NTMSPaths.internalRelativePath) }) else { return warnings }
+        let ports = guardedPorts.map(String.init).joined(separator: ", ")
+        return warnings + [
+            "Operation not permitted from a sandboxed command usually means the bash sandbox refused "
+                + "it, not file permissions, and sudo does not lift it. Commands may write only where "
+                + "the sandbox allows (the work folder and temporary directories by default), may "
+                + "neither connect to nor listen on these reserved ports: \(ports), and may signal "
+                + "only processes the same command started — stop a background command with "
+                + "bash_output. Use another port or path.",
+        ]
+    }
+
     /// `fallbackAllowed` is passed IN rather than read off `self.allowUnsandboxedFallback`: the
     /// planning phase forces it off per call, and a parameter that shadowed the stored property
     /// would silently hand the stored value to any future use added inside this function.
+    ///
+    /// A sandboxed run is tracked while it runs (`LoopbackPortReservations.trackForeground`): a
+    /// port reserved meanwhile stops it like a background command, and the second value says
+    /// why. The command's whole process group dies when it returns (`ProcessRunner.runShell`).
     private func runForeground(
         command: String, cwd: URL, timeout: TimeInterval, sandboxProfile: String?,
-        fallbackAllowed: Bool
-    ) throws -> ForegroundOutcome {
-        func run(profile: String?) throws -> ForegroundOutcome {
+        guardedPorts: Set<UInt16>, fallbackAllowed: Bool
+    ) throws -> (ForegroundOutcome, reservationStop: String?) {
+        let reservations = LoopbackPortReservations.shared
+        func run(profile: String?) throws -> (ForegroundOutcome, reservationStop: String?) {
+            let tracked = TrackedRun()
+            // Announced BEFORE the spawn, so a reservation landing while the child comes up finds
+            // it and waits for the stop (`LoopbackPortReservations.beginForeground`); an
+            // unconfined run is not tracked — nothing is reserved for it.
+            if profile != nil { tracked.handle = reservations.beginForeground(guardedPorts: guardedPorts) }
+            // A launch failure or a cancellation leaves by `throw`: forget the run there too.
+            defer { if let handle = tracked.handle { _ = reservations.untrackForeground(handle) } }
             do {
                 let result = try ProcessRunner.runShell(
-                    command, in: cwd, timeout: timeout, sandboxProfile: profile)
+                    command, in: cwd, timeout: timeout, sandboxProfile: profile,
+                    onLaunch: tracked.handle.map { run in
+                        { process, group in reservations.attach(process, group: group, to: run) }
+                    })
                 // Ask the wrapper only when there IS one and something went wrong. On the
                 // success path and on an unconfined run the answer is known without spending
                 // 30–40 ms on a second process.
@@ -283,9 +388,13 @@ nonisolated struct BashTool: ToolHandler {
                 } else {
                     launch = .childRan
                 }
-                return .completed(result, ranSandboxed: profile != nil, launch: launch)
+                let stop = tracked.handle.flatMap { reservations.untrackForeground($0) }
+                tracked.handle = nil
+                return (.completed(result, ranSandboxed: profile != nil, launch: launch), stop)
             } catch let ProcessRunnerError.timeout(_, stdout, stderr) {
-                return .timedOut(stdout: stdout, stderr: stderr, ranSandboxed: profile != nil)
+                let stop = tracked.handle.flatMap { reservations.untrackForeground($0) }
+                tracked.handle = nil
+                return (.timedOut(stdout: stdout, stderr: stderr, ranSandboxed: profile != nil), stop)
             }
         }
 
@@ -294,13 +403,20 @@ nonisolated struct BashTool: ToolHandler {
         // profile doing its job — retrying without it would defeat the confinement the user
         // asked for — and it is now refused by a case name instead of by a text rule declining
         // it for the right reason. Same owner as the envelope arm in `handle`.
-        guard case .completed(_, let ranSandboxed, let launch) = first,
+        guard case .completed(_, let ranSandboxed, let launch) = first.0,
               SeatbeltSandbox.response(
                   ranSandboxed: ranSandboxed, launch: launch,
                   fallbackAllowed: fallbackAllowed) == .retryUnconfined
         else { return first }
         return try run(profile: nil)
     }
+}
+
+/// The foreground run `runForeground` announces before the spawn and attaches in `ProcessRunner`'s
+/// launch hook — set and read on the calling thread, before and after the wait; never shared
+/// across threads.
+private nonisolated final class TrackedRun: @unchecked Sendable {
+    var handle: LoopbackPortReservations.ForegroundRun?
 }
 
 // MARK: - bash_output
@@ -356,7 +472,7 @@ nonisolated struct BashOutputTool: ToolHandler {
                     toolName: Self.name, args: args,
                     data: BashOutputData(
                         command_id: commandID, command: nil, output: nil,
-                        running: false, exit_code: nil, status: "stopped"))
+                        running: false, exit_code: nil, status: "stopped", stop_reason: nil))
             }
 
             guard let read = BackgroundBashRegistry.shared.read(commandID: commandID) else {
@@ -372,7 +488,8 @@ nonisolated struct BashOutputTool: ToolHandler {
                     output: read.newOutput,
                     running: read.running,
                     exit_code: read.exitCode.map(Int.init),
-                    status: read.running ? "running" : "finished"))
+                    status: read.running ? "running" : (read.stopReason == nil ? "finished" : "stopped"),
+                    stop_reason: read.stopReason))
         }
     }
 }
@@ -405,4 +522,7 @@ private nonisolated struct BashOutputData: Encodable {
     let running: Bool
     let exit_code: Int?
     let status: String
+    /// Why NanoTeams stopped the command, when it did (`BackgroundBashRegistry`'s stop reason) —
+    /// omitted otherwise, so an ordinary read carries no new key.
+    let stop_reason: String?
 }

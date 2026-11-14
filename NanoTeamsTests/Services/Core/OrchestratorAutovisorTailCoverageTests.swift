@@ -454,7 +454,7 @@ final class BOrchSchedulingTailTests: NTMSOrchestratorTestBase, @unchecked Senda
                         "premise: createDelegatedTask leaves the child loaded")
         XCTAssertNil(sut.taskEngineStates[child], "premise: no engine, so nothing else pins it")
 
-        let sweep = sut.evictIfReclaimable(child)
+        let sweep = sut.evictIfReclaimable(child, within: sut.currentFolderLifecycle)
 
         XCTAssertNil(sweep,
                      "nothing was evicted, so no residency sweep may be spawned")
@@ -480,7 +480,7 @@ final class BOrchSchedulingTailTests: NTMSOrchestratorTestBase, @unchecked Senda
         XCTAssertEqual(sut.activeTaskID, active, "premise: `other` is a background task")
         XCTAssertNotNil(sut.loadedTask(other), "premise: it is loaded")
 
-        let sweep = sut.evictIfReclaimable(other)
+        let sweep = sut.evictIfReclaimable(other, within: sut.currentFolderLifecycle)
 
         XCTAssertNotNil(sweep,
                         "an actual eviction de-references its models and must return a sweep")

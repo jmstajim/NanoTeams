@@ -1094,18 +1094,14 @@ private struct BashApprovalCard: View {
             }
 
             // Action row: Allow / Deny (+ Always allow) on the left, the read-only
-            // "Ask AI" second opinion pushed to the right. Verdicts render below,
-            // sized to their content.
-            BashApprovalAdviceView(taskID: taskID, stepID: request.stepID) {
-                Button("Allow") { resolve(.allow) }
-                    .buttonStyle(.terminalPrimary)
-                Button("Deny") { resolve(.deny) }
-                    .buttonStyle(.terminalDanger)
-                if request.offerAlways {
-                    Button("Always allow") { resolve(.alwaysAllow) }
-                        .buttonStyle(.terminalGhost)
-                }
-            }
+            // "Ask AI" second opinion pushed to the right — or below, in a narrow column
+            // (`ApprovalActionRow`). Verdicts render below, sized to their content.
+            BashApprovalAdviceView(
+                taskID: taskID, stepID: request.stepID,
+                alwaysLabel: request.offerAlways ? "Always allow" : nil,
+                onAllow: { resolve(.allow) },
+                onDeny: { resolve(.deny) },
+                onAlways: { resolve(.alwaysAllow) })
             .id(request.createdAt)
         }
         .padding(Spacing.s)
@@ -1122,16 +1118,20 @@ private struct BashApprovalCard: View {
 // MARK: - Bash approval "Ask AI" advice
 
 /// The bash-approval action row plus its on-demand "Ask AI" second opinion. The
-/// caller supplies the Allow/Deny(/Always) buttons as `actions` — they sit on the
-/// left of the row and the read-only "Ask AI" button is pushed to the right, on the
-/// same level. The judge verdict (read-only, no effect on the gate) renders below,
+/// caller supplies the Allow/Deny(/Always) decisions — they sit on the left of the row
+/// and the read-only "Ask AI" button is pushed to the right, on the same level, or below
+/// them in a column too narrow for one row (`ApprovalActionRow`, the row every approval
+/// card draws). The judge verdict (read-only, no effect on the gate) renders below,
 /// sized to its content. Host with `.id(request.createdAt)` so the in-flight advice
 /// request + verdicts are scoped to a single held-command instance and never leak
 /// across an identical re-held command.
-private struct BashApprovalAdviceView<Actions: View>: View {
+private struct BashApprovalAdviceView: View {
     let taskID: Int
     let stepID: String
-    let actions: Actions
+    let alwaysLabel: String?
+    let onAllow: @MainActor () -> Void
+    let onDeny: @MainActor () -> Void
+    let onAlways: @MainActor () -> Void
 
     @Environment(NTMSOrchestrator.self) private var store
     @State private var verdicts: [BashAdvice]? = nil
@@ -1144,20 +1144,28 @@ private struct BashApprovalAdviceView<Actions: View>: View {
 
     private var isLoading: Bool { adviceTask != nil }
 
-    init(taskID: Int, stepID: String, @ViewBuilder actions: () -> Actions) {
+    init(
+        taskID: Int, stepID: String, alwaysLabel: String?,
+        onAllow: @escaping @MainActor () -> Void,
+        onDeny: @escaping @MainActor () -> Void,
+        onAlways: @escaping @MainActor () -> Void
+    ) {
         self.taskID = taskID
         self.stepID = stepID
-        self.actions = actions()
+        self.alwaysLabel = alwaysLabel
+        self.onAllow = onAllow
+        self.onDeny = onDeny
+        self.onAlways = onAlways
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.xs) {
-            HStack(spacing: Spacing.xs) {
-                actions
-                Spacer(minLength: Spacing.s)
+            ApprovalActionRow(
+                grant: alwaysLabel.map { ApprovalGrant(label: $0) }, onAllow: onAllow, onDeny: onDeny,
+                onAlways: onAlways
+            ) {
                 askAIButton
             }
-            .controlSize(.small)
 
             if let verdicts {
                 if verdicts.isEmpty {
@@ -1195,6 +1203,7 @@ private struct BashApprovalAdviceView<Actions: View>: View {
         }
         .buttonStyle(.terminalSecondary)
         .fixedSize()
+        .layoutProbe("approval-action:Ask AI")
     }
 
     private func row(_ verdict: BashAdvice) -> some View {

@@ -113,4 +113,35 @@ final class TaskCompletionAwaiterTests: XCTestCase {
             )
         }
     }
+
+    func testRegister_cancelledTask_releasesContinuationAndClearsHasWaiters() async {
+        let waiterTask = Task { await awaiter.register(taskID: 42) }
+        await Task.yield()
+        XCTAssertTrue(awaiter.hasWaiters(for: 42), "precondition: waiter is registered")
+
+        waiterTask.cancel()
+        XCTAssertFalse(
+            awaiter.hasWaiters(for: 42),
+            "cancelling the waiting task must clear hasWaiters immediately"
+        )
+
+        let outcome = await withTaskGroup(of: TaskCompletionAwaiter.WaitOutcome?.self) { [awaiter] group in
+            group.addTask { await waiterTask.value }
+            group.addTask {
+                try? await Task.sleep(for: .milliseconds(250))
+                await MainActor.run {
+                    awaiter?.cancelAll(taskID: 42)
+                }
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+        XCTAssertEqual(
+            outcome,
+            .terminal(.failed),
+            "cancelled waiter continuation must resume with .terminal(.failed) rather than hanging"
+        )
+    }
 }

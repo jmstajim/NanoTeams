@@ -4,8 +4,9 @@ import XCTest
 
 /// What a NARROW work-folder write is allowed to cost.
 ///
-/// The five narrow writers (`updateWorkFolderContext` / `updateSelectedScheme` /
-/// `updateWorkFolderState` / `updateSettings` / `updateTeams`) each write ONE small file
+/// The narrow writers (`updateWorkFolderState` / `updateSettings` / `updateTeams`; the context
+/// and scheme writers of their own were folded into `updateSettings` on 2026-11-12, D-M18 R9)
+/// each write ONE small file
 /// and then rebuild a `WorkFolderContext`. Until 2026-08-30 that rebuild ended in
 /// `assembleContext` with `activeTaskProvided` defaulted false, so every one of them
 /// re-read the active `task.json` AND re-hydrated every `step_log.jsonl` of every step of
@@ -149,8 +150,8 @@ final class NarrowWorkFolderWriteCostTests: XCTestCase {
     /// `sweepOrphanTempFiles` is crash recovery: it hunts `.uuid.tmp` files left by a
     /// process killed between `Data.write(to:)` and `replaceItemAt`. Only a PREVIOUS
     /// process can create those, so its correct cadence is once per folder. It was
-    /// reached from `bootstrapIfNeeded` on every `preparePaths` — i.e. on all five narrow
-    /// writers plus create/delete/setActiveTask — recursively enumerating the whole
+    /// reached from `bootstrapIfNeeded` on every `preparePaths` — i.e. on every narrow
+    /// writer plus create/delete/setActiveTask — recursively enumerating the whole
     /// `.nanoteams/internal/` tree, which grows with tasks x runs x steps and is never
     /// pruned.
     ///
@@ -192,10 +193,6 @@ final class NarrowWorkFolderWriteCostTests: XCTestCase {
                 at: self.root, activeTask: task) { $0[0].updatedAt = MonotonicClock.shared.now() } }),
             ("updateWorkFolderState", { try self.repository.updateWorkFolderState(
                 at: self.root, activeTask: task) { $0.name = "renamed" } }),
-            ("updateWorkFolderContext", { try self.repository.updateWorkFolderContext(
-                at: self.root, context: "b", activeTask: task) }),
-            ("updateSelectedScheme", { try self.repository.updateSelectedScheme(
-                at: self.root, scheme: "S", activeTask: task) }),
         ]
     }
 }

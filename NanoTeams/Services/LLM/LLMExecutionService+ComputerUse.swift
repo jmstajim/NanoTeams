@@ -527,6 +527,10 @@ extension LLMExecutionService {
         result: ToolExecutionResult, toolCallID: UUID, stepID: String, taskID: Int,
         conversationMessages: inout [ChatMessage], tracker: ToolCallTracker?
     ) async {
+        // The handler's `pending` placeholder is replaced here; its warnings are not
+        // (`carryingWarnings`) — a `ui_key` sent as `key` is still told so.
+        let envelope = Self.appendingRepairNote(
+            result.argumentRepairNote, to: carryingWarnings(from: result.outputJSON, into: envelope))
         conversationMessages.append(ChatMessage(role: .tool, content: envelope, toolCallID: result.providerID))
         await appendLLMMessage(stepID: stepID, taskID: taskID, role: .tool, content: """
         [CALL] \(result.toolName)

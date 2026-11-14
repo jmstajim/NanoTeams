@@ -110,6 +110,45 @@ final class RevisionContinuationSendPathTests: XCTestCase {
                 + "task brief can legitimately contain")
     }
 
+    /// DEBTS D-M15, through the REAL send path: the feedback turn the step re-enters with carries
+    /// who wrote the revision — here the built-in Autovisor, which signs nothing. RED before
+    /// 2026-11-07: only an agent's label reached the turn, so this one read as the person's.
+    func testRevisionContinuation_carriesTheRevisionsAuthorToTheTurn() async throws {
+        let stepID = "swe_revision_author"
+        var task = makeRevisionContinuationTask(taskID: 7, stepID: stepID, revisionComment: "Add tests.")
+        task.runs[0].steps[0].revisionCommentIsFromAutomatedSupervisor = true
+        mockDelegate.taskToMutate = task
+
+        service.startStepExecution(stepID: stepID, taskID: 7, task: task, runIndex: 0, stepIndex: 0)
+        try await waitUntil { !self.stubClient.capturedCalls.isEmpty }
+        await service.cancelStepExecution(stepID: stepID, taskID: 7)
+
+        let step = mockDelegate.taskToMutate?.runs.last?.steps.first(where: { $0.id == stepID })
+        let feedback = step?.llmConversation.last(where: { $0.sourceContext == .supervisorFeedback })
+        XCTAssertEqual(feedback?.isFromAutomatedSupervisor, true)
+        XCTAssertEqual(feedback?.sourceContextDisplayLabel, LLMMessage.automatedSupervisorLabel)
+        XCTAssertEqual(stubClient.capturedCalls[0].messages.last?.content, "Supervisor Feedback: Add tests.",
+                       "the wire is the same whoever wrote it")
+    }
+
+    /// The same for a correction applied before the step's first request returned — the branch
+    /// with no transcript to replay, which records the bubble on its own.
+    func testFreshConversation_carriesTheRevisionsAuthorToTheTurn() async throws {
+        let stepID = "swe_fresh_author"
+        var task = makeCorrectedBeforeFirstRequestTask(taskID: 9, stepID: stepID, revisionComment: "Fix the citations.")
+        task.runs[0].steps[0].revisionCommentIsFromAutomatedSupervisor = false
+        mockDelegate.taskToMutate = task
+
+        service.startStepExecution(stepID: stepID, taskID: 9, task: task, runIndex: 0, stepIndex: 0)
+        try await waitUntil { !self.stubClient.capturedCalls.isEmpty }
+        await service.cancelStepExecution(stepID: stepID, taskID: 9)
+
+        let step = mockDelegate.taskToMutate?.runs.last?.steps.first(where: { $0.id == stepID })
+        let feedback = step?.llmConversation.last(where: { $0.sourceContext == .supervisorFeedback })
+        XCTAssertEqual(feedback?.isFromAutomatedSupervisor, false, "the person's correction is recorded as theirs")
+        XCTAssertNil(feedback?.sourceContextDisplayLabel)
+    }
+
     /// The sibling half of the same invariant (CLAUDE.md #60): re-tagging the revision path
     /// must not drag the `request_changes` team-vote outcome along with it. Without this,
     /// one mutation covers both halves and the split that motivated the new case is untested.

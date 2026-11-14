@@ -138,6 +138,10 @@ final class AskSupervisorFormTrainerOfflineTests: XCTestCase {
             projection.setActiveTeam(projection.teams[index].id)
         }
 
+        // The seeding NanoTeams lets the folder go before the trainer's own opens it: one process
+        // per folder (`WorkFolderInstanceLock`).
+        seed.releaseWorkFolderInstanceLock()
+
         let broken = try Self.firstFormArguments("form_field_task71_run4", attempt: 2)
         let client = ScriptedToolCallClient(script: [
             .toolCall(name: ToolNames.askSupervisorForm, argumentsJSON: broken),
@@ -196,6 +200,8 @@ final class AskSupervisorFormTrainerOfflineTests: XCTestCase {
             .deletingLastPathComponent() // repo root
     }
 
+    /// The logs are the field runs' own, except `createdAt`: its wall-clock time was normalised to
+    /// the start of the day plus each record's offset from the log's first one (order and gaps kept).
     private static func fieldLog(_ name: String) throws -> [ToolCallLogRecord] {
         let url = repoRoot
             .appendingPathComponent("NanoTeamsTests/Fixtures/ToolCallLogs")

@@ -5,7 +5,7 @@ import SwiftUI
 ///
 /// Composition (top to bottom — chronological within a turn):
 /// - `ActivityFeedRoleAvatar` — leading avatar (or clear spacer when header is hidden).
-/// - `MessageBubbleHeader` — role name, source label, timestamp.
+/// - `MessageBubbleHeader` — role name, author mark, `(context)` label, timestamp.
 /// - `MessageThinkingSection` (top) — compact "Thinking" row that opens a
 ///   window. Animates only while reasoning is the live tail (no content yet);
 ///   goes static once prose starts.
@@ -185,19 +185,19 @@ struct MessageBubbleView: View {
         hasRowAbove ? ActivityCardTokens.statusRowTopSpacing : 0
     }
 
-    /// The header's `(source)` label. A collapsed system notice already spells
-    /// its kind out in the row (`system: retry`), so repeating it beside the
-    /// role name says the same thing twice. Suppressed HERE rather than in
-    /// `LLMMessage.sourceContextDisplayLabel` because `ConversationTranscriptRenderer`
-    /// reads that same helper for `conversation_log.md`, where the label is the
-    /// only attribution there is. `nonisolated static` (pure) so the rule is
-    /// pinned against the PRODUCTION symbol — same pattern as
-    /// `isThinkingStreaming` above.
-    nonisolated static func headerSourceLabel(
+    /// What the header states about where the turn came from: the `(context)` word and the
+    /// author's agent mark (`LLMMessage.SourceAttribution`). A collapsed system notice already
+    /// spells its kind out in the row (`system: retry`), so repeating it beside the role name
+    /// says the same thing twice — both halves are suppressed by this one gate. Suppressed HERE
+    /// rather than in `LLMMessage.sourceAttribution` because `ConversationTranscriptRenderer`
+    /// reads the same value (joined) for `conversation_log.md`, where the label is the only
+    /// attribution there is. `nonisolated static` (pure) so the rule is pinned against the
+    /// PRODUCTION symbol — same pattern as `isThinkingStreaming` above.
+    nonisolated static func headerAttribution(
         for message: LLMMessage,
         isSystemNotice: Bool
-    ) -> String? {
-        isSystemNotice ? nil : message.sourceContextDisplayLabel
+    ) -> LLMMessage.SourceAttribution {
+        isSystemNotice ? .none : message.sourceAttribution
     }
 
     // MARK: - Body
@@ -237,13 +237,15 @@ struct MessageBubbleView: View {
             // below, which attaches them to their own content.
             VStack(alignment: .leading, spacing: 0) {
                 if showHeader {
+                    let attribution = Self.headerAttribution(
+                        for: message, isSystemNotice: systemNotice != nil
+                    )
                     MessageBubbleHeader(
                         roleName: roleName,
                         teamSuffix: roleTeamSuffix,
                         tintColor: tintColor,
-                        sourceLabel: Self.headerSourceLabel(
-                            for: message, isSystemNotice: systemNotice != nil
-                        ),
+                        contextLabel: attribution.context,
+                        authorLabel: attribution.author,
                         timestamp: message.createdAt,
                         isStreaming: isStreaming
                     )
@@ -634,11 +636,67 @@ extension MessageBubbleView: Equatable {
     .background(Colors.surfacePrimary)
 }
 
+/// Who wrote a Supervisor turn, beside the task card that wears the same mark: an external
+/// agent's signed revision feedback, an unsigned automated turn, a signed answer whose context
+/// word stays in parentheses. At the feed's narrowest content column too, where the fixed-size
+/// mark and the time compete for one line.
+#Preview("Supervisor authorship") {
+    let samples: [(LLMMessage, String)] = [
+        (LLMMessage(
+            role: .user, content: "Three changes, then update Engineering Notes.",
+            sourceRole: .supervisor, sourceContext: .supervisorFeedback,
+            authorLabel: "Claude Code", isFromAutomatedSupervisor: true),
+         "Three changes, then update Engineering Notes."),
+        (LLMMessage(
+            role: .user, content: "Continue with the plan.",
+            sourceRole: .supervisor, sourceContext: .supervisorMessage,
+            authorLabel: nil, isFromAutomatedSupervisor: true),
+         "Continue with the plan."),
+        (LLMMessage(
+            role: .user, content: "Use the smaller model.",
+            sourceRole: .supervisor, sourceContext: .supervisorAnswer,
+            authorLabel: "An agent whose label runs far longer than any header has room for",
+            isFromAutomatedSupervisor: true),
+         "Use the smaller model."),
+    ]
+    HStack(alignment: .top, spacing: 24) {
+        ForEach([420.0, 260.0, 172.0], id: \.self) { width in
+            VStack(alignment: .leading, spacing: 16) {
+                SupervisorTaskItemView(
+                    createdAt: Date(),
+                    supervisorTask: "Extend wordcount.py so that it accepts one or more file paths.",
+                    clippedTexts: [],
+                    attachmentPaths: [],
+                    workFolderURL: nil,
+                    roleDefinition: nil,
+                    authorLabel: "Claude Code"
+                )
+                ForEach(samples, id: \.0.id) { message, content in
+                    MessageBubbleView(
+                        message: message,
+                        role: .supervisor,
+                        roleDefinition: nil,
+                        content: content,
+                        thinking: nil,
+                        processingStatus: nil,
+                        isStreaming: false,
+                        showHeader: true
+                    )
+                }
+            }
+            .frame(width: width, alignment: .topLeading)
+        }
+    }
+    .padding()
+    .background(Colors.surfacePrimary)
+}
+
 // periphery:ignore - used in #Preview macros
 @ViewBuilder
 private func messageBubblePreviewSectionLabel(_ text: String) -> some View {
     Text(text)
         .font(Typography.caption2.weight(.bold))
+        .lineLimit(1)
         .foregroundStyle(Colors.textTertiary)
         .padding(.leading, 4)
 }

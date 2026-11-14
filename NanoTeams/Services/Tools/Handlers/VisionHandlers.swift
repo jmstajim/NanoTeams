@@ -19,6 +19,7 @@ nonisolated struct AnalyzeImageTool: ToolHandler {
         )
     )
     static let category: ToolCategory = .vision
+    static let undeclaredArguments = ToolArgumentVocabulary.filePath
     static let excludedInMeetings = true
 
     let resolver: SandboxPathResolver

@@ -75,6 +75,7 @@ nonisolated enum JudgeReplyChannelPolicy {
         case reasoningOnlyAllow
     }
 
+    /// runtime-prompt
     /// The one instruction the retry turn carries.
     static let retryInstruction =
         "Reply now with the JSON object only, in your visible reply — a decision written inside reasoning does not count."
@@ -88,6 +89,9 @@ nonisolated enum JudgeReplyChannelPolicy {
         return .verdict(hidden)
     }
 
+    /// runtime-prompt
+    /// The deny a second reasoning-only `OK` earns. It rides the gate's denial envelope, so the
+    /// model reads it.
     static let reasoningOnlyAllowReason =
         "The judge allowed only inside its reasoning channel, which is not a verdict; denied for safety."
 }
@@ -102,26 +106,64 @@ nonisolated enum JudgeReplyChannelPolicy {
 /// trainer must not read one as "the judge refused a dangerous command" — a fail-closed
 /// deny on a deny-worthy input measures the transport, not the prompt (2026-09-08).
 nonisolated enum JudgeFailClosedReason {
+    // Every one of them rides a gate's denial envelope, so the model reads it — each is a
+    // `RuntimePromptRegistry` row, and editing one moves `runtimePromptVersion`.
+
     // `BashJudgeService.parse`
+    /// runtime-prompt
     static let bashNoVerdict = "Judge returned no verdict; denied for safety."
+    /// runtime-prompt
     static let bashNotSingleObject = "Judge did not return a single clean verdict object; denied for safety."
+    /// runtime-prompt
     static let bashConflicting = "Judge returned a conflicting verdict; denied for safety."
+    /// runtime-prompt
     static let bashMalformed = "Judge verdict was malformed; denied for safety."
     // `ComputerUseJudgeService.parse`
+    /// runtime-prompt
     static let actionNoVerdict = "Judge returned no verdict; denied."
+    /// runtime-prompt
     static let actionUnparseable = "Could not parse the judge's verdict; denied."
+    // `MCPJudgeService.parse` & budget pre-check
+    /// runtime-prompt
+    static let mcpNoVerdict = "MCP judge returned no verdict; denied for safety."
+    /// runtime-prompt
+    static let mcpUnparseable = "Could not parse the MCP judge's verdict; denied for safety."
+    /// runtime-prompt
+    static let mcpPromptTooLarge = "MCP call arguments exceed the judge model's context window; denied for safety."
 
-    /// A transport / client failure, the classified message interpolated.
-    /// `subject` is `"Command"` for the bash gate, `"Action"` for computer use.
-    static func callFailed(subject: String, message: String) -> String {
-        "\(subject) judge call failed (\(message)); denied for safety."
+    /// The judges, each by the noun its `callFailed` names. ONE list, and everything that must
+    /// know every judge is derived from it: the prefixes `isFailClosed` matches, the set of
+    /// unparseable-reply sentences, the registry rows. Until 2026-09-23 both were hand-kept
+    /// arrays, so a third judge that forgot them would have had its transport failures scored
+    /// by the one-shot trainer as the judge refusing a dangerous input — measuring the
+    /// network, not the prompt. A new case does not compile until it names its sentences.
+    enum Subject: String, CaseIterable, Sendable {
+        case command = "Command"
+        case action = "Action"
+        case mcp = "MCP"
+
+        /// The sentences this judge's `parse` writes for a reply that is not a clean verdict.
+        var unparseableReplyReasons: [String] {
+            switch self {
+            case .command: [bashNoVerdict, bashNotSingleObject, bashConflicting, bashMalformed]
+            case .action: [actionNoVerdict, actionUnparseable]
+            case .mcp: [mcpNoVerdict, mcpUnparseable, mcpPromptTooLarge]
+            }
+        }
     }
 
-    private static let fixed: Set<String> = [
-        bashNoVerdict, bashNotSingleObject, bashConflicting, bashMalformed,
-        actionNoVerdict, actionUnparseable,
-    ]
-    private static let callFailedPrefixes = ["Command judge call failed (", "Action judge call failed ("]
+    /// runtime-prompt
+    /// A transport / client failure, the classified message interpolated.
+    static func callFailed(subject: Subject, message: String) -> String {
+        callFailedPrefix(subject) + "\(message)); denied for safety."
+    }
+
+    private static func callFailedPrefix(_ subject: Subject) -> String {
+        "\(subject.rawValue) judge call failed ("
+    }
+
+    private static let fixed = Set(Subject.allCases.flatMap(\.unparseableReplyReasons))
+    private static let callFailedPrefixes = Subject.allCases.map(callFailedPrefix)
 
     /// True when the deny came from the runtime rather than from the model's verdict.
     static func isFailClosed(_ reason: String) -> Bool {

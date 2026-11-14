@@ -27,7 +27,8 @@ enum WatchtowerInboxBuilder {
     /// Every notification the given tasks currently produce, dismissals ignored.
     static func build(
         _ inputs: [TaskInput],
-        bashApprovals: [BashApprovalRequest] = []
+        bashApprovals: [BashApprovalRequest] = [],
+        mcpApprovals: [MCPApprovalRequest] = []
     ) -> [WatchtowerNotification] {
         inputs.flatMap { input -> [WatchtowerNotification] in
             // Closing is the Supervisor's explicit "done" — a closed task must not
@@ -40,7 +41,8 @@ enum WatchtowerInboxBuilder {
             return run.allWatchtowerNotifications(
                 task: input.task,
                 teamRoles: input.teamRoles,
-                bashApprovals: bashApprovals
+                bashApprovals: bashApprovals,
+                mcpApprovals: mcpApprovals
             ).map {
                 WatchtowerNotification(
                     taskID: input.task.id,

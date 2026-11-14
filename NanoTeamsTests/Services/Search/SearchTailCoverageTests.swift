@@ -491,7 +491,8 @@ final class ESearchFileScannerTailTests: XCTestCase, @unchecked Sendable {
             contextAfter: 0,
             perQueryCap: 10,
             collectBudget: 10,
-            asciiFoldMatchesLocale: LineScanner.asciiFoldMatchesLocale
+            asciiFoldMatchesLocale: LineScanner.asciiFoldMatchesLocale,
+            resolver: SandboxPathResolver(workFolderRoot: tempDir)
         )
     }
 
@@ -504,12 +505,54 @@ final class ESearchFileScannerTailTests: XCTestCase, @unchecked Sendable {
     /// silently omits a file it could not read is indistinguishable from one that
     /// found no matches.
     ///
-    /// Induced with a DIRECTORY carrying a non-document extension — measured on
-    /// this toolchain, `FileHandle(forReadingFrom:)` throws for it. That needs no
-    /// permission games, so it holds for any user including root.
+    /// Induced with a DIRECTORY carrying a non-document extension. Since #377 the open goes
+    /// through `VerifiedFile.openForReading`, which refuses a non-regular file as a fact about
+    /// the FILE (`VerifiedFileError.notARegularFile`) rather than as a sandbox refusal — so the
+    /// reason still reads "could not open", and "symlink points outside the work folder" stays
+    /// reserved for the path the resolver refused.
     ///
     /// RED: route `.ioError` to `results.skippedBinaryCount += 1` → `skipped` is
     /// empty and the binary count is 1; both assertions fail.
+    /// The scan RE-verifies the name the walk handed it (#377). The walk only enqueues entries
+    /// whose real path it permitted, so this arm fires when the name was re-pointed in between —
+    /// a role's background `bash` flipping a link. Driven directly here, which is the only way
+    /// to reach it without winning the race.
+    func testScanFile_aDocumentNameThatNowLeavesTheWorkFolder_isReportedAsASymlinkSkip() throws {
+        let outside = tempDir.deletingLastPathComponent()
+            .appendingPathComponent("nt-outside-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: outside) }
+        let target = outside.appendingPathComponent("secret.rtf")
+        try #"{\rtf1\ansi SECRET}"#.write(to: target, atomically: true, encoding: .utf8)
+        let link = tempDir.appendingPathComponent("notes.rtf")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+
+        var results = SearchScanResults(queryCount: 1)
+        SearchExecutor.scanFile(
+            at: link, relativePath: "notes.rtf", plan: makePlan("SECRET"), into: &results)
+
+        XCTAssertEqual(results.skipped.first?.reason, "symlink points outside the work folder")
+        XCTAssertEqual(results.totalMatchCount, 0, "the document's bytes must not be scanned")
+    }
+
+    /// A document whose bytes the extractor cannot make text of: reported as ONE skipped file
+    /// with the extractor's own reason, never crashed and never scored as "no matches here".
+    /// (The "no extractor for this extension" arm beside it is unreachable while the supported
+    /// set and the registry agree — `DocumentFormatExtractorsTests` pins that agreement.)
+    func testScanFile_aDocumentTheExtractorCannotRead_isReportedWithItsReason() throws {
+        let broken = tempDir.appendingPathComponent("broken.rtf")
+        try Data([0x00, 0x01, 0x02]).write(to: broken)
+
+        var results = SearchScanResults(queryCount: 1)
+        SearchExecutor.scanFile(
+            at: broken, relativePath: "broken.rtf", plan: makePlan(), into: &results)
+
+        XCTAssertEqual(results.skipped.count, 1, "\(results.skipped)")
+        XCTAssertEqual(results.skipped.first?.path, "broken.rtf")
+        XCTAssertFalse(results.skipped.first?.reason.isEmpty ?? true, "the reason must say why")
+        XCTAssertEqual(results.totalMatchCount, 0)
+    }
+
     func testScanFile_candidateThatCannotBeOpened_isReportedNotCountedAsBinary() throws {
         let bogus = tempDir.appendingPathComponent("notes.txt", isDirectory: true)
         try FileManager.default.createDirectory(at: bogus, withIntermediateDirectories: true)
@@ -540,7 +583,8 @@ final class ESearchFileScannerTailTests: XCTestCase, @unchecked Sendable {
         let bogus = tempDir.appendingPathComponent("blob.dat", isDirectory: true)
         try FileManager.default.createDirectory(at: bogus, withIntermediateDirectories: true)
 
-        let outcome = SearchExecutor.readUTF8Streaming(url: bogus)
+        let outcome = SearchExecutor.readUTF8Streaming(
+            url: bogus, resolver: SandboxPathResolver(workFolderRoot: tempDir))
         guard case .ioError(let reason) = outcome else {
             return XCTFail("expected .ioError, got \(outcome)")
         }
@@ -559,6 +603,8 @@ final class ESearchFileScannerTailTests: XCTestCase, @unchecked Sendable {
         // Non-empty: a zero-byte file short-circuits to `.text` before the loop
         // that checks cancellation ever runs.
         try Data(String(repeating: "alpha beta\n", count: 64).utf8).write(to: file)
+        // Captured as a value: `tempDir` is an implicitly-unwrapped field of a @MainActor test.
+        let dir = tempDir!
 
         // The outcome is reduced to a String inside the task: the point is the
         // classification, and a plain `String` sidesteps any question about the
@@ -570,7 +616,8 @@ final class ESearchFileScannerTailTests: XCTestCase, @unchecked Sendable {
                 await Task.yield()
             }
             guard Task.isCancelled else { return "never-cancelled" }
-            switch SearchExecutor.readUTF8Streaming(url: file) {
+            switch SearchExecutor.readUTF8Streaming(
+                url: file, resolver: SandboxPathResolver(workFolderRoot: dir)) {
             case .cancelled: return "cancelled"
             case .binary: return "binary"
             case .text(let bytes): return "text(\(bytes.count))"
@@ -584,6 +631,75 @@ final class ESearchFileScannerTailTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(outcome, "cancelled",
                        "a cancelled read must be its own outcome — 'binary' would inflate "
                            + "skipped_binary_count once per file the cancel walked past")
+    }
+
+    /// The reader's OWN refusal arm, which the document path next door reaches through
+    /// `verifiedRealURL`: a plain-text name whose link leaves the work folder. The open is what
+    /// judges it (#376), so the outcome must name the refusal rather than borrow
+    /// "could not open" — the two sentences send a reader to different places, one to the
+    /// sandbox and one to the disk.
+    ///
+    /// RED: fold the `SandboxPathError` catch into the generic one → the reason reads
+    /// "could not open: …" and the assertion fails.
+    func testReadUTF8Streaming_throughALinkOutOfTheWorkFolder_saysItLeftTheFolder() throws {
+        let outside = tempDir.deletingLastPathComponent()
+            .appendingPathComponent("nt-outside-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: outside) }
+        let target = outside.appendingPathComponent("secret.txt")
+        try Data("SECRET needle".utf8).write(to: target)
+        let link = tempDir.appendingPathComponent("notes.txt")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+
+        let outcome = SearchExecutor.readUTF8Streaming(
+            url: link, resolver: SandboxPathResolver(workFolderRoot: tempDir))
+
+        guard case .ioError(let reason) = outcome else {
+            return XCTFail("expected .ioError, got \(outcome)")
+        }
+        XCTAssertEqual(reason, "symlink points outside the work folder")
+    }
+
+    /// `canAdopt`'s second gate: the PER-QUERY cap, which the budget test above it cannot stand
+    /// in for. A speculative scan sees empty buckets, so it cannot know one is already full —
+    /// and with several queries the total can sit far below the page budget while one bucket
+    /// overflows. Adopting such a candidate makes the parallel page differ from the serial one.
+    ///
+    /// Driven directly because the executor reaches this arm only on a fixture where a prolific
+    /// term saturates while the page does not, and the equivalence test next door asserts the
+    /// OUTCOME of that repair rather than the decision.
+    ///
+    /// RED: drop the per-query loop from `canAdopt` → the saturating candidate is adopted and
+    /// the first assertion fails.
+    func testCanAdopt_rejectsACandidateThatWouldOverfillOneQuerysBucket() {
+        let match = SearchMatch(path: "a.swift", line: 1, text: "ALPHA",
+                                context_before: nil, context_after: nil)
+        let plan = SearchScanPlan(
+            needles: [LineScanner.CompiledNeedle("ALPHA"), LineScanner.CompiledNeedle("BETA")],
+            regexes: [nil, nil],
+            contextBefore: 0, contextAfter: 0,
+            // Deliberately far apart: the page has ample room, so only the bucket can refuse.
+            perQueryCap: 2, collectBudget: 100,
+            asciiFoldMatchesLocale: LineScanner.asciiFoldMatchesLocale,
+            resolver: SandboxPathResolver(workFolderRoot: tempDir))
+
+        var accumulated = SearchScanResults(queryCount: 2)
+        accumulated.perQueryMatches[0] = [match, match]
+        accumulated.totalMatchCount = 2
+
+        var candidate = SearchScanResults(queryCount: 2)
+        candidate.perQueryMatches[0] = [match]
+        candidate.totalMatchCount = 1
+
+        XCTAssertFalse(accumulated.canAdopt(candidate, plan: plan),
+                       "bucket 0 would hold 3 of a 2-match cap while the page holds 3 of 100")
+
+        // Control: the same candidate in the OTHER bucket fits, so the refusal is about the cap
+        // and not about the candidate.
+        var otherBucket = SearchScanResults(queryCount: 2)
+        otherBucket.perQueryMatches[1] = [match]
+        otherBucket.totalMatchCount = 1
+        XCTAssertTrue(accumulated.canAdopt(otherBucket, plan: plan))
     }
 
     // NOTE — `scanFile`'s "document extractor could not open file" arm is NOT

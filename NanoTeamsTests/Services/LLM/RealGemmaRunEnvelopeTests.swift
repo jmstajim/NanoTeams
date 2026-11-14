@@ -90,7 +90,7 @@ final class RealGemmaRunEnvelopeTests: XCTestCase {
 
     // MARK: - MeditationApp run, 2026-08-07 — the two silently dropped calls
 
-    /// Record `[33]` @13:51:15.910Z, verbatim. Garbled OPENING sentinel plus the stray
+    /// Record `[33]`, verbatim. Garbled OPENING sentinel plus the stray
     /// `|` this model appends in 30% of envelopes. Before the normalizer both defects
     /// had to be survived at once and neither was: `sawHarmonyMarker` stayed false, and
     /// `BareToolCallSalvage` Rule A rejected the payload on the single trailing `|`.
@@ -108,7 +108,7 @@ final class RealGemmaRunEnvelopeTests: XCTestCase {
                       "the envelope must never survive as visible assistant prose")
     }
 
-    /// Record `[39]` @13:52:24.821Z, body excerpted. The model invented a batch schema
+    /// Record `[39]`, body excerpted. The model invented a batch schema
     /// (`call_multiple` + `{"contributions":[…]}`) NanoTeams never advertised.
     ///
     /// This deliberately does NOT resolve: the payload carries no top-level `name`, and

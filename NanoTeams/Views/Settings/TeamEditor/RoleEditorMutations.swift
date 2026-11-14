@@ -1,22 +1,43 @@
 import Foundation
 
-/// Pure mutation helpers shared by `RoleEditorSheet.saveRole`.
+/// Pure mutation helpers shared by `RoleEditorSheet`'s Save.
 ///
-/// Why this exists: the editor sheet receives `team` through a Binding whose
-/// getter (`TeamEditorView.binding(for:)`) returns a *captured snapshot* and
-/// whose setter spawns an async `mutateWorkFolder` Task. Two consecutive
-/// writes through that Binding race — the second write's read-modify-write
-/// cycle reads the stale captured snapshot and silently overwrites the
-/// first write. Symptom: unchecking a team in the Delegation tab's
+/// Why this exists: the editor sheet receives `team` through
+/// `TeamEditorView.binding(for:)`, whose getter used to return a *captured
+/// snapshot* and whose setter spawned an async `mutateWorkFolder` Task. Two
+/// consecutive writes through that Binding raced — the second write's
+/// read-modify-write cycle read the stale captured snapshot and silently
+/// overwrote the first. Symptom: unchecking a team in the Delegation tab's
 /// whitelist was lost whenever `allowDelegationToGeneratedTeams = true`
 /// (or any other whitelist entry remained), because that combination set
 /// `shouldClearReportsTo = true` and triggered a second `removeValue` write.
+/// (The binding now reads back what was staged — `TeamEditCommitQueue` — so
+/// that race is gone at the seam too.)
 ///
-/// Fix: callers compose every mutation on a local `var newTeam = team` and
-/// ship the result via a single Binding write (`team = newTeam`). These
-/// helpers own the composition so the rules don't drift between create and
-/// edit paths, and they stay covered by `RoleEditorMutationsTests`.
+/// Callers compose every mutation on a local `var newTeam = team` and hand
+/// the result over once: one staged value is what a Save waits for
+/// (`TeamEditCommitQueue.commit(_:as:)`). These helpers own the
+/// composition so the rules don't drift between create and edit paths, and
+/// they stay covered by `RoleEditorMutationsTests`.
 nonisolated enum RoleEditorMutations {
+
+    /// The editor's Save composed on `team`: `applyCreate` or `applyEdit`, by mode. `false`
+    /// only when the role being edited is gone from `team`, which is then left untouched.
+    @discardableResult
+    static func applySave(
+        to team: inout Team,
+        editorState: RoleEditorState,
+        mode: EditorMode<TeamRoleDefinition>
+    ) -> Bool {
+        switch mode {
+        case .create:
+            let teamID = team.id
+            applyCreate(to: &team, editorState: editorState, teamID: teamID)
+            return true
+        case .edit(let role):
+            return applyEdit(to: &team, editorState: editorState, existingRoleID: role.id)
+        }
+    }
 
     /// Apply the editor's `.edit` save to `team` in one pass.
     /// Returns `false` if no role matches `existingRoleID` (e.g. a stale UI

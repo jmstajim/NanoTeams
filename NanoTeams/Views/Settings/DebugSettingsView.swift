@@ -19,8 +19,7 @@ struct DebugSettingsView: View {
     private var debugCard: some View {
         @Bindable var config = config
         return SettingsCard(
-            header: "Debug",
-            systemImage: "ladybug"
+            header: "Debug"
         ) {
             VStack(spacing: 0) {
                 SettingsToggleRow(title: "Debug mode", icon: "ladybug", isOn: $config.debugModeEnabled)

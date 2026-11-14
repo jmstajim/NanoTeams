@@ -22,7 +22,6 @@ struct GlobalContextCard: View {
     var body: some View {
         SettingsCard(
             header: "Global Context",
-            systemImage: "text.book.closed",
             footer: "Empty by default — a blank field emits no Global guidance section at all. The one-tool-per-response rule ships inside the Tool Calling section of every call that has tools."
         ) {
             VStack(alignment: .leading, spacing: Spacing.m) {

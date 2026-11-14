@@ -17,7 +17,7 @@ struct RoleEditorGeneralTab: View {
     var body: some View {
         ScrollView {
             VStack(spacing: Spacing.xl) {
-                SettingsCard(header: "Identity", systemImage: "person.text.rectangle") {
+                SettingsCard(header: "Identity") {
                     VStack(alignment: .leading, spacing: Spacing.m) {
                         HStack(spacing: Spacing.m) {
                             IconPickerButton(
@@ -38,7 +38,6 @@ struct RoleEditorGeneralTab: View {
                 if !isEditingSupervisor {
                     SettingsCard(
                         header: "Execution",
-                        systemImage: "play.circle",
                         // Says what the stretch CANNOT do, not which tools it holds. "read-only
                         // tools" understated it the moment `bash` joined the phase: a user
                         // reading that would not expect a shell to run at all, and the honest

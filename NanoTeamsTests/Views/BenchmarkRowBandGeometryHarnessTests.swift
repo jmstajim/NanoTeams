@@ -102,7 +102,7 @@ final class BenchmarkRowBandGeometryHarnessTests: XCTestCase, @unchecked Sendabl
         var body: some View {
             ScrollView {
                 VStack(alignment: .leading, spacing: Spacing.xl) {
-                    SettingsCard(header: "Leaderboard", systemImage: "list.number") {
+                    SettingsCard(header: "Leaderboard") {
                         table
                     }
                 }
@@ -225,27 +225,11 @@ final class BenchmarkRowBandGeometryHarnessTests: XCTestCase, @unchecked Sendabl
     }
 
     /// The extent (in bitmap pixels) of every pixel that differs between the two renders — with
-    /// only the hover fill toggled between them, that IS the drawn band.
+    /// only the hover fill toggled between them, that IS the drawn band (`PixelDiff`).
     private func changedExtent(
         _ a: NSBitmapImageRep, _ b: NSBitmapImageRep
     ) -> (rows: ClosedRange<Int>, cols: ClosedRange<Int>)? {
-        var minRow = Int.max, maxRow = Int.min
-        var minCol = Int.max, maxCol = Int.min
-        for y in 0..<a.pixelsHigh {
-            for x in 0..<a.pixelsWide {
-                guard let ca = a.colorAt(x: x, y: y), let cb = b.colorAt(x: x, y: y) else { continue }
-                if abs(ca.redComponent - cb.redComponent) > 0.01
-                    || abs(ca.greenComponent - cb.greenComponent) > 0.01
-                    || abs(ca.blueComponent - cb.blueComponent) > 0.01 {
-                    minRow = min(minRow, y)
-                    maxRow = max(maxRow, y)
-                    minCol = min(minCol, x)
-                    maxCol = max(maxCol, x)
-                }
-            }
-        }
-        guard minRow <= maxRow else { return nil }
-        return (minRow...maxRow, minCol...maxCol)
+        PixelDiff.changedExtent(a, b)
     }
 
     private func changedRowRange(_ a: NSBitmapImageRep, _ b: NSBitmapImageRep) -> ClosedRange<Int>? {

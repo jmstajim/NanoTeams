@@ -19,19 +19,27 @@ final class TaskCompletionAwaiter {
     /// `switch` exhaustive without a defensive fall-through arm — and
     /// makes `.terminal(.idle)` (which would have wedged the handler
     /// into a tight loop) unrepresentable.
-    enum TerminalOutcome: Equatable {
+    nonisolated enum TerminalOutcome: Equatable, Sendable {
         case done
         case failed
         case needsAcceptance
     }
 
+    /// Why a delegated child task paused on its own (without a parent-initiated pause cascade).
+    nonisolated enum ChildPauseReason: Equatable, Sendable {
+        case runTimedOut(seconds: Int)
+        case iterationLimitReached(limit: Int)
+    }
+
     /// What we resume on. `.terminal` covers the engine end-states; `.needsSupervisorInput`
     /// is a yield point — the parent must answer the child's question before the child
     /// can continue, so we let the awaiter wake up to handle it without conflating it
-    /// with completion.
-    enum WaitOutcome: Equatable {
+    /// with completion; `.paused` covers pauses initiated by the child itself (run timeout
+    /// or iteration limit), never a parent `pauseRun` cascade.
+    nonisolated enum WaitOutcome: Equatable, Sendable {
         case terminal(TerminalOutcome)
         case needsSupervisorInput
+        case paused(ChildPauseReason)
         /// The Supervisor queued a message for the parent role while the
         /// child engine was still mid-flight. The handler pauses (does NOT
         /// stop) the child engine and returns the message text to the
@@ -44,16 +52,38 @@ final class TaskCompletionAwaiter {
         case parentMessageQueued(text: String)
     }
 
-    private var waiters: [Int: [CheckedContinuation<WaitOutcome, Never>]] = [:]
+    private struct WaiterEntry {
+        let id: UUID
+        let box: ApprovalWaiter<WaitOutcome>
+    }
 
-    /// Suspends until `deliver(taskID:outcome:)` or `cancelAll(taskID:)` is called for
-    /// this taskID. Caller is responsible for the fast-path check (i.e. inspect
-    /// `engineState[taskID]` first; only register if state is non-terminal). Without
-    /// the fast path, an engine that races past the wait state before registration
+    private var waiters: [Int: [WaiterEntry]] = [:]
+
+    /// Suspends until `deliver(taskID:outcome:)`, `cancelAll(taskID:)`, or task cancellation
+    /// resolves this registration. Caller is responsible for the fast-path check (i.e. inspect
+    /// `engineState[taskID]` and durable task state first; only register if state is non-terminal).
+    /// Without the fast path, an engine that races past the wait state before registration
     /// would never wake the continuation.
     func register(taskID: Int) async -> WaitOutcome {
-        await withCheckedContinuation { cont in
-            waiters[taskID, default: []].append(cont)
+        let id = UUID()
+        let box = ApprovalWaiter<WaitOutcome>()
+        waiters[taskID, default: []].append(WaiterEntry(id: id, box: box))
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { cont in
+                box.attach(cont)
+            }
+        } onCancel: { [weak self] in
+            box.resolve(.terminal(.failed))
+            Task { @MainActor [weak self] in
+                self?.removeWaiter(taskID: taskID, id: id)
+            }
+        }
+    }
+
+    private func removeWaiter(taskID: Int, id: UUID) {
+        waiters[taskID]?.removeAll { $0.id == id }
+        if waiters[taskID]?.isEmpty == true {
+            waiters.removeValue(forKey: taskID)
         }
     }
 
@@ -63,7 +93,7 @@ final class TaskCompletionAwaiter {
     /// it must call `register` again.
     func deliver(taskID: Int, outcome: WaitOutcome) {
         guard let pending = waiters.removeValue(forKey: taskID) else { return }
-        for cont in pending { cont.resume(returning: outcome) }
+        for entry in pending { entry.box.resolve(outcome) }
     }
 
     /// Releases every continuation for `taskID` with `.terminal(.failed)`. Called
@@ -71,7 +101,7 @@ final class TaskCompletionAwaiter {
     /// don't hang forever.
     func cancelAll(taskID: Int) {
         guard let pending = waiters.removeValue(forKey: taskID) else { return }
-        for cont in pending { cont.resume(returning: .terminal(.failed)) }
+        for entry in pending { entry.box.resolve(.terminal(.failed)) }
     }
 
     /// Releases every continuation across all tasks with `.terminal(.failed)`.
@@ -79,13 +109,15 @@ final class TaskCompletionAwaiter {
     func cancelAll() {
         let pending = waiters.values.flatMap { $0 }
         waiters.removeAll()
-        for cont in pending { cont.resume(returning: .terminal(.failed)) }
+        for entry in pending { entry.box.resolve(.terminal(.failed)) }
     }
 
-    /// Inspect-only — returns `true` iff there is at least one waiter registered for
-    /// the given task. Used by tests; not part of the production wake path.
+    /// Returns `true` iff at least one unsettled waiter is currently suspended on `taskID`.
+    /// Load-bearing on the production pause/resume and delegation-interrupt paths (`pauseRun`,
+    /// `resumeRun`, `stepHasSuspendedDelegationHandler`, `notifyDelegationInterrupt`, D-15), as
+    /// well as in unit tests.
     func hasWaiters(for taskID: Int) -> Bool {
         guard let list = waiters[taskID] else { return false }
-        return !list.isEmpty
+        return list.contains { !$0.box.isSettled }
     }
 }

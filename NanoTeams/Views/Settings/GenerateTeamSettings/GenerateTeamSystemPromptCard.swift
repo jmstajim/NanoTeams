@@ -12,7 +12,6 @@ struct GenerateTeamSystemPromptCard: View {
     var body: some View {
         SettingsCard(
             header: "System Prompt",
-            systemImage: "text.quote",
             footer: "Empty = use the built-in team generation prompt."
         ) {
             Toggle(isOn: Binding(

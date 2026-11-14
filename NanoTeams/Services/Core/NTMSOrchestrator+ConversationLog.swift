@@ -107,6 +107,7 @@ extension NTMSOrchestrator {
         let supervisorTask = task.supervisorTask
         let supervisorClippedTexts = task.clippedTexts.texts
         let supervisorAttachmentPaths = task.attachmentPaths
+        let supervisorAuthorLabel = task.origin?.authorLabel
 
         // All captured values are Sendable; ActivityFeedBuilder / the renderer are pure.
         Task.detached {
@@ -139,6 +140,7 @@ extension NTMSOrchestrator {
                 supervisorClippedTexts: supervisorClippedTexts,
                 supervisorAttachmentPaths: supervisorAttachmentPaths,
                 supervisorProjectFolderURL: workFolderRoot,
+                supervisorAuthorLabel: supervisorAuthorLabel,
                 stepArtifactContentCache: cache,
                 debugModeEnabled: debug,
                 activeQuestions: pending,

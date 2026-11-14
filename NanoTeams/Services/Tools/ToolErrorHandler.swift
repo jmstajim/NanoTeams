@@ -68,6 +68,27 @@ nonisolated enum ToolErrorHandler {
             return makeErrorResult(
                 toolName: toolName, args: args, code: code, message: message
             )
+        } catch let error as MCPArgumentCoercion.Failure {
+            // An argument fault, and it names the one property at fault — so `INVALID_ARGS`,
+            // which is what makes the note policy print the tool's required list beside it.
+            // The generic arm would file it as `COMMAND_FAILED`, whose direction is "choose a
+            // different approach" for a call one edited value would fix.
+            return makeErrorResult(
+                toolName: toolName, args: args, code: .invalidArgs, message: error.message
+            )
+        } catch let error as MCPClientError {
+            // Before the generic arm, and it has to be: `MCPClientError` is a
+            // `LocalizedError`, so `classify` would take its message verbatim under
+            // `COMMAND_FAILED` — one code for "the server is not running", "the server
+            // refused your arguments" and "the server took too long", whose recoveries are
+            // three different things.
+            if case .cancelled = error {
+                return makeCancelledResult(toolName: toolName, argumentsJSON: encodeArgsToJSON(args))
+            }
+            let (code, message) = classify(mcpClientError: error)
+            return makeErrorResult(
+                toolName: toolName, args: args, code: code, message: message
+            )
         } catch {
             let (code, message) = classify(error)
             return makeErrorResult(
@@ -108,6 +129,40 @@ nonisolated enum ToolErrorHandler {
         }
     }
 
+    /// One external server's failures, split by what the model can do about each.
+    ///
+    /// The messages are `MCPClientError`'s own — app-authored English, already written for
+    /// this reader — except the server's `-32602` text, which is the one part of an
+    /// "invalid params" that names the argument at fault.
+    ///
+    /// `.cancelled` is not here: it is answered one arm above with the unified cancellation
+    /// envelope, so an abandoned MCP call looks identical to a paused `bash` one.
+    static func classify(
+        mcpClientError error: MCPClientError
+    ) -> (code: ToolErrorCode, message: String) {
+        switch error {
+        case .rpc(let code, _, _) where code == MCPErrorCode.invalidParams:
+            return (.invalidArgs, error.message)
+        case .rpc, .inputRequired:
+            // The server answered and refused this call — or would not finish it without input
+            // this client cannot give. Not `MCP_SERVER_UNAVAILABLE`: it is reachable, and a
+            // different call may well succeed.
+            return (.mcpToolError, error.message)
+        case .timedOut:
+            return (.mcpTimedOut, error.message)
+        case .notConnected, .transport, .unsupportedProtocolVersion, .handshakeRefused:
+            return (.mcpServerUnavailable, error.message)
+        case .malformedResult, .pageLimitExceeded, .unknownResultType:
+            // The server is reachable and answering — with something this client cannot
+            // read. Grouped with "unavailable" because the recovery is the same one:
+            // nothing in the CALL reaches it, and the repair is the server.
+            return (.mcpServerUnavailable, error.message)
+        case .cancelled:
+            // Kept exhaustive so a new case cannot silently inherit a wrong code.
+            return (.cancelled, error.message)
+        }
+    }
+
     /// Classifies everything else ~50 tools can throw — `FileManager`,
     /// `Data(contentsOf:)`, `JSONDecoder`, `Process` — into a typed code and a
     /// STABLE English sentence.
@@ -144,8 +199,13 @@ nonisolated enum ToolErrorHandler {
             return (.fileNotFound, "File not found.")
         case (NSCocoaErrorDomain, 257), (NSCocoaErrorDomain, 513), (NSPOSIXErrorDomain, 13):
             return (.permissionDenied, "Permission denied.")
-        case (NSCocoaErrorDomain, 512):
+        case (NSCocoaErrorDomain, 514):
             return (.invalidArgs, "The path is not a valid file name.")
+        case (NSCocoaErrorDomain, 512):
+            // `fileWriteUnknown`. 514 is the invalid NAME; until 2026-11-08 this row claimed
+            // 512 was, so a write that failed for any unclassified reason told the model to fix
+            // its path.
+            return (.commandFailed, "The file could not be written.")
         case (NSCocoaErrorDomain, 516):
             return (.conflict, "A file already exists at that path.")
         case (NSCocoaErrorDomain, 640), (NSPOSIXErrorDomain, 28):

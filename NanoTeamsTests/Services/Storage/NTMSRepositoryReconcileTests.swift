@@ -139,6 +139,131 @@ final class NTMSRepositoryReconcileTests: XCTestCase {
                        "reconcile must not grant bash to review roles")
     }
 
+    /// User-granted MCP entries (`mcp__<slug>` whole-server grants and `mcp__<slug>__<tool>`
+    /// per-tool grants) on a bundled team's system role are work-folder configuration, not
+    /// stale built-in defaults. A version bump must overwrite the built-in prefix from the
+    /// bundle while preserving stored MCP entries in order after the bundled tools.
+    func testVersionBump_preservesMCPGrantsOnBundledSystemRole_andHandlesCornerCases() throws {
+        _ = try sut.openOrCreateWorkFolder(at: root)
+
+        let store = AtomicJSONStore()
+        var teamsFile = try store.read(TeamsFile.self, from: paths.teamsJSON)
+        let faangIdx = try XCTUnwrap(teamsFile.teams.firstIndex { $0.templateID == "faang" })
+        let bundledFaang = try XCTUnwrap(Team.defaultTeams.first { $0.templateID == "faang" })
+
+        // 1. Main case: Software Engineer has a removed built-in tool + whole-server and
+        //    per-tool MCP grants (plus a duplicate MCP entry).
+        let seIdx = try XCTUnwrap(
+            teamsFile.teams[faangIdx].roles.firstIndex { $0.systemRoleID == "softwareEngineer" }
+        )
+        let bundledSETools = try XCTUnwrap(
+            bundledFaang.roles.first { $0.systemRoleID == "softwareEngineer" }?.toolIDs
+        )
+        teamsFile.teams[faangIdx].roles[seIdx].toolIDs.removeAll { $0 == ToolNames.bash }
+        teamsFile.teams[faangIdx].roles[seIdx].toolIDs.append(contentsOf: [
+            "mcp__folio",
+            "mcp__folio__get_note",
+            "mcp__folio",
+        ])
+
+        // 2. Corner case: stored `toolIDs` contains ONLY MCP entries (all built-in tools stripped).
+        let reviewerIdx = try XCTUnwrap(
+            teamsFile.teams[faangIdx].roles.firstIndex { $0.systemRoleID == "codeReviewer" }
+        )
+        let bundledReviewerTools = try XCTUnwrap(
+            bundledFaang.roles.first { $0.systemRoleID == "codeReviewer" }?.toolIDs
+        )
+        teamsFile.teams[faangIdx].roles[reviewerIdx].toolIDs = ["mcp__ tracker".replacingOccurrences(of: " ", with: "")]
+
+        // 3. Corner case: empty `toolIDs` on a system role (Tech Lead stripped to `[]`,
+        //    Supervisor already `[]`).
+        let tlIdx = try XCTUnwrap(
+            teamsFile.teams[faangIdx].roles.firstIndex { $0.systemRoleID == "techLead" }
+        )
+        let bundledTLTools = try XCTUnwrap(
+            bundledFaang.roles.first { $0.systemRoleID == "techLead" }?.toolIDs
+        )
+        teamsFile.teams[faangIdx].roles[tlIdx].toolIDs = []
+
+        // 4. Corner case: Autovisor manager role keeps its own additive optional-group policy
+        //    while preserving any MCP entry stored on it after the bundled tools (even when a
+        //    missing optional group is delivered on the same version bump).
+        var autovisor = TeamTemplateFactory.autovisor()
+        let managerIdx = try XCTUnwrap(autovisor.roles.firstIndex {
+            $0.systemRoleID == AutovisorConstants.managerRoleSystemID
+        })
+        let group = try XCTUnwrap(AutovisorConstants.managerOptionalToolGroups.first)
+        autovisor.roles[managerIdx].toolIDs.removeAll {
+            $0 == ToolNames.analyzeImage || group.contains($0)
+        }
+        autovisor.roles[managerIdx].toolIDs.append("mcp__ops__ping")
+        teamsFile.teams.append(autovisor)
+
+        try store.write(teamsFile, to: paths.teamsJSON)
+
+        var state = try store.read(WorkFolderState.self, from: paths.workFolderJSON)
+        state.lastAppliedAppVersion = ""
+        try store.write(state, to: paths.workFolderJSON)
+
+        _ = try sut.openOrCreateWorkFolder(at: root)
+
+        let reconciled = try store.read(TeamsFile.self, from: paths.teamsJSON)
+        let afterFaang = try XCTUnwrap(reconciled.teams.first { $0.templateID == "faang" })
+
+        let afterSE = try XCTUnwrap(afterFaang.roles.first { $0.systemRoleID == "softwareEngineer" })
+        XCTAssertEqual(
+            afterSE.toolIDs,
+            bundledSETools + ["mcp__folio", "mcp__folio__get_note"],
+            "bundled tools must be restored first, followed by deduplicated MCP grants in stored order"
+        )
+
+        let afterReviewer = try XCTUnwrap(afterFaang.roles.first { $0.systemRoleID == "codeReviewer" })
+        XCTAssertEqual(
+            afterReviewer.toolIDs,
+            bundledReviewerTools + ["mcp__tracker"],
+            "a role whose stored toolIDs held only MCP entries must receive bundled tools followed by MCP"
+        )
+
+        let afterTL = try XCTUnwrap(afterFaang.roles.first { $0.systemRoleID == "techLead" })
+        XCTAssertEqual(afterTL.toolIDs, bundledTLTools,
+                       "empty stored toolIDs with no MCP entries must reconcile to bundled.toolIDs")
+
+        let afterSupervisor = try XCTUnwrap(afterFaang.roles.first(where: \.isSupervisor))
+        XCTAssertEqual(afterSupervisor.toolIDs, [],
+                       "Supervisor with empty bundled and stored toolIDs stays empty")
+
+        let afterManager = try XCTUnwrap(reconciled.teams
+            .first { $0.templateID == AutovisorConstants.teamTemplateID }?
+            .roles.first { $0.systemRoleID == AutovisorConstants.managerRoleSystemID })
+        XCTAssertFalse(afterManager.toolIDs.contains(ToolNames.analyzeImage),
+                       "Autovisor user-disabled optional tool stays off")
+        XCTAssertTrue(Set(group).isSubset(of: Set(afterManager.toolIDs)),
+                      "Autovisor missing optional group is still delivered")
+        XCTAssertTrue(afterManager.toolIDs.contains("mcp__ops__ping"),
+                      "Autovisor branch preserves stored MCP entry")
+
+        // 5. Corner case: duplicate between bundled and stored MCP entry (and empty inputs).
+        XCTAssertEqual(
+            NTMSRepository.reconcileSystemRoleToolIDs(bundled: [], stored: []),
+            []
+        )
+        XCTAssertEqual(
+            NTMSRepository.reconcileSystemRoleToolIDs(
+                bundled: [],
+                stored: ["mcp__folio", "mcp__folio__get_note"]
+            ),
+            ["mcp__folio", "mcp__folio__get_note"]
+        )
+        XCTAssertEqual(
+            NTMSRepository.reconcileSystemRoleToolIDs(
+                bundled: [ToolNames.readFile, "mcp__folio"],
+                stored: ["mcp__folio", "mcp__folio__get_note", "mcp__folio"]
+            ),
+            [ToolNames.readFile, "mcp__folio", "mcp__folio__get_note"],
+            "an MCP entry already present in bundled must not be duplicated"
+        )
+    }
+
     /// The Autovisor team is bundled but hidden (not in `Team.defaultTeams`), so the
     /// reconcile pass indexes it explicitly. A version bump must refresh the manager
     /// role's prompt to the bundled text WITHOUT resetting user-toggled optional tools

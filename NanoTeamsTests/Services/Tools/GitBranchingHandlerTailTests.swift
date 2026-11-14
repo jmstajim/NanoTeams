@@ -26,6 +26,18 @@ final class GitBranchingHandlerTailTests: XCTestCase {
     private var runtime: ToolRuntime!
     private var context: ToolExecutionContext!
 
+    /// The seeded repository (`git init`, the pinned config, the `base` commit) that every test's
+    /// `makeRepo(withInitialCommit: true)` starts from — built by the first such call of the class
+    /// and COPIED after. Building it per test was 65 % of the class (1.9 of 2.9 s alone, measured
+    /// 2026-10-28). The copy refreshes the index's stat data, the one thing a new inode changes.
+    nonisolated(unsafe) private static var seededTemplate: URL?
+
+    override class func tearDown() {
+        if let seededTemplate { try? FileManager.default.removeItem(at: seededTemplate) }
+        seededTemplate = nil
+        super.tearDown()
+    }
+
     override func setUp() async throws {
         try await super.setUp()
         try await makeRepo(withInitialCommit: true)
@@ -719,20 +731,10 @@ final class GitBranchingHandlerTailTests: XCTestCase {
         let paths = NTMSPaths(workFolderRoot: tempDir)
         try fileManager.createDirectory(at: paths.nanoteamsDir, withIntermediateDirectories: true)
 
-        if initGit {
-            try git(["init", "-b", "main"])
-            try git(["config", "user.email", "test@example.com"])
-            try git(["config", "user.name", "Test User"])
-            // The diffstat is the ONLY thing that carries a filename into a clean merge's
-            // output, so `testMerge_fileNamedCONFLICT_isNotMisreadAsAConflict` is asserting
-            // nothing at all under an inherited `merge.stat false`. Pin it here rather than
-            // trust the developer's global config.
-            try git(["config", "merge.stat", "true"])
-            if seedCommit {
-                try write("base.txt", "base\n")
-                try git(["add", "."])
-                try git(["commit", "-m", "base"])
-            }
+        if initGit, seedCommit {
+            try copySeededTemplate(into: tempDir)
+        } else if initGit {
+            try initializeRepository(seedCommit: false)
         }
 
         let resolvedRoot = tempDir!
@@ -743,6 +745,48 @@ final class GitBranchingHandlerTailTests: XCTestCase {
         }
         context = ToolExecutionContext(
             workFolderRoot: tempDir, taskID: 0, runID: 0, roleID: "test_role")
+    }
+
+    /// `git init`, the pinned config and, when asked, the `base` commit — in `tempDir`.
+    private func initializeRepository(seedCommit: Bool) throws {
+        try git(["init", "-b", "main"])
+        try git(["config", "user.email", "test@example.com"])
+        try git(["config", "user.name", "Test User"])
+        // The diffstat is the ONLY thing that carries a filename into a clean merge's
+        // output, so `testMerge_fileNamedCONFLICT_isNotMisreadAsAConflict` is asserting
+        // nothing at all under an inherited `merge.stat false`. Pin it here rather than
+        // trust the developer's global config.
+        try git(["config", "merge.stat", "true"])
+        if seedCommit {
+            try write("base.txt", "base\n")
+            try git(["add", "."])
+            try git(["commit", "-m", "base"])
+        }
+    }
+
+    /// The seeded repository's `.git` and `base.txt`, copied into `directory` (whose `.nanoteams/`
+    /// already exists, as it did before `git init` ran there) from the class's template, which the
+    /// first call builds with `initializeRepository(seedCommit: true)`.
+    private func copySeededTemplate(into directory: URL) throws {
+        if Self.seededTemplate == nil {
+            let template = fileManager.temporaryDirectory
+                .appendingPathComponent("git-template-\(UUID().uuidString)", isDirectory: true)
+                .standardizedFileURL
+            try fileManager.createDirectory(
+                at: NTMSPaths(workFolderRoot: template).nanoteamsDir, withIntermediateDirectories: true)
+            let testDirectory = tempDir
+            tempDir = template
+            defer { tempDir = testDirectory }
+            try initializeRepository(seedCommit: true)
+            Self.seededTemplate = template
+        }
+        let template = try XCTUnwrap(Self.seededTemplate)
+        for entry in [".git", "base.txt"] {
+            try fileManager.copyItem(
+                at: template.appendingPathComponent(entry), to: directory.appendingPathComponent(entry))
+        }
+        // A copy is a new inode, so the index's stat data no longer matches `base.txt`.
+        try git(["update-index", "--refresh"])
     }
 
     /// A branch holding a commit that `main` does not, so `git branch -d` refuses it.

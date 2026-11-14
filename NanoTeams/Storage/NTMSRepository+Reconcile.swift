@@ -11,7 +11,10 @@ import Foundation
 // Design invariants:
 //  * Scalar fields of system roles (`prompt`, `meetingGuidance`, `toolIDs`, `dependencies`,
 //    `icon`, `iconColor`, `iconBackground`, `usePlanningPhase`) are overwritten
-//    unconditionally. User customizations to system-role fields are a known
+//    unconditionally — EXCEPT user-granted MCP entries in `toolIDs` (`MCPToolNaming.isMCPName`:
+//    whole-server `mcp__<slug>` and per-tool `mcp__<slug>__<tool>`), which are work-folder
+//    grants bound to `servers.json` and are preserved in order after the bundled built-in tools.
+//    User customizations to built-in system-role fields are a known
 //    trade-off, documented in the plan — inline apply without preview.
 //  * Team settings are the user's after first creation: a bump never rewrites a value
 //    the Team Settings editor can change (limits, acceptance mode and checkpoints, Ask
@@ -91,6 +94,19 @@ nonisolated extension NTMSRepository {
             if case .allTemplated = self { return true }
             return false
         }
+    }
+
+    /// Merges a system role's bundled built-in `toolIDs` with any user-granted MCP entries
+    /// (`MCPToolNaming.isMCPName`) already stored on the role. Bundled tools come first in
+    /// template order, followed by stored MCP grants (`mcp__<slug>` and `mcp__<slug>__<tool>`)
+    /// in stored order without duplicates.
+    static func reconcileSystemRoleToolIDs(bundled: [String], stored: [String]) -> [String] {
+        var seen = Set(bundled)
+        var result = bundled
+        for id in stored where MCPToolNaming.isMCPName(id) && seen.insert(id).inserted {
+            result.append(id)
+        }
+        return result
     }
 
     func applyBundledContentUpdates(
@@ -285,7 +301,7 @@ nonisolated extension NTMSRepository {
                     }
                     nextToolIDs = toolIDs
                 } else {
-                    nextToolIDs = bundled.toolIDs
+                    nextToolIDs = Self.reconcileSystemRoleToolIDs(bundled: bundled.toolIDs, stored: role.toolIDs)
                 }
                 let nextDeps = bundled.dependencies
                 let nextIcon = bundled.icon

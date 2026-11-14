@@ -528,6 +528,40 @@ final class QuickCaptureBackstopBatchTests: NTMSOrchestratorTestBase, @unchecked
                       "Queue is empty — the regression is fixed")
     }
 
+    func testNotifyQueuedMessageBackstop_onOrchestratorWithoutController_flushesSecondParkedRole() async {
+        QuickCaptureController.shared._testReset()
+        XCTAssertNil(QuickCaptureController.shared.store,
+                     "premise: process-global QuickCaptureController is not wired to sut")
+        let roleA = "role-a"
+        let roleB = "role-b"
+        let taskID = await setUpTaskWaitingForSupervisor(
+            roleIDs: [roleA, roleB], waitingRoleIDs: [roleA]
+        )
+        let formState = QuickCaptureFormState()
+        sut.quickCaptureFormState = formState
+        formState.appendQueuedMessage(msg("for-B-headless", target: roleB), for: taskID)
+
+        await sut.mutateTask(taskID: taskID) { task in
+            guard let runIdx = task.runs.indices.last,
+                  let stepIdx = task.runs[runIdx].steps.firstIndex(where: { $0.effectiveRoleID == roleB })
+            else { return }
+            task.runs[runIdx].steps[stepIdx].status = .needsSupervisorInput
+            task.runs[runIdx].steps[stepIdx].needsSupervisorInput = true
+            task.runs[runIdx].steps[stepIdx].supervisorQuestion = "B asking too"
+        }
+
+        sut.notifyQueuedMessageBackstop(taskID: taskID)
+
+        await waitFor {
+            sut.loadedTask(taskID)?.runs.last?.steps
+                .first(where: { $0.effectiveRoleID == roleB })?.supervisorAnswer != nil
+        }
+        let bStep = sut.loadedTask(taskID)?.runs.last?.steps
+            .first(where: { $0.effectiveRoleID == roleB })
+        XCTAssertEqual(bStep?.supervisorAnswer, "for-B-headless")
+        XCTAssertTrue(formState.queuedMessages(for: taskID).isEmpty)
+    }
+
     // MARK: - Concurrent invocation safety (atomic reserve)
 
     func testBackstop_concurrentInvocations_secondSeesEmptyQueue() async {

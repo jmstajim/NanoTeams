@@ -27,14 +27,21 @@ final class BackgroundBashRegistryTests: XCTestCase {
     }
 
     private func logURL(for id: String) -> URL {
-        URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-            .appendingPathComponent("nanoteams-bg", isDirectory: true)
-            .appendingPathComponent("\(id).log")
+        BackgroundBashRegistry.logDir.appendingPathComponent("\(id).log")
+    }
+
+    /// Each process keeps its logs apart: the counter that names them restarts at 1 in every
+    /// process, and two processes writing `bg_1.log` in one shared folder replaced each other's
+    /// output — a command that printed and exited 0 read back empty under parallel testing.
+    func testLogs_liveInAFolderOfTheirOwnProcess() throws {
+        XCTAssertEqual(BackgroundBashRegistry.logDir.lastPathComponent, String(getpid()))
+        let id = try reg.start(command: "echo OWN_FOLDER", directory: tmp, confinement: nil, taskID: 53)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: logURL(for: id).path), "the log is where the folder says")
     }
 
     func testIncrementalRead_advancesOffsetAndReportsExit() throws {
         let id = try reg.start(
-            command: "echo HELLO_BG", directory: tmp, sandboxProfile: nil, taskID: 7)
+            command: "echo HELLO_BG", directory: tmp, confinement: nil, taskID: 7)
 
         // Awaiting a real detached subprocess inherently requires polling; the
         // budget is generous (≈10s) so a loaded CI host can't expire it for an
@@ -57,7 +64,7 @@ final class BackgroundBashRegistryTests: XCTestCase {
 
     func testTerminate_removesEntryAndDeletesLog() throws {
         let id = try reg.start(
-            command: "echo bye", directory: tmp, sandboxProfile: nil, taskID: 42)
+            command: "echo bye", directory: tmp, confinement: nil, taskID: 42)
         // Deterministic: terminate works whether or not the process has exited
         // (SIGTERM a still-running one; unlink the log either way), so no wait/poll.
         reg.terminate(taskID: 42)
@@ -67,8 +74,8 @@ final class BackgroundBashRegistryTests: XCTestCase {
     }
 
     func testTerminateAll_clearsEveryTask() throws {
-        let a = try reg.start(command: "echo a", directory: tmp, sandboxProfile: nil, taskID: 1)
-        let b = try reg.start(command: "echo b", directory: tmp, sandboxProfile: nil, taskID: 2)
+        let a = try reg.start(command: "echo a", directory: tmp, confinement: nil, taskID: 1)
+        let b = try reg.start(command: "echo b", directory: tmp, confinement: nil, taskID: 2)
         reg.terminateAll()
         XCTAssertNil(reg.read(commandID: a))
         XCTAssertNil(reg.read(commandID: b))
@@ -78,8 +85,161 @@ final class BackgroundBashRegistryTests: XCTestCase {
         reg.terminate(taskID: 999_999) // must not crash
     }
 
+    // MARK: - Reserved loopback ports
+
+    private func confined(_ ports: Set<UInt16>) -> BackgroundBashRegistry.Confinement {
+        .init(profile: "(version 1)\n(allow default)", guardedPorts: ports)
+    }
+
+    /// Only a running CONFINED command whose profile lacks a reserved port is stopped: one that
+    /// reserves it already, and an unconfined one (sandbox off — nothing is reserved for any
+    /// command then), keep running. A port reserved twice stops nothing the second time; an empty
+    /// set and port 0 reserve nothing. A private reservations instance: nothing leaks into the
+    /// process-wide one other suites read.
+    func testReserve_stopsOnlyConfinedCommandsLackingThePort() throws {
+        try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: BashConstants.sandboxExecPath))
+        let reservations = LoopbackPortReservations(registry: reg)
+        let lacking = try reg.start(command: "sleep 30", directory: tmp, confinement: confined([47321]), taskID: 51)
+        let holding = try reg.start(command: "sleep 30", directory: tmp, confinement: confined([47321, 3845]), taskID: 51)
+        let unconfined = try reg.start(command: "sleep 30", directory: tmp, confinement: nil, taskID: 51)
+
+        XCTAssertEqual(reservations.reserve([]), [])
+        XCTAssertEqual(reservations.reserve([0]), [])
+        XCTAssertEqual(reservations.ports, [], "port 0 names no port")
+
+        XCTAssertEqual(reservations.reserve([3845, 0]), [lacking])
+        XCTAssertEqual(reservations.ports, [3845])
+        XCTAssertEqual(reg.read(commandID: lacking)?.running, false, "reserve returns once it is reaped")
+        XCTAssertEqual(reservations.reserve([3845]), [], "already stopped, not stopped again")
+        XCTAssertNil(reg.read(commandID: holding)?.stopReason)
+        XCTAssertNil(reg.read(commandID: unconfined)?.stopReason)
+        XCTAssertEqual(reg.read(commandID: lacking)?.stopReason,
+                       LoopbackPortReservations.stopReason(forReserved: [3845]))
+
+        // Several missing ports are named together, in order.
+        XCTAssertEqual(reservations.reserve([9001, 9000]), [holding])
+        XCTAssertTrue(reg.read(commandID: holding)?.stopReason?.contains("ports 9000, 9001") == true)
+        XCTAssertNil(reg.read(commandID: unconfined)?.stopReason)
+        XCTAssertEqual(reservations.ports, [3845, 9000, 9001])
+    }
+
+    /// A command started under a profile built before a reservation landed — the window between
+    /// building the profile and registering the command — is stopped by `enforce`; one whose
+    /// profile has the port is not.
+    func testEnforce_stopsACommandWhoseProfilePredatesAReservation() throws {
+        try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: BashConstants.sandboxExecPath))
+        let reservations = LoopbackPortReservations(registry: reg)
+        reservations.reserve([3845])
+        let stale = try reg.start(command: "sleep 30", directory: tmp, confinement: confined([47321]), taskID: 54)
+        let fresh = try reg.start(command: "sleep 30", directory: tmp, confinement: confined([47321, 3845]), taskID: 54)
+        reservations.enforce(onBackgroundCommand: stale, guardedPorts: [47321])
+        reservations.enforce(onBackgroundCommand: fresh, guardedPorts: [47321, 3845])
+        XCTAssertTrue(reg.read(commandID: stale)?.stopReason?.contains("3845") == true)
+        XCTAssertNil(reg.read(commandID: fresh)?.stopReason)
+    }
+
+    /// Switching the sandbox on stops what runs unconfined — started while it was off — and
+    /// nothing else; switching it off, or setting it to what it already is, stops nothing.
+    @MainActor
+    func testSwitchingTheSandboxOn_stopsUnconfinedCommands() async throws {
+        try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: BashConstants.sandboxExecPath))
+        let configuration = StoreConfiguration(storage: InMemoryConfigurationStorage())
+        configuration.bashSandboxEnabled = false
+        let unconfined = try reg.start(command: "sleep 30", directory: tmp, confinement: nil, taskID: 55)
+        let confinedID = try reg.start(command: "sleep 30", directory: tmp, confinement: confined([47321]), taskID: 55)
+        configuration.bashSandboxEnabled = false
+        XCTAssertNil(reg.read(commandID: unconfined)?.stopReason, "no change, no stop")
+        configuration.bashSandboxEnabled = true
+        XCTAssertEqual(reg.read(commandID: unconfined)?.stopReason, BackgroundBashRegistry.sandboxSwitchedOnStopReason)
+        XCTAssertNil(reg.read(commandID: confinedID)?.stopReason)
+    }
+
+    /// Switching the sandbox on stops an unconfined command even when its leader moved itself
+    /// into another process group — the stop that matters most, since an unconfined leader IS the
+    /// role's own command and is the one that can leave (measured 2026-11-08; before the fix the
+    /// group signal answered ESRCH, `stopReason` was dropped and the command ran on unconfined
+    /// under a setting that now says otherwise).
+    @MainActor
+    func testSwitchingTheSandboxOn_stopsAnUnconfinedCommandThatLeftItsGroup() async throws {
+        let configuration = StoreConfiguration(storage: InMemoryConfigurationStorage())
+        configuration.bashSandboxEnabled = false
+        let id = try reg.start(
+            command: "exec /usr/bin/python3 -I -c "
+                + "'import os,time; os.setpgid(0, os.getpgid(os.getppid())); time.sleep(7713)'",
+            directory: tmp, confinement: nil, taskID: 56)
+        let pid = try XCTUnwrap(reg.commands(of: [id]).first?.process).processIdentifier
+        for _ in 0..<100 where getpgid(pid) == pid { try await Task.sleep(nanoseconds: 50_000_000) }
+        XCTAssertNotEqual(getpgid(pid), pid, "precondition: the leader left the group NanoTeams recorded")
+
+        configuration.bashSandboxEnabled = true
+        XCTAssertEqual(reg.read(commandID: id)?.stopReason, BackgroundBashRegistry.sandboxSwitchedOnStopReason)
+        for _ in 0..<100 where reg.read(commandID: id)?.running == true { try await Task.sleep(nanoseconds: 50_000_000) }
+        XCTAssertEqual(reg.read(commandID: id)?.running, false, "it was stopped, not just marked")
+    }
+
+    /// A finished command holds no port; reserving one it lacks does not touch it.
+    func testReserve_ignoresAFinishedCommand() throws {
+        try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: BashConstants.sandboxExecPath))
+        let reservations = LoopbackPortReservations(registry: reg)
+        let id = try reg.start(command: "true", directory: tmp, confinement: confined([47321]), taskID: 52)
+        for _ in 0..<200 where reg.read(commandID: id)?.running == true { Thread.sleep(forTimeInterval: 0.05) }
+        XCTAssertEqual(reg.read(commandID: id)?.running, false, "precondition: it finished")
+        XCTAssertEqual(reservations.reserve([3845]), [])
+        XCTAssertNil(reg.read(commandID: id)?.stopReason)
+    }
+
     func testStop_unknownID_returnsFalse() {
         XCTAssertFalse(reg.stop(commandID: "bg_nope"))
+    }
+
+    /// `enforce`'s stop is for confined commands only: an unconfined one — sandbox off, nothing
+    /// reserved for any command — keeps running, with no reason.
+    func testStopConfinedCommand_leavesAnUnconfinedCommandAlone() throws {
+        let id = try reg.start(command: "sleep 30", directory: tmp, confinement: nil, taskID: 57)
+        reg.stopConfinedCommand(id, reason: "a port")
+        XCTAssertEqual(reg.read(commandID: id)?.running, true)
+        XCTAssertNil(reg.read(commandID: id)?.stopReason)
+    }
+
+    /// A command that ended between the scan that claimed it and the signal keeps no reason:
+    /// nothing was stopped. That window is microseconds wide, so the entry is put into it —
+    /// `running` as the scan reads it, the process gone as the signal finds it.
+    func testAStopThatFindsTheCommandAlreadyEnded_leavesNoReason() throws {
+        try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: BashConstants.sandboxExecPath))
+        let id = try reg.start(command: "true", directory: tmp, confinement: confined([47321]), taskID: 58)
+        for _ in 0..<200 where reg.read(commandID: id)?.running == true { Thread.sleep(forTimeInterval: 0.05) }
+        XCTAssertEqual(reg.read(commandID: id)?.running, false, "precondition: it finished")
+        reg._testSimulateExitNotYetObserved(id)
+        XCTAssertEqual(reg.stopConfinedCommands(lacking: [3845], reason: { "ports \($0.sorted())" }), [])
+        XCTAssertNil(reg.read(commandID: id)?.stopReason)
+    }
+
+    /// `stop` on a command that has already ended signals nothing and schedules nothing: its exit
+    /// code stays its own.
+    func testStop_onAFinishedCommand_signalsNothing() throws {
+        let id = try reg.start(command: "exit 3", directory: tmp, confinement: nil, taskID: 59)
+        for _ in 0..<200 where reg.read(commandID: id)?.running == true { Thread.sleep(forTimeInterval: 0.05) }
+        XCTAssertEqual(reg.read(commandID: id)?.exitCode, 3, "precondition: it finished on its own")
+        XCTAssertTrue(reg.stop(commandID: id), "a known id")
+        XCTAssertEqual(reg.read(commandID: id)?.exitCode, 3, "nothing was signalled")
+    }
+
+    /// The per-task cap is enforced by `start` itself: once a task's commands exceed it, the
+    /// oldest FINISHED one is forgotten, log file included, and the newer ones stay.
+    func testStart_evictsTheOldestFinishedCommandOfTheTask_pastTheCap() throws {
+        var ids: [String] = []
+        for _ in 0..<BashConstants.maxRetainedBackgroundCommands {
+            ids.append(try reg.start(command: "true", directory: tmp, confinement: nil, taskID: 60))
+        }
+        for id in ids {
+            for _ in 0..<200 where reg.read(commandID: id)?.running == true { Thread.sleep(forTimeInterval: 0.05) }
+        }
+        XCTAssertTrue(ids.allSatisfy { reg.read(commandID: $0)?.running == false }, "precondition: all finished")
+        let newest = try reg.start(command: "true", directory: tmp, confinement: nil, taskID: 60)
+        XCTAssertNil(reg.read(commandID: ids[0]), "the oldest finished is forgotten")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: logURL(for: ids[0]).path), "and its log is gone")
+        XCTAssertNotNil(reg.read(commandID: ids[1]))
+        XCTAssertNotNil(reg.read(commandID: newest))
     }
 
     // MARK: - Eviction policy (pure)
@@ -361,7 +521,7 @@ final class BackgroundBashRegistryTests: XCTestCase {
         let id = try reg.start(
             command: "printf '\(head)'; while [ ! -f '\(gate.path)' ]; do sleep 0.02; done; "
                 + "printf '\(tail)'",
-            directory: tmp, sandboxProfile: nil, taskID: 7)
+            directory: tmp, confinement: nil, taskID: 7)
         let url = logURL(for: id)
 
         try waitUntil("the blocked process has written its first 11 bytes") {

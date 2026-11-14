@@ -23,16 +23,25 @@ extension NTMSOrchestrator {
     /// and updates the tool call + sets `task.generatedTeam` when done.
     ///
     /// Returns `true` on success (team generated and set on the task), `false` on failure.
+    ///
+    /// `lifecycle` is the caller's — the generation's spawn (`spawnTeamGeneration`) or the
+    /// retry's entry. The generation is an LLM call of seconds to minutes, and every write after
+    /// it — the step's outcome, the adopted team, a banner, the Autovisor's wake — goes through
+    /// the task id, which is per folder: asked after each suspension, a generation that a folder
+    /// transition overtook writes and reports nothing, in either folder.
     @discardableResult
-    func runTeamGeneration(taskID: Int) async -> Bool {
+    func runTeamGeneration(taskID: Int, within lifecycle: WorkFolderLifecycle) async -> Bool {
+        guard isCurrentFolderLifecycle(lifecycle) else { return false }
         guard let task = loadedTask(taskID) else {
             lastErrorMessage = "Cannot generate team for task \(taskID): task not loaded."
+            completionAwaiter.deliver(taskID: taskID, outcome: .terminal(.failed))
             return false
         }
         let taskDescription = task.effectiveSupervisorBrief
 
         guard !taskDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             lastErrorMessage = "Cannot generate a team without a task description."
+            completionAwaiter.deliver(taskID: taskID, outcome: .terminal(.failed))
             return false
         }
 
@@ -63,6 +72,7 @@ extension NTMSOrchestrator {
             task.runs[ri].steps.append(step)
             task.runs[ri].updatedAt = MonotonicClock.shared.now()
         }
+        guard isCurrentFolderLifecycle(lifecycle) else { return false }
 
         // `mutateTask` returning true means "persisted", NOT "the closure did
         // something" (CLAUDE.md §7), so the guard above can drop the step while
@@ -78,6 +88,7 @@ extension NTMSOrchestrator {
         guard loadedTask(taskID)?.runs.last?.steps.contains(where: { $0.id == stepID }) == true else {
             lastErrorMessage =
                 "Cannot generate a team for task \(taskID): the task has no run to attach it to."
+            completionAwaiter.deliver(taskID: taskID, outcome: .terminal(.failed))
             return false
         }
 
@@ -139,6 +150,10 @@ extension NTMSOrchestrator {
             generationResult = .failure(error)
         }
 
+        // The call suspended for as long as the model took. Its outcome is this folder's, and
+        // nothing of it — a write, a banner, a wake — may land in the folder opened since.
+        guard isCurrentFolderLifecycle(lifecycle) else { return false }
+
         // 3. Update the tool call + set task.generatedTeam on success.
         switch generationResult {
         case .success(let buildResult):
@@ -149,6 +164,7 @@ extension NTMSOrchestrator {
                 toolCallID: toolCallID,
                 warnings: buildResult.warnings
             )
+            guard isCurrentFolderLifecycle(lifecycle) else { return false }
             // Teardown / task-switch race: the run or generation step vanished
             // before the success mutation could land, so the team was NOT adopted
             // or re-pinned. Don't report success — returning `false` keeps the
@@ -156,6 +172,7 @@ extension NTMSOrchestrator {
             // (placeholder-pinned) team.
             guard applied else {
                 lastErrorMessage = "Team generation finished but could not be applied (the task or its run changed). Try again."
+                completionAwaiter.deliver(taskID: taskID, outcome: .terminal(.failed))
                 return false
             }
             if !buildResult.warnings.isEmpty {
@@ -178,16 +195,21 @@ extension NTMSOrchestrator {
                       let si = task.runs[ri].steps.firstIndex(where: { $0.id == stepID })
                 else { return }
                 if let ti = task.runs[ri].steps[si].toolCalls.firstIndex(where: { $0.id == toolCallID }) {
-                    task.runs[ri].steps[si].toolCalls[ti].resultJSON = errorEnvelope
-                    task.runs[ri].steps[si].toolCalls[ti].isError = true
+                    task.runs[ri].steps[si].toolCalls[ti].recordResult(
+                        errorEnvelope,
+                        isError: true,
+                        at: MonotonicClock.shared.now()
+                    )
                 }
                 task.runs[ri].steps[si].status = isCancellation ? .paused : .failed
                 task.runs[ri].steps[si].completedAt = MonotonicClock.shared.now()
                 task.runs[ri].steps[si].updatedAt = MonotonicClock.shared.now()
                 task.runs[ri].updatedAt = MonotonicClock.shared.now()
             }
+            guard isCurrentFolderLifecycle(lifecycle) else { return false }
             if !isCancellation {
                 lastErrorMessage = message
+                completionAwaiter.deliver(taskID: taskID, outcome: .terminal(.failed))
                 // The one condition the engine-state seam structurally cannot speak for: a
                 // generation failure flips the task to `.failed` with NO engine in existence
                 // to transition, so `onStateChanged` never fires and the manager's `.failed`
@@ -195,6 +217,7 @@ extension NTMSOrchestrator {
                 // status-edge hook — every other derived-status move that matters to the
                 // manager rides an engine transition.
                 scheduleAutovisorWake()
+                messageQueue.noteEngineLessStateUpdated(taskID: taskID)
             }
             return false
         }
@@ -237,8 +260,11 @@ extension NTMSOrchestrator {
                   let si = task.runs[ri].steps.firstIndex(where: { $0.id == stepID })
             else { return }
             if let ti = task.runs[ri].steps[si].toolCalls.firstIndex(where: { $0.id == toolCallID }) {
-                task.runs[ri].steps[si].toolCalls[ti].resultJSON = successEnvelope
-                task.runs[ri].steps[si].toolCalls[ti].isError = false
+                task.runs[ri].steps[si].toolCalls[ti].recordResult(
+                    successEnvelope,
+                    isError: false,
+                    at: MonotonicClock.shared.now()
+                )
             }
             task.runs[ri].steps[si].status = .done
             task.runs[ri].steps[si].completedAt = MonotonicClock.shared.now()
@@ -278,10 +304,7 @@ extension NTMSOrchestrator {
     /// "did anything change?" test to see.
     func retryTeamGenerationReportingResult(taskID: Int) async -> AutovisorActionResult {
         guard needsTeamGeneration(taskID: taskID) else {
-            return .failure(
-                "Task #\(taskID) has no pending team generation — its team is already in place. "
-                    + "Use manage_role on a role_id from task_status, or control_task delete "
-                    + "to drop the task.")
+            return .failure(.noPendingGeneration(taskID: taskID))
         }
         await retryTeamGeneration(taskID: taskID)
 
@@ -290,10 +313,10 @@ extension NTMSOrchestrator {
         // an LLM call — so a real failure would read back as nil and be reported as
         // "did not restart", i.e. the opposite of what happened.
         guard let task = loadedTask(taskID) else {
-            return .failure("Task #\(taskID) is no longer loaded.")
+            return .failure(.noLongerLoaded(taskID: taskID))
         }
         if task.generatedTeam != nil {
-            return .success("Re-ran team generation for task #\(taskID).")
+            return .success(.generationRerun(taskID: taskID))
         }
         // "Did it start?" is asked BEFORE "did it fail?". `retryTeamGeneration`'s
         // re-entrancy guard returns before the cleanup mutation, so on that path the
@@ -302,9 +325,7 @@ extension NTMSOrchestrator {
         // in-flight marker via its `defer` by the time we get here, so this cannot mask a
         // genuine second failure.
         if isGeneratingTeam(taskID: taskID) {
-            return .failure(
-                "Team generation for task #\(taskID) is already in progress — "
-                    + "wait and re-check task_status.")
+            return .failure(.generationInProgress(taskID: taskID))
         }
         if let failed = task.runs.last?.steps.last(where: {
             $0.isTeamGenerationStep && $0.status == .failed
@@ -312,11 +333,9 @@ extension NTMSOrchestrator {
             let reason = failed.toolCalls
                 .compactMap(\.errorMessage)
                 .last
-            return .failure(
-                reason.map { "Team generation for task #\(taskID) failed again: \($0)" }
-                    ?? "Team generation for task #\(taskID) failed again.")
+            return .failure(.generationFailedAgain(taskID: taskID, reason: reason))
         }
-        return .failure("Team generation for task #\(taskID) did not restart.")
+        return .failure(.generationDidNotRestart(taskID: taskID))
     }
 
     /// Removes every synthetic `team_generation_*` step from the task's latest run.
@@ -360,19 +379,25 @@ extension NTMSOrchestrator {
     ///   their own `engine.start()` on `false` — a generation is in flight and will start it.
     @discardableResult
     func spawnTeamGeneration(taskID: Int, clearingPriorSteps: Bool) -> Bool {
-        guard beginTeamGeneration(taskID: taskID) else { return false }
+        // The folder this start is for: captured at the spawn — its caller has just asked it —
+        // and asked by the continuation before each write and before the engine start. The
+        // continuation outlives its caller by an LLM call, and its only other stop is its own
+        // cancellation, which a stop verb gives it but a write already in flight does not notice.
+        let lifecycle = currentFolderLifecycle
+        guard beginTeamGeneration(taskID: taskID, within: lifecycle) else { return false }
         let genTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            defer { self.endTeamGeneration(taskID: taskID) }
+            defer { self.endTeamGeneration(taskID: taskID, within: lifecycle) }
             if clearingPriorSteps {
+                guard self.isCurrentFolderLifecycle(lifecycle) else { return }
                 await self.clearPriorTeamGenerationSteps(taskID: taskID)
             }
             // Re-check after the cleanup, exactly as `retryTeamGeneration` does: a team
             // adopted concurrently means there is nothing left to generate.
-            guard self.needsTeamGeneration(taskID: taskID) else { return }
-            let generated = await self.runTeamGeneration(taskID: taskID)
+            guard self.isCurrentFolderLifecycle(lifecycle), self.needsTeamGeneration(taskID: taskID) else { return }
+            let generated = await self.runTeamGeneration(taskID: taskID, within: lifecycle)
             // Skip engine start if pauseRun cancelled us mid-generation.
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, self.isCurrentFolderLifecycle(lifecycle) else { return }
             guard generated else { return } // failure envelope + lastErrorMessage already set
             self.engineForTask(taskID).start()
         }
@@ -386,27 +411,41 @@ extension NTMSOrchestrator {
     ///
     /// Keeps the AWAITING shape (rather than delegating to `spawnTeamGeneration`): the
     /// Retry button and `retryTeamGenerationReportingResult`'s durable-outcome read both
-    /// depend on the generation having finished by the time this returns.
+    /// depend on the generation having finished by the time this returns. Registered in
+    /// `teamGenerationTasks` so `pauseRun` and `stopAllEngines` cancel an in-flight retry
+    /// identically to a spawned generation.
     func retryTeamGeneration(taskID: Int) async {
+        // The folder the retry is for, asked after the cleanup and before the engine start —
+        // the same rule the spawned continuation follows (`spawnTeamGeneration`).
+        let lifecycle = currentFolderLifecycle
+        guard isCurrentFolderLifecycle(lifecycle) else { return }
         // Guard against double-retry (rapid button clicks) and against retry racing
         // a still-in-flight detached generation from `startRun`. Surface a banner
         // so the user understands why the click had no visible effect.
-        guard beginTeamGeneration(taskID: taskID) else {
+        guard beginTeamGeneration(taskID: taskID, within: lifecycle) else {
             lastInfoMessage = "Team generation is already in progress."
             return
         }
-        defer { endTeamGeneration(taskID: taskID) }
+        let genTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.endTeamGeneration(taskID: taskID, within: lifecycle) }
 
-        await clearPriorTeamGenerationSteps(taskID: taskID)
+            await self.clearPriorTeamGenerationSteps(taskID: taskID)
 
-        // After cleanup, `needsTeamGeneration` is true again iff the template is
-        // "generated" and no team has been adopted — same gate as `startRun`.
-        guard needsTeamGeneration(taskID: taskID) else { return }
+            // After cleanup, `needsTeamGeneration` is true again iff the template is
+            // "generated" and no team has been adopted — same gate as `startRun`.
+            guard !Task.isCancelled,
+                  self.isCurrentFolderLifecycle(lifecycle),
+                  self.needsTeamGeneration(taskID: taskID)
+            else { return }
 
-        let generated = await runTeamGeneration(taskID: taskID)
-        guard generated else { return }
-        let engine = engineForTask(taskID)
-        engine.start()
+            let generated = await self.runTeamGeneration(taskID: taskID, within: lifecycle)
+            guard !Task.isCancelled, generated, self.isCurrentFolderLifecycle(lifecycle) else { return }
+            let engine = self.engineForTask(taskID)
+            engine.start()
+        }
+        registerTeamGenerationTask(taskID: taskID, task: genTask)
+        await genTask.value
     }
 
     /// Saves the generated team to the project (moves from task to teams.json).
@@ -430,6 +469,15 @@ extension NTMSOrchestrator {
     // MARK: - Envelopes (test accessors)
 
     #if DEBUG
+    /// Test seam: a generation begun NOW, in the folder the process describes — what a suite that
+    /// drives `runTeamGeneration`'s arms directly means. Production always hands it the lifecycle
+    /// of the start or retry that owns it.
+    @discardableResult
+    func runTeamGeneration(taskID: Int) async -> Bool {
+        let lifecycle = currentFolderLifecycle
+        return await runTeamGeneration(taskID: taskID, within: lifecycle)
+    }
+
     /// Test accessor — verifies the placeholder envelope string matches the substring
     /// `StepToolCall.isGeneratingTeam` looks for. The actual implementation lives in
     /// `TeamGenerationEnvelopes` (shared with the `delegate_to_team` generated-flow

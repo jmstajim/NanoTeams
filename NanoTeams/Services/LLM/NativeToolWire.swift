@@ -1,90 +1,5 @@
 import Foundation
 
-// MARK: - JSONValue
-
-/// An arbitrary JSON value that round-trips through `Codable`.
-///
-/// Exists for the ONE place the app has to carry model-authored JSON as structure rather
-/// than as text: a native `tool_calls` turn. Ollama's `/api/chat` sends and expects
-/// `arguments` as an OBJECT, so replaying an assistant turn there means encoding the call's
-/// `argumentsJSON` string back into structure, and reading one means decoding structure into
-/// the string every downstream consumer already reads (`StepToolCall.argumentsJSON`). Every
-/// other wire value in the app has a fixed shape and a fixed `Codable` type.
-///
-/// Objects keep their keys SORTED on output (`stableString`, and the wire encoder's own
-/// `.sortedKeys`), which is what makes a call's bytes deterministic across resends — the
-/// property the prompt-prefix cache and `PromptPrefixFingerprint` depend on.
-nonisolated indirect enum JSONValue: Codable, Hashable, Sendable {
-    case object([String: JSONValue])
-    case array([JSONValue])
-    case string(String)
-    case number(Double)
-    case bool(Bool)
-    case null
-
-    init(from decoder: Decoder) throws {
-        let single = try decoder.singleValueContainer()
-        if single.decodeNil() {
-            self = .null
-        } else if let bool = try? single.decode(Bool.self) {
-            self = .bool(bool)
-        } else if let number = try? single.decode(Double.self) {
-            self = .number(number)
-        } else if let string = try? single.decode(String.self) {
-            self = .string(string)
-        } else if let array = try? single.decode([JSONValue].self) {
-            self = .array(array)
-        } else if let object = try? single.decode([String: JSONValue].self) {
-            self = .object(object)
-        } else {
-            throw DecodingError.dataCorruptedError(
-                in: single, debugDescription: "not a JSON value")
-        }
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var single = encoder.singleValueContainer()
-        switch self {
-        case .object(let object): try single.encode(object)
-        case .array(let array): try single.encode(array)
-        case .string(let string): try single.encode(string)
-        case .number(let number):
-            // An integral double encodes as an integer, so `{"depth":1}` does not come back
-            // as `{"depth":1.0}` — a byte the model never wrote and the server never cached.
-            if number.rounded() == number, abs(number) < 1e15 {
-                try single.encode(Int64(number))
-            } else {
-                try single.encode(number)
-            }
-        case .bool(let bool): try single.encode(bool)
-        case .null: try single.encodeNil()
-        }
-    }
-
-    /// The value parsed from `json`, or `nil` when the text is not a JSON value.
-    init?(json: String) {
-        guard let data = json.data(using: .utf8),
-              let value = try? JSONCoderFactory.makeWireDecoder().decode(JSONValue.self, from: data)
-        else { return nil }
-        self = value
-    }
-
-    /// The value as compact JSON text with sorted keys — the one spelling every reader of
-    /// a call's arguments sees, whichever provider produced it.
-    var stableString: String {
-        guard let data = try? JSONCoderFactory.makeWireEncoder().encode(self),
-              let text = String(data: data, encoding: .utf8)
-        else { return "null" }
-        return text
-    }
-
-    /// Whether this is a JSON object — the only shape a tool's arguments may take.
-    var isObject: Bool {
-        if case .object = self { return true }
-        return false
-    }
-}
-
 // MARK: - NativeToolDeclaration
 
 /// One tool as BOTH providers' native `tools` field spells it:
@@ -105,8 +20,19 @@ nonisolated struct NativeToolDeclaration: Encodable, Hashable, Sendable {
 
     init(_ schema: ToolSchema) {
         self.type = "function"
+        let raw = schema.parameters
+        let parameters: JSONSchema =
+            (raw.type == "object" && raw.properties == nil)
+            ? JSONSchema(
+                type: raw.type,
+                description: raw.description,
+                properties: [:],
+                required: raw.required,
+                items: raw.items,
+                enumValues: raw.enumValues)
+            : raw
         self.function = Function(
-            name: schema.name, description: schema.description, parameters: schema.parameters)
+            name: schema.name, description: schema.description, parameters: parameters)
     }
 }
 

@@ -85,7 +85,12 @@ final class PromptFormatConventionsTests: XCTestCase {
         // voting turn, the meeting directives, the planning brief — rendered with the
         // registry's fixed samples. One table for the format sweep AND the provenance
         // fingerprint, so a composer that is versioned is audited and vice versa.
-        for entry in RuntimePromptRegistry.entries where !oneShotSystemPrompts.contains(where: { $0.label == entry.name }) {
+        // Filtered to `.localModel`: `.externalAgent` texts follow the external-agent
+        // conventions in Invariant 6 below (O2, C6).
+        for entry in RuntimePromptRegistry.entries
+            where entry.audience == .localModel
+            && !oneShotSystemPrompts.contains(where: { $0.label == entry.name })
+        {
             s.append((entry.name, entry.render()))
         }
 
@@ -431,6 +436,101 @@ final class PromptFormatConventionsTests: XCTestCase {
         // Anti-vacuum: the shape list must still select a real population.
         XCTAssertGreaterThan(scanned, 10, "the construction-shape filter selected almost nothing — "
             + "the shapes probably drifted and the scan is now vacuous")
+    }
+
+    // MARK: - Invariant 6: external-agent runtime texts (.externalAgent audience)
+
+    static let externalInstructionsMaxChars = 4096
+    static let externalCriticalMaxChars = 2048
+
+    nonisolated private static let externalCatalogToolNames: Set<String> = [
+        "folder_status", "list_teams", "list_tasks", "task_status",
+        "create_managed_task", "control_task", "manage_role",
+        "answer_task_question", "message_task", "schedule_task",
+        "set_work_folder_context", "wait_for_events", "task_result",
+        "read_artifact", "task_log", "task_changes",
+    ]
+
+    static func validateExternalAgentSurface(
+        label: String,
+        contents: String,
+        allToolNames: Set<String> = externalCatalogToolNames
+    ) -> [String] {
+        var issues: [String] = []
+
+        for needle in settingsPathNeedles where contents.contains(needle) {
+            issues.append("contains UI Settings path \"\(needle)\"")
+        }
+
+        let isInstructions = label.localizedCaseInsensitiveContains("instructions")
+        let maxChars = isInstructions ? externalInstructionsMaxChars : externalCriticalMaxChars
+        if contents.count > maxChars {
+            issues.append("length \(contents.count) exceeds limit \(maxChars)")
+        }
+
+        let isToolDesc = label.localizedCaseInsensitiveContains("tooldescription")
+        let isSchemaText = label.localizedCaseInsensitiveContains("inputschematext")
+        if let slashIndex = label.lastIndex(of: "/"),
+           (isToolDesc || isSchemaText)
+        {
+            let ownTool = String(label[label.index(after: slashIndex)...])
+            for sibling in allToolNames.subtracting([ownTool]).sorted() {
+                let pattern = "\\b" + NSRegularExpression.escapedPattern(for: sibling) + "\\b"
+                if let regex = try? NSRegularExpression(pattern: pattern),
+                   regex.firstMatch(in: contents, range: NSRange(contents.startIndex..., in: contents)) != nil
+                {
+                    issues.append("mentions sibling tool '\(sibling)'")
+                }
+            }
+        }
+
+        return issues
+    }
+
+    func testExternalAgentFormatConventions_enforcesSettingsLengthAndCrossToolRulesAndExemptsLocalRules() {
+        for entry in RuntimePromptRegistry.entries where entry.audience == .externalAgent {
+            let issues = Self.validateExternalAgentSurface(label: entry.name, contents: entry.render())
+            XCTAssertEqual(issues, [], "[\(entry.name)] violated external-agent format conventions: \(issues)")
+        }
+
+        // Verify the validator catches Settings UI paths, length overflows, and sibling tool names
+        // in tool descriptions, while permitting bold emphasis and bare colon labels that local
+        // model conventions forbid.
+        let validInstructions = "**Critical**: Check readiness first.\nWorkflow:\n1. Inspect folder."
+        XCTAssertEqual(
+            Self.validateExternalAgentSurface(
+                label: "HostedMCPInstructions.text",
+                contents: validInstructions
+            ),
+            []
+        )
+
+        let settingsViolation = Self.validateExternalAgentSurface(
+            label: "HostedMCPInstructions.text",
+            contents: "Enable the driver in Settings → External Agents."
+        )
+        XCTAssertFalse(settingsViolation.isEmpty, "must reject Settings → paths in external-agent texts")
+
+        let overlongInstructions = Self.validateExternalAgentSurface(
+            label: "HostedMCPInstructions.text",
+            contents: String(repeating: "a", count: Self.externalInstructionsMaxChars + 1)
+        )
+        XCTAssertFalse(overlongInstructions.isEmpty, "must reject instructions > 4096 chars")
+
+        let overlongCritical = Self.validateExternalAgentSurface(
+            label: "AutovisorReply.roleNotWaiting",
+            contents: String(repeating: "b", count: Self.externalCriticalMaxChars + 1)
+        )
+        XCTAssertFalse(overlongCritical.isEmpty, "must reject non-instruction external text > 2048 chars")
+
+        let siblingToolViolation = Self.validateExternalAgentSurface(
+            label: "HostedMCPCatalog.toolDescription/task_status",
+            contents: "Returns status of a task; call list_tasks first to find task ids."
+        )
+        XCTAssertFalse(
+            siblingToolViolation.isEmpty,
+            "tool descriptions must not name sibling tools (progressive disclosure / O2)"
+        )
     }
 
     // MARK: - Helpers

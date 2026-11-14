@@ -38,11 +38,22 @@ nonisolated enum RoleEditorSectionPolicy {
 // MARK: - Role Editor Sheet
 
 /// Sheet for creating/editing team roles with tabbed sections.
+///
+/// `team` is the Team Editor's binding (`TeamEditorView.binding(for:)`), rebuilt on every render
+/// of the editor; `session` is what the click that opened the sheet captured — the team and the
+/// folder lifecycle the person was looking at (`TeamEditSheetRequest`). Save composes the role on
+/// `team`, commits it as `session` and closes only once that write landed (`RoleEditorSheet.save`);
+/// a refusal — the write failed, or the folder or the edited team changed while the sheet was open
+/// — keeps the sheet open with the reason. Cancel and Escape ask before throwing away edits
+/// (`EditorSheetClosePolicy`, shared with `ArtifactEditorSheet`). Previews:
+/// `RoleEditorSheet+Previews.swift`.
 struct RoleEditorSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(NTMSOrchestrator.self) var store
     @Environment(StoreConfiguration.self) var config
     @Binding var team: Team
+    /// The team and folder this sheet saves into, or nowhere.
+    let session: TeamEditCommitQueue.Session
     let mode: EditorMode<TeamRoleDefinition>
     let onSave: () -> Void
 
@@ -51,11 +62,27 @@ struct RoleEditorSheet: View {
     // pattern left a one-tick window during which the first body
     // evaluation rendered with the default-empty state. Per CLAUDE.md #26.
     @State private var editorState: RoleEditorState
+    /// A Save is waiting for its write: Save and Cancel are off, so Escape does nothing.
+    @State private var isSaving = false
+    /// Why the last Save did not land — shown in the sheet, which stayed open.
+    @State private var saveError: String?
+    @State private var isConfirmingDiscard = false
 
-    init(team: Binding<Team>, mode: EditorMode<TeamRoleDefinition>, onSave: @escaping () -> Void) {
+    /// `saveError` is the line the sheet opens with: `nil` wherever a person opens it, since
+    /// only a failed Save sets one. The previews pass one, so the refused state can be looked at
+    /// without a disk that refuses a write (the `ExternalAgentSheet` precedent).
+    init(
+        team: Binding<Team>,
+        session: TeamEditCommitQueue.Session,
+        mode: EditorMode<TeamRoleDefinition>,
+        onSave: @escaping () -> Void,
+        saveError: String? = nil
+    ) {
         self._team = team
+        self.session = session
         self.mode = mode
         self.onSave = onSave
+        self._saveError = State(initialValue: saveError)
         var initialState: RoleEditorState
         if case .edit(let role) = mode {
             initialState = RoleEditorState.loaded(from: role)
@@ -109,10 +136,16 @@ struct RoleEditorSheet: View {
             isVisionConfigured: store.configuration.isVisionConfigured,
             approval: approvalAvailability,
             autovisorTeamPolicy: store.snapshot.map { AutovisorTeamPolicy(settings: $0.workFolder.settings) }
-                ?? .unrestricted
+                ?? .unrestricted,
+            mcpGrants: mcpGrants
         )
         return model.autoInjected + model.meetingOnly
     }
+
+    /// Every configured MCP server and what it publishes — read once here and handed to both
+    /// the auto-injected list and the Tools tab, so a grant's row and its hint cannot
+    /// disagree about whether the server is reachable.
+    var mcpGrants: MCPGrantCatalogue { store.mcpServerManager?.grantCatalogue ?? .empty }
 
     /// The folder-level answer to "would a human be there to approve" — the team's Supervisor
     /// mode against Autovisor supervision of this folder — read with the two execution modes,
@@ -145,6 +178,12 @@ struct RoleEditorSheet: View {
 
             TerminalDivider()
 
+            if let saveError {
+                EditorSheetSaveErrorBanner(message: saveError)
+                    .padding(.horizontal, Spacing.standard)
+                    .padding(.top, Spacing.s)
+            }
+
             // Section tabs
             TerminalSegmentedPicker(
                 selection: $editorState.activeSection,
@@ -158,6 +197,10 @@ struct RoleEditorSheet: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(minWidth: 720, idealWidth: 780, minHeight: 720, idealHeight: 800)
+        // Escape is taken by Cancel's `.cancelAction`; this keeps the sheet's own dismissal
+        // out of it while there is something to lose or a write to wait for.
+        .interactiveDismissDisabled(isSaving || editorState.hasUnsavedChanges(mode: mode))
+        .discardChangesConfirmation(of: "role", isPresented: $isConfirmingDiscard) { dismiss() }
     }
 
     // MARK: - Header
@@ -168,24 +211,27 @@ struct RoleEditorSheet: View {
 
             Spacer()
 
-            if !isValid {
+            if isSaving {
+                SavingIndicator()
+            } else if !isValid {
                 Text(isEditingSupervisor ? "Name is required" : "Name and prompt are required")
                     .font(Typography.caption)
                     .foregroundStyle(Colors.textSecondary)
             }
 
             Button("Cancel") {
-                dismiss()
+                requestClose()
             }
             .keyboardShortcut(.cancelAction)
             .buttonStyle(.terminalSecondary)
+            .disabled(isSaving)
 
             Button("Save") {
-                if saveRole() { dismiss() }
+                Task { await save() }
             }
             .keyboardShortcut(.defaultAction)
             .buttonStyle(.terminalPrimary)
-            .disabled(!isValid)
+            .disabled(!isValid || isSaving)
         }
         .padding(.horizontal, Spacing.standard)
         .padding(.vertical, Spacing.m)
@@ -206,10 +252,12 @@ struct RoleEditorSheet: View {
                 autoInjectedTools: autoInjectedToolNames,
                 approval: approvalAvailability,
                 lockedTools: isManagedSingletonRole ? AutovisorConstants.managerMandatoryToolIDs : [],
-                restrictToTools: isManagedSingletonRole ? Set(AutovisorConstants.managerDefaultToolIDs) : nil
+                restrictToTools: isManagedSingletonRole ? Set(AutovisorConstants.managerDefaultToolIDs) : nil,
+                mcpGrants: isManagedSingletonRole ? .empty : mcpGrants
             )
         case .dependencies:
-            RoleEditorDependenciesTab(editorState: $editorState, isEditingSupervisor: isEditingSupervisor, team: $team)
+            RoleEditorDependenciesTab(
+                editorState: $editorState, isEditingSupervisor: isEditingSupervisor, team: $team, session: session)
         case .skills:
             RoleEditorSkillsTab(editorState: $editorState)
         case .llm:
@@ -242,50 +290,57 @@ struct RoleEditorSheet: View {
 
     // MARK: - Actions
 
-    /// Returns `true` when the save actually landed. `false` means the role
-    /// disappeared mid-edit (e.g. concurrent `handleDeleteRole` from another
-    /// view); the caller must keep the sheet open so the user can copy out
-    /// their work or cancel explicitly, instead of silently dismissing as if
-    /// nothing happened.
-    private func saveRole() -> Bool {
-        // Compose every mutation on a local copy and ship it through the
-        // `team` Binding via a single assignment. Multiple consecutive writes
-        // to the Binding race because `TeamEditorView.binding(for:)` has a
-        // captured-value getter — the second write reads the stale snapshot
-        // and silently overwrites the first. See `RoleEditorMutations` doc.
-        var newTeam = team
-        switch mode {
-        case .create:
-            _ = RoleEditorMutations.applyCreate(
-                to: &newTeam,
-                editorState: editorState,
-                teamID: newTeam.id
-            )
-            team = newTeam
-        case .edit(let role):
-            guard RoleEditorMutations.applyEdit(
-                to: &newTeam,
-                editorState: editorState,
-                existingRoleID: role.id
-            ) else {
-                store.lastErrorMessage = "Could not save role — “\(editorState.roleName)” no longer exists in this team. It may have been deleted in another view."
-                return false
-            }
-            team = newTeam
+    /// Save, then close — only once the write landed. Until 2026-11-08 the sheet closed on the
+    /// Binding assignment, whose setter merely started a write: a tool ticked here could vanish
+    /// with no sign. A refused write keeps the sheet open with the reason and the draft intact.
+    private func save() async {
+        guard !isSaving else { return }
+        isSaving = true
+        saveError = nil
+        let failure = await Self.save(editorState, mode: mode, session: session, onto: team, through: store.teamEdits)
+        isSaving = false
+        if let failure {
+            saveError = failure
+            return
         }
         onSave()
-        return true
+        dismiss()
     }
 
-}
+    /// Cancel and Escape: close at once only when nothing would be lost.
+    private func requestClose() {
+        switch EditorSheetClosePolicy.onCancel(
+            hasUnsavedChanges: editorState.hasUnsavedChanges(mode: mode), isSaving: isSaving
+        ) {
+        case .close: dismiss()
+        case .confirmDiscard: isConfirmingDiscard = true
+        case .ignore: break
+        }
+    }
 
-#Preview {
-    @Previewable @State var store = PreviewStore.make()
-    RoleEditorSheet(
-        team: .constant(.default),
-        mode: .create,
-        onSave: {}
-    )
-    .environment(store)
-    .environment(store.configuration)
+    /// The Save apart from the view: the draft composed on `team` — the team the sheet's binding
+    /// reads now — committed as `session`, and the write that carries it awaited. `nil` when the
+    /// role is stored; otherwise why it is not — for the sheet to show while it stays open.
+    ///
+    /// `session` is asked first: after a folder switch `team` is the next folder's team of the
+    /// same id, after an edited-team change another team, and either one composed with this draft
+    /// is a write into the wrong place — or, when that team lacks the role, a refusal that blames
+    /// a deletion that never happened. Composed on a local copy and handed over ONCE: one staged
+    /// value is what the Save waits for (`RoleEditorMutations`).
+    static func save(
+        _ editorState: RoleEditorState,
+        mode: EditorMode<TeamRoleDefinition>,
+        session: TeamEditCommitQueue.Session,
+        onto team: Team,
+        through queue: TeamEditCommitQueue
+    ) async -> String? {
+        if let refusal = queue.refusal(toSave: session, into: team) { return refusal }
+        var newTeam = team
+        guard RoleEditorMutations.applySave(to: &newTeam, editorState: editorState, mode: mode) else {
+            return "Could not save role — “\(editorState.roleName)” no longer exists in this team. "
+                + "It may have been deleted in another view."
+        }
+        return await queue.commit(newTeam, as: session).failureReason
+    }
+
 }

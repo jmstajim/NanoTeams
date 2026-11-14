@@ -17,6 +17,9 @@ nonisolated struct CreateArtifactTool: ToolHandler {
         parameters: parameterSchema(nameEnum: nil)
     )
     static let category: ToolCategory = .artifact
+    /// The body spellings, plus `markdown` — the format a model names when it means the body.
+    static let undeclaredArguments = ToolArgumentVocabulary.aliases(
+        ToolArgumentVocabulary.bodyAlternatives + ["markdown"], of: "content")
     static let excludedInMeetings = true
 
     /// LLM-facing prose. Stays in `Self.schema` as the user-curated tool surface
@@ -94,19 +97,14 @@ nonisolated struct CreateArtifactTool: ToolHandler {
             // NOT the shared `requiredNonEmptyString` helper, deliberately — see the
             // rejection branch below, which is where an empty name is handled.
             let name = try requiredString(args, "name")
-            // BOTH structural keys are excluded, or step 3 of `resolveContentString`
-            // ("if exactly one non-excluded string value remains, use it") adopts
-            // `format` as the body: `{"name": X, "format": "markdown"}` produced an
-            // artifact whose entire content was the word `markdown`, `ok: true`, and an
-            // auto-completed step — the empty-content guard below never saw an empty
-            // string. `format` is not in `nonContentKeys`, and it is the companion key
-            // the worked example in every producing role's system prompt suggests
-            // (`NativeLMStudioClient+RequestBuilder`), beside a `content` that is a
-            // literal `"..."` placeholder — so "copied the example, dropped the
-            // placeholder" lands exactly here. The same exclusion also rescues a REAL
-            // body sent under an alias (`{"name": X, "markdown": "# body", "format": …}`),
-            // which step 3 previously discarded as ambiguous.
-            let content = resolveContentString(args, excludeKeys: ["name", "format"]) ?? ""
+            // The declared `content` only: a body sent under another name arrives renamed to
+            // it (`undeclaredArguments` — `{"name": X, "markdown": "# body"}` is the live
+            // shape), and nothing else is ever adopted as the body. The resolver this
+            // replaced (2026-11-09) ended in "the one remaining string is the content", which
+            // once made `{"name": X, "format": "markdown"}` an artifact whose entire body was
+            // the word `markdown`; the empty-content guard below now sees that call as what it
+            // is. Absent → "" for the same guard.
+            let content = optionalString(args, "content") ?? ""
 
             // Defense-in-depth on top of `GeneratedTeamBuilder.stripFileShapedArtifactNames`.
             // The team-level cleanup catches file-shaped names in `produces_artifacts`

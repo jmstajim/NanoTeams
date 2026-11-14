@@ -290,4 +290,31 @@ extension NTMSPathsTests {
         XCTAssertNotEqual(NTMSPaths.roleDirComponent("a/b"), "a/b")
         XCTAssertNotEqual(NTMSPaths.roleDirComponent("..evil"), "..evil")
     }
+
+    // MARK: - MCP Paths
+
+    func testMCPFolderPathsLiveUnderInternal() throws {
+        let folioSlug = try XCTUnwrap(MCPServerSlug("folio"))
+        XCTAssertTrue(paths.mcpDir.path.hasSuffix(".nanoteams/internal/mcp"))
+        XCTAssertTrue(paths.mcpFolderJSON.path.hasSuffix(".nanoteams/internal/mcp/mcp_folder.json"))
+        XCTAssertTrue(paths.mcpServerDir(slug: folioSlug).path.hasSuffix("internal/mcp/folio"))
+        XCTAssertTrue(paths.mcpRPCLogJSONL(slug: folioSlug).path.hasSuffix("internal/mcp/folio/rpc_log.jsonl"))
+    }
+
+    /// A binary block of an MCP result goes under the task's ATTACHMENTS, not under
+    /// `internal/`: the whole point of writing it is that `analyze_image` can read it back,
+    /// and `SandboxPathResolver` hides `internal/` from every file tool.
+    func testMCPAttachmentsAreReachableByFileTools() throws {
+        let folioSlug = try XCTUnwrap(MCPServerSlug("folio"))
+        XCTAssertTrue(paths.mcpAttachmentsDir(taskID: 7).path.hasSuffix(".nanoteams/tasks/7/attachments/mcp"))
+        XCTAssertFalse(paths.mcpAttachmentsDir(taskID: 7).path.contains("/internal/"))
+        XCTAssertTrue(paths.mcpAttachmentsDir(taskID: 7, slug: folioSlug).path
+            .hasSuffix(".nanoteams/tasks/7/attachments/mcp/folio"))
+    }
+
+    func testMCPAttachmentsNestUnderDelegatedParents() throws {
+        let shortSlug = try XCTUnwrap(MCPServerSlug("s"))
+        XCTAssertTrue(paths.mcpAttachmentsDir(taskID: 9, ancestors: [3, 5], slug: shortSlug).path
+            .hasSuffix(".nanoteams/tasks/3/subtasks/5/subtasks/9/attachments/mcp/s"))
+    }
 }

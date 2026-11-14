@@ -59,15 +59,18 @@ nonisolated final class ToolCallTracker: @unchecked Sendable {
         let informationEpoch: Int
     }
 
-    /// Canonical identity of a tool call's arguments: key-sorted JSON of the SPELLING-
-    /// NORMALIZED payload when it parses, the trimmed raw text otherwise (a malformed
-    /// payload is still identical to its own byte-for-byte repeat, which is the case the
-    /// detector cares about).
-    static func argumentsIdentity(forJSON argumentsJSON: String) -> Int {
+    /// Canonical identity of a tool call's arguments, as the runtime READS them
+    /// (`ToolCallArguments`): key-sorted JSON of the SPELLING-NORMALIZED payload, so two
+    /// documents the runtime reads identically — keys reordered, a key with whitespace
+    /// around it, a reentrant envelope — are one call to the detector, as they are to the
+    /// tool. That holds for a call the reading REFUSES too (`Prepared.read`), so a model
+    /// repeating one refused call is still seen repeating it. The trimmed raw text when
+    /// there is nothing to read (a malformed payload is still identical to its own
+    /// byte-for-byte repeat, which is the case the detector cares about).
+    static func argumentsIdentity(toolName: String, forJSON argumentsJSON: String) -> Int {
         var hasher = Hasher()
-        if let dict = ToolCallDataUtils.parseJSON(argumentsJSON),
-           let canonical = ToolCallParsingHelpers.stableJSONString(
-               from: normalizeSpelling(dict)) {
+        if let args = ToolCallArguments.prepare(rawJSON: argumentsJSON, emittedName: toolName).read?.args,
+           let canonical = ToolCallParsingHelpers.stableJSONString(from: normalizeSpelling(args)) {
             hasher.combine(canonical)
         } else {
             hasher.combine(argumentsJSON.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -134,10 +137,13 @@ nonisolated final class ToolCallTracker: @unchecked Sendable {
         let utf8Length: Int
         let contentHash: Int
 
+        /// From the arguments as the runtime would dispatch them (`ToolCallArguments`), so a
+        /// call the runtime refuses leaves no fingerprint — its corrected retry is not "an
+        /// identical write already executed", because nothing was written.
         init?(argumentsJSON: String) {
-            guard let dict = ToolCallDataUtils.parseJSON(argumentsJSON),
-                  let path = dict["path"] as? String,
-                  let content = dict["content"] as? String else { return nil }
+            let args = ToolCallArguments.prepare(rawJSON: argumentsJSON, emittedName: TN.writeFile).dispatched?.args
+            guard let path = args?["path"] as? String,
+                  let content = args?["content"] as? String else { return nil }
             var hasher = Hasher()
             hasher.combine(content)
             self.path = path
@@ -175,8 +181,9 @@ nonisolated final class ToolCallTracker: @unchecked Sendable {
     func record(toolName: String, argumentsJSON: String, resultJSON: String, isError: Bool) {
         let toolName = canonical(toolName)
         if toolName == ToolNames.updateScratchpad, !isError {
-            if let dict = ToolCallDataUtils.parseJSON(argumentsJSON),
-               let content = resolveContentString(dict) {
+            if let dict = ToolCallArguments.prepare(rawJSON: argumentsJSON, emittedName: toolName)
+                .dispatched?.args,
+               let content = try? requiredString(dict, "content") {
                 let contentHash = content.hashValue
                 if contentHash == lastScratchpadContentHash { return }
                 lastScratchpadContentHash = contentHash
@@ -196,7 +203,7 @@ nonisolated final class ToolCallTracker: @unchecked Sendable {
         calls.append(TrackedCall(
             toolName: toolName,
             argumentsSummary: argSummary,
-            argumentsIdentity: Self.argumentsIdentity(forJSON: argumentsJSON),
+            argumentsIdentity: Self.argumentsIdentity(toolName: toolName, forJSON: argumentsJSON),
             resultSummary: resultSummary,
             resultJSON: resultJSON,
             wasSuccessful: !isError,
@@ -247,11 +254,10 @@ nonisolated final class ToolCallTracker: @unchecked Sendable {
     /// of how the caller arranges its loop.
     @discardableResult
     func checkAndRecordWrite(toolName: String, argumentsJSON: String) -> Bool {
-        if isDuplicateIdenticalWrite(toolName: toolName, argumentsJSON: argumentsJSON) {
-            return true
-        }
-        recordWriteFingerprint(toolName: toolName, argumentsJSON: argumentsJSON)
-        return false
+        // One reading of the document, not one per half: the payload can be a whole file.
+        guard canonical(toolName) == TN.writeFile,
+              let fp = WriteFingerprint(argumentsJSON: argumentsJSON) else { return false }
+        return !writeFingerprints.insert(fp).inserted
     }
 
     nonisolated deinit {}

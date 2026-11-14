@@ -9,6 +9,13 @@ import XCTest
 @MainActor
 final class AppTerminationDelegateTests: XCTestCase {
 
+    private var store: NTMSOrchestrator?
+
+    override func tearDown() async throws {
+        store = nil
+        try await super.tearDown()
+    }
+
     /// Without a shutdown step there is nothing to wait for, and suspending the quit would be
     /// a hang with no cause. This is also the state during launch, before the orchestrator
     /// exists.
@@ -76,6 +83,32 @@ final class AppTerminationDelegateTests: XCTestCase {
         await AppTerminationDelegate.run({ }, within: .seconds(30))
         XCTAssertLessThan(ContinuousClock.now - started, .seconds(5),
                           "the race must resolve on the WORK, not on the deadline")
+    }
+
+    // MARK: - The shutdown step itself
+
+    /// The delegate has about five seconds in total. Running the two teardowns in sequence
+    /// would leave a legacy MCP server holding a session for however long the index write
+    /// took on a large folder — so they race rather than queue.
+    func testShutdownForTerminationRunsBothHalvesAndFinishesWellInsideTheBudget() async {
+        let store = TestOrchestrator.make()
+        self.store = store
+        let started = Date()
+        await store.shutdownForTermination()
+        XCTAssertLessThan(Date().timeIntervalSince(started), 5,
+                          "the quit must not wait on a teardown that has nothing to do")
+        XCTAssertNil(store.searchIndexCoordinator)
+        XCTAssertTrue(store.mcpServerManager?.connections.isEmpty ?? true)
+    }
+
+    /// Quitting before a folder was ever opened is not an error: nothing has been built, so
+    /// there is nothing to take down.
+    func testShutdownForTerminationIsSafeBeforeAnythingWasOpened() async {
+        let store = TestOrchestrator.make()
+        self.store = store
+        XCTAssertNil(store.mcpServerManager)
+        await store.shutdownForTermination()
+        await store.shutdownForTermination()
     }
 }
 

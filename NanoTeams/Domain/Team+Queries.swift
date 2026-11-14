@@ -171,6 +171,15 @@ nonisolated extension Team {
         supervisorRequiredArtifacts.isEmpty
     }
 
+    /// Whether this team's roles read the Work Folder Context. Only a step prompt template that
+    /// carries the `{workFolderContext}` chip renders it, and unlike `{globalContext}` and
+    /// `{roleSkills}` the chip has no fallback insertion (`TemplateResolver`), so the roles of a
+    /// template without it — the bundled Personal Assistant and Quest Party, any custom team whose
+    /// author removed it — never see the text. Consultation and meeting turns never do.
+    var readsWorkFolderContext: Bool {
+        systemPromptTemplate.contains("{workFolderContext}")
+    }
+
     /// The `isChatMode` value a task created against this team must be SEEDED with — what
     /// `NTMSRepository.createTask` persists into `NTMSTask.storedIsChatMode`.
     ///

@@ -832,6 +832,49 @@ final class QuickCaptureQueueTests: XCTestCase {
         XCTAssertFalse(controller._testHasChatStartAttempted(taskID: taskID))
     }
 
+    /// A wake overtaken by a folder transition — before the dispatched `Task` runs, or on entry
+    /// to `performStartWake` while a folder open is in flight — refunds the attempt it stamped
+    /// and starts/resumes nothing.
+    ///
+    /// RED: drop the `isCurrentFolderLifecycle` guards in `wakeRunForQueuedMessages` or
+    /// `performStartWake` → the attempt stays stamped across the folder transition.
+    func testWakeAndPerformStartWake_folderTransition_refundsAttemptsWithoutWaking() async throws {
+        let tmp = try makeTempWorkFolder()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let store = TestOrchestrator.make()
+        await store.openWorkFolder(tmp)
+        guard let doneChatID = await store.createTask(title: "chat", supervisorTask: "g"),
+              let failedChatID = await store.createTask(title: "failed", supervisorTask: "g")
+        else {
+            return XCTFail("Could not create tasks")
+        }
+        let controller = QuickCaptureController(formState: sut)
+        controller.store = store
+
+        let m1 = msg("done wake")
+        let m2 = msg("failed wake")
+        sut.appendQueuedMessage(m1, for: doneChatID)
+        sut.appendQueuedMessage(m2, for: failedChatID)
+        store.engineState[doneChatID] = .done
+        store.engineState[failedChatID] = .failed
+
+        controller.tryFlushQueuedMessages()
+        XCTAssertTrue(controller._testHasChatStartAttempted(taskID: doneChatID), "premise: start attempt stamped")
+        XCTAssertEqual(controller.failedResumeAttemptedMessageIDs[failedChatID], [m2.id], "premise: resume attempt stamped")
+        store.workFolderOpenGeneration += 1
+        for _ in 0..<10 { await Task.yield() }
+
+        XCTAssertFalse(controller._testHasChatStartAttempted(taskID: doneChatID),
+                       "superseded .start wake must refund its stamped attempt")
+        XCTAssertNil(controller.failedResumeAttemptedMessageIDs[failedChatID],
+                     "superseded .resume wake must refund its stamped attempt")
+
+        controller.chatStartAttemptedMessageIDs[doneChatID] = [m1.id]
+        await controller.performStartWake(taskID: doneChatID, newlyStampedIDs: [m1.id])
+        XCTAssertFalse(controller._testHasChatStartAttempted(taskID: doneChatID),
+                       "performStartWake entered during an open transition must refund its attempt")
+    }
+
     /// Corner: the documented reopen scenario verbatim — an UNLOADED closed chat
     /// task. The sync pre-check in `wakeRunForQueuedMessages` is nil-soft for
     /// unloaded tasks, so `performStartWake`'s post-load re-check is the only

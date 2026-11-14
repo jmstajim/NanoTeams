@@ -20,9 +20,9 @@ nonisolated extension ToolRegistry {
         searchMaxResults: Int = AppDefaults.searchMaxResults,
         searchContextBefore: Int = AppDefaults.searchContextBefore,
         searchContextAfter: Int = AppDefaults.searchContextAfter,
-        bashSandboxEnabled: Bool = BashConstants.defaultSandboxEnabled,
-        bashSandboxPermissions: BashSandboxPermissions = BashSandboxPermissions(),
-        bashAllowUnsandboxedFallback: Bool = false
+        mcpTools: MCPResolvedTools = .empty,
+        mcpAttachmentsDir: URL? = nil,
+        home: URL? = nil
     ) -> (registry: ToolRegistry, runtime: ToolRuntime) {
         let registry = ToolRegistry()
         let logger = toolCallsLogURL.map { ToolCallLogger(logURL: $0) }
@@ -37,9 +37,7 @@ nonisolated extension ToolRegistry {
             searchMaxResults: searchMaxResults,
             searchContextBefore: searchContextBefore,
             searchContextAfter: searchContextAfter,
-            bashSandboxEnabled: bashSandboxEnabled,
-            bashSandboxPermissions: bashSandboxPermissions,
-            bashAllowUnsandboxedFallback: bashAllowUnsandboxedFallback
+            home: home
         )
         for handler in handlers {
             let name = type(of: handler).name
@@ -58,6 +56,29 @@ nonisolated extension ToolRegistry {
                         toolName: name, args: args,
                         code: .permissionDenied, message: message
                     )
+                }
+            }
+        }
+
+        // The SHIPPED half only, and it must be the same half the schema was built from:
+        // registering a withheld tool would give the model a working handler for a name its
+        // prompt never showed it, which is the gate running in only one of the two places it
+        // has to run. The caller resolves the snapshot ONCE and passes the same value here
+        // and to the schema resolver.
+        //
+        // No alias is registered for these: an alias is a spelling a model is known to
+        // hallucinate for one of THIS app's tools, and an external server's folded name has
+        // no such history. `mcp__` is also the one prefix `resolveToolName` must not strip.
+        if let invoker = mcpTools.invoker {
+            for entry in mcpTools.shipped {
+                let tool = MCPDynamicTool(
+                    entry: entry,
+                    invoker: invoker,
+                    attachmentsDirectory: mcpAttachmentsDir?
+                        .appendingPathComponent(entry.slug.rawValue, isDirectory: true),
+                    workFolderRoot: workFolderRoot)
+                registry.register(name: tool.name, schema: tool.schema) { _, args in
+                    await tool.handle(args: args)
                 }
             }
         }

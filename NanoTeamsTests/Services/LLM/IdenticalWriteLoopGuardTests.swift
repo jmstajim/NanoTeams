@@ -24,6 +24,47 @@ final class IdenticalWriteLoopGuardTests: XCTestCase {
         super.tearDown()
     }
 
+    // MARK: - The fingerprint reads what the runtime reads
+
+    /// A write the runtime refuses before any handler runs writes nothing, so it must leave no
+    /// fingerprint: its corrected retry is the FIRST write, not "an identical write already
+    /// executed".
+    func testARefusedWrite_leavesNoFingerprint_soItsCorrectedRetryRuns() {
+        let refused = #"{"path":"a.js","\npath":"b.js","content":"X"}"#
+        XCTAssertFalse(sut.checkAndRecordWrite(toolName: TN.writeFile, argumentsJSON: refused))
+        XCTAssertFalse(
+            sut.checkAndRecordWrite(toolName: TN.writeFile, argumentsJSON: #"{"path":"a.js","content":"X"}"#),
+            "nothing was written by the refused call")
+    }
+
+    /// Two spellings the runtime dispatches identically are one write.
+    func testAPaddedKeyOrAReentrantEnvelope_isTheSameWrite() {
+        XCTAssertFalse(sut.checkAndRecordWrite(
+            toolName: TN.writeFile, argumentsJSON: #"{"path":"a.js","content":"X"}"#))
+        XCTAssertTrue(sut.checkAndRecordWrite(
+            toolName: TN.writeFile, argumentsJSON: #"{" path":"a.js","content":"X"}"#))
+        XCTAssertTrue(sut.checkAndRecordWrite(
+            toolName: TN.writeFile,
+            argumentsJSON: #"{"name":"write_file","arguments":{"path":"a.js","content":"X"}}"#))
+    }
+
+    /// A model repeating one REFUSED call with its keys reordered is still repeating it — the
+    /// identity reads what the call was read as, not its bytes.
+    func testARefusedCallRepeatedInAnotherKeyOrder_isOneIdentity() {
+        XCTAssertEqual(
+            ToolCallTracker.argumentsIdentity(toolName: TN.search, forJSON: #"{"query":"x","paths":5}"#),
+            ToolCallTracker.argumentsIdentity(toolName: TN.search, forJSON: #"{ "paths": 5, "query": "x" }"#))
+    }
+
+    func testTheLoopIdentity_readsTheArgumentsTheRuntimeDispatches() {
+        XCTAssertEqual(
+            ToolCallTracker.argumentsIdentity(toolName: TN.readFile, forJSON: #"{"path":"a.txt"}"#),
+            ToolCallTracker.argumentsIdentity(toolName: TN.readFile, forJSON: #"{"\npath":"a.txt"}"#))
+        XCTAssertNotEqual(
+            ToolCallTracker.argumentsIdentity(toolName: TN.readFile, forJSON: #"{"path":"a.txt"}"#),
+            ToolCallTracker.argumentsIdentity(toolName: TN.readFile, forJSON: #"{"path":"b.txt"}"#))
+    }
+
     // MARK: - Identical write detection
 
     func testIsDuplicateIdenticalWrite_returnsFalse_forFirstCall() {

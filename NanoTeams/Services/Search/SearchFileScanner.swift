@@ -39,7 +39,14 @@ nonisolated extension SearchExecutor {
             // testFacade_everySupportedExtensionResolvesToAStrategy`. Kept as a
             // report rather than a crash so such a slip degrades to one skipped
             // file with a reason.
-            guard let outcome = DocumentTextExtractor.extract(from: url) else {
+            guard let real = try? VerifiedFile.verifiedRealURL(url, resolver: plan.resolver) else {
+                // The walk permitted this entry's real path; a refusal here means the name was
+                // re-pointed since. Reported like the walk's own symlink skip.
+                results.skipped.append(SkippedFile(
+                    path: relativePath, reason: "symlink points outside the work folder"))
+                return
+            }
+            guard let outcome = DocumentTextExtractor.extract(from: real) else {
                 results.skipped.append(SkippedFile(
                     path: relativePath,
                     reason: "document extractor could not open file as .\(ext)"
@@ -67,7 +74,7 @@ nonisolated extension SearchExecutor {
             // error / cancellation) so each routes to the right reporting
             // channel — collapsing them into one `nil` would silently
             // inflate `results.skippedBinaryCount` after a pause.
-            switch readUTF8Streaming(url: url) {
+            switch readUTF8Streaming(url: url, resolver: plan.resolver) {
             case .text(let utf8):
                 content = utf8
             case .binary:

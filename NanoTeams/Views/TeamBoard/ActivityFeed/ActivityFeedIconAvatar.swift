@@ -34,7 +34,7 @@ struct ActivityFeedIconAvatar: View {
         ForEach(items, id: \.0) { icon, label, color in
             VStack(spacing: 6) {
                 ActivityFeedIconAvatar(icon: icon, color: color)
-                Text(label).font(Typography.caption2).foregroundStyle(Colors.textSecondary)
+                Text(label).font(Typography.caption2).lineLimit(1).foregroundStyle(Colors.textSecondary)
             }
         }
     }
@@ -46,15 +46,15 @@ struct ActivityFeedIconAvatar: View {
     HStack(spacing: 16) {
         VStack(spacing: 6) {
             ActivityFeedIconAvatar(icon: "bell", color: Colors.info, size: 20)
-            Text("20pt").font(Typography.caption2).foregroundStyle(Colors.textSecondary)
+            Text("20pt").font(Typography.caption2).lineLimit(1).foregroundStyle(Colors.textSecondary)
         }
         VStack(spacing: 6) {
             ActivityFeedIconAvatar(icon: "exclamationmark.triangle", color: Colors.warning)
-            Text("Default").font(Typography.caption2).foregroundStyle(Colors.textSecondary)
+            Text("Default").font(Typography.caption2).lineLimit(1).foregroundStyle(Colors.textSecondary)
         }
         VStack(spacing: 6) {
             ActivityFeedIconAvatar(icon: "checkmark.seal", color: Colors.success, size: 40)
-            Text("40pt").font(Typography.caption2).foregroundStyle(Colors.textSecondary)
+            Text("40pt").font(Typography.caption2).lineLimit(1).foregroundStyle(Colors.textSecondary)
         }
     }
     .padding()

@@ -97,6 +97,82 @@ enum ToolErrorCode: String, Codable, CaseIterable {
     /// alone keeps the numbered list. `ToolErrorNotePolicy` appends no direction — the
     /// envelope's `next` names the form and the `questions` entry per question (2026-09-11).
     case questionnaireRequired = "QUESTIONNAIRE_REQUIRED"
+    /// An external MCP server ran the tool and reported that it failed — `isError: true` on
+    /// the wire, or a JSON-RPC refusal of the call. The message is the SERVER's own words,
+    /// which is why this is not `COMMAND_FAILED`: the reader has to know the sentence came
+    /// from outside this app, and the boundary sentence in the system prompt says results
+    /// from an MCP server are data to report rather than instructions to follow.
+    /// `-32602` is mapped to `INVALID_ARGS` instead — that one names the argument that was
+    /// wrong, which is the only part of an "invalid params" a model can act on.
+    case mcpToolError = "MCP_TOOL_ERROR"
+    /// The server did not answer inside the call's budget. The `_TIMED_OUT` suffix is
+    /// load-bearing exactly as `COMMAND_TIMED_OUT`'s is: `ToolErrorNotePolicy.direction`
+    /// routes on it to "may be transient — retry once", which is the right advice for a
+    /// server that is up but slow.
+    case mcpTimedOut = "MCP_TIMED_OUT"
+    /// The server could not be reached, refused the connection, or answered something this
+    /// client cannot read. Distinct from `MCP_TOOL_ERROR`, where the server answered and the
+    /// TOOL failed: here nothing ran, so no argument is at fault and no rewording reaches it.
+    case mcpServerUnavailable = "MCP_SERVER_UNAVAILABLE"
+    /// A human was asked to approve this call and answered no, or the Auto judge reviewed it
+    /// and returned a DENY verdict. A DECISION, like `BASH_DENIED` — distinct from `CANCELLED`,
+    /// which is the same hold abandoned rather than answered, from `APPROVAL_UNAVAILABLE`,
+    /// where nobody could answer at all, and from `MCP_JUDGE_UNAVAILABLE`, where the Auto
+    /// judge failed closed before producing a verdict.
+    case mcpDenied = "MCP_DENIED"
+    /// Under `.auto` mode, the MCP LLM judge failed closed before producing a verdict (transport
+    /// failure, unparseable reply, reasoning-only allow, or prompt exceeding the judge model's
+    /// context window). Distinct from `MCP_DENIED` so `ToolErrorNotePolicy.direction` tells the
+    /// model the Auto judge could not verify the call rather than claiming a person reviewed and
+    /// declined it.
+    case mcpJudgeUnavailable = "MCP_JUDGE_UNAVAILABLE"
+
+    // MARK: The hosted MCP server's refusals to an external agent
+    //
+    // Each names one cause with its own remedy, so an agent branches on the code rather than on
+    // the sentence. Until 2026-11-09 nearly every refusal on that surface was `COMMAND_FAILED`
+    // and an agent could not tell a stale task id from a spent creation window without reading
+    // prose (#387).
+
+    /// The folder's Autovisor is off, or driven by the built-in model: nothing an external agent
+    /// asks for is done until a person switches it back (`details.readiness` names the state).
+    case autovisorOff = "AUTOVISOR_OFF"
+    /// No top-level task with this id in the open folder.
+    case taskNotFound = "TASK_NOT_FOUND"
+    /// The task exists and is not this agent's: the person's, the built-in Autovisor's or
+    /// another agent's.
+    case notOwner = "NOT_OWNER"
+    /// A creation limit stands — running tasks, open tasks, or creations in a sliding window
+    /// (`details` names which, its value and, for the window, when it next admits one).
+    case limitReached = "LIMIT_REACHED"
+    /// No artifact of the task matches the name (`details.available` lists what it has).
+    case artifactNotFound = "ARTIFACT_NOT_FOUND"
+    /// No role with this id in the task's latest run.
+    case roleNotFound = "ROLE_NOT_FOUND"
+    /// The task, or the named role, is not waiting for an answer — somebody got there first, or
+    /// it never asked.
+    case notWaiting = "NOT_WAITING"
+    /// The folder's team policy refuses the team the call named, or the call named none and no
+    /// team may take it.
+    case teamRefused = "TEAM_REFUSED"
+    /// The agent called faster than its rate allows (`details.retry_after_ms`).
+    case rateLimited = "RATE_LIMITED"
+    /// A create with this `request_key` is still under way: its task is not in the index yet.
+    case requestInProgress = "REQUEST_IN_PROGRESS"
+    /// Snapshots repository does not exist or snapshots are unavailable for the task/folder.
+    case snapshotsUnavailable = "SNAPSHOTS_UNAVAILABLE"
+    /// The work folder changed while this action was running.
+    case folderChanged = "FOLDER_CHANGED"
+    /// The task stands paused by the person in the app (`pause_reason` `by_person`), and the call
+    /// would lift that pause — `control_task resume` or `start`, `manage_role correct`. Only the
+    /// person lifts it; nothing was changed, and `details.pause_reason` names the pause that
+    /// stands. A message or an answer is not refused: it waits for their resume (D-M18,
+    /// 2026-11-12 — until then the pause held by instruction alone).
+    case pausedByPerson = "PAUSED_BY_PERSON"
+    /// The person has not allowed this agent the call: `set_work_folder_context` while the
+    /// agent's switch is off (2026-11-13). Nothing was changed and only the person can change
+    /// it; `details.what_the_person_must_do` says what to ask of them.
+    case notAllowed = "NOT_ALLOWED"
 }
 
 // MARK: - Response Envelope Types

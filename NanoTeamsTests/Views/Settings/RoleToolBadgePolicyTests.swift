@@ -66,7 +66,8 @@ final class RoleToolBadgePolicyTests: XCTestCase {
         isVisionConfigured: Bool = false,
         // Helper default, not the runtime's: computer-use Off, bash available — the reading
         // every existing case was written against when the parameter was a Bool.
-        approval: ToolApprovalAvailability = ToolApprovalAvailability(bash: .available, computerUse: .withheld(.switchedOff))
+        approval: ToolApprovalAvailability = ToolApprovalAvailability(bash: .available, computerUse: .withheld(.switchedOff), humanPresent: true),
+        mcpGrants: MCPGrantCatalogue = .empty
     ) -> RoleToolBadgePolicy.Model {
         RoleToolBadgePolicy.model(
             role: def,
@@ -76,8 +77,255 @@ final class RoleToolBadgePolicyTests: XCTestCase {
             selectedScheme: selectedScheme,
             isVisionConfigured: isVisionConfigured,
             approval: approval,
-            autovisorTeamPolicy: .unrestricted
+            autovisorTeamPolicy: .unrestricted,
+            mcpGrants: mcpGrants
         )
+    }
+
+    // MARK: - MCP and the run's human (F46)
+
+    private static let telegramID = UUID(uuidString: "00000000-0000-0000-0000-0000000E4601")!
+    private static let tradeID = UUID(uuidString: "00000000-0000-0000-0000-0000000E4602")!
+
+    /// Telegram in Manual mode with `send_message` approved — a Manual server's tool never runs
+    /// unattended — and Trade-Room trusted and Semi-automatic, whose read-only `get_orders`
+    /// runs unattended and whose `place_order` does not.
+    private func mcpCatalogue() throws -> MCPGrantCatalogue {
+        MCPGrantCatalogue(servers: [
+            try MCPGrantCatalogueTests.makeServer(
+                slug: "telegram", id: Self.telegramID, approvalMode: .manual,
+                tools: [try MCPGrantCatalogueTests.makeTool(slug: "telegram", tool: "send_message")]),
+            try MCPGrantCatalogueTests.makeServer(
+                slug: "trade_room", id: Self.tradeID, approvalMode: .semiAutomatic, isTrusted: true,
+                tools: [
+                    try MCPGrantCatalogueTests.makeTool(slug: "trade_room", tool: "get_orders", runsUnattended: true),
+                    try MCPGrantCatalogueTests.makeTool(slug: "trade_room", tool: "place_order"),
+                ]),
+        ])
+    }
+
+    /// Supervisor mode Autonomous — the families' modes are beside the point here.
+    private let nobodyThere = ToolApprovalAvailability(bashMode: .auto, computerUseMode: .auto, humanPresent: false)
+
+    /// The runtime withholds every tool of a Manual server from a run with nobody to approve;
+    /// the badge says so, with the same words bash and computer-use get.
+    ///
+    /// RED until 2026-09-24: the editor asked the catalogue with a person present "by
+    /// construction", counted the tool as shipped, and showed no hint (F46).
+    func testAnMCPToolOfAManualServerIsWithheldOnAnAutonomousTeam() throws {
+        let def = role(toolIDs: ["mcp__telegram__send_message"])
+        let m = model(def, team: team([def]), approval: nobodyThere, mcpGrants: try mcpCatalogue())
+
+        XCTAssertFalse(m.effective.contains("mcp__telegram__send_message"))
+        XCTAssertEqual(m.unavailableHere[.humanApprover], ["mcp__telegram__send_message"])
+        XCTAssertNil(m.unavailableHere[.mcpToolLive], "not a missing tool — a missing person")
+        XCTAssertEqual(
+            ToolAvailabilityRequirement.governing(
+                "mcp__telegram__send_message", isDefaultStorage: false,
+                approval: nobodyThere, mcpGrants: try mcpCatalogue()),
+            .humanApprover)
+    }
+
+    func testTheSameToolShipsWhenAPersonIsThere() throws {
+        let def = role(toolIDs: ["mcp__telegram__send_message"])
+        let m = model(def, team: team([def]), approval: .available, mcpGrants: try mcpCatalogue())
+
+        XCTAssertEqual(m.effective, ["mcp__telegram__send_message"])
+        XCTAssertTrue(m.unavailableHere.isEmpty)
+        XCTAssertNil(
+            ToolAvailabilityRequirement.governing(
+                "mcp__telegram__send_message", isDefaultStorage: false,
+                approval: .available, mcpGrants: try mcpCatalogue()))
+    }
+
+    /// The split is per tool: a server's read-only tool that clears its policy unattended ships
+    /// to an Autonomous team while its order-placing one is withheld.
+    func testOnlyTheToolsThatRunUnattendedShipOnAnAutonomousTeam() throws {
+        let def = role(toolIDs: ["mcp__trade_room__get_orders", "mcp__trade_room__place_order"])
+        let m = model(def, team: team([def]), approval: nobodyThere, mcpGrants: try mcpCatalogue())
+
+        XCTAssertEqual(m.effective, ["mcp__trade_room__get_orders"])
+        XCTAssertEqual(m.unavailableHere[.humanApprover], ["mcp__trade_room__place_order"])
+    }
+
+    /// A whole-server grant of a server nothing of which could run without a person is
+    /// reported under the missing person, like its tools.
+    func testAWholeServerGrantWithNothingThatRunsUnattendedNeedsAPerson() throws {
+        let def = role(toolIDs: ["mcp__telegram"])
+        let m = model(def, team: team([def]), approval: nobodyThere, mcpGrants: try mcpCatalogue())
+
+        XCTAssertTrue(m.effective.isEmpty)
+        XCTAssertEqual(m.unavailableHere[.humanApprover], ["mcp__telegram"])
+        XCTAssertNil(m.unavailableHere[.mcpToolLive])
+    }
+
+    /// A whole-server grant that BRINGS tools is not a withheld grant, and the tools it brings
+    /// are the role's own choice, not something the runtime injected.
+    ///
+    /// RED until 2026-09-24: the grant's own name never ships (its tools do), so the badge filed
+    /// it under "No configured MCP server offers this — uncheck it here", and listed the tools
+    /// it brought as auto-injected.
+    func testAWholeServerGrantThatBringsToolsIsTheRolesOwnChoice() throws {
+        let def = role(toolIDs: ["mcp__trade_room"])
+        let attended = model(def, team: team([def]), approval: .available, mcpGrants: try mcpCatalogue())
+
+        XCTAssertEqual(attended.effective, ["mcp__trade_room__get_orders", "mcp__trade_room__place_order"])
+        XCTAssertTrue(attended.unavailableHere.isEmpty)
+        XCTAssertEqual(attended.autoInjected, [])
+        XCTAssertEqual(attended.configured, ["mcp__trade_room__get_orders", "mcp__trade_room__place_order"])
+
+        let unattended = model(def, team: team([def]), approval: nobodyThere, mcpGrants: try mcpCatalogue())
+        XCTAssertEqual(unattended.effective, ["mcp__trade_room__get_orders"])
+        XCTAssertTrue(unattended.unavailableHere.isEmpty, "the grant still brings a tool")
+        XCTAssertEqual(unattended.autoInjected, [])
+    }
+
+    /// A whole-server grant of a connected server that publishes tools and has none approved
+    /// brings the role nothing, and the badge says why — with a person there to approve or not,
+    /// since review comes before presence.
+    ///
+    /// RED until 2026-09-24: the grant read `.live`, the loop skipped a live whole-server grant
+    /// as one whose tools had shipped, and the role held `mcp__folio`, received no tool at run
+    /// time, and showed no badge.
+    func testAWholeServerGrantOfAServerWithNothingApprovedWaitsForReview() throws {
+        let catalogue = MCPGrantCatalogue(servers: [
+            try MCPGrantCatalogueTests.makeServer(
+                slug: "folio", id: Self.telegramID, approvalMode: .semiAutomatic,
+                tools: [
+                    try MCPGrantCatalogueTests.makeTool(slug: "folio", tool: "get_screenshot", pinState: .new),
+                    try MCPGrantCatalogueTests.makeTool(
+                        slug: "folio", tool: "get_metadata", pinState: .changed(approvedHash: "old")),
+                ]),
+        ])
+        let def = role(toolIDs: ["mcp__folio"])
+        for approval in [ToolApprovalAvailability.available, nobodyThere] {
+            let m = model(def, team: team([def]), approval: approval, mcpGrants: catalogue)
+
+            XCTAssertTrue(m.effective.isEmpty, "\(approval.humanPresent)")
+            XCTAssertEqual(m.unavailableHere[.mcpToolUnreviewed], ["mcp__folio"], "\(approval.humanPresent)")
+            XCTAssertEqual(m.unavailableHere.count, 1, "\(approval.humanPresent)")
+            XCTAssertEqual(
+                ToolAvailabilityRequirement.governing(
+                    "mcp__folio", isDefaultStorage: false, approval: approval, mcpGrants: catalogue),
+                .mcpToolUnreviewed)
+        }
+    }
+
+    /// A server that publishes nothing gives the grant nothing to wait for: no badge, since no
+    /// repair exists — whatever the server publishes and a person approves later rides in on it.
+    func testAWholeServerGrantOfAServerThatPublishesNothingCarriesNoBadge() throws {
+        let catalogue = MCPGrantCatalogue(servers: [
+            try MCPGrantCatalogueTests.makeServer(slug: "folio", id: Self.telegramID),
+        ])
+        let def = role(toolIDs: ["mcp__folio"])
+        let m = model(def, team: team([def]), approval: .available, mcpGrants: catalogue)
+
+        XCTAssertTrue(m.effective.isEmpty)
+        XCTAssertTrue(m.unavailableHere.isEmpty)
+        XCTAssertTrue(m.notInstalled.isEmpty)
+        XCTAssertTrue(m.policyBlocked.isEmpty)
+    }
+
+    // MARK: - A refused text, a withdrawn tool (2026-10-28)
+
+    /// A grant of a text the person refused is filed under the refusal — with the words that
+    /// say they rejected it and where to review it again — not under "Waiting for review",
+    /// which is what the Settings list counts it apart from. A whole-server grant of a server
+    /// whose every text was refused gets the whole-server form.
+    ///
+    /// RED until 2026-10-28: both were filed under `.mcpToolUnreviewed`.
+    func testARefusedGrantIsFiledUnderTheRefusalNotUnderWaitingForReview() throws {
+        let catalogue = MCPGrantCatalogue(servers: [
+            try MCPGrantCatalogueTests.makeServer(
+                slug: "folio", id: Self.telegramID,
+                tools: [
+                    try MCPGrantCatalogueTests.makeTool(
+                        slug: "folio", tool: "get_screenshot", pinState: .new, isRejected: true),
+                    try MCPGrantCatalogueTests.makeTool(
+                        slug: "folio", tool: "get_metadata", pinState: .changed(approvedHash: "old"), isRejected: true),
+                ]),
+        ])
+        let def = role(toolIDs: ["mcp__folio", "mcp__folio__get_screenshot"])
+        let m = model(def, team: team([def]), approval: .available, mcpGrants: catalogue)
+
+        XCTAssertTrue(m.effective.isEmpty)
+        XCTAssertEqual(m.unavailableHere[.mcpToolRefused], ["mcp__folio__get_screenshot"])
+        XCTAssertEqual(m.unavailableHere[.mcpServerToolsRefused], ["mcp__folio"])
+        XCTAssertNil(m.unavailableHere[.mcpToolUnreviewed], "nothing is waiting for review")
+        XCTAssertEqual(
+            ToolAvailabilityRequirement.governing(
+                "mcp__folio__get_screenshot", isDefaultStorage: false, approval: .available, mcpGrants: catalogue),
+            .mcpToolRefused)
+
+        let tooltip = RoleToolBadgePolicy.tooltip(m)
+        XCTAssertTrue(tooltip.contains(
+            "You rejected this tool's text — review it again in Settings → MCP Servers to grant it: "
+                + "mcp__folio__get_screenshot"), tooltip)
+        XCTAssertTrue(tooltip.contains(
+            "You rejected the text of every tool this server publishes — review them again in "
+                + "Settings → MCP Servers to grant them: mcp__folio"), tooltip)
+        XCTAssertFalse(tooltip.contains("Waiting for review"), tooltip)
+    }
+
+    /// A grant of a tool its connected server does not publish sits under that server's own
+    /// header, so its words name the server's answer and the repair that is the role's — not
+    /// "No configured MCP server offers this … or add the server", which stays for a grant
+    /// naming no configured server at all.
+    ///
+    /// RED until 2026-10-28: `.toolMissing` and `.unknownServer` shared `.mcpToolLive`.
+    func testAToolItsServerDoesNotOfferSaysSoApartFromAnUnknownServer() throws {
+        let def = role(toolIDs: ["mcp__telegram__get_updates", "mcp__gone__x"])
+        let m = model(def, team: team([def]), approval: .available, mcpGrants: try mcpCatalogue())
+
+        XCTAssertEqual(m.unavailableHere[.mcpToolNotOffered], ["mcp__telegram__get_updates"])
+        XCTAssertEqual(m.unavailableHere[.mcpToolLive], ["mcp__gone__x"])
+        XCTAssertEqual(ToolAvailabilityRequirement.forMCPGrant(.toolMissing), .mcpToolNotOffered)
+        XCTAssertEqual(ToolAvailabilityRequirement.forMCPGrant(.unknownServer), .mcpToolLive)
+        XCTAssertEqual(
+            ToolAvailabilityRequirement.mcpToolNotOffered.unmetHint,
+            "Its MCP server does not offer this tool — uncheck it here")
+        XCTAssertNil(ToolAvailabilityRequirement.mcpToolNotOffered.metHint)
+    }
+
+    /// A tool the APP cannot offer is badged as the app's refusal — pointing at the Settings page
+    /// that says why — never as the server's withdrawal, and a whole-server grant of a server
+    /// the app can offer nothing of is badged rather than silent. The words change; what ships
+    /// does not: neither brings a tool, as before.
+    ///
+    /// RED until 2026-10-28: the per-tool grant read "Its MCP server does not offer this tool
+    /// — uncheck it here", and the whole-server grant read live — no badge.
+    func testAToolTheAppCannotOfferIsBadgedAsSuchAndAServerOfNothingOfferableIsNotSilent() throws {
+        let catalogue = MCPGrantCatalogue(servers: [
+            try MCPGrantCatalogueTests.makeServer(
+                slug: "orders", id: Self.tradeID, nothingOffered: true, refused: ["mcp__orders__get_orders"]),
+            try MCPGrantCatalogueTests.makeServer(
+                slug: "telegram", id: Self.telegramID,
+                tools: [try MCPGrantCatalogueTests.makeTool(slug: "telegram", tool: "send_message")],
+                refused: ["mcp__telegram__get_updates"]),
+        ])
+        let def = role(toolIDs: ["mcp__orders__get_orders", "mcp__orders", "mcp__telegram__get_updates"])
+        let m = model(def, team: team([def]), approval: .available, mcpGrants: catalogue)
+
+        XCTAssertEqual(m.unavailableHere[.mcpToolNotOfferable], ["mcp__orders__get_orders", "mcp__telegram__get_updates"])
+        XCTAssertEqual(m.unavailableHere[.mcpServerToolsNotOfferable], ["mcp__orders"])
+        XCTAssertNil(m.unavailableHere[.mcpToolNotOffered], "not the server's withdrawal")
+        XCTAssertFalse(m.isSilent, "a grant that brings nothing is badged")
+        XCTAssertTrue(m.effective.filter(MCPToolNaming.isMCPName).isEmpty, "nothing of it ships, as before")
+
+        XCTAssertEqual(ToolAvailabilityRequirement.forMCPGrant(.toolNotOfferable), .mcpToolNotOfferable)
+        XCTAssertEqual(ToolAvailabilityRequirement.forMCPGrant(.noToolOfferable), .mcpServerToolsNotOfferable)
+        XCTAssertEqual(
+            ToolAvailabilityRequirement.mcpToolNotOfferable.unmetHint,
+            "The app cannot offer what its MCP server publishes as this tool — see Settings → MCP Servers")
+        XCTAssertEqual(
+            ToolAvailabilityRequirement.mcpServerToolsNotOfferable.unmetHint,
+            "The app cannot offer any tool its MCP server publishes — see Settings → MCP Servers")
+        for requirement in [ToolAvailabilityRequirement.mcpToolNotOfferable, .mcpServerToolsNotOfferable] {
+            XCTAssertNil(requirement.metHint)
+            XCTAssertTrue(ToolAvailabilityRequirement.allCases.contains(requirement),
+                          "the tooltip iterates allCases — a case missing there never renders")
+            XCTAssertTrue(RoleToolBadgePolicy.tooltip(m).contains(requirement.unmetHint), "\(requirement)")
+        }
     }
 
     // MARK: - Auto-injection
@@ -373,7 +621,7 @@ final class RoleToolBadgePolicyTests: XCTestCase {
         let tools = Array(ToolHandlerRegistry.computerUseTools)
         let def = role(toolIDs: tools + [ToolNames.readFile])
         let m = model(def, team: team([def]),
-                      approval: ToolApprovalAvailability(bash: .available, computerUse: .withheld(.switchedOff)))
+                      approval: ToolApprovalAvailability(bash: .available, computerUse: .withheld(.switchedOff), humanPresent: true))
 
         XCTAssertEqual(Set(m.unavailableHere[.computerUse] ?? []), Set(tools))
     }
@@ -383,7 +631,7 @@ final class RoleToolBadgePolicyTests: XCTestCase {
     func testBashOff_reportsTheShellToolsUnderTheOffSwitch() {
         let def = role(toolIDs: [ToolNames.bash, ToolNames.bashOutput, ToolNames.readFile])
         let m = model(def, team: team([def]),
-                      approval: ToolApprovalAvailability(bash: .withheld(.switchedOff), computerUse: .available))
+                      approval: ToolApprovalAvailability(bash: .withheld(.switchedOff), computerUse: .available, humanPresent: true))
         XCTAssertEqual(Set(m.unavailableHere[.bashEnabled] ?? []), [ToolNames.bash, ToolNames.bashOutput])
         XCTAssertNil(m.unavailableHere[.humanApprover])
         XCTAssertTrue(m.effective.contains(ToolNames.readFile))
@@ -450,7 +698,7 @@ final class RoleToolBadgePolicyTests: XCTestCase {
         XCTAssertEqual(ToolAvailabilityRequirement.governing(ToolNames.screenCapture, isDefaultStorage: false, approval: unattended), .computerUse)
         XCTAssertEqual(ToolAvailabilityRequirement.governing(ToolNames.bash, isDefaultStorage: false, approval: .available), .bashEnabled)
         XCTAssertEqual(ToolAvailabilityRequirement.governing(ToolNames.uiClick, isDefaultStorage: false, approval: .available), .computerUse)
-        let off = ToolApprovalAvailability(bash: .withheld(.switchedOff), computerUse: .withheld(.switchedOff))
+        let off = ToolApprovalAvailability(bash: .withheld(.switchedOff), computerUse: .withheld(.switchedOff), humanPresent: true)
         XCTAssertEqual(ToolAvailabilityRequirement.governing(ToolNames.bash, isDefaultStorage: false, approval: off), .bashEnabled)
         XCTAssertEqual(ToolAvailabilityRequirement.governing(ToolNames.uiKey, isDefaultStorage: false, approval: off), .computerUse)
     }

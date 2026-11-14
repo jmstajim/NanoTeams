@@ -12,7 +12,7 @@ final class HarmonySentinelNormalizerTests: XCTestCase {
 
     // MARK: - Positives (verbatim from the 2026-08-07 MeditationApp run)
 
-    /// Record `[33]` @13:51:15.910Z.
+    /// Record `[33]`.
     func testNormalize_toolCallGtCallPipeGt_becomesCanonical() {
         let input = #"<|tool_call>call|>{"name":"list_files","arguments":{"path":"MeditationApp"}}|<|<end|>"#
         let output = HarmonySentinelNormalizer.normalize(input)
@@ -20,7 +20,7 @@ final class HarmonySentinelNormalizerTests: XCTestCase {
         XCTAssertTrue(output.contains(#""name":"list_files""#), "payload must be untouched")
     }
 
-    /// Record `[39]` @13:52:24.821Z — no closing `|>` on the alien token at all.
+    /// Record `[39]` — no closing `|>` on the alien token at all.
     func testNormalize_toolCallGtCallMultiple_becomesCanonical() {
         let input = #"<|tool_call>call_multiple{"contributions":[]}<|end|>"#
         XCTAssertEqual(

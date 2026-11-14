@@ -11,14 +11,199 @@ nonisolated enum WorkFolderContextGenerationOutcome: Equatable {
     case failure(String)
 }
 
+/// One folder lifecycle — an open, from its first line, or an action that began while a folder
+/// was open — as the steps after its suspensions ask about it
+/// (`NTMSOrchestrator.folderLifecycleStillCurrent`). Captured ONCE, by whoever owns the
+/// lifecycle — `openWorkFolder` at its start (its own, new generation), any other action at its
+/// own entry (`currentFolderLifecycle`: the folder the process describes) — and handed to every
+/// helper that checks after a suspension; no helper takes the current one as its own baseline. A
+/// helper entered after a later open began would otherwise ask about THAT open, and every check
+/// of it would pass.
+nonisolated struct WorkFolderLifecycle: Hashable, Sendable {
+    /// The `NTMSOrchestrator.workFolderOpenGeneration` of the open this lifecycle belongs to.
+    let generation: Int
+}
+
+/// The points after a suspension where a folder lifecycle asks whether it is still the current
+/// one (`NTMSOrchestrator.folderLifecycleStillCurrent`), each named for the step it is about to
+/// run. Production reads none of these names: they are the documented test seam
+/// `NTMSOrchestrator._testWorkFolderOpenGate` holds a lifecycle at — the `_testRunLaunchGate`
+/// precedent — so `WorkFolderOpenSupersessionTests` can start a later open while an earlier one
+/// is suspended at exactly one of them. The first eleven are `openWorkFolder`'s own and the
+/// helpers that also run outside an open (the scheduler, the search index, the Autovisor's
+/// pass); the rest are the Autovisor chain's (`ensureAutovisorTask` and what it calls).
+///
+/// A hold at a check stands for a suspension right before it, so the check reads everything —
+/// its lifecycle argument included — AFTER the hold returns: the argument is an autoclosure,
+/// evaluated once the gate lets the lifecycle go. A hold at a check followed by a later open that
+/// commits therefore shows which lifecycle the check is asked about: a check asked with
+/// `currentFolderLifecycle` instead of its own would then answer for the later open and go on.
+nonisolated enum WorkFolderOpenStep: Sendable {
+    case delegationHistory
+    case staleStatusSweep
+    case automationScheduler
+    /// `startAutomationScheduler`: its reconcile done, before its poll loop starts.
+    case automationLoop
+    case autovisorTeam
+    case autovisorTask
+    case autovisorPass
+    case sleepTimer
+    case searchIndexInstall
+    case mcpServers
+    case restoreTarget
+    /// `ensureAutovisorTask`: the existing manager loaded, before its recurrence is re-enabled.
+    case autovisorManagerRecurrence
+    /// `ensureAutovisorTask`: before the Autovisor team is synced to its template.
+    case autovisorTeamSync
+    /// `ensureAutovisorTask`: before the goal and memory defaults are seeded.
+    case autovisorDefaults
+    /// `seedAutovisorDefaultsAndSyncBrief`: the defaults written, before the brief is synced.
+    case autovisorBrief
+    /// `syncAutovisorGoalToManagerBrief`: before the manager is loaded to take the brief.
+    case autovisorBriefLoad
+    /// `syncAutovisorGoalToManagerBrief`: the manager loaded, before its brief is written.
+    case autovisorBriefWrite
+    /// `createAutovisorTask`: the team ensured, before the manager task is created.
+    case autovisorTaskCreate
+    /// `createAutovisorTask`: the task created and its id pinned — in one synchronous stretch —
+    /// before it is loaded.
+    case autovisorTaskLoad
+    /// `createAutovisorTask`: the task loaded, before its review recurrence is seeded.
+    case autovisorTaskRecurrence
+}
+
 /// Work folder lifecycle: open/close folders, update settings, manage teams and tools.
 extension NTMSOrchestrator {
 
+    /// The folder lifecycle an action beginning NOW belongs to — captured once, at the start of
+    /// whatever owns it (`WorkFolderLifecycle`): the lifecycle of the open that COMMITTED the
+    /// folder the process describes (`committedWorkFolderGeneration`), never merely the latest
+    /// open's. While a later open is between its first line and its commit the process still
+    /// describes the folder being left — its URL, its snapshot — so an action beginning then acts
+    /// on that folder, whose lifecycle has already ended: its first check stops it. Until
+    /// 2026-10-28 this was the latest open's generation, so such an action held the NEXT
+    /// folder's token while writing through the previous folder's URL and snapshot — every check
+    /// passed, and a chain that straddled the commit wrote into both. An open names its own
+    /// lifecycle — the new generation — at its first line.
+    var currentFolderLifecycle: WorkFolderLifecycle {
+        WorkFolderLifecycle(generation: committedWorkFolderGeneration)
+    }
+
+    /// Whether `lifecycle` — an open, or an action that captured `currentFolderLifecycle` when it
+    /// began — may go on into `step`: no later open has started since. The ONE question every
+    /// post-read step of an open, and every step of the Autovisor chain, asks after a suspension
+    /// (CLAUDE.md #54 — re-check a stop condition after every suspension point), so a superseded
+    /// open starts and writes nothing for its folder in the process that now belongs to another:
+    /// no MCP connection, search index, scheduler, Autovisor pass or sleep timer, no banner of its
+    /// own, no launch-time restore target, and no write through the folder that is now open.
+    /// Until 2026-10-28 an open asked only after its read; resumed after a later open's
+    /// teardown, it ran every one of those for the folder the person had left.
+    ///
+    /// A later open bumps the generation at its very start, before its teardown, so a `false`
+    /// here also means that teardown has run or is running — anything this lifecycle started
+    /// after it would outlive it.
+    ///
+    /// `step` is read by the DEBUG test seam alone (`WorkFolderOpenStep`), and the seam stands for
+    /// a suspension right BEFORE the check — so the check reads everything after it: `lifecycle`
+    /// is an autoclosure, evaluated once the gate returns (and once before, to tell the gate which
+    /// lifecycle is asking). In a release build there is no gate and it is evaluated once, at the
+    /// comparison — the same as a plain argument.
+    func folderLifecycleStillCurrent(
+        _ lifecycle: @autoclosure () -> WorkFolderLifecycle, into step: WorkFolderOpenStep
+    ) async -> Bool {
+        #if DEBUG
+        if let gate = Self._testWorkFolderOpenGate { await gate(lifecycle(), step) }
+        #endif
+        return isCurrentFolderLifecycle(lifecycle())
+    }
+
+    /// No open has started since `lifecycle` began — the condition itself, spelled once: the read
+    /// guard and the failure guard of `openWorkFolder` ask it directly, every step after a
+    /// suspension through `folderLifecycleStillCurrent`.
+    func isCurrentFolderLifecycle(_ lifecycle: WorkFolderLifecycle) -> Bool {
+        lifecycle.generation == workFolderOpenGeneration
+    }
+
+    /// Whether a folder transition — an open, a close, a reset — is between its first line and
+    /// its commit: the stretch in which the process still describes the folder being left while
+    /// that folder's lifecycle is over. Nothing starts in that stretch (`claimRunStart` refuses),
+    /// and the queued-message flush waits it out (`QuickCaptureController.tryFlushQueuedMessages`):
+    /// whether the queue is still for the folder it names is the commit's decision.
+    var isFolderTransitionInProgress: Bool {
+        committedWorkFolderGeneration != workFolderOpenGeneration
+    }
+
+    /// The first, synchronous stretch of every folder transition — `openWorkFolder`,
+    /// `closeProject`, `resetAllData`: it ends the lifecycle the process is in and returns the
+    /// next one, before anything suspends. From here on every action that captured the ended
+    /// lifecycle stops at its next check, nothing of the folder being left keeps running — its
+    /// engines with their run starts and team generations, its poll loop, its step executions —
+    /// and nothing new starts in it until the next open commits
+    /// (`isFolderTransitionInProgress`).
+    ///
+    /// One function rather than the same lines at three call sites: while only `openWorkFolder`
+    /// ended the lifecycle, `resetAllData` tore its folder down and deleted it with that folder's
+    /// lifecycle still current and its poll loop still ticking.
+    @discardableResult
+    private func beginFolderTransition() -> WorkFolderLifecycle {
+        workFolderOpenGeneration &+= 1
+        let lifecycle = WorkFolderLifecycle(generation: workFolderOpenGeneration)
+        stopAllEngines()
+        stopAutomationScheduler()
+        // Clear the previous folder's auto-off deadline BEFORE any new poll loop starts: its
+        // first tick sleeps only until the next minute boundary and could fire
+        // `evaluateAutovisorAutoDisable` with a stale (possibly expired) deadline against the
+        // NEW folder's snapshot — spuriously disabling its Autovisor. Clear only —
+        // `rearmAutovisorAutoDisable()` here would re-arm from the OLD folder's still-loaded
+        // snapshot; the next open re-arms for its own folder after `ensureAutovisorTask()`.
+        clearAutovisorAutoDisable()
+        lastExternalAutovisorActivityAt = nil
+        autovisorCreationLedger.resetForFolderTransition()
+        autovisorEventFeed.disarmForFolderTransition()
+        externalActivityLog.disarmForFolderTransition()
+        // Drain the old folder's queued log lines and full-call files NOW: a reset deletes
+        // `.nanoteams/` next, and a write landing after that recreated the tree it lives in —
+        // the "reset" folder came back with the previous session's tail, bodies included.
+        externalActivityLog.flush()
+        externalAutovisorReadinessSignal.wakeAll(reason: .folderChanged)
+        llmExecutionService.cancelAllExecutions()
+        return lifecycle
+    }
+
     // MARK: - Bootstrap
 
-    /// Opens default storage if no project is loaded. Called once from MainLayoutView on launch.
+    /// Starts initial work-folder restoration in the background at orchestrator launch
+    /// (when `hostedMCPEnvironment.allowAutoStart` is true) so the last work folder is
+    /// already open even when NanoTeams starts or runs without a visible window (§11, Ш24).
+    func startStartupBootstrapIfNeeded() {
+        guard workFolderURL == nil,
+              workFolderOpenGeneration == 0,
+              bootstrapDefaultStorageTask == nil
+        else { return }
+        bootstrapDefaultStorageTask = Task { @MainActor [weak self] in
+            defer { self?.bootstrapDefaultStorageTask = nil }
+            await self?.performBootstrapDefaultStorageIfNeeded()
+        }
+    }
+
+    /// Opens the last work folder (or default storage) if no project is loaded or opening.
+    /// Idempotent across concurrent or sequential calls from orchestrator startup and `MainLayoutView`.
     func bootstrapDefaultStorageIfNeeded() async {
-        guard workFolderURL == nil else { return }
+        if let inFlight = bootstrapDefaultStorageTask {
+            await inFlight.value
+            return
+        }
+        guard workFolderURL == nil, workFolderOpenGeneration == 0 else { return }
+        let task = Task { @MainActor [weak self] in
+            defer { self?.bootstrapDefaultStorageTask = nil }
+            await self?.performBootstrapDefaultStorageIfNeeded()
+        }
+        bootstrapDefaultStorageTask = task
+        await task.value
+    }
+
+    private func performBootstrapDefaultStorageIfNeeded() async {
+        guard workFolderURL == nil, workFolderOpenGeneration == 0 else { return }
         // Try to restore last-opened folder first
         var unreachableRestoreTarget: String?
         if let path = configuration.lastOpenedWorkFolderPath {
@@ -26,7 +211,9 @@ extension NTMSOrchestrator {
             var isDir: ObjCBool = false
             if fileManager.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
                 await openWorkFolder(url)
-                try? repository.cleanupAllStagedDrafts(at: url)
+                if holdsWorkFolderInstanceLock(for: url) {
+                    try? repository.cleanupAllStagedDrafts(at: url)
+                }
                 return
             }
             // Only a folder that ACTUALLY opened is ever recorded here (see `openWorkFolder`),
@@ -40,7 +227,9 @@ extension NTMSOrchestrator {
         let defaultURL = Self.defaultStorageURL
         try? fileManager.createDirectory(at: defaultURL, withIntermediateDirectories: true)
         await openWorkFolder(defaultURL)
-        try? repository.cleanupAllStagedDrafts(at: defaultURL)
+        if holdsWorkFolderInstanceLock(for: defaultURL) {
+            try? repository.cleanupAllStagedDrafts(at: defaultURL)
+        }
         if let unreachableRestoreTarget {
             lastInfoMessage = "Couldn't reopen “\(unreachableRestoreTarget)” — it isn't where it "
                 + "was. Using internal storage; reopen the folder once it's available."
@@ -50,35 +239,39 @@ extension NTMSOrchestrator {
     // MARK: - Open / Close
 
     func openWorkFolder(_ url: URL) async {
-        workFolderOpenGeneration &+= 1
-        let openGeneration = workFolderOpenGeneration
-        stopAllEngines()
-        stopAutomationScheduler()
-        // Clear the previous folder's auto-off deadline BEFORE the new poll loop
-        // starts (below): its first tick sleeps only until the next minute boundary
-        // and could fire `evaluateAutovisorAutoDisable` with a stale (possibly
-        // expired) deadline against the NEW folder's snapshot — spuriously
-        // disabling its Autovisor. Clear only — `rearmAutovisorAutoDisable()` here
-        // would re-arm from the OLD folder's still-loaded snapshot; the fresh
-        // re-arm for this folder happens after `ensureAutovisorTask()`.
-        clearAutovisorAutoDisable()
+        // This open's own lifecycle — the new generation — and not `currentFolderLifecycle`,
+        // which names the folder still described until this open commits.
+        let lifecycle = beginFolderTransition()
         // The report describes the folder we are leaving; the open below either
         // replaces it or leaves it nil.
         bundledUpdateReport = nil
-        llmExecutionService.cancelAllExecutions()
         await tearDownSearchIndexCoordinator()
+        // The connections belong to the folder we are leaving: a legacy server holds a session
+        // per client, and the per-folder opt-outs about to be re-read are a different file.
+        await tearDownMCPServerManager()
 
+        // The two teardowns above suspend, and a later open waiting on the same teardown may
+        // resume first: that open owns the process and its lock now. Taking this folder's lock
+        // here let go of THAT folder's — it committed holding the wrong one, so a second NanoTeams
+        // could open it (D-M18 R1, 2026-11-12). A superseded open touches no lock.
+        guard isCurrentFolderLifecycle(lifecycle) else { return }
         do {
+            // The folder's lock before its first read (`WorkFolderInstanceLock`): a folder another
+            // NanoTeams process holds is refused here and goes to the failure arm below — the URL
+            // committed with nothing loaded, so no scheduler, sleep timer, Autovisor, MCP
+            // connection or write of this process ever reaches it (`HeldWorkFolderRepository`).
+            try takeWorkFolderInstanceLock(for: url)
             var snapshot = try await workFolderManagementService.openOrCreateWorkFolder(at: url)
             // The read above ran off the main actor. If another open started meanwhile, that
             // open owns the process now: applying this snapshot would pair ITS folder with
             // this one's contents, and everything below would run twice.
-            guard openGeneration == workFolderOpenGeneration else { return }
+            guard isCurrentFolderLifecycle(lifecycle) else { return }
             // Committed only now, in the same main-actor turn as the snapshot. Assigned before
             // the read, the suspension rendered the new URL over the previous folder's snapshot,
             // and anything writing through `workFolderURL` in that window — a context generation
             // finishing, a click — wrote the old folder's state into the new folder.
             workFolderURL = url
+            committedWorkFolderGeneration = lifecycle.generation
 
             // Recover stale statuses from a previous session where the app closed
             // while tasks were running. Steps in .running/.needsSupervisorInput → .paused,
@@ -124,7 +317,15 @@ extension NTMSOrchestrator {
                 }
             }
 
-            apply(snapshot)
+            let reopenedSameFolder = self.snapshot?.projection.id == snapshot.projection.id
+            apply(snapshot, settings: .adopt)
+            autovisorEventFeed.activateFolder(folderID: snapshot.projection.id)
+            if hasRealWorkFolder {
+                externalActivityLog.activateFolder(
+                    logURL: NTMSPaths(workFolderRoot: url).externalActivityLogJSONL
+                )
+                restoreExternalCreationWindow(workFolderRoot: url)
+            }
 
             // Discover agent instruction files (CLAUDE.md, AGENTS.md, …) for the
             // freshly opened folder BEFORE the Autovisor open-time review so the
@@ -136,10 +337,16 @@ extension NTMSOrchestrator {
             // the attached ids) only exist once the folder is loaded.
             await refreshAgentSkills()
 
+            guard await folderLifecycleStillCurrent(lifecycle, into: .delegationHistory) else { return }
             // Pass the whole task so chat-mode awareness in
             // `derivedStatusFromActiveRun` participates.
             if let activeTask = self.activeTask {
                 syncEngineStateFromRun(taskID: activeTask.id, task: activeTask)
+            }
+            if reopenedSameFolder, let preservedTasks = self.snapshot?.loadedTasks {
+                for (taskID, task) in preservedTasks where taskID != self.activeTask?.id {
+                    syncEngineStateFromRun(taskID: taskID, task: task)
+                }
             }
 
             // Restore delegation history of the active task: pull every
@@ -156,13 +363,19 @@ extension NTMSOrchestrator {
             // stale "Working" summary in the sidebar. Runs BEFORE the
             // scheduler and the Autovisor's open-time review — both read
             // statuses and must see honest values.
-            await recoverStaleStatusesAcrossIndex(folderURL: url)
+            guard await folderLifecycleStillCurrent(lifecycle, into: .staleStatusSweep) else { return }
+            await recoverStaleStatusesAcrossIndex(folderURL: url, lifecycle: lifecycle)
+            if reopenedSameFolder, isCurrentFolderLifecycle(lifecycle) {
+                messageQueue.tryFlushQueuedMessages()
+            }
 
             // Start recurring-task scheduling + run-timeout watchdog for this
             // folder. Runs after descendants are loaded so the scheduler's
             // eviction never drops a task the active feed/graph still needs.
-            await startAutomationScheduler()
+            guard await folderLifecycleStillCurrent(lifecycle, into: .automationScheduler) else { return }
+            await startAutomationScheduler(lifecycle: lifecycle)
 
+            guard await folderLifecycleStillCurrent(lifecycle, into: .autovisorTeam) else { return }
             // Autovisor: ensure the team is always present in teams.json (regardless
             // of the enabled toggle) so it shows as a protected entry in Settings →
             // Teams. The manager *task/run* below stays gated by `autovisorEnabled`.
@@ -174,8 +387,12 @@ extension NTMSOrchestrator {
             // manager after restart would otherwise hang, since the event-wake is
             // edge-triggered (no transition on load) and missed recurrence slots are
             // skipped. Runs after the scheduler so the manager's recurrence is live.
-            await ensureAutovisorTask()
+            guard await folderLifecycleStillCurrent(lifecycle, into: .autovisorTask) else { return }
+            await ensureAutovisorTask(lifecycle: lifecycle)
 
+            // No suspension from here to the search index's own start: the sleep timer, the
+            // bundled-update report and its banner are this check's too.
+            guard await folderLifecycleStillCurrent(lifecycle, into: .sleepTimer) else { return }
             // Auto-off sleep timer: the deadline is in-memory by design, so every
             // launch / folder switch re-arms a fresh countdown from "now" (and
             // clears it when this folder has the feature off — including default
@@ -196,9 +413,22 @@ extension NTMSOrchestrator {
                     lastInfoMessage = message
                 }
             }
+            // A volume without advisory locks: the folder is open, and nothing keeps a second
+            // NanoTeams out of it — the person is the only one who can (D-M18 R6). After the
+            // update banner, which would otherwise replace it in the same slot.
+            if workFolderHold.lock(for: url)?.excludesOtherProcesses == false {
+                lastInfoMessage = Self.folderWithoutAdvisoryLocksMessage
+            }
 
             // Spin up the search index coordinator if exploratory search is enabled.
-            await setUpSearchIndexCoordinatorIfEnabled()
+            await setUpSearchIndexCoordinatorIfEnabled(lifecycle: lifecycle)
+            guard await folderLifecycleStillCurrent(lifecycle, into: .mcpServers) else { return }
+            // And the MCP connections, which read this folder's opt-outs. After
+            // `apply(snapshot)` so the folder is known; a server that is enabled starts
+            // connecting here rather than on the first tool call.
+            await setUpMCPServerManager()
+
+            guard await folderLifecycleStillCurrent(lifecycle, into: .restoreTarget) else { return }
 
             // Only a folder that actually opened becomes the launch-time restore target.
             // This used to live in `SidebarView`'s `.onChange(of: store.workFolderURL)`,
@@ -210,11 +440,12 @@ extension NTMSOrchestrator {
             }
         } catch {
             // A superseded open reports nothing and discards nothing — the newer open owns both.
-            guard openGeneration == workFolderOpenGeneration else { return }
+            guard isCurrentFolderLifecycle(lifecycle) else { return }
             // A failed open commits its URL as well (`closeProject` / `resetAllData` read it as
             // their "no project open" signal) — paired with the discard below, never with the
             // previous folder's snapshot.
             workFolderURL = url
+            committedWorkFolderGeneration = lifecycle.generation
             self.lastErrorMessage = error.localizedDescription
             // Drop everything that
             // describes the PREVIOUS folder's contents so the process describes exactly one
@@ -252,6 +483,45 @@ extension NTMSOrchestrator {
         await reconcileAndReportResidency()
     }
 
+    // MARK: - The folder's lock
+
+    /// Takes `url`'s lock and lets go of the folder held so far. Called by an open only once it is
+    /// still the current one, after its teardowns (`openWorkFolder`); by Reset All Data before it
+    /// deletes anything; and by a folder reset after it, to keep its lock. A lock this orchestrator already holds on `url`'s lock file is kept, not
+    /// let go and taken again — there is no instant in which another process could take it. A
+    /// refusal records who holds the folder (`workFolderHeldByAnotherProcess`) and throws, holding
+    /// nothing.
+    func takeWorkFolderInstanceLock(for url: URL) throws {
+        workFolderHeldByAnotherProcess = nil
+        if let held = workFolderHold.lock(for: url), held.locksTheFileAtItsPath { return }
+        releaseWorkFolderInstanceLock()
+        do {
+            workFolderHold.hold(try workFolderLocking.acquire(url), for: url)
+        } catch let refusal as WorkFolderInstanceLock.AcquireError {
+            if case .heldByAnotherProcess(let holder) = refusal {
+                workFolderHeldByAnotherProcess = holder
+            }
+            throw refusal
+        }
+    }
+
+    /// Gives the held folder's lock back. Who holds a refused folder stays recorded — that fact is
+    /// about the folder, and the next open clears it.
+    func releaseWorkFolderInstanceLock() {
+        workFolderHold.release()
+    }
+
+    /// Whether this orchestrator holds the lock of the folder at `url` — what a write made outside
+    /// an open's own sequence asks first (the staged-draft sweep after a launch-time open).
+    func holdsWorkFolderInstanceLock(for url: URL) -> Bool {
+        workFolderHold.holds(url)
+    }
+
+    /// What an open on a volume without advisory locks tells the person (D-M18 R6).
+    static let folderWithoutAdvisoryLocksMessage = "This work folder is on a volume that doesn't "
+        + "support file locks, so NanoTeams can't keep a second NanoTeams out of it. Don't open it "
+        + "in another NanoTeams while it is open here."
+
     // MARK: - Stale Status Sweep
 
     /// Startup sweep: recovers stale "active-looking" statuses for every task in
@@ -262,7 +532,15 @@ extension NTMSOrchestrator {
     /// the banner value captured just before that iteration's calls (not a
     /// pre-loop snapshot), so a banner set by a concurrent path during an
     /// earlier iteration's awaits isn't destroyed.
-    func recoverStaleStatusesAcrossIndex(folderURL: URL) async {
+    ///
+    /// `lifecycle` is the open's, and the sweep asks it — not whether `workFolderURL` is still
+    /// `folderURL` — before every persist-capable call, after every suspension before it seeds an
+    /// engine state or evicts, and before its banner: the next open ends it at its first line and
+    /// moves the URL only at its commit, and a reopen of the SAME folder never moves it at all. A
+    /// sweep asking the URL went on recovering, loading and evicting through the next open's read
+    /// — seeding engine states into a mirror that open had already emptied — and ran to its end
+    /// beside a reopen's own sweep. `folderURL` stays the write target.
+    func recoverStaleStatusesAcrossIndex(folderURL: URL, lifecycle: WorkFolderLifecycle) async {
         // `TaskSummary` is a value type, so `filter` already hands back a snapshot —
         // `mutateTask` re-sorts the live array mid-loop and must not be observed here.
         // The second clause is the one-time backfill for the MIRRORED SUPERVISOR-WAIT
@@ -295,15 +573,15 @@ extension NTMSOrchestrator {
             let taskID = entry.id
             guard taskID != activeTaskID else { continue }     // recovered earlier in openWorkFolder
             guard taskEngines[taskID] == nil else { continue } // defensive: never touch a live engine
-            // Folder-switch guard sits SYNCHRONOUSLY before every persist-capable
+            // The lifecycle guard sits SYNCHRONOUSLY before every persist-capable
             // call — no suspension point between the check and the callee's
             // folder-URL capture (`mutateTask` / `ensureTaskLoaded` both bind
             // `workFolderURL` synchronously at entry; the detached disk write
             // targets that captured URL). Task IDs are per-folder sequential
-            // ints — a stale ID from the old index must never resolve against
-            // (and persist into) a different folder. `break`, not `return`:
-            // failures collected so far still get their aggregate banner.
-            guard workFolderURL == folderURL else { break }
+            // ints — a stale ID from this folder's index must never resolve against
+            // (and persist into) a different folder. `break`, not `return`: the
+            // banner below asks once more, and reports what this lifecycle collected.
+            guard isCurrentFolderLifecycle(lifecycle) else { break }
             let bannerBefore = lastErrorMessage
             if var probe = loadedTask(taskID) {
                 // In-process re-open: `apply` preserved `loadedTasks` (same folder),
@@ -334,6 +612,9 @@ extension NTMSOrchestrator {
                 let persisted = await mutateTask(taskID: taskID) {
                     _ = StatusRecoveryService.recoverStaleStatuses(in: &$0, team: team)
                 }
+                // The write suspended: the engine-state seed below reads whatever answers to this
+                // id NOW, and a later open may have committed a folder whose task has it.
+                guard isCurrentFolderLifecycle(lifecycle) else { break }
                 if !persisted {
                     failedIDs.append(taskID)
                     lastErrorMessage = bannerBefore            // restore: aggregate banner below
@@ -348,6 +629,7 @@ extension NTMSOrchestrator {
                 }
             } else {
                 let persisted = await ensureTaskLoaded(taskID)
+                guard isCurrentFolderLifecycle(lifecycle) else { break }
                 guard let loaded = loadedTask(taskID) else {   // load failed (missing/corrupt task.json) — collect, keep sweeping
                     failedIDs.append(taskID)
                     lastErrorMessage = bannerBefore            // restore: aggregate banner below
@@ -369,8 +651,11 @@ extension NTMSOrchestrator {
                     catch { failedIDs.append(taskID) }
                 }
             }
-            evictIfReclaimable(taskID, protectedDescendants: protectedDescendants)
+            evictIfReclaimable(taskID, protectedDescendants: protectedDescendants, within: lifecycle)
         }
+        // The banner is this lifecycle's: a sweep the next open overtook reports nothing into the
+        // session that open begins.
+        guard isCurrentFolderLifecycle(lifecycle) else { return }
         if !failedIDs.isEmpty {
             lastErrorMessage = "Could not recover status for \(failedIDs.count) task(s): " +
                 failedIDs.map { "#\($0)" }.joined(separator: ", ")
@@ -392,7 +677,11 @@ extension NTMSOrchestrator {
     /// also protects against a concurrent caller entering during our
     /// `coordinator.start()` await — if someone else won the race, we tear
     /// down the one we built before returning so no FSEventStream is orphaned.
-    func setUpSearchIndexCoordinatorIfEnabled() async {
+    ///
+    /// `lifecycle` is the caller's — the open's, captured at its start, or the setting change's
+    /// — never the current one read here: entered after a later open began, this would ask about
+    /// that open and install a coordinator for the folder being left.
+    func setUpSearchIndexCoordinatorIfEnabled(lifecycle: WorkFolderLifecycle) async {
         guard configuration.exploratorySearchEnabled,
               hasRealWorkFolder,
               let url = workFolderURL,
@@ -420,8 +709,9 @@ extension NTMSOrchestrator {
         // "create → start → publish", never "publish with a half-initialized
         // watcher".
         await coordinator.start()
+        let stillCurrent = await folderLifecycleStillCurrent(lifecycle, into: .searchIndexInstall)
 
-        // Two ways to lose the race, and only the first used to be checked.
+        // Three ways to lose the race, and only the first used to be checked.
         //
         // (1) A concurrent caller installed one — tear ours down.
         // (2) The FOLDER moved. `start()` suspends into the vector-index actor, and a Close
@@ -433,7 +723,12 @@ extension NTMSOrchestrator {
         //     method's own doc says must never be indexed — ends up with an index; and
         //     `exploratory_search` matches filenames against the old folder's roster while
         //     executing against the new root.
-        guard searchIndexCoordinator == nil, workFolderURL == url else {
+        // (3) An open BEGAN while it started. During that open's read the folder is still this
+        //     one, so (2) passes; the newer open's teardown ran against a still-nil slot, and
+        //     its own set-up then found this coordinator installed and kept it — indexing the
+        //     folder the person left while showing the next. The open generation says
+        //     what the folder check cannot.
+        guard searchIndexCoordinator == nil, workFolderURL == url, stillCurrent else {
             await coordinator.stop()
             return
         }
@@ -455,6 +750,9 @@ extension NTMSOrchestrator {
     /// nothing about the save. Closing a folder holding one outward symlink would otherwise
     /// raise a banner about a write that succeeded.
     func tearDownSearchIndexCoordinator() async {
+        #if DEBUG
+        if let gate = Self._testSearchIndexTeardownGate { await gate() }
+        #endif
         guard let coordinator = searchIndexCoordinator else { return }
         await coordinator.stop()
         if let saveFailure = coordinator.saveFailure {
@@ -491,10 +789,12 @@ extension NTMSOrchestrator {
     }
 
     private func applyExploratorySearchSettingChange() async {
+        let lifecycle = currentFolderLifecycle
         if configuration.exploratorySearchEnabled {
             searchIndexClearFailure = nil       // re-enabling supersedes any leftover warning
             if searchIndexCoordinator == nil {
-                await setUpSearchIndexCoordinatorIfEnabled()
+                // The setting change is its own lifecycle, begun here: nothing above suspends.
+                await setUpSearchIndexCoordinatorIfEnabled(lifecycle: lifecycle)
                 if searchIndexCoordinator == nil, !hasRealWorkFolder {
                     lastInfoMessage = "Exploratory Search needs an open project folder — default storage isn't indexed."
                 }
@@ -584,8 +884,9 @@ extension NTMSOrchestrator {
 
     /// Closes the current work folder and returns to default internal storage.
     func closeProject() async {
-        stopAllEngines()
-        llmExecutionService.cancelAllExecutions()
+        // The folder's lifecycle ends at the close's first line, not at the open of default
+        // storage below — the same boundary every transition crosses.
+        beginFolderTransition()
         // Cancel any in-flight active-task pointer write — its captured URL
         // is for the OLD workfolder, so letting it fire after we've opened
         // the default storage would write a ghost `activeTaskID` into the
@@ -600,8 +901,11 @@ extension NTMSOrchestrator {
 
     /// Deletes all data in Application Support and re-bootstraps from scratch.
     func resetAllData() async {
-        stopAllEngines()
-        llmExecutionService.cancelAllExecutions()
+        // The folder's lifecycle ends HERE, before the teardown below suspends and before the
+        // delete: until the open of default storage commits, nothing starts or writes in the
+        // folder being reset — its poll loop is stopped, a run start is refused, an action that
+        // captured the folder stops at its next check.
+        let lifecycle = beginFolderTransition()
         // Cancel before the `.nanoteams/` delete below — otherwise the chain
         // task can fire mid-delete and `setActiveTaskID` will throw
         // `.fileNoSuchFile` once `workfolder.json` is gone, surfacing as a
@@ -613,32 +917,49 @@ extension NTMSOrchestrator {
         // watcher can fire against the half-deleted folder and kick off a
         // rebuild that races the re-bootstrap.
         await tearDownSearchIndexCoordinator()
+        await tearDownMCPServerManager()
         configuration.lastOpenedWorkFolderPath = nil
 
         let defaultURL = Self.defaultStorageURL
-        let nanoteamsDir = defaultURL.appendingPathComponent(".nanoteams", isDirectory: true)
+        try? fileManager.createDirectory(at: defaultURL, withIntermediateDirectories: true)
         // Reported, not swallowed. `try?` here meant a refused delete produced NO signal while
         // `openWorkFolder` below re-read the intact tree and `apply`d it — so every task and
         // team the user asked to destroy came back, silently, under a dialog that promised to
         // "restore the application to its initial state". A PARTIAL delete is worse: the
         // recovery wrappers regenerate whatever went missing, so the app boots on a mix of
         // surviving and freshly-defaulted data with nothing to indicate it.
+        //
+        // Default storage is this process's before anything of it is deleted: its lock is taken
+        // first, and the delete goes through the repository, which writes only into the folder
+        // held and keeps the lock file (`removeWorkFolderData`). Until 2026-11-12 the delete was
+        // a bare `removeItem`, so a NanoTeams that did not hold default storage deleted another
+        // one's live tasks, teams and lock file under it, and the two then wrote it together
+        // (D-M18 R3). Held elsewhere, nothing is deleted, and the open below is refused as well.
         var deleteFailure: String?
+        var heldElsewhere = false
+        // An open begun during the teardowns owns the process and its lock now (D-M18 R1).
+        guard isCurrentFolderLifecycle(lifecycle) else { return }
         do {
-            if fileManager.fileExists(atPath: nanoteamsDir.path) {
-                try fileManager.removeItem(at: nanoteamsDir)
-            }
+            try takeWorkFolderInstanceLock(for: defaultURL)
+            try repository.removeWorkFolderData(at: defaultURL)
+        } catch WorkFolderInstanceLock.AcquireError.heldByAnotherProcess {
+            heldElsewhere = true
         } catch {
             deleteFailure = error.localizedDescription
         }
-        try? fileManager.createDirectory(at: defaultURL, withIntermediateDirectories: true)
         await openWorkFolder(defaultURL)
         // After the re-open, so the open's own banner can't displace it.
-        if let deleteFailure {
+        if heldElsewhere {
+            lastErrorMessage = Self.resetAllDataHeldElsewhereMessage
+        } else if let deleteFailure {
             lastErrorMessage = "Reset incomplete — couldn't delete the existing data: "
                 + "\(deleteFailure). Some tasks or teams may still be present."
         }
     }
+
+    /// What Reset All Data says when another NanoTeams holds default storage (D-M18 R3).
+    static let resetAllDataHeldElsewhereMessage = "Nothing was reset: the internal storage is open "
+        + "in another NanoTeams process. Quit the other NanoTeams, then reset again."
 
     // MARK: - Agent Instruction Files
 
@@ -913,11 +1234,11 @@ extension NTMSOrchestrator {
                 // Re-attaching a previously excluded file means "inject it again".
                 projection.settings.agentInstructionExcludedPaths.removeAll { accepted.contains($0) }
             }
-            // Same shape as `setAgentInstructionInjected`: `mutateWorkFolder` returns Void and
-            // reverts memory from disk on a failed settings write, so "accepted" only means
-            // "passed validation". Without this the rejection notice below overwrites the
-            // write-failure banner in the single-shot slot and tells the user the OTHER files
-            // were attached — which is exactly what did not happen.
+            // Same shape as `setAgentInstructionInjected`: on a failed settings write
+            // `mutateWorkFolder` re-reads memory from disk, so "accepted" only means "passed
+            // validation" — the stored list says what landed. Without this the rejection notice
+            // below overwrites the write-failure banner in the single-shot slot and tells the
+            // user the OTHER files were attached — which is exactly what did not happen.
             let stored = workFolder?.settings.agentInstructionExtraPaths ?? []
             persistFailed = !accepted.allSatisfy(stored.contains)
             if !persistFailed { await refreshAgentInstructions() }
@@ -964,16 +1285,18 @@ extension NTMSOrchestrator {
                 }
             }
         }
-        // Did the override actually land? `mutateWorkFolder` returns Void and, when the
-        // settings.json write fails, RE-READS the folder from disk and applies that — so the
-        // override is silently gone and the scan below would find the file un-injected for a
-        // reason that has nothing to do with the file. Reporting that as "isn't readable text"
+        // Did the override actually land? When the settings.json write fails,
+        // `mutateWorkFolder` RE-READS the folder from disk and applies that — so the override
+        // is gone, and the scan below would find the file un-injected for a reason that has
+        // nothing to do with the file. Reporting that as "isn't readable text"
         // was a false diagnosis over a real disk failure, and its `lastInfoMessage` write
         // displaced the write-failure banner in the single banner slot.
         //
         // The durable state is checked rather than `errorSurfaceCount`: it is exact, needs no
         // baseline, and cannot be tripped by an unrelated error surfacing during the scan's
-        // await (CLAUDE.md ranks a durable signal above the counter for this reason).
+        // await (CLAUDE.md ranks a durable signal above the counter for this reason). It is
+        // also the question asked — is this path injected now — where the outcome
+        // `mutateWorkFolder` returns would answer whether a write was needed and landed.
         let persisted = workFolder?.settings.agentInstructionInjectedPaths.contains(relativePath) ?? false
         guard !injected || persisted else { return }
 
@@ -1011,26 +1334,54 @@ extension NTMSOrchestrator {
 
     // MARK: - Work Folder Settings
 
-    func updateWorkFolderContext(_ context: String) async {
-        guard let url = workFolderURL else { return }
-        do {
-            let snapshot = try workFolderManagementService.updateWorkFolderContext(
-                context, at: url, activeTask: activeTask)
-            apply(snapshot)
-        } catch {
-            self.lastErrorMessage = error.localizedDescription
+    /// The context and the scheme are written as every other settings field is — through
+    /// `mutateWorkFolder`, from the settings in memory with the one field changed. Until
+    /// 2026-11-12 both had writers of their own that read `settings.json` back, set the field and
+    /// adopted the whole file: what any other writer had put there, the Autovisor's enabled flag
+    /// and driver included, replaced memory without the Autovisor's seam (D-M18 R9).
+    ///
+    /// `expectedRevision` is the revision of the text the writer read
+    /// (`ProjectSettings.contextRevision`, published by the hosted server): when given and the
+    /// stored text's is another, nothing is written. The comparison runs inside the mutation, so
+    /// no write can land between it and the replacement. The Settings editor passes the revision of
+    /// the text it knows is stored; an external agent passes the `expected_revision` it must send;
+    /// Generate and the built-in manager pass `nil` and write unconditionally.
+    @discardableResult
+    func updateWorkFolderContext(_ context: String, expectedRevision: String? = nil) async -> WorkFolderContextWrite {
+        guard workFolderURL != nil else { return .noFolder }
+        let trimmed = context.trimmingCharacters(in: .whitespacesAndNewlines)
+        var write = WorkFolderContextWrite.written
+        let outcome = await mutateWorkFolder { projection in
+            if let expectedRevision, projection.settings.contextRevision != expectedRevision {
+                write = .changedSinceRead
+                return
+            }
+            projection.settings.context = trimmed
+            // Stamped on every save, the same text included, as the context's own writer did.
+            projection.settings.contextUpdatedAt = Date()
         }
+        if let reason = outcome.failureReason { return .failed(reason: reason) }
+        return write
+    }
+
+    /// What `updateWorkFolderContext` did. `written` means the text is in `settings.json` and in
+    /// memory — the Settings page records its own save on it (`WorkFolderContextDraftSync.saved`).
+    enum WorkFolderContextWrite: Equatable {
+        case written
+        /// `expectedRevision` named another text than the stored one; nothing was written. It
+        /// carries no current revision: the agent gets that from a read, beside the text it names.
+        case changedSinceRead
+        /// No work folder is open; nothing was written.
+        case noFolder
+        /// `settings.json` could not be written, or the folder's contents were not loaded; memory
+        /// holds what is on disk. `reason` is also what `lastErrorMessage` showed, so a caller's
+        /// error scope has it already.
+        case failed(reason: String)
     }
 
     func updateSelectedScheme(_ scheme: String?) async {
-        guard let url = workFolderURL else { return }
-        do {
-            let snapshot = try workFolderManagementService.updateSelectedScheme(
-                scheme, at: url, activeTask: activeTask)
-            apply(snapshot)
-        } catch {
-            self.lastErrorMessage = error.localizedDescription
-        }
+        guard workFolderURL != nil else { return }
+        await mutateWorkFolder { $0.settings.selectedScheme = scheme }
     }
 
     /// Runs one context-generation pass and reports a typed outcome so the
@@ -1128,6 +1479,7 @@ extension NTMSOrchestrator {
     // MARK: - Autovisor settings
 
     func updateAutovisorGoal(_ goal: String) async {
+        let lifecycle = currentFolderLifecycle
         await mutateWorkFolder { proj in
             proj.settings.autovisorGoal = goal
         }
@@ -1135,7 +1487,7 @@ extension NTMSOrchestrator {
         // `syncAutovisorGoalToManagerBrief` keeps the task's `supervisorTask` (plus
         // goal clips + attachment paths) in lock-step. It owns the manager-loaded
         // guard and the `autovisorTaskID == nil` (pre-Enable) no-op.
-        await syncAutovisorGoalToManagerBrief()
+        await syncAutovisorGoalToManagerBrief(lifecycle: lifecycle)
     }
 
     /// Persists the Autovisor's standing memory. Used by both the Settings
@@ -1186,7 +1538,7 @@ extension NTMSOrchestrator {
         guard let url = workFolderURL else { return }
         do {
             let snapshot = try settingsService.saveToolDefinitions(tools, at: url)
-            apply(snapshot)
+            apply(snapshot, settings: .keepInMemory)
         } catch {
             self.lastErrorMessage = error.localizedDescription
         }
@@ -1194,19 +1546,62 @@ extension NTMSOrchestrator {
 
     func resetWorkFolderSettings() async {
         guard let url = workFolderURL else { return }
+        // Removing `.nanoteams/` and recreating defaults is a folder boundary: the old folder's
+        // tasks, runs, and engines are destroyed, so its lifecycle ends here before any teardown
+        // suspends.
+        let lifecycle = beginFolderTransition()
+        bundledUpdateReport = nil
+        pendingActiveTaskWrite?.cancel()
+        pendingActiveTaskWrite = nil
+        await tearDownSearchIndexCoordinator()
+        await tearDownMCPServerManager()
         // Tip-dismissal state lives in UserDefaults (not in the work folder), and
         // clearing it cannot fail — so do it unconditionally regardless of whether
         // the disk reset succeeds. The user pressed "reset"; tips should reappear.
         configuration.dismissedFeatureTipIDs = []
         do {
+            guard isCurrentFolderLifecycle(lifecycle) else { return }
+            // Only a folder this process holds is reset — the repository refuses any other before
+            // it deletes anything (`HeldWorkFolderRepository`) — and it stays held throughout: the
+            // reset keeps the lock file (`NTMSRepository.removeWorkFolderData`, D-M18 R7). The take
+            // after it keeps that lock; it takes a new one only when `.nanoteams/` had been removed
+            // from under this process before the reset, leaving the lock on a file nobody can open.
             let snapshot = try settingsService.resetWorkFolderSettings(at: url)
-            apply(snapshot)
+            try takeWorkFolderInstanceLock(for: url)
+            committedWorkFolderGeneration = lifecycle.generation
+            apply(snapshot, settings: .adopt)
+            autovisorEventFeed.activateFolder(folderID: snapshot.projection.id)
+            if hasRealWorkFolder {
+                externalActivityLog.activateFolder(
+                    logURL: NTMSPaths(workFolderRoot: url).externalActivityLogJSONL
+                )
+                restoreExternalCreationWindow(workFolderRoot: url)
+            }
             // Reset re-bootstraps the default templates (which exclude Autovisor) —
             // re-seed the always-present protected singleton so it survives a reset.
             await ensureAutovisorTeam()
+            guard await folderLifecycleStillCurrent(lifecycle, into: .automationScheduler) else { return }
+            await startAutomationScheduler(lifecycle: lifecycle)
+            guard await folderLifecycleStillCurrent(lifecycle, into: .autovisorTask) else { return }
+            await ensureAutovisorTask(lifecycle: lifecycle)
+            guard await folderLifecycleStillCurrent(lifecycle, into: .sleepTimer) else { return }
+            rearmAutovisorAutoDisable()
+            await setUpSearchIndexCoordinatorIfEnabled(lifecycle: lifecycle)
+            guard await folderLifecycleStillCurrent(lifecycle, into: .mcpServers) else { return }
+            await setUpMCPServerManager()
         } catch {
+            guard isCurrentFolderLifecycle(lifecycle) else { return }
+            committedWorkFolderGeneration = lifecycle.generation
             self.lastErrorMessage = error.localizedDescription
+            // Whatever failed — the folder another process's, or a delete or a bootstrap that
+            // stopped partway — the snapshot in memory no longer describes what is on disk. It is
+            // let go with the lock, as a failed open's: kept, it described deleted tasks and its
+            // engines could be restarted over a half-reset folder (D-M18 R7).
+            discardWorkFolderState()
         }
+        await refreshAgentInstructions()
+        await refreshAgentSkills()
+        await reconcileEmbeddingLifecycle()
     }
 
     // MARK: - Team Management

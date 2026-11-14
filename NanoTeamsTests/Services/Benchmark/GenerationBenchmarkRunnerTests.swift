@@ -243,8 +243,8 @@ final class GenerationBenchmarkRunnerTests: XCTestCase, @unchecked Sendable {
     /// see it — it only runs when another event arrives, and none ever will.
     ///
     /// RED: drop the `try Task.checkCancellation()` after the measured loop → the sample the user
-    /// cut off is recorded with no void at all, i.e. as a complete measurement of a short reply,
-    /// and its rate is averaged into the leaderboard as something the model produced.
+    /// cut off is recorded as `.noOutput` — the model said nothing — instead of `.cancelled`: a
+    /// stop we caused, filed as a failure of the model's.
     ///
     /// The warm-up already had this line; this is the sibling site that did not (#51).
     func testCancellingDuringAMeasuredSample_recordsItAsCancelled_notAsAShortAnswer() async throws {
@@ -259,6 +259,11 @@ final class GenerationBenchmarkRunnerTests: XCTestCase, @unchecked Sendable {
         let measured = try XCTUnwrap(store.loadSamples().first { $0.phase == .measured })
         XCTAssertEqual(measured.void, .cancelled,
                        "a stop we caused must never be recorded as an answer the model gave")
+        // The warm-up must have ended on its own finish. One the watchdog had to cut is a test
+        // that waited out `warmUpDeadline` — a minute here — to reach the sample it is about.
+        let warmUp = try XCTUnwrap(store.loadSamples().first { $0.phase == .warmup })
+        XCTAssertNotEqual(warmUp.void, .stoppedEarly,
+                          "the warm-up stream was left open, so only the deadline ended it")
     }
 
     // MARK: - The warm-up is bounded
@@ -1045,14 +1050,16 @@ private final class SlowProvenanceProbe: ServerProvenanceProbe, @unchecked Senda
     func probeServingEngine(config _: LLMConfig) async -> ServerProvenance.Engine? { nil }
 }
 
-/// Yields one delta and then hangs, so a run stays in flight until it is cancelled. The producer
-/// is torn down through `onTermination`, the same shape the codebase's other time-aware stub uses.
-/// Satisfies the warm-up policy on its first call, then hangs on every call after it.
+/// Answers the warm-up with a short stream it then FINISHES, and hangs on every call after it, so a
+/// run reaches a measured sample and stays in flight there until it is cancelled.
 ///
 /// The shape exists to reach a MEASURED sample and stop there: `HangingClient` stalls the warm-up
-/// instead, so a run against it never gets past one. Nothing ever finishes the continuation, so the
-/// only thing that can end the measured read is the consumer being cancelled — which is precisely
-/// the case where the stream finishes rather than throwing.
+/// instead, so a run against it never gets past one. The warm-up ends the way a server ends one, so
+/// the runner's warm-up read returns at once; left open, only its watchdog could end it, and the
+/// test sat out `warmUpDeadline` (a minute) before the sample it is about began (measured
+/// 2026-10-28: 60.3 s, the slowest test in the suite). Nothing ever finishes the MEASURED
+/// continuation, so the only thing that can end that read is the consumer being cancelled — which
+/// is precisely the case where the stream finishes rather than throwing.
 private final class WarmThenHangingClient: LLMClient, @unchecked Sendable {
     private let lock = NSLock()
     private var calls = 0
@@ -1081,7 +1088,7 @@ private final class WarmThenHangingClient: LLMClient, @unchecked Sendable {
             for index in 0..<(BenchmarkWarmUpPolicy.outputCeiling + 2) {
                 continuation.yield(StreamEvent(contentDelta: "t\(index)"))
             }
-            // Deliberately never finished.
+            continuation.finish()
         }
     }
 

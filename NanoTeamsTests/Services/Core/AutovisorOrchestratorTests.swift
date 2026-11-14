@@ -31,8 +31,12 @@ final class AutovisorOrchestratorTests: NTMSOrchestratorTestBase, @unchecked Sen
     func testSelfGuard_allowsActionOnOtherTask() async {
         _ = await pinManager()
         let otherID = await sut.createTask(title: "Real", supervisorTask: "x", makeActive: false)!
-        // pause on a task whose engine isn't running is a no-op → reported as success
-        // (the point: it is NOT refused by the self-guard).
+        await sut.ensureTaskLoaded(otherID)
+        await sut.mutateTask(taskID: otherID) { task in
+            task.runs = [Run(id: 0, steps: [
+                StepExecution(id: "swe", role: .softwareEngineer, title: "SWE", status: .running)
+            ])]
+        }
         let r = await sut.performAutovisorAction(.controlTask(taskID: otherID, verb: .pause))
         XCTAssertTrue(r.ok)
     }
@@ -433,7 +437,7 @@ final class AutovisorOrchestratorTests: NTMSOrchestratorTestBase, @unchecked Sen
         await sut.updateAutovisorTuning(tuning)
 
         // One non-manager task already `.running` → at the configured ceiling of 1.
-        guard let runningID = await makeRunningTask() else { return }
+        guard let runningID = await makeRunningTask(origin: .builtInAutovisor) else { return }
 
         let before = taskCount
         let r = await sut.performAutovisorAction(
@@ -1035,12 +1039,12 @@ final class AutovisorOrchestratorTests: NTMSOrchestratorTestBase, @unchecked Sen
 
     /// Drives a top-level task to a plain `.running` state with a single running step,
     /// so the ONLY enabled activation trigger that can match is `onTaskStuck`.
-    private func makeRunningTask() async -> Int? {
+    private func makeRunningTask(origin: TaskOrigin? = nil) async -> Int? {
         guard let startupID = sut.snapshot?.workFolder.teams.first(where: { $0.templateID == "startup" })?.id else {
             XCTFail("Startup team must be bootstrapped"); return nil
         }
         guard let taskID = await sut.createTask(title: "Spin", supervisorTask: "x",
-                                                preferredTeamID: startupID, makeActive: false) else {
+                                                preferredTeamID: startupID, makeActive: false, origin: origin) else {
             XCTFail("createTask failed"); return nil
         }
         await sut.ensureTaskLoaded(taskID)
@@ -1189,7 +1193,7 @@ final class AutovisorOrchestratorTests: NTMSOrchestratorTestBase, @unchecked Sen
         await sut.ensureTaskLoaded(mgrID)
         XCTAssertEqual(sut.snapshot?.workFolder.settings.autovisorGoal, "")
 
-        await sut.seedAutovisorDefaultsAndSyncBrief()
+        await sut.seedAutovisorDefaultsAndSyncBrief(lifecycle: sut.currentFolderLifecycle)
 
         XCTAssertEqual(sut.snapshot?.workFolder.settings.autovisorGoal, AutovisorConstants.defaultGoal)
         XCTAssertEqual(sut.snapshot?.workFolder.settings.autovisorMemory, AutovisorConstants.defaultMemory)
@@ -1204,7 +1208,7 @@ final class AutovisorOrchestratorTests: NTMSOrchestratorTestBase, @unchecked Sen
         await sut.updateAutovisorGoal("Keep docs current")
         await sut.updateAutovisorMemory("Reviewed 3 tasks.")
 
-        await sut.seedAutovisorDefaultsAndSyncBrief()
+        await sut.seedAutovisorDefaultsAndSyncBrief(lifecycle: sut.currentFolderLifecycle)
 
         XCTAssertEqual(sut.snapshot?.workFolder.settings.autovisorGoal, "Keep docs current")
         XCTAssertEqual(sut.snapshot?.workFolder.settings.autovisorMemory, "Reviewed 3 tasks.")
@@ -1333,7 +1337,7 @@ final class AutovisorOrchestratorTests: NTMSOrchestratorTestBase, @unchecked Sen
     func testUpdateActivation_unrelatedFieldChange_doesNotReArm() async {
         _ = await enabledManager()
         // Future sentinel — see testWake_doesNotReArmAutoOffDeadline.
-        sut.rearmAutovisorAutoDisable(now: Date(timeIntervalSince1970: 4_000_000_000))
+        sut.rearmAutovisorAutoDisable(now: Date(timeIntervalSince1970: 3_999_974_800))
         let sentinel = sut.autovisorAutoDisableAt
 
         var act = sut.snapshot!.workFolder.settings.autovisorActivation
@@ -1347,7 +1351,7 @@ final class AutovisorOrchestratorTests: NTMSOrchestratorTestBase, @unchecked Sen
     func testUpdateActivation_durationChange_reArmsFromNow() async {
         _ = await enabledManager()
         // Future sentinel — see testWake_doesNotReArmAutoOffDeadline.
-        sut.rearmAutovisorAutoDisable(now: Date(timeIntervalSince1970: 4_000_000_000))
+        sut.rearmAutovisorAutoDisable(now: Date(timeIntervalSince1970: 3_999_974_800))
 
         var act = sut.snapshot!.workFolder.settings.autovisorActivation
         act.autoDisableAfterSeconds = 7200
@@ -1430,7 +1434,7 @@ final class AutovisorOrchestratorTests: NTMSOrchestratorTestBase, @unchecked Sen
         guard await makeReviewStartupTask() != nil else { return }  // wake-worthy task
         // FUTURE sentinel: an expired deadline could be disabled+cleared by a real
         // minute-boundary scheduler tick landing mid-test (rare but flaky).
-        let sentinel = Date(timeIntervalSince1970: 4_000_000_000)
+        let sentinel = Date(timeIntervalSince1970: 3_999_974_800)
         sut.rearmAutovisorAutoDisable(now: sentinel)
         let armed = sut.autovisorAutoDisableAt
 

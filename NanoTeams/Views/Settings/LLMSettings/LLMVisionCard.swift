@@ -43,7 +43,6 @@ struct LLMVisionCard: View {
     var body: some View {
         SettingsCard(
             header: "Image Analysis (Vision)",
-            systemImage: "eye",
             footer: "Enables image analysis for roles via analyze_image. "
                 + "Empty fields fall back to the main LLM configuration."
         ) {

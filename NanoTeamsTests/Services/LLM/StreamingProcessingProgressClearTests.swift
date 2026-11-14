@@ -8,7 +8,7 @@ import XCTest
 /// "Processing 99%" while the model was actively generating tokens (visible
 /// in LM Studio's loaded-models panel as token count climbing). The
 /// pre-fix flow only cleared `processingStatus` at end-of-stream
-/// (`LLMExecutionService+Streaming.swift:176`), so if LM Studio didn't
+/// (`LLMExecutionService+Streaming.swift:179`), so if LM Studio didn't
 /// emit `prompt_processing.end` (which would have set progress to 1.0)
 /// AND the last `prompt_processing.progress` was 0.99, the indicator
 /// stayed visually frozen at 99% throughout generation.

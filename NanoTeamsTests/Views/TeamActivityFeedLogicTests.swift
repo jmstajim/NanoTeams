@@ -107,7 +107,7 @@ final class TeamActivityFeedLogicTests: XCTestCase {
         )
         for tagged in items {
             guard case let .notification(_, _, type, _, _) = tagged.item,
-                  case let .supervisorInput(question, answer, _, _, _, _, _, _) = type
+                  case let .supervisorInput(question, answer, _, _, _, _, _, _, _) = type
             else { continue }
             result.append((question, answer, tagged.item.createdAt))
         }

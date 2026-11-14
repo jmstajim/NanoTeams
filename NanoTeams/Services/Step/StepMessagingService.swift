@@ -33,6 +33,8 @@ nonisolated enum StepMessagingService {
         attachmentPaths: [String] = [],
         origin: SupervisorAnswerOrigin = .supervisor,
         submission: SupervisorInquirySubmission? = nil,
+        author: String? = nil,
+        keepingPause: Bool = false,
         in task: inout NTMSTask
     ) -> Bool {
         guard let location = task.locateStepInLatestRun(stepID: stepID) else { return false }
@@ -59,6 +61,9 @@ nonisolated enum StepMessagingService {
         // arm a delivery that has nothing to deliver.
         task.runs[location.runIndex].steps[location.stepIndex].supervisorAnswerPendingDelivery =
             StepExecution.inferPendingDelivery(answer: clean, attachmentPaths: attachmentPaths)
+        let trimmedAuthor = author?.trimmingCharacters(in: .whitespacesAndNewlines)
+        task.runs[location.runIndex].steps[location.stepIndex].supervisorAnswerAuthor =
+            (trimmedAuthor?.isEmpty == false) ? trimmedAuthor : nil
         task.runs[location.runIndex].steps[location.stepIndex].needsSupervisorInput = false
         // The structure the prose above was rendered from — what the feed re-renders the
         // answered card from, and the record of which answers were decisions and which were
@@ -93,7 +98,11 @@ nonisolated enum StepMessagingService {
                 role: .user,
                 content: "\(origin.messageContentPrefix)\(recorded)",
                 sourceRole: origin.messageSourceRole,
-                sourceContext: origin.messageContext
+                sourceContext: origin.messageContext,
+                authorLabel: (trimmedAuthor?.isEmpty == false) ? trimmedAuthor : nil,
+                // On the turn, not only on the step: the step's flag is overwritten by the
+                // next answer, and a step's cards and `task_log` read each answer by its own.
+                isFromAutomatedSupervisor: origin.turnIsFromAutomatedSupervisor
             )
             task.runs[location.runIndex].steps[location.stepIndex].llmConversation.append(answerMessage)
         }
@@ -103,8 +112,15 @@ nonisolated enum StepMessagingService {
         // already flipped .needsSupervisorInput → .paused, but the user can still answer
         // (the Answer chip surfaces while `needsSupervisorInput` flag is true). Treat
         // .paused identically here so resumeRun's continuation path is invariant.
+        //
+        // Except under a pause that stands (`keepingPause` — the task is paused, for any reason):
+        // the step stays `.paused` with the answer in its conversation, the shape `resumeRun`
+        // restarts — at once when the answer resumes the task, or when the person resumes it if
+        // an automated answer leaves their Pause standing. `.pending` beside a paused engine
+        // would read as live work while nothing runs, and would lift the pause before the
+        // Resume that records it could see it.
         let s = task.runs[location.runIndex].steps[location.stepIndex].status
-        if s.acceptsSupervisorAnswer {
+        if s.acceptsSupervisorAnswer, !(keepingPause && s == .paused) {
             task.runs[location.runIndex].steps[location.stepIndex].status = .pending
         }
         return true

@@ -127,7 +127,12 @@ final class EndToEndRoleAcceptanceReviewTests: NTMSOrchestratorTestBase, @unchec
         let id = await seedTaskWithNeedsAcceptanceStep()
         _ = await sut.acceptRole(taskID: id, roleID: "pm")
 
-        // Simulate restart
+        // Simulate restart: the process that exits lets its folder go. The old orchestrator is
+        // still alive here — its engine resumed on the accept — so it is stopped and its lock given
+        // back first; without that the reopen is refused, and the read only passed while a second
+        // orchestrator of the same process could write into a folder it never opened (D-M18 R2).
+        sut.stopAllEngines()
+        sut.releaseWorkFolderInstanceLock()
         sut = TestOrchestrator.make()
         await sut.openWorkFolder(tempDir)
         await sut.switchTask(to: id)

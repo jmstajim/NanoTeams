@@ -141,7 +141,38 @@ extension LLMExecutionService {
 
     // MARK: - LLM Message Appending
 
-    func appendLLMMessage(stepID: String, taskID: Int, role: LLMRole, content: String, thinking: String? = nil, sourceRole: Role? = nil, sourceContext: MessageSourceContext? = nil) async {
+    func appendLLMMessage(
+        stepID: String,
+        taskID: Int,
+        role: LLMRole,
+        content: String,
+        thinking: String? = nil,
+        sourceRole: Role? = nil,
+        sourceContext: MessageSourceContext? = nil
+    ) async {
+        await appendLLMMessage(
+            stepID: stepID,
+            taskID: taskID,
+            role: role,
+            content: content,
+            thinking: thinking,
+            sourceRole: sourceRole,
+            sourceContext: sourceContext,
+            authorLabel: nil
+        )
+    }
+
+    func appendLLMMessage(
+        stepID: String,
+        taskID: Int,
+        role: LLMRole,
+        content: String,
+        thinking: String? = nil,
+        sourceRole: Role? = nil,
+        sourceContext: MessageSourceContext? = nil,
+        authorLabel: String?,
+        isFromAutomatedSupervisor: Bool? = nil
+    ) async {
         let cleanedContent = ConversationRepairService.cleanHarmonyTokens(content)
         let cleanedThinking = thinking.map { ConversationRepairService.cleanHarmonyTokens($0) }
         let hasContent = !cleanedContent.isEmpty
@@ -149,7 +180,15 @@ extension LLMExecutionService {
         guard hasContent || hasThinking else { return }
         guard let delegate, isExecutionLive(stepID: stepID, taskID: taskID) else { return }
 
-        let msg = LLMMessage(role: role, content: cleanedContent, thinking: cleanedThinking, sourceRole: sourceRole, sourceContext: sourceContext)
+        let msg = LLMMessage(
+            role: role,
+            content: cleanedContent,
+            thinking: cleanedThinking,
+            sourceRole: sourceRole,
+            sourceContext: sourceContext,
+            authorLabel: authorLabel,
+            isFromAutomatedSupervisor: isFromAutomatedSupervisor
+        )
 
         await delegate.mutateTask(taskID: taskID) { task in
             TaskMutationService.appendLLMMessage(msg, to: stepID, in: &task)

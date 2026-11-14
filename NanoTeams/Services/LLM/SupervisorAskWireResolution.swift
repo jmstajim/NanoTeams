@@ -40,9 +40,27 @@ nonisolated enum SupervisorAskWireResolution {
         var replacedAny = false
         for id in ids {
             guard let index = lastIndexByID[id] else { continue }
-            messages[index] = ChatMessage(role: .tool, content: answer, toolCallID: id)
+            // The answer replaces the placeholder; what the placeholder told the model rides the
+            // answer instead of vanishing with it — its warnings (a form's repairs, an argument
+            // the runtime ignored) and the parser's `format_note` (an argument left out of a
+            // prompt-taught call). The model never reads the placeholder itself: the step parks.
+            let placeholder = messages[index].content ?? ""
+            messages[index] = ChatMessage(
+                role: .tool,
+                content: LLMExecutionService.appendingRepairNote(
+                    Self.formatNote(in: placeholder), to: carryingWarnings(from: placeholder, into: answer)),
+                toolCallID: id)
             replacedAny = true
         }
         return replacedAny
+    }
+
+    /// The parser's note spliced into a tool turn (`LLMExecutionService.appendingRepairNote`):
+    /// its `format_note` member, or `nil` when the turn carries none.
+    private static func formatNote(in content: String) -> String? {
+        guard content.contains("format_note"), let data = content.data(using: .utf8),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        else { return nil }
+        return object["format_note"] as? String
     }
 }

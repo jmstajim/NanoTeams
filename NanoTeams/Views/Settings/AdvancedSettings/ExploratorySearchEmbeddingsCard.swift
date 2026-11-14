@@ -56,7 +56,6 @@ struct ExploratorySearchEmbeddingsCard: View {
     var body: some View {
         SettingsCard(
             header: "Semantic Query Expansion",
-            systemImage: "sparkle.magnifyingglass",
             footer: "Embeddings let Exploratory Search surface translations, synonyms, and related terms — computed once after index build, reused on every query."
         ) {
             LLMEndpointEditor(

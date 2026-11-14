@@ -6,11 +6,11 @@ struct HelpSettingsView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: Spacing.xl) {
-                SettingsCard(header: "Keyboard Shortcuts", systemImage: "command") {
+                SettingsCard(header: "Keyboard Shortcuts") {
                     KeyboardShortcutsSheetView(embedInSettings: true)
                 }
 
-                SettingsCard(header: "Resources", systemImage: "link") {
+                SettingsCard(header: "Resources") {
                     VStack(spacing: 0) {
                         ResourceLinkRow(
                             title: "GitHub Repository",
@@ -30,7 +30,7 @@ struct HelpSettingsView: View {
                     }
                 }
 
-                SettingsCard(header: "About", systemImage: "info.circle") {
+                SettingsCard(header: "About") {
                     VStack(spacing: Spacing.s) {
                         aboutRow("Version", value: AppVersion.current)
                         aboutRow("Build", value: Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1")

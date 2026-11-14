@@ -130,8 +130,10 @@ final class ActivityFeedPersistenceRoundTripTests: XCTestCase {
                 return "cr:\(req.changes)"
             case .notification(_, _, let type, _, _):
                 switch type {
-                case .supervisorInput(let q, _, _, _, _, _, _, _):
+                case .supervisorInput(let q, _, _, _, _, _, _, _, _):
                     return "notif:input:\(q)"
+                case .supervisorEvent(let event, let roleName):
+                    return "notif:event:\(event.summaryText(roleName: roleName))"
                 case .failed:
                     return "notif:failed"
                 }

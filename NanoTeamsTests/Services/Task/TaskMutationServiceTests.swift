@@ -835,4 +835,12 @@ final class TaskMutationServiceTests: XCTestCase {
         XCTAssertEqual(task.runs[0].steps[0].status, .pending) // First run unchanged
         XCTAssertEqual(task.runs[1].steps[0].status, .running) // Latest run updated
     }
+
+    func testParseToolResultComposite_withoutResultSection() {
+        let text = "[CALL] bash\nArguments: {\"command\": \"ls\"}"
+        let parsed = TaskMutationService.parseToolResultComposite(text)
+        XCTAssertNotNil(parsed)
+        XCTAssertEqual(parsed?.toolName, "bash")
+        XCTAssertEqual(parsed?.argumentsJSON, "{\"command\": \"ls\"}")
+    }
 }

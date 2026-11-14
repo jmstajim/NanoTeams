@@ -18,6 +18,8 @@ nonisolated struct UpdateScratchpadTool: ToolHandler {
         )
     )
     static let category: ToolCategory = .memory
+    static let undeclaredArguments = ToolArgumentVocabulary.aliases(
+        ToolArgumentVocabulary.bodyAlternatives, of: "content")
 
     
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self {
@@ -26,9 +28,9 @@ nonisolated struct UpdateScratchpadTool: ToolHandler {
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
         await ToolErrorHandler.execute(toolName: Self.name, args: args) {
-            guard let content = resolveContentString(args) else {
-                throw ToolArgumentError.missingRequired("content")
-            }
+            // Its other spellings arrive renamed (`undeclaredArguments`); prose that was not
+            // JSON is recovered by `requiredString` itself.
+            let content = try requiredString(args, "content")
 
             return makeSuccessResult(
                 toolName: Self.name,

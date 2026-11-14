@@ -73,6 +73,7 @@ struct OneShotPromptTrainerConfig: Codable {
 enum OneShotPromptService: String, Codable, CaseIterable, Hashable {
     case bashJudge = "bash_judge"
     case computerUseJudge = "computer_use_judge"
+    case mcpJudge = "mcp_judge"
     case bashExplain = "bash_explain"
     case promptImprovement = "prompt_improvement"
     case vision

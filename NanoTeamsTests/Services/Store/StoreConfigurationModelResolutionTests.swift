@@ -33,6 +33,7 @@ final class StoreConfigurationModelResolutionTests: XCTestCase {
         config.teamGenLLMOverride = nil
         config.bashJudgeLLMOverride = nil
         config.computerUseJudgeLLMOverride = nil
+        config.mcpJudgeLLMOverride = nil
     }
 
     override func tearDown() async throws {
@@ -167,6 +168,16 @@ final class StoreConfigurationModelResolutionTests: XCTestCase {
         config.computerUseMode = .off
         config.computerUseJudgeLLMOverride = LLMOverride(modelName: "cu-judge-model")
         XCTAssertFalse(config.referencesModel("cu-judge-model", base: base))
+    }
+
+    func testReferencesModel_mcpJudgeOverride_whenActiveAndWhenInactive() {
+        config.mcpJudgeLLMOverride = LLMOverride(modelName: "mcp-judge-model")
+        XCTAssertFalse(
+            config.referencesModel("mcp-judge-model", base: base),
+            "Inactive when no MCP server is in Auto mode")
+        XCTAssertTrue(
+            config.referencesModel("mcp-judge-model", base: base, mcpJudgeIsActive: true),
+            "Active while at least one enabled MCP server is in Auto mode")
     }
 
     /// Team generation has no on/off toggle, so a configured override is

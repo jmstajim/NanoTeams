@@ -197,9 +197,11 @@ extension LLMExecutionService {
     /// and the team, never the RUN's statuses), so the caller computes it, the same way it
     /// computes `humanPresent`.
     func toolSchemas(
-        for role: Role, team: Team? = nil, humanPresent: Bool, workSuperseded: Bool = false
+        for role: Role, team: Team? = nil, humanPresent: Bool, workSuperseded: Bool = false,
+        mcpTools: MCPResolvedTools? = nil
     ) -> [ToolSchema] {
-        guard let env = toolResolutionEnvironment(humanPresent: humanPresent) else { return [] }
+        guard let env = toolResolutionEnvironment(humanPresent: humanPresent, mcpTools: mcpTools)
+        else { return [] }
         // Schema-build is the earliest and most universal detection point for
         // an orphan-coordinator (`reportOrphanCoordinatorIfNeeded` throttles
         // per team so this is safe to call on every iteration). The meeting
@@ -213,7 +215,8 @@ extension LLMExecutionService {
                 selectedScheme: env.selectedScheme,
                 isVisionConfigured: env.isVisionConfigured,
                 approval: env.approval,
-                autovisorTeamPolicy: env.autovisorTeamPolicy
+                autovisorTeamPolicy: env.autovisorTeamPolicy,
+                mcpTools: env.mcpTools
             ),
             workSuperseded: workSuperseded)
     }
@@ -224,9 +227,10 @@ extension LLMExecutionService {
     /// `resolveToolSchemas(forDefinition:…)` for the full rationale.
     func toolSchemas(
         forDefinition roleDefinition: TeamRoleDefinition, team: Team? = nil, humanPresent: Bool,
-        workSuperseded: Bool = false
+        workSuperseded: Bool = false, mcpTools: MCPResolvedTools? = nil
     ) -> [ToolSchema] {
-        guard let env = toolResolutionEnvironment(humanPresent: humanPresent) else { return [] }
+        guard let env = toolResolutionEnvironment(humanPresent: humanPresent, mcpTools: mcpTools)
+        else { return [] }
         reportOrphanCoordinatorIfNeeded(team: team)
         return Self.supersededRunnerStrip(
             Self.resolveToolSchemas(
@@ -236,7 +240,8 @@ extension LLMExecutionService {
                 selectedScheme: env.selectedScheme,
                 isVisionConfigured: env.isVisionConfigured,
                 approval: env.approval,
-                autovisorTeamPolicy: env.autovisorTeamPolicy
+                autovisorTeamPolicy: env.autovisorTeamPolicy,
+                mcpTools: env.mcpTools
             ),
             workSuperseded: workSuperseded)
     }
@@ -292,17 +297,38 @@ extension LLMExecutionService {
     /// refused (KNOWN_ISSUES B3).
     func approvalHumanPresent(task: NTMSTask, supervisorMode: SupervisorMode) -> Bool {
         ApprovalPresence.humanPresent(
-            supervisorMode: supervisorMode, underAutovisor: isUnderAutovisor(task: task))
+            supervisorMode: supervisorMode,
+            underAutovisor: underAutovisorForApproval(task: task)
+        )
+    }
+
+    /// The external catalogue this run ships, read off the delegate and split on whether a
+    /// human is there to approve.
+    ///
+    /// A METHOD rather than an expression at each use, because a step needs the same answer
+    /// twice — once for the schema the model is shown, once for the handlers the runtime
+    /// registers — and the manager can rebuild the snapshot between two reads. Two reads
+    /// would then ship a tool the registry has no handler for, or register one the prompt
+    /// never named. `resolveStepRuntime` calls this once and passes the value to both.
+    func resolvedMCPTools(humanPresent: Bool) -> MCPResolvedTools {
+        (delegate?.mcpTools ?? .empty).resolved(humanPresent: humanPresent)
     }
 
     /// Delegate-sourced inputs shared by both `toolSchemas` shims — kept in one
     /// place so the two entry points can't drift on which environment they read.
-    private func toolResolutionEnvironment(humanPresent: Bool) -> (
+    ///
+    /// `mcpTools` is the caller's already-resolved catalogue when it has one; `nil` means
+    /// "read it here", which is what every surface that resolves a schema and nothing else
+    /// wants.
+    private func toolResolutionEnvironment(
+        humanPresent: Bool, mcpTools: MCPResolvedTools? = nil
+    ) -> (
         allTeams: [Team],
         selectedScheme: String?,
         isVisionConfigured: Bool,
         approval: ToolApprovalAvailability,
-        autovisorTeamPolicy: AutovisorTeamPolicy
+        autovisorTeamPolicy: AutovisorTeamPolicy,
+        mcpTools: MCPResolvedTools
     )? {
         guard let delegate else { return nil }
         return (
@@ -314,7 +340,12 @@ extension LLMExecutionService {
                 bashMode: delegate.bashPolicy.mode,
                 computerUseMode: delegate.computerUsePolicy.mode,
                 humanPresent: humanPresent),
-            autovisorTeamPolicy: delegate.snapshot.map { AutovisorTeamPolicy(settings: $0.workFolder.settings) } ?? .unrestricted
+            autovisorTeamPolicy: delegate.snapshot.map { AutovisorTeamPolicy(settings: $0.workFolder.settings) } ?? .unrestricted,
+            // Frozen for the step's whole life: the catalogue can change under a running
+            // step, and the wire is append-only, so re-reading it per iteration would
+            // rewrite a prompt the server has already cached. Drift is reported on the one
+            // call that hits it instead (`ToolUnavailabilityReason.mcpToolChanged`).
+            mcpTools: mcpTools ?? resolvedMCPTools(humanPresent: humanPresent)
         )
     }
 
@@ -330,6 +361,12 @@ extension LLMExecutionService {
     /// `ToolDefinitionRegistry.shared.allToolSchemas`, the per-role schema
     /// builders) are themselves `nonisolated`. Lets the renderer call it
     /// from a non-main-actor context.
+    ///
+    /// - Parameter mcpTools: the external tools this run ships, already split on whether a
+    ///   human is there to approve a call. `.empty` by default, and the default is a true
+    ///   statement rather than a convenience — a caller with no MCP manager has no servers,
+    ///   which is exactly what `.empty` says. (`approval` has no default for the opposite
+    ///   reason: an implicit "feature off" there would be a claim, and a wrong one.)
     nonisolated static func resolveToolSchemas(
         for role: Role,
         team: Team?,
@@ -337,7 +374,8 @@ extension LLMExecutionService {
         selectedScheme: String? = nil,
         isVisionConfigured: Bool = false,
         approval: ToolApprovalAvailability,
-        autovisorTeamPolicy: AutovisorTeamPolicy = .unrestricted
+        autovisorTeamPolicy: AutovisorTeamPolicy = .unrestricted,
+        mcpTools: MCPResolvedTools = .empty
     ) -> [ToolSchema] {
         // 1. Find role definition — findRole handles id, systemRoleID, and name (custom roles
         // created via Role.fromDefinition carry the role's name, not its id, in `.custom(id:)`).
@@ -352,7 +390,8 @@ extension LLMExecutionService {
                 selectedScheme: selectedScheme,
                 isVisionConfigured: isVisionConfigured,
                 approval: approval,
-                autovisorTeamPolicy: autovisorTeamPolicy
+                autovisorTeamPolicy: autovisorTeamPolicy,
+                mcpTools: mcpTools
             )
         }
 
@@ -372,7 +411,8 @@ extension LLMExecutionService {
             selectedScheme: selectedScheme,
             isVisionConfigured: isVisionConfigured,
             approval: approval,
-            autovisorTeamPolicy: autovisorTeamPolicy
+            autovisorTeamPolicy: autovisorTeamPolicy,
+            mcpTools: mcpTools
         )
     }
 
@@ -393,7 +433,8 @@ extension LLMExecutionService {
         selectedScheme: String? = nil,
         isVisionConfigured: Bool = false,
         approval: ToolApprovalAvailability,
-        autovisorTeamPolicy: AutovisorTeamPolicy = .unrestricted
+        autovisorTeamPolicy: AutovisorTeamPolicy = .unrestricted,
+        mcpTools: MCPResolvedTools = .empty
     ) -> [ToolSchema] {
         resolveToolSchemasCore(
             allowedIDs: Set(roleDefinition.toolIDs),
@@ -409,7 +450,8 @@ extension LLMExecutionService {
             selectedScheme: selectedScheme,
             isVisionConfigured: isVisionConfigured,
             approval: approval,
-            autovisorTeamPolicy: autovisorTeamPolicy
+            autovisorTeamPolicy: autovisorTeamPolicy,
+            mcpTools: mcpTools
         )
     }
 
@@ -425,7 +467,8 @@ extension LLMExecutionService {
         selectedScheme: String?,
         isVisionConfigured: Bool,
         approval: ToolApprovalAvailability,
-        autovisorTeamPolicy: AutovisorTeamPolicy
+        autovisorTeamPolicy: AutovisorTeamPolicy,
+        mcpTools: MCPResolvedTools
     ) -> [ToolSchema] {
 
         // 3. Build the candidate set from the LIVE handler registry — the
@@ -464,7 +507,7 @@ extension LLMExecutionService {
 
         // 3.0b The ten management tools DEFINE the Autovisor manager and mean nothing on any
         // other role: their `ToolSignal`s are interpreted only by the manager's step loop, and
-        // `set_work_folder_context` rewrites the context every role of every task reads. A
+        // `set_work_folder_context` rewrites the context every role reads on a team whose prompt carries it. A
         // generated or hand-edited `toolIDs` could carry them until 2026-09-06 (the generator
         // validated against the whole registry), so this is the structural backstop —
         // the mirror of step 8, which strips `ask_supervisor` from the manager. Not
@@ -710,7 +753,40 @@ extension LLMExecutionService {
             allowedTools.removeAll { ToolNames.supervisorAskTools.contains($0.name) }
         }
 
-        return allowedTools
+        // 9. External MCP tools, appended after every built-in one.
+        //
+        // The steps above never see them: an MCP tool is not a `ToolHandler`, so it is in
+        // none of the sets `ToolHandlerRegistry.allTypes` feeds and none of the strips can
+        // name it. What the role's `toolIDs` carries is a GRANT — one tool's model-facing
+        // name, or `mcp__<slug>` for a whole server — and `mcpToolSchemas` is what expands it.
+        return allowedTools + mcpToolSchemas(allowedIDs: allowedIDs, mcpTools: mcpTools)
+    }
+
+    /// The MCP tools a role's grants reach, as schemas, in the snapshot's own (slug, name)
+    /// order.
+    ///
+    /// **Appended after the built-ins, and that position is load-bearing.** The tool list is
+    /// rendered into segment 0 of the system prompt, which the server caches as a prefix;
+    /// inserting anywhere else would shift every built-in below it and re-prefill the whole
+    /// request the first time a server connects. Last also makes the `.empty` case
+    /// byte-identical to the prompt this app built before MCP existed — a concatenation with
+    /// nothing is the same array.
+    ///
+    /// The withholding decision is NOT made here: `MCPToolsSnapshot.resolved(humanPresent:)`
+    /// already split the catalogue per tool, and this ships the `shipped` half only. A granted
+    /// tool that could never reach a decision in this run is therefore absent from the schema
+    /// and recognised by the executor's classifier instead (`approval_unavailable`), the same
+    /// shape `bash` and the computer-use family use.
+    nonisolated static func mcpToolSchemas(
+        allowedIDs: Set<String>, mcpTools: MCPResolvedTools
+    ) -> [ToolSchema] {
+        guard !mcpTools.shipped.isEmpty else { return [] }
+        return mcpTools.granted(by: allowedIDs).shipped.map {
+            ToolSchema(
+                name: $0.modelFacingName,
+                description: $0.descriptor.displayDescription,
+                parameters: $0.descriptor.inputSchema)
+        }
     }
 
     /// Removes blocked tools from schemas when no real work folder is open.

@@ -72,7 +72,6 @@ struct DownloadedModelsCard: View {
     var body: some View {
         SettingsCard(
             header: "Downloaded Models",
-            systemImage: "internaldrive",
             footer: footerText
         ) {
             VStack(alignment: .leading, spacing: Spacing.s) {

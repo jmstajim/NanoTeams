@@ -129,6 +129,16 @@ nonisolated struct AutovisorActivation: Codable, Hashable {
     static let `default` = AutovisorActivation()
 }
 
+/// What the `.autovisor` destination shows — `AutovisorPolicy.detailPane`.
+nonisolated enum AutovisorDetailPane: Equatable, Sendable {
+    /// The start page: driver, goal, Enable. Every switched-off state, for both drivers.
+    case setup
+    /// The external agent's pane: its agents, its tasks, its activity.
+    case externalAgent
+    /// The built-in manager's chat — its hidden task on the TeamBoard.
+    case managerChat(taskID: Int)
+}
+
 /// Pure decision rules for the Autovisor's universal-supervisor behavior.
 nonisolated enum AutovisorPolicy {
     /// Whether the Autovisor manager acts as this task's Supervisor — the
@@ -149,12 +159,17 @@ nonisolated enum AutovisorPolicy {
         parentTaskID: Int?,
         autovisorEnabled: Bool,
         activation: AutovisorActivation,
-        autovisorTaskID: Int?
+        autovisorTaskID: Int?,
+        driver: AutovisorDriver = .builtInModel,
+        origin: TaskOrigin? = nil
     ) -> Bool {
-        autovisorEnabled
-            && activation.onTaskNeedsSupervisor
-            && parentTaskID == nil
-            && autovisorTaskID != taskID
+        guard autovisorEnabled, parentTaskID == nil, autovisorTaskID != taskID else { return false }
+        switch driver {
+        case .builtInModel:
+            return activation.onTaskNeedsSupervisor
+        case .externalAgent:
+            return origin?.isExternalAgent == true
+        }
     }
 
     /// The folder-level half of `supervisesTask`, for surfaces that hold no task: does the
@@ -162,8 +177,14 @@ nonisolated enum AutovisorPolicy {
     /// `supervisesTask` would be true for a top-level task that is not the manager's own —
     /// the case the role editor, the wire preview and the badge describe when they ask whether
     /// a human would be there to approve a `bash` command (`ApprovalPresence`).
-    static func supervisesTopLevelTasks(autovisorEnabled: Bool, activation: AutovisorActivation) -> Bool {
-        autovisorEnabled && activation.onTaskNeedsSupervisor
+    /// Under `.externalAgent`, ordinary human tasks in the folder are NOT under the external agent.
+    static func supervisesTopLevelTasks(
+        autovisorEnabled: Bool,
+        activation: AutovisorActivation,
+        driver: AutovisorDriver = .builtInModel
+    ) -> Bool {
+        guard driver == .builtInModel else { return false }
+        return autovisorEnabled && activation.onTaskNeedsSupervisor
     }
 
     /// Whether the Autovisor can be ENABLED in the current work folder.
@@ -219,13 +240,41 @@ nonisolated enum AutovisorPolicy {
     /// rather than the manager chat — the routing rule for
     /// `MainLayoutView.autovisorDetail` and the sidebar menu label that names it.
     ///
-    /// Setup unless the manager exists AND is enabled. A disabled manager keeps its
-    /// task (`setAutovisorEnabled(false)` leaves `autovisorTaskID` set — only Delete
-    /// clears it), so without this it would keep rendering a chat for a manager that
-    /// won't run. The goal is deliberately NOT an input: while disabled, the way back
-    /// is always the same one screen, whatever the goal says.
-    static func showsSetupPane(taskExists: Bool, enabled: Bool) -> Bool {
-        !taskExists || !enabled
+    /// Setup unless the manager exists AND is enabled (for `.builtInModel`), or unless
+    /// enabled (for `.externalAgent`, which needs no built-in manager task).
+    static func showsSetupPane(
+        taskExists: Bool,
+        enabled: Bool,
+        driver: AutovisorDriver = .builtInModel
+    ) -> Bool {
+        switch driver {
+        case .builtInModel:
+            return !taskExists || !enabled
+        case .externalAgent:
+            return !enabled
+        }
+    }
+
+    /// The pane the `.autovisor` destination renders — `showsSetupPane` resolved into a
+    /// route, so the view and the sidebar's "Open Setup" / "Open Chat" label read one rule
+    /// (CLAUDE.md #373). The start page is where the driver is chosen, so it stands for both
+    /// drivers while the Autovisor is off.
+    static func detailPane(
+        managerTaskID: Int?,
+        enabled: Bool,
+        driver: AutovisorDriver
+    ) -> AutovisorDetailPane {
+        if showsSetupPane(taskExists: managerTaskID != nil, enabled: enabled, driver: driver) {
+            return .setup
+        }
+        switch driver {
+        case .externalAgent:
+            return .externalAgent
+        case .builtInModel:
+            // `showsSetupPane` is false under `.builtInModel` only with a manager task.
+            guard let managerTaskID else { return .setup }
+            return .managerChat(taskID: managerTaskID)
+        }
     }
 
     /// Whether an OFF→ON click (the Watchtower pill) must route to the setup pane
@@ -235,7 +284,17 @@ nonisolated enum AutovisorPolicy {
     /// `AutovisorConstants.defaultGoal` placeholder must be replaced first, or the
     /// manager would start on the inert "explore & wait" directive; likewise a
     /// manager that was never created has nothing to turn on yet.
-    static func requiresSetupBeforeEnabling(taskExists: Bool, goalIsUnset: Bool) -> Bool {
-        !taskExists || goalIsUnset
+    /// Under `.externalAgent`, neither a manager task nor a folder goal is required.
+    static func requiresSetupBeforeEnabling(
+        taskExists: Bool,
+        goalIsUnset: Bool,
+        driver: AutovisorDriver = .builtInModel
+    ) -> Bool {
+        switch driver {
+        case .builtInModel:
+            return !taskExists || goalIsUnset
+        case .externalAgent:
+            return false
+        }
     }
 }

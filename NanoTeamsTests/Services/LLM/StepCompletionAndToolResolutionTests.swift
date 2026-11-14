@@ -843,8 +843,8 @@ final class StepCompletionAndToolResolutionTests: XCTestCase {
     // MARK: - resolveToolSchemas: manager-only tools never reach a team role (step 3.0b)
 
     /// The ten management tools define the Autovisor; their signals mean nothing on any other
-    /// role's step loop, and `set_work_folder_context` rewrites what every role of every task
-    /// reads. A generated or hand-edited `toolIDs` carrying them is stripped structurally —
+    /// role's step loop, and `set_work_folder_context` rewrites what the roles of every task read
+    /// on a team whose prompt carries it. A generated or hand-edited `toolIDs` carrying them is stripped structurally —
     /// the mirror of step 8, which strips `ask_supervisor` from the manager.
     func testResolveToolSchemas_managerOnlyTools_areStrippedFromATeamRole_andKeptOnTheManager() async {
         let planted = [ToolNames.controlTask, ToolNames.waitForEvents, ToolNames.setWorkFolderContext]
@@ -1463,7 +1463,11 @@ final class StepCompletionAndToolResolutionTests: XCTestCase {
         XCTAssertTrue(results.isEmpty)
     }
 
-    func testGateBashCalls_undecodableArgumentsJSON_isPassedToTheHandler() async {
+    /// `{not json` reaches `BashTool` as prose under `__raw_input__`, and the handler runs that
+    /// text — so the gate judges it (here: denied, the tool is Off). Until 2026-11-09 this pin
+    /// asserted the opposite, that an undecodable document was "passed to the handler" unjudged:
+    /// the handler did not refuse it, it ran it.
+    func testGateBashCalls_undecodableArgumentsJSON_isJudgedAsTheProseTheHandlerRuns() async {
         delegate.snapshot = nil
         delegate.bashPolicy = BashPolicy(mode: .off)
         let task = NTMSTask(id: 1, title: "T", supervisorTask: "G", runs: [])
@@ -1476,7 +1480,10 @@ final class StepCompletionAndToolResolutionTests: XCTestCase {
             stepID: "swe", taskID: 1, supervisorMode: .autonomous, task: task,
             client: StubStreamingClient(), config: LLMConfig(), networkLogger: nil)
 
-        XCTAssertTrue(results.isEmpty)
+        XCTAssertEqual(results[0]?.isError, true, "the prose the handler would run is judged")
+        XCTAssertTrue(
+            results[0]?.outputJSON.contains(ToolErrorCode.bashDenied.rawValue) ?? false,
+            results[0]?.outputJSON ?? "nil")
     }
 
     func testGateBashCalls_mixedBatch_synthesizesOnlyForTheDeniedIndices() async {

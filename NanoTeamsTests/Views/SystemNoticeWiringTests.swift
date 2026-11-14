@@ -16,34 +16,52 @@ import XCTest
 ///   * a source scan for the parts that only exist as view composition.
 final class SystemNoticeWiringTests: XCTestCase {
 
-    // MARK: - Header label suppression (behavioural)
+    // MARK: - Header attribution suppression (behavioural)
 
-    func testHeaderSourceLabel_systemNotice_suppressesTheDuplicateLabel() {
+    func testHeaderAttribution_systemNotice_suppressesTheDuplicateLabel() {
         let message = LLMMessage(role: .user, content: "nudge", sourceContext: .retryNudge)
         XCTAssertEqual(message.sourceContextDisplayLabel, "retry",
                        "precondition: the header would otherwise show `(retry)`")
-        XCTAssertNil(MessageBubbleView.headerSourceLabel(for: message, isSystemNotice: true),
-                     "the row already says `system: retry` — the header must not repeat it")
+        XCTAssertEqual(MessageBubbleView.headerAttribution(for: message, isSystemNotice: true), .none,
+                       "the row already says `system: retry` — the header must not repeat it")
     }
 
-    func testHeaderSourceLabel_ordinaryTurn_keepsItsLabel() {
+    /// One gate hides both halves: a notice row has no header to put a mark in.
+    func testHeaderAttribution_systemNotice_suppressesAnAuthorToo() {
+        let message = LLMMessage(
+            role: .user, content: "nudge", sourceContext: .retryNudge,
+            authorLabel: "Claude Code", isFromAutomatedSupervisor: true)
+        XCTAssertEqual(message.sourceAttribution.author, "Claude Code", "precondition")
+        XCTAssertEqual(MessageBubbleView.headerAttribution(for: message, isSystemNotice: true), .none)
+    }
+
+    func testHeaderAttribution_ordinaryTurn_keepsItsLabel() {
         let message = LLMMessage(
             role: .user, content: "answer", sourceRole: .techLead, sourceContext: .consultation)
-        XCTAssertEqual(
-            MessageBubbleView.headerSourceLabel(for: message, isSystemNotice: false),
-            "consultation")
+        let attribution = MessageBubbleView.headerAttribution(for: message, isSystemNotice: false)
+        XCTAssertEqual(attribution.context, "consultation")
+        XCTAssertNil(attribution.author)
     }
 
-    func testHeaderSourceLabel_noContext_isStillNil() {
+    func testHeaderAttribution_signedSupervisorTurn_isAnAuthorWithNoContext() {
+        let message = LLMMessage(
+            role: .user, content: "Three changes", sourceRole: .supervisor,
+            sourceContext: .supervisorFeedback, authorLabel: "Claude Code", isFromAutomatedSupervisor: true)
+        let attribution = MessageBubbleView.headerAttribution(for: message, isSystemNotice: false)
+        XCTAssertNil(attribution.context, "the crowned header already says it is the Supervisor")
+        XCTAssertEqual(attribution.author, "Claude Code")
+    }
+
+    func testHeaderAttribution_noContext_isStillEmpty() {
         let message = LLMMessage(role: .assistant, content: "plain")
-        XCTAssertNil(MessageBubbleView.headerSourceLabel(for: message, isSystemNotice: false))
+        XCTAssertEqual(MessageBubbleView.headerAttribution(for: message, isSystemNotice: false), .none)
     }
 
     /// The suppression is scoped to the FEED. `conversation_log.md` keeps the
     /// label, because there the row's `system:` prefix does not exist.
     func testTranscriptHelper_isUnaffectedBySuppression() {
         let message = LLMMessage(role: .user, content: "nudge", sourceContext: .retryNudge)
-        _ = MessageBubbleView.headerSourceLabel(for: message, isSystemNotice: true)
+        _ = MessageBubbleView.headerAttribution(for: message, isSystemNotice: true)
         XCTAssertEqual(message.sourceContextDisplayLabel, "retry",
                        "`sourceContextDisplayLabel` is shared with the transcript renderer and "
                            + "must not be narrowed for a feed concern")
@@ -95,7 +113,7 @@ final class SystemNoticeWiringTests: XCTestCase {
         XCTAssertTrue(code.contains("SystemNoticeRow("),
                       "the bubble must render the collapsed row")
 
-        // `headerSourceLabel` is pinned behaviourally above, but a truth table
+        // `headerAttribution` is pinned behaviourally above, but a truth table
         // says nothing about what the CALL SITE feeds it — a hard-coded `false`
         // there would restore the duplicate `(retry)` with every test green.
         //

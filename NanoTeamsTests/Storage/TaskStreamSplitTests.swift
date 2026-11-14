@@ -266,7 +266,7 @@ final class TaskStreamSplitTests: XCTestCase {
         task.updatedAt = MonotonicClock.shared.now()
         try repository.updateTaskOnly(at: root, task: task)
 
-        task.runs[0].steps[0].toolCalls[0].resultJSON = #"{"ok":true}"#
+        task.runs[0].steps[0].toolCalls[0].recordResult(#"{"ok":true}"#)
         task.updatedAt = MonotonicClock.shared.now()
         try repository.updateTaskOnly(at: root, task: task)
 
@@ -519,6 +519,11 @@ final class TaskStreamSplitTests: XCTestCase {
             }
             XCTAssertEqual(tid, id)
             XCTAssertEqual(sid, "engineer")
+            // The banner's text. Read here so the line is covered by this test and not, in some
+            // full runs only, by whichever orchestrator test's detached write happened to fail.
+            XCTAssertEqual(
+                error.localizedDescription,
+                "Unable to write the step log for task \(id), step 'engineer'.")
         }
 
         try FileManager.default.removeItem(at: logURL)

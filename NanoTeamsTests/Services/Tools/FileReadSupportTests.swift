@@ -110,8 +110,9 @@ final class FileReadSupportTests: XCTestCase {
     func testExtract_utf8TextFile_returnsTextWithUTF8Encoding() throws {
         try write("a.txt", "hello world")
         let url = tempDir.appendingPathComponent("a.txt")
-        let outcome = FileReadSupport.extractContent(
-            toolName: "read_file", args: [:], path: "a.txt", fileURL: url
+        let outcome = try FileReadSupport.extractContent(
+            toolName: "read_file", args: [:], path: "a.txt", fileURL: url,
+            resolver: SandboxPathResolver(workFolderRoot: tempDir)
         )
         guard case .text(let content, let encoding) = outcome else { return XCTFail("Expected text") }
         XCTAssertEqual(content, "hello world")
@@ -121,8 +122,9 @@ final class FileReadSupportTests: XCTestCase {
     func testExtract_documentFormat_returnsExtractedTextEncoding() throws {
         let url = tempDir.appendingPathComponent("doc.rtf")
         try #"{\rtf1\ansi RTF body text}"#.write(to: url, atomically: true, encoding: .utf8)
-        let outcome = FileReadSupport.extractContent(
-            toolName: "read_file", args: [:], path: "doc.rtf", fileURL: url
+        let outcome = try FileReadSupport.extractContent(
+            toolName: "read_file", args: [:], path: "doc.rtf", fileURL: url,
+            resolver: SandboxPathResolver(workFolderRoot: tempDir)
         )
         guard case .text(let content, let encoding) = outcome else { return XCTFail("Expected text") }
         XCTAssertTrue(content.contains("RTF body text"))
@@ -133,8 +135,9 @@ final class FileReadSupportTests: XCTestCase {
         // Bytes that are not valid UTF-8 and not a recognized document format.
         let url = tempDir.appendingPathComponent("blob.bin")
         try Data([0xFF, 0xFE, 0x00, 0x80, 0x81, 0x82]).write(to: url)
-        let outcome = FileReadSupport.extractContent(
-            toolName: "read_lines", args: [:], path: "blob.bin", fileURL: url
+        let outcome = try FileReadSupport.extractContent(
+            toolName: "read_lines", args: [:], path: "blob.bin", fileURL: url,
+            resolver: SandboxPathResolver(workFolderRoot: tempDir)
         )
         guard case .failure(let err) = outcome else { return XCTFail("Binary must fail, not return empty text") }
         XCTAssertTrue(err.isError)
@@ -145,8 +148,9 @@ final class FileReadSupportTests: XCTestCase {
     func testExtract_emptyFile_returnsEmptyTextNotFailure() throws {
         try write("empty.txt", "")
         let url = tempDir.appendingPathComponent("empty.txt")
-        let outcome = FileReadSupport.extractContent(
-            toolName: "read_file", args: [:], path: "empty.txt", fileURL: url
+        let outcome = try FileReadSupport.extractContent(
+            toolName: "read_file", args: [:], path: "empty.txt", fileURL: url,
+            resolver: SandboxPathResolver(workFolderRoot: tempDir)
         )
         guard case .text(let content, let encoding) = outcome else { return XCTFail("Empty file is valid UTF-8") }
         XCTAssertEqual(content, "")

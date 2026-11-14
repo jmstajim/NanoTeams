@@ -198,8 +198,11 @@ final class AutovisorTaskStatusArtifactTests: XCTestCase {
             messages: [StepMessage(role: .softwareEngineer, content: "researching")],
             toolCalls: calls
         )
-        let run = Run(id: 0, createdAt: old, steps: [step],
+        var run = Run(id: 0, createdAt: old, steps: [step],
                       roleStatuses: ["startup_software_engineer": .idle])
+        // What `StatusRecoveryService` records when it parks the interrupted step. A pause with
+        // no recorded cause reads as the person's, which the manager may not resume (D-M18).
+        run.pauseCause = .recovered
         mockDelegate.taskToMutate = NTMSTask(
             id: 10, title: "M3 — Player screen", supervisorTask: "...", runs: [run])
 
@@ -628,6 +631,73 @@ final class AutovisorTaskStatusArtifactTests: XCTestCase {
                      "a gate the payload cannot list is still a gate; no close hint")
     }
 
+    // MARK: - pending_question / pending_questions / pending_question_count (Ш4 + D-42)
+
+    func testHandleTaskStatus_twoParkedSteps_pendingQuestionMatchesFirstAnswerableAndListsAll() async throws {
+        let sweStep = StepExecution(
+            id: "swe", role: .softwareEngineer, title: "SWE",
+            status: .needsSupervisorInput,
+            needsSupervisorInput: true,
+            supervisorQuestion: "First question from SWE?")
+        let qaStep = StepExecution(
+            id: "qa", role: .techLead, title: "QA",
+            status: .needsSupervisorInput,
+            needsSupervisorInput: true,
+            supervisorQuestion: "Second question from QA?")
+        mockDelegate.taskToMutate = NTMSTask(
+            id: 1, title: "Parallel wait", supervisorTask: "...",
+            runs: [Run(id: 0, steps: [sweStep, qaStep], roleStatuses: ["swe": .working, "qa": .working])])
+
+        let status = try Self.decodeStatus(from: await service.handleTaskStatus(taskID: 1))
+        XCTAssertEqual(status.pending_question, "First question from SWE?",
+                       "pending_question must show the FIRST answerable step (where answer_task_question without role_id delivers)")
+        XCTAssertEqual(status.pending_questions, [
+            PendingQuestionRowDTO(role_id: "swe", question: "First question from SWE?"),
+            PendingQuestionRowDTO(role_id: "qa", question: "Second question from QA?")
+        ])
+    }
+
+    func testHandleTaskStatus_closedTaskWithStaleFlag_omitsPendingQuestion() async throws {
+        let staleStep = StepExecution(
+            id: "swe", role: .softwareEngineer, title: "SWE",
+            status: .needsSupervisorInput,
+            needsSupervisorInput: true,
+            supervisorQuestion: "Stale question on closed task?")
+        mockDelegate.taskToMutate = NTMSTask(
+            id: 1, title: "Closed", supervisorTask: "...",
+            runs: [Run(id: 0, steps: [staleStep], roleStatuses: ["swe": .done])],
+            closedAt: Date())
+
+        let status = try Self.decodeStatus(from: await service.handleTaskStatus(taskID: 1))
+        XCTAssertNil(status.pending_question,
+                     "a closed task cannot receive an answer, so pending_question must be nil")
+        XCTAssertNil(status.pending_questions,
+                     "and pending_questions must be omitted on a closed task")
+    }
+
+    func testHandleListTasks_waitingTaskWithCount_carriesPendingQuestionCount() async throws {
+        let index = TasksIndex(tasks: [
+            TaskSummary(id: 1, title: "TwoWaiting", status: .running,
+                        hasPendingSupervisorInput: true, pendingSupervisorQuestionCount: 2),
+            TaskSummary(id: 2, title: "NotWaiting", status: .running,
+                        hasPendingSupervisorInput: false, pendingSupervisorQuestionCount: 0),
+        ])
+        let projection = WorkFolderProjection(
+            state: WorkFolderState(name: "t"), settings: ProjectSettings(), teams: [])
+        mockDelegate.snapshot = WorkFolderContext(
+            projection: projection, tasksIndex: index, toolDefinitions: [])
+
+        struct Row: Decodable { let id: Int; let waiting_for_supervisor: Bool?; let pending_question_count: Int? }
+        struct Env: Decodable { struct D: Decodable { let tasks: [Row] }; let data: D }
+        let rows = try JSONDecoder().decode(Env.self, from: Data(await service.handleListTasks().utf8)).data.tasks
+        let row1 = try XCTUnwrap(rows.first(where: { $0.id == 1 }))
+        let row2 = try XCTUnwrap(rows.first(where: { $0.id == 2 }))
+        XCTAssertEqual(row1.waiting_for_supervisor, true)
+        XCTAssertEqual(row1.pending_question_count, 2)
+        XCTAssertNil(row2.waiting_for_supervisor)
+        XCTAssertNil(row2.pending_question_count, "0 pending questions must be omitted, never 0 on the wire")
+    }
+
     // MARK: - Helpers
 
     /// Builds a single-run task from `steps`/`roleStatuses`, wires it into the mock, and returns
@@ -665,12 +735,18 @@ final class AutovisorTaskStatusArtifactTests: XCTestCase {
         let running_tool: String?
         let stuck: StuckDTO?
     }
+    private struct PendingQuestionRowDTO: Decodable, Equatable {
+        let role_id: String
+        let question: String
+    }
     private struct StatusDTO: Decodable {
         let chat_mode: Bool
         let steps: [StepRowDTO]
         let stuck: StuckDTO?
         let timed_out: Bool
         let roles_needing_acceptance: [String]?
+        let pending_question: String?
+        let pending_questions: [PendingQuestionRowDTO]?
     }
 
     private static func decodeStatus(from json: String) throws -> StatusDTO {

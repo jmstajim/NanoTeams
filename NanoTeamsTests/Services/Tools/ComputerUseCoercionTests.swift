@@ -61,6 +61,17 @@ final class ComputerUseCoercionTests: XCTestCase {
         service.parseComputerUseAction(name: tool, argsJSON: argsJSON)
     }
 
+    /// The handler the runtime would dispatch `tool` to, run on exactly `args`.
+    private func handlerResult(_ tool: String, _ args: [String: Any]) async -> ToolExecutionResult {
+        switch tool {
+        case ToolNames.screenCapture: await ScreenCaptureTool().handle(context: ctx(), args: args)
+        case ToolNames.uiClick: await UIClickTool().handle(context: ctx(), args: args)
+        case ToolNames.uiType: await UITypeTool().handle(context: ctx(), args: args)
+        case ToolNames.uiKey: await UIKeyTool().handle(context: ctx(), args: args)
+        default: await UIScrollTool().handle(context: ctx(), args: args)
+        }
+    }
+
     /// Pure-evaluator input with the same shape `ComputerUsePermissionServiceTests` uses.
     private func evalInput(
         _ action: ComputerUseAction,
@@ -95,6 +106,38 @@ final class ComputerUseCoercionTests: XCTestCase {
     }
 
     // MARK: - Gate ↔ handler agreement
+
+    /// The handler emits what the gate approved, for the documents the two used to read
+    /// differently (2026-11-09): a reentrant `{name, arguments}` envelope (the gate typed the
+    /// TOOL NAME), a blank `text` beside an alternative key and a blank `keys` beside `key`
+    /// (the gate took the alternative, the handler refused), a structural key beside an unknown
+    /// one (the gate typed the unknown, the handler refused), and a scroll target with
+    /// whitespace around it (the gate trimmed it, the handler did not).
+    func testHostileDocuments_theHandlerEmitsExactlyTheActionTheGateJudged() async {
+        let cases: [(tool: String, json: String)] = [
+            (ToolNames.uiType, #"{"name":"ui_type","arguments":{"text":"hello"}}"#),
+            (ToolNames.uiType, #"{"text":"","content":"hello"}"#),
+            (ToolNames.uiKey, #"{"keys":"","key":"Return"}"#),
+            (ToolNames.uiScroll, #"{"x":1,"y":2,"dy":3,"target":"  Safari  "}"#),
+            (ToolNames.screenCapture, #"{"target":"Safari","window_title":""}"#),
+        ]
+        for (tool, json) in cases {
+            let judged = gateAction(tool, json)
+            XCTAssertNotNil(judged, "\(tool) \(json): every case here is an action")
+            guard let args = ToolCallArguments.prepare(rawJSON: json, emittedName: tool).dispatched?.args
+            else { XCTFail("\(tool) \(json) is dispatched"); continue }
+            let emitted = signalAction(await handlerResult(tool, args))
+            XCTAssertEqual(emitted, judged, "\(tool) \(json): the gate judged one action, the handler emitted another")
+        }
+        // A key the tool does not take is refused before either side reads it — before
+        // 2026-11-09 the gate typed `foo`'s value and the handler refused the call.
+        XCTAssertNil(gateAction(ToolNames.uiType, #"{"target":"Notes","foo":"hello"}"#))
+        if case .typeText(let text, _)? = gateAction(ToolNames.uiType, #"{"name":"ui_type","arguments":{"text":"hello"}}"#) {
+            XCTAssertEqual(text, "hello", "the envelope's inner text is what is typed — not the tool name")
+        } else {
+            XCTFail("a reentrant ui_type envelope types its inner text")
+        }
+    }
 
     /// The headline invariant: a quoted coordinate resolves to the SAME pixel on both
     /// sides. A regression removing coercion from either side changes what runs relative
@@ -245,14 +288,13 @@ final class ComputerUseCoercionTests: XCTestCase {
 
     // MARK: - Fail closed
 
-    /// The gate's contract is sparse-by-omission: an index ABSENT from the returned map
-    /// passes through to execution. So an unparseable action must produce a synthetic
-    /// deny — silently skipping it would run the OS action ungated.
-    ///
-    /// Both calls share one policy (Auto + Safety Off) under which a well-formed click is
-    /// allowed with no judge and no human, which is what makes the contrast sharp:
-    /// index 0 (quoted, valid) passes through, index 1 (garbage) is denied.
-    func testUnparseableCoordinate_gateDenies_whileValidQuotedCoordinatePassesThrough() async {
+    /// A coordinate the shared coercion cannot read (`"501abc"`) never reaches a handler: the
+    /// runtime's type gate refuses it with `INVALID_ARGS` naming `x`. The approval gate reads
+    /// the same reading (`ToolCallArguments`), so it holds no card and asks no judge for a call
+    /// that cannot run — the model gets the precise refusal instead of a generic "could not
+    /// parse". Both calls share one policy (Auto + Safety Off) under which a well-formed click
+    /// is allowed with no judge and no human.
+    func testUncoercibleCoordinate_isRefusedByTheRuntime_andHoldsNoCard() async {
         let calls = [
             StepToolCall(providerID: "ok", name: ToolNames.uiClick, argumentsJSON: #"{"x":"501","y":"7"}"#),
             StepToolCall(providerID: "bad", name: ToolNames.uiClick, argumentsJSON: #"{"x":"501abc","y":7}"#),
@@ -260,34 +302,24 @@ final class ComputerUseCoercionTests: XCTestCase {
         let results = await gate(calls, policy: ComputerUsePolicy(mode: .auto, restrictionLevel: .off))
 
         XCTAssertNil(results[0], "a valid quoted coordinate must not be denied by the gate")
-        guard let denied = results[1] else {
-            return XCTFail("an unparseable coordinate must be intercepted, not passed through to execution")
-        }
-        XCTAssertTrue(denied.isError, "the interception must be an error result")
-        XCTAssertTrue(
-            denied.outputJSON.contains("COMPUTER_USE_DENIED"),
-            "expected a computer-use deny envelope, got: \(denied.outputJSON)")
-        XCTAssertTrue(
-            denied.outputJSON.contains("parse"),
-            "the deny must name the parse failure (not the no-human reason): \(denied.outputJSON)")
-        XCTAssertEqual(
-            judgeClient.callCount, 0,
-            "an unparseable action must be denied outright, never sent to the judge for a verdict")
+        XCTAssertNil(results[1], "the runtime refuses it; the gate holds no card for it")
+        guard case .invalid(_, _, let message) = ToolCallArguments.prepare(
+            rawJSON: calls[1].argumentsJSON, emittedName: calls[1].name)
+        else { return XCTFail("the runtime must refuse an uncoercible coordinate before the handler") }
+        XCTAssertTrue(message.contains("`x`"), message)
+        XCTAssertEqual(judgeClient.callCount, 0, "nothing that cannot run is sent to the judge")
     }
 
     /// JSON `null` for a required coordinate must also fail closed at the gate.
-    func testNullCoordinate_gateDenies() async {
+    func testNullCoordinate_holdsNoCard_andTheHandlerReportsItMissing() async {
         let calls = [StepToolCall(name: ToolNames.uiClick, argumentsJSON: #"{"x":null,"y":7}"#)]
         let results = await gate(calls, policy: ComputerUsePolicy(mode: .auto, restrictionLevel: .off))
 
-        guard let denied = results[0] else {
-            return XCTFail("a null coordinate must be intercepted, not passed through to execution")
-        }
-        XCTAssertTrue(denied.isError)
-        XCTAssertTrue(
-            denied.outputJSON.contains("parse"),
-            "expected the parse-failure deny, got: \(denied.outputJSON)")
+        XCTAssertNil(results[0], "the handler refuses it through the same resolver — no card")
         XCTAssertEqual(judgeClient.callCount, 0, "a null coordinate must never reach the judge")
+        let handled = await UIClickTool().handle(context: ctx(), args: ["x": NSNull(), "y": 7])
+        XCTAssertNil(signalAction(handled), "no action is emitted, so nothing runs")
+        XCTAssertTrue(handled.outputJSON.contains("Missing required argument: x"), handled.outputJSON)
     }
 
     /// A coordinate no `Int` can hold must resolve to nil, not trap. `Int(1e300)` is a

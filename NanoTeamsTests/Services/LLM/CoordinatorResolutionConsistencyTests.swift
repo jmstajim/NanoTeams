@@ -66,7 +66,7 @@ final class CoordinatorResolutionConsistencyTests: XCTestCase {
         team.roles.first { role in
             RoleToolBadgePolicy.model(
                 role: role, team: team, allTeams: [team], storage: .defaultStorage,
-                selectedScheme: nil, isVisionConfigured: false, approval: ToolApprovalAvailability(bash: .available, computerUse: .withheld(.switchedOff)),
+                selectedScheme: nil, isVisionConfigured: false, approval: ToolApprovalAvailability(bash: .available, computerUse: .withheld(.switchedOff), humanPresent: true),
                 autovisorTeamPolicy: .unrestricted
             ).meetingOnly.contains(ToolNames.concludeMeeting)
         }?.id

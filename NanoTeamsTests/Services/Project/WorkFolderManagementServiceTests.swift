@@ -9,8 +9,6 @@ final class WorkFolderManagementServiceTests: XCTestCase {
     private var tempDir: URL!
     private var repository: NTMSRepository!
     private var service: WorkFolderManagementService!
-    /// Fresh service instance for round-trip persistence tests
-    private var freshService: WorkFolderManagementService!
 
     override func setUp() async throws {
         try await super.setUp()
@@ -20,7 +18,6 @@ final class WorkFolderManagementServiceTests: XCTestCase {
         try fileManager.createDirectory(at: tempDir, withIntermediateDirectories: true)
         repository = NTMSRepository()
         service = WorkFolderManagementService(repository: repository)
-        freshService = WorkFolderManagementService(repository: repository)
     }
 
     override func tearDown() async throws {
@@ -28,7 +25,6 @@ final class WorkFolderManagementServiceTests: XCTestCase {
             try? fileManager.removeItem(at: tempDir)
         }
 //        service = nil
-//        freshService = nil
         repository = nil
         tempDir = nil
         try await super.tearDown()
@@ -57,71 +53,12 @@ final class WorkFolderManagementServiceTests: XCTestCase {
         XCTAssertTrue(fileManager.fileExists(atPath: nanoteamsDir.path))
     }
 
-    // MARK: - updateWorkFolderContext
-
-    func testUpdateWorkFolderContext_UpdatesContext() async throws {
-        _ = try await service.openOrCreateWorkFolder(at: tempDir)
-
-        let context = try service.updateWorkFolderContext("New context", at: tempDir, activeTask: nil)
-        XCTAssertEqual(context.workFolder.settings.context, "New context")
-    }
-
-    func testUpdateWorkFolderContext_TrimsWhitespace() async throws {
-        _ = try await service.openOrCreateWorkFolder(at: tempDir)
-
-        let context = try service.updateWorkFolderContext("  Trimmed  \n", at: tempDir, activeTask: nil)
-        XCTAssertEqual(context.workFolder.settings.context, "Trimmed")
-    }
-
-    func testUpdateWorkFolderContext_EmptyString() async throws {
-        _ = try await service.openOrCreateWorkFolder(at: tempDir)
-
-        let context = try service.updateWorkFolderContext("", at: tempDir, activeTask: nil)
-        XCTAssertEqual(context.workFolder.settings.context, "")
-    }
-
-    // MARK: - updateSelectedScheme
-
-    func testUpdateSelectedScheme_SetsScheme() async throws {
-        _ = try await service.openOrCreateWorkFolder(at: tempDir)
-
-        let context = try service.updateSelectedScheme("NanoTeams", at: tempDir, activeTask: nil)
-        XCTAssertEqual(context.workFolder.settings.selectedScheme, "NanoTeams")
-    }
-
-    func testUpdateSelectedScheme_ClearsScheme() async throws {
-        _ = try await service.openOrCreateWorkFolder(at: tempDir)
-
-        let context = try service.updateSelectedScheme(nil, at: tempDir, activeTask: nil)
-        XCTAssertNil(context.workFolder.settings.selectedScheme)
-    }
-
     // MARK: - fetchAvailableSchemes
 
     func testFetchAvailableSchemes_ReturnsEmptyForNonXcodeProject() async {
         let schemes = await service.fetchAvailableSchemes(workFolderRoot: tempDir)
         // No Xcode project in temp dir — should return empty
         XCTAssertTrue(schemes.isEmpty)
-    }
-
-    // MARK: - Round-trip Persistence
-
-    func testRoundTrip_ContextPersistsAcrossOpens() async throws {
-        _ = try await service.openOrCreateWorkFolder(at: tempDir)
-        _ = try service.updateWorkFolderContext("Persisted context", at: tempDir, activeTask: nil)
-
-        // Use fresh service to simulate fresh open
-        let context2 = try await freshService.openOrCreateWorkFolder(at: tempDir)
-        XCTAssertEqual(context2.workFolder.settings.context, "Persisted context")
-    }
-
-    func testRoundTrip_SchemePersistsAcrossOpens() async throws {
-        _ = try await service.openOrCreateWorkFolder(at: tempDir)
-        _ = try service.updateSelectedScheme("MyScheme", at: tempDir, activeTask: nil)
-
-        // Use fresh service to simulate fresh open
-        let context2 = try await freshService.openOrCreateWorkFolder(at: tempDir)
-        XCTAssertEqual(context2.workFolder.settings.selectedScheme, "MyScheme")
     }
 
     // MARK: - Reset Produces New Identity

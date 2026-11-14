@@ -12,8 +12,8 @@ import XCTest
 /// and in a Harmony tool loop almost every assistant turn is envelope-only, so no
 /// `StepMessage` is ever written for it and tool results are not written there at all.
 ///
-/// Observed live (2026-07-23, `qwen3.6:35b-a3b` over Ollama): the request at 17:53:43
-/// carried system + task + four assistant/tool-result pairs; the request at 17:55:16,
+/// Observed live (2026-07-23, `qwen3.6:35b-a3b` over Ollama): one request
+/// carried system + task + four assistant/tool-result pairs; the next one,
 /// immediately after the Supervisor answered, carried four messages total — system,
 /// task, a synthesized `ask_supervisor` envelope, and the answer. Every read, every
 /// write and the bash denial were gone, so the model re-read the same files, re-wrote

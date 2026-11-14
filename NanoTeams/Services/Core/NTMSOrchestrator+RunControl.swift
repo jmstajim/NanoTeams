@@ -1,5 +1,14 @@
 import Foundation
 
+/// A run start's claim (`NTMSOrchestrator.claimRunStart`): which start it is, and the folder
+/// lifecycle it was taken in. Its launch goes on only while both still hold
+/// (`runLaunchIsStillWanted`) — the generation, which every stop verb moves, and the lifecycle,
+/// which every folder transition ends at its first line.
+nonisolated struct RunStartClaim: Hashable, Sendable {
+    let generation: Int
+    let lifecycle: WorkFolderLifecycle
+}
+
 /// Run lifecycle: start, pause, resume.
 extension NTMSOrchestrator {
 
@@ -20,14 +29,24 @@ extension NTMSOrchestrator {
     /// started (or team generation has been spawned) — so all its other callers
     /// (Play, Autovisor, recurrence, delegation, queue flush) are unaffected.
     func startRun(taskID: Int) async {
-        guard let generation = claimRunStart(taskID: taskID) else { return }
-        defer { releaseRunStart(taskID: taskID, generation: generation) }
+        guard let claim = claimRunStart(taskID: taskID) else { return }
+        defer { releaseRunStart(taskID: taskID, claim: claim) }
         await materializeRun(taskID: taskID)
-        await launchRun(taskID: taskID, generation: generation)
+        guard runLaunchIsStillWanted(taskID: taskID, claim: claim) else { return }
+        // The run's start snapshot, before the engine starts — the first step's first request
+        // must not race the tree it is compared against. Bounded: a slow first snapshot of a
+        // large folder finishes in the background and is recorded on round 1 (N2–N4).
+        if let run = loadedTask(taskID)?.runs.last {
+            await captureTaskSnapshots(
+                [TaskSnapshotRequest(round: run.round, phase: .start)],
+                taskID: taskID, runID: run.id, within: claim.lifecycle,
+                waitBudget: taskSnapshotWaitBudget)
+        }
+        guard runLaunchIsStillWanted(taskID: taskID, claim: claim) else { return }
+        await launchRun(taskID: taskID, claim: claim)
     }
 
-    /// Takes the run-start claim and returns the generation this start owns, or `nil`
-    /// if the start must not proceed.
+    /// Takes the run-start claim and returns it, or `nil` if the start must not proceed.
     ///
     /// Every guard here is synchronous ON PURPOSE: the claim must be visible to a
     /// concurrent caller before the first suspension point, because the engine-state
@@ -35,10 +54,21 @@ extension NTMSOrchestrator {
     /// `startAutovisorPass` both read `engineState.initializingRunTaskIDs` for exactly
     /// that reason.
     ///
-    /// The returned generation is not a convenience: it is what lets `launchRun` tell
-    /// "still the start I was spawned for" from "a start that was aborted and
-    /// replaced" — see `runStartGeneration`.
-    func claimRunStart(taskID: Int) -> Int? {
+    /// The claim names the start — its generation, what lets `launchRun` tell "still the start
+    /// I was spawned for" from "a start that was aborted and replaced" (`runStartGeneration`) —
+    /// and the folder lifecycle it is taken in: the folder the process describes now
+    /// (`currentFolderLifecycle`). A start is refused outright while that lifecycle is over — a
+    /// folder transition between its first line and its commit — because the folder still
+    /// described is the one being left: a run materialized there belongs to nothing, and an
+    /// engine started there outlives the switch and resolves its task id against the next
+    /// folder's task of the same number. The boundary empties the claim set, so a start claimed
+    /// after it used to pass every re-check of its launch. A transition that begins AFTER the
+    /// claim ends its lifecycle, and the launch refuses at its next re-check.
+    func claimRunStart(taskID: Int) -> RunStartClaim? {
+        let lifecycle = currentFolderLifecycle
+        guard isCurrentFolderLifecycle(lifecycle),
+              !isDormantAutovisorManagerTask(taskID)
+        else { return nil }
         if let state = taskEngineStates[taskID],
            state == .running || state == .needsAcceptance || state == .needsSupervisorInput {
             return nil
@@ -56,7 +86,7 @@ extension NTMSOrchestrator {
         guard engineState.beginRunStart(taskID) else { return nil }
         let generation = (runStartGeneration[taskID] ?? 0) + 1
         runStartGeneration[taskID] = generation
-        return generation
+        return RunStartClaim(generation: generation, lifecycle: lifecycle)
     }
 
     /// Releases the claim taken by `claimRunStart`. Paired by `startRun`'s `defer`
@@ -69,25 +99,29 @@ extension NTMSOrchestrator {
     /// `defer` would drop the NEW start's claim — re-opening the double-start window
     /// the claim exists to close, and switching every Initializing surface off while a
     /// run really is starting.
-    func releaseRunStart(taskID: Int, generation: Int) {
-        guard runStartGeneration[taskID] == generation else { return }
+    func releaseRunStart(taskID: Int, claim: RunStartClaim) {
+        guard runStartGeneration[taskID] == claim.generation else { return }
         engineState.endRunStart(taskID)
     }
 
-    /// Abandons an in-flight run start and reports whether there was one.
+    /// Abandons an in-flight run start and reports whether there was one. The one verb that
+    /// does: Pause (`pauseRun`), `stopEngine(for:)` and the folder boundary (`stopAllEngines`)
+    /// all call it.
     ///
-    /// Three acts, none of which alone is enough. Bumping the generation is the
-    /// REFUSAL: every `runLaunchIsStillWanted` past this point fails, on the inline
-    /// path as well as the background one. Cancelling the registered `Task` only makes
-    /// the background launch unwind sooner — the detached scans it is parked in do not
-    /// inherit cancellation (see `drainRunStartLaunches`), so the abort takes effect at
-    /// the launch's next re-check, which is still BEFORE anything is written. Dropping
-    /// the claim is what the user sees: all four Initializing surfaces go dark on this
-    /// tick rather than when the scan finally returns.
+    /// Three acts. Bumping the generation is the REFUSAL: every `runLaunchIsStillWanted` past
+    /// this point fails, on the inline path as well as the background one. Cancelling the
+    /// registered `Task` (a background launch's; an inline start has none) puts the launch's own
+    /// cancellation in step with the abort — a holder of `runStartTask(for:)` sees it cancelled
+    /// — though it refuses nothing sooner: the detached scans the launch is parked in do not
+    /// inherit cancellation (see `drainRunStartLaunches`), so the abort takes effect at the
+    /// launch's next re-check, which is still BEFORE anything is written, and there the
+    /// generation refuses it already. Dropping the claim is what the user sees: all four
+    /// Initializing surfaces go dark on this tick rather than when the scan finally returns.
     ///
-    /// The Bool is the caller's verdict, not decoration — `pauseRun` reports it as a
-    /// successful pause, because an aborted start produces no engine and so cannot be
-    /// judged by the engine mirror (CLAUDE.md #130).
+    /// The Bool says whether a start was in flight. `pauseRun` needs that same fact for its
+    /// verdict — an aborted start produces no engine and so cannot be judged by the engine
+    /// mirror (CLAUDE.md #130) — but reads it before its cascade (`isInitializingRun`), since the
+    /// cascade is what clears it; no production caller reads the Bool itself.
     @discardableResult
     func abortRunStart(taskID: Int) -> Bool {
         guard engineState.isInitializingRun(taskID) else { return false }
@@ -110,37 +144,42 @@ extension NTMSOrchestrator {
         #endif
     }
 
-    /// Whether the background launch for `taskID` may still proceed.
+    /// Whether the launch for `taskID` — inline or in the background — may still proceed.
     ///
-    /// Three conditions, and no one of them implies another — which is exactly why this
+    /// Four conditions, and no one of them implies another — which is exactly why this
     /// is one predicate called from every point in `launchRun` rather than a guard
     /// written out where it happened to be needed (CLAUDE.md #51).
     ///
-    /// `Task.isCancelled` is what `stopEngine(for:)` and `stopAllEngines()` set: task
-    /// deletion, work-folder switch, shutdown. It is NOT redundant with the loaded-task
-    /// check, and the folder switch is the case that proves it: `NTMSTask.id` is a
-    /// sequential `Int` scoped to ONE work folder, so folder B almost certainly has its
-    /// own task 1. A launch for folder A's task 1, suspended in the skills scan while the
-    /// user switches, would find folder B's task 1 loaded and start an engine on a task
-    /// nobody asked to run — a key outliving the data it identifies (CLAUDE.md #74).
+    /// The generation is the refusal every stop verb gives: `abortRunStart` moves it for Pause,
+    /// for `stopEngine(for:)` (task deletion, close, a recurrence or delegation stop) and for
+    /// `stopAllEngines()` (the folder boundary). Nothing is registered to cancel for an INLINE
+    /// start (Play, the Autovisor, a recurrence fire), whose launch runs in its caller's context,
+    /// so a stop verb reaches it through this half alone.
     ///
-    /// The loaded-task half covers the mirror case: a task evicted without either stop
-    /// verb running. `engineForTask` is a WRITE, so it must not be reached for a task
-    /// that is no longer in memory.
+    /// The claim's lifecycle is the folder boundary, asked as such: `NTMSTask.id` is a sequential
+    /// `Int` scoped to ONE work folder, so folder B almost certainly has its own task 1, and a
+    /// start for folder A's task 1, suspended while the user switches, finds folder B's task 1
+    /// loaded — a key outliving the data it identifies (CLAUDE.md #74). The boundary also moves
+    /// the generation of every start it finds in flight; this half does not depend on that list.
     ///
-    /// The generation half is the Supervisor's own "stop this". `Task.isCancelled`
-    /// cannot express it on the INLINE start path (Play, Autovisor, recurrence), where
-    /// the launch runs in the caller's context and `backgroundRunLaunches` holds
-    /// nothing to cancel — so without it Pause would defend one of the two paths, which
-    /// is a coincidence rather than a defence (CLAUDE.md #51).
-    private func runLaunchIsStillWanted(taskID: Int, generation: Int) -> Bool {
+    /// `Task.isCancelled` is the launch's own task cancelled: a background launch's by
+    /// `abortRunStart` (beside its generation) and by `drainRunStartLaunches` (a test's teardown,
+    /// which moves no generation), and an inline start's CALLER's — a run started from inside a
+    /// step whose task Pause or a folder transition cancelled, a delegation child among them.
+    ///
+    /// The loaded-task half covers a task evicted without any stop verb running.
+    /// `engineForTask` is a WRITE, so it must not be reached for a task that is no longer in
+    /// memory.
+    private func runLaunchIsStillWanted(taskID: Int, claim: RunStartClaim) -> Bool {
         !Task.isCancelled
+            && isCurrentFolderLifecycle(claim.lifecycle)
+            && !isDormantAutovisorManagerTask(taskID)
             && loadedTask(taskID) != nil
-            && runStartGeneration[taskID] == generation
+            && runStartGeneration[taskID] == claim.generation
     }
 
     /// Phase 2 — prompt warm-up, then team generation or the engine itself.
-    func launchRun(taskID: Int, generation: Int) async {
+    func launchRun(taskID: Int, claim: RunStartClaim) async {
         #if DEBUG
         // Deterministic seam for `RunStartOrderingTests`: holds the launch phase open
         // so a test can assert what is true at the navigation boundary. A wall-clock
@@ -149,7 +188,7 @@ extension NTMSOrchestrator {
         if let gate = Self._testRunLaunchGate { await gate() }
         #endif
 
-        guard runLaunchIsStillWanted(taskID: taskID, generation: generation) else { return }
+        guard runLaunchIsStillWanted(taskID: taskID, claim: claim) else { return }
 
         // Refresh agent instruction files and role-attached skills so this run's
         // first prompt reflects the current disk state (a CLAUDE.md or a
@@ -175,7 +214,7 @@ extension NTMSOrchestrator {
         // re-check a stop condition after every suspension point, not only on entry).
         // Everything below this line WRITES: `spawnTeamGeneration` and `engineForTask`
         // both create state that would then outlive what it belongs to.
-        guard runLaunchIsStillWanted(taskID: taskID, generation: generation) else { return }
+        guard runLaunchIsStillWanted(taskID: taskID, claim: claim) else { return }
 
         // For "Generated Team" template: run team generation in a detached Task so
         // this phase returns as soon as the placeholder Supervisor step is on disk.
@@ -198,7 +237,7 @@ extension NTMSOrchestrator {
         // re-fires the observer and duplicates the triggering condition).
         if taskID == autovisorTaskID {
             autovisorLastWakeAt = Date()
-            autovisorCreationsThisReview = 0
+            autovisorCreationLedger.resetBuiltInReview()
             seedAutovisorNotifiedKeysForPassStart()
         }
 
@@ -217,12 +256,12 @@ extension NTMSOrchestrator {
     /// The registry write lands before the spawned task can run — we are on
     /// `@MainActor` and it cannot start until this synchronous stretch yields — so
     /// `runStartTask(for:)` never observes a hole between spawn and registration.
-    func spawnBackgroundRunLaunch(taskID: Int, generation: Int) {
+    func spawnBackgroundRunLaunch(taskID: Int, claim: RunStartClaim) {
         let launch = Task { @MainActor [weak self] in
             guard let self else { return }
             defer {
                 self.backgroundRunLaunches.removeValue(forKey: taskID)
-                self.releaseRunStart(taskID: taskID, generation: generation)
+                self.releaseRunStart(taskID: taskID, claim: claim)
                 #if DEBUG
                 // Attempted HERE and not at the end of `launchRun`: this is the one
                 // launch a submit owns, so another task's concurrent run start
@@ -233,7 +272,7 @@ extension NTMSOrchestrator {
                 SubmitLatencyProbe.end()
                 #endif
             }
-            await self.launchRun(taskID: taskID, generation: generation)
+            await self.launchRun(taskID: taskID, claim: claim)
         }
         backgroundRunLaunches[taskID] = launch
     }
@@ -253,17 +292,10 @@ extension NTMSOrchestrator {
     /// own `defer`. Removing the entry here as well would race a launch spawned for the
     /// same id in between and drop the NEW handle, leaving it unjoinable.
     ///
-    /// Cancellation is cooperative, so this is only half the mechanism: `launchRun`
-    /// re-asks `runLaunchIsStillWanted` after each suspension. A cancel with no check, or
-    /// a check with no cancel, defends nothing.
+    /// Called by `abortRunStart` alone, beside the generation it moves — the refusal
+    /// `runLaunchIsStillWanted` reads after each suspension of `launchRun`.
     func cancelRunStartLaunch(taskID: Int) {
         backgroundRunLaunches[taskID]?.cancel()
-    }
-
-    /// Cancels every in-flight background launch. Paired with `stopAllEngines()`, whose
-    /// contract is that nothing keeps running across a work-folder boundary.
-    func cancelAllRunStartLaunches() {
-        for (_, launch) in backgroundRunLaunches { launch.cancel() }
     }
 
     /// Cancels every in-flight launch and waits for them to unwind.
@@ -272,8 +304,9 @@ extension NTMSOrchestrator {
     /// work-folder switch, which cancels but does not wait. That is a decision rather than an
     /// omission: the launch is suspended inside a `Task.detached` scan, and a detached task
     /// does NOT inherit its parent's cancellation, so draining at the switch would block it
-    /// for the remainder of the very scan this split moved off the submit path. Cancel-and-
-    /// re-check (`runLaunchIsStillWanted`) already makes the switch SAFE; the drain only adds
+    /// for the remainder of the very scan this split moved off the submit path. The launch's
+    /// re-checks (`runLaunchIsStillWanted`) already make the switch SAFE — the boundary ends the
+    /// claim's lifecycle and moves its generation, and either refuses it; the drain only adds
     /// DETERMINISM — which a teardown needs and a user waiting on a folder does not.
     ///
     /// Re-reads the registry each pass instead of snapshotting it: a launch that is
@@ -284,6 +317,54 @@ extension NTMSOrchestrator {
             launch.cancel()
             await launch.value
         }
+    }
+
+    /// Why `task` stands paused, as an external agent is told it (`AutovisorPauseReason.resolve`)
+    /// — `nil` when it is not paused. The run's record, joined by the engine's live
+    /// iteration-limit flag; the event feed and `task_status` both read it here.
+    func autovisorPauseReason(of task: NTMSTask) -> AutovisorPauseReason? {
+        AutovisorPauseReason.resolve(
+            run: task.runs.last,
+            taskStatus: task.status,
+            isPaused: task.derivedStatusFromActiveRun() == .paused,
+            liveIterationLimitPause: taskEngines[task.id]?.pausedIterationLimit != nil
+        )
+    }
+
+    /// Whether task `taskID` stands paused by the person's Pause pressed in the app. An automated
+    /// Supervisor's message, answer or role decision does not lift it: it lands and waits, and the
+    /// task stays paused until the person resumes it. The verbs that resume on purpose —
+    /// `control_task resume`, `control_task start` (a new run leaves the paused one behind) and
+    /// `manage_role correct` — are refused it since 2026-11-12, for the built-in Autovisor and an
+    /// external agent alike (`AutovisorReply.pausedByThePerson`, D-M18); until then
+    /// `HostedMCPInstructions` ("by_person, do not resume") was the whole gate. The one predicate
+    /// is what keeps a message, an answer, a decision and a resume agreeing on whose pause it is.
+    /// Until 2026-11-09 three paths lifted it as a
+    /// side effect — `message_task`, an answer into the paused step, and the message queue's
+    /// backstop — so the person's Pause held until the agent's next message.
+    ///
+    /// The built-in Autovisor's own Pause is not the person's: its message or answer resumes what
+    /// it paused, as before. On the wire both read `by_person` — an external agent cannot tell
+    /// them apart, and owns neither task.
+    ///
+    /// The engine's own state counts beside the derived status: a delegating task's Pause leaves
+    /// the step suspended on `delegate_to_team` running (`pauseRun` skips it), so the task derives
+    /// `.running` while its engine stands paused — and that Pause is the person's too.
+    ///
+    /// A top-level task's only: a delegated child is paused and resumed by the role that
+    /// delegated it (pause-and-decide), whoever paused that role's own task.
+    func isPausedInTheApp(taskID: Int) -> Bool {
+        guard let task = loadedTask(taskID) else { return false }
+        return isPausedInTheApp(task)
+    }
+
+    /// `isPausedInTheApp(taskID:)` of a task already in hand — one a reader hydrated rather than
+    /// loaded — with this process's engine for it.
+    func isPausedInTheApp(_ task: NTMSTask) -> Bool {
+        AutovisorPauseReason.isThePersons(
+            task: task,
+            enginePaused: taskEngines[task.id]?.state == .paused,
+            liveIterationLimitPause: taskEngines[task.id]?.pausedIterationLimit != nil)
     }
 
     /// Pauses a task and reports whether it is ACTUALLY stopped afterwards.
@@ -297,8 +378,34 @@ extension NTMSOrchestrator {
     ///
     /// The verdict is about the PARENT only; the children's verdicts in the cascade are
     /// discarded, because a caller asked about this task.
+    ///
+    /// The Pause belongs to the folder described when it began, and asks that lifecycle after
+    /// every suspension of its cascade: each step's cancellation awaits its handler (seconds) and
+    /// each `pauseStep` awaits a write, and a folder transition that began meanwhile leaves the
+    /// task id — and every step id, a role id — naming the next folder's task, whose steps the
+    /// loop would then cancel and pause and whose engine mirror it would re-derive. Begun while a
+    /// transition is under way, it pauses nothing: the boundary has already stopped every engine
+    /// and run start of the folder being left.
     @discardableResult
     func pauseRun(taskID: Int) async -> Bool {
+        await pauseRun(taskID: taskID, by: .person)
+    }
+
+    /// A Pause somebody asked for — the person, the built-in Autovisor or an external agent —
+    /// recorded on the run as `.requested` with its requester (`Run.pauseRequestedBy`) and as a
+    /// timeline event, so the agent is told whose pause it is (`AutovisorPauseReason`).
+    @discardableResult
+    func pauseRun(taskID: Int, by requester: ControlActor) async -> Bool {
+        await pauseRun(taskID: taskID, cause: .requested, requestedBy: requester)
+    }
+
+    /// `pauseRun(taskID:)` with the reason recorded on the run (`Run.pauseCause`): `.requested`
+    /// for a Pause somebody asked for (`requestedBy`), `.runTimedOut` from the run-timeout
+    /// watchdog, which nobody asked for.
+    @discardableResult
+    func pauseRun(taskID: Int, cause: Run.PauseCause, requestedBy requester: ControlActor? = nil) async -> Bool {
+        let lifecycle = currentFolderLifecycle
+        guard isCurrentFolderLifecycle(lifecycle) else { return false }
         // Captured BEFORE the cascade, because the cascade is what clears it: an
         // aborted start leaves no engine behind, so asking the engine mirror
         // afterwards would report a successful Pause as a failure. A predicate that
@@ -307,7 +414,10 @@ extension NTMSOrchestrator {
         // pre-fix, Pause pressed during `Initializing…` really did stop the run and
         // still told the Autovisor's `control_task pause` — and the UI — that it had not.
         let abortedAnInitialization = engineState.isInitializingRun(taskID)
-        await pauseRun(taskID: taskID, visited: [])
+        await pauseRun(
+            taskID: taskID, visited: [], lifecycle: lifecycle, cause: cause, requestedBy: requester,
+            stopsTheTree: false)
+        guard isCurrentFolderLifecycle(lifecycle) else { return false }
         return taskEngineStates[taskID] == .paused || abortedAnInitialization
     }
 
@@ -317,10 +427,64 @@ extension NTMSOrchestrator {
     /// would stack-overflow. `descendantIDs` already caps via
     /// `treeTraversalSafetyCap`, but `childTaskIDs` is a flat one-level
     /// lookup that the recursion drives — we cap here independently.
-    private func pauseRun(taskID: Int, visited: Set<Int>) async {
+    ///
+    /// `stopsTheTree`: the Pause stopped something higher in the delegation tree, so it is the
+    /// later click for this child too, whatever it finds here (see `pauseEpochs`).
+    private func pauseRun(
+        taskID: Int, visited: Set<Int>, lifecycle: WorkFolderLifecycle, cause: Run.PauseCause,
+        requestedBy requester: ControlActor?, stopsTheTree: Bool
+    ) async {
         if visited.contains(taskID) { return }
         var nextVisited = visited
         nextVisited.insert(taskID)
+
+        // A Pause that stops something is the later click for every Resume still under way on
+        // this task: each one asks `pauseEpochs` after its suspensions and restarts nothing past
+        // a Pause that landed meanwhile (`resumeIsStillWanted`). Bumped before the first await,
+        // so a Resume that wakes in the middle of this cascade already sees it. A Pause that
+        // stops nothing — the run stands paused — leaves the Resume to go on, as it leaves the
+        // standing pause's cause. The engine's own iteration-limit pause yields to it as well:
+        // that pause leaves the steps it started running, `TeamEngine.pause()` is a no-op on an
+        // engine already `.paused`, and the live flag outranks every recorded cause, so until
+        // 2026-11-13 the person's Pause there read `iteration_limit` and the gate let the agent
+        // resume it (D-M18).
+        let stopsSomething = interruptsAResume(taskID: taskID) || pauseWouldStopSomething(taskID: taskID)
+        let supersedesResumes = stopsTheTree || stopsSomething
+        if supersedesResumes { pauseEpochs[taskID, default: 0] += 1 }
+        if stopsSomething { taskEngines[taskID]?.pausedIterationLimit = nil }
+
+        // The cause FIRST: a reader that finds this run's steps paused takes the reason from it,
+        // so by then it must name this pause — a `.runTimedOut` left by an earlier timeout would
+        // otherwise turn a person's Pause into the timeout's (`Run.latestPauseIsItsTimeout`).
+        // Only for a Pause that pauses something: on a run that already stands paused it stops
+        // nothing, and the pause that stands keeps its cause. Writing it anyway turned a timed-out
+        // run's second Pause into the person's — Watchtower lost "timed out" and the agent got a
+        // second `paused` event, `by_person`, for the timeout's pause.
+        // A requested Pause records who asked, with the cause and as a timeline event — every one
+        // that stops something, so `task_log` tells each Pause, not only the first of a cause.
+        // Pre-checked: `mutateTask` returning true means "persisted", not "changed" (CLAUDE.md §7).
+        //
+        // An automated requester never replaces the person's: while the person's requested Pause
+        // stands or is still stopping the run (its cancellations await their handlers for
+        // seconds, and the run still has work to stop), an agent's Pause that lands in that window
+        // pauses nothing more, and recording it would turn the person's Pause into the agent's —
+        // one its next message lifts. A Resume records `.resumed`, so `.requested` here means a
+        // Pause that has not been lifted.
+        let requester = cause == .requested ? requester : nil
+        if stopsSomething,
+           let run = loadedTask(taskID)?.runs.last,
+           !Self.keepsThePersonsPause(of: run, against: requester),
+           run.pauseCause != cause || run.pauseRequestedBy != requester || requester != nil {
+            await mutateTask(taskID: taskID) { task in
+                guard let last = task.runs.indices.last else { return }
+                task.runs[last].pauseCause = cause
+                task.runs[last].pauseRequestedBy = requester
+                if let requester {
+                    task.runs[last].supervisorEvents.append(SupervisorTimelineEvent(kind: .runPaused, by: requester))
+                }
+            }
+            guard isCurrentFolderLifecycle(lifecycle) else { return }
+        }
 
         // Cancel any in-flight generated-team creation first. The detached Task's
         // `defer` releases the reserve flag as it unwinds, and the cancellation
@@ -338,7 +502,13 @@ extension NTMSOrchestrator {
         // BEFORE the parent so when this method returns the entire delegation
         // subtree is in a consistent paused state.
         for childID in childTaskIDs(of: taskID) {
-            await pauseRun(taskID: childID, visited: nextVisited)
+            // A cascade pauses each child on the parent's behalf — none of them started it, so
+            // a timed-out parent's child did not time out; whoever asked for the parent's Pause
+            // asked for theirs.
+            await pauseRun(
+                taskID: childID, visited: nextVisited, lifecycle: lifecycle, cause: .requested, requestedBy: requester,
+                stopsTheTree: supersedesResumes)
+            guard isCurrentFolderLifecycle(lifecycle) else { return }
         }
 
         // Cancel LLM execution per-step, NOT bulk-by-task: a step with a SUSPENDED
@@ -375,8 +545,10 @@ extension NTMSOrchestrator {
                 if let childID = step.activeDelegationChildID,
                    completionAwaiter.hasWaiters(for: childID) { continue }
                 await llmExecutionService.cancelStepExecution(stepID: step.id, taskID: taskID)
+                guard isCurrentFolderLifecycle(lifecycle) else { return }
                 if step.status == .running || step.status == .needsSupervisorInput {
                     await pauseStep(stepID: step.id, taskID: taskID)
+                    guard isCurrentFolderLifecycle(lifecycle) else { return }
                 }
             }
         } else {
@@ -401,6 +573,37 @@ extension NTMSOrchestrator {
         }
     }
 
+    /// Whether `run`'s standing requested Pause is the person's and `requester` is automated — a
+    /// Pause that must not be re-attributed (see `pauseRun`). A requested Pause recorded before
+    /// the requester was (`nil`) is the person's.
+    nonisolated static func keepsThePersonsPause(of run: Run, against requester: ControlActor?) -> Bool {
+        guard let requester, requester.isAutomated, run.pauseCause == .requested else { return false }
+        return (run.pauseRequestedBy ?? .person) == .person
+    }
+
+    /// Whether a Resume that lifted this task's pause is still under way — recorded, but not yet
+    /// done restarting. The task no longer stands paused then: its cause reads `.resumed`, the
+    /// agent may have been told `resumed`, and the steps still parked are the ones the Resume is
+    /// about to restart. A Pause there stops the Resume, so it is the later click and stands
+    /// like any Pause that stops something (`pauseEpochs`), though it parks no step itself. Until
+    /// the review of 2026-11-13 it read "the run stands paused", stopped nothing, and the Resume
+    /// went on: the click lost, and an agent's `control_task pause` answered `paused` — or
+    /// `already paused`, engineless — for a task about to run (D-M18).
+    func interruptsAResume(taskID: Int) -> Bool {
+        resumesLiftingAPause[taskID, default: 0] > 0
+    }
+
+    /// Whether a Pause of this task would stop anything — what the private `pauseRun` acts on:
+    /// a team generation it cancels, a run start it aborts, an engine `TeamEngine.pause()` moves
+    /// to `.paused`, or a step it parks. False means the run already stands paused (or never
+    /// ran), so that Pause leaves the run's `pauseCause` to the pause that stands.
+    private func pauseWouldStopSomething(taskID: Int) -> Bool {
+        if isGeneratingTeam(taskID: taskID) || engineState.isInitializingRun(taskID) { return true }
+        if taskEngines[taskID]?.isPausable == true { return true }
+        guard let run = loadedTask(taskID)?.runs.last else { return false }
+        return run.steps.contains { $0.status == .running || $0.status == .needsSupervisorInput }
+    }
+
     /// True iff the task's latest run has a step whose `delegate_to_team` handler is
     /// suspended RIGHT NOW awaiting a child task.
     ///
@@ -420,18 +623,43 @@ extension NTMSOrchestrator {
         }
     }
 
+    /// Resumes a task's run: restarts its interrupted steps and wakes (or creates) its engine.
+    ///
+    /// The resume belongs to the folder described when it began, and asks that lifecycle before
+    /// each of its writes, each `runStep`, the team-generation re-entry and the engine it
+    /// creates — after every suspension, since each write and each step start awaits. Every
+    /// caller reaches it this way — the Resume button, the queue's wake, `answerSupervisorQuestion`,
+    /// `control_task resume`, a delegation's resume — and none of them could stop a resume that
+    /// was already running: one begun while the next folder was read restarted the folder being
+    /// left's steps and created an engine after the boundary had stopped every engine, which then
+    /// resolved its task id against the next folder's task of the same number.
     func resumeRun(taskID: Int) async {
-        await resumeRun(taskID: taskID, visited: [])
+        await resumeRun(taskID: taskID, by: .person)
+    }
+
+    /// A Resume `actor` asked for. When it lifts a pause it says so before it restarts anything:
+    /// a `runResumed` timeline event on the run, and the event feed's `resumed` with the actor,
+    /// which the agent that resumed it is not told back (`ControlActor.isExternalAgent`).
+    func resumeRun(taskID: Int, by actor: ControlActor) async {
+        let lifecycle = currentFolderLifecycle
+        await resumeRun(taskID: taskID, visited: [], lifecycle: lifecycle, by: actor)
     }
 
     /// Internal recursive variant with a visited-set cycle guard, mirroring
-    /// `pauseRun(taskID:visited:)`.
-    private func resumeRun(taskID: Int, visited: Set<Int>) async {
+    /// `pauseRun(taskID:visited:lifecycle:)`.
+    private func resumeRun(taskID: Int, visited: Set<Int>, lifecycle: WorkFolderLifecycle, by actor: ControlActor) async {
         if visited.contains(taskID) { return }
+        guard isCurrentFolderLifecycle(lifecycle),
+              !isDormantAutovisorManagerTask(taskID)
+        else { return }
         var nextVisited = visited
         nextVisited.insert(taskID)
+        let pauseEpoch = pauseEpochs[taskID, default: 0]
 
         await ensureTaskLoaded(taskID)
+        guard resumeIsStillWanted(taskID: taskID, lifecycle: lifecycle, pauseEpoch: pauseEpoch),
+              !isDormantAutovisorManagerTask(taskID)
+        else { return }
 
         guard let task = loadedTask(taskID), let run = task.runs.last else { return }
 
@@ -464,8 +692,36 @@ extension NTMSOrchestrator {
         // Pre-checked rather than called unconditionally: `mutateTask` returning true
         // means "persisted", not "mutated" (CLAUDE.md §7), so an unguarded call would
         // burn a disk write on every `answerSupervisorQuestion → resumeRun`.
-        if task.status == .paused {
-            await mutateTask(taskID: taskID) { $0.clearRecoveryPauseLatch() }
+        //
+        // The same write records the Resume when it lifts a pause the task stands in — the pause
+        // the feed told as `paused`, whatever its reason: an iteration-limit pause is the engine's
+        // alone, its steps unparked, so the derived status reads `.running` through it, and until
+        // 2026-11-09 a Resume of one recorded nothing and the agent told `paused(iteration_limit)`
+        // never heard it lifted. Read before `engine.resume()` clears the engine's flag. The
+        // lifted pause's cause becomes `.resumed`, and its requester goes: a later pause that
+        // records no cause of its own — the recovery latch armed over interrupted work — is not
+        // read as the one lifted here.
+        let liftsAPause = autovisorPauseReason(of: task) != nil
+        // From here until it returns, this Resume is what a Pause stops (`resumesLiftingAPause`).
+        if liftsAPause { resumesLiftingAPause[taskID, default: 0] += 1 }
+        defer {
+            if liftsAPause {
+                let left = resumesLiftingAPause[taskID, default: 1] - 1
+                resumesLiftingAPause[taskID] = left > 0 ? left : nil
+            }
+        }
+        if task.status == .paused || liftsAPause {
+            await mutateTask(taskID: taskID) { task in
+                task.clearRecoveryPauseLatch()
+                guard liftsAPause, let last = task.runs.indices.last else { return }
+                task.runs[last].supervisorEvents.append(SupervisorTimelineEvent(kind: .runResumed, by: actor))
+                task.runs[last].pauseCause = .resumed
+                task.runs[last].pauseRequestedBy = nil
+            }
+            guard resumeIsStillWanted(taskID: taskID, lifecycle: lifecycle, pauseEpoch: pauseEpoch) else { return }
+            if liftsAPause, task.parentTaskID == nil {
+                autovisorEventFeed.recordResumed(taskID: taskID, by: actor)
+            }
         }
 
         // Cascade resume to delegated children FIRST so when this method returns
@@ -481,7 +737,8 @@ extension NTMSOrchestrator {
         // parent handler IS suspended, which is the case this cascade exists for.
         // Do not "tidy" the two cascades into symmetry.
         for childID in childTaskIDs(of: taskID) where completionAwaiter.hasWaiters(for: childID) {
-            await resumeRun(taskID: childID, visited: nextVisited)
+            await resumeRun(taskID: childID, visited: nextVisited, lifecycle: lifecycle, by: actor)
+            guard resumeIsStillWanted(taskID: taskID, lifecycle: lifecycle, pauseEpoch: pauseEpoch) else { return }
         }
 
         // Team generation never completed, so this run is still pinned to the "Generated
@@ -541,6 +798,7 @@ extension NTMSOrchestrator {
                     task.runs[ri].roleStatuses[roleID] = .working
                     task.runs[ri].updatedAt = MonotonicClock.shared.now()
                 }
+                guard resumeIsStillWanted(taskID: taskID, lifecycle: lifecycle, pauseEpoch: pauseEpoch) else { return }
                 // mutateTask returning true means "persisted", not "did something"
                 // (CLAUDE.md §7) — verify the flip landed before restarting, else a
                 // still-.failed role would trip the run loop's immediate re-fail guard.
@@ -555,7 +813,8 @@ extension NTMSOrchestrator {
                 // dismissal must not survive into the retry's outcome.
                 retireRoleBannerDismissals(taskID: taskID, roleIDs: [roleID])
                 guard claimDirectStart() else { continue }
-                await runStep(stepID: stepID, taskID: taskID)
+                await runStep(stepID: stepID, taskID: taskID, within: lifecycle)
+                guard resumeIsStillWanted(taskID: taskID, lifecycle: lifecycle, pauseEpoch: pauseEpoch) else { return }
             }
         }
 
@@ -595,11 +854,13 @@ extension NTMSOrchestrator {
                     task.runs[loc.runIndex].steps[loc.stepIndex].status = .needsSupervisorInput
                     task.runs[loc.runIndex].steps[loc.stepIndex].updatedAt = MonotonicClock.shared.now()
                 }
+                guard resumeIsStillWanted(taskID: taskID, lifecycle: lifecycle, pauseEpoch: pauseEpoch) else { return }
                 if run.roleStatuses[roleID] != .working {
                     await mutateTask(taskID: taskID) { task in
                         guard let ri = task.runs.indices.last else { return }
                         task.runs[ri].roleStatuses[roleID] = .working
                     }
+                    guard resumeIsStillWanted(taskID: taskID, lifecycle: lifecycle, pauseEpoch: pauseEpoch) else { return }
                 }
             }
         }
@@ -624,6 +885,7 @@ extension NTMSOrchestrator {
                     task.runs[ri].roleStatuses[roleID] = .working
                     task.runs[ri].updatedAt = MonotonicClock.shared.now()
                 }
+                guard resumeIsStillWanted(taskID: taskID, lifecycle: lifecycle, pauseEpoch: pauseEpoch) else { return }
                 // The closure can short-circuit (no runs in `task` due to a
                 // concurrent mutation), and `mutateTask` returning true means
                 // "persisted" not "did something" (CLAUDE.md §7). Re-read the
@@ -637,7 +899,8 @@ extension NTMSOrchestrator {
                 }
             }
             guard claimDirectStart() else { continue }
-            await runStep(stepID: step.id, taskID: taskID)
+            await runStep(stepID: step.id, taskID: taskID, within: lifecycle)
+            guard resumeIsStillWanted(taskID: taskID, lifecycle: lifecycle, pauseEpoch: pauseEpoch) else { return }
         }
 
         // 2. Re-read task after mutations
@@ -655,7 +918,8 @@ extension NTMSOrchestrator {
             if roleStatus == .working {
                 // Normal pause: role still working, restart step
                 guard claimDirectStart() else { continue }
-                await runStep(stepID: step.id, taskID: taskID)
+                await runStep(stepID: step.id, taskID: taskID, within: lifecycle)
+                guard resumeIsStillWanted(taskID: taskID, lifecycle: lifecycle, pauseEpoch: pauseEpoch) else { return }
             } else if roleStatus == .idle && (!step.messages.isEmpty || !step.llmConversation.isEmpty) {
                 // Recovery: role was reset to idle (app restart), but step was interrupted.
                 // The `.working` flip happens even when the start is declined — it is what
@@ -665,8 +929,10 @@ extension NTMSOrchestrator {
                     task.runs[ri].roleStatuses[roleID] = .working
                     task.runs[ri].updatedAt = MonotonicClock.shared.now()
                 }
+                guard resumeIsStillWanted(taskID: taskID, lifecycle: lifecycle, pauseEpoch: pauseEpoch) else { return }
                 guard claimDirectStart() else { continue }
-                await runStep(stepID: step.id, taskID: taskID)
+                await runStep(stepID: step.id, taskID: taskID, within: lifecycle)
+                guard resumeIsStillWanted(taskID: taskID, lifecycle: lifecycle, pauseEpoch: pauseEpoch) else { return }
             }
         }
 
@@ -678,6 +944,35 @@ extension NTMSOrchestrator {
         } else {
             engine.resume()
         }
+    }
+
+    /// Whether a Resume of `taskID` begun at `pauseEpoch` in `lifecycle` may still restart
+    /// anything — asked after each of its suspensions, beside the folder lifecycle.
+    ///
+    /// A Pause that stopped something since the Resume began is the later click, and it stands
+    /// (`pauseEpochs`, bumped by `pauseRun`). The Resume records itself, then suspends on that
+    /// record's write, on each child resume and on each step start; where the steps were not
+    /// parked when it began — the engine's iteration-limit pause, a delegating task's step still
+    /// awaiting its child — a Pause pressed in that window parked them, and the Resume then found
+    /// them `.paused` and restarted exactly those: the person's last click lost, the task running,
+    /// and the agent told `paused` and then `resumed` (D-M18, measured 2026-11-13). Past such a
+    /// Pause the Resume stops where it is and tells the feed nothing more; the timeline keeps both,
+    /// in the order they landed.
+    private func resumeIsStillWanted(taskID: Int, lifecycle: WorkFolderLifecycle, pauseEpoch: Int) -> Bool {
+        isCurrentFolderLifecycle(lifecycle) && pauseEpochs[taskID, default: 0] == pauseEpoch
+    }
+
+    func restartRun(taskID: Int) async {
+        let lifecycle = currentFolderLifecycle
+        guard isCurrentFolderLifecycle(lifecycle) else { return }
+        switch taskEngineStates[taskID] {
+        case .running, .needsSupervisorInput, .needsAcceptance:
+            await pauseRun(taskID: taskID)
+        default:
+            break
+        }
+        guard isCurrentFolderLifecycle(lifecycle) else { return }
+        await startRun(taskID: taskID)
     }
 
 }

@@ -43,14 +43,14 @@ enum DelegatedSupervisorAnswerService {
         delegate: any LLMStateDelegate,
         logger: NetworkLogger? = nil
     ) async -> Bool {
+        let lifecycle = delegate.currentFolderLifecycle
+        guard delegate.isCurrentFolderLifecycle(lifecycle) else { return false }
         // 1. Read pending question from child's last step.
         // The child's `ask_supervisor` flow set this via `setNeedsSupervisorInput`.
-        guard let childTask = delegate.loadedTask(childTID),
-              let childRun = childTask.runs.last
-        else {
+        guard let childTask = delegate.loadedTask(childTID) else {
             return false
         }
-        guard let askingStep = childRun.steps.first(where: { $0.needsSupervisorInput && $0.supervisorQuestion != nil }),
+        guard let askingStep = childTask.answerableSupervisorSteps.first,
               let headline = askingStep.supervisorQuestion?.trimmingCharacters(in: .whitespacesAndNewlines),
               !headline.isEmpty
         else {
@@ -76,15 +76,19 @@ enum DelegatedSupervisorAnswerService {
             client: client,
             globalConfig: globalConfig,
             delegate: delegate,
+            lifecycle: lifecycle,
             logger: logger
         ) else { return false }
+
+        guard !Task.isCancelled, delegate.isCurrentFolderLifecycle(lifecycle) else { return false }
 
         // 3. Deliver the answer back to the child step. answerSupervisorQuestion
         // also resumes the engine so the child step exits `.needsSupervisorInput`.
         return await delegate.answerSupervisorQuestion(
             taskID: childTID,
             stepID: askingStep.id,
-            answer: answer
+            answer: answer,
+            within: lifecycle
         )
     }
 
@@ -102,8 +106,10 @@ enum DelegatedSupervisorAnswerService {
         client: any LLMClient,
         globalConfig: LLMConfig,
         delegate: any LLMStateDelegate,
+        lifecycle: WorkFolderLifecycle,
         logger: NetworkLogger? = nil
     ) async -> String? {
+        guard !Task.isCancelled, delegate.isCurrentFolderLifecycle(lifecycle) else { return nil }
         // Locate the role's step and resolve its effective LLM config.
         guard let task = delegate.loadedTask(taskID),
               let run = task.runs.last,
@@ -182,6 +188,7 @@ enum DelegatedSupervisorAnswerService {
                     accumulator.absorb(event.toolCallDeltas)
                 }
             }
+            try Task.checkCancellation()
             // Promote the reasoning channel BEFORE any consumer looks, because all three
             // read `captured.content`: the Harmony salvage gate below (so an escalation
             // emitted as a reasoning-channel envelope was invisible), `persistExchange`'s
@@ -216,13 +223,17 @@ enum DelegatedSupervisorAnswerService {
             // user's own Pause as one destroys the delegation they paused to inspect — and
             // posts a red banner blaming the role. Return nil without the banner: the parent
             // step is being cancelled anyway, and the child stays intact for the resume.
-            if CancellationClassifier.isCancellation(error) { return nil }
+            if CancellationClassifier.isCancellation(error) || !delegate.isCurrentFolderLifecycle(lifecycle) {
+                return nil
+            }
             let reason = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             delegate.setLastErrorMessageForUI(
                 "Delegated supervisor answer failed for role \(roleID): \(reason)"
             )
             return nil
         }
+
+        guard !Task.isCancelled, delegate.isCurrentFolderLifecycle(lifecycle) else { return nil }
 
         // Persist (question, answer) pair to the role's llmConversation for UI.
         await persistExchange(
@@ -232,6 +243,7 @@ enum DelegatedSupervisorAnswerService {
             response: captured,
             delegate: delegate
         )
+        guard !Task.isCancelled, delegate.isCurrentFolderLifecycle(lifecycle) else { return nil }
 
         // Plain text answer or escalation?
         // The FIRST parking call in emission order, by membership in the closed set — the
@@ -255,6 +267,7 @@ enum DelegatedSupervisorAnswerService {
                     client: client,
                     globalConfig: globalConfig,
                     delegate: delegate,
+                    lifecycle: lifecycle,
                     logger: logger
                 )
             } else {
@@ -269,6 +282,7 @@ enum DelegatedSupervisorAnswerService {
                     else { return }
                     task.runs[runIdx].steps[stepIdx].setAncillaryQuestion(escalatedQuestion)
                 }
+                guard !Task.isCancelled, delegate.isCurrentFolderLifecycle(lifecycle) else { return nil }
                 delegate.setLastInfoMessageForUI(
                     "Delegated team escalated a question that requires Supervisor input. The delegation was aborted; the question is recorded on the step's ancillary log."
                 )

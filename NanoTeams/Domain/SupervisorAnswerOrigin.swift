@@ -11,13 +11,22 @@ import Foundation
 /// makes one decision and every downstream field follows from it.
 ///
 /// `StepMessagingService.answerSupervisorQuestion` is the only reader: it writes
-/// `supervisorAnswerWasAuto` from `isAutomated` and builds the appended turn from the other
-/// three properties.
+/// `supervisorAnswerWasAuto` from `isAutomated`, writes `supervisorAnswerAuthor` from the
+/// optional external-agent label (`nil` for human, built-in Autovisor manager, or in-loop
+/// auto-answers), and builds the appended turn from the other three properties. Together:
+/// - `SupervisorAnswerOrigin` (`.supervisor | .automated | .questionnaireRequest`) governs the
+///   wire prefix, source role, and `MessageSourceContext`.
+/// - `StepExecution.supervisorAnswerWasAuto` (`origin.isAutomated`) is the boolean persisted
+///   for the generic "Auto-answered" badge.
+/// - `StepExecution.supervisorAnswerAuthor` (`String?`) carries the external agent's display
+///   label when `origin == .automated` came from hosted MCP `answer_task_question`, so UI cards
+///   and `conversation_log.md` can attribute "Answered by <agent>" without altering the wire.
 nonisolated enum SupervisorAnswerOrigin: String, Codable, Hashable, CaseIterable {
     /// The human, at a question card, the Watchtower banner or the Quick Capture panel.
     case supervisor
     /// An LLM answerer standing in for the human: `SupervisorAutoAnswerService` under
-    /// `.autonomous`, the Autovisor's `answer_task_question`, a delegating parent role.
+    /// `.autonomous`, the Autovisor's `answer_task_question` (built-in manager or external
+    /// agent paired with `StepExecution.supervisorAnswerAuthor`), a delegating parent role.
     case automated
     /// The app's directive asking the role to re-ask its question as a questionnaire.
     case questionnaireRequest
@@ -27,6 +36,17 @@ nonisolated enum SupervisorAnswerOrigin: String, Codable, Hashable, CaseIterable
     /// False for `.questionnaireRequest`: the badge means an LLM answerer stood in for the
     /// human, and the directive is sent BY the human — they pressed the button.
     var isAutomated: Bool { self == .automated }
+
+    /// What the appended turn records as its author (`LLMMessage.isFromAutomatedSupervisor`,
+    /// DEBTS D-M15): the person or an automated stand-in. `nil` for the directive — the app's
+    /// words, not a Supervisor turn, and never read as one.
+    var turnIsFromAutomatedSupervisor: Bool? {
+        switch self {
+        case .supervisor: return false
+        case .automated: return true
+        case .questionnaireRequest: return nil
+        }
+    }
 
     /// Attribution of the turn appended to `llmConversation` in the same mutation.
     ///

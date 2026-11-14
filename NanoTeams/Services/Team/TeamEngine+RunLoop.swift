@@ -25,9 +25,12 @@ extension TeamEngine {
             // whose own message names the thing that cannot work.
             iterationCount += 1
             if autoIterationLimit > 0, iterationCount >= autoIterationLimit {
+                let limit = autoIterationLimit
+                pausedIterationLimit = limit
                 transition(to: .paused)
+                onIterationLimitPaused?(limit)
                 store.setLastErrorMessageForUI(
-                    "Run paused: iteration limit (\(autoIterationLimit)) reached. " +
+                    "Run paused: iteration limit (\(limit)) reached. " +
                         "Press Resume to continue, or increase 'Auto iterations limit' in Team Settings."
                 )
                 return

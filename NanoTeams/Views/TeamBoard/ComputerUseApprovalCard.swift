@@ -73,16 +73,11 @@ private struct ComputerUseApprovalCard: View {
                         RoundedRectangle.squircle(CornerRadius.micro).strokeBorder(Colors.borderSubtle, lineWidth: 1))
             }
 
-            HStack(spacing: Spacing.xs) {
-                Button("Allow") { resolve(.allow) }
-                    .buttonStyle(.terminalPrimary)
-                Button("Deny") { resolve(.deny) }
-                    .buttonStyle(.terminalDanger)
-                if request.offerAlways, let app = request.targetApp {
-                    Button("Always allow in \(app)") { resolve(.alwaysAllowApp) }
-                        .buttonStyle(.terminalGhost)
-                }
-            }
+            ApprovalActionRow(
+                grant: request.offerAlways ? request.targetApp.map { ApprovalGrant(label: "Always allow in \($0)") } : nil,
+                onAllow: { resolve(.allow) },
+                onDeny: { resolve(.deny) },
+                onAlways: { resolve(.alwaysAllowApp) })
         }
         .padding(Spacing.s)
         .frame(maxWidth: .infinity, alignment: .leading)

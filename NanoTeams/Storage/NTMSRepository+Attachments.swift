@@ -87,6 +87,7 @@ nonisolated extension NTMSRepository {
     }
 
     func removeStagedItem(at workFolderRoot: URL, relativePath: String) throws {
+        try instanceLocking.refuseIfHeldByAnotherProcess(workFolderRoot)
         let itemURL = try resolvedProjectRelativeURL(workFolderRoot: workFolderRoot, relativePath: relativePath)
         guard fileManager.fileExists(atPath: itemURL.path) else { return }
         try fileManager.removeItem(at: itemURL)

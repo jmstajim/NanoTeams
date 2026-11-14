@@ -25,14 +25,10 @@ nonisolated final class BenchmarkHistoryStore: @unchecked Sendable {
     /// Deliberately BESIDE `.nanoteams/`, not inside it: `~/Library/Application Support/NanoTeams/`
     /// is itself the default WORK FOLDER (`NTMSOrchestrator.defaultStorageURL`) and carries a full
     /// `.nanoteams/internal/` tree. Filing benchmark history under that tree would tie a
-    /// machine-scoped fact to one work folder — the exact coupling this store exists to avoid —
-    /// and would put it behind `NTMSPaths`, which is rooted in a work folder and has no opinion
-    /// about app-level data.
-    static var defaultDirectory: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("NanoTeams", isDirectory: true)
-            .appendingPathComponent("benchmarks", isDirectory: true)
-    }
+    /// machine-scoped fact to one work folder — the exact coupling this store exists to avoid.
+    /// The directory itself comes from `NTMSPaths.MachineStore`, the table the bash sandbox's
+    /// deny list reads too (F6 S9, 2026-11-12).
+    static var defaultDirectory: URL { NTMSPaths.machineStorageURL(.benchmarks) }
 
     let directory: URL
     private let fileManager: FileManager

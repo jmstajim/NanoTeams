@@ -99,6 +99,7 @@ struct FinalReviewHeader: View {
                 .foregroundStyle(color)
             Text("\(progress.ready)/\(progress.total)")
                 .font(Typography.term2xs.monospacedDigit())
+                .lineLimit(1)
                 .tracking(Typography.labelTracking)
                 .foregroundStyle(color)
         }

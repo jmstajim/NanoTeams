@@ -116,4 +116,20 @@ final class AcceptanceGateFactTests: XCTestCase {
         known.hasRolesAwaitingAcceptance = false
         XCTAssertTrue(known.acceptanceGateStateIsKnown, "…and a known `false` is not unknown")
     }
+    // MARK: - every role done or at its gate (F6 C14)
+
+    /// The one rule `derivedStatusFromActiveRun` (Review rather than Working) and the external
+    /// mapper (`acceptance_gate`) both read: every role done or waiting for acceptance, and at
+    /// least one role with a status — a run with no role statuses waits on nothing.
+    func testEveryRoleIsCompleteOrAwaitingAcceptance() {
+        XCTAssertFalse(Run(id: 0).everyRoleIsCompleteOrAwaitingAcceptance, "no role statuses: no decision to wait on")
+        XCTAssertTrue(Run(id: 0, roleStatuses: ["a": .needsAcceptance]).everyRoleIsCompleteOrAwaitingAcceptance)
+        XCTAssertTrue(Run(id: 0, roleStatuses: ["a": .done, "b": .needsAcceptance, "c": .accepted, "d": .skipped])
+            .everyRoleIsCompleteOrAwaitingAcceptance)
+        XCTAssertTrue(Run(id: 0, roleStatuses: ["a": .done]).everyRoleIsCompleteOrAwaitingAcceptance)
+        for working: RoleExecutionStatus in [.idle, .ready, .working, .revisionRequested, .failed] {
+            XCTAssertFalse(Run(id: 0, roleStatuses: ["a": .needsAcceptance, "b": working])
+                .everyRoleIsCompleteOrAwaitingAcceptance, "\(working) is still owed work or a restart")
+        }
+    }
 }

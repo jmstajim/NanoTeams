@@ -3,7 +3,7 @@ import XCTest
 @testable import NanoTeams
 
 /// The second defect from the `google/gemma-4-26b-a4b-qat` MeditationApp run
-/// (`network_log.json`, 2026-08-13, 19:53:21): the model spliced its own training
+/// (`network_log.json`, 2026-08-13): the model spliced its own training
 /// sentinel into the taught marker and wrote
 ///
 ///     <|tool_call>call:edit_file{new_text: "…", old_text: "…", path: "…"}<|end|>

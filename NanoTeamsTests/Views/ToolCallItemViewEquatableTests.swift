@@ -5,7 +5,7 @@ import XCTest
 
 /// Drift-guard for `ToolCallItemView.==` — the same convention as
 /// `MessageBubbleEquatableTests`. The card is rendered under `.equatable()` in
-/// the feed dispatcher (`TeamActivityFeedView.swift:691`), so anything the body
+/// the feed dispatcher (`TeamActivityFeedView.swift:693`), so anything the body
 /// RENDERS but `==` does not compare has its updates silently dropped.
 ///
 /// Two groups of cases, and the second is the one this suite was written for.

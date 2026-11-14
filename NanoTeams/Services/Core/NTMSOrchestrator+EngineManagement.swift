@@ -9,11 +9,23 @@ extension NTMSOrchestrator {
 
     func engineForTask(_ taskID: Int) -> TeamEngine {
         if let existing = taskEngines[taskID] { return existing }
+        if isDormantAutovisorManagerTask(taskID) {
+            return engineFactory()
+        }
         let engine = engineFactory()
         let adapter = TaskEngineStoreAdapter(orchestrator: self, taskID: taskID)
         engine.attach(store: adapter)
         engine.onQueuedRolesChanged = { [weak self] roleIDs in
             self?.engineState.setQueuedRoles(roleIDs, for: taskID)
+        }
+        engine.onIterationLimitPaused = { [weak self] limit in
+            guard let self else { return }
+            self.completionAwaiter.deliver(
+                taskID: taskID,
+                outcome: .paused(.iterationLimitReached(limit: limit))
+            )
+            self.autovisorEventFeed.recordIterationLimitPause(taskID: taskID)
+            self.recordIterationLimitPauseCause(taskID: taskID)
         }
         engine.onStateChanged = { [weak self] state in
             guard let self else { return }
@@ -27,11 +39,14 @@ extension NTMSOrchestrator {
             case .done:
                 self.completionAwaiter.deliver(taskID: taskID, outcome: .terminal(.done))
                 self.clearAutovisorLoopParkLedger(taskID)
+                self.captureSnapshotForTerminalOutcome(taskID: taskID, phase: .review)
             case .failed:
                 self.completionAwaiter.deliver(taskID: taskID, outcome: .terminal(.failed))
+                self.captureSnapshotForTerminalOutcome(taskID: taskID, phase: .failure)
             case .needsAcceptance:
                 self.completionAwaiter.deliver(taskID: taskID, outcome: .terminal(.needsAcceptance))
                 self.clearAutovisorLoopParkLedger(taskID)
+                self.captureSnapshotForTerminalOutcome(taskID: taskID, phase: .review)
             case .needsSupervisorInput:
                 self.completionAwaiter.deliver(taskID: taskID, outcome: .needsSupervisorInput)
                 // A manager pass killed by a reasoning loop reviewed nothing, so the
@@ -57,9 +72,45 @@ extension NTMSOrchestrator {
             // exist — leaving a ≤60 s poll as the only path to a manager that is supposed to
             // react to events. Over-firing is free; see `scheduleAutovisorWake`.
             self.scheduleAutovisorWake()
+            self.messageQueue.tryFlushQueuedMessages()
         }
         taskEngines[taskID] = engine
         return engine
+    }
+
+    /// The end snapshot of an engine outcome — review, failure, stop — in the background; its
+    /// failure is recorded on its round (`captureTaskSnapshots`). A task with no run has no
+    /// round to end: until 2026-11-12 it took `?? 1` for both, and `control_task stop` on a
+    /// waiting task wrote `…/1/1/stop` — the end of round 1 of the task's SECOND run, read
+    /// later as that round's end (N13).
+    private func captureSnapshotForTerminalOutcome(taskID: Int, phase: TaskSnapshotPhase) {
+        guard shouldCaptureTaskSnapshots(taskID: taskID),
+              let task = loadedTask(taskID),
+              let run = task.runs.last
+        else { return }
+        if phase == .stop, task.closedAt != nil { return }
+        let lifecycle = currentFolderLifecycle
+        let request = TaskSnapshotRequest(round: run.round, phase: phase)
+        Task { [weak self] in
+            await self?.captureTaskSnapshots(
+                [request], taskID: taskID, runID: run.id, within: lifecycle, waitBudget: nil)
+        }
+    }
+
+    /// Records `Run.pauseCause = .iterationLimit` for the engine's own pause. The live
+    /// `pausedIterationLimit` answers while this process runs; the run keeps the answer across a
+    /// relaunch, where a cause an earlier timeout left would otherwise read as this pause's. Asked
+    /// in the folder the pause happened in — task ids are per folder.
+    private func recordIterationLimitPauseCause(taskID: Int) {
+        let lifecycle = currentFolderLifecycle
+        guard loadedTask(taskID)?.runs.last.map({ $0.pauseCause != .iterationLimit }) == true else { return }
+        Task { [weak self] in
+            guard let self, self.isCurrentFolderLifecycle(lifecycle) else { return }
+            await self.mutateTask(taskID: taskID) { task in
+                guard let last = task.runs.indices.last else { return }
+                task.runs[last].pauseCause = .iterationLimit
+            }
+        }
     }
 
     /// Wakes the engine for `taskID` so it observes durable state a Supervisor-side mutation
@@ -90,13 +141,15 @@ extension NTMSOrchestrator {
     /// trading an invisible stall for a different invisible stall.
     ///
     /// Callers must keep this the LAST statement with no `await` after it: the Autovisor's
-    /// `reportingError` reads `errorSurfaceCount` immediately on return, so a suspension would
-    /// attribute the woken run loop's own error to the caller's action.
+    /// `reportingError` reads the action's error scope immediately on return, and the woken run
+    /// loop runs in a task that inherits it, so a suspension would attribute the loop's own error
+    /// to the caller's action.
     ///
     /// Deliberately does NOT call `cancelRoleTasks` (that is `restartRole`'s job) and does NOT
     /// run `resumeRun`'s step-restoration branches — it is not a substitute for either.
     @discardableResult
     func wakeEngine(taskID: Int) -> Bool {
+        if isDormantAutovisorManagerTask(taskID) { return false }
         // A run already being created will start the engine itself. `startRun` clears its
         // engine-state guard, takes the run-start claim, and only THEN suspends across
         // `refreshAgentInstructions` / `ensureTaskLoaded` / `createNewRun`. Racing that window
@@ -137,12 +190,18 @@ extension NTMSOrchestrator {
         return true
     }
 
-    func stopEngine(for taskID: Int) {
-        // A background run launch must not outlive the verb that says this task's engine
-        // is gone: still suspended in the prompt warm-up, it would resume and create a
-        // NEW one after this returns. Cancel only — the launch's own `defer` owns the
-        // registry entry and the run-start claim.
-        cancelRunStartLaunch(taskID: taskID)
+    func stopEngine(for taskID: Int, captureSnapshot: Bool = true) {
+        // A run start in flight must not outlive the verb that says this task's engine is
+        // gone: still suspended — in the run's write or the prompt warm-up — it would resume
+        // and create a NEW engine after this returns. `abortRunStart` abandons it on BOTH
+        // paths: its generation refuses the launch's next re-check, the only refusal a stop
+        // verb gives an INLINE start (Play, the Autovisor, a recurrence fire) — nothing is
+        // registered for it to cancel.
+        abortRunStart(taskID: taskID)
+        // So must a Generated-Team start's continuation, the engine start that waits on an LLM
+        // call: cancelled here, it stops costing and starts nothing (the continuation also asks
+        // the lifecycle it was spawned in before every write — see `spawnTeamGeneration`).
+        cancelTeamGeneration(taskID: taskID)
         taskEngines[taskID]?.stop()
         taskEngines.removeValue(forKey: taskID)
         engineState.removeEngine(for: taskID)
@@ -154,22 +213,41 @@ extension NTMSOrchestrator {
         // stop / recurrence supersede). Pause does NOT route through here, so a
         // paused-then-resumed run keeps its background commands.
         BackgroundBashRegistry.shared.terminate(taskID: taskID)
+        if captureSnapshot {
+            captureSnapshotForTerminalOutcome(taskID: taskID, phase: .stop)
+        }
     }
 
     func stopAllEngines() {
-        // Same reason as in `stopEngine`, and here it is load-bearing rather than tidy:
-        // this verb runs on the work-folder boundary, and `NTMSTask.id` is sequential
-        // PER FOLDER — a launch resuming after the switch would find the new folder's
-        // task of the same id and start it. Guarding one of the two verbs would be a
+        // Every run start in flight is abandoned FIRST — before the engines go and before
+        // `removeAllEngines` ends the claims — for the reason `stopEngine` gives. This verb runs
+        // at the folder boundary (`beginFolderTransition`), where `NTMSTask.id` being sequential
+        // PER FOLDER is the whole hazard: a start resuming after the switch finds the next
+        // folder's task of the same id loaded. Its generation, moved here, refuses it at the
+        // launch's next re-check — and so does its claim's lifecycle, which the boundary ends;
+        // a start claimed AFTER this returns, while the transition is still under way, is
+        // refused at its claim (`claimRunStart`). Guarding one of the two stop verbs would be a
         // coincidence, not a defence (CLAUDE.md #51).
-        cancelAllRunStartLaunches()
+        for taskID in engineState.initializingRunTaskIDs.sorted() {
+            abortRunStart(taskID: taskID)
+        }
+        // Every Generated-Team continuation too (both initial and `retryTeamGeneration`, which
+        // registers in `teamGenerationTasks` and records its lifecycle in `teamGenerationInFlight`)
+        // — its engine start waits on an LLM call that would otherwise go on costing for the
+        // folder being left.
+        for (_, generation) in teamGenerationTasks {
+            generation.cancel()
+        }
+        teamGenerationTasks.removeAll()
+        teamGenerationInFlight.removeAll()
         for (_, engine) in taskEngines {
             engine.stop()
         }
         taskEngines.removeAll()
         engineState.removeAllEngines()
         completionAwaiter.cancelAll()
-        // Work-folder switch / shutdown: nothing may keep running across folders.
+        // The folder boundary: nothing of the folder being left keeps running, background
+        // commands included.
         BackgroundBashRegistry.shared.terminateAll()
     }
 
@@ -189,7 +267,8 @@ extension NTMSOrchestrator {
     /// `derivedStatus == .failed` — recovery paths can leave the engine gone
     /// while the run carries a failed step.
     func awaitTaskTerminalState(taskID: Int) async -> TaskCompletionAwaiter.WaitOutcome {
-        if let s = engineState.taskEngineStates[taskID] {
+        let liveEngineState = engineState.taskEngineStates[taskID]
+        if let s = liveEngineState {
             switch s {
             case .done:
                 return .terminal(.done)
@@ -199,6 +278,10 @@ extension NTMSOrchestrator {
                 return .terminal(.needsAcceptance)
             case .needsSupervisorInput:
                 return .needsSupervisorInput
+            case .paused:
+                if let limit = taskEngines[taskID]?.pausedIterationLimit {
+                    return .paused(.iterationLimitReached(limit: limit))
+                }
             default:
                 break
             }
@@ -207,11 +290,23 @@ extension NTMSOrchestrator {
             if task.closedAt != nil {
                 return .terminal(.done)
             }
+            if !task.answerableSupervisorSteps.isEmpty {
+                return .needsSupervisorInput
+            }
+            if liveEngineState != .running {
+                if let run = task.runs.last,
+                   run.latestPauseIsItsTimeout,
+                   task.derivedStatusFromActiveRun() == .paused {
+                    return .paused(.runTimedOut(seconds: Int(task.runTimeoutSeconds ?? 0)))
+                }
+            }
             switch task.derivedStatusFromActiveRun() {
             case .failed:
                 return .terminal(.failed)
             case .done:
                 return .terminal(.done)
+            case .needsSupervisorAcceptance:
+                return .terminal(.needsAcceptance)
             default:
                 break
             }
@@ -220,11 +315,18 @@ extension NTMSOrchestrator {
     }
 
     /// Reserves an in-flight slot for generated-team creation for the given task.
-    /// Returns `false` if a generation is already in flight for this task.
+    /// Returns `false` if a generation is already in flight for this task in the
+    /// current folder lifecycle, or if `callerLifecycle` is no longer current.
     /// After reserving, create the detached Task and call
     /// `registerTeamGenerationTask(taskID:task:)` so `pauseRun` can cancel it.
-    func beginTeamGeneration(taskID: Int) -> Bool {
-        teamGenerationInFlight.insert(taskID).inserted
+    func beginTeamGeneration(taskID: Int, within callerLifecycle: WorkFolderLifecycle? = nil) -> Bool {
+        let lifecycle = callerLifecycle ?? currentFolderLifecycle
+        guard isCurrentFolderLifecycle(lifecycle) else { return false }
+        if let existing = teamGenerationInFlight[taskID], isCurrentFolderLifecycle(existing) {
+            return false
+        }
+        teamGenerationInFlight[taskID] = lifecycle
+        return true
     }
 
     /// Installs the Task handle paired with a prior `beginTeamGeneration(taskID:)`.
@@ -234,10 +336,14 @@ extension NTMSOrchestrator {
         teamGenerationTasks[taskID] = task
     }
 
-    /// Releases the reserve flag + Task handle for this task.
-    func endTeamGeneration(taskID: Int) {
+    /// Releases the reserve flag + Task handle for this task when owned by `callerLifecycle`
+    /// (or unconditionally when `callerLifecycle` is nil).
+    func endTeamGeneration(taskID: Int, within callerLifecycle: WorkFolderLifecycle? = nil) {
+        if let callerLifecycle, teamGenerationInFlight[taskID] != callerLifecycle {
+            return
+        }
         teamGenerationTasks.removeValue(forKey: taskID)
-        teamGenerationInFlight.remove(taskID)
+        teamGenerationInFlight.removeValue(forKey: taskID)
     }
 
     /// Cancels an in-flight generation Task for this task. The Task's `defer`
@@ -246,9 +352,10 @@ extension NTMSOrchestrator {
         teamGenerationTasks[taskID]?.cancel()
     }
 
-    /// Whether a team generation is currently reserved for this task.
+    /// Whether a team generation is currently reserved for this task in the current folder lifecycle.
     func isGeneratingTeam(taskID: Int) -> Bool {
-        teamGenerationInFlight.contains(taskID)
+        guard let lifecycle = teamGenerationInFlight[taskID] else { return false }
+        return isCurrentFolderLifecycle(lifecycle)
     }
 
     /// Syncs `taskEngineStates` from the task's derived status when no engine
@@ -267,6 +374,7 @@ extension NTMSOrchestrator {
             hasSteps: !lastRun.steps.isEmpty
         ) {
             engineState[taskID] = state
+            messageQueue.noteEngineLessStateUpdated(taskID: taskID)
         }
     }
 

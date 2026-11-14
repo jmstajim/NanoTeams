@@ -426,7 +426,7 @@ final class CloseTaskTests: NTMSOrchestratorTestBase, @unchecked Sendable {
     }
 
     /// Pin: double-click on sidebar "Close Chat" can spawn two overlapping
-    /// `Task { _ = await store.closeTask(...) }` from [SidebarView.swift:351](NanoTeams/Views/App/SidebarView.swift#L351).
+    /// `Task { _ = await store.closeTask(...) }` from [SidebarView.swift:520](NanoTeams/Views/App/SidebarView.swift#L520).
     /// Both calls must succeed without disk corruption — second call sees
     /// `closedAt` already set, idempotently re-sets it. Guards against a future
     /// `precondition(task.closedAt == nil)` or any non-idempotent mutation

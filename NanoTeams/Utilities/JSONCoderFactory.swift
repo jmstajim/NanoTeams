@@ -6,7 +6,7 @@ nonisolated enum JSONCoderFactory {
 
     // MARK: - ISO 8601 formatters
 
-    /// ISO 8601 with fractional seconds (e.g. `2026-04-23T14:30:00.123Z`).
+    /// ISO 8601 with fractional seconds (e.g. `2026-04-23T01:30:00.123Z`).
     /// Preserves the millisecond spacing produced by `MonotonicClock`, so persisted
     /// timestamps don't collapse to the same second on save and scramble ordering
     /// (e.g. activity feed messages/tool calls interleaving) after reload.

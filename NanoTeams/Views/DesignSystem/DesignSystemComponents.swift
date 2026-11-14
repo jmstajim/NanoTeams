@@ -258,11 +258,12 @@ extension View {
 
 // MARK: - Settings Card
 
-/// Reusable settings card with section header, card-styled content, and optional footer.
-/// Pattern: NTMSSectionHeader above → content in cardStyle() → caption footer below.
+/// Reusable settings card: a `┤ TITLE ├` box-drawing pane around the content, a caption footer
+/// under it. The title chip is text only — the DS pane carries no icon — and the card has no
+/// `systemImage`: it took one for months and never drew it, so 67 call sites named an icon
+/// nobody saw (removed 2026-11-07).
 struct SettingsCard<Content: View>: View {
     let header: String
-    var systemImage: String?
     var footer: String?
     /// A trailing control rendered on the `┤ TITLE ├` chip line — forwarded to the
     /// slot `TerminalPane` already owns. Must stay a `var` (an Optional `var` gets

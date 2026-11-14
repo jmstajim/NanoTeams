@@ -19,8 +19,8 @@ import Synchronization
 /// training-data sentinel (`<|tool_call|>`) into the `<|call|>` the system prompt
 /// teaches:
 ///
-///     <|tool_call>call|>{"name":"list_files",…}      record [33], 13:51:15
-///     <|tool_call>call_multiple{"contributions":…}   record [39], 13:52:24
+///     <|tool_call>call|>{"name":"list_files",…}      record [33]
+///     <|tool_call>call_multiple{"contributions":…}   record [39]
 ///
 /// so it is predictable, and normalising it is cheaper and more honest than teaching
 /// the model a format it half-knows.
@@ -219,7 +219,12 @@ nonisolated enum HarmonySentinelNormalizer {
     /// verbatim marker, or a sentinel this pass repairs into one. Nothing else about the
     /// buffer changes: exactly the tag's characters are removed, the gap is re-emitted, and
     /// the closing `</tool_call>` is left alone (see the type comment for why).
-    static func normalize(_ text: String) -> String {
+    /// - Parameter knownNames: every name that IS a tool on this call. The default is the
+    ///   app's registry; a step that advertised MCP tools passes the union, because the
+    ///   name-hoisting branch below DROPS a debris run whose trailing identifier it does
+    ///   not recognise — so an unrecognised `mcp__…` name is not merely unhelped, it is
+    ///   lost, and the call with it.
+    static func normalize(_ text: String, knownNames: Set<String> = ToolNames.allNames) -> String {
         // Two read-only fast paths before anything is allocated. Since 2026-08-21 the
         // per-delta caller no longer reaches this with the whole accumulated buffer:
         // `StreamMarkerWindow.harmonyNeedleArrived` scans only the delta plus a
@@ -278,7 +283,8 @@ nonisolated enum HarmonySentinelNormalizer {
                 // `<|call|>tool_name{…}` branch, so this costs no new parsing machinery.
                 // For `.truncatedCanonical` the run is empty by construction, so this
                 // reads as the no-op it is rather than needing a branch of its own.
-                if let name = trailingToolName(in: text[hit.range.upperBound..<payload]) {
+                if let name = trailingToolName(
+                    in: text[hit.range.upperBound..<payload], knownNames: knownNames) {
                     result.append(name)
                 }
                 cursor = payload
@@ -509,7 +515,9 @@ nonisolated enum HarmonySentinelNormalizer {
     /// therefore keep producing the bare marker they produced before, which is what
     /// their pins assert. Matching is exact — a shouted `EDIT_FILE` is not a tool, and
     /// case-folding here would be inference by another name.
-    private static func trailingToolName(in debris: Substring) -> String? {
+    private static func trailingToolName(
+        in debris: Substring, knownNames: Set<String>
+    ) -> String? {
         var start = debris.endIndex
         while start > debris.startIndex {
             let previous = debris.index(before: start)
@@ -518,7 +526,7 @@ nonisolated enum HarmonySentinelNormalizer {
             start = previous
         }
         let candidate = String(debris[start...])
-        guard !candidate.isEmpty, ToolNames.allNames.contains(candidate) else { return nil }
+        guard !candidate.isEmpty, knownNames.contains(candidate) else { return nil }
         return candidate
     }
 

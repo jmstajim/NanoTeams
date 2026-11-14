@@ -122,17 +122,32 @@ nonisolated extension ActivityFeedBuilder {
     /// `nonisolated(unsafe)` static shape).
     private nonisolated(unsafe) static let artifactContentCache = NSCache<NSString, NSString>()
 
+    /// Injectable read/write seam over `artifactContentCache` so tests can verify per-(path,
+    /// updatedAt) memoization deterministically without `NSCache` eviction under memory pressure (D-B16).
+    nonisolated struct ArtifactContentMemo {
+        var get: (String) -> String?
+        var set: (String, String) -> Void
+
+        static var shared: ArtifactContentMemo {
+            ArtifactContentMemo(
+                get: { artifactContentCache.object(forKey: $0 as NSString) as String? },
+                set: { value, key in artifactContentCache.setObject(value as NSString, forKey: key as NSString) }
+            )
+        }
+    }
+
     static func loadArtifactContentsForStepSync(
         _ step: StepExecution,
-        workFolderURL: URL?
+        workFolderURL: URL?,
+        memo: ArtifactContentMemo = .shared
     ) -> Set<String> {
         guard let projectURL = workFolderURL else { return [] }
         var contents: Set<String> = []
         for artifact in step.artifacts {
             guard let relativePath = artifact.relativePath else { continue }
-            let cacheKey = "\(relativePath)|\(artifact.updatedAt.timeIntervalSinceReferenceDate)" as NSString
-            if let cached = artifactContentCache.object(forKey: cacheKey) {
-                contents.insert(cached as String)
+            let cacheKey = "\(relativePath)|\(artifact.updatedAt.timeIntervalSinceReferenceDate)"
+            if let cached = memo.get(cacheKey) {
+                contents.insert(cached)
                 continue
             }
             let fileURL = projectURL
@@ -141,7 +156,7 @@ nonisolated extension ActivityFeedBuilder {
             if let content = try? String(contentsOf: fileURL, encoding: .utf8) {
                 // Only a successful read is memoized — an unreadable file must
                 // stay retryable (it may simply not have landed yet).
-                artifactContentCache.setObject(content as NSString, forKey: cacheKey)
+                memo.set(content, cacheKey)
                 contents.insert(content)
             } else {
                 #if DEBUG

@@ -117,7 +117,7 @@ final class ActivityFeedBuilderEscalationAnswerTests: XCTestCase {
         in items: [ActivityFeedBuilder.TaggedItem]
     ) -> [(question: String, answer: String?)] {
         items.compactMap {
-            if case let .notification(_, _, .supervisorInput(question, answer, _, _, _, _, _, _), _, _) = $0.item {
+            if case let .notification(_, _, .supervisorInput(question, answer, _, _, _, _, _, _, _), _, _) = $0.item {
                 return (question, answer)
             }
             return nil

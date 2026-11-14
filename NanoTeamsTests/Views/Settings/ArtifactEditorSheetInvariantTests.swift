@@ -4,19 +4,21 @@ import XCTest
 
 /// Structural pin on `ArtifactEditorSheet`'s save path.
 ///
-/// Why a SOURCE SCAN rather than a behavioural test: `saveArtifact()` is
-/// `private` on a `View` struct with no test seam, and the defect it guards is
-/// a SwiftUI `Binding` race — five consecutive `team.artifacts[i].X = …` writes
-/// through `TeamEditorView.binding(for:)`, whose getter returns a captured
-/// snapshot and whose setter is async. Each write re-read the same pre-edit
-/// snapshot and replaced the whole team, so only the last one survived and it
-/// carried nothing but `updatedAt`. Nothing reachable from a unit test could
-/// observe that, which is exactly how it shipped.
+/// Why a SOURCE SCAN rather than a behavioural test: the sheet's actions are
+/// `private` on a `View` struct with no test seam, and the defect the first two
+/// pins guard was a SwiftUI `Binding` race — five consecutive
+/// `team.artifacts[i].X = …` writes through `TeamEditorView.binding(for:)`, whose
+/// getter then returned a captured snapshot and whose setter was an unawaited
+/// `Task`. Each write re-read the same pre-edit snapshot and replaced the whole
+/// team, so only the last one survived and it carried nothing but `updatedAt`.
+/// Nothing reachable from a unit test could observe that, which is exactly how it
+/// shipped. (The binding now stages into `TeamEditCommitQueue` and reads the staged
+/// value back; the compose-once shape stays, because one Save is one commit.)
 ///
-/// `ArtifactEditorMutationsTests` pins the SEMANTICS of the replacement; this
-/// file pins the SHAPE, so the next editor sheet cannot quietly reintroduce the
-/// class. Same technique and rationale as
-/// `TeamActivityFeedContainerInvariantTests`.
+/// `ArtifactEditorMutationsTests` pins the SEMANTICS of the replacement and
+/// `ArtifactEditorSaveAndCloseTests` the awaited Save; this file pins the SHAPE,
+/// so the next editor sheet cannot quietly reintroduce the class. Same technique
+/// and rationale as `TeamActivityFeedContainerInvariantTests`.
 final class ArtifactEditorSheetInvariantTests: XCTestCase {
 
     private func source(_ relativePath: String) throws -> String {
@@ -42,11 +44,11 @@ final class ArtifactEditorSheetInvariantTests: XCTestCase {
         XCTAssertFalse(
             source.contains("team.artifacts["),
             """
-            ArtifactEditorSheet must not write through `team.artifacts[...]`. \
-            `TeamEditorView.binding(for:)` has a captured-snapshot getter and an async \
-            setter, so consecutive read-modify-write cycles each start from the pre-edit \
-            snapshot and the last write wins. Compose on a local `var newTeam = team` via \
-            `ArtifactEditorMutations` and assign once. See RoleEditorMutations' doc comment.
+            ArtifactEditorSheet must not write through `team.artifacts[...]`: a Save is ONE \
+            value committed as the sheet's session, and per-field writes through the binding \
+            are as many staged values — the race this pin was written for. Compose on a local \
+            `var newTeam = team` via `ArtifactEditorMutations` and commit once. See \
+            RoleEditorMutations' doc comment.
             """
         )
     }
@@ -57,7 +59,7 @@ final class ArtifactEditorSheetInvariantTests: XCTestCase {
         let source = try artifactEditorSheetSource()
         XCTAssertTrue(
             source.contains("var newTeam = team"),
-            "ArtifactEditorSheet.saveArtifact must compose mutations on a local copy before a single Binding write."
+            "ArtifactEditorSheet's Save must compose mutations on a local copy before a single commit."
         )
         XCTAssertTrue(
             source.contains("ArtifactEditorMutations."),
@@ -65,22 +67,50 @@ final class ArtifactEditorSheetInvariantTests: XCTestCase {
         )
     }
 
-    /// A failed save must keep the sheet open, mirroring `RoleEditorSheet`
-    /// (`if saveRole() { dismiss() }`). The old code dismissed unconditionally
-    /// AND still called `onSave()`, so an edit against a deleted artifact looked
-    /// exactly like a successful one.
-    func testSaveButton_dismissesOnlyOnSuccess() throws {
-        let source = try artifactEditorSheetSource()
-        XCTAssertTrue(
-            source.contains("if saveArtifact() { dismiss() }"),
-            "The Save button must gate dismissal on the save's result."
-        )
+    /// A failed save must keep the sheet open, mirroring `RoleEditorSheet`. The
+    /// first version dismissed unconditionally AND still called `onSave()`, so an
+    /// edit against a deleted artifact looked exactly like a successful one; the
+    /// second (`if saveArtifact() { dismiss() }`) gated on the Binding assignment,
+    /// which only started the write — a refused write closed the sheet anyway and
+    /// told `onSave` about an artifact that was never stored.
+    ///
+    /// RED: restore `Button("Save") { if saveArtifact() { dismiss() } }`, or call
+    /// `onSave` before the awaited Save answered → an assertion below fails.
+    func testSaveButton_dismissesOnlyAfterTheAwaitedSaveStoredTheArtifact() throws {
+        let source = RatchetSourceScan.strippingLineComments(try artifactEditorSheetSource())
+        let button = try XCTUnwrap(RatchetSourceScan.functionBody(after: "Button(\"Save\")", in: source))
+        XCTAssertFalse(button.contains("dismiss()"), "the Save button must not dismiss on its own")
+        XCTAssertTrue(button.contains("await save()"), "the Save button must run the awaited Save")
+        let save = try XCTUnwrap(RatchetSourceScan.functionBody(after: "private func save() async", in: source))
+        let awaited = try XCTUnwrap(save.range(of: "await Self.save("))
+        let stored = try XCTUnwrap(save.range(of: "case .saved(let artifact)"))
+        let told = try XCTUnwrap(save.range(of: "onSave(artifact)"))
+        let dismissed = try XCTUnwrap(save.range(of: "dismiss()"))
+        XCTAssertLessThan(awaited.lowerBound, stored.lowerBound)
+        XCTAssertLessThan(stored.lowerBound, told.lowerBound, "onSave must hear only of a stored artifact")
+        XCTAssertLessThan(told.lowerBound, dismissed.lowerBound)
+        XCTAssertEqual(save.components(separatedBy: "onSave(").count, 2, "onSave is called once, on `.saved`")
+    }
+
+    /// Escape reaches the sheet as its `.cancelAction` button — which must ask the shared close
+    /// policy, not dismiss.
+    ///
+    /// RED: restore `Button("Cancel") { dismiss() }` → the first assertion fails.
+    func testTheCancelButton_andWithItEscape_goThroughTheClosePolicy() throws {
+        let source = RatchetSourceScan.strippingLineComments(try artifactEditorSheetSource())
+        let cancel = try XCTUnwrap(RatchetSourceScan.functionBody(after: "Button(\"Cancel\")", in: source))
+        XCTAssertTrue(cancel.contains("requestClose()"), "Cancel must ask before closing")
+        XCTAssertFalse(cancel.contains("dismiss()"), "Cancel must not dismiss on its own")
+        let header = try XCTUnwrap(RatchetSourceScan.functionBody(after: "private var headerBar", in: source))
+        XCTAssertTrue(header.contains(".keyboardShortcut(.cancelAction)"), "Escape must stay on Cancel")
+        let requestClose = try XCTUnwrap(RatchetSourceScan.functionBody(after: "func requestClose()", in: source))
+        XCTAssertTrue(requestClose.contains("EditorSheetClosePolicy.onCancel("))
     }
 
     /// `RoleEditorDependenciesTab` discovered the created artifact by diffing
     /// `team.artifactNames` against a pre-sheet snapshot. That could never fire:
-    /// `onSave` runs in the same synchronous turn as the async Binding write, so
-    /// the diff was always empty.
+    /// `onSave` ran in the same synchronous turn as the then-async Binding write,
+    /// so the diff was always empty.
     func testRoleEditorDependenciesTab_doesNotDiffTheTeamToFindTheNewArtifact() throws {
         let source = try source(
             "NanoTeams/Views/Settings/TeamEditor/RoleEditorDependenciesTab.swift")

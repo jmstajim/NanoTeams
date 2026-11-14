@@ -64,7 +64,7 @@ nonisolated func requiredString(_ args: [String: Any], _ key: String) throws -> 
             detail: "must be a string; received \(ToolArgumentError.jsonTypeName(of: value))")
     }
     // Fallback: LLM passed a plain string instead of a JSON object
-    if let raw = args["__raw_input__"] as? String {
+    if let raw = args[ToolRuntime.rawInputKey] as? String {
         // Try to parse as JSON and extract the requested key
         if let data = raw.data(using: .utf8),
            let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -200,13 +200,13 @@ nonisolated func extractString(_ args: [String: Any], _ key: String) -> String? 
     }
     func lookup(in dict: [String: Any]) -> String? {
         if let s = dict[key] as? String { return nonEmpty(s) }
-        if let v = dict[key] { return nonEmpty(String(describing: v)) }
+        if let v = dict[key], !(v is NSNull) { return nonEmpty(String(describing: v)) }
         return nil
     }
 
     if let result = lookup(in: args) { return result }
 
-    guard let raw = args["__raw_input__"] as? String,
+    guard let raw = args[ToolRuntime.rawInputKey] as? String,
           let data = raw.data(using: .utf8),
           let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     else { return nil }
@@ -316,12 +316,26 @@ nonisolated func argumentTypeViolations(args: [String: Any], schema: JSONSchema)
                 violations.append("`\(key)` must be a boolean — send true or false; received \(received).")
             }
         case "integer":
-            if coerceInt(value) == nil {
+            guard let intValue = coerceInt(value) else {
                 violations.append("`\(key)` must be an integer; received \(received).")
+                break
+            }
+            if let min = property.minimum, let max = property.maximum, (intValue < min || intValue > max) {
+                violations.append("`\(key)` must be between \(min) and \(max); received \(intValue).")
+            } else if let min = property.minimum, intValue < min {
+                violations.append("`\(key)` must be >= \(min); received \(intValue).")
+            } else if let max = property.maximum, intValue > max {
+                violations.append("`\(key)` must be <= \(max); received \(intValue).")
             }
         case "array":
             if coerceStringArray(value) == nil, !(value is [Any]) {
-                violations.append("`\(key)` must be an array of strings; received \(received).")
+                // "of strings" only when the schema says so. Every built-in tool's array IS
+                // of strings, so the phrase was true until an external MCP server declared
+                // one of objects — and then the refusal named a shape the server does not
+                // want, which is a false diagnosis (playbook R1.8.5) in the one message the
+                // model has to act on.
+                let element = property.items?.type == "string" ? " of strings" : ""
+                violations.append("`\(key)` must be an array\(element); received \(received).")
             }
         default:
             continue
@@ -361,95 +375,18 @@ nonisolated func optionalStringArray(_ args: [String: Any], _ key: String) -> [S
     coerceStringArray(args[key])
 }
 
+/// A required string list. A present value the coercion cannot read is reported as what it
+/// is — the key and the JSON type that arrived — never as missing: telling the model about an
+/// omission that did not happen sends it to add a key it already sent. Other spellings of the
+/// argument (`files` for `git_add`'s `paths`, `members` for `participants`) arrive renamed to
+/// it, before the handler runs (`ToolHandler.undeclaredArguments`).
 nonisolated func requiredStringArray(_ args: [String: Any], _ key: String) throws -> [String] {
-    try requiredStringArray(args, aliases: [key])
-}
-
-/// Resolves a string list from the first usable alias, for tools that accept
-/// several spellings of the same argument (`paths`/`files`/`path`,
-/// `participants`/`members`).
-///
-/// Chaining `try? requiredStringArray(a)` then `try? requiredStringArray(b)`
-/// cannot tell "this key is absent, try the next alias" from "this key is
-/// present but malformed", so a malformed first alias fell through the chain and
-/// the model was told about a key it never sent — `git_add {"paths": 5}` reported
-/// the whole alias list as missing, and `request_team_meeting {"participants": 5}`
-/// reported `members`, which is not even in that tool's schema.
-///
-/// A usable value anywhere in the chain still wins: the model gave us something
-/// we can act on. Only when nothing is usable does a malformed key get named, in
-/// preference to reporting an omission that did not happen.
-///
-/// - Parameter display: what to name when every alias is absent. Defaults to the
-///   alias list, so the model sees every spelling the tool accepts.
-nonisolated func requiredStringArray(
-    _ args: [String: Any], aliases: [String], display: String? = nil
-) throws -> [String] {
-    var malformed: (key: String, value: Any)?
-    for key in aliases {
-        if let value = coerceStringArray(args[key]) {
-            return value
-        }
-        if malformed == nil, let raw = args[key], !(raw is NSNull) {
-            malformed = (key, raw)
-        }
-    }
-    if let malformed {
+    if let value = coerceStringArray(args[key]) { return value }
+    if let raw = args[key], !(raw is NSNull) {
         throw ToolArgumentError.invalidValue(
-            key: malformed.key,
-            detail: "must be a list of strings; received "
-                + ToolArgumentError.jsonTypeName(of: malformed.value))
+            key: key,
+            detail: "must be a list of strings; received " + ToolArgumentError.jsonTypeName(of: raw))
     }
-    throw ToolArgumentError.missingRequired(display ?? aliases.joined(separator: " / "))
+    throw ToolArgumentError.missingRequired(key)
 }
 
-// MARK: - Resilient Content Resolution
-
-/// Known non-content keys that should never be treated as content fallbacks.
-nonisolated private let nonContentKeys: Set<String> = [
-    "path", "encoding", "max_lines",
-    "must_exist", "mode", "file_glob", "patch",
-    "start_line", "end_line", "include_line_numbers",
-    "new_text", "anchors", "replace_range", "occurrence",
-    "match_strategy", "sort", "depth", "include_files",
-    "include_dirs", "paths", "max_results", "context_before",
-    "context_after", "max_match_lines", "query"
-]
-
-/// Common alternative argument names LLMs use instead of "content".
-nonisolated private let contentAlternativeNames: [String] = [
-    "text", "body", "file_content", "data", "value",
-    "plan", "notes", "output", "message", "code", "source"
-]
-
-/// Resolves the "content" argument from a tool's args dictionary,
-/// with fallback for common LLM argument naming mistakes.
-///
-/// Resolution order:
-/// 1. `args["content"]` (exact match)
-/// 2. Known alternative names: "text", "body", "file_content", etc.
-/// 3. If exactly one non-excluded string value remains, use it.
-nonisolated func resolveContentString(_ args: [String: Any], excludeKeys: Set<String> = []) -> String? {
-    // 1. Exact match
-    if let content = args["content"] as? String {
-        return content
-    }
-
-    // 2. Known alternative names
-    for alt in contentAlternativeNames {
-        if let content = args[alt] as? String {
-            return content
-        }
-    }
-
-    // 3. Single remaining string value fallback
-    let allExcluded = nonContentKeys.union(excludeKeys)
-    let candidateEntries = args.filter { key, value in
-        !allExcluded.contains(key) && value is String
-    }
-    if candidateEntries.count == 1, let content = candidateEntries.first?.value as? String {
-        return content
-    }
-
-    return nil
-}

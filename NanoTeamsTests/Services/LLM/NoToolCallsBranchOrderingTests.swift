@@ -1365,7 +1365,7 @@ final class NoToolCallsBranchOrderingTests: XCTestCase {
 
     // After a tool call executes between two drift turns, the second drift must
     // start fresh (counter=1 → nudge), not pre-armed (counter=2 → escalate).
-    // Production reset point: `LLMExecutionService.swift:286` immediately before
+    // Production reset point: `LLMExecutionService+ToolIteration.swift:288` (`resetCountersOnParseableToolCall`) immediately before
     // `executeToolCalls`. Without this reset, a model alternating between
     // reasoning-heavy turns and productive tool calls would prematurely escalate
     // to the supervisor on its second drift even though it had been making

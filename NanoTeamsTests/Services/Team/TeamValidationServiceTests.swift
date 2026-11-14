@@ -42,6 +42,8 @@ final class TeamValidationServiceTests: XCTestCase {
                        "the run proceeds with the skill absent from the prompt — warn, do not block")
         XCTAssertFalse(ValidationError.meetingCoordinatorHealed(from: "ghost", to: "a").isError,
                        "the team runs with the healed coordinator — warn, do not block")
+        XCTAssertFalse(ValidationError.unknownMCPServer(roleID: "a", toolID: "mcp__gone__x").isError,
+                       "the grant simply brings no tools — warn, do not block")
     }
 
     /// Off on a chat-mode team leaves its role with no reply channel — the one setting

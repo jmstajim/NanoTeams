@@ -12,9 +12,11 @@ import XCTest
 // `AccessibilityWalkCoverageTests` (via `AXNodeReading`). Neither posts a keystroke, touches
 // `NSPasteboard.general`, or mutates a target app's AX state.
 //
-// What remains genuinely unreachable is the live conformance layer — `SystemPasteboard`,
-// `SystemCopyKeystroke`, `SystemAXNodeReader` and friends — each of which is a single framework
-// round-trip with no decision in it. That is the residue the seam was drawn to isolate.
+// What remains genuinely unreachable is the live conformance layer — `SystemCopyKeystroke`,
+// `SystemAXNodeReader` and friends — each of which is a single framework round-trip with no
+// decision in it. That is the residue the seam was drawn to isolate. `SystemPasteboard` left that
+// list on 2026-11-08: it takes a pasteboard name, so `SystemPasteboardTests` below drives it on a
+// pasteboard of its own.
 //
 // What follows covers the pure decision logic those paths are built out of.
 
@@ -498,5 +500,93 @@ final class AXInspectorRoleFilterTests: XCTestCase {
         XCTAssertLessThanOrEqual(
             AccessibilityInspector.maxLabelChars * AccessibilityWalkPolicy.maxEmittedElements, 20_000,
             "worst-case label payload per capture must stay well under a context window")
+    }
+}
+
+// MARK: - SystemPasteboard, on a pasteboard of its own
+
+/// The live pasteboard adapter, on a pasteboard no other process can see
+/// (`NSPasteboard.withUniqueName()`): the general one is shared by every process on the Mac, so a
+/// test that wrote there read a parallel runner's writes as its own (CLAUDE.md #395). Until
+/// 2026-11-08 the adapter could reach only `.general` and sat in the coverage ledger as
+/// unreachable.
+final class SystemPasteboardTests: XCTestCase {
+
+    private static let customType = NSPasteboard.PasteboardType("com.nanoteams.tests.custom")
+
+    func testTheAppsAdapter_isTheClipboard() {
+        XCTAssertEqual(SystemPasteboard().name, .general)
+    }
+
+    /// `[]` is "read, and empty"; `nil` would be "could not read", which the capture flow treats
+    /// as a reason not to restore anything.
+    func testAnEmptyPasteboard_readsAsEmpty_notAsUnreadable() {
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally() }
+        let pasteboard = SystemPasteboard(name: board.name)
+        pasteboard.clear()
+        XCTAssertEqual(pasteboard.snapshotItems(), [])
+        XCTAssertNil(pasteboard.string())
+        XCTAssertEqual(pasteboard.fileURLs(), [])
+    }
+
+    func testWrite_putsBackEveryItemAndType_inOneGeneration() {
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally() }
+        let pasteboard = SystemPasteboard(name: board.name)
+        let items = [
+            PasteboardItemSnapshot(dataByType: [
+                .string: Data("hello".utf8), Self.customType: Data([0, 1, 2]),
+            ]),
+            PasteboardItemSnapshot(dataByType: [.string: Data("second".utf8)]),
+        ]
+        let before = pasteboard.changeCount
+        XCTAssertEqual(before, board.changeCount, "the adapter reads the pasteboard it names")
+        XCTAssertTrue(pasteboard.write(items))
+        XCTAssertEqual(pasteboard.changeCount, before + 1, "one generation for the whole write")
+        XCTAssertEqual(pasteboard.snapshotItems(), items)
+        XCTAssertEqual(
+            pasteboard.string(), "hello\nsecond",
+            "NSPasteboard answers a string read with every item's string, one per line")
+    }
+
+    /// A concealed item begins its generation host-only. The flag cannot be read back here — only
+    /// another host could fail to read it — so what is pinned is the one generation and the
+    /// marking itself surviving the write.
+    func testWrite_ofAConcealedItem_keepsTheMarking_inOneGeneration() {
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally() }
+        let pasteboard = SystemPasteboard(name: board.name)
+        let before = pasteboard.changeCount
+        XCTAssertTrue(pasteboard.write([PasteboardItemSnapshot(dataByType: [
+            .string: Data("ntm_a1b2c3d4_secret".utf8), PasteboardItemSnapshot.concealedType: Data(),
+        ])]))
+        XCTAssertEqual(pasteboard.changeCount, before + 1)
+        XCTAssertEqual(
+            pasteboard.snapshotItems()?.first?.dataByType[PasteboardItemSnapshot.concealedType], Data())
+    }
+
+    func testFileURLs_readsTheFiles_andNotAWebAddress() {
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally() }
+        let pasteboard = SystemPasteboard(name: board.name)
+        let file = URL(fileURLWithPath: "/tmp/a file.txt")
+        XCTAssertTrue(pasteboard.write([
+            PasteboardItemSnapshot(dataByType: [.fileURL: Data(file.absoluteString.utf8)]),
+            PasteboardItemSnapshot(dataByType: [.URL: Data("https://example.com/".utf8)]),
+        ]))
+        XCTAssertEqual(pasteboard.fileURLs(), [file])
+    }
+
+    func testClear_beginsAGeneration_andEmptiesIt() {
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally() }
+        let pasteboard = SystemPasteboard(name: board.name)
+        XCTAssertTrue(pasteboard.write([PasteboardItemSnapshot(dataByType: [.string: Data("x".utf8)])]))
+        let before = pasteboard.changeCount
+        pasteboard.clear()
+        XCTAssertEqual(pasteboard.changeCount, before + 1)
+        XCTAssertEqual(pasteboard.snapshotItems(), [])
+        XCTAssertNil(pasteboard.string())
     }
 }

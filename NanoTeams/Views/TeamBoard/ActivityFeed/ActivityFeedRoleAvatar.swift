@@ -68,7 +68,7 @@ struct ActivityFeedRoleAvatar: View {
         ForEach(roles, id: \.0) { role, def in
             VStack(spacing: 6) {
                 ActivityFeedRoleAvatar(role: role, roleDefinition: def)
-                Text(def.name).font(Typography.caption2).foregroundStyle(Colors.textSecondary)
+                Text(def.name).font(Typography.caption2).lineLimit(1).foregroundStyle(Colors.textSecondary)
             }
         }
     }
@@ -87,7 +87,7 @@ struct ActivityFeedRoleAvatar: View {
         ForEach(roles, id: \.0) { role, label in
             VStack(spacing: 6) {
                 ActivityFeedRoleAvatar(role: role, roleDefinition: nil)
-                Text(label).font(Typography.caption2).foregroundStyle(Colors.textSecondary)
+                Text(label).font(Typography.caption2).lineLimit(1).foregroundStyle(Colors.textSecondary)
             }
         }
     }

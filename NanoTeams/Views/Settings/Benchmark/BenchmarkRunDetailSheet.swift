@@ -141,6 +141,7 @@ struct BenchmarkRunDetailSheet: View {
                 ForEach(Self.sampleColumnTitles, id: \.self) { title in
                     Text(title)
                         .font(Typography.caption2)
+                        .lineLimit(1)
                         .foregroundStyle(Colors.textTertiary)
                 }
             }

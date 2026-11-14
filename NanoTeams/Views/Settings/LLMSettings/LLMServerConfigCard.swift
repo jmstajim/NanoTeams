@@ -21,7 +21,6 @@ struct LLMServerConfigCard: View {
     var body: some View {
         SettingsCard(
             header: "Server",
-            systemImage: "server.rack",
             footer: "Requires a running \(config.llmProvider.displayName) server."
         ) {
             VStack(alignment: .leading, spacing: Spacing.s) {

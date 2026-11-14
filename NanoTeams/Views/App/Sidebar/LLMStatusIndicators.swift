@@ -39,6 +39,7 @@ struct ExploratorySearchStatusIndicator: View {
                 NTMSLoader(font: Typography.term2xs, color: Colors.accent)
                 Text("INDEXING")
                     .font(Typography.term2xs)
+                    .lineLimit(1)
                     .tracking(Typography.labelTracking)
                     .foregroundStyle(Colors.accent)
             }
@@ -72,6 +73,7 @@ struct LLMStatusIndicator: View {
                     .foregroundStyle(isReachable ? Colors.success : Colors.error)
                 Text(isReachable ? "ONLINE" : "OFFLINE")
                     .font(Typography.term2xs)
+                    .lineLimit(1)
                     .tracking(Typography.labelTracking)
                     .foregroundStyle(isReachable ? Colors.success : Colors.error)
             }

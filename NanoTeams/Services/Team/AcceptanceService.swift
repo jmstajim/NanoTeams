@@ -276,7 +276,11 @@ nonisolated extension AcceptanceService {
 
     // MARK: - Validate Acceptance Flow
 
-    /// Validates that acceptance can proceed for a role.
+    /// runtime-prompt
+    ///
+    /// Validates that acceptance can proceed for a role. The message is model-facing as well:
+    /// it is the fact the Autovisor's refused `manage_role accept` reads
+    /// (`AutovisorReply.acceptRejected`).
     /// - Parameters:
     ///   - roleID: The role to accept
     ///   - roleStatuses: Current status of all roles

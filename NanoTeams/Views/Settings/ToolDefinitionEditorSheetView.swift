@@ -262,7 +262,7 @@ struct ToolDetailEditor: View {
     var body: some View {
         ScrollView {
             VStack(spacing: Spacing.xl) {
-                SettingsCard(header: "Identity", systemImage: "tag") {
+                SettingsCard(header: "Identity") {
                     if isBuiltIn {
                         HStack {
                             Text("Name").font(Typography.subheadline)
@@ -278,7 +278,7 @@ struct ToolDetailEditor: View {
                     }
                 }
 
-                SettingsCard(header: "Description", systemImage: "text.alignleft") {
+                SettingsCard(header: "Description") {
                     if isBuiltIn {
                         Text(promptDraft)
                             .font(.system(.body, design: .monospaced))
@@ -292,7 +292,7 @@ struct ToolDetailEditor: View {
                     }
                 }
 
-                SettingsCard(header: "Parameters (JSON Schema)", systemImage: "curlybraces") {
+                SettingsCard(header: "Parameters (JSON Schema)") {
                     VStack(alignment: .leading, spacing: Spacing.s) {
                         if isBuiltIn {
                             Text(parametersDraft)

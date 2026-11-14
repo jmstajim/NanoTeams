@@ -208,6 +208,14 @@ final class QuickCaptureFormState {
         /// must NOT produce a second Supervisor bubble: the user typed once and would otherwise
         /// watch their own message appear twice.
         let isRedelivery: Bool
+        /// Optional external-agent display label when `isFromAutomatedSupervisor` was queued
+        /// via hosted MCP `message_task` (`nil` for human or built-in Autovisor manager).
+        let authorLabel: String?
+        /// Who queued it — the Autovisor's `message_task` names itself; `nil` is the person, on
+        /// every human enqueue path. A delivery's Resume is attributed to it, and the backstop
+        /// does not lift a pause pressed in the app for a message only automated Supervisors
+        /// wrote (`SupervisorMessageQueueService.resumer(of:)`).
+        let actor: ControlActor?
 
         /// Fails when the payload is entirely empty. Trims `text` for the emptiness
         /// check but preserves the original (including leading/trailing whitespace)
@@ -218,6 +226,8 @@ final class QuickCaptureFormState {
             clippedTexts: [String],
             targetRoleID: String? = nil,
             isFromAutomatedSupervisor: Bool = false,
+            authorLabel: String? = nil,
+            actor: ControlActor? = nil,
             kind: Kind = .supervisorSpeech,
             id: UUID = UUID(),
             createdAt: Date = MonotonicClock.shared.now(),
@@ -233,6 +243,8 @@ final class QuickCaptureFormState {
             self.clippedTexts = clippedTexts
             self.targetRoleID = targetRoleID
             self.isFromAutomatedSupervisor = isFromAutomatedSupervisor
+            self.authorLabel = authorLabel
+            self.actor = actor
             self.kind = kind
             self.createdAt = createdAt
             self.isRedelivery = isRedelivery

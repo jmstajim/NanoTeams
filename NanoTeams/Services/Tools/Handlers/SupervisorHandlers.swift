@@ -18,6 +18,13 @@ nonisolated struct AskSupervisorTool: ToolHandler {
         )
     )
     static let category: ToolCategory = .supervisor
+    /// `headline` belongs to the questionnaire, and a plain question that carries one has still
+    /// asked a plain question (`SupervisorAskRouting`). `required` was an emission pinned as
+    /// harmless long before this table existed.
+    static let undeclaredArguments: [String: UndeclaredArgument] = [
+        "headline": .ignored(reason: "a plain question has no headline"),
+        "required": .ignored(reason: "the step always waits for the answer"),
+    ]
     static let excludedInMeetings = true
 
     
@@ -135,6 +142,9 @@ nonisolated struct AskSupervisorFormTool: ToolHandler {
         )
     )
     static let category: ToolCategory = .supervisor
+    /// A model that writes the form's content straight into the arguments has still sent
+    /// the questionnaire — the handler lifts it (`SupervisorFormPayload`).
+    static let undeclaredArguments: [String: UndeclaredArgument] = ["questions": .readByHandler]
     static let excludedInMeetings = true
 
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self {

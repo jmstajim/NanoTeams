@@ -31,7 +31,7 @@ nonisolated enum BashExplainService {
         var content = ""
         var thinking = ""
         do {
-            // JudgeConfig.applying, NOT configForJudge: this call wants only the
+            // JudgeConfig.applying, NOT JudgeConfig.forVerdict: this call wants only the
             // judge's model targeting (URL/model override). The verdict
             // path's temperature-0 pin is for strict-JSON extraction — this is
             // generative prose, so the operator's temperature stays in effect.

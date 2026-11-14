@@ -213,6 +213,18 @@ final class SecureTokenStorageCoverageTests: XCTestCase {
         }
     }
 
+    /// The listing against the real Security framework, the same way: a service nothing was
+    /// ever stored under answers `errSecItemNotFound`, which is an empty list, not a failure.
+    func testKeychain_accountNames_emptyService_returnsEmptyWithoutThrowing() throws {
+        let sut = KeychainSecureTokenStorage(service: testService("list"))
+        do {
+            let names = try sut.accountNames(withPrefix: "")
+            XCTAssertEqual(names, [])
+        } catch KeychainError.unhandled(let status) where platformIsKeychainUnavailable(status) {
+            throw XCTSkip("Keychain listing refused on this runner (status \(status)).")
+        }
+    }
+
     /// The non-throwing shim over the same absent-entry read.
     func testKeychain_tokenShim_absentEntry_returnsNil() {
         let sut = KeychainSecureTokenStorage(service: testService("read-shim"))
@@ -360,7 +372,57 @@ final class SecureTokenStorageCoverageTests: XCTestCase {
         XCTAssertEqual(sut.token(forKey: k2), "token-loopback")
     }
 
+    /// Written, listed under its prefix and nothing else, cleared — against the real Keychain.
+    func testKeychain_accountNames_listsWhatIsStoredUnderThePrefix() throws {
+        try SecureTokenStorageTests.skipUnlessRealKeychainOptedIn()
+        let sut = KeychainSecureTokenStorage(service: testService("list-written"))
+        let keys = ["server-a/bearer", "server-a/header/X-Key", "server-b/bearer"]
+        defer { for key in keys { try? sut.setToken(nil, forKey: key) } }
+        do {
+            try sut.setToken("a", forKey: keys[0])
+        } catch KeychainError.unhandled(let status)
+            where status == errSecMissingEntitlement
+            || status == errSecInteractionNotAllowed
+            || status == errSecAuthFailed
+        {
+            throw XCTSkip("Keychain unavailable on this runner (status \(status)).")
+        }
+        try sut.setToken("h", forKey: keys[1])
+        try sut.setToken("b", forKey: keys[2])
+
+        XCTAssertEqual(try sut.accountNames(withPrefix: "server-a/"), ["server-a/bearer", "server-a/header/X-Key"])
+        try sut.setToken(nil, forKey: keys[0])
+        XCTAssertEqual(try sut.accountNames(withPrefix: "server-a/"), ["server-a/header/X-Key"])
+    }
+
     // MARK: - InMemorySecureTokenStorage test hooks
+
+    /// The in-memory listing: names under the prefix only, sorted, a corrupt entry among them —
+    /// the names are listed without reading a value — and a locked store refusing like a read.
+    func testInMemory_accountNames_listsNamesUnderThePrefixOnly() throws {
+        let sut = InMemorySecureTokenStorage(initial: ["s1/b": "1", "s1/a": "2", "s2/a": "3", "s1": "4"])
+        sut.storeCorruptEntry(forKey: "s1/c")
+
+        XCTAssertEqual(try sut.accountNames(withPrefix: "s1/"), ["s1/a", "s1/b", "s1/c"])
+        XCTAssertEqual(try sut.accountNames(withPrefix: "none/"), [])
+        sut.readError = .unhandled(-25308)
+        XCTAssertThrowsError(try sut.accountNames(withPrefix: "s1/"))
+    }
+
+    /// A corrupt entry reads as the Keychain's own `.invalidUTF8` until a write or a delete
+    /// replaces it.
+    func testInMemory_aCorruptEntryThrowsUntilReplaced() throws {
+        let sut = InMemorySecureTokenStorage()
+        sut.storeCorruptEntry(forKey: "k")
+        XCTAssertThrowsError(try sut.loadToken(forKey: "k")) { XCTAssertEqual($0 as? KeychainError, .invalidUTF8) }
+
+        try sut.setToken("fresh", forKey: "k")
+        XCTAssertEqual(try sut.loadToken(forKey: "k"), "fresh")
+
+        sut.storeCorruptEntry(forKey: "k")
+        try sut.setToken(nil, forKey: "k")
+        XCTAssertNil(try sut.loadToken(forKey: "k"))
+    }
 
     /// The `readError` GETTER takes the lock in its own right; `loadToken`
     /// deliberately reads `_readError` directly to avoid recursing on the

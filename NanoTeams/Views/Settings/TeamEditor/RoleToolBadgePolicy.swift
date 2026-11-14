@@ -29,8 +29,66 @@ nonisolated enum ToolAvailabilityRequirement: Hashable, Sendable, CaseIterable {
     /// A tool whose every call would wait for a human's approval, on a team where no human
     /// is there to give it: Supervisor mode Autonomous (or the Autovisor supervising this
     /// folder) while the family's mode is Manual — or Semi-automatic, for the computer-use
-    /// tools that are never read-only (`ApprovalGatedAvailability`).
+    /// tools that are never read-only (`ApprovalGatedAvailability`) — or an MCP tool its
+    /// server's mode would hold (`MCPGrantState.needsApprover`).
     case humanApprover
+    /// An `mcp__…` grant whose server is configured and switched off app-wide. Reversible, and
+    /// not a fault in the role.
+    case mcpServerDisabled
+    /// An `mcp__…` grant whose server is switched on and blocked by the open work folder's rule
+    /// (`MCPGrantState.serverOffInThisFolder`) — the folder's switch, not the server's.
+    case mcpServerOffInThisFolder
+    /// An `mcp__…` grant whose server nothing runs because no work folder is served — one being
+    /// switched, one that failed to open (`MCPGrantState.serverNotRunning`). Nothing to switch:
+    /// it starts when a folder opens. Until 2026-10-28 it read `mcpServerDisabled`, "switched
+    /// off — turn it on", of a server whose power switch was on.
+    case mcpServerNotRunning
+    /// An `mcp__…` grant whose server is not connected and lacks a credential its configuration
+    /// declares (`MCPGrantState.serverNeedsToken`): the repair is the token.
+    case mcpServerNeedsToken
+    /// An `mcp__…` grant whose server is switched on and not answering: connecting, refused,
+    /// or an address this client will not talk to. All of those read the same from here —
+    /// come back when it connects — and the server list is where the reason is.
+    case mcpServerDisconnected
+    /// An `mcp__…` grant naming a tool the server publishes and nobody has approved, or
+    /// approved once and the server has since rewritten, and whose text nobody refused. Withheld
+    /// until someone reads it. Also a whole-server grant of a server that publishes tools, has
+    /// none approved, and has one waiting to be read.
+    case mcpToolUnreviewed
+    /// An `mcp__…` grant naming a tool whose text the person refused
+    /// (`MCPGrantState.toolRefused`). Decided, not waiting: withheld until they review it again
+    /// and approve it. Until 2026-10-28 it read "Waiting for review" beside a Settings list that
+    /// counted nothing to review.
+    case mcpToolRefused
+    /// A whole-server grant of a server every text of which the person refused
+    /// (`MCPGrantState.everyToolRefused`) — the whole-server form of `mcpToolRefused`.
+    case mcpServerToolsRefused
+    /// An `mcp__…` grant whose server is connected and re-reading its tool list: a listing asked
+    /// after its `list_changed`, or once its stated catalogue lifetime ran out, failed. A
+    /// whole-server grant, or a tool the last committed listing had reviewed — one it did not
+    /// publish or had not reviewed is filed as that. Nothing to repair — the read is retried
+    /// on its own — but nothing ships until it succeeds, and the Settings row says so.
+    case mcpToolsBeingReread
+    /// An `mcp__…` grant of a tool its connected server does not publish
+    /// (`MCPGrantState.toolMissing`) — renamed or withdrawn. The grant sits under that server's
+    /// own header in the picker (F45), so its words name the server's answer, not a missing
+    /// server; the repair is the role's, here. Until 2026-10-28 it shared `mcpToolLive`'s "No
+    /// configured MCP server offers this … or add the server", under the server's own header.
+    case mcpToolNotOffered
+    /// An `mcp__…` grant of a tool its server publishes and the APP cannot offer — its listing
+    /// collided, or the app could not read the entry (`MCPGrantState.toolNotOfferable`). Not the
+    /// server's withdrawal: the grant works again once the server fixes what the Settings page
+    /// names, so the words send the person there rather than telling them to uncheck it. Until
+    /// 2026-10-28 it read `mcpToolNotOffered`'s "does not offer this tool — uncheck it here".
+    case mcpToolNotOfferable
+    /// A whole-server grant of a server that published tools the app can offer none of
+    /// (`MCPGrantState.noToolOfferable`) — the whole-server form of `mcpToolNotOfferable`.
+    case mcpServerToolsNotOfferable
+    /// The residual: an `mcp__…` grant no configured server can name at all — the server was
+    /// deleted or its slug renamed (`MCPGrantState.unknownServer`), or a per-tool grant the
+    /// catalogue reads live and the run still did not ship. Nothing but editing the role will
+    /// resolve it.
+    case mcpToolLive
 
     /// Wording shown when the precondition is NOT met. Also used as the tooltip
     /// group header in the role-list badge.
@@ -48,6 +106,35 @@ nonisolated enum ToolAvailabilityRequirement: Hashable, Sendable, CaseIterable {
         case .humanApprover:
             return "Needs a human to approve — Supervisor mode is Autonomous "
                 + "(or the Autovisor supervises this folder) while the tool's mode asks a human"
+        case .mcpServerDisabled:
+            return "Its MCP server is switched off — turn it on in Settings → MCP Servers"
+        case .mcpServerOffInThisFolder:
+            return "Its MCP server is off in this work folder — allow it in Settings → MCP Servers"
+        case .mcpServerNotRunning:
+            return "Its MCP server is not running — it starts when a work folder opens"
+        case .mcpServerNeedsToken:
+            return "Its MCP server needs a token — add it in Settings → MCP Servers"
+        case .mcpServerDisconnected:
+            return "Its MCP server is not connected — check it in Settings → MCP Servers"
+        case .mcpToolUnreviewed:
+            return "Waiting for review — approve it in Settings → MCP Servers"
+        case .mcpToolRefused:
+            return "You rejected this tool's text — review it again in Settings → MCP Servers to grant it"
+        case .mcpServerToolsRefused:
+            return "You rejected the text of every tool this server publishes — review them again "
+                + "in Settings → MCP Servers to grant them"
+        case .mcpToolsBeingReread:
+            return "Its MCP server's tool list is being re-read — withheld until the read succeeds "
+                + "(see Settings → MCP Servers)"
+        case .mcpToolNotOffered:
+            return "Its MCP server does not offer this tool — uncheck it here"
+        case .mcpToolNotOfferable:
+            return "The app cannot offer what its MCP server publishes as this tool — see Settings → MCP Servers"
+        case .mcpServerToolsNotOfferable:
+            return "The app cannot offer any tool its MCP server publishes — see Settings → MCP Servers"
+        case .mcpToolLive:
+            return "No configured MCP server offers this — uncheck it here, "
+                + "or add the server in Settings → MCP Servers"
         }
     }
 
@@ -59,13 +146,38 @@ nonisolated enum ToolAvailabilityRequirement: Hashable, Sendable, CaseIterable {
         case .computerUse: return "Computer Use enabled"
         case .bashEnabled: return "Bash enabled"
         case .gitRepository, .workFolder, .xcodeScheme, .meetingsEnabled, .teammatePartner,
-             .askSupervisorEnabled, .humanApprover: return nil
+             .askSupervisorEnabled, .humanApprover, .mcpServerDisabled, .mcpServerOffInThisFolder,
+             .mcpServerNotRunning, .mcpServerNeedsToken, .mcpServerDisconnected,
+             .mcpToolUnreviewed, .mcpToolRefused, .mcpServerToolsRefused, .mcpToolsBeingReread,
+             .mcpToolNotOffered, .mcpToolNotOfferable, .mcpServerToolsNotOfferable, .mcpToolLive: return nil
         }
     }
 
     /// For surfaces that know whether the precondition currently holds.
     func hint(isMet: Bool) -> String {
         isMet ? (metHint ?? unmetHint) : unmetHint
+    }
+
+    /// The badge's reading of where one grant stands. The Domain type answers what is true;
+    /// this says which group the tooltip files it under, and `nil` means nothing withholds it.
+    static func forMCPGrant(_ state: MCPGrantState) -> ToolAvailabilityRequirement? {
+        switch state {
+        case .live: return nil
+        case .serverDisabled: return .mcpServerDisabled
+        case .serverOffInThisFolder: return .mcpServerOffInThisFolder
+        case .serverNotRunning: return .mcpServerNotRunning
+        case .serverNeedsToken: return .mcpServerNeedsToken
+        case .serverUnreachable: return .mcpServerDisconnected
+        case .catalogueBeingReread: return .mcpToolsBeingReread
+        case .toolUnreviewed: return .mcpToolUnreviewed
+        case .toolRefused: return .mcpToolRefused
+        case .everyToolRefused: return .mcpServerToolsRefused
+        case .toolMissing: return .mcpToolNotOffered
+        case .toolNotOfferable: return .mcpToolNotOfferable
+        case .noToolOfferable: return .mcpServerToolsNotOfferable
+        case .unknownServer: return .mcpToolLive
+        case .needsApprover: return .humanApprover
+        }
     }
 
     /// The precondition governing `toolName`, or `nil` when the tool has none.
@@ -88,8 +200,17 @@ nonisolated enum ToolAvailabilityRequirement: Hashable, Sendable, CaseIterable {
         approval: ToolApprovalAvailability,
         meetings: MeetingAvailability = .available,
         hasTeammatePartner: Bool = true,
-        askSupervisorEnabled: Bool = true
+        askSupervisorEnabled: Bool = true,
+        mcpGrants: MCPGrantCatalogue = .empty
     ) -> ToolAvailabilityRequirement? {
+        // FIRST, because every arm below asks a registry set and no set holds an `mcp__…`
+        // name — a grant falling through would end up reported as "not installed", which
+        // sends the user looking for a handler that was never meant to exist. With no
+        // catalogue every grant answers `.unknownServer`, which is the honest reading: a
+        // surface that was given nothing knows of no server that could serve it.
+        if MCPToolNaming.isMCPName(toolName) {
+            return forMCPGrant(mcpGrants.state(ofGrant: toolName, humanPresent: approval.humanPresent))
+        }
         if toolName == ToolNames.requestTeamMeeting || toolName == ToolNames.requestChanges {
             switch meetings {
             case .switchedOff: return .meetingsEnabled
@@ -236,6 +357,7 @@ nonisolated enum RoleToolBadgePolicy {
         isVisionConfigured: Bool,
         approval: ToolApprovalAvailability,
         autovisorTeamPolicy: AutovisorTeamPolicy,
+        mcpGrants: MCPGrantCatalogue = .empty,
         fileManager: FileManager = .default
     ) -> Model {
         let shipped = EffectiveToolset.resolve(
@@ -247,6 +369,11 @@ nonisolated enum RoleToolBadgePolicy {
             isVisionConfigured: isVisionConfigured,
             approval: approval,
             autovisorTeamPolicy: autovisorTeamPolicy,
+            // Split on the presence a RUN of this team would have, as the runtime splits it
+            // (`resolvedMCPTools(humanPresent:)`). The person at the editor is not the run's
+            // approver: asked with `true` "by construction", every Manual server's tool counted
+            // as shipped on an Autonomous team while the runtime withheld it (F46).
+            mcpTools: mcpGrants.resolvedTools(humanPresent: approval.humanPresent),
             fileManager: fileManager
         )
         let effectiveNames = Set(shipped.map(\.name))
@@ -264,7 +391,20 @@ nonisolated enum RoleToolBadgePolicy {
         var unavailable: [ToolAvailabilityRequirement: [String]] = [:]
 
         for name in configured.subtracting(effectiveNames) {
-            if !installed.contains(name) {
+            if MCPToolNaming.isMCPName(name) {
+                let state = mcpGrants.state(ofGrant: name, humanPresent: approval.humanPresent)
+                // A whole-server grant never ships under its own name — its tools do, and they
+                // are in `effectiveNames`. Live, it brings whatever of the server this run can
+                // take (nothing, from a server that publishes nothing), and nothing is withheld;
+                // until F46 it was filed under "No configured MCP server offers this — uncheck
+                // it here". One whose server has nothing approved is not live: it waits for review,
+                // or — every text of it refused — says the person rejected them.
+                if MCPToolNaming.isServerGrant(name), state == .live { continue }
+                // A per-tool grant that is live and still not shipped fell to something the
+                // catalogue does not model; the residual group is where it belongs.
+                let group = ToolAvailabilityRequirement.forMCPGrant(state) ?? .mcpToolLive
+                unavailable[group, default: []].append(name)
+            } else if !installed.contains(name) {
                 notInstalled.append(name)
             } else if blocked.contains(name) {
                 policyBlocked.append(name)
@@ -297,7 +437,9 @@ nonisolated enum RoleToolBadgePolicy {
 
         return Model(
             effective: effectiveNames.sorted(),
-            autoInjected: effectiveNames.subtracting(configured).sorted(),
+            // The runtime never injects an MCP tool: one in the effective set that the role does
+            // not name is one its whole-server grant brought, which is the role's own choice.
+            autoInjected: effectiveNames.subtracting(configured).filter { !MCPToolNaming.isMCPName($0) }.sorted(),
             notInstalled: notInstalled.sorted(),
             policyBlocked: policyBlocked.sorted(),
             unavailableHere: unavailable.mapValues { $0.sorted() },

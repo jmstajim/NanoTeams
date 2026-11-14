@@ -452,6 +452,29 @@ final class IterationTerminalArmsCoverageTests: XCTestCase {
                       "The feed's 'Auto-answered' badge reads this flag — a human never replied")
         XCTAssertFalse(step.needsSupervisorInput,
                        "The step must NOT be parked: there is no human in autonomous mode")
+        // DEBTS D-M15: the answer's own turn records who wrote it. The step's flag is
+        // overwritten by the step's next answer; the card for THIS one reads the turn.
+        let answerTurn = try XCTUnwrap(step.llmConversation.last { $0.sourceContext == .supervisorAnswer })
+        XCTAssertEqual(answerTurn.isFromAutomatedSupervisor, true,
+                       "the team's auto-answer is an automated author, recorded on its turn")
+    }
+
+    /// `forward_to_team`'s message reaches the child as its Supervisor's turn, but the PARENT ROLE
+    /// wrote it. RED before 2026-11-07 (DEBTS D-M15): the turn recorded nothing and the child's
+    /// feed showed the parent model's words as the person's.
+    func testAForwardedMessage_isRecordedAsTheParentRolesAutomatedTurn() async throws {
+        _ = seedTask()
+
+        let result = await service.injectForwardedMessageIntoChild(
+            childTaskID: ufcTaskID, message: "Use the cached index.", delegate: delegate)
+
+        guard case .injected(let stepID) = result else { return XCTFail("expected an injection, got \(result)") }
+        XCTAssertEqual(stepID, ufcStepID)
+        let forwarded = try XCTUnwrap(delegate.taskToMutate?.runs[0].steps[0].llmConversation.last)
+        XCTAssertEqual(forwarded.sourceContext, .supervisorMessage)
+        XCTAssertEqual(forwarded.isFromAutomatedSupervisor, true)
+        XCTAssertNil(forwarded.authorLabel, "no external agent signed it")
+        XCTAssertEqual(forwarded.sourceContextDisplayLabel, LLMMessage.automatedSupervisorLabel)
     }
 
     /// The only end-to-end path a QUESTIONNAIRE has without a human. `HeadlessRunner` prints
@@ -572,8 +595,8 @@ final class IterationTerminalArmsCoverageTests: XCTestCase {
 // =============================================================================
 
 /// `reportPrefixCacheMiss` and `requeueSupervisorMessageAtHead` are protocol
-/// REQUIREMENTS (`LLMExecutionDelegate.swift:301` and `:329`) that additionally
-/// carry no-op DEFAULTS in `extension LLMStateDelegate` (`:335`, `:340`). That
+/// REQUIREMENTS (`LLMExecutionDelegate.swift:387` and `:415`) that additionally
+/// carry no-op DEFAULTS in `extension LLMStateDelegate` (`:421`, `:426`). That
 /// default is the only reason the ~44 existing doubles did not have to grow two
 /// methods each when the prompt-prefix ledger and the planning-phase re-queue
 /// landed. The contract is therefore precisely "a conformer that implements

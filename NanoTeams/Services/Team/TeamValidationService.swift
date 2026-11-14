@@ -65,12 +65,22 @@ nonisolated enum TeamValidationService {
         /// only the questionnaire reads as "this role cannot ask a plain question".
         case supervisorFormWithoutPlainAsk(roleID: String)
 
+        /// A role's `toolIDs` names an MCP server that is not configured any more — the
+        /// server was removed in Settings, or its slug was renamed, and the grant is a name
+        /// nothing will ever resolve.
+        ///
+        /// A warning: the run is fine, the grant simply brings no tools. Reported at the
+        /// SERVER level only, because the per-tool half is not decidable from a catalogue —
+        /// a tool absent from a disconnected server's listing looks exactly like a server
+        /// that was quit, and the role editor's badge already reports per-tool liveness.
+        case unknownMCPServer(roleID: String, toolID: String)
+
         var isError: Bool {
             switch self {
             case .nonTopLevelDelegator, .delegationToSelf, .askSupervisorOffInChatMode:
                 return true
             case .unknownDelegationTeam, .noDelegationTargets, .unknownAttachedSkill,
-                 .meetingCoordinatorHealed, .supervisorFormWithoutPlainAsk:
+                 .meetingCoordinatorHealed, .supervisorFormWithoutPlainAsk, .unknownMCPServer:
                 return false  // Warning, not error
             }
         }
@@ -101,6 +111,8 @@ nonisolated enum TeamValidationService {
                 return "Ask Supervisor is Off, but this chat-mode team replies through ask_supervisor — its role would have no way to answer. Switch the mode to Manual or Autonomous."
             case .supervisorFormWithoutPlainAsk(let roleID):
                 return "\(roleName(roleID)) can send a questionnaire but has no plain \(ToolNames.askSupervisor) — the run adds one beside it, because every escalation reminder names that tool. Check it in the role’s Tools tab to make the toolset say what actually runs."
+            case .unknownMCPServer(let roleID, let toolID):
+                return "\(roleName(roleID)) is granted “\(toolID)”, but no MCP server of that name is configured. Uncheck it in the role’s Tools tab, or add the server back in Settings → MCP Servers."
             }
         }
     }
@@ -178,6 +190,44 @@ nonisolated enum TeamValidationService {
             guard held.contains(ToolNames.askSupervisorForm),
                   !held.contains(ToolNames.askSupervisor) else { return nil }
             return .supervisorFormWithoutPlainAsk(roleID: role.id)
+        }
+    }
+
+    // MARK: - MCP Grants
+
+    /// Flags every MCP grant whose SERVER the catalogue cannot name.
+    ///
+    /// `knownMCPToolIDs` is every id the MCP catalogue can currently resolve: each
+    /// configured server's whole-server grant (`mcp__<slug>`) plus the model-facing name of
+    /// every tool the app has approved from it. It is passed in rather than read here so this
+    /// stays pure — the catalogue is manager state that moves with connections.
+    ///
+    /// An EMPTY set means "no server is configured, or the manager is not built yet", which
+    /// is not "every grant is dangling"; the same distinction `validateAttachedSkills` draws,
+    /// and for the same reason.
+    ///
+    /// **Server level only, deliberately.** The set's SLUGS are the question; a named tool
+    /// inside a known slug is accepted even when the set does not list it. That tool may be
+    /// missing because the server is switched off, unreachable, or has tools awaiting review
+    /// — none of which is a configuration fault, and all of which look identical from here.
+    /// The role editor's badge reports per-tool liveness (`MCPGrantState`, filed under its
+    /// requirement by `ToolAvailabilityRequirement.forMCPGrant`). A dangling SLUG is the one
+    /// durable fault nothing else in the app names.
+    static func validateMCPTools(
+        team: Team,
+        knownMCPToolIDs: Set<String>
+    ) -> [ValidationError] {
+        guard !knownMCPToolIDs.isEmpty else { return [] }
+        let knownSlugs = Set(knownMCPToolIDs.compactMap(MCPToolNaming.slug(ofName:)))
+        guard !knownSlugs.isEmpty else { return [] }
+        return team.roles.flatMap { role in
+            role.toolIDs.compactMap { toolID -> ValidationError? in
+                guard MCPToolNaming.isMCPName(toolID) else { return nil }
+                if let slug = MCPToolNaming.slug(ofName: toolID), knownSlugs.contains(slug) {
+                    return nil
+                }
+                return .unknownMCPServer(roleID: role.id, toolID: toolID)
+            }
         }
     }
 

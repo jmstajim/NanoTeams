@@ -18,6 +18,10 @@ struct RoleRowBadgeInputs: Equatable {
     /// the runtime's, which `TeamEditorView` computes with `ToolApprovalAvailability.forTeam`.
     var approval: ToolApprovalAvailability = .available
     var autovisorTeamPolicy: AutovisorTeamPolicy = .unrestricted
+    /// Every configured MCP server and everything it publishes. `Hashable`, which is what
+    /// lets it ride in this `Equatable` struct and serve as the badge memo's key — the
+    /// snapshot could do neither, because it carries the invoker.
+    var mcpGrants: MCPGrantCatalogue = .empty
 }
 
 /// Precomputed badge models for one role. Handed to the row as a plain value so
@@ -33,14 +37,16 @@ struct RoleRowBadges: Equatable {
 /// List of roles in a team with search, add/edit/delete, and double-click to edit.
 struct RoleListView: View {
     @Binding var team: Team
+    /// What a role sheet opened from here saves into — handed to it by the click that opens it.
+    let session: TeamEditCommitQueue.Session
     let onSave: () -> Void
     /// Defaults render the list with no badges — keeps the `#Preview` and any
     /// future host compiling without threading orchestrator state.
     var badgeInputs: RoleRowBadgeInputs = .init()
 
     @State var selectedRoleID: String? = nil
-    @State private var showingAddRole = false
-    @State private var showingEditRole: TeamRoleDefinition? = nil
+    /// The role sheet a click asked for, with the session that click captured.
+    @State private var roleSheet: TeamEditSheetRequest<TeamRoleDefinition>? = nil
     @State var showingDeleteConfirmation: TeamRoleDefinition? = nil
     @State var importError: ImportExportError? = nil
     @State private var searchText: String = ""
@@ -76,7 +82,7 @@ struct RoleListView: View {
                 if !isReadOnly {
                     // Add role button
                     Button {
-                        showingAddRole = true
+                        openRoleEditor(.create)
                     } label: {
                         Image(systemName: "plus")
                             .font(Typography.termBase.weight(.bold))
@@ -92,7 +98,7 @@ struct RoleListView: View {
                     // More actions menu
                     Menu {
                         Button {
-                            showingAddRole = true
+                            openRoleEditor(.create)
                         } label: {
                             Label("New Role", systemImage: "plus")
                         }
@@ -127,17 +133,11 @@ struct RoleListView: View {
                 roleList
             }
         }
-        .sheet(isPresented: $showingAddRole) {
+        .sheet(item: $roleSheet) { request in
             RoleEditorSheet(
                 team: $team,
-                mode: .create,
-                onSave: handleSaveRole
-            )
-        }
-        .sheet(item: $showingEditRole) { role in
-            RoleEditorSheet(
-                team: $team,
-                mode: .edit(role),
+                session: request.session,
+                mode: request.mode,
                 onSave: handleSaveRole
             )
         }
@@ -214,7 +214,8 @@ struct RoleListView: View {
                     selectedScheme: badgeInputs.selectedScheme,
                     isVisionConfigured: badgeInputs.isVisionConfigured,
                     approval: badgeInputs.approval,
-                    autovisorTeamPolicy: badgeInputs.autovisorTeamPolicy
+                    autovisorTeamPolicy: badgeInputs.autovisorTeamPolicy,
+                    mcpGrants: badgeInputs.mcpGrants
                 ),
                 skills: RoleEditorSkillsPolicy.badge(
                     attachedIDs: role.attachedSkillIDs,
@@ -225,6 +226,12 @@ struct RoleListView: View {
         return result
     }
 
+    /// Opens the role sheet as the click that called this saw the team: its session is this
+    /// render's, never the one presenting the sheet (`TeamEditSheetRequest`).
+    private func openRoleEditor(_ mode: EditorMode<TeamRoleDefinition>) {
+        roleSheet = TeamEditSheetRequest(mode: mode, session: session)
+    }
+
     // MARK: - Empty State
 
     private var emptyState: some View {
@@ -233,7 +240,7 @@ struct RoleListView: View {
             icon: "person.text.rectangle",
             description: "Add roles to define the team's workflow",
             actionTitle: "Add First Role",
-            onAction: { showingAddRole = true }
+            onAction: { openRoleEditor(.create) }
         )
     }
 
@@ -295,17 +302,17 @@ struct RoleListView: View {
             showAddToGraph: showAddToGraph,
             isReadOnly: isReadOnly,
             onSelect: { selectedRoleID = role.id },
-            onEdit: { showingEditRole = role },
+            onEdit: { openRoleEditor(.edit(role)) },
             onAddToGraph: { handleAddToGraph(role) }
         )
         .accessibilityAction(named: "Edit") {
-            showingEditRole = role
+            openRoleEditor(.edit(role))
         }
         .contextMenu {
             // Editing is always allowed (read-only Autovisor opens a restricted editor —
             // Prompt + Tools only). Structural actions (Duplicate / Delete) are hidden.
             Button {
-                showingEditRole = role
+                openRoleEditor(.edit(role))
             } label: {
                 Label("Edit...", systemImage: "pencil")
             }
@@ -505,8 +512,13 @@ private struct RoleListItemView: View {
 }
 
 #Preview {
+    // A store only for the folder lifecycle a session needs: the list itself reads none.
+    @Previewable @State var store = PreviewStore.make()
+    let team = Team.default
+    let lifecycle = store.currentFolderLifecycle
     RoleListView(
-        team: .constant(.default),
+        team: .constant(team),
+        session: TeamEditCommitQueue.Session(team: team, lifecycle: lifecycle),
         onSave: {}
     )
     .frame(width: 600, height: 800)

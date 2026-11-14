@@ -55,7 +55,8 @@ enum PreviewStore {
     /// Callers that need seeded state (`snapshot`, `workFolderURL`, an active task) assign it
     /// afterwards, exactly as the hand-rolled helpers did before this factory existed.
     static func make() -> NTMSOrchestrator {
-        let repository = NTMSRepository()
+        let locking = WorkFolderInstanceLocking.isolatingDefaultStorage()
+        let repository = NTMSRepository(instanceLocking: locking)
         return NTMSOrchestrator(
             repository: repository,
             // TWO seams on one line, and naming only the first is how the second stayed open
@@ -76,7 +77,25 @@ enum PreviewStore {
             // NOT `.shared`: a preview must not mutate the process-global ensurer that the
             // running app and any hand-loaded model share.
             chatModelEnsurer: ChatModelEnsurer(),
-            downloadedModelStore: InertDownloadedModelStore()
+            downloadedModelStore: InertDownloadedModelStore(),
+            // Spelled even though `.inert` is the default: a preview that opened a work folder
+            // would otherwise read the developer's own configured servers off disk, and the
+            // canvas is not a place to discover you have connected a brokerage account.
+            mcpEnvironment: .inert,
+            mcpCatalogueStore: MCPServerCatalogueStore(
+                directory: FileManager.default.temporaryDirectory
+                    .appendingPathComponent("nanoteams-preview-mcp", isDirectory: true)),
+            hostedMCPEnvironment: .inert,
+            hostedMCPAgentStore: HostedMCPAgentStore(
+                directoryURL: FileManager.default.temporaryDirectory
+                    .appendingPathComponent("nanoteams-preview-external-agents", isDirectory: true),
+                // The inert environment's own storage: `InMemorySecureTokenStorage` exists only
+                // in Debug, and this file compiles in every configuration — naming it here broke
+                // the Release build from `ba020944` (2026-11-05) to 2026-11-13.
+                secretStorage: HostedMCPEnvironment.inert.secretStorage()),
+            // A canvas opening default storage must not take the lock of the NanoTeams the
+            // developer is running there.
+            workFolderLocking: locking
         )
     }
 

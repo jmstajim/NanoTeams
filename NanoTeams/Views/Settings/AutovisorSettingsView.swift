@@ -6,6 +6,7 @@ import SwiftUI
 struct AutovisorSettingsView: View {
     @Environment(NTMSOrchestrator.self) var store
     @Environment(ModelCatalog.self) private var modelCatalog
+    @Environment(\.openWindow) private var openWindow
 
     @State private var goalDraft = ""
     @State private var memoryDraft = ""
@@ -47,11 +48,25 @@ struct AutovisorSettingsView: View {
         return store.taskEngineStates[id] == .running
     }
 
+    private var currentDriver: AutovisorDriver {
+        store.workFolder?.settings.autovisorDriver ?? .builtInModel
+    }
+
+    private var driverPresentation: AutovisorSettingsPresentation {
+        AutovisorSettingsPresentation.make(
+            driver: currentDriver,
+            readiness: store.externalAutovisorReadiness,
+            tuning: tuning,
+            bashWarnings: store.activeBashSecurityWarnings
+        )
+    }
+
     private var content: some View {
         ScrollView {
             // All settings stay visible whether the manager is on or off — you can
             // set the goal/memory/schedule/model up front, then flip the toggle.
             VStack(spacing: Spacing.xl) {
+                driverCard
                 powerCard
                 goalCard
                 memoryCard
@@ -59,7 +74,9 @@ struct AutovisorSettingsView: View {
                 teamsCard
                 limitsCard
                 stuckCard
-                modelCard
+                if driverPresentation.showsModelCard {
+                    modelCard
+                }
             }
             .padding(Spacing.xl)
         }
@@ -101,12 +118,83 @@ struct AutovisorSettingsView: View {
         }
     }
 
+    // MARK: - Driver (§11 & C7)
+
+    private var driverCard: some View {
+        let pres = driverPresentation
+        return SettingsCard(
+            header: "Driver"
+        ) {
+            VStack(alignment: .leading, spacing: Spacing.m) {
+                HStack(spacing: Spacing.s) {
+                    AutovisorDriverPicker(selection: pres.driver) { driver in
+                        Task { await store.setAutovisorDriver(driver) }
+                    }
+
+                    Spacer(minLength: 0)
+
+                    Button("External Agents…") {
+                        SettingsNavigation.open(tab: .externalAgents, using: openWindow)
+                    }
+                    .buttonStyle(.terminalSecondary)
+                }
+
+                if pres.driver == .externalAgent {
+                    let isReady = (pres.readiness.state == .ready)
+                    HStack(spacing: Spacing.s) {
+                        Circle()
+                            .fill(isReady ? Colors.success : Colors.warning)
+                            .frame(width: 8, height: 8)
+                        Text(
+                            isReady
+                                ? "Ready for an external agent"
+                                : (pres.readiness.reason ?? "The external agent cannot drive this folder yet.")
+                        )
+                        .font(Typography.caption)
+                        .foregroundStyle(isReady ? Colors.success : Colors.textSecondary)
+                    }
+
+                    if !pres.bashWarnings.isEmpty {
+                        VStack(alignment: .leading, spacing: Spacing.xs) {
+                            ForEach(pres.bashWarnings, id: \.self) { warning in
+                                HStack(alignment: .top, spacing: Spacing.s) {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                        .font(Typography.caption)
+                                        .foregroundStyle(Colors.warning)
+                                    VStack(alignment: .leading, spacing: Spacing.xxs) {
+                                        Text(warning.title)
+                                            .font(Typography.captionSemibold)
+                                            .foregroundStyle(Colors.textPrimary)
+                                        Text(warning.message)
+                                            .font(Typography.caption)
+                                            .foregroundStyle(Colors.textSecondary)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(Spacing.s)
+                                .background(
+                                    RoundedRectangle.squircle(CornerRadius.small)
+                                        .fill(Colors.warningTint)
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    Text(AutovisorDriverPicker.caption(for: .builtInModel))
+                        .font(Typography.caption)
+                        .foregroundStyle(Colors.textTertiary)
+                }
+            }
+        }
+    }
+
     // MARK: - Power + Auto-off
 
     private var powerCard: some View {
-        SettingsCard(
-            header: "Autovisor",
-            systemImage: AutovisorConstants.symbolName
+        let pres = driverPresentation
+        return SettingsCard(
+            header: "Autovisor"
         ) {
             VStack(spacing: 0) {
                 HStack(spacing: Spacing.standard) {
@@ -131,7 +219,7 @@ struct AutovisorSettingsView: View {
                             .foregroundStyle(Colors.textTertiary)
                     }
                     Spacer()
-                    if isEnabled, store.autovisorTaskID != nil {
+                    if pres.showsRunNowInPowerCard, isEnabled, store.autovisorTaskID != nil {
                         SettingsPillButton(title: "Run now", icon: "play") {
                             if let id = store.autovisorTaskID {
                                 // Same contract as the TeamBoard TopBar's Run now:
@@ -145,14 +233,18 @@ struct AutovisorSettingsView: View {
                 }
                 .padding(.vertical, Spacing.xs)
 
-                rowCaption("An autonomous supervisor for this folder: it watches all tasks, creates/runs/stops them, answers their questions, and keeps the goal, memory, and shared context current.", indented: false)
+                rowCaption(driverPresentation.powerCaption, indented: false)
 
                 SettingsToggleRow(
                     title: "Turn off automatically",
                     icon: "moon.zzz",
                     isOn: $activation.autoDisableEnabled
                 )
-                rowCaption("Sleep timer: Autovisor switches itself off after a set time once turned on. Editing the duration restarts the countdown, and relaunching the app restarts it too.")
+                rowCaption(
+                    pres.sleepTimerCountsFromAgentActivity
+                        ? pres.sleepTimerCaption
+                        : "Sleep timer: Autovisor switches itself off after a set time once turned on. Editing the duration restarts the countdown, and relaunching the app restarts it too."
+                )
 
                 if activation.autoDisableEnabled {
                     autoOffDurationRow
@@ -171,7 +263,6 @@ struct AutovisorSettingsView: View {
     private var goalCard: some View {
         SettingsCard(
             header: "Goal",
-            systemImage: "target",
             // Rides the `┤ GOAL ├` chip via the slot TerminalPane already owns.
             // `AnyView` is re-wrapped per keystroke, but the wrapped type never
             // changes, so the tip's `@State` identity survives.
@@ -304,26 +395,43 @@ struct AutovisorSettingsView: View {
     // MARK: - Memory
 
     private var memoryCard: some View {
-        SettingsCard(
-            header: "Memory",
-            systemImage: "brain"
+        let pres = driverPresentation
+        return SettingsCard(
+            header: "Memory"
         ) {
             VStack(spacing: 0) {
-                HStack(alignment: .top, spacing: Spacing.xs) {
-                    PromptMarker()
-                    editor($memoryDraft, minHeight: 140) { newValue in
-                        memorySaveTask?.cancel()
-                        memorySaveTask = Task {
-                            try? await Task.sleep(for: .milliseconds(500))
-                            guard !Task.isCancelled else { return }
-                            if store.workFolder?.settings.autovisorMemory != newValue {
-                                await store.updateAutovisorMemory(newValue)
+                if pres.isMemoryReadOnly {
+                    HStack(alignment: .top, spacing: Spacing.xs) {
+                        PromptMarker()
+                        Text(memoryDraft.isEmpty ? "Memory is empty." : memoryDraft)
+                            .font(Typography.termBase)
+                            .foregroundStyle(Colors.textSecondary)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, minHeight: 100, alignment: .topLeading)
+                            .padding(Spacing.s)
+                            .background(
+                                RoundedRectangle.squircle(CornerRadius.small)
+                                    .fill(Colors.surfaceElevated)
+                            )
+                    }
+                    rowCaption("Read-only while an external agent drives. The built-in manager's notes are kept as they are.", indented: false)
+                } else {
+                    HStack(alignment: .top, spacing: Spacing.xs) {
+                        PromptMarker()
+                        editor($memoryDraft, minHeight: 140) { newValue in
+                            memorySaveTask?.cancel()
+                            memorySaveTask = Task {
+                                try? await Task.sleep(for: .milliseconds(500))
+                                guard !Task.isCancelled else { return }
+                                if store.workFolder?.settings.autovisorMemory != newValue {
+                                    await store.updateAutovisorMemory(newValue)
+                                }
                             }
                         }
                     }
-                }
 
-                rowCaption("Autovisor's standing notes, carried across reviews. It writes here itself; you can edit too.", indented: false)
+                    rowCaption("Autovisor's standing notes, carried across reviews. It writes here itself; you can edit too.", indented: false)
+                }
             }
         }
     }
@@ -331,19 +439,35 @@ struct AutovisorSettingsView: View {
     // MARK: - Activation
 
     private var activationCard: some View {
-        SettingsCard(
-            header: "Activation",
-            systemImage: "clock.arrow.circlepath"
+        let pres = driverPresentation
+        return SettingsCard(
+            header: "Activation"
         ) {
             VStack(spacing: 0) {
-                SettingsStepperRow(
-                    title: "Review interval (min)",
-                    icon: "clock.arrow.circlepath",
-                    value: $intervalMinutes,
-                    range: 1...1440,
-                    zeroLabel: nil
-                )
-                rowCaption("How often Autovisor wakes on a timer to run a review pass.")
+                if pres.showsIntervalRowInActivationCard {
+                    SettingsStepperRow(
+                        title: "Review interval (min)",
+                        icon: "clock.arrow.circlepath",
+                        value: $intervalMinutes,
+                        range: 1...1440,
+                        zeroLabel: nil
+                    )
+                    rowCaption("How often Autovisor wakes on a timer to run a review pass.")
+                }
+
+                if let badgeText = pres.activationTriggersBuiltInBadgeText {
+                    HStack(spacing: Spacing.xs) {
+                        Image(systemName: "info.circle")
+                            .font(Typography.caption)
+                            .foregroundStyle(Colors.textTertiary)
+                        Text("Activation triggers (\(badgeText)): an external agent always supervises the tasks it created.")
+                            .font(Typography.caption)
+                            .foregroundStyle(Colors.textSecondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, Spacing.s)
+                    .padding(.vertical, Spacing.xs)
+                }
 
                 SettingsToggleRow(title: "Wake when a task needs supervisor input", icon: "questionmark.bubble", isOn: $activation.onTaskNeedsSupervisor)
                 rowCaption("Lets Autovisor answer folder tasks as their Supervisor. Off restores each task's normal supervisor handling — auto-answer or human wait.")
@@ -373,9 +497,9 @@ struct AutovisorSettingsView: View {
     // MARK: - Limits
 
     private var limitsCard: some View {
-        SettingsCard(
-            header: "Limits",
-            systemImage: "gauge.with.dots.needle.bottom.50percent"
+        let pres = driverPresentation
+        return SettingsCard(
+            header: "Limits"
         ) {
             VStack(spacing: 0) {
                 SettingsStepperRow(
@@ -387,15 +511,43 @@ struct AutovisorSettingsView: View {
                 )
                 rowCaption("Cap on how many Autovisor-created tasks run concurrently. Each is its own LLM-call stream.")
 
-                SettingsStepperRow(
-                    title: "Max new tasks per review",
-                    icon: "plus.square.on.square",
-                    value: $tuning.maxManagedTasksPerReview,
-                    range: 1...20,
-                    zeroLabel: nil
-                )
-                rowCaption("Cap on tasks Autovisor may create in a single review pass.")
+                if pres.showsExternalLimits {
+                    SettingsStepperRow(
+                        title: "Max creations per window",
+                        icon: "plus.square.on.square",
+                        value: $tuning.maxExternalCreationsPerWindow,
+                        range: 1...50,
+                        zeroLabel: nil
+                    )
+                    rowCaption("Most tasks one external agent may create within the window (\(tuning.externalCreationWindowMinutes) min).")
 
+                    SettingsStepperRow(
+                        title: "Creation window (min)",
+                        icon: "clock",
+                        value: $tuning.externalCreationWindowMinutes,
+                        range: 1...AutovisorConstants.maxExternalCreationWindowMinutes,
+                        zeroLabel: nil
+                    )
+                    rowCaption("Length of the sliding window that limits an external agent's task creation.")
+
+                    SettingsStepperRow(
+                        title: "Max open external tasks per agent",
+                        icon: "tray.full",
+                        value: $tuning.maxOpenExternalTasks,
+                        range: 1...50,
+                        zeroLabel: nil
+                    )
+                    rowCaption("Most open (not yet closed) tasks one external agent may hold.")
+                } else {
+                    SettingsStepperRow(
+                        title: "Max new tasks per review",
+                        icon: "plus.square.on.square",
+                        value: $tuning.maxManagedTasksPerReview,
+                        range: 1...20,
+                        zeroLabel: nil
+                    )
+                    rowCaption("Cap on tasks Autovisor may create in a single review pass.")
+                }
             }
         }
     }
@@ -418,7 +570,7 @@ struct AutovisorSettingsView: View {
     /// Blocking governs CREATION only: `control_task start` and `manage_role restart` re-run
     /// tasks that already exist, and a started run is pinned to its team.
     private var teamsCard: some View {
-        SettingsCard(header: "Teams", systemImage: "rectangle.3.group") {
+        SettingsCard(header: "Teams") {
             VStack(alignment: .leading, spacing: 0) {
                 SettingsToggleRow(
                     title: "Let Autovisor generate new teams",
@@ -498,8 +650,7 @@ struct AutovisorSettingsView: View {
 
     private var stuckCard: some View {
         SettingsCard(
-            header: "Stuck detection",
-            systemImage: "exclamationmark.triangle"
+            header: "Stuck detection"
         ) {
             VStack(spacing: 0) {
                 SettingsStepperRow(
@@ -549,8 +700,7 @@ struct AutovisorSettingsView: View {
     /// `llmOverride` rather than a `StoreConfiguration` field.
     private var modelCard: some View {
         SettingsCard(
-            header: "Model",
-            systemImage: "cpu"
+            header: "Model"
         ) {
             // The manager's model can live on a different provider than the
             // global chat LLM — pin its wire format here (`nil` = inherit).

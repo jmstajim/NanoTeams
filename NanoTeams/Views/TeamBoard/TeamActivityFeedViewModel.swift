@@ -31,6 +31,7 @@ final class TeamActivityFeedViewModel {
         var supervisorClippedTexts: [String]
         var supervisorAttachmentPaths: [String]
         var supervisorProjectFolderURL: URL?
+        var supervisorAuthorLabel: String? = nil
         var workFolderURL: URL?
         var debugModeEnabled: Bool
         var isStreaming: (UUID) -> Bool
@@ -188,6 +189,7 @@ final class TeamActivityFeedViewModel {
         let changeRequestCount: Int
         let supervisorInputCount: Int
         let failedStepCount: Int
+        let supervisorEventCount: Int
         /// Aggregated counts across all loaded descendants + a stable hash of
         /// the descendant ID set. ID-set hash detects descendants
         /// appearing/disappearing even when total counts collide.
@@ -277,6 +279,7 @@ final class TeamActivityFeedViewModel {
             // misses the multi-round race window (see `StepExecution.hasActiveSupervisorInput`).
             supervisorInputCount: steps.count(where: \.hasActiveSupervisorInput),
             failedStepCount: steps.count { $0.status == .failed },
+            supervisorEventCount: run?.supervisorEvents.count ?? 0,
             descendantSummary: DescendantSummary.compute(descendants),
             composerVisible: composerVisible
         )
@@ -295,6 +298,7 @@ final class TeamActivityFeedViewModel {
         supervisorClippedTexts: [String] = [],
         supervisorAttachmentPaths: [String] = [],
         supervisorProjectFolderURL: URL? = nil,
+        supervisorAuthorLabel: String? = nil,
         debugModeEnabled: Bool,
         composerVisible: Bool = true,
         isStreaming: @escaping (UUID) -> Bool
@@ -326,6 +330,7 @@ final class TeamActivityFeedViewModel {
             supervisorClippedTexts: supervisorClippedTexts,
             supervisorAttachmentPaths: supervisorAttachmentPaths,
             supervisorProjectFolderURL: supervisorProjectFolderURL,
+            supervisorAuthorLabel: supervisorAuthorLabel,
             stepArtifactContentCache: stepArtifactContentCache,
             debugModeEnabled: debugModeEnabled,
             activeQuestions: activeQuestions,
@@ -681,6 +686,7 @@ final class TeamActivityFeedViewModel {
             supervisorClippedTexts: context.supervisorClippedTexts,
             supervisorAttachmentPaths: context.supervisorAttachmentPaths,
             supervisorProjectFolderURL: context.supervisorProjectFolderURL,
+            supervisorAuthorLabel: context.supervisorAuthorLabel,
             debugModeEnabled: context.debugModeEnabled,
             composerVisible: context.composerVisible,
             isStreaming: context.isStreaming

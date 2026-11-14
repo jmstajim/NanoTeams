@@ -48,6 +48,20 @@ nonisolated enum HeadlessConfigLocator {
         var status: Status
         var configPath: String?
         var detail: String
+
+        /// What the receipt says once the runner has returned: `nil` keeps the `ran` written
+        /// before the run. A run refused before it started — the work folder is open in
+        /// another NanoTeams process, the developer's own app included — did NOT run, so the
+        /// wrapper must print "DID NOT RUN" and the refusal, not "failed (exit code: 65)" with
+        /// the reason on the test host's stdout, which never reaches it.
+        static func afterRun(_ result: HeadlessResult, configPath: String) -> Receipt? {
+            guard result.outcome == .folderInUse else { return nil }
+            let refusal = result.errors.first ?? "The work folder is open in another NanoTeams process."
+            return Receipt(
+                status: .failed, configPath: configPath,
+                detail: "The headless run did not start: \(refusal) "
+                    + "Close the folder in the NanoTeams app (or quit it) before running headless.")
+        }
     }
 
     /// Best-effort: a missing receipt path just means nobody asked for one

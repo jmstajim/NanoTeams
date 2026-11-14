@@ -5,7 +5,7 @@ import XCTest
 ///
 /// 1. **C-2: `stopEngineForTask` cascades through the delegation subtree.**
 ///    The original `stopEngine(for:)` is single-level — used by `closeTask`
-///    and `removeTaskRecursively` where children are walked separately. The
+///    and `removeTask` where children are walked separately. The
 ///    `LLMStateDelegate`-protocol method `stopEngineForTask`, by contrast,
 ///    is called from `handleDelegateToTeam` on timeout / cancel / abort,
 ///    and in those flows depth-2+ chains can have their grandchild engines
@@ -13,7 +13,7 @@ import XCTest
 ///
 /// 2. **C-3: recursive control methods are cycle-safe.** A corrupt
 ///    `tasks_index.json` (parent==self, or 1↔2 mutual link) would
-///    stack-overflow `pauseRun` / `resumeRun` / `removeTaskRecursively` /
+///    stack-overflow `pauseRun` / `resumeRun` / `removeTask` /
 ///    `stopEngineForTask` without the `visited: Set<Int>` guard. The
 ///    `TasksIndex.ancestorIDs/descendantIDs` cycle tests cover the
 ///    data-structure traversal; these cover the orchestrator-level
@@ -257,17 +257,17 @@ final class RecursiveCycleAndCascadeTests: XCTestCase, @unchecked Sendable {
                       "resumeRun must terminate even on mutual cycle 1↔2 — same recursion shape as pauseRun")
     }
 
-    func testRemoveTaskRecursively_selfCycleInTasksIndex_doesNotInfiniteLoop() async {
+    func testRemoveTask_selfCycleInTasksIndex_doesNotInfiniteLoop() async {
         let store = makeOrchestrator()
         injectCorruptIndex(into: store, summaries: [
             summary(id: 7, parent: 7)
         ])
 
         let completed = await withBoundedTimeout(2.0) {
-            await store.removeTaskRecursively(7)
+            await store.removeTask(7)
         }
         XCTAssertTrue(completed,
-                      "removeTaskRecursively must terminate on self-cycle — without visited guard, the bottom-up recursion calls itself indefinitely")
+                      "removeTask must terminate on self-cycle — without visited guard, the bottom-up recursion calls itself indefinitely")
     }
 
     /// New recursive method introduced by the C-2 fix — must inherit the
@@ -283,7 +283,7 @@ final class RecursiveCycleAndCascadeTests: XCTestCase, @unchecked Sendable {
             store.stopEngineForTask(1)
         }
         XCTAssertTrue(completed,
-                      "stopEngineForTask was added by the C-2 cascade fix — its recursion needs the same visited-set guard as pauseRun/resumeRun/removeTaskRecursively")
+                      "stopEngineForTask was added by the C-2 cascade fix — its recursion needs the same visited-set guard as pauseRun/resumeRun/removeTask")
     }
 
     // MARK: - Helpers

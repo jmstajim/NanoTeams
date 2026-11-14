@@ -60,6 +60,11 @@ final class PrefixCacheOwnerCoverageTests: XCTestCase {
             "recordPrefixChain" + "ForTasklessCall(",
             "recordPrefix" + "Chain?(",
             "recordPrefix" + "Chain: {",
+            // The approval gates' seam (`LLMExecutionService+BashGate`): it notes the judge and
+            // then asks it, or neither once the run has stopped. That it really records, under
+            // the label it is handed, is checked by behaviour, not by this scan —
+            // `BashGateTests` / `ComputerUseGateTests` `…judgeAsked_isNotedOnTheLedger`.
+            "askApproval" + "Judge(",
         ]
     }
 

@@ -491,63 +491,6 @@ final class ToolsEnvelopeTests: XCTestCase {
         XCTAssertTrue(result.outputJSON.contains("pending"))
     }
 
-    // MARK: - resolveContentString Tests
-
-    func testResolveContentString_exactMatch() {
-        let args: [String: Any] = ["content": "hello", "path": "test.txt"]
-        XCTAssertEqual(resolveContentString(args), "hello")
-    }
-
-    func testResolveContentString_textFallback() {
-        let args: [String: Any] = ["text": "hello world", "path": "test.txt"]
-        XCTAssertEqual(resolveContentString(args), "hello world")
-    }
-
-    func testResolveContentString_bodyFallback() {
-        let args: [String: Any] = ["body": "some body"]
-        XCTAssertEqual(resolveContentString(args), "some body")
-    }
-
-    func testResolveContentString_planFallback() {
-        let args: [String: Any] = ["plan": "Step 1: Do something"]
-        XCTAssertEqual(resolveContentString(args), "Step 1: Do something")
-    }
-
-    func testResolveContentString_singleUnknownStringFallback() {
-        let args: [String: Any] = ["weird_name": "the content", "path": "test.txt"]
-        XCTAssertEqual(resolveContentString(args), "the content")
-    }
-
-    func testResolveContentString_multipleUnknownStringsReturnsNil() {
-        let args: [String: Any] = ["name1": "value1", "name2": "value2"]
-        XCTAssertNil(resolveContentString(args))
-    }
-
-    func testResolveContentString_emptyArgsReturnsNil() {
-        let args: [String: Any] = [:]
-        XCTAssertNil(resolveContentString(args))
-    }
-
-    func testResolveContentString_onlyNonContentKeysReturnsNil() {
-        let args: [String: Any] = ["path": "test.txt", "encoding": "utf8"]
-        XCTAssertNil(resolveContentString(args))
-    }
-
-    func testResolveContentString_contentTakesPriority() {
-        let args: [String: Any] = ["content": "primary", "text": "secondary"]
-        XCTAssertEqual(resolveContentString(args), "primary")
-    }
-
-    func testResolveContentString_emptyContentIsValid() {
-        let args: [String: Any] = ["content": ""]
-        XCTAssertEqual(resolveContentString(args), "")
-    }
-
-    func testResolveContentString_excludeKeysRespected() {
-        let args: [String: Any] = ["custom_key": "value"]
-        XCTAssertNil(resolveContentString(args, excludeKeys: ["custom_key"]))
-    }
-
     // MARK: - encodeArgsToJSON Tests
 
     func testEncodeArgsToJSONBasic() {

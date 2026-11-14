@@ -42,6 +42,10 @@ nonisolated extension PromptBuilder {
         /// live at `resolveToolSchemas` steps 3.2-bis / 3.2-ter; threading it here is what
         /// keeps the preview byte-identical to the wire.
         let approval: ToolApprovalAvailability
+        /// The external tools the run would ship, already split on whether a human is there
+        /// to approve. Default `.empty` — a preview surface that has not been handed a
+        /// catalogue has none, and renders the bytes this app rendered before MCP existed.
+        let mcpTools: MCPResolvedTools
         let globalContext: String
         /// `.meeting` kind only: preview the prompt the **coordinator** would
         /// see at turn 1 (mid- and late-meeting branches are runtime-dynamic
@@ -74,6 +78,7 @@ nonisolated extension PromptBuilder {
             selectedScheme: String?,
             isVisionConfigured: Bool,
             approval: ToolApprovalAvailability,
+            mcpTools: MCPResolvedTools = .empty,
             globalContext: String,
             isCoordinator: Bool = false,
             agentInstructions: AgentInstructionsSnapshot? = nil,
@@ -88,6 +93,7 @@ nonisolated extension PromptBuilder {
             self.selectedScheme = selectedScheme
             self.isVisionConfigured = isVisionConfigured
             self.approval = approval
+            self.mcpTools = mcpTools
             self.globalContext = globalContext
             self.isCoordinator = isCoordinator
             self.agentInstructions = agentInstructions
@@ -514,7 +520,8 @@ nonisolated extension PromptBuilder {
             // Sourced from the real projection (single source of truth) so the
             // Autovisor Manager role's create_managed_task preview stays
             // byte-identical to the wire when generation is disabled for the folder.
-            autovisorTeamPolicy: inputs.workFolder.map { AutovisorTeamPolicy(settings: $0.settings) } ?? .unrestricted
+            autovisorTeamPolicy: inputs.workFolder.map { AutovisorTeamPolicy(settings: $0.settings) } ?? .unrestricted,
+            mcpTools: inputs.mcpTools
         )
     }
 

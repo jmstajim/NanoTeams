@@ -6,13 +6,16 @@ import Foundation
 /// absorbed. `@unchecked Sendable` because the lock serializes all access to the mutable state.
 ///
 /// The lock/race semantics here are safety-critical (early-resolve-before-attach, single resume),
-/// so both the `bash` gate (`BashApprovalWaiter`) and the computer-use gate
-/// (`ComputerUseApprovalWaiter`) share this single generic rather than each keeping a byte-clone
-/// that could drift if the concurrency logic is ever fixed in one place only.
+/// so the `bash`, computer-use and MCP gates share this single generic rather than each keeping a
+/// byte-clone that could drift if the concurrency logic is ever fixed in one place only.
 nonisolated final class ApprovalWaiter<Decision: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Decision, Never>?
     private var settled: Decision?
+
+    var isSettled: Bool {
+        lock.withLock { settled != nil }
+    }
 
     /// Registers the gate's continuation. If a decision already arrived (resolve raced ahead of
     /// the await registering), resume immediately with it.

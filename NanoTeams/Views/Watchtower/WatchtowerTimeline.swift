@@ -57,59 +57,16 @@ struct WatchtowerTimeline: View {
 
     // MARK: - Components
 
+    /// The shared header row — the same one the External Autovisor pane's log carries, so the
+    /// two activity lists filter and hide alike (`ActivityFilterBar`).
     private var filterHeader: some View {
-        HStack {
-            Menu {
-                Button("All tasks & chats") {
-                    selectedTaskFilter = nil
-                }
-
-                if !availableTasks.isEmpty {
-                    Divider()
-                    ForEach(availableTasks, id: \.id) { task in
-                        Button(task.title) {
-                            selectedTaskFilter = task.id
-                        }
-                    }
-                }
-            } label: {
-                HStack(spacing: Spacing.s) {
-                    Image(systemName: "line.3.horizontal.decrease.circle")
-                        .foregroundStyle(Colors.textSecondary)
-
-                    Text(filterLabel)
-                        .font(Typography.termBase)
-                        .foregroundStyle(Colors.textPrimary)
-
-                    Image(systemName: "chevron.down")
-                        .font(Typography.caption)
-                        .foregroundStyle(Colors.textTertiary)
-                }
-                .padding(.horizontal, Spacing.m)
-                .padding(.vertical, Spacing.s)
-                .background(
-                    RoundedRectangle.squircle(CornerRadius.small)
-                        .fill(Colors.surfaceCard)
-                )
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-
-            Spacer()
-
-            // Clear button - hides displayed events without deleting data
-            ClearTimelineButton(isDisabled: cachedEvents.isEmpty) {
-                clearedUpToDate = MonotonicClock.shared.now()
-            }
-        }
-    }
-
-    private var filterLabel: String {
-        if let taskID = selectedTaskFilter,
-           let task = availableTasks.first(where: { $0.id == taskID }) {
-            return task.title
-        }
-        return "All tasks & chats"
+        ActivityFilterBar(
+            options: availableTasks.map { ActivityFilterBar.Option(id: $0.id, title: $0.title) },
+            selection: selectedTaskFilter,
+            onSelect: { selectedTaskFilter = $0 },
+            isHideDisabled: cachedEvents.isEmpty,
+            onHide: { clearedUpToDate = MonotonicClock.shared.now() }
+        )
     }
 
     private var timelineContent: some View {
@@ -235,27 +192,6 @@ struct WatchtowerTimeline: View {
             taskFilter: selectedTaskFilter,
             clearedUpTo: clearedUpToDate
         )
-    }
-}
-
-// MARK: - Clear Timeline Button
-
-private struct ClearTimelineButton: View {
-    let isDisabled: Bool
-    let action: () -> Void
-    @State private var isHovered = false
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: "eye.slash")
-                .font(Typography.caption)
-                .foregroundStyle(isHovered ? Colors.textPrimary : Colors.textSecondary)
-        }
-        .buttonStyle(.plain)
-        .help("Hide timeline events")
-        .accessibilityLabel("Hide timeline events")
-        .disabled(isDisabled)
-        .trackHover($isHovered)
     }
 }
 

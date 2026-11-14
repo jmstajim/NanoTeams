@@ -134,6 +134,93 @@ final class ComputerUseGateTests: XCTestCase {
 
         XCTAssertGreaterThan(client.callCount, 0, "Auto must route a mutating action to the judge")
     }
+
+    /// A Pause while the Auto judge is being asked: the cancellation envelope, never
+    /// `COMPUTER_USE_DENIED` — twin of the human hold's `.cancelled` arm. Until 2026-09-23 the
+    /// cut-short call read as an empty reply: "Judge returned no verdict; denied."
+    func testAuto_judgeCutShortByCancellation_synthesizesCancelledNotDenied() async {
+        let client = ScriptedToolCallClient(script: [.hang])
+        let gateTask = Task {
+            await self.gate(
+                [self.clickCall()], policy: ComputerUsePolicy(mode: .auto, restrictionLevel: .standard),
+                supervisorMode: .manual, client: client)
+        }
+        for _ in 0..<500 where client.callCount < 1 { try? await Task.sleep(for: .milliseconds(2)) }
+        XCTAssertEqual(client.callCount, 1, "premise: the judge was being asked")
+        gateTask.cancel()
+        let results = await gateTask.value
+
+        let output = results[0]?.outputJSON ?? ""
+        XCTAssertTrue(output.contains(ToolErrorCode.cancelled.rawValue), output)
+        XCTAssertFalse(output.contains(ToolErrorCode.computerUseDenied.rawValue), output)
+        XCTAssertEqual(results[0]?.providerID, "c1", "the synthetic result still answers the call")
+    }
+
+    /// Twin of the `bash` gate's: two actions that need a verdict, paused while the FIRST is
+    /// being judged — the second is answered as cancelled without a judge request of its own.
+    func testAuto_pauseDuringTheFirstJudge_asksNoFurtherJudgeInTheBatch() async {
+        let client = ScriptedToolCallClient(script: [.hang, .text(#"{"decision":"OK"}"#)])
+        let calls = [clickCall(providerID: "c1"), clickCall(providerID: "c2")]
+        let gateTask = Task {
+            await self.gate(
+                calls, policy: ComputerUsePolicy(mode: .auto, restrictionLevel: .standard),
+                supervisorMode: .manual, client: client)
+        }
+        for _ in 0..<500 where client.callCount < 1 { try? await Task.sleep(for: .milliseconds(2)) }
+        XCTAssertEqual(client.callCount, 1, "premise: the first judge was being asked")
+        gateTask.cancel()
+        let results = await gateTask.value
+
+        XCTAssertEqual(client.callCount, 1, "a stopped run asks no further judge")
+        for (idx, providerID) in [(0, "c1"), (1, "c2")] {
+            let output = results[idx]?.outputJSON ?? ""
+            XCTAssertTrue(output.contains(ToolErrorCode.cancelled.rawValue), "\(providerID): \(output)")
+            XCTAssertEqual(results[idx]?.providerID, providerID, "each call is still answered")
+        }
+    }
+
+    /// Reached with the run already stopped: no judge is asked and none is noted on the
+    /// prompt-prefix ledger.
+    func testAuto_runAlreadyStopped_notesNoJudgeOnTheLedger_andAsksNone() async {
+        let client = ScriptedToolCallClient(script: [.text(#"{"decision":"OK"}"#)])
+        await recordStepRequest()
+        let results = await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await self.gate(
+                [self.clickCall()], policy: ComputerUsePolicy(mode: .auto, restrictionLevel: .standard),
+                supervisorMode: .manual, client: client)
+        }.value
+
+        let output = results[0]?.outputJSON ?? ""
+        XCTAssertTrue(output.contains(ToolErrorCode.cancelled.rawValue), output)
+        XCTAssertEqual(client.callCount, 0, "a stopped run asks no judge")
+        let suspect = await recordStepRequest()
+        XCTAssertNil(suspect, "a judge that was never asked was noted on the ledger as \(suspect ?? "")")
+    }
+
+    /// The other side of the guard: a judge that IS asked is noted, under its own label.
+    func testAuto_judgeAsked_isNotedOnTheLedger() async {
+        let client = ScriptedToolCallClient(script: [.text(#"{"decision":"OK"}"#)])
+        await recordStepRequest()
+        _ = await gate(
+            [clickCall()], policy: ComputerUsePolicy(mode: .auto, restrictionLevel: .standard),
+            supervisorMode: .manual, client: client)
+        XCTAssertEqual(client.callCount, 1, "premise: the judge was asked")
+        let suspect = await recordStepRequest()
+        XCTAssertEqual(suspect, LLMCallOwner.oneShot(label: "computer-use judge").key)
+    }
+
+    /// Records one request of this test's step on the ledger, on the (server, model) the gate
+    /// is handed, and returns who else the ledger saw on it since the step's previous request.
+    @discardableResult
+    private func recordStepRequest() async -> String? {
+        let config = LLMConfig()
+        return await service.prefixLedger.record(
+            baseURL: config.baseURLString, model: config.modelName,
+            owner: .step(taskID: 1, stepID: "step1"),
+            messages: [ChatMessage(role: .user, content: "brief")], toolSchemaText: ""
+        ).suspect
+    }
 }
 
 // MARK: - Stub

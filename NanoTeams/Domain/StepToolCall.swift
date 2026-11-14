@@ -9,9 +9,11 @@ nonisolated struct StepToolCall: Codable, Identifiable, Hashable {
     /// Raw JSON string (may be partial/invalid JSON if model streamed malformed args; stored verbatim).
     var argumentsJSON: String
     /// Result JSON from tool execution (nil if not yet executed).
-    var resultJSON: String?
+    private(set) var resultJSON: String?
     /// Whether the tool execution resulted in an error.
-    var isError: Bool?
+    private(set) var isError: Bool?
+    /// Timestamp when resultJSON was recorded. Nil if not yet executed or historical data.
+    private(set) var resultRecordedAt: Date?
 
     /// Set when the parser had to REPAIR this call's argument structure — today, when the
     /// model closed its `arguments` object (or the whole call object) before it had
@@ -38,7 +40,8 @@ nonisolated struct StepToolCall: Codable, Identifiable, Hashable {
         argumentsJSON: String,
         resultJSON: String? = nil,
         isError: Bool? = nil,
-        argumentRepairNote: String? = nil
+        argumentRepairNote: String? = nil,
+        resultRecordedAt: Date? = nil
     ) {
         self.id = id
         self.createdAt = createdAt
@@ -48,6 +51,23 @@ nonisolated struct StepToolCall: Codable, Identifiable, Hashable {
         self.resultJSON = resultJSON
         self.isError = isError
         self.argumentRepairNote = argumentRepairNote
+        self.resultRecordedAt = resultRecordedAt
+    }
+
+    /// Centralized mutation method for tool results.
+    /// Invariant: resultRecordedAt is always stamped when a result is recorded.
+    mutating func recordResult(
+        _ resultJSON: String?,
+        isError: Bool? = nil,
+        argumentsJSON: String? = nil,
+        at timestamp: Date = MonotonicClock.shared.now()
+    ) {
+        self.resultJSON = resultJSON
+        self.isError = isError
+        if let argumentsJSON {
+            self.argumentsJSON = argumentsJSON
+        }
+        self.resultRecordedAt = timestamp
     }
 
     /// The `message` out of this call's error result, in EITHER envelope shape.
@@ -92,6 +112,18 @@ nonisolated struct StepToolCall: Codable, Identifiable, Hashable {
         guard let raw, !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else { return nil }
         return raw
+    }
+
+    /// The envelope's `error.code` (`UNKNOWN_TOOL`, `INVALID_ARGS`, …) when the result is a
+    /// failure envelope; `nil` otherwise. The machine-readable half of `errorMessage`.
+    var errorCode: String? {
+        guard let resultJSON,
+              let dict = JSONUtilities.parseJSONDictionary(resultJSON),
+              let nested = dict["error"] as? [String: Any],
+              let code = nested["code"] as? String,
+              !code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return nil }
+        return code
     }
 
     /// True while a vision analysis is in progress (interim placeholder result).

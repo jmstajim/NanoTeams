@@ -113,6 +113,21 @@ nonisolated enum AutovisorConstants {
     /// accumulation across many review passes.
     static let maxConcurrentManagedTasks = 2
 
+    /// Max new tasks an external agent may create within `externalCreationWindowMinutes`.
+    static let maxExternalCreationsPerWindow = 5
+
+    /// Sliding window length (minutes) for an external agent's task creation budget.
+    static let externalCreationWindowMinutes = 15
+
+    /// The longest creation window the settings offer — and how long the moments of an external
+    /// agent's creations are kept (`AutovisorCreationLedger`, `ExternalCreationWindowStore`), so a
+    /// window raised later, after a relaunch too, still finds the creations inside it. A window
+    /// set longer by editing settings.json keeps stamps for its own length.
+    static let maxExternalCreationWindowMinutes = 240
+
+    /// Max open (`closedAt == nil`) tasks owned by a single external agent at once.
+    static let maxOpenExternalTasks = 3
+
     /// Minimum auto-off (sleep-timer) duration. The scheduler evaluates once a
     /// minute, so sub-minute durations could never be honored on time.
     static let minAutoDisableSeconds: TimeInterval = 60

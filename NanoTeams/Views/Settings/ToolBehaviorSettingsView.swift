@@ -22,8 +22,7 @@ struct ToolBehaviorSettingsView: View {
     private var readFileCard: some View {
         @Bindable var config = config
         return SettingsCard(
-            header: "File reads",
-            systemImage: "doc.text"
+            header: "File reads"
         ) {
             VStack(spacing: 0) {
                 SettingsStepperRow(
@@ -49,8 +48,7 @@ struct ToolBehaviorSettingsView: View {
     private var searchCard: some View {
         @Bindable var config = config
         return SettingsCard(
-            header: "`search`",
-            systemImage: "magnifyingglass"
+            header: "`search`"
         ) {
             VStack(spacing: 0) {
                 SettingsStepperRow(

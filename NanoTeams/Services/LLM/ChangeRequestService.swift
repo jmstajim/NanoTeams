@@ -187,7 +187,7 @@ enum ChangeRequestService {
 
         // Limits
         let maxCR = teamSettings.limits.maxChangeRequestsPerRun
-        if maxCR > 0, run.changeRequests.count >= maxCR {
+        if maxCR > 0, run.changeRequests.count(where: \.status.countsAgainstTheRunsBudget) >= maxCR {
             return ("Change request limit reached (\(maxCR) per run).", nil)
         }
         let maxAmend = teamSettings.limits.maxAmendmentsPerStep

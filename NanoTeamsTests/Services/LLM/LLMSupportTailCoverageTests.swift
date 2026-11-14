@@ -220,6 +220,7 @@ private final class DLLMNDJSONSession: NetworkSession, @unchecked Sendable {
 private struct DLLMWriteFailingTokenStorage: SecureTokenStorage {
     func setToken(_: String?, forKey _: String) throws { throw DLLMError.boom }
     func loadToken(forKey _: String) throws -> String? { nil }
+    func accountNames(withPrefix _: String) throws -> [String] { [] }
 }
 
 // =============================================================================
@@ -442,15 +443,16 @@ final class DLLMComputerUseJudgeTransportTests: XCTestCase {
     /// resolve to DENY and say why, or an unreachable judge silently becomes an
     /// approval channel.
     ///
-    /// RED: change `Decision(allowed: false, …)` in the catch to
+    /// RED: change `allowed: false` in `JudgeCall.ruling`'s `.callFailed` arm to
     /// `allowed: true` -> `XCTAssertFalse(decision.allowed)` fails.
-    func testJudge_transportFailure_deniesAndNamesTheUnderlyingCause() async {
-        let decision = await ComputerUseJudgeService.judge(
+    func testJudge_transportFailure_deniesAndNamesTheUnderlyingCause() async throws {
+        let ruling = await ComputerUseJudgeService.judge(
             action: .click(x: 10, y: 20, button: "left", double: false, target: "Safari"),
             policy: ComputerUsePolicy(mode: .auto, restrictionLevel: .standard),
             config: LLMConfig(provider: .lmStudio, baseURLString: "http://127.0.0.1:1234", modelName: "m"),
             client: DLLMThrowingChatClient()
         )
+        let decision = try XCTUnwrap(ruling.decision, "the judge ruled — no cancellation here")
 
         XCTAssertFalse(decision.allowed, "A failed judge call must never allow the action")
         XCTAssertTrue(
@@ -1228,7 +1230,7 @@ final class DLLMWirePreviewTrailingHeaderTests: XCTestCase {
             workFolderState: .defaultStorage,
             selectedScheme: nil,
             isVisionConfigured: false,
-            approval: ToolApprovalAvailability(bash: .available, computerUse: .withheld(.switchedOff)),
+            approval: ToolApprovalAvailability(bash: .available, computerUse: .withheld(.switchedOff), humanPresent: true),
             globalContext: ""
         )
 
@@ -1262,7 +1264,7 @@ final class DLLMWirePreviewTrailingHeaderTests: XCTestCase {
             workFolderState: .defaultStorage,
             selectedScheme: nil,
             isVisionConfigured: false,
-            approval: ToolApprovalAvailability(bash: .available, computerUse: .withheld(.switchedOff)),
+            approval: ToolApprovalAvailability(bash: .available, computerUse: .withheld(.switchedOff), humanPresent: true),
             globalContext: ""
         )
 

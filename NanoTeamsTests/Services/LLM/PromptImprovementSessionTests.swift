@@ -58,9 +58,16 @@ final class PromptImprovementSessionTests: XCTestCase {
 
     /// Bounded yield-loop for pump-driven assertions — deterministic enough
     /// on the main actor without wall-clock sleeps.
-    private func waitUntil(_ condition: @autoclosure () -> Bool) async {
-        for _ in 0..<4000 where !condition() {
+    private func waitUntil(
+        _ condition: @autoclosure () -> Bool,
+        file: StaticString = #filePath, line: UInt = #line
+    ) async {
+        for _ in 0..<4000 {
+            if condition() { return }
             await Task.yield()
+        }
+        if !condition() {
+            XCTFail("condition did not hold after 4000 yields", file: file, line: line)
         }
     }
 

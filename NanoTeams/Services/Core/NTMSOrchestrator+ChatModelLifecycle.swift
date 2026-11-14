@@ -74,6 +74,9 @@ extension NTMSOrchestrator {
         client: (any LLMClient)? = nil,
         ensurer: ChatModelEnsurer? = nil
     ) async -> [String] {
+        #if DEBUG
+        if let gate = Self._testResidencyReconcileGate { await gate() }
+        #endif
         let ensurer = resolvedEnsurer(ensurer)
         // COALESCING latch, not a drop. A pass that arrives while another is in
         // flight records a rerun request instead of returning empty and losing
@@ -267,7 +270,9 @@ extension NTMSOrchestrator {
         }
 
         add(configuration.llmBaseURLString)
-        for slot in configuration.referencedModelSlots { add(slot.normalizedBase) }
+        for slot in configuration.referencedModelSlots(mcpJudgeIsActive: mcpJudgeIsActive) {
+            add(slot.normalizedBase)
+        }
         for team in snapshot?.projection.teams ?? [] {
             for role in team.roles {
                 if let url = role.llmOverride?.baseURLString { add(url) }
@@ -472,6 +477,13 @@ extension NTMSOrchestrator {
     ///
     /// Equatable so SwiftUI's `onChange` fires once per real change rather
     /// than on every unrelated configuration write.
+    /// True while at least one enabled MCP server is in Auto approval mode in the open folder.
+    var mcpJudgeIsActive: Bool {
+        mcpServerManager?.serverRows.contains {
+            $0.config.isEnabled && $0.isAllowedInThisFolder && $0.config.approvalMode == .auto
+        } ?? false
+    }
+
     var residencyRelevantSettings: ResidencySettingsFingerprint {
         ResidencySettingsFingerprint(
             visionEnabled: configuration.visionEnabled,
@@ -481,6 +493,8 @@ extension NTMSOrchestrator {
             computerUseMode: configuration.computerUseMode,
             computerUseRestriction: configuration.computerUseRestrictionLevel,
             computerUseJudgeOverride: configuration.computerUseJudgeLLMOverride,
+            mcpJudgeActive: mcpJudgeIsActive,
+            mcpJudgeOverride: configuration.mcpJudgeLLMOverride,
             teamGenOverride: configuration.teamGenLLMOverride
         )
     }
@@ -510,7 +524,7 @@ extension NTMSOrchestrator {
     /// this so the two can never disagree about what counts as a reference.
     func referencedModelSites(base: String) -> [ModelReferenceResolver.Site] {
         let normalizedBase = base.normalizedBaseURL
-        var sites: [ModelReferenceResolver.Site] = configuration.referencedModelSlots
+        var sites: [ModelReferenceResolver.Site] = configuration.referencedModelSlots(mcpJudgeIsActive: mcpJudgeIsActive)
             .filter { $0.normalizedBase == normalizedBase && !$0.modelName.isEmpty }
             .map { .init(modelName: $0.modelName, description: "Your LLM settings currently use this model.") }
 
@@ -546,7 +560,7 @@ extension NTMSOrchestrator {
     }
 
     func modelIsStillReferenced(_ model: String, base: String) -> Bool {
-        if configuration.referencesModel(model, base: base) { return true }
+        if configuration.referencesModel(model, base: base, mcpJudgeIsActive: mcpJudgeIsActive) { return true }
 
         let normalizedBase = base.normalizedBaseURL
         let globalModel = configuration.llmModelName
@@ -602,5 +616,7 @@ nonisolated struct ResidencySettingsFingerprint: Equatable {
     let computerUseMode: ComputerUseMode
     let computerUseRestriction: ComputerUseRestrictionLevel
     let computerUseJudgeOverride: LLMOverride?
+    let mcpJudgeActive: Bool
+    let mcpJudgeOverride: LLMOverride?
     let teamGenOverride: LLMOverride?
 }

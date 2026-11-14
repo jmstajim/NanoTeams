@@ -210,27 +210,6 @@ final class ComputerUseJudgeServiceTests: XCTestCase {
                       "reply restatement must follow the closing fence")
     }
 
-    // MARK: - configForJudge (temperature pin, mirrors BashJudgeService)
-
-    func testConfigForJudge_noOverride_pinsTemperatureToZero() {
-        let base = LLMConfig(modelName: "global-model", temperature: 0.9)
-        let jc = ComputerUseJudgeService.configForJudge(base, policy: ComputerUsePolicy(judgeOverride: nil))
-        XCTAssertEqual(jc.temperature, 0)
-    }
-
-    func testConfigForJudge_overrideWithoutTemperature_staysZero() {
-        let base = LLMConfig(modelName: "global-model", temperature: 0.9)
-        let p = ComputerUsePolicy(judgeOverride: LLMOverride(modelName: "judge-model"))
-        let jc = ComputerUseJudgeService.configForJudge(base, policy: p)
-        XCTAssertEqual(jc.temperature, 0)
-        XCTAssertEqual(jc.modelName, "judge-model")
-    }
-
-    /// The override no longer carries sampling params, so the verdict pin is
-    /// unconditional — nothing can raise a security verdict off temperature 0.
-    func testConfigForJudge_overrideCannotUnpinTemperature() {
-        let base = LLMConfig(modelName: "global-model", temperature: 0.9)
-        let p = ComputerUsePolicy(judgeOverride: LLMOverride(baseURLString: "http://judge:9999"))
-        XCTAssertEqual(ComputerUseJudgeService.configForJudge(base, policy: p).temperature, 0)
-    }
+    // The verdict config is pinned on the wire for both judges —
+    // `JudgeCallTests.testBothJudges_sendTheirPolicysOverride_asTheVerdictConfig`.
 }

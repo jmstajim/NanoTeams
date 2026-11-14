@@ -65,21 +65,23 @@ final class FToolsProcessLaunchTests: XCTestCase {
         return dir
     }
 
+    /// The sandbox settings the test asked for reach `handle` the way production's do — on the
+    /// batch's context (`ToolExecutionContext.bashSandbox`), not on the handler.
+    private var sandbox = BashPolicy.Sandbox(enabled: false)
+
     private func makeTool(
         sandboxEnabled: Bool = false,
         permissions: BashSandboxPermissions = BashSandboxPermissions()
     ) -> BashTool {
-        BashTool(
+        sandbox = BashPolicy.Sandbox(enabled: sandboxEnabled, permissions: permissions, allowUnsandboxedFallback: false)
+        return BashTool(
             workFolderRoot: workDir,
             resolver: SandboxPathResolver(workFolderRoot: workDir),
-            fileManager: .default,
-            sandboxEnabled: sandboxEnabled,
-            sandboxPermissions: permissions,
-            allowUnsandboxedFallback: false)
+            fileManager: .default)
     }
 
     private func context() -> ToolExecutionContext {
-        ToolExecutionContext(workFolderRoot: workDir, taskID: taskID, runID: 0, roleID: "r")
+        ToolExecutionContext(workFolderRoot: workDir, taskID: taskID, runID: 0, roleID: "r", bashSandbox: sandbox)
     }
 
     // MARK: - The misreported spawn failure
@@ -200,8 +202,7 @@ final class FToolsProcessLaunchTests: XCTestCase {
     func testBackgroundStart_spawnFailure_leavesNoLogFileBehind() async throws {
         try XCTSkipIf(getuid() == 0, "running as root bypasses directory permissions")
         let locked = try makeLockedDirectory()
-        let logDir = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-            .appendingPathComponent("nanoteams-bg", isDirectory: true)
+        let logDir = BackgroundBashRegistry.logDir
         func logNames() -> Set<String> {
             Set((try? FileManager.default.contentsOfDirectory(atPath: logDir.path)) ?? [])
         }
@@ -209,7 +210,7 @@ final class FToolsProcessLaunchTests: XCTestCase {
 
         XCTAssertThrowsError(
             try BackgroundBashRegistry.shared.start(
-                command: "echo hi", directory: locked, sandboxProfile: nil, taskID: taskID)
+                command: "echo hi", directory: locked, confinement: nil, taskID: taskID)
         )
 
         // Set subtraction, not a count: the log dir is process-wide, so an unrelated
@@ -243,7 +244,10 @@ final class FToolsProcessLaunchTests: XCTestCase {
         let command = "ls \"$HOME/Library/Keychains\" >/dev/null 2>&1 && echo READ || echo NOREAD"
 
         let id = try BackgroundBashRegistry.shared.start(
-            command: command, directory: workDir, sandboxProfile: profile, taskID: taskID)
+            command: command, directory: workDir,
+            confinement: BackgroundBashRegistry.Confinement(
+                profile: profile, guardedPorts: Set(SeatbeltSandbox.effectiveGuardedPorts([]))),
+            taskID: taskID)
 
         let output = try await drain(commandID: id)
         XCTAssertTrue(output.contains("NOREAD"),
@@ -446,22 +450,43 @@ final class FToolsGitTailTests: XCTestCase {
                        "a failed pull must not emit the success-shaped payload: \(result.outputJSON)")
     }
 
+    // MARK: - Background commands
+
+    /// What the Add agent sheet asks before a token goes to the clipboard: a role's background
+    /// command outlives its step, so a task that looks idle may still have a process that can
+    /// run `pbpaste` (#375).
+    func testHasRunningCommands_answersForAProcessThatOutlivesItsStep() async throws {
+        let registry = BackgroundBashRegistry.shared
+        let before = registry.hasRunningCommands
+        _ = try registry.start(
+            command: "sleep 30", directory: FileManager.default.temporaryDirectory,
+            confinement: nil, taskID: 918_273)
+        XCTAssertTrue(registry.hasRunningCommands, "a live command must be visible")
+        registry.terminate(taskID: 918_273)
+        // The entry flips when the process is reaped, which is not synchronous with `terminate`.
+        for _ in 0..<100 where registry.hasRunningCommands {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertEqual(registry.hasRunningCommands, before, "and invisible once it is gone")
+    }
+
     // MARK: - git_diff
 
-    /// `git_diff`'s non-not-a-repo failure arm. An invalid pathspec magic exits 128
-    /// with "fatal: Invalid pathspec magic 'zzz'" (measured), and `:`-prefixed
-    /// pathspecs are deliberately passed through `relativizePathspec` unchanged, so
-    /// this reaches git verbatim.
+    /// `:`-magic never reaches git any more: it can address the repository TOP, which lies
+    /// above the work folder whenever the repository encloses it, so the resolver refuses it
+    /// first (#378). The refusal is an argument fault — `INVALID_ARGS` with the repair named —
+    /// not git's own text.
     ///
-    /// RED: replace `message: result.stderr` with a fixed string -> the
-    /// "Invalid pathspec magic" assertion fires.
-    func testGitDiff_invalidPathspecMagic_reportsGitsReasonAndNoDiff() async throws {
+    /// RED: pass the pathspec through to git -> `INVALID_ARGS` and the repair sentence vanish,
+    /// and git answers "fatal: Invalid pathspec magic 'zzz'" after running.
+    func testGitDiff_pathspecMagic_isRefusedBeforeGitRuns() async throws {
         let result = try await call(ToolNames.gitDiff, ["paths": [":(zzz)x"]])
 
         XCTAssertTrue(result.isError, "got: \(result.outputJSON)")
-        XCTAssertTrue(result.outputJSON.contains("COMMAND_FAILED"), result.outputJSON)
-        XCTAssertTrue(result.outputJSON.contains("Invalid pathspec magic"),
-                      "git's reason must survive: \(result.outputJSON)")
+        XCTAssertTrue(result.outputJSON.contains("INVALID_ARGS"), result.outputJSON)
+        XCTAssertTrue(result.outputJSON.contains("Pathspec magic is not accepted"), result.outputJSON)
+        XCTAssertTrue(result.outputJSON.contains("Name paths relative to"),
+                      "the repair must be named (R1.8.1): \(result.outputJSON)")
         XCTAssertFalse(result.outputJSON.contains("files_changed"),
                        "a failed diff must not emit a diff payload: \(result.outputJSON)")
     }
@@ -597,8 +622,10 @@ final class FToolsGitTailTests: XCTestCase {
 
 // MARK: - ToolRuntime argument normalization
 
-/// `ToolRuntime.parseAndNormalizeArguments`' two unreached arms: a top-level JSON
-/// value that parses but is not an object, and a key that needs trimming.
+/// Two arms of the runtime's one reading of a document (`ToolRuntime.dispatchedArguments`,
+/// through its private `normalizedArguments`) that nothing else reached: a top-level JSON value
+/// that parses but is not an object, and a key that needs trimming. (A top-level `null` is not
+/// that first arm: it reads as no arguments, as an empty document does.)
 final class FToolsToolRuntimeArgumentTests: XCTestCase {
 
     private var workDir: URL!
@@ -650,7 +677,8 @@ final class FToolsToolRuntimeArgumentTests: XCTestCase {
         XCTAssertTrue(result.isError, "got: \(result.outputJSON)")
         XCTAssertTrue(result.outputJSON.contains("must be a JSON object"),
                       "the model needs the shape, not just a failure: \(result.outputJSON)")
-        XCTAssertTrue(result.outputJSON.contains("execution_failed"), result.outputJSON)
+        // An argument fault, reported as one (2026-11-09) — not a bare `execution_failed`.
+        XCTAssertTrue(result.outputJSON.contains("INVALID_ARGS"), result.outputJSON)
     }
 
     /// Keys arrive from models with stray whitespace/newlines. The trim is a
@@ -712,8 +740,12 @@ final class FToolsPureTailTests: XCTestCase {
                       "credential subpaths must be granted: \(readAllow)")
         XCTAssertTrue(readAllow.contains("(literal \"\(netrc)\")"),
                       "credential literals must be granted too: \(readAllow)")
-        XCTAssertNil(Self.clause(startingWith: "(deny file-read*", in: granted),
-                     "nothing left to deny once credentials are granted: \(granted)")
+        // Granted stores leave one read deny: the agent token locations, which no grant
+        // opens (#375) — and it names none of the stores just granted.
+        let onlyDeny = try XCTUnwrap(Self.clause(startingWith: "(deny file-read*", in: granted), granted)
+        XCTAssertTrue(onlyDeny.hasPrefix("(deny file-read* file-write*"), onlyDeny)
+        XCTAssertFalse(onlyDeny.contains(ssh), "the granted stores are not denied: \(onlyDeny)")
+        XCTAssertTrue(onlyDeny.contains("/.config/nanoteams\""), onlyDeny)
 
         // The sibling configuration is what makes the assertions above meaningful:
         // with the grant off, the same paths must NOT appear in a read-allow.

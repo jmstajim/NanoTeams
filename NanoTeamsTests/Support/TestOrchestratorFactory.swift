@@ -77,9 +77,20 @@ enum TestOrchestrator {
         downloadedModelStore: (any DownloadedModelStore)? = nil,
         skillsCatalogueStore: AgentSkillsCatalogueStore? = nil,
         stepExecutionClient: (any LLMClient)? = nil,
-        automationTickInterval: TimeInterval? = nil
+        automationTickInterval: TimeInterval? = nil,
+        mcpEnvironment: MCPEnvironment? = nil,
+        mcpCatalogueStore: MCPServerCatalogueStore? = nil,
+        hostedMCPEnvironment: HostedMCPEnvironment? = nil,
+        hostedMCPAgentStore: HostedMCPAgentStore? = nil,
+        hostedMCPFrameLog: HostedMCPFrameLog? = nil,
+        taskSnapshotService: (any TaskSnapshotProtocol)? = nil,
+        taskSnapshotWaitBudget: Duration? = nil,
+        workFolderLocking: WorkFolderInstanceLocking? = nil
     ) -> NTMSOrchestrator {
-        let resolvedRepository = repository ?? NTMSRepository()
+        // One locking value for both halves: the orchestrator takes the lock where the repository's
+        // write gate looks for it.
+        let locking = workFolderLocking ?? .isolatingDefaultStorage()
+        let resolvedRepository = repository ?? NTMSRepository(instanceLocking: locking)
         return NTMSOrchestrator(
             repository: resolvedRepository,
             // The FIFTH seam, and the one the doc above missed: `nil` here builds
@@ -133,7 +144,31 @@ enum TestOrchestrator {
             // `nil` on the ORCHESTRATOR's init means "production cadence" (wall-clock
             // minute boundaries) — the nondeterminism source, so the factory never
             // forwards it. See `automationTickNever`.
-            automationTickInterval: automationTickInterval ?? Self.automationTickNever
+            automationTickInterval: automationTickInterval ?? Self.automationTickNever,
+            // Two seams, one concern: nothing in a suite may reach a real server or the
+            // developer's own configured ones. `.inert` cannot open a socket or touch the
+            // Keychain; the temp catalogue makes sure there is nothing to connect to in the
+            // first place — and, just as importantly, that a suite's own fixtures are never
+            // written over `~/Library/Application Support/NanoTeams/mcp/servers.json`.
+            mcpEnvironment: mcpEnvironment ?? .inert,
+            mcpCatalogueStore: mcpCatalogueStore ?? MCPServerCatalogueStore(
+                directory: FileManager.default.temporaryDirectory
+                    .appendingPathComponent("nt-mcp-catalogue-\(UUID().uuidString)",
+                                            isDirectory: true)),
+            hostedMCPEnvironment: hostedMCPEnvironment ?? .inert,
+            hostedMCPAgentStore: hostedMCPAgentStore ?? HostedMCPAgentStore(
+                directoryURL: FileManager.default.temporaryDirectory
+                    .appendingPathComponent("nt-external-agents-\(UUID().uuidString)",
+                                            isDirectory: true),
+                secretStorage: InMemorySecureTokenStorage()),
+            hostedMCPFrameLog: hostedMCPFrameLog ?? HostedMCPFrameLog(),
+            taskSnapshotService: taskSnapshotService,
+            taskSnapshotWaitBudget: taskSnapshotWaitBudget,
+            // The real `flock` on every temp folder a suite opens; default storage — the
+            // developer's own `~/Library/Application Support/NanoTeams`, which the NanoTeams they
+            // are running and every parallel worker would otherwise contend for — gets a lock
+            // file of this orchestrator's own (`isolatingDefaultStorage`).
+            workFolderLocking: locking
         )
     }
 

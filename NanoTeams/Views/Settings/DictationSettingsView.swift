@@ -36,7 +36,6 @@ struct DictationSettingsView: View {
     private var privacyCard: some View {
         SettingsCard(
             header: "Privacy",
-            systemImage: "lock.shield",
             footer: "All dictation runs entirely on your Mac using Apple's on-device speech recognition. No audio or transcripts leave your device."
         ) {
             SettingsItemHeader(
@@ -50,7 +49,6 @@ struct DictationSettingsView: View {
     private var unsupportedCard: some View {
         SettingsCard(
             header: "Not available",
-            systemImage: "exclamationmark.triangle",
             footer: "Dictation uses Apple's SpeechAnalyzer framework, which ships on macOS 26 and later."
         ) {
             SettingsItemHeader(
@@ -79,7 +77,6 @@ private struct DictationLanguagesCard: View {
     var body: some View {
         SettingsCard(
             header: "Languages",
-            systemImage: "globe",
             footer: "Pick which on-device models load when dictation starts. Apple's recognizer is multilingual — selecting a language biases recognition toward it but doesn't hard-filter other languages out of the audio. Uninstalled models must be downloaded once before they can be used. The active session runs at most 3 models in parallel."
         ) {
             VStack(alignment: .leading, spacing: Spacing.s) {

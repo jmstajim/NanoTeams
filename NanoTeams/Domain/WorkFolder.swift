@@ -104,8 +104,48 @@ nonisolated struct WorkFolderState: Codable, Hashable {
 /// during task execution.
 nonisolated struct ProjectSettings: Codable, Hashable {
     var schemaVersion: Int
-    var context: String
+    var context: String {
+        didSet {
+            if context != oldValue {
+                contextUpdatedAt = Date()
+            }
+        }
+    }
     var contextPrompt: String
+    /// When `context` was last updated — wall-clock `Date`, compared with the search index's
+    /// file modification times (§5.5). A `contextUpdatedAtMonotonic` beside it was written and
+    /// read by nothing until it was removed on 2026-11-12 (F6 C12); a stored key is ignored.
+    var contextUpdatedAt: Date?
+    /// `contextUpdatedAt` in the spelling an external agent reads: the `updated_at` of
+    /// `folder_status.work_folder_context`. Whole seconds. It says WHEN, and `stale` is computed
+    /// from it; it is not what a write is checked against (`contextRevision`).
+    var contextUpdatedAtStamp: String? {
+        contextUpdatedAt.map { JSONCoderFactory.iso8601Formatter.string(from: $0) }
+    }
+    /// Names this exact `context`: FNV-1a 64 over its UTF-8, as 16 hex digits.
+    /// `folder_status` publishes it beside the text, and `set_work_folder_context` must send it
+    /// back as `expected_revision` — a text replaced since the agent read it is refused, never
+    /// overwritten (`NTMSOrchestrator.updateWorkFolderContext`).
+    ///
+    /// The text, not a moment. Until 2026-11-13 the precondition was the whole-second
+    /// `updated_at`, and three texts had none an agent could send back or that told them apart:
+    /// a context never written, one last written before the stamp existed (bc2f7db4), and two
+    /// saves within one second. A text changed and changed back is the one the agent read, so
+    /// nothing it has not seen is lost. Not CryptoKit, as `Clip.deterministicID` is not: the token
+    /// guards against overwriting an unseen edit, not against a forger — an agent that wants to
+    /// write blindly can read the revision first.
+    var contextRevision: String { Self.contextRevision(of: context) }
+
+    /// The revision `text` has as the stored `context` — what the Settings page's own autosave
+    /// sends for the text it last knew was stored (`WorkFolderContextEditor`).
+    static func contextRevision(of text: String) -> String {
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in text.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x0000_0100_0000_01B3
+        }
+        return String(format: "%016llx", hash)
+    }
     var selectedScheme: String?
     // Autovisor (schemaVersion 3). Goal + standing memory + enable flag +
     // activation config for the per-folder automated Supervisor agent. Goal/memory
@@ -116,6 +156,10 @@ nonisolated struct ProjectSettings: Codable, Hashable {
     var autovisorGoal: String
     var autovisorMemory: String
     var autovisorEnabled: Bool
+    /// When `autovisorEnabled` last flipped and what flipped it — `nil` for a folder whose
+    /// Autovisor has not been switched since 2026-11-09. Additive, tolerant decode.
+    var autovisorLastSwitch: AutovisorSwitch?
+    var autovisorDriver: AutovisorDriver
     var autovisorActivation: AutovisorActivation
     var autovisorTuning: AutovisorTuning
     // Whether the Autovisor may assemble a new team on the fly via
@@ -166,10 +210,12 @@ nonisolated struct ProjectSettings: Codable, Hashable {
         schemaVersion: Int = 3,
         context: String = "",
         contextPrompt: String = AppDefaults.workFolderContextPrompt,
+        contextUpdatedAt: Date? = nil,
         selectedScheme: String? = nil,
         autovisorGoal: String = "",
         autovisorMemory: String = "",
         autovisorEnabled: Bool = false,
+        autovisorDriver: AutovisorDriver = .builtInModel,
         autovisorActivation: AutovisorActivation = .default,
         autovisorTuning: AutovisorTuning = .default,
         autovisorAllowTeamGeneration: Bool = true,
@@ -183,10 +229,12 @@ nonisolated struct ProjectSettings: Codable, Hashable {
         self.schemaVersion = schemaVersion
         self.context = context
         self.contextPrompt = contextPrompt
+        self.contextUpdatedAt = contextUpdatedAt
         self.selectedScheme = selectedScheme
         self.autovisorGoal = autovisorGoal
         self.autovisorMemory = autovisorMemory
         self.autovisorEnabled = autovisorEnabled
+        self.autovisorDriver = autovisorDriver
         self.autovisorActivation = autovisorActivation
         self.autovisorTuning = autovisorTuning
         self.autovisorAllowTeamGeneration = autovisorAllowTeamGeneration
@@ -202,10 +250,13 @@ nonisolated struct ProjectSettings: Codable, Hashable {
         case schemaVersion
         case context
         case contextPrompt
+        case contextUpdatedAt
         case selectedScheme
         case autovisorGoal
         case autovisorMemory
         case autovisorEnabled
+        case autovisorLastSwitch
+        case autovisorDriver
         case autovisorActivation
         case autovisorTuning
         case autovisorAllowTeamGeneration
@@ -235,10 +286,15 @@ nonisolated struct ProjectSettings: Codable, Hashable {
         self.contextPrompt = try c.decodeIfPresent(String.self, forKey: .contextPrompt)
             ?? c.decodeIfPresent(String.self, forKey: .legacyDescriptionPrompt)
             ?? AppDefaults.workFolderContextPrompt
+        self.contextUpdatedAt = try c.decodeIfPresent(Date.self, forKey: .contextUpdatedAt)
         self.selectedScheme = try c.decodeIfPresent(String.self, forKey: .selectedScheme)
         self.autovisorGoal = try c.decodeIfPresent(String.self, forKey: .autovisorGoal) ?? ""
         self.autovisorMemory = try c.decodeIfPresent(String.self, forKey: .autovisorMemory) ?? ""
         self.autovisorEnabled = try c.decodeIfPresent(Bool.self, forKey: .autovisorEnabled) ?? false
+        // A cause a later build names differently reads as no record rather than failing the file.
+        self.autovisorLastSwitch = (try? c.decodeIfPresent(AutovisorSwitch.self, forKey: .autovisorLastSwitch)) ?? nil
+        self.autovisorDriver =
+            (try? c.decodeIfPresent(AutovisorDriver.self, forKey: .autovisorDriver)) ?? .builtInModel
         self.autovisorActivation = try c.decodeIfPresent(AutovisorActivation.self, forKey: .autovisorActivation) ?? .default
         self.autovisorTuning = try c.decodeIfPresent(AutovisorTuning.self, forKey: .autovisorTuning) ?? .default
         self.autovisorAllowTeamGeneration =
@@ -264,10 +320,15 @@ nonisolated struct ProjectSettings: Codable, Hashable {
         try c.encode(schemaVersion, forKey: .schemaVersion)
         try c.encode(context, forKey: .context)
         try c.encode(contextPrompt, forKey: .contextPrompt)
+        try c.encodeIfPresent(contextUpdatedAt, forKey: .contextUpdatedAt)
         try c.encodeIfPresent(selectedScheme, forKey: .selectedScheme)
         try c.encode(autovisorGoal, forKey: .autovisorGoal)
         try c.encode(autovisorMemory, forKey: .autovisorMemory)
         try c.encode(autovisorEnabled, forKey: .autovisorEnabled)
+        try c.encodeIfPresent(autovisorLastSwitch, forKey: .autovisorLastSwitch)
+        if autovisorDriver != .builtInModel {
+            try c.encode(autovisorDriver, forKey: .autovisorDriver)
+        }
         try c.encode(autovisorActivation, forKey: .autovisorActivation)
         try c.encode(autovisorTuning, forKey: .autovisorTuning)
         try c.encode(autovisorAllowTeamGeneration, forKey: .autovisorAllowTeamGeneration)

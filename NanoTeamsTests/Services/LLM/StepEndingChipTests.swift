@@ -130,7 +130,7 @@ final class StepEndingChipTests: XCTestCase {
         let inputs = PromptBuilder.WirePreviewInputs(
             role: role, team: team, allTeams: [team], workFolder: nil,
             workFolderState: .defaultStorage, selectedScheme: nil,
-            isVisionConfigured: false, approval: ToolApprovalAvailability(bash: .available, computerUse: .withheld(.switchedOff)),
+            isVisionConfigured: false, approval: ToolApprovalAvailability(bash: .available, computerUse: .withheld(.switchedOff), humanPresent: true),
             globalContext: AppDefaults.globalContext, isCoordinator: false,
             agentInstructions: nil)
         return try PromptBuilder.buildWirePromptPreview(kind: .stepExecution, inputs: inputs)

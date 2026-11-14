@@ -63,6 +63,17 @@ final class TeamEngine {
 
     var onStateChanged: ((TeamEngineState) -> Void)?
     var onRoleStatusChanged: ((String, RoleExecutionStatus) -> Void)?
+    /// Fires when the run loop pauses itself because `iterationCount >= autoIterationLimit`,
+    /// carrying the limit that was reached. Distinct from `onStateChanged(.paused)` so a
+    /// parent delegation awaiter wakes only on a child's self-pause, never on a parent-initiated
+    /// `pauseRun` cascade.
+    var onIterationLimitPaused: ((Int) -> Void)?
+
+    /// Non-nil while the engine is `.paused` specifically because `autoIterationLimit` was reached;
+    /// cleared on `stop()`, `pause()`, and `resume()` — and by `NTMSOrchestrator.pauseRun` when a
+    /// Pause stops the steps this pause left running, since `pause()` is a no-op on an engine
+    /// already `.paused`.
+    var pausedIterationLimit: Int?
 
     /// Fires when the set of roles that are ready but waiting for a concurrency slot
     /// changes. An EPHEMERAL projection, deliberately not a `RoleExecutionStatus` case:
@@ -136,12 +147,19 @@ final class TeamEngine {
         publishQueuedRoles([])
         lastSlotWaitOccupancy = nil
         lastWorkingWaitProgress = nil
+        pausedIterationLimit = nil
         state = .pending
         iterationCount = 0
     }
 
+    /// Whether `pause()` would stop this engine — the states it leaves for `.paused`. Every other
+    /// state is one a Pause leaves exactly as it is, so a Pause there pauses nothing here.
+    var isPausable: Bool {
+        state == .running || state == .needsAcceptance || state == .needsSupervisorInput
+    }
+
     func pause() {
-        guard state == .running || state == .needsAcceptance || state == .needsSupervisorInput else { return }
+        guard isPausable else { return }
         runTask?.cancel()
         runTask = nil
         for task in roleTasks.values { task.cancel() }
@@ -150,6 +168,7 @@ final class TeamEngine {
         publishQueuedRoles([])
         lastSlotWaitOccupancy = nil
         lastWorkingWaitProgress = nil
+        pausedIterationLimit = nil
         state = .paused
     }
 
@@ -167,6 +186,7 @@ final class TeamEngine {
 
         // Reset iteration count to allow another full set of iterations
         iterationCount = 0
+        pausedIterationLimit = nil
         lastSlotWaitOccupancy = nil
         state = .running
         launchRunLoop()

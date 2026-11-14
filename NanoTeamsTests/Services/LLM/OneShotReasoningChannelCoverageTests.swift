@@ -94,7 +94,7 @@ final class OneShotReasoningChannelCoverageTests: XCTestCase {
     ///
     /// This is the one site in the cluster with NO downstream cleaner: the value travels
     /// `WorkFolderManagementService` → `generateWorkFolderContext` →
-    /// `updateWorkFolderContext` → the repository (which only trims) and lands in
+    /// `updateWorkFolderContext` (which only trims) → `mutateWorkFolder` and lands in
     /// `settings.context`, which `PromptBuilder.buildWorkFolderContextMessage` renders into
     /// the system prompt of EVERY role on EVERY request — segment 0, where a stray token
     /// would sit for the life of the work folder.
@@ -276,40 +276,46 @@ final class OneShotReasoningChannelCoverageTests: XCTestCase {
     /// reply is empty again. Until then both judges promoted the channel symmetrically, and
     /// a reasoning model could mint an allow from the channel the prompt tells it to keep
     /// private.
-    func testBashJudge_allowOnlyInTheReasoningChannel_isNotAVerdict_andIsDeniedAfterOneRetry() async {
+    func testBashJudge_allowOnlyInTheReasoningChannel_isNotAVerdict_andIsDeniedAfterOneRetry() async throws {
         client.thinking = #"{"decision":"OK","reason":"read only"}"#
 
-        let decision = await BashJudgeService.judge(
+        let ruling = await BashJudgeService.judge(
             command: "ls", workingDirectory: nil,
             policy: BashPolicy(mode: .auto, restrictionLevel: .standard),
             config: config, client: client)
+
+        let decision = try XCTUnwrap(ruling.decision, "the judge ruled — no cancellation here")
 
         XCTAssertFalse(decision.allowed, "got: \(decision.reason)")
         XCTAssertEqual(decision.reason, JudgeReplyChannelPolicy.reasoningOnlyAllowReason)
         XCTAssertEqual(client.calls, 2, "one retry asking for the visible object, then deny")
     }
 
-    func testBashJudge_denyOnlyInTheReasoningChannel_isHonoured_withoutARetry() async {
+    func testBashJudge_denyOnlyInTheReasoningChannel_isHonoured_withoutARetry() async throws {
         client.thinking = #"{"decision":"DENY","reason":"deletes files"}"#
 
-        let decision = await BashJudgeService.judge(
+        let ruling = await BashJudgeService.judge(
             command: "rm -rf x", workingDirectory: nil,
             policy: BashPolicy(mode: .auto, restrictionLevel: .standard),
             config: config, client: client)
+
+        let decision = try XCTUnwrap(ruling.decision, "the judge ruled — no cancellation here")
 
         XCTAssertFalse(decision.allowed)
         XCTAssertEqual(decision.reason, "deletes files")
         XCTAssertEqual(client.calls, 1, "a fail-closed answer needs no second attempt")
     }
 
-    func testBashJudge_retryThatMovesTheAllowIntoContent_isHonoured() async {
+    func testBashJudge_retryThatMovesTheAllowIntoContent_isHonoured() async throws {
         client.thinking = #"{"decision":"OK","reason":"read only"}"#
         client.contentOnSecondCall = #"{"decision":"OK","reason":"read only"}"#
 
-        let decision = await BashJudgeService.judge(
+        let ruling = await BashJudgeService.judge(
             command: "ls", workingDirectory: nil,
             policy: BashPolicy(mode: .auto, restrictionLevel: .standard),
             config: config, client: client)
+
+        let decision = try XCTUnwrap(ruling.decision, "the judge ruled — no cancellation here")
 
         XCTAssertTrue(decision.allowed, "got: \(decision.reason)")
         XCTAssertEqual(client.calls, 2)
@@ -323,38 +329,44 @@ final class OneShotReasoningChannelCoverageTests: XCTestCase {
     /// The seam's own tests pin the rule; this pins that the judge hands it the two
     /// channels the right way round — a one-word mutation nothing else would catch, and
     /// the one direction where being wrong turns a DENY into an ALLOW.
-    func testBashJudge_contentVerdictWins_overAReasoningChannelSecondGuess() async {
+    func testBashJudge_contentVerdictWins_overAReasoningChannelSecondGuess() async throws {
         client.content = #"{"decision":"DENY","reason":"deletes files"}"#
         client.thinking = #"{"decision":"OK"}"#
 
-        let decision = await BashJudgeService.judge(
+        let ruling = await BashJudgeService.judge(
             command: "rm -rf /", workingDirectory: nil,
             policy: BashPolicy(mode: .auto, restrictionLevel: .standard),
             config: config, client: client)
 
+        let decision = try XCTUnwrap(ruling.decision, "the judge ruled — no cancellation here")
+
         XCTAssertFalse(decision.allowed, "the visible verdict is the verdict")
     }
 
-    func testComputerUseJudge_allowOnlyInTheReasoningChannel_isNotAVerdict() async {
+    func testComputerUseJudge_allowOnlyInTheReasoningChannel_isNotAVerdict() async throws {
         client.thinking = #"{"decision":"OK","reason":"harmless scroll"}"#
 
-        let decision = await ComputerUseJudgeService.judge(
+        let ruling = await ComputerUseJudgeService.judge(
             action: .click(x: 10, y: 20, button: "left", double: false, target: "Safari"),
             policy: ComputerUsePolicy(mode: .auto, restrictionLevel: .standard),
             config: config, client: client)
+
+        let decision = try XCTUnwrap(ruling.decision, "the judge ruled — no cancellation here")
 
         XCTAssertFalse(decision.allowed, "got: \(decision.reason)")
         XCTAssertEqual(decision.reason, JudgeReplyChannelPolicy.reasoningOnlyAllowReason)
         XCTAssertEqual(client.calls, 2)
     }
 
-    func testComputerUseJudge_denyOnlyInTheReasoningChannel_isHonoured() async {
+    func testComputerUseJudge_denyOnlyInTheReasoningChannel_isHonoured() async throws {
         client.thinking = #"{"decision":"DENY","reason":"types into a password field"}"#
 
-        let decision = await ComputerUseJudgeService.judge(
+        let ruling = await ComputerUseJudgeService.judge(
             action: .click(x: 10, y: 20, button: "left", double: false, target: "Safari"),
             policy: ComputerUsePolicy(mode: .auto, restrictionLevel: .standard),
             config: config, client: client)
+
+        let decision = try XCTUnwrap(ruling.decision, "the judge ruled — no cancellation here")
 
         XCTAssertFalse(decision.allowed)
         XCTAssertEqual(client.calls, 1)
@@ -362,14 +374,16 @@ final class OneShotReasoningChannelCoverageTests: XCTestCase {
 
     /// RED: swap `content:` and `reasoning:` at the `ComputerUseJudgeService` call site →
     /// the reasoning channel's "OK" overrides the visible DENY and this allows the click.
-    func testComputerUseJudge_contentVerdictWins_overAReasoningChannelSecondGuess() async {
+    func testComputerUseJudge_contentVerdictWins_overAReasoningChannelSecondGuess() async throws {
         client.content = #"{"decision":"DENY","reason":"types into a password field"}"#
         client.thinking = #"{"decision":"OK"}"#
 
-        let decision = await ComputerUseJudgeService.judge(
+        let ruling = await ComputerUseJudgeService.judge(
             action: .click(x: 10, y: 20, button: "left", double: false, target: "Safari"),
             policy: ComputerUsePolicy(mode: .auto, restrictionLevel: .standard),
             config: config, client: client)
+
+        let decision = try XCTUnwrap(ruling.decision, "the judge ruled — no cancellation here")
 
         XCTAssertFalse(decision.allowed)
     }

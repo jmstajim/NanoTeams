@@ -294,6 +294,9 @@ final class ToolArgumentCoercionHandlerTests: XCTestCase {
             XCTAssertFalse(r.isError, "got: \(r.outputJSON)")
             XCTAssertTrue(fm.fileExists(atPath: tempDir.appendingPathComponent("\(dir)/f.txt").path),
                           "the parent must have been created regardless of `create_dirs`")
+            XCTAssertTrue(
+                metaWarnings(in: r.outputJSON).contains("Ignored `create_dirs`: missing parent folders are always created."),
+                "the model is told why its argument did nothing: \(r.outputJSON)")
         }
         XCTAssertNil(WriteFileTool.schema.parameters.properties?["create_dirs"],
                      "the parameter is not on the wire — nothing the model was never shown may steer a write")

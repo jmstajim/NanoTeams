@@ -12,6 +12,7 @@ struct RoleStatusPill: View {
             if let def = roleDefinition, !def.isSupervisor {
                 Text(def.completionTypeDisplayLabel.uppercased())
                     .font(Typography.term2xs.weight(.medium))
+                    .lineLimit(1)
                     .tracking(Typography.labelTracking)
                     .foregroundStyle(def.completionTypeDisplayColor)
             }
@@ -24,6 +25,7 @@ struct RoleStatusPill: View {
 
             Text(statusName.uppercased())
                 .font(Typography.term2xs.weight(.medium))
+                .lineLimit(1)
                 .tracking(Typography.labelTracking)
                 .foregroundStyle(statusColor)
         }

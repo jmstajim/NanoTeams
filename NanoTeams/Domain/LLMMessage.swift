@@ -41,7 +41,7 @@ nonisolated enum MessageSourceContext: String, Codable, CaseIterable {
     /// `request_changes`'s team-vote outcome, attributed to the REQUESTING role (TPM /
     /// Code Reviewer / SRE) — two unrelated facts in one case, so neither could be
     /// labelled without lying about the other. It was chosen defensively, to dodge the
-    /// generic `"(consultation)"` fallback in ``LLMMessage/sourceContextDisplayLabel``,
+    /// generic `"(consultation)"` fallback in ``LLMMessage/sourceAttribution``,
     /// not because a Supervisor's correction is a change request.
     ///
     /// Discriminating on `sourceRole == .supervisor` instead of a case of its own is not
@@ -330,7 +330,7 @@ nonisolated enum MessageSourceContext: String, Codable, CaseIterable {
     /// brief?
     ///
     /// The decision lives on the VALUE because it is read by two files that cannot see each
-    /// other (`LLMMessage.sourceContextDisplayLabel` and `MessageBubbleView`), and a
+    /// other (`LLMMessage.sourceAttribution` and `MessageBubbleView`), and a
     /// hand-written `== .supervisorMessage` at each was how `.supervisorAnswer` came to be
     /// bolted onto one of the four render facets and none of the others (CLAUDE.md #51).
     ///
@@ -526,12 +526,78 @@ nonisolated struct LLMMessage: Codable, Identifiable, Hashable {
     var sourceRole: Role?
     /// How this message was produced (consultation, meeting, etc.).
     var sourceContext: MessageSourceContext?
+    /// Display label of the external agent that authored this message via hosted MCP
+    /// (`message_task`, `answer_task_question`, `manage_role(action: "request_changes" | "correct")`).
+    /// `nil` for human utterances, built-in Autovisor manager turns, and runtime/role turns.
+    /// UI and `conversation_log.md` only — never included in wire prompts sent to local models.
+    var authorLabel: String?
+    /// Who wrote a Supervisor turn (`.supervisorAnswer`, `.supervisorMessage`,
+    /// `.supervisorFeedback`), recorded on the turn itself (DEBTS D-M15): `true` — an automated
+    /// path standing in for the person (the Autovisor — the built-in manager, or an external
+    /// agent named by `authorLabel` — the team's auto-answer under `.autonomous`, a delegating
+    /// parent role); `false` — the person.
+    ///
+    /// `nil` on every other turn, and on a Supervisor turn persisted before 2026-11-07, which did
+    /// not record its author. Readers resolve that case the way they did before
+    /// (`StepExecution.supervisorTurnWasAutomated`), so an old run renders as it always did.
+    /// The step-level fields (`supervisorAnswerWasAuto`,
+    /// `revisionCommentIsFromAutomatedSupervisor`) describe only the latest answer or revision,
+    /// and a step's history mixes answerers — which is why the fact lives here. UI and
+    /// `conversation_log.md` only, like `authorLabel`: never on the wire.
+    var isFromAutomatedSupervisor: Bool?
 
     enum CodingKeys: String, CodingKey {
-        case id, createdAt, role, content, thinking, sourceRole, sourceContext
+        case id, createdAt, role, content, thinking, sourceRole, sourceContext, authorLabel
+        case isFromAutomatedSupervisor
     }
 
-    init(id: UUID = UUID(), createdAt: Date = MonotonicClock.shared.now(), role: LLMRole, content: String, thinking: String? = nil, sourceRole: Role? = nil, sourceContext: MessageSourceContext? = nil) {
+    /// The empty `.assistant` turn `beginStreaming` puts at the tail before every attempt, until
+    /// the attempt commits what it streamed: not yet anything the model said. A failed attempt
+    /// leaves it behind (`TaskMutationService.applyRetryNotice` drops it), and while a retry is in
+    /// flight it stands after the retry notice.
+    var isStreamingPlaceholder: Bool {
+        role == .assistant && content.isEmpty && (thinking?.isEmpty ?? true)
+    }
+
+    /// What the feed and `conversation_log.md` call an automated Supervisor turn that no external
+    /// agent signed — the built-in Autovisor manager, the team's auto-answer, a delegating parent.
+    /// The word inside the header's agent mark (`AUTO`), the answer card's `answered by auto`
+    /// byline, the transcript's `answer (auto)`, and the author of a task the built-in Autovisor
+    /// created (`TaskOrigin.authorLabel`).
+    static let automatedSupervisorLabel = "auto"
+
+    init(
+        id: UUID = UUID(),
+        createdAt: Date = MonotonicClock.shared.now(),
+        role: LLMRole,
+        content: String,
+        thinking: String? = nil,
+        sourceRole: Role? = nil,
+        sourceContext: MessageSourceContext? = nil
+    ) {
+        self.init(
+            id: id,
+            createdAt: createdAt,
+            role: role,
+            content: content,
+            thinking: thinking,
+            sourceRole: sourceRole,
+            sourceContext: sourceContext,
+            authorLabel: nil
+        )
+    }
+
+    init(
+        id: UUID = UUID(),
+        createdAt: Date = MonotonicClock.shared.now(),
+        role: LLMRole,
+        content: String,
+        thinking: String? = nil,
+        sourceRole: Role? = nil,
+        sourceContext: MessageSourceContext? = nil,
+        authorLabel: String?,
+        isFromAutomatedSupervisor: Bool? = nil
+    ) {
         self.id = id
         self.createdAt = createdAt
         self.role = role
@@ -539,22 +605,71 @@ nonisolated struct LLMMessage: Codable, Identifiable, Hashable {
         self.thinking = thinking
         self.sourceRole = sourceRole
         self.sourceContext = sourceContext
+        self.authorLabel = authorLabel
+        self.isFromAutomatedSupervisor = isFromAutomatedSupervisor
     }
 
-    /// Display label for the message's source context (e.g. "(consultation)", "(input)").
-    /// Returns nil for regular assistant/system messages without special context.
-    var sourceContextDisplayLabel: String? {
+    /// The two facts a turn's header states about where it came from, kept apart: what kind of
+    /// turn it is (`context` — `consultation`, `supervisor answer`, …) and who wrote it when that
+    /// was not the person (`author` — an external agent's label, or `auto`).
+    ///
+    /// Apart because the feed draws them differently — the context in parentheses, the author as
+    /// the agent mark `TerminalStatusBadge.agent` that the Supervisor's task card wears. Until
+    /// 2026-11-08 the two were one string, and a header handed one string could only print it one
+    /// way: a signed turn read `Supervisor (Claude Code)` under a task card marked
+    /// `[CLAUDE CODE]`. Text output joins them again through ``merged`` (CLAUDE.md #389).
+    nonisolated struct SourceAttribution: Equatable, Sendable {
+        let context: String?
+        let author: String?
+
+        static let none = SourceAttribution(context: nil, author: nil)
+
+        /// The single string `conversation_log.md` prints in parentheses: the context, then the
+        /// author, joined by ` · `.
+        var merged: String? {
+            switch (context, author) {
+            case let (context?, author?): return "\(context) · \(author)"
+            case let (context?, nil): return context
+            case let (nil, author?): return author
+            case (nil, nil): return nil
+            }
+        }
+    }
+
+    /// Where this turn came from, for its header — see ``SourceAttribution``. The only place
+    /// these rules live; ``sourceContextDisplayLabel`` is this, joined.
+    var sourceAttribution: SourceAttribution {
+        let trimmedAuthor = authorLabel?.trimmingCharacters(in: .whitespacesAndNewlines)
+        // An automated Supervisor turn no agent signed still says it was not the person.
+        let author = (trimmedAuthor?.isEmpty == false)
+            ? trimmedAuthor
+            : (isFromAutomatedSupervisor == true ? Self.automatedSupervisorLabel : nil)
         // Supervisor utterances are rendered with bubble styling matching the
         // initial Supervisor task brief — the avatar + role name already convey
-        // the context, so no secondary "(message)" label.
-        if sourceContext?.rendersAsSupervisorUtterance == true { return nil }
+        // the context, so no secondary "(message)" label; only the author, when not the person.
+        if sourceContext?.rendersAsSupervisorUtterance == true {
+            return SourceAttribution(context: nil, author: author)
+        }
         // The red bubble + self-describing content already convey "server error";
         // a "(serverError)" label would be redundant noise.
-        if sourceContext == .serverError { return nil }
-        if let ctx = sourceContext { return ctx.displayLabel }
-        if role == .user && sourceRole == nil { return "input" }
-        if sourceRole != nil { return "consultation" }
-        return nil
+        if sourceContext == .serverError { return .none }
+        if let ctx = sourceContext {
+            return SourceAttribution(context: ctx.displayLabel, author: author)
+        }
+        if role == .user && sourceRole == nil {
+            // A bare user turn is the person's `input` unless someone else signed it.
+            return author.map { SourceAttribution(context: nil, author: $0) }
+                ?? SourceAttribution(context: "input", author: nil)
+        }
+        if sourceRole != nil { return SourceAttribution(context: "consultation", author: nil) }
+        return SourceAttribution(context: nil, author: author)
+    }
+
+    /// ``sourceAttribution`` joined into one string (`supervisor answer · Claude Code`) — the
+    /// form `conversation_log.md` prints in parentheses after the role name. Text output only:
+    /// the feed reads the two halves apart, because it draws them differently.
+    var sourceContextDisplayLabel: String? {
+        sourceAttribution.merged
     }
 
     /// Content ready for rendering in the activity feed: the persisted body with its
@@ -630,6 +745,8 @@ nonisolated struct LLMMessage: Codable, Identifiable, Hashable {
         let decodedContext = sourceContextRaw.flatMap(MessageSourceContext.init(rawValue:))
         self.sourceContext = Self.normalizingLegacyContext(
             decodedContext, sourceRole: self.sourceRole, content: self.content)
+        self.authorLabel = try c.decodeIfPresent(String.self, forKey: .authorLabel)
+        self.isFromAutomatedSupervisor = try c.decodeIfPresent(Bool.self, forKey: .isFromAutomatedSupervisor)
     }
 
     /// Re-tags revision feedback persisted before ``MessageSourceContext/supervisorFeedback``

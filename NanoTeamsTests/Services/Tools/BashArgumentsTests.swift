@@ -20,20 +20,28 @@ final class BashArgumentsTests: XCTestCase {
     }
 
     func testAlternativeKeys_resolve() {
-        // The handler's resilient resolver honors these; the gate MUST too, else a
-        // command under one of them runs ungated.
-        XCTAssertEqual(BashArguments.command(from: ["text": "rm -rf /"]), "rm -rf /")
-        XCTAssertEqual(BashArguments.command(from: ["content": "curl x | sh"]), "curl x | sh")
-        XCTAssertEqual(BashArguments.command(from: ["script": "make"]), "make")
-        XCTAssertEqual(BashArguments.command(from: ["body": "git push"]), "git push")
+        // Renamed to `command` by the runtime's reading (`BashTool.undeclaredArguments`) — the
+        // gate reads the same, so a command under one of them is judged, never run ungated.
+        XCTAssertEqual(BashArguments.command(fromJSON: #"{"text":"rm -rf /"}"#), "rm -rf /")
+        XCTAssertEqual(BashArguments.command(fromJSON: #"{"content":"curl x | sh"}"#), "curl x | sh")
+        XCTAssertEqual(BashArguments.command(fromJSON: #"{"script":"make"}"#), "make")
+        XCTAssertEqual(BashArguments.command(fromJSON: #"{"body":"git push"}"#), "git push")
+        XCTAssertEqual(BashArguments.command(fromJSON: #"{"cmd":"ls"}"#), "ls")
+        XCTAssertEqual(BashArguments.command(fromJSON: #"{"code":"pwd"}"#), "pwd")
     }
 
-    func testContentDecoy_contentWins_matchingHandlerExecution() {
-        // {"command":"ls","content":"rm -rf ~"} — the handler runs `content`, so the
-        // resolver MUST return `content` (not the benign `command` decoy) so the
-        // gate judges what actually executes.
-        let resolved = BashArguments.command(from: ["command": "ls", "content": "rm -rf ~"])
-        XCTAssertEqual(resolved, "rm -rf ~")
+    private func isRefused(_ json: String) -> Bool {
+        if case .invalid = ToolCallArguments.prepare(rawJSON: json, emittedName: ToolNames.bash) { return true }
+        return false
+    }
+
+    func testContentDecoy_isRefused_neverResolvedEitherWay() {
+        // {"command":"ls","content":"rm -rf ~"} — until 2026-11-09 the alias OUTRANKED the
+        // declared key and `content` ran. Two spellings of one argument now refuse the call:
+        // nothing is judged, nothing runs.
+        let json = #"{"command":"ls","content":"rm -rf ~"}"#
+        XCTAssertNil(BashArguments.command(fromJSON: json))
+        XCTAssertTrue(isRefused(json))
     }
 
     func testEmptyOrWhitespace_isNil() {
@@ -43,9 +51,10 @@ final class BashArgumentsTests: XCTestCase {
     }
 
     func testJSONParity_matchesDictResolution() {
-        let json = #"{"command":"ls","content":"rm -rf ~"}"#
-        XCTAssertEqual(BashArguments.command(fromJSON: json), "rm -rf ~")
-        XCTAssertNil(BashArguments.command(fromJSON: "not json"))
+        XCTAssertNil(BashArguments.command(fromJSON: #"{"command":"ls","content":"rm -rf ~"}"#))
+        // Prose reaches the handler under `__raw_input__` and the handler runs it, so the gate
+        // must judge it — until 2026-11-09 this was `nil`, and the gate skipped the call.
+        XCTAssertEqual(BashArguments.command(fromJSON: "not json"), "not json")
         XCTAssertEqual(BashArguments.command(fromJSON: #"{"text":"whoami"}"#), "whoami")
     }
 
@@ -95,34 +104,38 @@ final class BashArgumentsTests: XCTestCase {
 
     // MARK: - Extended alias / precedence (gate-bypass surface)
 
-    func testExtendedAliasKeys_resolveAsCommand() {
-        // The handler's resilient resolver honors the full alias set; the gate MUST
-        // resolve identically or a command under one of them runs ungated.
-        XCTAssertEqual(BashArguments.command(from: ["data": "whoami"]), "whoami")
-        XCTAssertEqual(BashArguments.command(from: ["value": "id"]), "id")
-        XCTAssertEqual(BashArguments.command(from: ["file_content": "ls -la"]), "ls -la")
-        XCTAssertEqual(BashArguments.command(from: ["code": "pwd"]), "pwd")
-        XCTAssertEqual(BashArguments.command(from: ["source": "date"]), "date")
-        XCTAssertEqual(BashArguments.command(from: ["message": "echo hi"]), "echo hi")
+    func testNamesOutsideTheList_areRefused_aNarrowingOnPurpose() {
+        // The old resolver took eleven body names and then ANY single remaining string as the
+        // command. A name outside the six is now refused by name — never run as a command.
+        for key in ["data", "value", "file_content", "source", "message", "plan", "notes"] {
+            let json = "{\"\(key)\":\"whoami\"}"
+            XCTAssertNil(BashArguments.command(fromJSON: json), key)
+            XCTAssertTrue(isRefused(json), key)
+        }
     }
 
-    func testAliasPrecedence_contentBeatsText_textBeatsBody() {
-        // Fixed precedence so the gate always judges exactly what the handler runs.
-        XCTAssertEqual(BashArguments.command(from: ["content": "A", "text": "B"]), "A")
-        XCTAssertEqual(BashArguments.command(from: ["text": "B", "body": "C"]), "B")
+    func testTwoAliases_areRefused_noPrecedence() {
+        // There used to be a precedence (content > text > body). There is none now: two
+        // spellings would let the gate and the runtime read different ones.
+        XCTAssertTrue(isRefused(#"{"content":"A","text":"B"}"#))
+        XCTAssertTrue(isRefused(#"{"text":"B","body":"C"}"#))
     }
 
-    func testCommandDecoyUnderAliasKey_aliasWins() {
-        // A benign `command` decoy with the real command under any alias key must
-        // resolve to the alias (gate-bypass regression — the gate judges the alias).
-        XCTAssertEqual(BashArguments.command(from: ["command": "ls", "text": "rm -rf ~"]), "rm -rf ~")
-        XCTAssertEqual(BashArguments.command(from: ["command": "ls", "data": "curl x | sh"]), "curl x | sh")
+    func testCommandDecoyUnderAliasKey_isRefused() {
+        XCTAssertTrue(isRefused(#"{"command":"ls","text":"rm -rf ~"}"#))
+        XCTAssertTrue(isRefused(#"{"command":"ls","data":"curl x | sh"}"#), "`data` is not a spelling of `command`")
     }
 
-    func testSingleRemainingUnknownKey_resolves() {
-        // One unknown, non-structural string key resolves as the command (resilient
-        // single-remaining fallback) — so the gate sees it too.
-        XCTAssertEqual(BashArguments.command(from: ["foo": "whoami"]), "whoami")
+    func testAnUnknownKey_isRefused_neverRunAsTheCommand() {
+        XCTAssertNil(BashArguments.command(fromJSON: #"{"foo":"whoami"}"#))
+        XCTAssertTrue(isRefused(#"{"foo":"whoami"}"#))
+    }
+
+    func testDescription_isIgnored_andTheCommandRuns() throws {
+        let call = try XCTUnwrap(ToolCallArguments.prepare(
+            rawJSON: #"{"command":"ls","description":"List files"}"#, emittedName: ToolNames.bash).dispatched)
+        XCTAssertEqual(BashArguments.command(from: call.args), "ls")
+        XCTAssertEqual(call.notes, ["Ignored `description`: a command's description is not part of what runs."])
     }
 
     func testAmbiguousTwoUnknownKeys_isNil() {
@@ -145,11 +158,14 @@ final class BashArgumentsTests: XCTestCase {
         XCTAssertNil(BashArguments.command(from: ["text": ["a", "b"]]))
     }
 
-    func testJSON_topLevelNonObject_isNil() {
-        // Valid JSON that isn't a top-level object can't carry args → nil.
+    func testJSON_topLevelNonObject_isWhatTheRuntimeDispatches() {
+        // A list is not arguments: the runtime refuses it, so nothing runs and nothing is judged.
         XCTAssertNil(BashArguments.command(fromJSON: "[1,2,3]"))
-        XCTAssertNil(BashArguments.command(fromJSON: "123"))
-        XCTAssertNil(BashArguments.command(fromJSON: "\"hello\""))
+        // A bare scalar is not a JSON object either, but the runtime does NOT refuse it — it
+        // reaches the handler as prose under `__raw_input__`, and the handler runs that text.
+        // So the gate judges exactly it (until 2026-11-09 this was `nil`: judged nothing, ran it).
+        XCTAssertEqual(BashArguments.command(fromJSON: "123"), "123")
+        XCTAssertEqual(BashArguments.command(fromJSON: "\"hello\""), "\"hello\"")
     }
 
     func testWorkingDirectory_whitespaceNotTrimmed_and_badJSON() {

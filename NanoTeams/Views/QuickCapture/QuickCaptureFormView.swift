@@ -668,7 +668,7 @@ struct QuickCaptureFormView: View {
                 .lineLimit(1)
             Spacer()
             Button {
-                QuickCaptureController.shared.discardQueuedChatMessage(taskID: taskID)
+                store.messageQueue.discardQueuedChatMessage(taskID: taskID)
             } label: {
                 Image(systemName: "xmark")
                     .font(Typography.term2xs.weight(.semibold))

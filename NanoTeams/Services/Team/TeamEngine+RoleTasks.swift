@@ -41,6 +41,7 @@ extension TeamEngine {
         guard let store, let run = store.activeTask?.runs.last, let gate = acceptanceGate() else { return }
         let stepMap = run.stepsByRoleBaseID()
         for (roleID, status) in run.roleStatuses {
+            guard !Task.isCancelled else { return }
             await reconcileRole(
                 roleID: roleID,
                 roleStatus: status,
@@ -134,11 +135,15 @@ extension TeamEngine {
     func restartParkedRoles(_ roleIDs: [String], in run: Run) async {
         let stepMap = run.stepsByRoleBaseID()
         for roleID in roleIDs {
+            guard !Task.isCancelled else { return }
             guard let step = stepMap[roleID] else { continue }
             let stepID = step.id
             launchRoleTask(roleID: roleID) { engine, store in
+                guard !Task.isCancelled else { return }
                 await store.prepareStepForExecution(stepID: stepID)
+                guard !Task.isCancelled else { return }
                 await store.runStep(stepID: stepID)
+                guard !Task.isCancelled else { return }
                 await engine.waitForStepCompletion(stepID: stepID, roleID: roleID)
             }
         }
@@ -227,6 +232,7 @@ extension TeamEngine {
 
         var started: [String] = []
         for roleID in roleIDs {
+            guard !Task.isCancelled else { break }
             // Skip if already executing. `hasLiveRoleTask` is believable because
             // `launchRoleTask` evicts a finished record; the older `roleTasks[roleID] != nil`
             // form skipped a role whose previous execution had merely RETURNED, which under a
@@ -235,21 +241,27 @@ extension TeamEngine {
 
             // Update status to working
             await store.updateRoleStatus(roleID: roleID, status: .working)
+            guard !Task.isCancelled else { break }
             onRoleStatusChanged?(roleID, .working)
             started.append(roleID)
 
             // Create step if needed and start execution
             launchRoleTask(roleID: roleID) { engine, store in
+                guard !Task.isCancelled else { return }
                 guard let stepID = await store.findOrCreateStep(roleID: roleID) else {
+                    guard !Task.isCancelled else { return }
                     await store.updateRoleStatus(roleID: roleID, status: .failed)
                     engine.onRoleStatusChanged?(roleID, .failed)
                     return
                 }
 
+                guard !Task.isCancelled else { return }
                 await store.prepareStepForExecution(stepID: stepID)
+                guard !Task.isCancelled else { return }
                 await store.runStep(stepID: stepID)
 
                 // Wait for step to complete
+                guard !Task.isCancelled else { return }
                 await engine.waitForStepCompletion(stepID: stepID, roleID: roleID)
             }
         }
@@ -308,6 +320,7 @@ extension TeamEngine {
 
         var started: [String] = []
         for roleID in roleIDs {
+            guard !Task.isCancelled else { break }
             // The change REQUESTER is flagged `.revisionRequested` while its own step keeps
             // running (`holdDownstreamForRevision`), and `resetStepForRevision` no-ops on a
             // `.running` step — so without this guard a startable requester got a SECOND
@@ -316,11 +329,14 @@ extension TeamEngine {
             if hasLiveRoleTask(roleID) { continue }
 
             await store.updateRoleStatus(roleID: roleID, status: .working)
+            guard !Task.isCancelled else { break }
             onRoleStatusChanged?(roleID, .working)
             started.append(roleID)
 
             launchRoleTask(roleID: roleID) { engine, store in
+                guard !Task.isCancelled else { return }
                 guard let stepID = await store.findOrCreateStep(roleID: roleID) else {
+                    guard !Task.isCancelled else { return }
                     await store.updateRoleStatus(roleID: roleID, status: .failed)
                     store.setLastErrorMessageForUI("Revision failed for '\(roleID)': step not found.")
                     engine.onRoleStatusChanged?(roleID, .failed)
@@ -329,10 +345,14 @@ extension TeamEngine {
 
                 // Reset the step from .done/.failed to .pending for re-execution.
                 // This also clears completedAt so it reflects the revision completion time.
+                guard !Task.isCancelled else { return }
                 await store.resetStepForRevision(stepID: stepID)
 
+                guard !Task.isCancelled else { return }
                 await store.prepareStepForExecution(stepID: stepID)
+                guard !Task.isCancelled else { return }
                 await store.runStep(stepID: stepID)
+                guard !Task.isCancelled else { return }
                 await engine.waitForStepCompletion(stepID: stepID, roleID: roleID)
             }
         }

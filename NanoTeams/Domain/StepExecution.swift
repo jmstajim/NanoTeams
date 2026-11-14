@@ -94,6 +94,16 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
     /// auto-answered") mislabeled human answers to the Autovisor's idle park.
     var supervisorAnswerWasAuto: Bool = false
 
+    /// Display label of the external agent that supplied `supervisorAnswer` via the
+    /// hosted MCP `answer_task_question` tool (`nil` for human answers, the built-in
+    /// Autovisor manager, or in-loop auto-answers). Paired with `SupervisorAnswerOrigin.automated`
+    /// (`supervisorAnswerWasAuto == true`), so the wire continues to treat the answer as an
+    /// automated Supervisor reply while `SupervisorInputCard` can render "Answered by <agent>"
+    /// instead of the generic "Auto-answered" badge. Single writer: `StepMessagingService.answerSupervisorQuestion`;
+    /// cleared alongside the other answer fields in `setNeedsSupervisorInput`, `recordAutoSupervisorAnswer`,
+    /// and `reset()`.
+    var supervisorAnswerAuthor: String?
+
     /// True while an answer is recorded but has NOT yet been handed to the wire.
     ///
     /// `supervisorAnswer` cannot carry this meaning: it is a DISPLAY field the activity
@@ -169,6 +179,24 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
     /// While set, `checkArtifactCompleteness` is skipped to prevent premature auto-completion
     /// from artifacts created in the prior execution.
     var revisionComment: String?
+
+    /// Display label of the external agent that submitted `revisionComment` via hosted MCP
+    /// `manage_role(action: "request_changes" | "correct")` (`nil` for human or built-in
+    /// Autovisor manager). Forwarded to the `.supervisorFeedback` `LLMMessage.authorLabel`
+    /// when the step resumes and cleared alongside `revisionComment`.
+    var revisionCommentAuthor: String?
+
+    /// Who wrote `revisionComment`: `true` — an automated path, the Autovisor (built-in manager
+    /// or external agent); `false` — the person; `nil` — nobody recorded, which is what an
+    /// amendment notice is (the team's vote, not a Supervisor's words) and what every revision
+    /// persisted before 2026-11-07 is. Forwarded to the `.supervisorFeedback` turn's
+    /// `LLMMessage.isFromAutomatedSupervisor` when the step re-enters, because the turn is built
+    /// from these fields and not from the request that set them (DEBTS D-M15) — until then only
+    /// the external agent's label reached the turn, and the built-in manager's
+    /// `request_changes` and `correct` read as the person's words. Set with `revisionComment` by
+    /// `requestRevision` and `correctRole`, reset to `nil` by the amendment writers, cleared with
+    /// `revisionComment`.
+    var revisionCommentIsFromAutomatedSupervisor: Bool?
 
     /// Written by the repository, read by the repository. Non-nil ⇔ this step's
     /// four stream collections live in `step_log.jsonl` (`NTMSPaths.stepLogJSONL`)
@@ -261,6 +289,7 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         supervisorAnswer: String? = nil,
         supervisorAnswerAttachmentPaths: [String] = [],
         supervisorAnswerWasAuto: Bool = false,
+        supervisorAnswerAuthor: String? = nil,
         // `nil` = infer from the answer, the same rule `init(from:)` applies to a
         // `task.json` written before this key existed. Callers that construct a
         // mid-flight step (tests, previews) then keep today's semantics without
@@ -272,6 +301,8 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         llmConversation: [LLMMessage] = [],
         wireTranscript: [ChatMessage] = [],
         revisionComment: String? = nil,
+        revisionCommentAuthor: String? = nil,
+        revisionCommentIsFromAutomatedSupervisor: Bool? = nil,
         toolCallingMode: ToolCallingMode? = nil,
         ancillaryQuestion: String? = nil,
         ancillaryAnswer: String? = nil,
@@ -303,12 +334,15 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
                 ?? Self.inferPendingDelivery(
                     answer: supervisorAnswer,
                     attachmentPaths: supervisorAnswerAttachmentPaths)
+        self.supervisorAnswerAuthor = supervisorAnswerAuthor
         self.supervisorCommentForNext = supervisorCommentForNext
         self.tokenUsage = tokenUsage
         self.contextFill = contextFill
         self.llmConversation = llmConversation
         self.wireTranscript = wireTranscript
         self.revisionComment = revisionComment
+        self.revisionCommentAuthor = revisionCommentAuthor
+        self.revisionCommentIsFromAutomatedSupervisor = revisionCommentIsFromAutomatedSupervisor
         self.toolCallingMode = toolCallingMode
         // Aggregate the four legacy delegation/ancillary parameters into the
         // two structs. The DelegationState init enforces
@@ -347,6 +381,7 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         case supervisorInquiryAnswer
         case supervisorAnswerAttachmentPaths
         case supervisorAnswerWasAuto
+        case supervisorAnswerAuthor
         case supervisorAnswerPendingDelivery
         case supervisorCommentForNext
         case tokenUsage
@@ -354,6 +389,8 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         case llmConversation
         case wireTranscript
         case revisionComment
+        case revisionCommentAuthor
+        case revisionCommentIsFromAutomatedSupervisor
         case toolCallingMode
         case logCommit
         // New aggregated shape (preferred on encode + decode).
@@ -392,6 +429,7 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
             SupervisorInquiryAnswer.self, forKey: .supervisorInquiryAnswer)
         self.supervisorAnswerAttachmentPaths = try c.decodeIfPresent([String].self, forKey: .supervisorAnswerAttachmentPaths) ?? []
         self.supervisorAnswerWasAuto = try c.decodeIfPresent(Bool.self, forKey: .supervisorAnswerWasAuto) ?? false
+        self.supervisorAnswerAuthor = try c.decodeIfPresent(String.self, forKey: .supervisorAnswerAuthor)
         // Absent in every `task.json` written before the flag existed. Defaulting to
         // `false` there would swallow the answer of a step that was answered but not
         // yet resumed at the moment of the upgrade, so absence INFERS from the answer:
@@ -416,6 +454,9 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         self.wireTranscript =
             try c.decodeIfPresent([ChatMessage].self, forKey: .wireTranscript) ?? []
         self.revisionComment = try c.decodeIfPresent(String.self, forKey: .revisionComment)
+        self.revisionCommentAuthor = try c.decodeIfPresent(String.self, forKey: .revisionCommentAuthor)
+        self.revisionCommentIsFromAutomatedSupervisor =
+            try c.decodeIfPresent(Bool.self, forKey: .revisionCommentIsFromAutomatedSupervisor)
         // Absent for every step written before the mode existed, and that absence is NOT
         // resolved here: `task.json` carries the stream arrays stripped (`logCommit`), so at
         // decode time the transcript this decision depends on is not yet hydrated.
@@ -475,6 +516,7 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         if supervisorAnswerWasAuto {
             try c.encode(supervisorAnswerWasAuto, forKey: .supervisorAnswerWasAuto)
         }
+        try c.encodeIfPresent(supervisorAnswerAuthor, forKey: .supervisorAnswerAuthor)
         // Emitted only when it DISAGREES with what `init(from:)` infers from the answer.
         // Omitting a `false` beside a non-nil `supervisorAnswer` would decode back as
         // `true` — a delivered answer would be re-delivered on the next re-entry, which
@@ -493,6 +535,11 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         // disk re-encoded after a read) don't grow a `"wireTranscript":[]` key.
         if !wireTranscript.isEmpty { try c.encode(wireTranscript, forKey: .wireTranscript) }
         try c.encodeIfPresent(revisionComment, forKey: .revisionComment)
+        try c.encodeIfPresent(revisionCommentAuthor, forKey: .revisionCommentAuthor)
+        // Absent while nobody is recorded, so every step persisted without it re-encodes
+        // byte-for-byte.
+        try c.encodeIfPresent(
+            revisionCommentIsFromAutomatedSupervisor, forKey: .revisionCommentIsFromAutomatedSupervisor)
         try c.encodeIfPresent(toolCallingMode, forKey: .toolCallingMode)
         try c.encodeIfPresent(logCommit, forKey: .logCommit)
         // Encode the new bundled shape only when non-empty (preserves the
@@ -608,11 +655,23 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
     /// Resets all execution state so the step can be re-run from scratch.
     /// Preserves identity fields (id, role, title, expectedArtifacts, createdAt).
     /// - Parameter supervisorComment: If provided, prepended as a Supervisor message to guide the retry.
-    mutating func reset(supervisorComment: String? = nil) {
+    /// - Parameters:
+    ///   - supervisorComment: the comment the re-run starts from, kept as a `.supervisor` step
+    ///     message (the wire relays it; `task_log` lists it).
+    ///   - commentAuthorLabel / commentIsFromAutomatedSupervisor: who left it, recorded on that
+    ///     message (DEBTS D-M15). `nil` leaves the author unrecorded.
+    mutating func reset(
+        supervisorComment: String? = nil,
+        commentAuthorLabel: String? = nil,
+        commentIsFromAutomatedSupervisor: Bool? = nil
+    ) {
         status = .pending
         completedAt = nil
         messages = supervisorComment.map {
-            [StepMessage(role: .supervisor, content: $0)]
+            [StepMessage(
+                role: .supervisor, content: $0,
+                authorLabel: commentAuthorLabel,
+                isFromAutomatedSupervisor: commentIsFromAutomatedSupervisor)]
         } ?? []
         artifacts = []
         toolCalls = []
@@ -628,6 +687,7 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         supervisorAnswerAttachmentPaths = []
         supervisorAnswerWasAuto = false
         supervisorAnswerPendingDelivery = false
+        supervisorAnswerAuthor = nil
         supervisorCommentForNext = nil
         tokenUsage = nil
         // Cleared with the transcript it measures: a fill left behind would show the
@@ -639,6 +699,8 @@ nonisolated struct StepExecution: Codable, Identifiable, Hashable {
         // re-entry replay a conversation belonging to the discarded attempt.
         wireTranscript = []
         revisionComment = nil
+        revisionCommentAuthor = nil
+        revisionCommentIsFromAutomatedSupervisor = nil
         // The transcript this mode described is gone with it; the re-run resolves afresh.
         toolCallingMode = nil
         // `reset` clears delegation history too — this is a full re-run, not a
@@ -681,6 +743,21 @@ nonisolated enum StepStatus: String, Codable, CaseIterable, Hashable {
     case needsApproval
     case failed
     case done
+
+    /// The step's status as an external agent reads it (`task_status.steps[].status`), in the
+    /// event vocabulary where the condition has an event: a parked question is `question`, a
+    /// finished step awaiting a decision is `acceptance_gate` (`TaskStatus.externalName`).
+    var externalName: String {
+        switch self {
+        case .pending: "pending"
+        case .running: "running"
+        case .paused: "paused"
+        case .needsSupervisorInput: "question"
+        case .needsApproval: "acceptance_gate"
+        case .failed: "failed"
+        case .done: "done"
+        }
+    }
 }
 
 // MARK: - DelegationState

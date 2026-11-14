@@ -15,10 +15,14 @@ import XCTest
 /// * `if lastErrorMessage == nil { lastErrorMessage = "<ours>" }` — a foreign message
 ///   suppresses a diagnostic that is the only signal a feature is dead.
 ///
-/// The replacement is `NTMSOrchestrator.errorSurfaced(since:)`, keyed on the monotonic
-/// `errorSurfaceCount` that nothing clears. This suite pins the two behaviours that are
-/// deterministically observable without a render, plus a source scan so the class cannot
-/// come back in a fourth spelling.
+/// The first replacement was `NTMSOrchestrator.errorSurfaced(since:)`, keyed on the monotonic
+/// `errorSurfaceCount` that nothing clears. It fixed those three and kept a fourth: sampled
+/// around an `await`, the process-wide count attributes to the operation every error ANY task
+/// surfaced while it was suspended (D-M18, 2026-11-13). The replacement of the replacement is
+/// `surfacingError(_:)`, whose scope sees the operation's own task tree (`SurfacedErrorScopeTests`).
+/// `errorSurfaced(since:)` survives as a DEBUG test probe. This suite pins the counter's two
+/// behaviours that are deterministically observable without a render, plus source scans so
+/// neither class can come back in another spelling.
 @MainActor
 final class ErrorOutcomeAttributionTests: XCTestCase, @unchecked Sendable {
 
@@ -178,8 +182,65 @@ final class ErrorOutcomeAttributionTests: XCTestCase, @unchecked Sendable {
         XCTAssertTrue(
             offenders.isEmpty,
             "`lastErrorMessage` is consumed by the banner, so it cannot answer "
-                + "\"did that fail, and why\". Use `errorSurfaced(since:)`.\n"
+                + "\"did that fail, and why\". Use `surfacingError(_:)`.\n"
                 + offenders.joined(separator: "\n"))
+    }
+
+    /// The process-wide counter is the process's record, not an operation's outcome: production
+    /// code outside its declaration reads neither it nor its probe. A count sampled before an
+    /// `await` and compared after it reports another task's error as the operation's — the
+    /// agent's `control_task delete` answered `COMMAND_FAILED "Task not found: 22"` for a delete
+    /// that happened (D-M18, 2026-11-12).
+    ///
+    /// RED: put `let before = errorSurfaceCount` back into any verb → this names the line.
+    func testNoProductionCodeReadsTheProcessWideCounterForAnOutcome() throws {
+        let root = try Self.repoRoot()
+        let declaration = "NanoTeams/Services/Core/NTMSOrchestrator.swift"
+        var offenders: [String] = []
+        var declarationReads = 0
+
+        for url in Self.swiftFiles(under: root.appendingPathComponent("NanoTeams")) {
+            let rel = url.path.replacingOccurrences(of: root.path + "/", with: "")
+            guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            for (i, line) in text.components(separatedBy: "\n").enumerated() {
+                let code = Self.strippingComment(line)
+                guard Self.readsTheProcessWideCounter(code) else { continue }
+                if rel == declaration {
+                    declarationReads += 1
+                    continue
+                }
+                offenders.append("\(rel):\(i + 1): \(line.trimmingCharacters(in: .whitespaces))")
+            }
+        }
+
+        XCTAssertTrue(
+            offenders.isEmpty,
+            "`errorSurfaceCount` counts every task's errors; an operation reads its own with "
+                + "`surfacingError(_:)`.\n" + offenders.joined(separator: "\n"))
+        // The declaration file: the two writes in `didSet`, the two declarations and the DEBUG
+        // probe's body. Anti-vacuity, and a ceiling: a sixth line there is a new consumer.
+        XCTAssertEqual(declarationReads, 5, "the scan no longer sees the declaration, or it grew a reader")
+    }
+
+    func testTheCounterScannerRecognisesWhatItBans() {
+        for banned in [
+            "let before = errorSurfaceCount",
+            "let errorsBefore = store.errorSurfaceCount",
+            "if let err = errorSurfaced(since: before) { return .failure(err) }",
+            "lastSurfacedError ?? fallback",
+        ] {
+            XCTAssertTrue(Self.readsTheProcessWideCounter(banned), banned)
+        }
+        for legal in [
+            "let (ok, error) = await surfacingError { await closeTask(taskID: id) }",
+            "restoreBanner(baselineBanner)",
+        ] {
+            XCTAssertFalse(Self.readsTheProcessWideCounter(legal), legal)
+        }
+    }
+
+    private static func readsTheProcessWideCounter(_ code: String) -> Bool {
+        ["errorSurfaceCount", "errorSurfaced(since:", "lastSurfacedError"].contains { code.contains($0) }
     }
 
     /// Anti-vacuity: the scanner recognises each spelling it exists to catch, and leaves

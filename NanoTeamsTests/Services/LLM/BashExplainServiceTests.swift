@@ -144,7 +144,7 @@ final class BashExplainServiceTests: XCTestCase {
 
     /// The verdict path pins temperature to 0 (strict-JSON extraction); the
     /// advisory is GENERATIVE prose and must keep the operator's temperature —
-    /// the explainer uses `JudgeConfig.applying`, never `configForJudge`.
+    /// the explainer uses `JudgeConfig.applying`, never `JudgeConfig.forVerdict`.
     func testExplain_keepsOperatorTemperature_noVerdictPin() async {
         let client = StubExplainClient(content: "x")
         var policy = BashPolicy()

@@ -58,6 +58,20 @@ nonisolated enum ActivityDetailWindow: Hashable, Codable {
         createdAt: Date
     )
 
+    /// One external Autovisor agent's call, in full — the arguments it sent and the response it
+    /// got. `id` = `ExternalAutovisorActivityRecord.id`. The bodies are loaded lazily inside
+    /// `ExternalAgentCallDetailBody` from `ExternalAutovisorActivityLog.fullCall(id:)`, like
+    /// `.artifact` below: a response can be half a megabyte, and the WINDOW reports a body that
+    /// will not load — until 2026-11-13 the error banner was cleared while ANY external call was in
+    /// flight (a process-wide suppression depth, now `NTMSOrchestrator.suppressingBanners`, which
+    /// clears only what the call itself raises), and an agent waiting for events always has one.
+    case externalAgentCall(
+        id: UUID,
+        toolName: String,
+        isError: Bool,
+        createdAt: Date
+    )
+
     /// Artifact viewer. Content is loaded lazily from disk inside
     /// `ArtifactDetailBody` (work-folder URL pulled from the
     /// `NTMSOrchestrator` environment) so this value type stays small.
@@ -91,6 +105,7 @@ nonisolated enum ActivityDetailWindow: Hashable, Codable {
         case .supervisorThinking(let id, _, _): return "supervisor-thinking:\(id)"
         case .compaction(let id, _, _):         return "compaction:\(id)"
         case .toolCall(let id, _, _, _, _, _):  return "tool:\(id)"
+        case .externalAgentCall(let id, _, _, _): return "external-call:\(id)"
         case .artifact(let taskID, let name, _, let relativePath, let createdAt):
             // `relativePath` (not `name`) is the source of truth for artifact
             // identity: two roles in the same task can produce same-named

@@ -78,6 +78,15 @@ final class OrchestratorEngineState {
         taskEngineStates.removeValue(forKey: taskID)
     }
 
+    /// Drops every per-task projection — engine state, meeting participants, queued roles — for
+    /// the ids NOT in `taskIDs`. The run-start claims are left alone: a claim is a start in
+    /// flight, not a projection of one.
+    func retainProjections(forTaskIDs taskIDs: Set<Int>) {
+        taskEngineStates = taskEngineStates.filter { taskIDs.contains($0.key) }
+        activeMeetingParticipants = activeMeetingParticipants.filter { taskIDs.contains($0.key) }
+        queuedRoleIDs = queuedRoleIDs.filter { taskIDs.contains($0.key) }
+    }
+
     func removeAllEngines() {
         taskEngineStates.removeAll()
         activeMeetingParticipants.removeAll()

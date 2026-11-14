@@ -14,7 +14,6 @@ struct LLMRoleConcurrencyCard: View {
     var body: some View {
         SettingsCard(
             header: "Parallel Roles",
-            systemImage: "square.stack.3d.up",
             footer: Self.footer
         ) {
             VStack(alignment: .leading, spacing: Spacing.xs) {

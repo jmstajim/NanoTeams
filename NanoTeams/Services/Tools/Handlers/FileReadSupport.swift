@@ -82,9 +82,14 @@ nonisolated enum FileReadSupport {
         toolName: String,
         args: [String: Any],
         path: String,
-        fileURL: URL
-    ) -> ContentOutcome {
-        if let outcome = DocumentTextExtractor.extract(from: fileURL) {
+        fileURL: URL,
+        resolver: SandboxPathResolver
+    ) throws -> ContentOutcome {
+        // The extractors open the name themselves, so they are pointed at the file's real path
+        // rather than the one the model wrote; the UTF-8 arm below reads a verified descriptor
+        // and never resolves a name again (#376).
+        if let outcome = DocumentTextExtractor.extract(
+            from: try VerifiedFile.verifiedRealURL(fileURL, resolver: resolver)) {
             guard case .text(let extracted, _) = outcome else {
                 // `.empty` and `.failure` both mean "no content to return". They read the
                 // same here on purpose: the caller asked for this file's text, and either
@@ -97,7 +102,10 @@ nonisolated enum FileReadSupport {
             }
             return .text(content: extracted, encoding: "extracted_text")
         }
-        guard let utf8 = try? String(contentsOf: fileURL, encoding: .utf8) else {
+        // A path refused on re-verification throws, so it still answers "File not found" rather
+        // than arriving below as "not valid UTF-8".
+        let data = try VerifiedFile.readData(fileURL, resolver: resolver)
+        guard let utf8 = String(data: data, encoding: .utf8) else {
             return .failure(makeErrorResult(
                 toolName: toolName, args: args,
                 code: .commandFailed,

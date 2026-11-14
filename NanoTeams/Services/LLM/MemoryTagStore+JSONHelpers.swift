@@ -66,6 +66,17 @@ nonisolated extension MemoryTagStore {
         return value
     }
 
+    /// `,"warnings":[…]` for the `meta.warnings` of the handler's envelope, or "" — the ONE way
+    /// a tagged result, which is BUILT rather than filtered, carries those disclosures forward:
+    /// an argument the runtime renamed or ignored (`ToolArgumentVocabulary`), lines `edit_file`
+    /// left in the model's indentation. Until 2026-11-09 only `processEdit` carried them, so a
+    /// `read_file` sent as `file_path` was renamed without the model ever being told.
+    func warningsMember(of outputJSON: String) -> String {
+        let warnings = metaWarnings(in: outputJSON)
+        guard !warnings.isEmpty else { return "" }
+        return ",\"warnings\":[" + warnings.map(jsonEscape).joined(separator: ",") + "]"
+    }
+
     func parseJSON(_ json: String) -> [String: Any]? {
         guard let data = json.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {

@@ -117,6 +117,33 @@ final class MessageBubbleEquatableTests: XCTestCase {
         XCTAssertNotEqual(a, b, "Mutating message.content must break equality.")
     }
 
+    /// The header's agent mark is derived from the message, not passed as a prop of its own —
+    /// so the two fields it reads have to reach `==` through `message`, or a re-signed turn
+    /// keeps its old mark.
+    func testNotEqual_whenMessageAuthorDiffers() async {
+        func signed(_ author: String?) -> LLMMessage {
+            LLMMessage(
+                id: Self.messageID, createdAt: Self.baselineCreatedAt, role: .user, content: "hello",
+                sourceRole: .supervisor, sourceContext: .supervisorMessage,
+                authorLabel: author, isFromAutomatedSupervisor: true)
+        }
+        XCTAssertNotEqual(
+            Self.makeBubble(message: signed("Claude Code")),
+            Self.makeBubble(message: signed("Codex")))
+    }
+
+    func testNotEqual_whenMessageAutomatedFlagDiffers() async {
+        func turn(automated: Bool) -> LLMMessage {
+            LLMMessage(
+                id: Self.messageID, createdAt: Self.baselineCreatedAt, role: .user, content: "hello",
+                sourceRole: .supervisor, sourceContext: .supervisorMessage,
+                authorLabel: nil, isFromAutomatedSupervisor: automated)
+        }
+        XCTAssertNotEqual(
+            Self.makeBubble(message: turn(automated: true)),
+            Self.makeBubble(message: turn(automated: false)))
+    }
+
     func testNotEqual_whenRoleDiffers() async {
         XCTAssertNotEqual(Self.makeBubble(), Self.makeBubble(role: .productManager))
     }

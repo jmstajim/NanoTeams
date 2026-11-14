@@ -57,10 +57,12 @@ extension SidebarView {
                 HStack(spacing: Spacing.xs) {
                     Text(TerminalGlyph.prompt)
                         .font(Typography.term2xs)
+                        .lineLimit(1)
                         .foregroundStyle(Colors.accent)
                         .accessibilityHidden(true)
                     Text("show storage in finder")
                         .font(Typography.term2xs)
+                        .lineLimit(1)
                         .foregroundStyle(Colors.textTertiary)
                 }
                 .contentShape(Rectangle())

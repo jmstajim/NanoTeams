@@ -31,9 +31,7 @@ nonisolated struct ScreenCaptureTool: ToolHandler {
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
         await ToolErrorHandler.execute(toolName: Self.name, args: args) {
-            let target = optionalString(args, "target").flatMap { $0.isEmpty ? nil : $0 } ?? "screen"
-            let windowTitle = optionalString(args, "window_title").flatMap { $0.isEmpty ? nil : $0 }
-            return signalResult(args: args, action: .capture(target: target, windowTitle: windowTitle))
+            try signalResult(tool: Self.name, args: args)
         }
     }
 }
@@ -66,12 +64,7 @@ nonisolated struct UIClickTool: ToolHandler {
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
         await ToolErrorHandler.execute(toolName: Self.name, args: args) {
-            let x = try requiredInt(args, "x")
-            let y = try requiredInt(args, "y")
-            let button = ComputerUseAction.normalizedButton(optionalString(args, "button"))
-            let double = optionalBool(args, "double")
-            let target = ComputerUseAction.normalizedTargetSpec(optionalString(args, "target"))
-            return signalResult(args: args, action: .click(x: x, y: y, button: button, double: double, target: target))
+            try signalResult(tool: Self.name, args: args)
         }
     }
 
@@ -96,20 +89,19 @@ nonisolated struct UITypeTool: ToolHandler {
         )
     )
     static let category: ToolCategory = .computerUse
+    /// The body names models send text under, and `content` — but never `text` itself, which
+    /// is declared. Before 2026-11-09 a resolver inside the handler took these and then any
+    /// single remaining string, while the approval gate took them with the structural keys
+    /// excluded: two readings of one call.
+    static let undeclaredArguments = ToolArgumentVocabulary.aliases(
+        ["content"] + ToolArgumentVocabulary.bodyAlternatives.filter { $0 != "text" }, of: "text")
     static let excludedInMeetings = true
 
     static func makeInstance(dependencies _: ToolHandlerDependencies) -> Self { Self() }
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
         await ToolErrorHandler.execute(toolName: Self.name, args: args) {
-            let text = optionalString(args, "text") ?? resolveContentString(args) ?? ""
-            guard !text.isEmpty else {
-                // Named after the SCHEMA key, not after the prose: "No text provided"
-                // left the model to guess which argument to add.
-                throw ToolArgumentError.missingRequired("text")
-            }
-            let target = optionalString(args, "target").flatMap { $0.isEmpty ? nil : $0 }
-            return signalResult(args: args, action: .typeText(text: text, target: target))
+            try signalResult(tool: Self.name, args: args)
         }
     }
 }
@@ -130,18 +122,14 @@ nonisolated struct UIKeyTool: ToolHandler {
         )
     )
     static let category: ToolCategory = .computerUse
+    static let undeclaredArguments = ToolArgumentVocabulary.aliases(["key"], of: "keys")
     static let excludedInMeetings = true
 
     static func makeInstance(dependencies _: ToolHandlerDependencies) -> Self { Self() }
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
         await ToolErrorHandler.execute(toolName: Self.name, args: args) {
-            let keys = optionalString(args, "keys") ?? optionalString(args, "key") ?? ""
-            guard !keys.isEmpty else {
-                throw ToolArgumentError.missingRequired("keys")
-            }
-            let target = optionalString(args, "target").flatMap { $0.isEmpty ? nil : $0 }
-            return signalResult(args: args, action: .pressKey(keys: keys, target: target))
+            try signalResult(tool: Self.name, args: args)
         }
     }
 }
@@ -171,12 +159,7 @@ nonisolated struct UIScrollTool: ToolHandler {
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
         await ToolErrorHandler.execute(toolName: Self.name, args: args) {
-            let x = try requiredInt(args, "x")
-            let y = try requiredInt(args, "y")
-            let dx = optionalInt(args, "dx") ?? 0
-            let dy = optionalInt(args, "dy") ?? 0
-            let target = optionalString(args, "target").flatMap { $0.isEmpty ? nil : $0 }
-            return signalResult(args: args, action: .scroll(x: x, y: y, dx: dx, dy: dy, target: target))
+            try signalResult(tool: Self.name, args: args)
         }
     }
 }
@@ -185,6 +168,17 @@ nonisolated struct UIScrollTool: ToolHandler {
 
 /// Interim `{status:"pending"}` envelope + the `.computerUse` signal. The service finalizer
 /// overwrites the envelope with the real result.
+///
+/// The action comes from `ComputerUseArguments` — the resolver the approval gate judges with —
+/// so the handler emits exactly what was approved. A missing argument throws its own name
+/// (`ToolArgumentError.missingRequired`), which is the refusal the model reads.
+nonisolated private func signalResult(tool: String, args: [String: Any]) throws -> ToolExecutionResult {
+    guard let action = try ComputerUseArguments.action(canonicalName: tool, args: args) else {
+        preconditionFailure("\(tool) is a computer-use tool")
+    }
+    return signalResult(args: args, action: action)
+}
+
 nonisolated private func signalResult(args: [String: Any], action: ComputerUseAction) -> ToolExecutionResult {
     ToolExecutionResult(
         toolName: action.toolNameForSignal,

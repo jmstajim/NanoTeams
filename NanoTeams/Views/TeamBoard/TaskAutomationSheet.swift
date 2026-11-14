@@ -117,6 +117,7 @@ struct TaskAutomationSheet: View {
             }
             Text(draft.weekdays.isEmpty ? "Every day" : "Selected days only")
                 .font(Typography.caption2)
+                .lineLimit(1)
                 .foregroundStyle(Colors.textTertiary)
         }
     }
@@ -208,7 +209,7 @@ struct TaskAutomationSheet: View {
                     TerminalStepperButtons(value: timeoutMinutesBinding, range: 0...59)
                 }
                 Text("If a run lasts longer, it's paused and you're notified.")
-                    .font(Typography.caption2)
+                    .font(Typography.caption)
                     .foregroundStyle(Colors.textTertiary)
             }
         }

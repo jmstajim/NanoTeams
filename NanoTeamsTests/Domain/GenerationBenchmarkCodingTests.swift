@@ -200,7 +200,7 @@ final class GenerationBenchmarkCodingTests: XCTestCase {
     /// sheet's Stop and Total columns go permanently blank on Ollama.
     func testSample_roundTripsTheServersTotalAndStopReason() throws {
         let sample = GenerationBenchmarkSample(
-            runID: UUID(), recordedAt: Date(timeIntervalSince1970: 1_755_000_000),
+            runID: UUID(), recordedAt: Date(timeIntervalSince1970: 1_754_956_800),
             phase: .measured, sampleIndex: 0,
             totalMs: 18_000, serverTotalMs: 17_500, doneReason: "length")
         let data = try JSONCoderFactory.makeJSONLEncoder().encode(sample)

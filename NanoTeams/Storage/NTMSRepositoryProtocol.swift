@@ -10,12 +10,12 @@ import Foundation
 /// Work-folder (project) lifecycle and metadata operations.
 nonisolated protocol WorkFolderRepository: Sendable {
     func openOrCreateWorkFolder(at workFolderRoot: URL) throws -> WorkFolderContext
-    func updateWorkFolderContext(at workFolderRoot: URL, context: String, activeTask: NTMSTask?) throws -> WorkFolderContext
-    func updateSelectedScheme(at workFolderRoot: URL, scheme: String?, activeTask: NTMSTask?) throws -> WorkFolderContext
     func updateWorkFolderState(at workFolderRoot: URL, activeTask: NTMSTask?, mutate: (inout WorkFolderState) -> Void) throws -> WorkFolderContext
     func updateSettings(at workFolderRoot: URL, activeTask: NTMSTask?, mutate: (inout ProjectSettings) -> Void) throws -> WorkFolderContext
     func updateTeams(at workFolderRoot: URL, activeTask: NTMSTask?, mutate: (inout [Team]) -> Void) throws -> WorkFolderContext
     func resetWorkFolderSettings(at workFolderRoot: URL) throws -> WorkFolderContext
+    /// Deletes the folder's `.nanoteams/` but its lock file (`NTMSRepository.removeWorkFolderData`).
+    func removeWorkFolderData(at workFolderRoot: URL) throws
 }
 
 /// Task CRUD and active-task selection.
@@ -34,7 +34,9 @@ nonisolated protocol TaskRepository: Sendable {
         parentTaskID: Int?,
         parentRoleID: String?,
         delegationDepth: Int,
-        makeActive: Bool
+        makeActive: Bool,
+        origin: TaskOrigin?,
+        requestKey: String?
     ) throws -> (snapshot: WorkFolderContext, taskID: Int)
     func setActiveTask(at workFolderRoot: URL, taskID: Int?) throws -> WorkFolderContext
     /// Persists `activeTaskID` to `workfolder.json` without rebuilding the full

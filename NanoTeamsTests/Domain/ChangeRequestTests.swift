@@ -315,4 +315,18 @@ final class ChangeRequestTests: XCTestCase {
         XCTAssertEqual(limits.maxChangeRequestsPerRun, 0)
         XCTAssertEqual(limits.maxAmendmentsPerStep, 0)
     }
+
+    // MARK: - What counts against the run's budget (F6 C5, review R3)
+
+    /// A vote that decided spent one of the run's change requests and a vote under way holds
+    /// one — two parallel requests on the last slot must not both be voted on; only a vote that
+    /// ended without a decision (Pause, Stop, the run timeout, a folder switch) is free.
+    func testCountsAgainstTheRunsBudget_unlessTheVoteEndedWithoutADecision() {
+        let all: [ChangeRequestStatus] = [
+            .pending, .approved, .rejected, .escalated, .supervisorApproved, .supervisorRejected, .failed,
+        ]
+        for status in all {
+            XCTAssertEqual(status.countsAgainstTheRunsBudget, status != .failed, "\(status)")
+        }
+    }
 }

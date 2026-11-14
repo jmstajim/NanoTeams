@@ -101,7 +101,7 @@ final class EditFilePerLineAlignmentTests: XCTestCase {
 
     // MARK: - Class 1: mid-insertion sandwich, interior tier (run idx 12)
 
-    /// Run idx 12 (16:52:10): the anchor reproduced an aligned-constant line with
+    /// Run idx 12: the anchor reproduced an aligned-constant line with
     /// the model's own interior padding (tier 3.5 territory), kept the anchor's
     /// last two lines as the tail, and inserted a constants block between — whose
     /// 5-space rows were no map key, so the whole edit was refused with
@@ -159,7 +159,7 @@ final class EditFilePerLineAlignmentTests: XCTestCase {
 
     // MARK: - Class 1: mid-insertion sandwich, indentation tier (run idx 19/26/55)
 
-    /// Run idx 19 (16:55:13): head + blank + tail anchor around an inserted
+    /// Run idx 19: head + blank + tail anchor around an inserted
     /// function whose body depths (6/9sp) no 3-line anchor could have shown.
     /// The refusal told the model to "check leading whitespace (tabs vs spaces)"
     /// about an anchor that was never the problem.
@@ -196,7 +196,7 @@ final class EditFilePerLineAlignmentTests: XCTestCase {
         XCTAssertEqual(written[3], "      let a = KEYS[0];", "the new body keeps the model's bytes")
     }
 
-    /// Run idx 43 (16:58:34): the sandwich whose new block ends in its own `}` —
+    /// Run idx 43: the sandwich whose new block ends in its own `}` —
     /// under the shipped code the suffix arm FALSE-aligned on that brace
     /// (trim-equal to the anchor's closer), pulled the real closer inside the
     /// "window", and refused on its depth. Per-line pairing is order-preserving,
@@ -232,7 +232,7 @@ final class EditFilePerLineAlignmentTests: XCTestCase {
 
     // MARK: - Class 2: one anchor depth ↔ two file depths (run idx 21/40/61)
 
-    /// Run idx 61 (17:00:35): a pure same-count rewrite of `saveWorld()` whose
+    /// Run idx 61: a pure same-count rewrite of `saveWorld()` whose
     /// window closes at 3sp beside a 4sp body — the anchor's `"    "` mapped to
     /// two file depths and the map refused, though ten of thirteen lines were
     /// byte-reproductions each pairing with exactly one file line.
@@ -267,7 +267,7 @@ final class EditFilePerLineAlignmentTests: XCTestCase {
                        "the reproduced closer takes ITS file line's 3sp — the conflict never existed per line")
     }
 
-    /// Run idx 21 (16:55:30): the sandwich variant of the same conflict — the
+    /// Run idx 21: the sandwich variant of the same conflict — the
     /// anchor's head and tail sit at ONE model depth while the file has them at
     /// two (3sp and 2sp, the head written by the run itself 40 seconds earlier).
     ///
@@ -304,7 +304,7 @@ final class EditFilePerLineAlignmentTests: XCTestCase {
 
     // MARK: - Class 3: grow-in-place rewrite (run idx 31)
 
-    /// Run idx 31 (16:57:03): the window rewritten (first line's comment changed)
+    /// Run idx 31: the window rewritten (first line's comment changed)
     /// AND grown — neither end reproduces the anchor, and the new sun-disc block
     /// carried depths (7sp) the anchor never showed.
     ///

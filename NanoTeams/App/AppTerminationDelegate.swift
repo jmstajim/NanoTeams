@@ -30,6 +30,9 @@ final class AppTerminationDelegate: NSObject, NSApplicationDelegate {
     /// next to a user deciding the app is wedged.
     static let saveTimeout: Duration = .seconds(5)
 
+    /// Budget for the hosted loopback MCP server teardown branch inside `shutdownForTermination()` (§7.1).
+    static let hostedMCPShutdownBudget: Duration = .seconds(1)
+
     /// The shutdown step, installed by `NanoTeamsApp` once the orchestrator exists.
     ///
     /// `nil` until then — and a quit in that window is not an error: nothing has been opened,
@@ -46,6 +49,9 @@ final class AppTerminationDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(
         _ sender: NSApplication
     ) -> NSApplication.TerminateReply {
+        // A token copied in the last minute would outlive the app on the clipboard, where the
+        // next launch's roles read it (#375).
+        ExternalAgentsPasteboard.clearPendingSecret()
         guard let onTerminate else { return .terminateNow }
         Task { @MainActor in
             await Self.run(onTerminate, within: Self.saveTimeout)
@@ -64,6 +70,12 @@ final class AppTerminationDelegate: NSObject, NSApplicationDelegate {
     /// loser does not help — the work is a `Data.write(options: .atomic)` into an actor, which
     /// observes no cancellation. On timeout the save is therefore ABANDONED, not stopped; it
     /// finishes, or doesn't, into a process that is already exiting.
+    static func run(
+        _ work: @escaping @MainActor () async -> Void, budget timeout: Duration
+    ) async {
+        await run(work, within: timeout)
+    }
+
     static func run(
         _ work: @escaping @MainActor () async -> Void, within timeout: Duration
     ) async {

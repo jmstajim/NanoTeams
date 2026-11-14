@@ -9,10 +9,12 @@ import XCTest
 ///
 ///     cat > /tmp/nt_search_sweep.json <<'JSON'
 ///     { "results": "/path/to/exploratory_search_results_real.json",
-///       "cutoffEpoch": 1789203640 }
+///       "cutoffEpoch": 1789171200 }
 ///     JSON
 ///     xcodebuild test-without-building -project NanoTeams.xcodeproj -scheme NanoTeams \
 ///       -destination 'platform=macOS' -only-testing:NanoTeamsTests/SearchBudgetSweepTests
+///
+/// (`cutoffEpoch` is the recording's own epoch; the example's is cut to the start of its day.)
 ///
 /// **Why a harness and not a re-implementation.** The question D-44 asks — what would recall be
 /// at another page size, another per-term cap, another dedup rule — is a pure function of the
@@ -179,14 +181,15 @@ final class SearchBudgetSweepTests: XCTestCase {
             // Per-file dedup needs headroom: a bucket that drops repeats must be allowed to
             // collect them first, or the rule would be measured against a shorter walk.
             collectBudget: perFileDedup ? Int.max / 4 : collectBudget,
-            asciiFoldMatchesLocale: LineScanner.asciiFoldMatchesLocale)
+            asciiFoldMatchesLocale: LineScanner.asciiFoldMatchesLocale,
+            resolver: SandboxPathResolver(workFolderRoot: root, internalDir: internalDir))
 
         var results = SearchScanResults(queryCount: queries.count)
         var walker = SearchDirectoryWalker(
             fileManager: .default,
             workFolderRoot: root,
-            canonicalRoot: root.resolvingSymlinksInPath().standardizedFileURL,
-            internalCanonical: internalDir.resolvingSymlinksInPath().standardizedFileURL,
+            canonicalRootReal: SandboxPathResolver.canonicalPath(root.path),
+            internalCanonicalReal: SandboxPathResolver.canonicalPath(internalDir.path),
             internalRelPrefix: ".nanoteams/internal",
             compiledGlob: nil,
             listMode: false,

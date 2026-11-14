@@ -44,6 +44,7 @@ final class SupervisorTaskItemViewEquatableTests: XCTestCase {
         attachmentPaths: [String] = [],
         workFolderURL: URL? = nil,
         roleDefinition: TeamRoleDefinition? = nil,
+        authorLabel: String? = nil,
         onAvatarTap: (() -> Void)? = nil
     ) -> SupervisorTaskItemView {
         SupervisorTaskItemView(
@@ -53,6 +54,7 @@ final class SupervisorTaskItemViewEquatableTests: XCTestCase {
             attachmentPaths: attachmentPaths,
             workFolderURL: workFolderURL,
             roleDefinition: roleDefinition,
+            authorLabel: authorLabel,
             onAvatarTap: onAvatarTap
         )
     }
@@ -112,6 +114,13 @@ final class SupervisorTaskItemViewEquatableTests: XCTestCase {
             Self.makeCard(roleDefinition: nil),
             Self.makeCard(roleDefinition: Self.roleDef()),
             "nil → resolved definition is the fallback-avatar → crown transition; it must break equality."
+        )
+    }
+
+    func testNotEqual_whenAuthorLabelDiffers() async {
+        XCTAssertNotEqual(
+            Self.makeCard(authorLabel: nil),
+            Self.makeCard(authorLabel: "Claude Code")
         )
     }
 

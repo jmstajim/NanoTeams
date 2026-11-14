@@ -71,6 +71,19 @@ final class TaskFactsProjection {
     /// (`SidebarViewLogic.RowsMemo`, keyed by `TaskManagementState.sidebarRows`) reads it.
     private(set) var rowsRevision: Int = 0
 
+    /// Previous summary per task ID so `replaceAll(with:)` can report row edges alongside
+    /// `apply(_:outcome:)` and callers can look up a task's current summary in O(1) (§9).
+    @ObservationIgnored private var previousSummariesByTaskID: [Int: TaskSummary] = [:]
+
+    /// O(1) lookup of the current `TaskSummary` for `taskID` (`nil` if absent).
+    func summary(for taskID: Int) -> TaskSummary? {
+        previousSummariesByTaskID[taskID]
+    }
+
+    /// Synchronous O(1) row-edge hook for `AutovisorEventFeed` (§9). Called on both
+    /// `apply(_:outcome:)` and `replaceAll(with:)` with `(previousRow, currentRow)`.
+    @ObservationIgnored var onRowUpdated: ((TaskSummary?, TaskSummary) -> Void)?
+
     // MARK: - Incremental maintenance
 
     /// Applies one row. Bumps `waitRevision` only when that row's wait fact actually
@@ -94,6 +107,8 @@ final class TaskFactsProjection {
         if outcome.moved || rowChanged {
             rowsRevision &+= 1
         }
+        previousSummariesByTaskID[summary.id] = summary
+        onRowUpdated?(outcome.previous, summary)
     }
 
     /// Whole-row inequality with `updatedAt` neutralised — the synthesized
@@ -123,14 +138,20 @@ final class TaskFactsProjection {
         var statuses: [Int: TaskStatus] = [:]
         var waits: [Int: SupervisorWaitState] = [:]
         var stamps: [Int: Date] = [:]
+        var nextSummaries: [Int: TaskSummary] = [:]
         statuses.reserveCapacity(summaries.count)
         waits.reserveCapacity(summaries.count)
         stamps.reserveCapacity(summaries.count)
+        nextSummaries.reserveCapacity(summaries.count)
         for summary in summaries {
             statuses[summary.id] = summary.status
             waits[summary.id] = SupervisorWaitState(summary)
             stamps[summary.id] = summary.updatedAt
+            nextSummaries[summary.id] = summary
+            let previous = previousSummariesByTaskID[summary.id]
+            onRowUpdated?(previous, summary)
         }
+        previousSummariesByTaskID = nextSummaries
         if statuses != statusByTaskID {
             statusByTaskID = statuses
         }
@@ -150,6 +171,7 @@ final class TaskFactsProjection {
         if !statusByTaskID.isEmpty { statusByTaskID = [:] }
         if !waitStateByTaskID.isEmpty { waitStateByTaskID = [:]; waitRevision &+= 1 }
         if !updatedAtByTaskID.isEmpty { updatedAtByTaskID = [:] }
+        if !previousSummariesByTaskID.isEmpty { previousSummariesByTaskID = [:] }
         rowsRevision &+= 1
     }
 }

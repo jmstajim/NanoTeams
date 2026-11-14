@@ -270,7 +270,7 @@ struct RoleEditorSkillsTab: View {
                 .font(Typography.termXs.weight(.medium))
                 .foregroundStyle(Colors.textPrimary)
             Text("added to this role's system prompt on every request")
-                .font(Typography.caption2)
+                .font(Typography.caption)
                 .foregroundStyle(Colors.textSecondary)
         }
         .padding(.horizontal, Spacing.s)
@@ -291,7 +291,7 @@ struct RoleEditorSkillsTab: View {
                     .foregroundStyle(Colors.textSecondary)
             } else {
                 Text("Injected in this order.")
-                    .font(Typography.caption2)
+                    .font(Typography.caption)
                     .foregroundStyle(Colors.textTertiary)
 
                 ForEach(Array(attachedRows.enumerated()), id: \.element.id) { index, row in
@@ -345,6 +345,7 @@ struct RoleEditorSkillsTab: View {
                 Text(RoleEditorSkillsPolicy.formatTokens(
                     RoleEditorSkillsPolicy.estimatedTokens(forBody: body)))
                     .font(Typography.caption2)
+                    .lineLimit(1)
                     .foregroundStyle(Colors.textTertiary)
             }
 
@@ -448,6 +449,7 @@ struct RoleEditorSkillsTab: View {
                     VStack(alignment: .leading, spacing: Spacing.xs) {
                         Text(group.section)
                             .font(Typography.caption2.weight(.medium))
+                            .lineLimit(1)
                             .foregroundStyle(Colors.textTertiary)
                             .padding(.top, Spacing.xs)
 

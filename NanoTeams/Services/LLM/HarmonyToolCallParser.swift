@@ -5,7 +5,20 @@ import Foundation
 /// Strategy for parsing tool calls from a specific marker format.
 /// Implement this protocol to add new marker-based parsing formats (OCP).
 nonisolated protocol ToolCallParsingStrategy: Sendable {
-    func parse(from text: String) -> [StepToolCall]
+    /// - Parameter knownNames: every name that IS a tool on this call. A step that
+    ///   advertised MCP tools passes the union of the registry and its own schema names —
+    ///   `ToolNames.allNames` is a compile-time list and cannot hold a tool an external
+    ///   server published a moment ago, so without the union those calls parse as "not a
+    ///   tool" and are dropped silently.
+    func parse(from text: String, knownNames: Set<String>) -> [StepToolCall]
+}
+
+nonisolated extension ToolCallParsingStrategy {
+    /// The registry-only reading, for a caller with no schema array in hand. A protocol
+    /// requirement cannot carry a default, so the default lives here.
+    func parse(from text: String) -> [StepToolCall] {
+        parse(from: text, knownNames: ToolNames.allNames)
+    }
 }
 
 // MARK: - Call Marker Strategy
@@ -15,7 +28,7 @@ nonisolated struct CallMarkerStrategy: ToolCallParsingStrategy {
     static let callMarker = "<|call|>"
     static let endMarker = "<|end|>"
 
-    func parse(from text: String) -> [StepToolCall] {
+    func parse(from text: String, knownNames: Set<String>) -> [StepToolCall] {
         guard let firstMarkerRange = text.range(of: Self.callMarker) else { return [] }
 
         let tail = text[firstMarkerRange.lowerBound...]
@@ -35,7 +48,7 @@ nonisolated struct CallMarkerStrategy: ToolCallParsingStrategy {
                 if let (jsonText, endIdx, skippedEmptyObjects) = ToolCallParsingHelpers.extractCallObject(
                     in: tail, from: idx, endMarker: Self.endMarker)
                 {
-                    if var call = ToolCallParsingHelpers.parseToolCallFromJSON(jsonText) {
+                    if var call = ToolCallParsingHelpers.parseToolCallFromJSON(jsonText, knownNames: knownNames) {
                         // The empty objects the walker skipped are a repair the model must hear
                         // about once (REC.5) — merged with whatever the parse itself repaired.
                         call.argumentRepairNote = ToolCallParsingHelpers.mergedRepairNote(
@@ -86,7 +99,7 @@ nonisolated struct CallMarkerStrategy: ToolCallParsingStrategy {
                 if let (rawBody, afterMarker) = ToolCallParsingHelpers.endMarkerBoundedBody(
                     in: tail, from: idx, endMarker: Self.endMarker)
                 {
-                    if let call = ToolCallParsingHelpers.parseToolCallFromJSON(rawBody)
+                    if let call = ToolCallParsingHelpers.parseToolCallFromJSON(rawBody, knownNames: knownNames)
                         ?? ToolCallParsingHelpers.parseAfterRepairAndRewalk(rawBody)
                     {
                         results.append(call)
@@ -163,7 +176,7 @@ nonisolated struct StartMarkerStrategy: ToolCallParsingStrategy {
         return roleMarkers.contains(where: { lowered.hasPrefix($0) })
     }
 
-    func parse(from text: String) -> [StepToolCall] {
+    func parse(from text: String, knownNames: Set<String>) -> [StepToolCall] {
         guard let firstMarkerRange = text.range(of: Self.startMarker) else { return [] }
 
         let tail = text[firstMarkerRange.lowerBound...]
@@ -402,7 +415,7 @@ nonisolated struct ChannelMarkerStrategy: ToolCallParsingStrategy {
         ToolCallParsingHelpers.reservedChannelNames
     }
 
-    func parse(from text: String) -> [StepToolCall] {
+    func parse(from text: String, knownNames: Set<String>) -> [StepToolCall] {
         guard text.contains(Self.channelMarker) else { return [] }
 
         var results: [StepToolCall] = []
@@ -525,7 +538,16 @@ nonisolated struct HarmonyToolCallParser: Sendable {
         self.strategies = strategies
     }
 
-    func extractAllToolCalls(from text: String) -> [StepToolCall] {
+    /// Every name a parser may resolve on one call: the app's own tools plus whatever the
+    /// caller advertised. Spelled once here so the seams that hold a schema array — the
+    /// step's streaming call, a finished reply, the bare salvage — cannot disagree.
+    static func knownNames(advertising tools: [ToolSchema]) -> Set<String> {
+        tools.isEmpty ? ToolNames.allNames : ToolNames.allNames.union(tools.lazy.map(\.name))
+    }
+
+    func extractAllToolCalls(
+        from text: String, knownNames: Set<String> = ToolNames.allNames
+    ) -> [StepToolCall] {
         var results: [StepToolCall] = []
 
         // Repair a mangled OPENING sentinel first — every strategy below is gated on an
@@ -535,14 +557,14 @@ nonisolated struct HarmonyToolCallParser: Sendable {
         // finished body with no marker-detection pass of their own: `TeamGenerationService`
         // and `DelegatedSupervisorAnswerService`. Idempotent, and a no-op for text without
         // the alien token.
-        let text = HarmonySentinelNormalizer.normalize(text)
+        let text = HarmonySentinelNormalizer.normalize(text, knownNames: knownNames)
 
         func key(for call: StepToolCall) -> String {
             call.name.lowercased() + "|" + call.argumentsJSON
         }
 
         for strategy in strategies {
-            let calls = strategy.parse(from: text)
+            let calls = strategy.parse(from: text, knownNames: knownNames)
             guard !calls.isEmpty else { continue }
             if results.isEmpty {
                 results = calls

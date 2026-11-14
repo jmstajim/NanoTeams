@@ -29,30 +29,7 @@ nonisolated enum LMStudioModelsFolder {
     /// they are managing a remote host. Erring toward "not local" is the only
     /// safe direction.
     static func isLocalEndpoint(baseURLString: String) -> Bool {
-        let trimmed = baseURLString.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let url = URL(string: trimmed), let host = url.host else {
-            return false
-        }
-        // `URL.host` keeps IPv6 literals unbracketed on macOS, but strip them
-        // defensively so `[::1]` can't slip past the equality check.
-        let normalized = host
-            .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
-            .lowercased()
-
-        if normalized == "localhost" || normalized == "::1" || normalized == "0.0.0.0" {
-            return true
-        }
-        // The whole 127.0.0.0/8 block is loopback, not just 127.0.0.1.
-        return isLoopbackIPv4(normalized)
-    }
-
-    private static func isLoopbackIPv4(_ host: String) -> Bool {
-        let parts = host.split(separator: ".", omittingEmptySubsequences: false)
-        guard parts.count == 4, parts[0] == "127" else { return false }
-        return parts.allSatisfy { part in
-            guard let value = Int(part) else { return false }
-            return (0...255).contains(value)
-        }
+        LoopbackHost.isLocalMachine(urlString: baseURLString)
     }
 
     // MARK: - Models root

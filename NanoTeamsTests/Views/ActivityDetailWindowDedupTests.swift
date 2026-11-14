@@ -98,12 +98,16 @@ final class ActivityDetailWindowDedupTests: XCTestCase {
         // Same argument for the compaction disclosure: its id is the epoch's streaming
         // `LLMMessage.id`, so it shares the space with `.thinking` and `.systemNotice`.
         let compaction = ActivityDetailWindow.compaction(id: id, roleName: "X", text: "y")
+        // An external agent's call and a role's tool call are both "a tool call" to a reader,
+        // and their ids are both UUIDs — the prefix is what keeps the two windows apart.
+        let externalCall = ActivityDetailWindow.externalAgentCall(
+            id: id, toolName: "x", isError: false, createdAt: Date())
 
         // All pairwise-distinct because each case prefixes its own namespace
         // into `dedupKey`.
         let cases: [ActivityDetailWindow] = [
             llm, meeting, supervisor, toolCall, meetingTool, meetingTools, systemNotice,
-            compaction,
+            compaction, externalCall,
         ]
         for i in 0..<cases.count {
             for j in (i + 1)..<cases.count {
@@ -268,6 +272,27 @@ final class ActivityDetailWindowDedupTests: XCTestCase {
         let decodedAsString = try JSONDecoder().decode(String.self, from: encoded)
         XCTAssertEqual(decodedAsString, "thinking:\(id)",
                        "Encoding must emit the dedupKey only — never the full payload.")
+    }
+
+    // MARK: - External agent call (2026-11-08)
+
+    /// A second tap on the same row focuses its window; another row opens another.
+    func testExternalAgentCall_sameIDEqual_differentIDsNot() {
+        let id = UUID()
+        let a = ActivityDetailWindow.externalAgentCall(id: id, toolName: "folder_status", isError: false, createdAt: Date())
+        let b = ActivityDetailWindow.externalAgentCall(id: id, toolName: "folder_status", isError: true, createdAt: Date())
+        let c = ActivityDetailWindow.externalAgentCall(id: UUID(), toolName: "folder_status", isError: false, createdAt: Date())
+        XCTAssertEqual(a, b)
+        XCTAssertNotEqual(a, c)
+        XCTAssertEqual(a.dedupKey, "external-call:\(id)")
+    }
+
+    func testCodable_encodeWritesDedupKey_forExternalAgentCall() throws {
+        let id = UUID()
+        let value = ActivityDetailWindow.externalAgentCall(id: id, toolName: "list_teams", isError: false, createdAt: Date())
+        let encoded = try JSONEncoder().encode(value)
+        XCTAssertEqual(try JSONDecoder().decode(String.self, from: encoded), "external-call:\(id)",
+                       "the window value carries no bodies — they load inside the window")
     }
 
     func testCodable_encodeWritesDedupKey_forSystemNotice() throws {

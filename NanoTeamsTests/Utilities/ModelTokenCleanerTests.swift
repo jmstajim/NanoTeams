@@ -123,7 +123,7 @@ final class ModelTokenCleanerTests: XCTestCase {
     /// the greedy pairing matched the one at the end of `<|end|>` and deleted the entire
     /// `create_artifact` payload between them — the model was then told it had submitted
     /// nothing, for an attempt the harness had swallowed.
-    /// (MeditationApp run, record `[39]` @2026-08-07T13:52:24.821Z.)
+    /// (MeditationApp run of 2026-08-07, record `[39]`.)
     func testClean_mangledOpenerDoesNotSwallowPayload() {
         let input = #"<|tool_call>call_multiple{"contributions":[{"toolName":"create_artifact"}]}<|end|>"#
         XCTAssertEqual(

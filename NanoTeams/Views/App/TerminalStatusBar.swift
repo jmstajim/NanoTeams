@@ -74,6 +74,7 @@ struct TerminalStatusBar: View {
     private var separator: some View {
         Text("·")
             .font(Typography.term2xs)
+            .lineLimit(1)
             .foregroundStyle(Colors.textQuaternary)
     }
 }

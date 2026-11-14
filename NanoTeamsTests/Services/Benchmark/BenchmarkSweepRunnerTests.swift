@@ -340,17 +340,28 @@ final class BenchmarkSweepRunnerTests: XCTestCase, @unchecked Sendable {
     /// `.undetermined` — the row would then ask for a rescan right after one had just run.
     /// RED: drop the `await scanTask?.value` branch and return immediately → the second caller
     /// returns while `isScanning` is still true, so the assertion that the scan has finished fails.
+    ///
+    /// The first lookup is HELD, so the first scan is provably in flight when the second caller
+    /// arrives. Until 2026-11-07 the stub answered at once: under load the first scan could
+    /// finish before the second `async let` began, the second then started a scan of its own,
+    /// and the test read four lookups with no defect present (seen in an instrumented parallel run
+    /// beside another build).
     func testScan_secondCallerAwaitsTheFirstRatherThanStartingAnother() async {
         discovery.outcomes[LLMProvider.lmStudio.defaultBaseURL.normalizedBaseURL] =
             .answered(["a"])
         discovery.outcomes[LLMProvider.ollama.defaultBaseURL.normalizedBaseURL] = .answered(["b"])
+        discovery.holdsFirstAnswer = true
         let sut = makeSut()
 
         async let first: Void = sut.scan()
+        while !discovery.isHoldingAnswer { await Task.yield() }
         async let second: Void = sut.scan()
-        _ = await (first, second)
+        for _ in 0..<5 { await Task.yield() }
+        discovery.releaseHeldAnswer()
+        await second
 
-        XCTAssertFalse(sut.isScanning, "both callers must have observed the scan finish")
+        XCTAssertFalse(sut.isScanning, "the second caller returned before the scan it arrived during had finished")
+        await first
         XCTAssertEqual(sut.entries.count, 2)
         XCTAssertEqual(
             discovery.chatModelCalls.count, 2,
@@ -632,10 +643,26 @@ private final class FakeDiscovery: BenchmarkModelDiscovering {
     var answering: [String: Bool] = [:]
     private(set) var chatModelCalls: [BenchmarkServer] = []
     private(set) var answeringCalls: [BenchmarkServer] = []
+    /// When set, the next `chatModels` call waits for `releaseHeldAnswer()` — a scan is then
+    /// provably in flight, which a test of a caller arriving MID-scan needs.
+    var holdsFirstAnswer = false
+    private(set) var isHoldingAnswer = false
+    private var heldAnswer: CheckedContinuation<Void, Never>?
 
     func chatModels(on server: BenchmarkServer) async -> BenchmarkDiscoveryOutcome {
         chatModelCalls.append(server)
+        if holdsFirstAnswer {
+            holdsFirstAnswer = false
+            isHoldingAnswer = true
+            await withCheckedContinuation { heldAnswer = $0 }
+            isHoldingAnswer = false
+        }
         return outcomes[server.baseURLString.normalizedBaseURL] ?? .noAnswer(detail: "unset")
+    }
+
+    func releaseHeldAnswer() {
+        heldAnswer?.resume()
+        heldAnswer = nil
     }
 
     func isAnswering(_ server: BenchmarkServer) async -> Bool {

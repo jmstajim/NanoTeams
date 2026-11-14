@@ -86,7 +86,13 @@ extension LLMExecutionService {
                 message: "Could not resolve teams for resume — child task #\(childTaskID) may have been unloaded."
             )
         }
+        // Read before the resume suspends — the handler runs synchronously from the dispatcher,
+        // past its cancellation gate — and asked before the wait, which reads its own afresh.
+        let lifecycle = delegate.currentFolderLifecycle
         await delegate.resumeRun(taskID: childTaskID)
+        guard delegate.isCurrentFolderLifecycle(lifecycle) else {
+            return makeErrorEnvelope(code: .commandFailed, message: DeferredCallReplies.folderChanged)
+        }
         return await awaitDelegationCompletion(
             childTID: childTaskID,
             parentTID: parentTID,
@@ -144,6 +150,10 @@ extension LLMExecutionService {
                 message: "Could not resolve teams for forward — child task #\(childTaskID) may have been unloaded."
             )
         }
+        // The folder lifecycle the forward runs in, read before its first suspension (the
+        // injection's write) and asked after each one — the injection, the resume — so a
+        // forward a folder transition overtook resumes and waits on nothing of the next folder's.
+        let lifecycle = delegate.currentFolderLifecycle
         // Inject the message into the child task's run as a Supervisor turn
         // on the child's most-recently-streamed step. The child team's tool
         // loop picks it up on its next iteration via the same
@@ -156,6 +166,9 @@ extension LLMExecutionService {
             message: message,
             delegate: delegate
         )
+        guard delegate.isCurrentFolderLifecycle(lifecycle) else {
+            return makeErrorEnvelope(code: .commandFailed, message: DeferredCallReplies.folderChanged)
+        }
         switch injectionOutcome {
         case .injected:
             break
@@ -171,6 +184,9 @@ extension LLMExecutionService {
             )
         }
         await delegate.resumeRun(taskID: childTaskID)
+        guard delegate.isCurrentFolderLifecycle(lifecycle) else {
+            return makeErrorEnvelope(code: .commandFailed, message: DeferredCallReplies.folderChanged)
+        }
         return await awaitDelegationCompletion(
             childTID: childTaskID,
             parentTID: parentTID,
@@ -261,11 +277,15 @@ extension LLMExecutionService {
             guard let stepIdx = live ?? pending else { return }
             let prefix = MessageSourceContext.supervisorMessagePrefix
             let body = "\(prefix)\(message)"
+            // The parent ROLE wrote this — an LLM standing in for the child's Supervisor —
+            // so the child's feed must not show it as the person's words (DEBTS D-M15).
             task.runs[runIdx].steps[stepIdx].llmConversation.append(LLMMessage(
                 role: .user,
                 content: body,
                 sourceRole: .supervisor,
-                sourceContext: .supervisorMessage
+                sourceContext: .supervisorMessage,
+                authorLabel: nil,
+                isFromAutomatedSupervisor: true
             ))
             injectedStepID = task.runs[runIdx].steps[stepIdx].id
         }

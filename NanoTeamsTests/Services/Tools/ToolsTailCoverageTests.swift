@@ -1179,18 +1179,20 @@ final class ToolsTailBashHandlerTests: XCTestCase {
         super.tearDown()
     }
 
+    /// The sandbox switch the test asked for reaches `handle` the way production's does — on the
+    /// batch's context (`ToolExecutionContext.bashSandbox`), not on the handler.
+    private var sandbox = BashPolicy.Sandbox(enabled: false)
+
     private func tool(sandboxed: Bool = false) -> BashTool {
-        BashTool(
+        sandbox = BashPolicy.Sandbox(enabled: sandboxed)
+        return BashTool(
             workFolderRoot: workDir,
             resolver: SandboxPathResolver(workFolderRoot: workDir),
-            fileManager: fm,
-            sandboxEnabled: sandboxed,
-            sandboxPermissions: BashSandboxPermissions(),
-            allowUnsandboxedFallback: false)
+            fileManager: fm)
     }
 
     private func context() -> ToolExecutionContext {
-        ToolExecutionContext(workFolderRoot: workDir, taskID: 41, runID: 0, roleID: "r")
+        ToolExecutionContext(workFolderRoot: workDir, taskID: 41, runID: 0, roleID: "r", bashSandbox: sandbox)
     }
 
     // MARK: - working_directory
@@ -1586,7 +1588,7 @@ final class ToolsTailAutovisorHandlerTests: XCTestCase {
         let result = await AnswerTaskQuestionTool().handle(
             context: context(), args: ["task_id": 3, "answer": "  ship it  "])
         XCTAssertFalse(result.isError)
-        guard case let .answerTaskQuestion(_, answer)? = result.signal else {
+        guard case let .answerTaskQuestion(_, answer, _)? = result.signal else {
             return XCTFail("got \(String(describing: result.signal))")
         }
         XCTAssertEqual(answer, "ship it")

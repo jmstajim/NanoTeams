@@ -166,7 +166,9 @@ struct SidebarView: View {
                     Task { await store.openWorkFolder(url) }
                 }
             }
-            .onAppear { refreshRecentProjects() }
+            .onAppear {
+                refreshRecentProjects()
+            }
             // The URL flips when an open's read returns — on success and on failure alike, before
             // either outcome is applied — so it says which folder was ASKED for, not which one
             // loaded. Cancelling a generation is right on that signal — it belongs to the folder
@@ -210,9 +212,12 @@ struct SidebarView: View {
     /// configured → routes to the chat; unconfigured → routes to the first-time
     /// setup pane (`AutovisorSetupView`).
     private var autovisorInfo: SidebarViewLogic.ManagerRowInfo? {
-        let isManagerActive = store.autovisorTaskID != nil
-            && store.workFolder?.settings.autovisorEnabled == true
-        let state = store.autovisorTaskID.flatMap { engineState.taskEngineStates[$0] }
+        let settings = store.workFolder?.settings
+        let isExternal = settings?.autovisorDriver == .externalAgent
+        let isManagerActive = isExternal
+            ? (settings?.autovisorEnabled == true)
+            : (store.autovisorTaskID != nil && settings?.autovisorEnabled == true)
+        let state = isExternal ? nil : store.autovisorTaskID.flatMap { engineState.taskEngineStates[$0] }
         return SidebarViewLogic.resolveManagerRowInfo(
             hasWorkFolder: store.hasRealWorkFolder,
             isManagerActive: isManagerActive,
@@ -305,6 +310,7 @@ struct SidebarView: View {
                 NTMSLoader(font: Typography.term2xs, color: Colors.accent)
                 Text("WORKING")
                     .font(Typography.term2xs)
+                    .lineLimit(1)
                     .tracking(Typography.labelTracking)
                     .foregroundStyle(Colors.accent)
             }
@@ -315,9 +321,11 @@ struct SidebarView: View {
             HStack(spacing: Spacing.xs) {
                 Text(TerminalGlyph.review)
                     .font(Typography.term2xs)
+                    .lineLimit(1)
                     .foregroundStyle(Colors.info)
                 Text("WAITING")
                     .font(Typography.term2xs)
+                    .lineLimit(1)
                     .tracking(Typography.labelTracking)
                     .foregroundStyle(Colors.info)
             }
@@ -334,6 +342,7 @@ struct SidebarView: View {
             // `(N)` count chip per the design's tmux ledger heading.
             Text("(\(tasks.count))")
                 .font(Typography.term2xs)
+                .lineLimit(1)
                 .foregroundStyle(Colors.textTertiary)
                 .monospacedDigit()
                 .accessibilityHidden(true)
@@ -460,6 +469,7 @@ struct SidebarView: View {
             } label: {
                 Text("ESC")
                     .font(Typography.term2xs)
+                    .lineLimit(1)
                     .tracking(Typography.labelTracking)
                     .foregroundStyle(Colors.textTertiary)
             }
@@ -598,7 +608,10 @@ struct SidebarView: View {
                         // turn this back on". Bouncing to the Watchtower would hide it.
                         Task { await store.setAutovisorEnabled(false) }
                     } label: {
-                        Label("Disable", systemImage: "pause.circle")
+                        // `power`, not `pause.circle`: this switches the Autovisor off — every
+                        // agent call is refused until it is switched back on — and a pause glyph
+                        // read as pausing one task (2026-11-08).
+                        Label("Disable", systemImage: "power")
                     }
                     Divider()
                     Button(role: .destructive) {

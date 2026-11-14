@@ -92,6 +92,7 @@ struct TeamActivityFeedView: View {
             roleMap[d.task.id] = d.teamRoles
             if let name = d.teamName { teamNameMap[d.task.id] = name }
         }
+        let supervisorAuthorLabel = task?.origin?.authorLabel
         return TeamActivityFeedViewModel.BuildContext(
             run: run,
             roleDefinitions: roleDefinitions,
@@ -103,6 +104,7 @@ struct TeamActivityFeedView: View {
             supervisorClippedTexts: task?.clippedTexts.texts ?? [],
             supervisorAttachmentPaths: task?.attachmentPaths ?? [],
             supervisorProjectFolderURL: store.workFolderURL,
+            supervisorAuthorLabel: supervisorAuthorLabel,
             workFolderURL: store.workFolderURL,
             debugModeEnabled: config.debugModeEnabled,
             isStreaming: { streamingManager.isStreaming(messageID: $0) },
@@ -268,6 +270,8 @@ struct TeamActivityFeedView: View {
                 BashApprovalCardList(taskID: taskID, roleDefinitions: roleDefinitions)
                     .padding(.horizontal, Spacing.s)
                 ComputerUseApprovalCardList(taskID: taskID, roleDefinitions: roleDefinitions)
+                    .padding(.horizontal, Spacing.s)
+                MCPApprovalCardList(taskID: taskID, roleDefinitions: roleDefinitions)
                     .padding(.horizontal, Spacing.s)
             }
 
@@ -735,7 +739,7 @@ struct TeamActivityFeedView: View {
                 isAutoAnswering: isAutonomousMode
             )
 
-        case .supervisorTask(_, let taskCreatedAt, let taskText, let clips, let paths, let folderURL, let originTaskID):
+        case .supervisorTask(_, let taskCreatedAt, let taskText, let clips, let paths, let folderURL, let originTaskID, let authorLabel):
             SupervisorTaskItemView(
                 createdAt: taskCreatedAt,
                 supervisorTask: taskText,
@@ -743,6 +747,7 @@ struct TeamActivityFeedView: View {
                 attachmentPaths: paths,
                 workFolderURL: folderURL,
                 roleDefinition: findRoleDefinition(for: .supervisor, originTaskID: originTaskID),
+                authorLabel: authorLabel,
                 onAvatarTap: avatarTap(for: .supervisor, originTaskID: originTaskID)
             )
             .equatable()

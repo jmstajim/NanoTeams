@@ -7,16 +7,24 @@ import Foundation
 final class TaskEngineStoreAdapter: TeamEngineStore {
     private weak var orchestrator: NTMSOrchestrator?
     let taskID: Int
+    let lifecycle: WorkFolderLifecycle
 
-    init(orchestrator: NTMSOrchestrator, taskID: Int) {
+    init(orchestrator: NTMSOrchestrator, taskID: Int, lifecycle: WorkFolderLifecycle? = nil) {
         self.orchestrator = orchestrator
         self.taskID = taskID
+        self.lifecycle = lifecycle ?? orchestrator.currentFolderLifecycle
+    }
+
+    private var isLifecycleCurrent: Bool {
+        guard let orchestrator else { return false }
+        return orchestrator.isCurrentFolderLifecycle(lifecycle)
     }
 
     // MARK: - TeamEngineStore
 
     var activeTask: NTMSTask? {
-        orchestrator?.loadedTask(taskID)
+        guard isLifecycleCurrent else { return nil }
+        return orchestrator?.loadedTask(taskID)
     }
 
     var teamSettings: TeamSettings {
@@ -73,6 +81,7 @@ final class TaskEngineStoreAdapter: TeamEngineStore {
     }
 
     func updateRoleStatus(roleID: String, status: RoleExecutionStatus) async {
+        guard isLifecycleCurrent else { return }
         await orchestrator?.mutateTask(taskID: taskID) { task in
             guard let runIndex = task.runs.indices.last else { return }
             task.runs[runIndex].roleStatuses[roleID] = status
@@ -81,6 +90,7 @@ final class TaskEngineStoreAdapter: TeamEngineStore {
     }
 
     func prepareStepForExecution(stepID: String) async {
+        guard isLifecycleCurrent else { return }
         await orchestrator?.mutateTask(taskID: taskID) { task in
             StepExecutionService.prepareStepForExecution(
                 stepID: stepID,
@@ -90,11 +100,13 @@ final class TaskEngineStoreAdapter: TeamEngineStore {
     }
 
     func runStep(stepID: String) async {
-        await orchestrator?.runStep(stepID: stepID, taskID: taskID)
+        guard isLifecycleCurrent else { return }
+        await orchestrator?.runStep(stepID: stepID, taskID: taskID, within: lifecycle)
     }
 
     func findOrCreateStep(roleID: String) async -> String? {
-        await orchestrator?.findOrCreateStep(taskID: taskID, roleID: roleID)
+        guard isLifecycleCurrent else { return nil }
+        return await orchestrator?.findOrCreateStep(taskID: taskID, roleID: roleID, within: lifecycle)
     }
 
     /// Resets a completed step for revision (append-only continuation).
@@ -106,6 +118,7 @@ final class TaskEngineStoreAdapter: TeamEngineStore {
     /// No-ops for any status other than `.done`/`.failed` (benign: a `.pending` step was
     /// already reset by a prior pass).
     func resetStepForRevision(stepID: String) async {
+        guard isLifecycleCurrent else { return }
         // Clear any stale streaming state ONLY when the step is actually being reset
         // (i.e. it is `.done`/`.failed` — the same gate the mutation below uses). The
         // reset returns the step to `.pending`; a leftover `activeMessageIDs` entry
@@ -146,6 +159,7 @@ final class TaskEngineStoreAdapter: TeamEngineStore {
     }
 
     func setLastErrorMessageForUI(_ message: String) {
+        guard isLifecycleCurrent else { return }
         orchestrator?.setLastErrorMessageForUI(message)
     }
 

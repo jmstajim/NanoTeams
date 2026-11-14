@@ -119,4 +119,14 @@ nonisolated enum UserDefaultsKeys {
     static let computerUseRaiseTargetWindowBeforeClick = "NanoTeams.computerUse.raiseTargetWindow.v1"
     static let computerUseGateFirstCaptureOnly = "NanoTeams.computerUse.gateFirstCapture.v1"
     static let computerUseJudgeLLMOverride = "NanoTeams.computerUse.judgeLLMOverride.v1"
+    // MCP Auto-mode judge override (model + endpoint URL; bearer token lives in Keychain by URL).
+    static let mcpJudgeLLMOverride = "NanoTeams.mcp.judgeLLMOverride.v1"
+    // External Agents server settings (agent tokens live in Keychain + Application Support).
+    // Spelled with the tab's pre-2026-11-08 name, Agent Access: a stored name is not renamed,
+    // or every install would read its switch as off and its port as the default.
+    static let externalAgentsEnabled = "NanoTeams.agentAccess.enabled.v1"
+    static let externalAgentsPort = "NanoTeams.agentAccess.port.v1"
+    // Which beta features the person has acknowledged (`BetaFeature.rawValue`). One key, because
+    // the set grows as features are marked beta and shrinks as they stop being so.
+    static let acknowledgedBetaFeatures = "NanoTeams.beta.acknowledgedFeatures.v1"
 }

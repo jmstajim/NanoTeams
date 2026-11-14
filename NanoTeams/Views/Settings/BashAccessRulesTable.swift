@@ -38,7 +38,7 @@ struct BashAccessRulesTable: View {
             row("Temp directories", "TMPDIR, /private/tmp",
                 read: .editable($permissions.tempRead),
                 write: .editable($permissions.tempWrite))
-            row("Credential stores", "~/.ssh, ~/.aws, Keychain, .netrc",
+            row("Credential stores", "~/.ssh, ~/.aws, Keychain, .netrc, agent configs",
                 read: .editable($permissions.credentialRead),
                 write: .blocked)
             row("Home folder", "Your user folder (~), outside the project",

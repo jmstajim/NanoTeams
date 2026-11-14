@@ -24,6 +24,14 @@ protocol TaskMutationDelegate: AnyObject {
 @MainActor
 protocol LLMStateDelegate: TaskMutationDelegate {
     var workFolderURL: URL? { get }
+    /// The folder lifecycle an action beginning NOW belongs to (`NTMSOrchestrator.currentFolderLifecycle`).
+    /// Read by a step's deferred tool-call handlers when they begin — synchronously from the
+    /// dispatcher, past its cancellation gate, so the step is live and no folder transition has
+    /// begun since it started — and asked again (`isCurrentFolderLifecycle`) after every
+    /// suspension of the handler before it writes.
+    var currentFolderLifecycle: WorkFolderLifecycle { get }
+    /// No folder transition has begun since `lifecycle` did.
+    func isCurrentFolderLifecycle(_ lifecycle: WorkFolderLifecycle) -> Bool
     /// The global LLM configuration — provider, URL, model, request timeout.
     var globalLLMConfig: LLMConfig { get }
     /// App-wide instruction text appended to every LLM system prompt. Empty
@@ -62,6 +70,16 @@ protocol LLMStateDelegate: TaskMutationDelegate {
     /// Shell-command execution policy (mode, rules, restriction level, sandbox,
     /// autonomous-approval gate). Consumed by the `bash` permission gate.
     var bashPolicy: BashPolicy { get }
+    /// The loopback ports a role's `bash` may neither connect to nor listen on
+    /// (`SeatbeltSandbox.guardedLoopbackPorts(externalAgentsPort:mcpServerPorts:llmServerPorts:)`):
+    /// the External Agents ports, and the ports of the MCP and LLM servers on this machine that
+    /// NanoTeams dials with a bearer or a prompt. Read per tool BATCH into
+    /// `ToolExecutionContext.guardedLoopbackPorts` — never baked in at step entry, which left a
+    /// server configured mid-step unguarded for the rest of the step (review 2026-11-08).
+    ///
+    /// No default implementation: a conformer that forgot it would build profiles guarding the
+    /// default External Agents port alone and compile without a word (#49's lesson).
+    var seatbeltGuardedLoopbackPorts: [UInt16] { get }
     /// Published by the `bash` gate when it begins / ends HOLDING a command for the
     /// human's in-loop Allow/Deny decision. The orchestrator mirrors these into an
     /// observable (`bashApprovalRequests`) so the activity feed renders the approval
@@ -75,6 +93,33 @@ protocol LLMStateDelegate: TaskMutationDelegate {
     /// outlive its run — and, since task IDs are reused across folders, can't be
     /// mis-attributed to a same-ID task in the newly-opened folder.
     func clearAllBashApprovalRequests()
+    /// Every approved tool of every reachable MCP server, at the instant it is read. `nil`
+    /// when no manager was built — a preview store, a headless run without `mcpServers`, a
+    /// test double — which resolves to `.empty` and leaves the prompt byte-identical to the
+    /// one this app built before the feature existed.
+    ///
+    /// The SCHEMA is resolved from it ONCE per step entry (`toolResolutionEnvironment`) and
+    /// frozen for the step's whole life: the catalogue can change under a running step, and
+    /// narrowing the schema mid-step would rewrite a prompt the server has already cached. What
+    /// never reaches the prompt is re-read: each iteration compares it against the frozen
+    /// copy (a call that hits a tool the server has since changed is refused on that call
+    /// alone), and the MCP gate reads the policy a call runs under from it per call.
+    var mcpTools: MCPToolsSnapshot? { get }
+    /// Published by the MCP gate when it begins / ends HOLDING one call for a person's
+    /// decision. The orchestrator mirrors these into an observable so the activity feed can
+    /// render the approval card — with the whole arguments document, which is the one thing
+    /// a decider about an outbound call has to be able to read. The decision returns via
+    /// `LLMExecutionService.resolveMCPApproval`; the model is never asked to re-issue.
+    /// `didEnd` carries the hold's `createdAt` so a late end from a prior hold of the same
+    /// call cannot clear a fresh card.
+    func mcpApprovalDidBegin(_ request: MCPApprovalRequest)
+    func mcpApprovalDidEnd(taskID: Int, stepID: String, callKey: String, createdAt: Date)
+    /// Drops EVERY published MCP approval card (all tasks) on full execution teardown — task
+    /// ids are reused across folders, so a card that outlived its run would be attributed to
+    /// a same-numbered task in the next one.
+    func clearAllMCPApprovalRequests()
+    /// Dedicated model/endpoint override for the MCP Auto judge and MCP "Ask AI" card advice.
+    var mcpJudgeOverride: LLMOverride? { get }
     /// Computer-use control policy (mode, restriction, target-app allowlist, blocked patterns).
     /// Consumed by the computer-use permission gate.
     var computerUsePolicy: ComputerUsePolicy { get }
@@ -187,7 +232,12 @@ protocol LLMStateDelegate: TaskMutationDelegate {
     /// `effectiveRoleID`, same namespace as `runningRoleIDs`) — is NOT task-cancelled
     /// (it is mid tool-loop and must finish committing its tool result); it is only
     /// flagged `.revisionRequested`.
-    func holdDownstreamForRevision(taskID: Int, runningRoleIDs: [String], requesterRoleID: String) async
+    func holdDownstreamForRevision(
+        taskID: Int,
+        runningRoleIDs: [String],
+        requesterRoleID: String,
+        within lifecycle: WorkFolderLifecycle
+    ) async
 
     /// Trigger the queued-Supervisor-message backstop drain for `taskID`. Called
     /// from `setNeedsSupervisorInput` after the step mutation persists,
@@ -297,7 +347,12 @@ protocol LLMStateDelegate: TaskMutationDelegate {
     /// answer to a delegated child team's `ask_supervisor` call.
     /// Returns `true` if the mutation persisted and the engine was nudged.
     @discardableResult
-    func answerSupervisorQuestion(taskID: Int, stepID: String, answer: String) async -> Bool
+    func answerSupervisorQuestion(
+        taskID: Int,
+        stepID: String,
+        answer: String,
+        within lifecycle: WorkFolderLifecycle
+    ) async -> Bool
 
     // MARK: - Autovisor
 
@@ -307,7 +362,19 @@ protocol LLMStateDelegate: TaskMutationDelegate {
     /// test mock) don't sprout ~16 methods. Enforces the self-guard (refuses any
     /// action targeting the manager's own task). Returns a structured result the
     /// caller formats into the tool-result envelope.
-    func performAutovisorAction(_ action: AutovisorAction) async -> AutovisorActionResult
+    ///
+    /// `lifecycle` is the manager pass's — the folder lifecycle its step runs in: the action
+    /// does nothing once a folder transition has ended it, and asks it again after its own
+    /// suspensions.
+    func performAutovisorAction(
+        _ action: AutovisorAction, within lifecycle: WorkFolderLifecycle
+    ) async -> AutovisorActionResult
+
+    func performAutovisorAction(
+        _ action: AutovisorAction,
+        as actor: AutovisorActor,
+        within lifecycle: WorkFolderLifecycle
+    ) async -> AutovisorActionResult
 
     /// Persists the Autovisor's standing memory (write-through from the
     /// manager's `update_scratchpad`). Writes only `settings.json` via `mutateWorkFolder`.
@@ -489,3 +556,16 @@ protocol LLMMeetingDelegate: AnyObject {
 /// Individual LLMExecutionService extensions declare the narrower sub-protocol
 /// they actually need (LLMStateDelegate, LLMStreamingDelegate, or LLMMeetingDelegate).
 typealias LLMExecutionDelegate = LLMStateDelegate & LLMStreamingDelegate & LLMMeetingDelegate
+
+extension LLMStateDelegate {
+    var mcpJudgeOverride: LLMOverride? { nil }
+
+    func performAutovisorAction(
+        _ action: AutovisorAction,
+        as actor: AutovisorActor,
+        within lifecycle: WorkFolderLifecycle
+    ) async -> AutovisorActionResult {
+        _ = actor
+        return await performAutovisorAction(action, within: lifecycle)
+    }
+}

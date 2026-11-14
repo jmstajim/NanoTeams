@@ -143,8 +143,7 @@ final class ExploratorySearchRuntimeIntegrationTests: XCTestCase {
               "file_glob": "*.swift",
               "context_before": 1,
               "context_after": 2,
-              "max_results": 5,
-              "max_match_lines": 8
+              "max_results": 5
             }
             """#
         )

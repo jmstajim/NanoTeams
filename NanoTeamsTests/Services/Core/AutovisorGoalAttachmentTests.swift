@@ -192,7 +192,7 @@ final class AutovisorGoalAttachmentTests: NTMSOrchestratorTestBase, @unchecked S
 
         // Delete the file behind the settings path, then trigger a re-mirror.
         try! FileManager.default.removeItem(at: staged.url)
-        await sut.syncAutovisorGoalToManagerBrief()
+        await sut.syncAutovisorGoalToManagerBrief(lifecycle: sut.currentFolderLifecycle)
 
         XCTAssertEqual(settings()?.autovisorGoalAttachmentPaths, [],
                        "the dangling path is dropped from settings on re-mirror")
@@ -314,7 +314,7 @@ final class AutovisorGoalAttachmentTests: NTMSOrchestratorTestBase, @unchecked S
         XCTAssertEqual(task.attachmentPaths, [staged.stagedRelativePath])
 
         sut.configuration.embedFilesInPrompt = true
-        await sut.syncAutovisorGoalToManagerBrief()
+        await sut.syncAutovisorGoalToManagerBrief(lifecycle: sut.currentFolderLifecycle)
         task = try XCTUnwrap(sut.loadedTask(mgrID))
         XCTAssertTrue(task.supervisorTask.contains("BODY"), "embed ON: file text now inlined")
         XCTAssertEqual(task.attachmentPaths, [], "embedded text file no longer path-listed")

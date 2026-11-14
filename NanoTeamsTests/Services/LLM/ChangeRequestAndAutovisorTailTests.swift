@@ -87,6 +87,36 @@ private final class RecordingSilentLLMClient: LLMClient, @unchecked Sendable {
     func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
 }
 
+/// A voting turn that reaches the model and never answers: the stream stays open until the task
+/// that iterates it is cancelled — what a meeting turn looks like while the person presses Pause.
+/// `callCount` tells the test the vote is under way, so the Pause lands inside it.
+private final class HangingVoteLLMClient: LLMClient, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _callCount = 0
+    /// Held so no stream ends because its continuation was released; only the consumer's
+    /// cancellation ends one.
+    private var open: [AsyncThrowingStream<StreamEvent, Error>.Continuation] = []
+    var callCount: Int { lock.withLock { _callCount } }
+
+    func streamChat(
+        config _: LLMConfig,
+        messages _: [ChatMessage],
+        tools _: [ToolSchema],
+        logger _: NetworkLogger?,
+        stepID _: String?,
+        roleName _: String?
+    ) -> AsyncThrowingStream<StreamEvent, Error> {
+        AsyncThrowingStream { continuation in
+            self.lock.withLock {
+                self._callCount += 1
+                self.open.append(continuation)
+            }
+        }
+    }
+
+    func fetchModels(config _: LLMConfig, visionOnly _: Bool) async throws -> [LLMModelInfo] { [] }
+}
+
 // MARK: - 1. handleChangeRequest: validation routing + vote arms
 
 /// Drives the REAL `handleChangeRequest` entry point. The validation tests assert the
@@ -98,6 +128,8 @@ final class ChangeRequestHandlerFlowTests: XCTestCase {
     private var service: LLMExecutionService!
     private var mockDelegate: MockLLMExecutionDelegate!
     private var tempDir: URL!
+    /// What a handler running inside the step's own task answered — read after the Pause.
+    private var replyFromTheStepsTask: CollaborationReply?
 
     private let requesterStepID = "team_swe"
     private let targetRoleID = "team_pm"
@@ -121,6 +153,7 @@ final class ChangeRequestHandlerFlowTests: XCTestCase {
         service?.cancelAllExecutions()
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
         tempDir = nil
+        replyFromTheStepsTask = nil
         mockDelegate = nil
         service = nil
         try await super.tearDown()
@@ -242,6 +275,165 @@ final class ChangeRequestHandlerFlowTests: XCTestCase {
         XCTAssertEqual(mockDelegate.taskToMutate?.runs[0].changeRequests.count, 6,
                        "the failed-vote path records the request (as rejected) — 5 seeded + this one")
         XCTAssertEqual(mockDelegate.taskToMutate?.runs[0].changeRequests.last?.status, .rejected)
+    }
+
+    // MARK: An interrupted vote (F6 D2, C5; review R1, R3)
+
+    /// A vote whose step was paused while it ran decided nothing. The handler runs where the app
+    /// runs it — inside the step's own task, registered as its `runningTask` — and the Pause is
+    /// the app's: `cancelStepExecution` cancels that task and WAITS for it, so the step's
+    /// execution state is still there when the meeting returns "Meeting cancelled.". The record
+    /// must close `.failed` (it spends nothing) and the reply must not call it a vote that did not
+    /// run. RED before the review fix (R1): `.rejected` — a decision the team never took, which
+    /// spent one of the run's change requests, and the reply "could not be voted on".
+    func testHandler_aVotePausedWhileItRuns_closesItsRecordAsFailed_andSpendsNothing() async throws {
+        let limits = TeamLimits(maxMeetingTurns: 2, maxChangeRequestsPerRun: 1)
+        install(team: makeTeam(limits: limits), task: makeTask())
+        let client = HangingVoteLLMClient()
+        let stepsTask = Task { @MainActor in
+            self.replyFromTheStepsTask = await self.submitChangeRequest(client: client)
+        }
+        service._testInjectRunningTask(stepID: requesterStepID, taskID: taskID, runningTask: stepsTask)
+        try await waitUntil("the vote reaches the model") { client.callCount > 0 }
+        XCTAssertEqual(mockDelegate.taskToMutate?.runs[0].changeRequests.first?.status, .pending,
+                       "premise: the vote is under way")
+
+        await service.cancelStepExecution(stepID: requesterStepID, taskID: taskID)
+
+        let reply = try XCTUnwrap(replyFromTheStepsTask, "the step's task finished before the Pause returned")
+        XCTAssertFalse(reply.succeeded)
+        XCTAssertFalse(reply.text.contains("could not be voted on"), "got: \(reply.text)")
+        XCTAssertEqual(reply.text, DeferredCallReplies.voteInterrupted)
+        let recorded = mockDelegate.taskToMutate?.runs[0].changeRequests
+        XCTAssertEqual(recorded?.count, 1)
+        XCTAssertEqual(recorded?.first?.status, .failed, "the vote ended without a decision")
+        XCTAssertNotNil(recorded?.first?.resolvedAt, "the record says when it ended")
+        let targetStep = mockDelegate.taskToMutate?.runs[0].steps.first { $0.id == targetRoleID }
+        XCTAssertEqual(targetStep?.amendments.count, 0, "nothing was amended")
+        let run = try XCTUnwrap(mockDelegate.taskToMutate?.runs[0])
+        let again = ChangeRequestService.validateChangeRequest(
+            targetRoleID: targetRoleID, requestingRole: .softwareEngineer,
+            team: makeTeam(limits: limits), teamSettings: TeamSettings(limits: limits), run: run)
+        XCTAssertNil(again.error, "the interrupted vote left the run's only change request free")
+    }
+
+    /// The same Pause arriving while the folder changes: the record belongs to the folder being
+    /// left and is not written from here (the next open's recovery closes it), and the reply says
+    /// the folder changed — not that the vote was interrupted in a folder still open.
+    func testHandler_aVoteAFolderSwitchOvertakes_writesNothingHere() async throws {
+        install(team: makeTeam(limits: TeamLimits(maxMeetingTurns: 2)), task: makeTask())
+        let client = HangingVoteLLMClient()
+        let stepsTask = Task { @MainActor in
+            self.replyFromTheStepsTask = await self.submitChangeRequest(client: client)
+        }
+        service._testInjectRunningTask(stepID: requesterStepID, taskID: taskID, runningTask: stepsTask)
+        try await waitUntil("the vote reaches the model") { client.callCount > 0 }
+
+        mockDelegate.folderTransitions += 1
+        stepsTask.cancel()
+        await stepsTask.value
+
+        let reply = try XCTUnwrap(replyFromTheStepsTask)
+        XCTAssertEqual(reply.text, DeferredCallReplies.folderChanged)
+        XCTAssertEqual(mockDelegate.taskToMutate?.runs[0].changeRequests.first?.status, .pending,
+                       "the folder being left is closed by its next open, not by this handler")
+    }
+
+    /// A vote under way holds its slot: two roles running in parallel (CLAUDE.md #45) on the
+    /// run's last change request cannot both be voted on. RED before the review fix (R3): the
+    /// second passed validation — a `.pending` record spent nothing — and was voted on too,
+    /// leaving more decided requests than `maxChangeRequestsPerRun`. Once the first vote ends
+    /// without a decision its slot is free again.
+    func testHandler_aVoteUnderWay_holdsItsSlot_againstAParallelRequest() async throws {
+        let limits = TeamLimits(maxMeetingTurns: 2, maxChangeRequestsPerRun: 1)
+        install(team: makeTeam(limits: limits), task: makeTask())
+        service._testRegisterStepTask(stepID: secondVoterRoleID, taskID: taskID)
+        let client = HangingVoteLLMClient()
+        let stepsTask = Task { @MainActor in
+            self.replyFromTheStepsTask = await self.submitChangeRequest(client: client)
+        }
+        service._testInjectRunningTask(stepID: requesterStepID, taskID: taskID, runningTask: stepsTask)
+        try await waitUntil("the first vote reaches the model") { client.callCount > 0 }
+
+        let parallel = await service.handleChangeRequest(
+            stepID: secondVoterRoleID, targetRoleID: targetRoleID,
+            changes: "Name the error cases.", reasoning: "The design needs them.",
+            requestingRole: .uxDesigner, task: mockDelegate.taskToMutate!,
+            runIndex: 0, stepIndex: 0,
+            client: ScriptedVoteLLMClient(vote: "VOTE: APPROVE"), config: LLMConfig())
+
+        XCTAssertFalse(parallel.succeeded)
+        XCTAssertTrue(parallel.text.contains("Change request limit reached"), "got: \(parallel.text)")
+        XCTAssertEqual(mockDelegate.taskToMutate?.runs[0].changeRequests.count, 1,
+                       "the refused request leaves no record beside the vote under way")
+
+        await service.cancelStepExecution(stepID: requesterStepID, taskID: taskID)
+        let run = try XCTUnwrap(mockDelegate.taskToMutate?.runs[0])
+        XCTAssertEqual(run.changeRequests.first?.status, .failed, "premise: the first vote decided nothing")
+        let afterIt = ChangeRequestService.validateChangeRequest(
+            targetRoleID: targetRoleID, requestingRole: .uxDesigner,
+            team: makeTeam(limits: limits), teamSettings: TeamSettings(limits: limits), run: run)
+        XCTAssertNil(afterIt.error, "a vote that ended without a decision frees its slot")
+    }
+
+    /// A request whose vote ended without a decision (`.failed`) does not count against the run's
+    /// budget; one still `.pending` does — it is a vote under way (an older build's leftover is
+    /// closed `.failed` when its task is loaded, `StatusRecoveryService`).
+    func testHandler_failedRequestsAreFree_pendingOnesHoldTheirSlot() async {
+        var task = makeTask()
+        task.runs[0].changeRequests = [
+            ChangeRequest(requestingRoleID: "softwareEngineer", targetRoleID: targetRoleID,
+                          changes: "interrupted", reasoning: "r", status: .failed),
+            ChangeRequest(requestingRoleID: "softwareEngineer", targetRoleID: targetRoleID,
+                          changes: "interrupted too", reasoning: "r", status: .failed),
+        ]
+        install(team: makeTeam(limits: TeamLimits(maxChangeRequestsPerRun: 2)), task: task)
+        // The meeting cannot run without a folder, so the request fails PAST the budget check.
+        mockDelegate.workFolderURL = nil
+
+        let reply = await submitChangeRequest()
+
+        XCTAssertFalse(reply.text.contains("limit reached"), "got: \(reply.text)")
+        XCTAssertTrue(reply.text.lowercased().contains("voting meeting"), "got: \(reply.text)")
+
+        var held = makeTask()
+        held.runs[0].changeRequests = [
+            ChangeRequest(requestingRoleID: "softwareEngineer", targetRoleID: targetRoleID,
+                          changes: "under way", reasoning: "r", status: .pending),
+        ]
+        install(team: makeTeam(limits: TeamLimits(maxChangeRequestsPerRun: 1)), task: held)
+        let refused = await submitChangeRequest()
+        XCTAssertTrue(refused.text.contains("Change request limit reached"), "got: \(refused.text)")
+    }
+
+    /// Decided requests still spend it — approved and rejected alike.
+    func testHandler_decidedRequests_spendTheRunsBudget() async {
+        var task = makeTask()
+        task.runs[0].changeRequests = [
+            ChangeRequest(requestingRoleID: "softwareEngineer", targetRoleID: targetRoleID,
+                          changes: "a", reasoning: "r", status: .approved),
+            ChangeRequest(requestingRoleID: "softwareEngineer", targetRoleID: targetRoleID,
+                          changes: "b", reasoning: "r", status: .rejected),
+        ]
+        install(team: makeTeam(limits: TeamLimits(maxChangeRequestsPerRun: 2)), task: task)
+
+        let reply = await submitChangeRequest()
+
+        XCTAssertTrue(reply.text.contains("Change request limit reached"), "got: \(reply.text)")
+    }
+
+    private func waitUntil(
+        _ what: String, timeout: Duration = .seconds(10), _ condition: () -> Bool,
+        file: StaticString = #filePath, line: UInt = #line
+    ) async throws {
+        let deadline = ContinuousClock.now + timeout
+        while !condition() {
+            guard ContinuousClock.now < deadline else {
+                XCTFail("timed out waiting until \(what)", file: file, line: line)
+                throw CancellationError()
+            }
+            try await Task.sleep(for: .milliseconds(5))
+        }
     }
 
     // MARK: Vote arms (real auto-created voting meeting)
@@ -1100,7 +1292,7 @@ final class AutovisorLifecycleTailTests: NTMSOrchestratorTestBase, @unchecked Se
                        "premise: the feature is off by default")
         let before = taskCount
 
-        await sut.ensureAutovisorTask()
+        await sut.ensureAutovisorTask(lifecycle: sut.currentFolderLifecycle)
 
         XCTAssertNil(sut.autovisorTaskID, "a disabled Autovisor must not materialize a manager")
         XCTAssertEqual(taskCount, before)
@@ -1109,7 +1301,7 @@ final class AutovisorLifecycleTailTests: NTMSOrchestratorTestBase, @unchecked Se
     func testEnsure_withoutARealWorkFolder_createsNothing() async {
         XCTAssertFalse(sut.hasRealWorkFolder, "premise: default storage")
 
-        await sut.ensureAutovisorTask()
+        await sut.ensureAutovisorTask(lifecycle: sut.currentFolderLifecycle)
 
         XCTAssertNil(sut.autovisorTaskID,
                      "default storage has nothing to manage — the manager must not be created")
@@ -1120,7 +1312,7 @@ final class AutovisorLifecycleTailTests: NTMSOrchestratorTestBase, @unchecked Se
     func testEnsure_enabled_createsPinsAndSeedsTheReviewRecurrence() async {
         await openAndEnable()
 
-        await sut.ensureAutovisorTask()
+        await sut.ensureAutovisorTask(lifecycle: sut.currentFolderLifecycle)
 
         guard let mgrID = sut.autovisorTaskID else {
             return XCTFail("enabling must lazily create the manager task")
@@ -1144,7 +1336,7 @@ final class AutovisorLifecycleTailTests: NTMSOrchestratorTestBase, @unchecked Se
     func testEnsure_createdManager_isHiddenAndNotActive() async {
         await openAndEnable()
 
-        await sut.ensureAutovisorTask()
+        await sut.ensureAutovisorTask(lifecycle: sut.currentFolderLifecycle)
 
         guard let mgrID = sut.autovisorTaskID else { return XCTFail("no manager created") }
         defer { sut.stopEngineForTask(mgrID) }
@@ -1156,12 +1348,12 @@ final class AutovisorLifecycleTailTests: NTMSOrchestratorTestBase, @unchecked Se
 
     func testEnsure_calledTwice_isIdempotent() async {
         await openAndEnable()
-        await sut.ensureAutovisorTask()
+        await sut.ensureAutovisorTask(lifecycle: sut.currentFolderLifecycle)
         guard let first = sut.autovisorTaskID else { return XCTFail("no manager created") }
         sut.stopEngineForTask(first)
         let afterFirst = taskCount
 
-        await sut.ensureAutovisorTask()
+        await sut.ensureAutovisorTask(lifecycle: sut.currentFolderLifecycle)
 
         XCTAssertEqual(sut.autovisorTaskID, first, "the pinned id must be reused, not replaced")
         XCTAssertEqual(taskCount, afterFirst, "a second ensure must not create a second manager")
@@ -1178,7 +1370,7 @@ final class AutovisorLifecycleTailTests: NTMSOrchestratorTestBase, @unchecked Se
             $0.state.autovisorTaskID = 999_999   // never existed
         }
 
-        await sut.ensureAutovisorTask()
+        await sut.ensureAutovisorTask(lifecycle: sut.currentFolderLifecycle)
 
         guard let mgrID = sut.autovisorTaskID else {
             return XCTFail("a stale pin must be replaced by a real manager")
@@ -1195,7 +1387,7 @@ final class AutovisorLifecycleTailTests: NTMSOrchestratorTestBase, @unchecked Se
     /// open-time pass and then never recurs again.
     func testEnsure_afterDisableEnableCycle_restoresTheReviewRecurrence() async {
         await openAndEnable()
-        await sut.ensureAutovisorTask()
+        await sut.ensureAutovisorTask(lifecycle: sut.currentFolderLifecycle)
         guard let mgrID = sut.autovisorTaskID else { return XCTFail("no manager created") }
         sut.stopEngineForTask(mgrID)
 
@@ -1205,7 +1397,7 @@ final class AutovisorLifecycleTailTests: NTMSOrchestratorTestBase, @unchecked Se
                        "premise: disabling stops the scheduler firing the manager")
 
         await sut.mutateWorkFolder { $0.settings.autovisorEnabled = true }
-        await sut.ensureAutovisorTask()
+        await sut.ensureAutovisorTask(lifecycle: sut.currentFolderLifecycle)
         await sut.ensureTaskLoaded(mgrID)
 
         XCTAssertEqual(sut.autovisorTaskID, mgrID, "the same manager is reused")
@@ -1220,14 +1412,14 @@ final class AutovisorLifecycleTailTests: NTMSOrchestratorTestBase, @unchecked Se
     /// edit) gets a default one seeded rather than staying un-scheduled forever.
     func testEnsure_existingManagerWithNoRecurrence_seedsADefaultOne() async {
         await openAndEnable()
-        await sut.ensureAutovisorTask()
+        await sut.ensureAutovisorTask(lifecycle: sut.currentFolderLifecycle)
         guard let mgrID = sut.autovisorTaskID else { return XCTFail("no manager created") }
         sut.stopEngineForTask(mgrID)
         await sut.ensureTaskLoaded(mgrID)
         await sut.mutateTask(taskID: mgrID) { $0.recurrence = nil }
         XCTAssertNil(sut.loadedTask(mgrID)?.recurrence, "premise: the recurrence is gone")
 
-        await sut.ensureAutovisorTask()
+        await sut.ensureAutovisorTask(lifecycle: sut.currentFolderLifecycle)
         await sut.ensureTaskLoaded(mgrID)
 
         XCTAssertEqual(sut.loadedTask(mgrID)?.recurrence?.isEnabled, true,

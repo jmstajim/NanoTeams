@@ -101,7 +101,7 @@ nonisolated enum SkillConstants {
     ///   than defaulted: the whole job of this function is getting a level
     ///   right, so the call site says which one.
     static func nestedBody(_ body: String, under headingLevel: Int) -> String {
-        let lines = body.components(separatedBy: "\n")
+        let (lines, breaks) = Self.lines(of: body)
         let minimumLevel = headingLevel + 1
 
         var shallowest = Int.max
@@ -115,7 +115,30 @@ nonisolated enum SkillConstants {
             let rest = lines[index].drop(while: { $0 == "#" })
             result[index] = String(repeating: "#", count: newLevel) + rest
         }
-        return result.joined(separator: "\n")
+        return zip(result, breaks).map { $0 + $1 }.joined()
+    }
+
+    /// `body` cut at every line break a renderer draws as one — LF, CR, CRLF, NEL, U+2028, U+2029,
+    /// VT and FF (`Character.isNewline`) — and each line's break, `""` after the last, so the body
+    /// reassembles byte for byte. Until 2026-11-13 it was cut at `\n` alone: a heading after any
+    /// other break shares its line with the text before it, so `intro\r## Attached Files` — which
+    /// the person's editor draws on two lines — kept its fabricated section (review, 2026-11-13).
+    private static func lines(of body: String) -> (lines: [String], breaks: [String]) {
+        var lines: [String] = []
+        var breaks: [String] = []
+        var current = ""
+        for character in body {
+            if character.isNewline {
+                lines.append(current)
+                breaks.append(String(character))
+                current = ""
+            } else {
+                current.append(character)
+            }
+        }
+        lines.append(current)
+        breaks.append("")
+        return (lines, breaks)
     }
 
     /// Walks `lines`, invoking `body` with the index and heading level of every

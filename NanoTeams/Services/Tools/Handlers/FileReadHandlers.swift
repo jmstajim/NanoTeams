@@ -24,6 +24,7 @@ nonisolated struct ReadFileTool: ToolHandler {
         )
     )
     static let category: ToolCategory = .fileRead
+    static let undeclaredArguments = ToolArgumentVocabulary.filePath
 
     let resolver: SandboxPathResolver
     // `nonisolated(unsafe)`: see `ToolHandlerDependencies.fileManager`.
@@ -63,8 +64,8 @@ nonisolated struct ReadFileTool: ToolHandler {
             // Extract content (PDF/DOCX/RTF/etc. → plain text; otherwise raw UTF-8).
             let fullContent: String
             let encoding: String
-            switch FileReadSupport.extractContent(
-                toolName: Self.name, args: args, path: path, fileURL: fileURL
+            switch try FileReadSupport.extractContent(
+                toolName: Self.name, args: args, path: path, fileURL: fileURL, resolver: resolver
             ) {
             case .text(let content, let enc): fullContent = content; encoding = enc
             case .failure(let err): return err
@@ -122,6 +123,7 @@ nonisolated struct ReadLinesTool: ToolHandler {
         )
     )
     static let category: ToolCategory = .fileRead
+    static let undeclaredArguments = ToolArgumentVocabulary.filePath
 
     let resolver: SandboxPathResolver
     // `nonisolated(unsafe)`: see `ToolHandlerDependencies.fileManager`.
@@ -173,8 +175,8 @@ nonisolated struct ReadLinesTool: ToolHandler {
             }
 
             let content: String
-            switch FileReadSupport.extractContent(
-                toolName: Self.name, args: args, path: path, fileURL: fileURL
+            switch try FileReadSupport.extractContent(
+                toolName: Self.name, args: args, path: path, fileURL: fileURL, resolver: resolver
             ) {
             case .text(let extracted, _): content = extracted
             case .failure(let err): return err
@@ -268,6 +270,8 @@ nonisolated struct ListFilesTool: ToolHandler {
         )
     )
     static let category: ToolCategory = .fileRead
+    /// `search`'s name for the same glob, and grep's.
+    static let undeclaredArguments = ToolArgumentVocabulary.aliases(["file_glob", "glob"], of: "name_glob")
 
     let resolver: SandboxPathResolver
     // `nonisolated(unsafe)`: see `ToolHandlerDependencies.fileManager`.
@@ -318,6 +322,15 @@ nonisolated struct ListFilesTool: ToolHandler {
             // shape called the now-removed `GlobMatcher.matches(name:glob:)` inside the per-entry loop, which
             // built a fresh `NSRegularExpression` for EVERY directory entry — the same defect
             // already fixed in the search walk.
+            // A basename glob with a folder in it matches nothing — a silent zero under ok:true.
+            // grep's and the agent harness's globs are path globs (`src/*.gd`), so this is the
+            // shape a model brings; say where each half goes instead.
+            if let nameGlob, nameGlob.contains("/") {
+                throw ToolArgumentError.invalidValue(
+                    key: "name_glob",
+                    detail: "matches entry names only, and '\(nameGlob)' names a folder: send the folder "
+                        + "in `path` and the name pattern alone here.")
+            }
             let compiledNameGlob: CompiledGlob?
             do {
                 compiledNameGlob = try nameGlob.map {
@@ -366,6 +379,11 @@ nonisolated struct ListFilesTool: ToolHandler {
             }()
 
             var entries: [(path: String, isDir: Bool)] = []
+            // Links that lead out of the work folder, named rather than silently dropped:
+            // `bash`'s own `ls` shows them and `search` reports them, so a listing that just
+            // omits them reads as a broken tool. A hidden location stays silent, as the
+            // internal directory always has.
+            var linksOutside: [String] = []
             let maxEntries = ToolConstants.maxDirectoryEntries
             let fm = fileManager
             let internalDir = self.internalDir
@@ -379,6 +397,12 @@ nonisolated struct ListFilesTool: ToolHandler {
                 guard entries.count <= maxEntries else { return }
 
                 guard let contents = try? fm.contentsOfDirectory(atPath: url.path) else { return }
+                // Each entry is judged where it really is, as `read_file` would judge it: a link
+                // a role's bash planted must not list what lies outside the work folder, and a
+                // hidden location inside it (a credential store, an agent token) is left
+                // out silently, like the internal directory (#375). One `realpath` per DIRECTORY;
+                // only a symlink entry pays its own.
+                let realDir = SandboxPathResolver.canonicalPath(url.path)
 
                 for name in contents {
                     guard entries.count <= maxEntries else { return }
@@ -386,6 +410,17 @@ nonisolated struct ListFilesTool: ToolHandler {
 
                     let itemURL = url.appendingPathComponent(name)
                     if let internalDir, SandboxPathResolver.isWithin(candidate: itemURL, container: internalDir) { continue }
+                    let isLink = (try? itemURL.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink ?? false
+                    let realItem = isLink
+                        ? SandboxPathResolver.canonicalPath(itemURL.path)
+                        : (realDir as NSString).appendingPathComponent(name)
+                    guard resolver.permits(canonicalPath: realItem) else {
+                        if isLink, !resolver.hides(canonicalPath: realItem) {
+                            linksOutside.append(
+                                relativePath.isEmpty ? name : "\(relativePath)/\(name)")
+                        }
+                        continue
+                    }
                     var itemIsDir: ObjCBool = false
                     guard fm.fileExists(atPath: itemURL.path, isDirectory: &itemIsDir) else {
                         continue
@@ -461,9 +496,13 @@ nonisolated struct ListFilesTool: ToolHandler {
                 ),
                 meta: ToolResultMeta(
                     truncated: truncated,
-                    warnings: truncated
+                    warnings: (truncated
                         ? ["Listing capped at \(maxEntries) entries. Narrow with name_glob, or list a subdirectory."]
-                        : []
+                        : [])
+                        + (linksOutside.isEmpty
+                            ? []
+                            : ["Not listed, symlink points outside the work folder: "
+                                + linksOutside.sorted().joined(separator: ", ")])
                 )
             )
         }
@@ -494,6 +533,18 @@ nonisolated struct SearchTool: ToolHandler {
         )
     )
     static let category: ToolCategory = .fileRead
+    /// grep's vocabulary (`grep` and `find` already resolve to this tool by NAME,
+    /// `ToolRegistry.defaultAliases`) and the singular `path` every sibling file tool takes —
+    /// qwen3.6 sent `{"pattern", "path"}` on 2026-11-09 and lost both.
+    static let undeclaredArguments: [String: UndeclaredArgument] = [
+        "pattern": .alias(
+            of: "query",
+            detail: "A pattern is read as a regular expression (`mode: \"regex\"`), as grep reads it — send `query` alone for a literal substring.",
+            sets: ["mode": "regex"]),
+        "path": .alias(of: "paths"),
+        "glob": .alias(of: "file_glob"),
+        "name_glob": .alias(of: "file_glob"),
+    ]
 
     let resolver: SandboxPathResolver
     // `nonisolated(unsafe)`: see `ToolHandlerDependencies.fileManager`.
@@ -549,6 +600,15 @@ nonisolated struct SearchTool: ToolHandler {
             let fileGlob = optionalString(canonicalArgs, "file_glob").flatMap {
                 let trimmed = $0.trimmingCharacters(in: .whitespacesAndNewlines)
                 return trimmed.isEmpty ? nil : trimmed
+            }
+            // Same silent zero as `list_files`' `name_glob`: `file_glob` matches basenames, so
+            // `src/*.js` — grep's spelling, and what `glob` renamed to this carries — matches
+            // nothing. Where each half goes is the repair.
+            if let fileGlob, fileGlob.contains("/") {
+                throw ToolArgumentError.invalidValue(
+                    key: "file_glob",
+                    detail: "matches file names only, and '\(fileGlob)' names a folder: send the folder "
+                        + "in `paths` and the name pattern alone here.")
             }
             let maxResults = optionalInt(canonicalArgs, "max_results") ?? defaultMaxResults
             let offset = optionalInt(canonicalArgs, "offset") ?? 0

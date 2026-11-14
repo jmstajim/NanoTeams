@@ -81,6 +81,36 @@ final class MeetingCoordinatorTests: XCTestCase {
         XCTAssertTrue(filtered.isEmpty)
     }
 
+    // MARK: - MCP in meetings
+
+    /// A meeting turn runs no MCP approval gate — there is no step to park and no card to
+    /// show, so a held call would have nobody to hold it. The schema is the structural half
+    /// of that rule: the tool never reaches the model, so no call of it is possible.
+    func testFilterMeetingTools_removesEveryMCPTool() {
+        let tools = [
+            makeSchema(TN.readFile),
+            makeSchema("mcp__folio__get_screenshot"),
+            makeSchema("mcp__trade_room__post_order"),
+        ]
+        let filtered = MeetingCoordinator.filterMeetingTools(tools)
+        XCTAssertEqual(filtered.map(\.name), [TN.readFile])
+    }
+
+    /// The predicate, not the excluded-name set: an MCP tool is not a `ToolHandler`, so
+    /// `meetingExcluded` cannot name one and a set-only filter would pass every one through.
+    func testMeetingExcludedToolsCannotNameAnMCPTool() {
+        XCTAssertFalse(
+            MeetingCoordinator.meetingExcludedTools.contains { MCPToolNaming.isMCPName($0) })
+    }
+
+    /// The coordinator's extra gavel does not buy it an exemption.
+    func testSpeakerTools_coordinatorGetsNoMCPEither() {
+        let base = [makeSchema(TN.readFile), makeSchema("mcp__folio__get_metadata")]
+        let coordinator = MeetingCoordinator.speakerTools(base: base, isCoordinator: true)
+        XCTAssertFalse(coordinator.contains { MCPToolNaming.isMCPName($0.name) })
+        XCTAssertTrue(coordinator.contains { $0.name == TN.concludeMeeting })
+    }
+
 
     /// The whole-turn prompt, composed from the three parts the production wire now sends as
     /// separate messages. The assertions below are about CONTENT — every line still reaches the

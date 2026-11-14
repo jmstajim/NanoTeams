@@ -3,7 +3,7 @@ import XCTest
 @testable import NanoTeams
 
 /// The class of defect that broke the `google/gemma-4-26b-a4b-qat` MeditationApp run
-/// (`network_log.json`, 2026-08-13, 19:53:20 and 19:53:28): **the model closed a
+/// (`network_log.json`, 2026-08-13, two requests eight seconds apart): **the model closed a
 /// structural object before it had finished writing its members.**
 ///
 /// The observed payload was
@@ -96,7 +96,7 @@ final class ToolCallArgumentSpillTests: XCTestCase {
     }
 
     /// The run's own evidence that this was not a one-off: the identical shape came
-    /// back eight seconds later (19:53:28) after the model had been told "Fix the
+    /// back eight seconds later, after the model had been told "Fix the
     /// arguments and retry".
     func testProductionPayload_secondOccurrence_alsoRecovers() {
         let envelope = #"<|call|>{"name":"edit_file","arguments":{"new_text":"import SwiftUI\nimport UIKit"},"old_text":"import SwiftUI"},"path":"MeditationApp/ContentView.swift"}}<|end|>"#
@@ -272,10 +272,10 @@ final class ToolCallArgumentSpillTests: XCTestCase {
     /// RED: delete the `depth > 0` padding arm of `repairPrematureObjectClose` → the
     /// reconstruction fails to parse and `extra` is silently dropped.
     func testSpill_underClosedAfterRemovingThePrematureCloser_isPadded() {
-        let envelope = #"<|call|>{"name":"read_file","arguments":{"path":"a"}},"extra":"x"<|end|>"#
+        let envelope = #"<|call|>{"name":"read_lines","arguments":{"path":"a"}},"start_line":5<|end|>"#
         let args = arguments(envelope)
         XCTAssertEqual(args["path"] as? String, "a")
-        XCTAssertEqual(args["extra"] as? String, "x")
+        XCTAssertEqual(args["start_line"] as? Int, 5)
     }
 
     /// A reconstruction that does not parse is worse than the truncated span it would

@@ -762,4 +762,13 @@ final class JSONSchemaTests: XCTestCase {
         let decoded = try decoder.decode(JSONSchema.self, from: data)
         XCTAssertEqual(decoded.required, [])
     }
+
+    // MARK: - Declared argument names
+
+    func testDeclaredArgumentNames_areThePropertyKeys_andEmptyWithoutProperties() {
+        let schema = JSONSchema.object(properties: ["path": JSONSchema.string(), "max": JSONSchema.integer()])
+        XCTAssertEqual(schema.declaredArgumentNames, ["path", "max"])
+        XCTAssertEqual(JSONSchema(type: "object").declaredArgumentNames, [], "no `properties` declares nothing")
+        XCTAssertEqual(JSONSchema.object(properties: [:]).declaredArgumentNames, [])
+    }
 }

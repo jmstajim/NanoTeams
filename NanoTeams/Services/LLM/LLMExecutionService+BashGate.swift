@@ -58,7 +58,8 @@ extension LLMExecutionService {
     /// `BashPermissionService`):
     /// - `.deny` rule → `BASH_DENIED`
     /// - `.allow` / read-only → pass through (runs)
-    /// - `.ask` → AUTO judge (mode `.auto`); or, with a human present, the command
+    /// - `.ask` → AUTO judge (mode `.auto`) — a judge call the run's cancellation cut short
+    ///   is a `CANCELLED` envelope, never a denial; or, with a human present, the command
     ///   is HELD and the gate AWAITS the human's Allow/Deny in-loop — the model is
     ///   never asked to re-issue. On Allow the call passes through (runs for real);
     ///   on Deny a denial is synthesized; on `.cancelled` (Pause / teardown, no human
@@ -108,9 +109,10 @@ extension LLMExecutionService {
         for (idx, call) in resolvedToolCalls.enumerated() {
             guard ToolRegistry.resolveToolName(call.name) == ToolNames.bash else { continue }
             guard let command = BashArguments.command(fromJSON: call.argumentsJSON) else {
-                // Malformed args — let the handler reject with a clear INVALID_ARGS.
-                // (Resolves the command identically to BashTool, so a command under
-                // an alternative key can't slip past the gate and run ungated.)
+                // Nothing would run: the runtime refuses the document, or the handler finds no
+                // command in it — either way the model gets that refusal, and no card is held
+                // for a call that cannot run. Resolved by the runtime's own reading and the
+                // handler's own resolver, so no command can reach `BashTool` unjudged.
                 continue
             }
             let commandKey = BashPermissionService.decisionKey(for: command)
@@ -124,17 +126,21 @@ extension LLMExecutionService {
                 if policy.mode == .auto {
                     // AUTO judge.
                     let workingDir = BashArguments.workingDirectory(fromJSON: call.argumentsJSON)
-                    // The judge runs against the SAME (server, model) as the step whose tool
-                    // loop we are inside, so record its presence: if the server later reports it
-                    // re-processed this step's prompt, this is the caller to name.
-                    await noteInterleavingCall(label: "bash judge", config: config)
-                    let verdict = await BashJudgeService.judge(
-                        command: command, workingDirectory: workingDir,
-                        policy: judgePolicy, config: config, client: client, logger: networkLogger)
-                    if verdict.allowed {
+                    let ruling = await askApprovalJudge(label: "bash judge", config: config) {
+                        await BashJudgeService.judge(
+                            command: command, workingDirectory: workingDir,
+                            policy: judgePolicy, config: config, client: client, logger: networkLogger)
+                    }
+                    switch ruling {
+                    case .decided(let verdict) where verdict.allowed:
                         continue
-                    } else {
+                    case .decided(let verdict):
                         synthetic[idx] = makeBashDeniedResult(call: call, reason: verdict.reason)
+                    case .cancelled:
+                        // Paused while the judge was being asked, or before it could be:
+                        // nobody ruled, so no `BASH_DENIED` — twin of the human hold's
+                        // `.cancelled` below.
+                        synthetic[idx] = makeCancelledResult(for: call)
                     }
                 } else if humanPresent {
                     // HOLD the command and await the human's Allow/Deny in-loop. This
@@ -225,6 +231,27 @@ extension LLMExecutionService {
 
     // MARK: - Helpers
 
+    /// Asks an approval judge on a gate's behalf — the one place both gates (`bash`,
+    /// computer-use) do it.
+    ///
+    /// The judge runs against the SAME (server, model) as the step whose tool loop we are inside,
+    /// so its presence is noted on the prompt-prefix ledger first: if the server later reports it
+    /// re-processed this step's prompt, this is the caller to name.
+    ///
+    /// Unless the run has already stopped. A batch can hold several calls that need a verdict,
+    /// and a Pause that cut the first judge short leaves the gate's loop running under the
+    /// cancelled task: every later call used to note a judge — a suspect `serverDroppedCache`
+    /// could name for a request that never went out — and then reach `JudgeCall.run`, which sends
+    /// nothing for a stopped run. It is answered `.cancelled` here instead, like the judge the
+    /// Pause interrupted, so the gate writes the same cancellation envelope for each of them.
+    func askApprovalJudge(
+        label: String, config: LLMConfig, _ judge: () async -> JudgeRuling
+    ) async -> JudgeRuling {
+        if Task.isCancelled { return .cancelled }
+        await noteInterleavingCall(label: label, config: config)
+        return await judge()
+    }
+
     func isUnderAutovisor(task: NTMSTask) -> Bool {
         guard let settings = delegate?.snapshot?.workFolder.settings else { return false }
         return AutovisorPolicy.supervisesTask(
@@ -232,6 +259,42 @@ extension LLMExecutionService {
             parentTaskID: task.parentTaskID,
             autovisorEnabled: settings.autovisorEnabled,
             activation: settings.autovisorActivation,
-            autovisorTaskID: delegate?.snapshot?.workFolder.state.autovisorTaskID)
+            autovisorTaskID: delegate?.snapshot?.workFolder.state.autovisorTaskID,
+            driver: settings.autovisorDriver,
+            origin: task.origin
+        )
+    }
+
+    /// Whether nobody but the Autovisor stands behind this task's approval cards — the
+    /// `underAutovisor:` that `ApprovalPresence.humanPresent` reads for the schema resolver and both
+    /// gates. Wider than `isUnderAutovisor` by one case: a DELEGATED child (`parentTaskID != nil`)
+    /// whose root task an external agent created, while the external driver is on and the Autovisor
+    /// is enabled. Such a child inherits its root's absence of a person — it has no `origin` of its
+    /// own, and its cards would wait on a person the agent's task never had. Supervision itself does
+    /// not widen: `isUnderAutovisor` (the manager's wake, the auto-answer suppression) stays
+    /// top-level only, so the child's questions still go through its own team's
+    /// `SupervisorMode` — an autonomous child team still answers itself. A child of a person's task
+    /// is unchanged under either driver: its root has no agent origin, so a person approves.
+    func underAutovisorForApproval(task: NTMSTask) -> Bool {
+        if isUnderAutovisor(task: task) {
+            return true
+        }
+        guard let settings = delegate?.snapshot?.workFolder.settings,
+              settings.autovisorEnabled,
+              settings.autovisorDriver == .externalAgent,
+              task.parentTaskID != nil else {
+            return false
+        }
+        return rootTaskOriginIsExternalAgent(for: task)
+    }
+
+    private func rootTaskOriginIsExternalAgent(for task: NTMSTask) -> Bool {
+        guard let snapshot = delegate?.snapshot else { return false }
+        let ancestorIDs = snapshot.tasksIndex.ancestorIDs(of: task.id)
+        guard let rootID = ancestorIDs.first,
+              let rootSummary = snapshot.tasksIndex.tasks.first(where: { $0.id == rootID }) else {
+            return false
+        }
+        return rootSummary.origin?.isExternalAgent == true
     }
 }

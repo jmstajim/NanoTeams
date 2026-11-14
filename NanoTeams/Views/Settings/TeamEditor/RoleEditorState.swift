@@ -27,7 +27,10 @@ nonisolated enum RoleSection: String, CaseIterable, Identifiable {
 /// Consolidated state for `RoleEditorSheet`. Using a single `@State` struct lets SwiftUI
 /// track changes through one projected `Binding<RoleEditorState>` with key-path subscripts
 /// (`$editorState.roleName`, etc.) instead of 17 separate `@State` properties.
-nonisolated struct RoleEditorState {
+///
+/// `Equatable` so `hasUnsavedChanges(mode:)` compares every field without listing them: a
+/// field added here is compared the day it is added.
+nonisolated struct RoleEditorState: Equatable {
     var roleName: String = ""
     var roleIcon: String = "person"
     var rolePrompt: String = ""
@@ -118,6 +121,36 @@ nonisolated struct RoleEditorState {
     /// wrote are the bytes the model reads.
     static func normalizedMeetingGuidance(_ draft: String) -> String? {
         draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : draft
+    }
+
+    /// Whether closing the editor now would throw away something the person changed: this
+    /// draft against the editor as it opened — the role as stored for `.edit`, the empty form
+    /// for `.create`. What Cancel and Escape ask before closing (`EditorSheetClosePolicy`).
+    ///
+    /// Compared as drafts rather than by building two roles (`provisionalDefinition`) and
+    /// diffing them: the sheet asks on every body pass and a role carries its whole prompt, and
+    /// the draft already holds the role's set-valued fields as sets, so a stored list in another
+    /// order is not a change. Normalized where Save normalizes — a blank meeting guidance is
+    /// none — and blind to the two fields that only move the view, so an edit that would save
+    /// nothing never asks. `RoleEditorUnsavedChangesTests` fails when a field is added without
+    /// a side.
+    func hasUnsavedChanges(mode: EditorMode<TeamRoleDefinition>) -> Bool {
+        let opened: RoleEditorState
+        switch mode {
+        case .edit(let role): opened = .loaded(from: role)
+        case .create: opened = RoleEditorState()
+        }
+        return Self.asSaved(self) != Self.asSaved(opened)
+    }
+
+    /// `state` as Save would store it: the view-only fields set aside, the meeting guidance
+    /// normalized.
+    private static func asSaved(_ state: RoleEditorState) -> RoleEditorState {
+        var saved = state
+        saved.activeSection = .general
+        saved.showingPromptPreview = false
+        saved.meetingGuidance = normalizedMeetingGuidance(state.meetingGuidance) ?? ""
+        return saved
     }
 
     /// The role as it would be saved RIGHT NOW, from the in-flight draft.

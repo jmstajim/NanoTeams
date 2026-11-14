@@ -307,7 +307,7 @@ final class RunStartOrderingTests: NTMSOrchestratorTestBase, @unchecked Sendable
         XCTAssertTrue(sut.engineState.isInitializingRun(taskID),
                       "The new start's claim survives the old launch's release")
 
-        sut.releaseRunStart(taskID: taskID, generation: fresh)
+        sut.releaseRunStart(taskID: taskID, claim: fresh)
         XCTAssertFalse(sut.engineState.isInitializingRun(taskID),
                        "Anti-vacuum: the matching release still works, so the guard above "
                            + "is about the GENERATION and not about releases being broken")
@@ -350,8 +350,8 @@ final class RunStartOrderingTests: NTMSOrchestratorTestBase, @unchecked Sendable
     /// `testTaskRemovedWhileLaunchIsSuspended_…` above: that one is green on the
     /// loaded-task guard's merit even with the cancel deleted.
     ///
-    /// RED: delete `cancelRunStartLaunch(taskID:)` from `stopEngine(for:)` → the launch
-    /// resumes past both guards and `XCTAssertNil(sut.taskEngineStates[taskID])` fails.
+    /// RED: delete `abortRunStart(taskID:)` from `stopEngine(for:)` → the launch resumes past
+    /// every guard and `XCTAssertNil(sut.taskEngineStates[taskID])` fails.
     func testStopEngine_cancelsThePendingLaunch() async {
         await sut.openWorkFolder(tempDir)
         guard let taskID = await sut.createPreparedTaskAndStart(request: makeRequest()) else {
@@ -364,7 +364,7 @@ final class RunStartOrderingTests: NTMSOrchestratorTestBase, @unchecked Sendable
         // `runStartTask(for:)?.value`, NEVER `drainRunStartLaunches()`: the drain cancels
         // before it awaits, so joining through it would supply the very cancellation this
         // test exists to attribute to `stopEngine`. Measured — with the drain here, the
-        // mutation "delete the cancel from `stopAllEngines`" stayed GREEN on the sibling
+        // mutation "delete the cancel from `stopAllEngines`" (before 2026-10-28) stayed GREEN on the sibling
         // test while its source pin went red (CLAUDE.md #56, reading #3: the fixture never
         // selected the mutated branch). A join that mutates is not a join.
         await sut.runStartTask(for: taskID)?.value
@@ -392,8 +392,11 @@ final class RunStartOrderingTests: NTMSOrchestratorTestBase, @unchecked Sendable
     /// the loaded-task guard's merit and would stop describing the defect the moment task
     /// numbering changed (CLAUDE.md #93).
     ///
-    /// RED: delete `cancelAllRunStartLaunches()` from `stopAllEngines()` → the launch starts
-    /// an engine on the OTHER folder's task of the same id and the `XCTAssertNil` fails.
+    /// RED: delete the `abortRunStart` loop from `stopAllEngines()` → the launch starts an
+    /// engine on the OTHER folder's task of the same id and the `XCTAssertNil` fails. (Until
+    /// 2026-10-28 the verb cancelled background launches with `cancelAllRunStartLaunches()`;
+    /// since 2026-10-28 it abandons every start, inline ones included, and the cancel is one of
+    /// `abortRunStart`'s acts.)
     func testWorkFolderSwitchWhileLaunchSuspended_doesNotStartAnEngineInTheNewFolder() async {
         let otherDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("other-folder-\(UUID().uuidString)", isDirectory: true)
@@ -420,8 +423,16 @@ final class RunStartOrderingTests: NTMSOrchestratorTestBase, @unchecked Sendable
                 + "this test stops describing the collision it exists for"
         )
 
+        let launch = sut.runStartTask(for: taskID)
+        XCTAssertNotNil(launch, "Fixture precondition: the create registered its launch")
+
         // The user switches back. `openWorkFolder` runs `stopAllEngines()`.
         await sut.openWorkFolder(otherDir)
+        // The boundary abandons the start then and there — all three acts of `abortRunStart`:
+        // the claim ends and the launch is cancelled now, not when the scan it is parked in
+        // returns (the generation, the refusal itself, is what the assertion below reads).
+        XCTAssertFalse(sut.engineState.isInitializingRun(taskID), "the start's claim outlived the boundary")
+        XCTAssertEqual(launch?.isCancelled, true, "the boundary did not cancel the launch")
         gate.open()
         // Same reason as in `testStopEngine_cancelsThePendingLaunch`: the drain would
         // cancel the launch itself and this test would pass with the cancel deleted from
@@ -437,6 +448,33 @@ final class RunStartOrderingTests: NTMSOrchestratorTestBase, @unchecked Sendable
             sut.taskEngineStates[taskID],
             "A launch belonging to the previous work folder must not start anything in the new one"
         )
+    }
+
+    /// `stopEngine` for a task whose start is INLINE — Play, the Autovisor, a recurrence fire,
+    /// a delegation child — registers no launch to cancel: the verb abandons the start
+    /// (`abortRunStart`), so its launch refuses at its next re-check by its generation, and the
+    /// claim ends at once.
+    ///
+    /// RED until 2026-10-28: `stopEngine` only cancelled a background launch; the inline
+    /// start resumed past every re-check and created an engine after the verb that removed one.
+    func testStopEngine_abandonsAnInlineStart() async {
+        await sut.openWorkFolder(tempDir)
+        guard let taskID = await sut.createTask(title: "t", supervisorTask: "b") else {
+            XCTFail("Expected the task to be created")
+            return
+        }
+        let inlineStart = Task { @MainActor in await self.sut.startRun(taskID: taskID) }
+        while !sut.engineState.isInitializingRun(taskID) { await Task.yield() }
+        XCTAssertNil(sut.runStartTask(for: taskID), "Anti-vacuum: an inline start registers no launch")
+
+        sut.stopEngine(for: taskID)
+        XCTAssertFalse(sut.engineState.isInitializingRun(taskID), "the start's claim outlived the stop")
+        gate.open()
+        await inlineStart.value
+
+        XCTAssertNotNil(sut.loadedTask(taskID), "Fixture precondition: the task is still loaded")
+        XCTAssertNil(sut.taskEngineStates[taskID],
+                     "An inline start must not create an engine after the verb that removed one")
     }
 
     func testTaskRemovedWhileLaunchIsSuspended_launchIsASafeNoOp() async {
@@ -477,6 +515,105 @@ final class RunStartOrderingTests: NTMSOrchestratorTestBase, @unchecked Sendable
         XCTAssertTrue(sut.abortRunStart(taskID: taskID))
         XCTAssertFalse(sut.abortRunStart(taskID: taskID),
                        "Idempotent, and honest about it: a second Pause aborted nothing")
+    }
+
+    /// `runLaunchIsStillWanted` — the `!Task.isCancelled` half alone (D-M11 п.15):
+    /// a launch whose own task is cancelled while its folder lifecycle, loaded task, and
+    /// `runStartGeneration` are all still intact must not create an engine.
+    func testLaunchTaskCancelledWithoutGenerationOrLifecycleChange_doesNotStartAnEngine() async {
+        await sut.openWorkFolder(tempDir)
+        guard let taskID = await sut.createPreparedTaskAndStart(request: makeRequest()) else {
+            XCTFail("Expected the task to be created")
+            return
+        }
+        let launch = sut.runStartTask(for: taskID)
+        XCTAssertNotNil(launch, "Premise: background launch is registered")
+
+        sut.cancelRunStartLaunch(taskID: taskID)
+        XCTAssertEqual(launch?.isCancelled, true, "Premise: the launch task is cancelled")
+        XCTAssertEqual(sut.runStartGeneration[taskID], 1, "Premise: generation was not bumped")
+        gate.open()
+        await launch?.value
+
+        XCTAssertNotNil(sut.loadedTask(taskID), "Premise: the task is still loaded")
+        XCTAssertNil(sut.taskEngineStates[taskID],
+                     "A cancelled launch task must not start an engine even when lifecycle and generation still match")
+        XCTAssertTrue(sut.taskEngines.isEmpty)
+    }
+
+    /// `runLaunchIsStillWanted` — the `isCurrentFolderLifecycle(claim.lifecycle)` half alone (D-M11 п.16):
+    /// a launch whose claim's folder lifecycle has ended while the task is loaded, the task is not
+    /// cancelled, and `runStartGeneration` matches `claim.generation` must not create an engine.
+    func testLaunchWhoseClaimsLifecycleEndedWithoutAGenerationBump_doesNotStartAnEngine() async {
+        await sut.openWorkFolder(tempDir)
+        guard let taskID = await sut.createTask(title: "t", supervisorTask: "b") else {
+            XCTFail("Expected the task to be created")
+            return
+        }
+        await sut.materializeRun(taskID: taskID)
+        let endedLifecycle = WorkFolderLifecycle(generation: sut.workFolderOpenGeneration - 1)
+        sut.runStartGeneration[taskID] = 1
+        let staleClaim = RunStartClaim(generation: 1, lifecycle: endedLifecycle)
+        gate.open()
+
+        await sut.launchRun(taskID: taskID, claim: staleClaim)
+
+        XCTAssertNotNil(sut.loadedTask(taskID), "Premise: the task is loaded")
+        XCTAssertEqual(sut.runStartGeneration[taskID], staleClaim.generation, "Premise: generation matches")
+        XCTAssertNil(sut.taskEngineStates[taskID],
+                     "A launch with an ended folder lifecycle must not create an engine even when generation matches")
+        XCTAssertTrue(sut.taskEngines.isEmpty)
+    }
+
+    /// `runLaunchIsStillWanted` — the `loadedTask(taskID) != nil` half alone (D-M11 п.17):
+    /// a launch whose task was evicted from memory without a stop verb (so neither cancellation,
+    /// folder lifecycle, nor `runStartGeneration` refuses it) must not reach `engineForTask`.
+    func testTaskEvictedWhileLaunchIsSuspended_doesNotStartAnEngine() async {
+        await sut.openWorkFolder(tempDir)
+        guard let taskID = await sut.createTask(title: "evictable", supervisorTask: "b", makeActive: false),
+              let _ = await sut.createTask(title: "active", supervisorTask: "b", makeActive: true)
+        else {
+            XCTFail("Expected tasks to be created")
+            return
+        }
+        let inlineStart = Task { @MainActor in await self.sut.startRun(taskID: taskID) }
+        while !sut.engineState.isInitializingRun(taskID) { await Task.yield() }
+
+        sut.evictLoadedTask(taskID)
+        XCTAssertNil(sut.loadedTask(taskID), "Premise: task was evicted without a stop verb")
+        XCTAssertEqual(sut.runStartGeneration[taskID], 1, "Premise: generation was not bumped")
+        gate.open()
+        await inlineStart.value
+
+        XCTAssertNil(sut.taskEngineStates[taskID],
+                     "An evicted task must not get a live engine")
+        XCTAssertTrue(sut.taskEngines.isEmpty)
+    }
+
+    /// `stopAllEngines` — abandons inline starts and bumps `runStartGeneration` (D-M11 п.14 & п.18):
+    /// when `stopAllEngines()` runs in the same folder while an inline start (which registers no
+    /// `backgroundRunLaunches` entry) is parked on the launch gate, `runStartGeneration` is the
+    /// sole condition that refuses the inline start once the gate opens.
+    func testStopAllEngines_abandonsAnInlineStartInTheSameFolder() async {
+        await sut.openWorkFolder(tempDir)
+        guard let taskID = await sut.createTask(title: "inline", supervisorTask: "b") else {
+            XCTFail("Expected the task to be created")
+            return
+        }
+        let inlineStart = Task { @MainActor in await self.sut.startRun(taskID: taskID) }
+        while !sut.engineState.isInitializingRun(taskID) { await Task.yield() }
+        XCTAssertNil(sut.runStartTask(for: taskID), "Premise: inline start has no background launch task")
+
+        sut.stopAllEngines()
+        XCTAssertFalse(sut.engineState.isInitializingRun(taskID))
+        XCTAssertEqual(sut.runStartGeneration[taskID], 2, "stopAllEngines must bump the start generation")
+        gate.open()
+        await inlineStart.value
+
+        XCTAssertNotNil(sut.loadedTask(taskID), "Premise: task is still loaded in the same folder")
+        XCTAssertNil(sut.taskEngineStates[taskID],
+                     "An inline start must be refused by its generation after stopAllEngines()")
+        XCTAssertTrue(sut.taskEngines.isEmpty)
     }
 
 }

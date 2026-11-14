@@ -55,6 +55,9 @@ actor SearchIndexService {
     private let fileManager: FileManager
     private let walker: SearchIndexWalker
     private let vocabularyFilter: SearchIndexPlanner.VocabularyFilter
+    /// Who judges the file each pass is about to open. The walk judged a NAME; a pass opens it,
+    /// so it verifies what the kernel handed back (#376).
+    private let resolver: SandboxPathResolver
 
     /// In-memory index — the source of truth while a folder is open.
     private var cached: SearchIndex?
@@ -90,6 +93,7 @@ actor SearchIndexService {
             "search_index.json", isDirectory: false)
         self.walker = SearchIndexWalker(
             workFolderRoot: root, internalDir: internalRoot, fileManager: fileManager)
+        self.resolver = SandboxPathResolver(workFolderRoot: root, internalDir: internalRoot)
         self.vocabularyFilter = vocabularyFilter
     }
 
@@ -244,7 +248,8 @@ actor SearchIndexService {
         case (.incremental(let diff), .some(let base)):
             let dirtyCandidates = diff.dirty.map { roster.candidates[$0] }
             let passes = await Self.runFilePasses(
-                dirtyCandidates, concurrency: SearchExecutor.defaultScanConcurrency)
+                dirtyCandidates, concurrency: SearchExecutor.defaultScanConcurrency,
+                resolver: resolver)
             warnings.append(contentsOf: Self.warnings(from: passes))
             lastIndexWarnings = warnings
             let merged = SearchIndexPlanner.merge(
@@ -260,7 +265,8 @@ actor SearchIndexService {
         // (`.reuse` or `.incremental` without a base), for which rebuilding is the safe answer.
         default:
             let passes = await Self.runFilePasses(
-                roster.candidates, concurrency: SearchExecutor.defaultScanConcurrency)
+                roster.candidates, concurrency: SearchExecutor.defaultScanConcurrency,
+                resolver: resolver)
             warnings.append(contentsOf: Self.warnings(from: passes))
             guard let built = SearchIndexPlanner.build(
                 candidates: roster.candidates, passes: passes, filter: vocabularyFilter,
@@ -376,7 +382,8 @@ actor SearchIndexService {
     /// equivalent: nothing a pass discovers can make an earlier or later pass wrong.
     private static func runFilePasses(
         _ candidates: [SearchIndexPlanner.IndexCandidate],
-        concurrency: Int
+        concurrency: Int,
+        resolver: SandboxPathResolver
     ) async -> [SearchIndexPlanner.IndexFilePass] {
         guard !candidates.isEmpty else { return [] }
         // Collected as pairs and sorted, not written into a pre-sized optional array: the loop
@@ -391,14 +398,16 @@ actor SearchIndexService {
                 let window = min(max(1, concurrency), candidates.count)
                 while next < window {
                     let index = next
-                    group.addTask { (index, indexOne(candidates[index])) }
+                    group.addTask { (index, indexOne(candidates[index], resolver: resolver)) }
                     next += 1
                 }
                 while let (index, pass) = await group.next() {
                     collected.append((index, pass))
                     if next < candidates.count {
                         let queued = next
-                        group.addTask { (queued, indexOne(candidates[queued])) }
+                        group.addTask {
+                            (queued, indexOne(candidates[queued], resolver: resolver))
+                        }
                         next += 1
                     }
                 }
@@ -410,7 +419,8 @@ actor SearchIndexService {
     /// One candidate's content pass: filename tokens always, content tokens when the extension
     /// says the bytes are text (or a document extractor can make them text).
     private static func indexOne(
-        _ candidate: SearchIndexPlanner.IndexCandidate
+        _ candidate: SearchIndexPlanner.IndexCandidate,
+        resolver: SandboxPathResolver
     ) -> SearchIndexPlanner.IndexFilePass {
         // Д1: `.cancelled`, not an empty token set. An empty set would stamp the file into the
         // roster with a fresh `(mTime, size)` and none of its words, and the next diff would
@@ -420,13 +430,18 @@ actor SearchIndexService {
 
         let ext = candidate.url.pathExtension.lowercased()
         if DocumentTextExtractor.isSupported(extension: ext) {
-            if case .text(let extracted, _) = DocumentTextExtractor.extract(from: candidate.url) {
+            // The extractor opens the name itself, so it is pointed at the file's real path.
+            guard let real = try? VerifiedFile.verifiedRealURL(candidate.url, resolver: resolver)
+            else { return .indexed(tokens) }
+            if case .text(let extracted, _) = DocumentTextExtractor.extract(from: real) {
                 tokens.formUnion(TokenExtractor.extractTokens(from: extracted))
             }
         } else if textIndexableExtensions.contains(ext),
                   candidate.size <= Int64(maxRawTextIndexableBytes) {
             do {
-                let data = try Data(contentsOf: candidate.url)
+                // Through a verified descriptor: a name re-pointed since the walk is refused
+                // rather than tokenized into the vocabulary.
+                let data = try VerifiedFile.readData(candidate.url, resolver: resolver)
                 if let content = String(data: data, encoding: .utf8) {
                     tokens.formUnion(TokenExtractor.extractTokens(from: content))
                 }

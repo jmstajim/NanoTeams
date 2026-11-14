@@ -42,10 +42,7 @@ final class BashPlanningPhaseSandboxTests: XCTestCase {
         BashTool(
             workFolderRoot: workDir,
             resolver: SandboxPathResolver(workFolderRoot: workDir),
-            fileManager: .default,
-            sandboxEnabled: true,
-            sandboxPermissions: BashSandboxPermissions(),
-            allowUnsandboxedFallback: false)
+            fileManager: .default)
     }
 
     private func context(isPlanningPhase: Bool) -> ToolExecutionContext {

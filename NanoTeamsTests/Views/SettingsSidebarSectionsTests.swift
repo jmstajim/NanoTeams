@@ -38,8 +38,12 @@ final class SettingsSidebarSectionsTests: XCTestCase {
 
         XCTAssertEqual(sections[0].tabs, [.updates, .llm]) // pinned, header-less, at the very top
         XCTAssertEqual(sections[1].tabs, [.workFolder, .teams, .autovisor])
-        XCTAssertEqual(sections[2].tabs, [.vision, .exploratorySearch, .generateTeam])
-        XCTAssertEqual(sections[3].tabs, [.bash, .computerUse, .toolBehavior, .tools])
+        // External Agents is a capability the app switches on — an external agent may drive it —
+        // app-wide like the other three (its port and agents live in StoreConfiguration), not
+        // the work folder's; Agent Tools is at its five-tab cap, and it is no app-shell
+        // preference (it sat under Application until 2026-11-08).
+        XCTAssertEqual(sections[2].tabs, [.vision, .exploratorySearch, .generateTeam, .externalAgents])
+        XCTAssertEqual(sections[3].tabs, [.bash, .computerUse, .toolBehavior, .tools, .mcpServers])
         XCTAssertEqual(sections[4].tabs, [.general, .theme, .dictation])
         XCTAssertEqual(sections[5].tabs, [.benchmark, .debug, .help])
     }
@@ -102,6 +106,34 @@ final class SettingsSidebarSectionsTests: XCTestCase {
         for case let title? in SettingsView.sidebarSections.map(\.title) {
             XCTAssertFalse(title.isEmpty)
             XCTAssertEqual(title, title.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+    }
+
+    // MARK: - Tab names and subtitles
+
+    /// The tab external agents connect through is named for them, and its second line says who
+    /// uses whom: "Agent Access" alone read as what this app's own roles may reach (cold read
+    /// 2026-11-08, 3 of 3), and "External Agents" alone still split on the direction (1 of 3).
+    func testExternalAgents_isNamedForThem_andItsSubtitleSaysWhoUsesWhom() {
+        let tab = SettingsView.SettingsTab.externalAgents
+        XCTAssertEqual(tab.rawValue, "External Agents")
+        XCTAssertEqual(tab.subtitle, "Let Claude Code, Codex… use NanoTeams")
+    }
+
+    /// A subtitle is for a name that reads the wrong way round, not decoration: one tab has
+    /// one. The LLM row's second line is its own live state, not this table's.
+    func testOnlyExternalAgents_carriesAStaticSubtitle() {
+        XCTAssertEqual(SettingsView.SettingsTab.allCases.filter { $0.subtitle != nil }, [.externalAgents])
+    }
+
+    /// A subtitle is trimmed text with no line break of its own — the row wraps it — so an edge
+    /// space or a newline cannot render as a gap.
+    func testSubtitles_areTrimmed_withNoLineBreakOfTheirOwn() {
+        for tab in SettingsView.SettingsTab.allCases {
+            guard let subtitle = tab.subtitle else { continue }
+            XCTAssertFalse(subtitle.isEmpty, "\(tab)")
+            XCTAssertEqual(subtitle, subtitle.trimmingCharacters(in: .whitespacesAndNewlines), "\(tab)")
+            XCTAssertFalse(subtitle.contains("\n"), "\(tab)")
         }
     }
 

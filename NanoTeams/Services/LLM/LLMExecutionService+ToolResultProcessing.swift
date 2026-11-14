@@ -60,14 +60,7 @@ extension LLMExecutionService {
     /// then render a broken result falsely green — so a non-envelope manager
     /// handler must never be added.
     nonisolated static func isAutovisorSignal(_ signal: ToolSignal?) -> Bool {
-        switch signal {
-        case .listTasks, .taskStatus, .createManagedTask, .controlTask, .manageRole,
-             .answerTaskQuestion, .messageTask, .scheduleTask, .setWorkFolderContext,
-             .waitForEvents:
-            return true
-        default:
-            return false
-        }
+        AutovisorCommand(signal: signal) != nil
     }
 
     // MARK: - Tool Result Processing
@@ -136,6 +129,10 @@ extension LLMExecutionService {
         memoryStore: MemoryTagStore,
         wireIsMidPlanning: Bool,
         allowedToolNames: Set<String>,
+        /// The step's MCP schemas. `ToolHandlerRegistry` has never heard of them, so without
+        /// them a failed MCP call is the one failure whose note cannot name what the tool
+        /// requires. Default empty: every caller that ships no MCP ships none.
+        dynamicSchemas: [ToolSchema] = [],
         conversationMessages: inout [ChatMessage],
         networkLogger: NetworkLogger? = nil
     ) async -> ToolResultsOutcome {
@@ -169,12 +166,33 @@ extension LLMExecutionService {
             )
         }
 
-        for (idx, result) in results.enumerated() {
+        for (idx, executed) in results.enumerated() {
+            // The parser's repair note rides the result into whichever branch builds this
+            // call's tool turn — each one splices it (`ToolExecutionResult.argumentRepairNote`).
+            var result = executed
+            result.argumentRepairNote = resolvedToolCalls[idx].argumentRepairNote
             // Collaboration / delegation / manager signals run their real
             // side-effects in the deferred handler. Gated by the single-source
             // predicate so a new signal can't silently fall through to the
             // regular path (see `isCollaborationDeferredSignal`).
             if Self.isCollaborationDeferredSignal(result.signal) {
+                // Each handler is awaited in turn and can suspend for seconds, and the step can
+                // be stopped meanwhile — Pause cancels its task, a folder transition cancels every
+                // step's task at its first line. The gate is the step's OWN task, an identity:
+                // `isExecutionLive` reads `executionStates[TaskStepKey]`, and a `TaskStepKey`
+                // collides across folders (ids are per folder, template role ids deterministic),
+                // so after a transition it can answer for the next folder's step. A call the
+                // stopped step never reached is answered "not run" in the model's turn — keeping
+                // every call paired with one result — and nowhere else.
+                guard !Task.isCancelled else {
+                    effectiveResults[idx].isError = true
+                    conversationMessages.append(ChatMessage(
+                        role: .tool,
+                        content: buildCollaborationErrorResult(
+                            toolName: result.toolName, message: DeferredCallReplies.notRun),
+                        toolCallID: result.providerID))
+                    continue
+                }
                 effectiveResults[idx].isError = await appendCollaborationResult(
                     result: result,
                     toolCallID: resolvedToolCalls[idx].id,
@@ -244,6 +262,7 @@ extension LLMExecutionService {
                     memoryStore: memoryStore,
                     wireIsMidPlanning: wireIsMidPlanning,
                     allowedToolNames: allowedToolNames,
+                    dynamicSchemas: dynamicSchemas,
                     conversationMessages: &conversationMessages,
                     outcome: &outcome
                 )
@@ -256,6 +275,7 @@ extension LLMExecutionService {
                     memoryStore: memoryStore,
                     wireIsMidPlanning: wireIsMidPlanning,
                     allowedToolNames: allowedToolNames,
+                    dynamicSchemas: dynamicSchemas,
                     conversationMessages: &conversationMessages,
                     outcome: &outcome
                 )
@@ -266,4 +286,32 @@ extension LLMExecutionService {
         return outcome
     }
 
+}
+
+/// What a step's deferred tool calls are answered when they do not finish: the dispatcher's
+/// answer for a call its stopped step never reached, and a deferred action's answer when the
+/// work folder changed under it. Model-facing — each reaches the step's conversation as the
+/// call's tool result, inside the collaboration error envelope.
+nonisolated enum DeferredCallReplies {
+    /// runtime-prompt
+    ///
+    /// A deferred call its stopped step never reached: Pause, or a folder transition, stopped the
+    /// step while an earlier call of the same batch ran.
+    static let notRun = "Not run: the step was stopped before this call was reached."
+
+    /// runtime-prompt
+    ///
+    /// A `request_changes` whose step was stopped — Pause, Stop, the run-timeout watchdog — while
+    /// the team voted on it: the vote decided nothing and is closed `.failed`, which does not
+    /// count against the run's limit (F6 C5, review R1). The requester reads it after a resume.
+    static let voteInterrupted =
+        "Interrupted: the step was stopped while the team voted on this change request, so nothing was decided or changed, and the request does not count against the run's limit. Ask again if the change is still needed."
+
+    /// runtime-prompt
+    ///
+    /// A deferred action a folder transition overtook — an Autovisor action, or the delegation
+    /// handler's wait for its child: the folder it ran in is no longer the one open, so it did
+    /// nothing further — there or in the folder now open.
+    static let folderChanged =
+        "The work folder changed while this action was running, so it stopped: nothing further was done in either folder."
 }

@@ -444,15 +444,9 @@ extension LLMExecutionService {
         // Autovisor as the folder's Supervisor: suppress the generic auto-answer
         // so the step parks at `.needsSupervisorInput`. The engine pauses on any
         // parked step (TeamEngine+RunLoop — mode-independent), which is what the
-        // manager's needs-supervisor wake trigger observes via live engine state.
-        if let settings = delegate?.snapshot?.workFolder.settings,
-           AutovisorPolicy.supervisesTask(
-               taskID: task.id,
-               parentTaskID: task.parentTaskID,
-               autovisorEnabled: settings.autovisorEnabled,
-               activation: settings.autovisorActivation,
-               autovisorTaskID: delegate?.snapshot?.workFolder.state.autovisorTaskID
-           ) {
+        // manager's needs-supervisor wake trigger (or external agent event feed)
+        // observes via live engine state.
+        if isUnderAutovisor(task: task) {
             return nil
         }
         guard let q = outcome.supervisorQuestion, supervisorMode == .autonomous else { return nil }
@@ -500,11 +494,15 @@ extension LLMExecutionService {
                 ChatMessage(role: .user, content: "\(MessageSourceContext.supervisorAnswerPrefix)\(answer)")
             )
         }
+        // The team's own auto-answer is an automated author, recorded on the turn: the step's
+        // flag set above describes only this latest answer (DEBTS D-M15).
         await appendLLMMessage(
             stepID: stepID, taskID: task.id, role: .user,
             content: "\(MessageSourceContext.supervisorAnswerPrefix)\(answer)",
             sourceRole: .supervisor,
-            sourceContext: .supervisorAnswer)
+            sourceContext: .supervisorAnswer,
+            authorLabel: nil,
+            isFromAutomatedSupervisor: true)
         return .continueLoop
     }
 }

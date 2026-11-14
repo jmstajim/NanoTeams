@@ -170,15 +170,15 @@ final class DefaultStorageToolFilterTests: XCTestCase {
         let (_, runtime) = ToolRegistry.defaultRegistry(
             workFolderRoot: tempDir,
             toolCallsLogURL: tempDir.appendingPathComponent("tool_calls.jsonl"),
-            isDefaultStorage: true,
-            bashSandboxEnabled: false
+            isDefaultStorage: true
         )
 
         let context = ToolExecutionContext(
             workFolderRoot: tempDir,
             taskID: Int(),
             runID: 0,
-            roleID: "test_role"
+            roleID: "test_role",
+            bashSandbox: BashPolicy.Sandbox(enabled: false)
         )
 
         let call = StepToolCall(name: ToolNames.bash, argumentsJSON: "{\"command\": \"echo hello\"}")

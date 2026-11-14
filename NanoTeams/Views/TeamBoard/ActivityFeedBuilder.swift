@@ -249,6 +249,7 @@ nonisolated enum ActivityFeedBuilder {
         supervisorClippedTexts: [String] = [],
         supervisorAttachmentPaths: [String] = [],
         supervisorProjectFolderURL: URL? = nil,
+        supervisorAuthorLabel: String? = nil,
         stepArtifactContentCache: [String: Set<String>],
         debugModeEnabled: Bool,
         activeQuestions: [SupervisorQuestionInbox.PendingQuestion] = [],
@@ -267,6 +268,7 @@ nonisolated enum ActivityFeedBuilder {
             supervisorClippedTexts: supervisorClippedTexts,
             supervisorAttachmentPaths: supervisorAttachmentPaths,
             supervisorProjectFolderURL: supervisorProjectFolderURL,
+            supervisorAuthorLabel: supervisorAuthorLabel,
             stepArtifactContentCache: stepArtifactContentCache,
             debugModeEnabled: debugModeEnabled,
             activeQuestions: activeQuestions,
@@ -302,6 +304,7 @@ nonisolated enum ActivityFeedBuilder {
         supervisorClippedTexts: [String] = [],
         supervisorAttachmentPaths: [String] = [],
         supervisorProjectFolderURL: URL? = nil,
+        supervisorAuthorLabel: String? = nil,
         stepArtifactContentCache: [String: Set<String>],
         debugModeEnabled: Bool,
         activeQuestions: [SupervisorQuestionInbox.PendingQuestion] = [],
@@ -394,6 +397,7 @@ nonisolated enum ActivityFeedBuilder {
             // Merge clip/attachment paths from both the stripped text and the structured fields
             let allClips = supervisorClippedTexts.isEmpty ? stripped.clippedTexts : supervisorClippedTexts
             let allPaths = supervisorAttachmentPaths.isEmpty ? stripped.paths : supervisorAttachmentPaths
+            let trimmedAuthor = supervisorAuthorLabel?.trimmingCharacters(in: .whitespacesAndNewlines)
             items.append(.supervisorTask(
                 brief: brief,
                 taskCreatedAt: date,
@@ -401,7 +405,8 @@ nonisolated enum ActivityFeedBuilder {
                 clippedTexts: allClips,
                 attachmentPaths: allPaths,
                 workFolderURL: supervisorProjectFolderURL,
-                originTaskID: activeTaskID
+                originTaskID: activeTaskID,
+                authorLabel: (trimmedAuthor?.isEmpty == false) ? trimmedAuthor : nil
             ))
         }
 
@@ -553,8 +558,15 @@ nonisolated enum ActivityFeedBuilder {
             // in `TeamActivityFeedImplicitStreamTargetTests`.
             let trackImplicitTarget = step.status == .running
             var latestVisible: LLMMessage?
+            let pendingRevisionRaw = step.revisionComment.map(MessageSourceContext.rawFeedback)
+            var hasRecordedPendingRevisionFeedback = false
 
             for (position, msg) in step.llmConversation.enumerated() {
+                if let pendingRevisionRaw,
+                   msg.sourceContext == .supervisorFeedback,
+                   msg.displayContent == pendingRevisionRaw {
+                    hasRecordedPendingRevisionFeedback = true
+                }
                 // Answer ordinal bookkeeping runs over the FULL conversation, before
                 // the visible-role guard, so it counts exactly what the old
                 // `filter { .supervisorAnswer }` counted — widened to every context that
@@ -631,6 +643,32 @@ nonisolated enum ActivityFeedBuilder {
             if trackImplicitTarget, let id = latestVisible?.id {
                 implicitStreamTargets.insert(id)
             }
+            // A revision the person did not write is shown before the step re-enters with it —
+            // an external agent's (signed) or the built-in Autovisor's (`auto`, DEBTS D-M15).
+            let pendingRevisionAuthor = step.revisionCommentAuthor?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let signedPendingRevision = pendingRevisionAuthor?.isEmpty == false
+            if let pendingRevisionRaw,
+               !pendingRevisionRaw.isEmpty,
+               signedPendingRevision || step.revisionCommentIsFromAutomatedSupervisor == true,
+               !hasRecordedPendingRevisionFeedback {
+                let pendingFeedbackMessage = LLMMessage(
+                    id: Self.deterministicPendingFeedbackID(for: step.id),
+                    createdAt: step.updatedAt,
+                    role: .user,
+                    content: MessageSourceContext.supervisorFeedbackPrefix + pendingRevisionRaw,
+                    sourceRole: .supervisor,
+                    sourceContext: .supervisorFeedback,
+                    authorLabel: signedPendingRevision ? pendingRevisionAuthor : nil,
+                    isFromAutomatedSupervisor: true
+                )
+                items.append(.llmMessage(
+                    message: pendingFeedbackMessage,
+                    role: .supervisor,
+                    stepID: step.id,
+                    originTaskID: originTaskID
+                ))
+            }
 
             for call in step.toolCalls {
                 items.append(.toolCall(call: call, role: role, stepID: step.id, originTaskID: originTaskID))
@@ -656,6 +694,19 @@ nonisolated enum ActivityFeedBuilder {
         for cr in run?.changeRequests ?? [] {
             let targetName = teamRoles.roleName(for: cr.targetRoleID)
             items.append(.changeRequest(request: cr, targetRoleName: targetName, originTaskID: originTaskID))
+        }
+
+        // Supervisor timeline events an automated Supervisor wrote (<agent> accepted / closed /
+        // paused / resumed); the person's own Pause and Resume are not drawn.
+        for event in run?.supervisorEvents ?? [] where event.isDrawnInTheFeed {
+            let roleName = event.roleID.map { teamRoles.roleName(for: $0) }
+            items.append(.notification(
+                stepID: event.roleID ?? "supervisor",
+                role: .supervisor,
+                type: .supervisorEvent(event: event, roleName: roleName),
+                createdAt: event.createdAt,
+                originTaskID: originTaskID
+            ))
         }
 
         // Answered supervisor-input notifications. Active / in-flight questions
@@ -713,16 +764,28 @@ nonisolated enum ActivityFeedBuilder {
                 }
 
                 let rawAnswer: String?
+                let answerAuthor: String?
+                // Who answered THIS park — read off its own answer turn (DEBTS D-M15). The step's
+                // flag describes only the latest answer; the turn-less arms below are the only
+                // ones left with nothing better to read.
+                let wasAutoAnswered: Bool
                 if index < a.answerIndices.count {
-                    let content = step.llmConversation[a.answerIndices[index]].content
+                    let answerTurn = step.llmConversation[a.answerIndices[index]]
+                    let content = answerTurn.content
                     let prefix = MessageSourceContext.supervisorAnswerPrefix
                     rawAnswer = content.hasPrefix(prefix)
                         ? String(content.dropFirst(prefix.count))
                         : content
+                    answerAuthor = answerTurn.authorLabel ?? (isLast ? step.supervisorAnswerAuthor : nil)
+                    wasAutoAnswered = step.supervisorTurnWasAutomated(answerTurn)
                 } else if isLast {
                     rawAnswer = step.supervisorAnswer
+                    answerAuthor = step.supervisorAnswerAuthor
+                    wasAutoAnswered = step.supervisorAnswerWasAuto
                 } else {
                     rawAnswer = "(answered)"
+                    answerAuthor = nil
+                    wasAutoAnswered = step.supervisorAnswerWasAuto
                 }
 
                 if thinkingResolver == nil {
@@ -736,9 +799,9 @@ nonisolated enum ActivityFeedBuilder {
                     : call.createdAt
 
                 // The questionnaire belongs to the TRAILING ask or to no card at all. `step`
-                // stores one — the latest park's — so attaching it to every ask card the way
-                // `wasAutoAnswered` is attached would draw a form over an earlier plain
-                // question the role asked and the Supervisor answered in prose.
+                // stores one — the latest park's — so attaching it to every ask card would draw
+                // a form over an earlier plain question the role asked and the Supervisor
+                // answered in prose.
                 //
                 // The discriminator is the step HOLDING a questionnaire, deliberately not the
                 // trailing call's NAME. One park can be raised by several calls in one batch:
@@ -765,6 +828,8 @@ nonisolated enum ActivityFeedBuilder {
                     timestamp: answerTimestamp,
                     mergeStructuredAttachmentPaths: isLast,
                     answeredInquiry: answeredInquiry,
+                    answerAuthor: answerAuthor,
+                    wasAutoAnswered: wasAutoAnswered,
                     originTaskID: originTaskID
                 )
             }
@@ -829,6 +894,9 @@ nonisolated enum ActivityFeedBuilder {
                     thinking: thinking,
                     timestamp: anchor,
                     mergeStructuredAttachmentPaths: true,
+                    answerAuthor: answerMsg?.authorLabel ?? step.supervisorAnswerAuthor,
+                    // The latest answer either way: the card renders `step.supervisorAnswer`.
+                    wasAutoAnswered: answerMsg.map(step.supervisorTurnWasAutomated) ?? step.supervisorAnswerWasAuto,
                     originTaskID: originTaskID
                 )
             }
@@ -843,6 +911,19 @@ nonisolated enum ActivityFeedBuilder {
                 ))
             }
         }
+    }
+
+    private static func deterministicPendingFeedbackID(for stepID: String) -> UUID {
+        var bytes = [UInt8](repeating: 0, count: 16)
+        for (idx, b) in stepID.utf8.prefix(16).enumerated() {
+            bytes[idx] = b
+        }
+        return UUID(uuid: (
+            bytes[0], bytes[1], bytes[2], bytes[3],
+            bytes[4], bytes[5], bytes[6], bytes[7],
+            bytes[8], bytes[9], bytes[10], bytes[11],
+            bytes[12], bytes[13], bytes[14], bytes[15]
+        ))
     }
 
     /// Gate + payload for the synthesized escalation Q&A card — the single
@@ -937,6 +1018,8 @@ nonisolated enum ActivityFeedBuilder {
         timestamp: Date,
         mergeStructuredAttachmentPaths: Bool,
         answeredInquiry: AnsweredInquiry? = nil,
+        answerAuthor: String? = nil,
+        wasAutoAnswered: Bool,
         originTaskID: Int
     ) {
         let answer: String?
@@ -959,6 +1042,7 @@ nonisolated enum ActivityFeedBuilder {
                 }
             }
         }
+        let trimmedAuthor = answerAuthor?.trimmingCharacters(in: .whitespacesAndNewlines)
         items.append(.notification(
             stepID: step.id,
             role: step.role,
@@ -967,8 +1051,9 @@ nonisolated enum ActivityFeedBuilder {
                 answerAttachmentPaths: attachmentPaths,
                 answerClippedTexts: answerClippedTexts,
                 toolCallID: toolCallID, thinking: thinking,
-                wasAutoAnswered: step.supervisorAnswerWasAuto,
-                inquiry: answeredInquiry
+                wasAutoAnswered: wasAutoAnswered,
+                inquiry: answeredInquiry,
+                answerAuthor: (trimmedAuthor?.isEmpty == false) ? trimmedAuthor : nil
             ),
             createdAt: timestamp,
             originTaskID: originTaskID
@@ -1028,6 +1113,11 @@ nonisolated enum ActivityFeedBuilder {
     /// after interleave; the role.baseID-based grouping was designed for a single
     /// team's timeline.
     ///
+    /// It also fires when the AUTHOR changes (``headerAuthor(of:)``). Every Supervisor turn
+    /// shares one `roleID`, and the queue persists a mixed batch as one turn per author, back to
+    /// back — so without the author in the key, an agent's turn following the person's lost its
+    /// header, and with it the only mark saying who wrote it (until 2026-11-08).
+    ///
     /// Boundary band fires whenever the originTaskID changes between consecutive
     /// items. Direction is `.intoChild` when the new task is a descendant of the
     /// previous item's task (or the active task), `.backToParent` otherwise.
@@ -1040,21 +1130,24 @@ nonisolated enum ActivityFeedBuilder {
         tagged.reserveCapacity(items.count)
         var prevRoleID: String? = nil
         var prevOriginTaskID: Int? = nil
+        var prevAuthor: String? = nil
         var prevHadRoleID: Bool = false
         var prevItem: TeamActivityTimelineItem? = nil
 
         for item in items {
             let curRoleID = item.roleID
             let curOriginTaskID = item.originTaskID
+            let curAuthor = Self.headerAuthor(of: item)
 
             // Section header rule (extended): fire on first item, when curRoleID is
             // nil (notifications/changeRequests always break grouping), or when
-            // either roleID or originTaskID differs from the previous item.
+            // roleID, originTaskID or the header's author differs from the previous item.
             let showHeader = tagged.isEmpty
                 || curRoleID == nil
                 || !prevHadRoleID
                 || prevRoleID != curRoleID
                 || prevOriginTaskID != curOriginTaskID
+                || prevAuthor != curAuthor
 
             // Boundary band: emitted on origin-task transitions only (never on
             // the very first item).
@@ -1107,10 +1200,28 @@ nonisolated enum ActivityFeedBuilder {
             ))
             prevRoleID = curRoleID
             prevOriginTaskID = curOriginTaskID
+            prevAuthor = curAuthor
             prevHadRoleID = curRoleID != nil
             prevItem = item
         }
         return tagged
+    }
+
+    /// The author a header's agent mark would show for this item, so a turn is never grouped
+    /// under a header naming someone else. The AUTHOR only — the `(context)` word was never part
+    /// of the grouping key and is not now. A message's comes from
+    /// ``LLMMessage/sourceAttribution`` (already trimmed; no writer signs a system notice, whose
+    /// row draws no mark); the task card's was trimmed when the item was built. `nil` for
+    /// everything else: role turns, tools and artifacts carry no author.
+    private static func headerAuthor(of item: TeamActivityTimelineItem) -> String? {
+        switch item {
+        case .llmMessage(let message, _, _, _):
+            return message.sourceAttribution.author
+        case .supervisorTask(_, _, _, _, _, _, _, let authorLabel):
+            return authorLabel
+        case .toolCall, .artifact, .meetingMessage, .notification, .changeRequest:
+            return nil
+        }
     }
 }
 

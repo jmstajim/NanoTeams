@@ -34,7 +34,13 @@ final class QuickCaptureController {
 
     // MARK: - Dependencies
 
-    weak var store: NTMSOrchestrator?
+    weak var store: NTMSOrchestrator? {
+        didSet {
+            if self === Self.shared {
+                store?.messageQueue.controllerFormState = formState
+            }
+        }
+    }
 
     /// NSPanel hosts its own SwiftUI tree; the main WindowGroup's
     /// `.environment(...)` chain does not reach it, so the canonical
@@ -101,60 +107,34 @@ final class QuickCaptureController {
     /// `internal` so `+Hotkeys.setup` can flip the one-shot guard.
     @ObservationIgnored var didSetupHotkeys = false
 
-    /// In-flight guard for the queue-driven wake-ups (`resumeRun` AND the
-    /// `.done`-chat `startRun`). Prevents two `tryFlush` ticks (e.g. an enqueue
-    /// immediately followed by an engineState onChange) from spawning two
-    /// concurrent wake calls before the first transitions the engine. Cleared in
-    /// the dispatched `Task`'s `defer` so back-to-back callers within the same
-    /// in-flight cycle collapse to one wake. Shared across both wake modes — a
-    /// task can only be in one wake at a time, so a racing `.done`-start and a
-    /// flickering `.failed`-resume dedupe against each other too.
-    ///
-    /// `internal` (with the two give-up maps below) so the `+QueueManagement`
-    /// extension owns the queue control plane while the storage lives here.
-    @ObservationIgnored var pendingResumeForQueueFlush: Set<Int> = []
+    @ObservationIgnored private let fallbackQueue = SupervisorMessageQueueService()
 
-    /// One-shot guard for `.failed`-engine queue resumes, keyed by the specific queued
-    /// MESSAGE IDs a `resumeRun` was already attempted for. A `.failed` task routes a
-    /// queued message to `resumeRun` (which revives transiently-failed steps). But if a
-    /// resume completes and the engine lands back at `.failed` with the message still
-    /// unconsumed — no revivable step — re-resuming would loop forever
-    /// (wake→terminal→onChange→wake…). Tracking the attempted message IDs (not a
-    /// per-task bool) makes the guard robust two ways: (1) a brand-new message — from
-    /// ANY enqueue path, including the Autovisor's `message_task` which appends
-    /// directly, not via `queueChatMessage` — has an ID not yet attempted, so it always
-    /// earns a fresh attempt; (2) the transient `.running` that a wake sets before the
-    /// run re-terminates can't reset the guard (only the terminal arms touch the maps).
-    /// Consumed IDs prune themselves: each tick intersects with the live queue. Give up
-    /// only when every still-queued message has already been attempted and no attempt
-    /// is in-flight.
-    ///
-    /// DELIBERATELY SEPARATE from `chatStartAttemptedMessageIDs`: the two wake
-    /// mechanisms operate on different state (revive an existing run vs create a fresh
-    /// one), so a spent `.failed`-resume attempt is no evidence that a `.done`-chat
-    /// start would also fail — sharing one map would prematurely discard a message on
-    /// a `.failed`→`.done` transition without the second mechanism ever being tried.
-    @ObservationIgnored var failedResumeAttemptedMessageIDs: [Int: Set<UUID>] = [:]
+    var queueService: SupervisorMessageQueueService {
+        store?.messageQueue ?? fallbackQueue
+    }
 
-    /// `.done`-chat counterpart of `failedResumeAttemptedMessageIDs`: one `startRun`
-    /// attempt per message ID. The fresh run drains the queue on iteration 1, so the
-    /// only way a message survives a completed attempt is a consume-side persistence
-    /// failure that re-prepended the batch — bound that to one full LLM pass per
-    /// message instead of a wake-loop. Same set algebra, same self-pruning.
-    @ObservationIgnored var chatStartAttemptedMessageIDs: [Int: Set<UUID>] = [:]
+    var pendingResumeForQueueFlush: Set<Int> {
+        queueService.pendingResumeForQueueFlush
+    }
 
-    /// Test seam — overrides the `Task { resumeRun }` dispatched by the
-    /// `.paused`/`.pending`/`.none`/`.failed` branches of `tryFlushQueuedMessages`.
-    /// Production path is `nil`. Tests inject a synchronous closure so the in-flight
-    /// guard + branch routing can be exercised without spinning a real engine. Mirrors
-    /// the `engineFactory` seam pattern in `NTMSOrchestrator`. The in-flight flag is
-    /// intentionally NOT cleared after the closure (mirrors the in-flight `Task`);
-    /// tests simulate completion via `clearPendingResumeForQueueFlushForTesting`.
-    @ObservationIgnored var resumeRunForTesting: ((Int) -> Void)?
+    var failedResumeAttemptedMessageIDs: [Int: Set<UUID>] {
+        queueService.failedResumeAttemptedMessageIDs
+    }
 
-    /// Test seam — same contract as `resumeRunForTesting`, for the `Task { startRun }`
-    /// dispatched by the `.done`-chat branch (`QueueWakeMode.start`).
-    @ObservationIgnored var startRunForTesting: ((Int) -> Void)?
+    var chatStartAttemptedMessageIDs: [Int: Set<UUID>] {
+        get { queueService.chatStartAttemptedMessageIDs }
+        set { queueService.chatStartAttemptedMessageIDs = newValue }
+    }
+
+    var resumeRunForTesting: ((Int) -> Void)? {
+        get { queueService.resumeRunForTesting }
+        set { queueService.resumeRunForTesting = newValue }
+    }
+
+    var startRunForTesting: ((Int) -> Void)? {
+        get { queueService.startRunForTesting }
+        set { queueService.startRunForTesting = newValue }
+    }
 
     // MARK: - Init
 
@@ -639,47 +619,10 @@ final class QuickCaptureController {
     // MARK: - Test Helpers
 
     #if DEBUG
-    /// Flush tasks spawned by `tryFlushQueuedMessages`, retained so a test can JOIN the drain
-    /// instead of polling for a side effect.
-    ///
-    /// Polling cannot express what these tests assert. `flushQueuedChatMessage` pops the queue
-    /// SYNCHRONOUSLY (its documented atomicity contract) and writes the embed-failure banner only
-    /// after `await answerSupervisorQuestion`, which itself suspends twice — a detached JSON
-    /// encode + atomic file write, then `resumeRun`. So every signal a poll can watch is produced
-    /// on the near side of the suspension while the asserted value lands on the far side:
-    /// `!hasQueuedMessage` flips at the pop, and `supervisorAnswer` is committed inside the first
-    /// `mutateTask`, with all of `resumeRun` still to run. Measured on macOS 26: at wait-exit the
-    /// queue was empty, `supervisorAnswer` was set, the banner was nil — and it arrived **6.4 ms
-    /// later**, above the tests' own 5 ms poll granularity. The local pass was marginal luck; the
-    /// CI runner lost the same race (`testBackstopDrain_reportsFilesItCouldNotEmbed`, 2026-08-15).
-    ///
-    /// A join is not merely more reliable, it is the only thing that works for the COUNTER-test:
-    /// `testBackstopDrain_saysNothingWhenEveryFileEmbedded` asserts an ABSENCE, and you cannot
-    /// poll for one — under the race it passed by observing nothing, i.e. it guarded nothing.
-    var _testPendingFlushTasks: [Task<Void, Never>] = []
-
-    /// Drains in a LOOP rather than awaiting the batch once: a flush wakes a run, and that state
-    /// change can re-enter `tryFlushQueuedMessages` and append more tasks while we are awaiting
-    /// the first batch.
     func _testAwaitPendingFlushes() async {
-        while !_testPendingFlushTasks.isEmpty {
-            let batch = _testPendingFlushTasks
-            _testPendingFlushTasks = []
-            for task in batch { await task.value }
-        }
+        await queueService._testAwaitPendingFlushes()
     }
-    #endif
 
-    /// The one call site's view of the retention above: a no-op in release, so the flush stays
-    /// fire-and-forget in production and neither the call site nor a release build carries a
-    /// dangling binding.
-    #if DEBUG
-    func retainFlushTaskForTests(_ task: Task<Void, Never>) { _testPendingFlushTasks.append(task) }
-    #else
-    func retainFlushTaskForTests(_ task: Task<Void, Never>) {}
-    #endif
-
-    #if DEBUG
     func _testResolveMode() -> QuickCaptureMode { resolveMode() }
     func _testEnterAnswerMode(_ mode: QuickCaptureMode) {
         if case .supervisorAnswer(let session) = mode {
@@ -727,13 +670,10 @@ final class QuickCaptureController {
         // `QuickCaptureControllerCallbackTests` went red by test ORDER (promote 2026-09-11).
         lastRenderedIdentity = nil
         isTaskSelected = false
+        store?.messageQueue._testReset()
+        fallbackQueue._testReset()
         store = nil
         dictation = nil
-        pendingResumeForQueueFlush.removeAll()
-        failedResumeAttemptedMessageIDs.removeAll()
-        chatStartAttemptedMessageIDs.removeAll()
-        resumeRunForTesting = nil
-        startRunForTesting = nil
         formState._testReset()
     }
     #endif

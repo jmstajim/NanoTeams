@@ -60,10 +60,16 @@ nonisolated extension SearchExecutor {
     /// keeps the algorithm identical and adds the cancellation checkpoint.
     // `internal`, not `private`: Swift's `private` is file-scoped, and this moved out of
     // `SearchExecutor.swift` alongside the outcome type it returns.
-    static func readUTF8Streaming(url: URL) -> StreamReadOutcome {
+    static func readUTF8Streaming(
+        url: URL, resolver: SandboxPathResolver
+    ) -> StreamReadOutcome {
         let handle: FileHandle
         do {
-            handle = try FileHandle(forReadingFrom: url)
+            // Verified AFTER the open: the walk judged a name, this judges what the kernel
+            // handed back, so a name re-pointed in between is refused rather than read (#376).
+            handle = try VerifiedFile.openForReading(url, resolver: resolver)
+        } catch is SandboxPathError {
+            return .ioError(reason: "symlink points outside the work folder")
         } catch {
             return .ioError(reason: "could not open: \(ToolErrorHandler.classify(error).message)")
         }
@@ -71,8 +77,9 @@ nonisolated extension SearchExecutor {
 
         // Size gate BEFORE any read. A 0-byte file is legitimate empty text (one empty line),
         // not a binary — classifying it otherwise would inflate `skipped_binary_count` on every
-        // placeholder file in the tree.
-        if let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize {
+        // placeholder file in the tree. Read off the verified HANDLE, not the path.
+        if let size = (try? handle.seekToEnd()).map(Int.init) {
+            try? handle.seek(toOffset: 0)
             if size == 0 { return .text(Data()) }
             if size > maxSearchableFileBytes { return .tooLarge }
         }

@@ -157,6 +157,10 @@ final class AskSupervisorFormTrainer {
             cases: cases,
             summary: FormEmissionClassifier.summarize(cases.map(\.emissions)))
         try write(result)
+        // The measurement is over: the folder is let go, so the next NanoTeams — the person's, or
+        // the test that reads the folder back — can open it (one process per folder,
+        // `WorkFolderInstanceLock`).
+        orchestrator.releaseWorkFolderInstanceLock()
         return result
     }
 

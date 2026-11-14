@@ -123,7 +123,10 @@ nonisolated enum FormEmissionClassifier {
             let envelope = jsonObject(record.resultJSON ?? "")
             let error = envelope?["error"] as? [String: Any]
             let details = error?["details"] as? [String: Any]
-            let warnings = (envelope?["meta"] as? [String: Any])?["warnings"] as? [Any]
+            // The decoder's repairs only: an argument the runtime renamed, ignored or read as
+            // text (`ToolArgumentVocabulary`) rides the same `meta.warnings` and is no repair.
+            let warnings = ((envelope?["meta"] as? [String: Any])?["warnings"] as? [Any])?
+                .filter { !ToolArgumentVocabulary.isNote(($0 as? String) ?? "") }
             result.append(FormEmission(
                 attempt: attempt,
                 shape: shape,

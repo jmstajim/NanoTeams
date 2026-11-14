@@ -10,6 +10,11 @@ struct HeadlessResult {
         case timeout
         case failed
         case error
+        /// The run never started: another NanoTeams process holds the work folder
+        /// (`WorkFolderInstanceLock` — one process per folder, D-M18 C1). Nothing was run in it
+        /// and nothing was written to it, so the receipt says `failed`, not `ran`
+        /// (`HeadlessConfigLocator.Receipt.afterRun`).
+        case folderInUse
     }
 
     var outcome: Outcome
@@ -45,6 +50,8 @@ final class HeadlessRunner {
 
     private let config: HeadlessConfig
     private let makeOrchestrator: @MainActor (StoreConfiguration) -> NTMSOrchestrator
+    /// `nil` when the config names no MCP server.
+    private let mcp: HeadlessMCPSetup.Prepared?
     private var orchestrator: NTMSOrchestrator!
 
     /// - Parameter makeOrchestrator: the orchestrator for this run, built from the
@@ -55,12 +62,21 @@ final class HeadlessRunner {
     init(config: HeadlessConfig,
          makeOrchestrator: (@MainActor (StoreConfiguration) -> NTMSOrchestrator)? = nil) {
         self.config = config
+        // Prepared here rather than inside the closure so the runner can read back which
+        // tools it approved — and so a config naming no server leaves `nil`, which keeps the
+        // orchestrator on the inert environment that cannot open a socket.
+        let mcp = HeadlessMCPSetup.prepare(config: config)
+        self.mcp = mcp
         self.makeOrchestrator = makeOrchestrator ?? { configuration in
             // NTMS-ALLOW-REAL-LLM-CLIENT: production-intent driver — a headless run is
             // SUPPOSED to talk to the configured LM Studio / Ollama server, so this is the
             // one place under NanoTeamsTests/ that must NOT route through
             // `TestOrchestrator.make`.
-            NTMSOrchestrator(repository: NTMSRepository(), configuration: configuration)
+            NTMSOrchestrator(
+                repository: NTMSRepository(),
+                configuration: configuration,
+                mcpEnvironment: mcp?.environment ?? .inert,
+                mcpCatalogueStore: mcp?.catalogueStore)
         }
     }
 
@@ -131,8 +147,34 @@ final class HeadlessRunner {
 
         // 4. Open project
         await orchestrator.openWorkFolder(projectURL)
+        if orchestrator.workFolderHeldByAnotherProcess != nil {
+            // The developer's NanoTeams (or another run) has this folder open. The open's own
+            // refusal names the holder's PID and what to do; the folder was left untouched.
+            let refusal = orchestrator.lastErrorMessage ?? "This work folder is open in another NanoTeams process."
+            print("[HEADLESS] ERROR: \(refusal)")
+            return HeadlessResult(
+                outcome: .folderInUse, duration: Date().timeIntervalSince(startTime),
+                roleResults: [], artifacts: [], errors: [refusal])
+        }
         if let err = orchestrator.lastErrorMessage {
             return errorResult("openWorkFolder failed: \(err)", startTime: startTime)
+        }
+
+        // 4-bis. Trust-on-first-use, once the servers have answered. Approving before the
+        // catalogue arrives would silently produce a run with no tools, which reads exactly
+        // like a run whose model ignored them.
+        if let mcp, let manager = orchestrator.mcpServerManager {
+            await HeadlessMCPSetup.waitForCatalogues(
+                manager: manager, budget: MCPConstants.connectTimeout)
+            let approved = HeadlessMCPSetup.approveConfiguredTools(
+                manager: manager, servers: mcp.servers)
+            for (slug, tools) in approved.sorted(by: { $0.key < $1.key }) {
+                print("[HEADLESS] MCP \(slug): approved \(tools.count) tool(s)"
+                      + (tools.isEmpty ? "" : " — \(tools.joined(separator: ", "))"))
+            }
+            for connection in manager.connections {
+                print("[HEADLESS] MCP \(connection.config.slug): \(connection.status.displayLabel)")
+            }
         }
 
         // 5. Switch team if needed.
@@ -175,10 +217,13 @@ final class HeadlessRunner {
         }
         print("[HEADLESS] Task created: \(String(taskID).prefix(8))... — \"\(config.taskTitle)\"")
 
-        // 9. Set supervisorMode to autonomous for headless runs
-        await orchestrator.mutateWorkFolder { wf in
+        // 9. Set supervisorMode to autonomous for headless runs (and grant configured MCP servers to the active team's roles)
+        await orchestrator.mutateWorkFolder { [mcp] wf in
             if let idx = wf.teams.firstIndex(where: { $0.id == wf.activeTeamID }) {
                 wf.teams[idx].settings.supervisorMode = .autonomous
+                if let servers = mcp?.servers {
+                    HeadlessMCPSetup.grantConfiguredServers(to: &wf.teams[idx], servers: servers)
+                }
             }
         }
 

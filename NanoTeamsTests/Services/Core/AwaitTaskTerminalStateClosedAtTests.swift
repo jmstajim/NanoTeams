@@ -146,21 +146,306 @@ final class AwaitTaskTerminalStateClosedAtTests: XCTestCase {
         }
     }
 
+    func testAwait_recoveredPendingQuestionWithPausedEngineState_returnsNeedsSupervisorInputImmediately() async {
+        let store = makeOrchestrator()
+        let root = makeWorkFolderRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        await store.openWorkFolder(root)
+        guard let taskID = await store.createTask(title: "RecoveredChild", supervisorTask: "...") else {
+            return XCTFail("task creation failed")
+        }
+
+        await store.mutateTask(taskID: taskID) { task in
+            var step = StepExecution(
+                id: "swe",
+                role: .softwareEngineer,
+                title: "SWE",
+                status: .paused,
+                needsSupervisorInput: true,
+                supervisorQuestion: "Which database schema should I use?"
+            )
+            step.supervisorAnswer = nil
+            var run = Run(id: 0, steps: [step])
+            run.roleStatuses["swe"] = .working
+            task.runs.append(run)
+        }
+        store.engineState[taskID] = .paused
+
+        let outcome = await withTimeout(seconds: 0.4, onTimeout: {
+            store.completionAwaiter.cancelAll(taskID: taskID)
+        }) {
+            await store.awaitTaskTerminalState(taskID: taskID)
+        }
+        XCTAssertEqual(
+            outcome,
+            .needsSupervisorInput,
+            "a relaunch-recovered pending question (step .paused with answerableSupervisorSteps non-empty) must fast-path to .needsSupervisorInput"
+        )
+    }
+
+    func testAwait_childRunTimeoutWatchdog_deliversPausedRunTimedOut() async {
+        let store = makeOrchestrator()
+        let root = makeWorkFolderRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        await store.openWorkFolder(root)
+        guard let taskID = await store.createTask(title: "TimeoutChild", supervisorTask: "...") else {
+            return XCTFail("task creation failed")
+        }
+
+        let past = MonotonicClock.shared.now().addingTimeInterval(-120)
+        await store.mutateTask(taskID: taskID) { task in
+            task.runTimeoutSeconds = 30
+            let step = StepExecution(id: "swe", role: .softwareEngineer, title: "SWE", status: .running)
+            let run = Run(id: 0, createdAt: past, updatedAt: past, steps: [step])
+            task.runs.append(run)
+        }
+        store.engineState[taskID] = .running
+
+        let waiter = Task { await store.awaitTaskTerminalState(taskID: taskID) }
+        await Task.yield()
+        XCTAssertTrue(store.completionAwaiter.hasWaiters(for: taskID))
+
+        await store.evaluateRunTimeouts()
+
+        let outcome = await withTimeout(seconds: 0.4, onTimeout: {
+            store.completionAwaiter.cancelAll(taskID: taskID)
+        }) {
+            await waiter.value
+        }
+        XCTAssertEqual(
+            outcome,
+            .paused(.runTimedOut(seconds: 30)),
+            "child run timeout watchdog must wake awaiter with .paused(.runTimedOut)"
+        )
+
+        // Also cover the fast path on an already timed-out paused run when runTimeoutSeconds is nil,
+        // and wakeEngine's refusal while team generation is active.
+        await store.mutateTask(taskID: taskID) { task in
+            task.runTimeoutSeconds = nil
+        }
+        store.engineState[taskID] = nil
+        let fastOutcome = await store.awaitTaskTerminalState(taskID: taskID)
+        XCTAssertEqual(fastOutcome, .paused(.runTimedOut(seconds: 0)))
+
+        _ = store.beginTeamGeneration(taskID: taskID, within: store.currentFolderLifecycle)
+        XCTAssertFalse(store.wakeEngine(taskID: taskID))
+        store.endTeamGeneration(taskID: taskID)
+    }
+
+    func testAwait_childIterationLimitReached_deliversPausedIterationLimitReached() async {
+        let store = makeOrchestrator()
+        let root = makeWorkFolderRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        await store.openWorkFolder(root)
+        guard let taskID = await store.createTask(title: "IterLimitChild", supervisorTask: "...") else {
+            return XCTFail("task creation failed")
+        }
+
+        await store.mutateTask(taskID: taskID) { task in
+            let step = StepExecution(id: "swe", role: .softwareEngineer, title: "SWE", status: .running)
+            var run = Run(id: 0, steps: [step])
+            run.roleStatuses["swe"] = .working
+            task.runs.append(run)
+        }
+
+        let engine = store.engineForTask(taskID)
+        engine.setAutoIterationLimitForTesting(1)
+
+        let waiter = Task { await store.awaitTaskTerminalState(taskID: taskID) }
+        await Task.yield()
+        XCTAssertTrue(store.completionAwaiter.hasWaiters(for: taskID))
+
+        engine.start()
+
+        let outcome = await withTimeout(seconds: 0.5, onTimeout: {
+            store.completionAwaiter.cancelAll(taskID: taskID)
+        }) {
+            await waiter.value
+        }
+        XCTAssertEqual(
+            outcome,
+            .paused(.iterationLimitReached(limit: 1)),
+            "child engine reaching autoIterationLimit must wake awaiter with .paused(.iterationLimitReached)"
+        )
+    }
+
+    func testAwait_teamGenerationFailure_deliversTerminalFailed() async {
+        let store = makeOrchestrator()
+        let root = makeWorkFolderRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        await store.openWorkFolder(root)
+        let generatedTeam = TeamTemplateFactory.generatedTeam()
+        await store.mutateWorkFolder { project in
+            if !project.teams.contains(where: { $0.templateID == "generated" }) {
+                project.teams.append(generatedTeam)
+            }
+        }
+        guard let taskID = await store.createTask(
+            title: "GenFailChild",
+            supervisorTask: "Build it",
+            preferredTeamID: generatedTeam.id
+        ) else {
+            return XCTFail("task creation failed")
+        }
+        await store.mutateTask(taskID: taskID) { task in
+            task.runs.append(Run(id: 0, steps: [], teamID: generatedTeam.id))
+        }
+
+        let waiter = Task { await store.awaitTaskTerminalState(taskID: taskID) }
+        await Task.yield()
+        XCTAssertTrue(store.completionAwaiter.hasWaiters(for: taskID))
+
+        let ok = await store.runTeamGeneration(taskID: taskID)
+        XCTAssertFalse(ok)
+
+        let outcome = await withTimeout(seconds: 0.4, onTimeout: {
+            store.completionAwaiter.cancelAll(taskID: taskID)
+        }) {
+            await waiter.value
+        }
+        XCTAssertEqual(
+            outcome,
+            TaskCompletionAwaiter.WaitOutcome.terminal(.failed),
+            "runTeamGeneration failure must deliver .terminal(.failed) to completionAwaiter"
+        )
+    }
+
+    func testAwait_pausedFastPathsAndDerivedNeedsAcceptance() async {
+        let store = makeOrchestrator()
+        let root = makeWorkFolderRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        await store.openWorkFolder(root)
+        guard let taskID = await store.createTask(title: "FastPaths", supervisorTask: "...") else {
+            return XCTFail("task creation failed")
+        }
+
+        // 1) Fast-path when engineState == .paused and pausedIterationLimit is set
+        let engine = store.engineForTask(taskID)
+        engine.pausedIterationLimit = 5
+        store.engineState[taskID] = .paused
+        let iterOutcome = await store.awaitTaskTerminalState(taskID: taskID)
+        XCTAssertEqual(iterOutcome, .paused(.iterationLimitReached(limit: 5)))
+        engine.pausedIterationLimit = nil
+
+        // 2) Fast-path when engineState == .paused and run.timedOutAt != nil
+        await store.mutateTask(taskID: taskID) { task in
+            task.runTimeoutSeconds = 45
+            task.runs = [Run(
+                id: 0,
+                steps: [StepExecution(id: "swe", role: .softwareEngineer, title: "SWE", status: .paused)],
+                roleStatuses: ["swe": .working],
+                timedOutAt: Date()
+            )]
+        }
+        store.engineState[taskID] = .paused
+        let timeoutOutcome = await store.awaitTaskTerminalState(taskID: taskID)
+        XCTAssertEqual(timeoutOutcome, .paused(.runTimedOut(seconds: 45)))
+
+        // 3) Fast-path when engineState == nil and run.derivedStatus == .needsSupervisorAcceptance
+        store.engineState[taskID] = nil
+        await store.mutateTask(taskID: taskID) { task in
+            task.setStoredChatMode(false)
+            task.runs = [Run(
+                id: 0,
+                steps: [StepExecution(id: "swe", role: .softwareEngineer, title: "SWE", status: .done)],
+                roleStatuses: ["swe": .needsAcceptance]
+            )]
+        }
+        let acceptOutcome = await store.awaitTaskTerminalState(taskID: taskID)
+        XCTAssertEqual(acceptOutcome, .terminal(.needsAcceptance))
+
+        // 4) Live engineState fast-paths (.done, .failed, .needsSupervisorInput)
+        store.engineState[taskID] = .done
+        let liveDone = await store.awaitTaskTerminalState(taskID: taskID)
+        XCTAssertEqual(liveDone, .terminal(.done))
+
+        store.engineState[taskID] = .failed
+        let liveFailed = await store.awaitTaskTerminalState(taskID: taskID)
+        XCTAssertEqual(liveFailed, .terminal(.failed))
+
+        store.engineState[taskID] = .needsSupervisorInput
+        let liveInput = await store.awaitTaskTerminalState(taskID: taskID)
+        XCTAssertEqual(liveInput, .needsSupervisorInput)
+    }
+
+    /// A child whose run timed out, was resumed, and was then paused by the person is NOT paused
+    /// by its timeout: the delegating role must keep waiting, as it does for any pause the child
+    /// did not start itself (`.paused(reason)` is only for self-pauses), rather than read "the
+    /// child timed out" and resume a run the person stopped.
+    ///
+    /// RED before 2026-11-07: the fast path read `timedOutAt != nil` and answered
+    /// `.paused(.runTimedOut)` for the person's pause.
+    func testAwait_childPausedByThePersonAfterItsTimeout_isNotReportedAsTimedOut() async {
+        let store = makeOrchestrator()
+        let root = makeWorkFolderRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        await store.openWorkFolder(root)
+        guard let taskID = await store.createTask(title: "Re-paused child", supervisorTask: "...") else {
+            return XCTFail("task creation failed")
+        }
+        await store.mutateTask(taskID: taskID) { task in
+            task.runTimeoutSeconds = 45
+            var run = Run(
+                id: 0,
+                steps: [StepExecution(id: "swe", role: .softwareEngineer, title: "SWE", status: .paused)],
+                roleStatuses: ["swe": .working],
+                timedOutAt: Date()
+            )
+            run.pauseCause = .requested
+            task.runs = [run]
+        }
+        store.engineState[taskID] = .paused
+
+        let waiter = Task { await store.awaitTaskTerminalState(taskID: taskID) }
+        for _ in 0..<50 where !store.completionAwaiter.hasWaiters(for: taskID) {
+            await Task.yield()
+        }
+        XCTAssertTrue(store.completionAwaiter.hasWaiters(for: taskID), "the person's pause is waited out, not answered at once")
+        store.completionAwaiter.deliver(taskID: taskID, outcome: .terminal(.done))
+        let outcome = await withTimeout(seconds: 0.4, onTimeout: {
+            store.completionAwaiter.cancelAll(taskID: taskID)
+        }) {
+            await waiter.value
+        }
+        XCTAssertEqual(outcome, .terminal(.done))
+
+        // The timeout's own pause still answers at once.
+        await store.mutateTask(taskID: taskID) { $0.runs[0].pauseCause = .runTimedOut }
+        let timedOut = await store.awaitTaskTerminalState(taskID: taskID)
+        XCTAssertEqual(timedOut, .paused(.runTimedOut(seconds: 45)))
+    }
+
     // MARK: - Helpers
 
     /// Wraps an async call with a hard timeout. Returns nil on timeout.
     /// Used to assert "fast-path completes quickly" rather than letting a
     /// hung test stall CI for 30 minutes.
-    private func withTimeout<T: Sendable>(seconds: Double, _ op: @escaping @Sendable () async -> T) async -> T? {
-        await withTaskGroup(of: T?.self) { group in
-            group.addTask { await op() }
+    private func withTimeout<T: Sendable>(
+        seconds: Double,
+        onTimeout: (@MainActor @Sendable () -> Void)? = nil,
+        _ op: @escaping @Sendable () async -> T
+    ) async -> T? {
+        await withTaskGroup(of: (timedOut: Bool, value: T?).self) { group in
+            group.addTask { (false, await op()) }
             group.addTask {
                 try? await Task.sleep(for: .seconds(seconds))
+                if let onTimeout {
+                    await MainActor.run { onTimeout() }
+                }
+                return (true, nil)
+            }
+            let first = await group.next()
+            group.cancelAll()
+            if first?.timedOut == true {
                 return nil
             }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first
+            return first?.value
         }
     }
 }

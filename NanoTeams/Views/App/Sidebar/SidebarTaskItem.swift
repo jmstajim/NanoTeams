@@ -36,4 +36,14 @@ struct SidebarTaskItem: Identifiable, Equatable {
     /// already says a task is waiting, and with parallel roles (CLAUDE.md #45) the question
     /// the Supervisor is actually choosing between tasks on is how many.
     var waitingQuestionCount: Int? = nil
+    /// Who created the task (`nil` / `.human` / `.builtInAutovisor` / `.externalAgent(AgentIdentity)`).
+    /// Drives the external-agent origin mark in `SidebarTaskRow` (§11).
+    var origin: TaskOrigin? = nil
+
+    /// Display label when the task was created by an external agent (`nil` otherwise).
+    var externalAgentLabel: String? {
+        guard case .externalAgent(let identity) = origin else { return nil }
+        let trimmed = identity.label.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
 }

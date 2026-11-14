@@ -998,4 +998,112 @@ final class LLMMessageSourceContextTests: XCTestCase {
             )
         }
     }
+
+    // MARK: - sourceAttribution (who wrote the turn, apart from what kind of turn it is)
+
+    private func turn(
+        role: LLMRole = .user,
+        sourceRole: Role? = .supervisor,
+        context: MessageSourceContext?,
+        author: String? = nil,
+        automated: Bool? = nil
+    ) -> LLMMessage {
+        LLMMessage(role: role, content: "x", sourceRole: sourceRole, sourceContext: context,
+                   authorLabel: author, isFromAutomatedSupervisor: automated)
+    }
+
+    private func attribution(_ context: String?, _ author: String?) -> LLMMessage.SourceAttribution {
+        LLMMessage.SourceAttribution(context: context, author: author)
+    }
+
+    /// The header draws the two halves apart — the author as the agent mark, the context in
+    /// parentheses — so the split itself is the contract. Each row is a turn a writer produces.
+    func testSourceAttribution_splitsContextFromAuthor() {
+        let rows: [(String, LLMMessage, LLMMessage.SourceAttribution)] = [
+            ("signed revision feedback",
+             turn(context: .supervisorFeedback, author: "Claude Code", automated: true),
+             attribution(nil, "Claude Code")),
+            ("signed Supervisor message",
+             turn(context: .supervisorMessage, author: "Claude Code", automated: true),
+             attribution(nil, "Claude Code")),
+            ("unsigned automated message",
+             turn(context: .supervisorMessage, automated: true),
+             attribution(nil, LLMMessage.automatedSupervisorLabel)),
+            ("the person's message",
+             turn(context: .supervisorMessage, automated: false),
+             .none),
+            ("a pre-2026-11-07 message with no recorded author",
+             turn(context: .supervisorMessage),
+             .none),
+            ("signed answer keeps its context word",
+             turn(context: .supervisorAnswer, author: "Claude Code", automated: true),
+             attribution("supervisor answer", "Claude Code")),
+            ("unsigned automated answer",
+             turn(context: .supervisorAnswer, automated: true),
+             attribution("supervisor answer", LLMMessage.automatedSupervisorLabel)),
+            ("consultation has a context and no author",
+             turn(sourceRole: .techLead, context: .consultation),
+             attribution("consultation", nil)),
+            ("server error shows neither, even signed",
+             turn(role: .assistant, sourceRole: nil, context: .serverError, author: "Claude Code"),
+             .none),
+            ("padded author is trimmed",
+             turn(context: .supervisorFeedback, author: "  Claude Code \n", automated: true),
+             attribution(nil, "Claude Code")),
+            ("blank author on an automated turn falls back to auto",
+             turn(context: .supervisorMessage, author: "   ", automated: true),
+             attribution(nil, LLMMessage.automatedSupervisorLabel)),
+            ("blank author on the person's turn is no author",
+             turn(context: .supervisorMessage, author: " \n ", automated: false),
+             .none),
+            ("bare user turn, signed",
+             turn(sourceRole: nil, context: nil, author: "Claude Code"),
+             attribution(nil, "Claude Code")),
+            ("bare user turn, unsigned",
+             turn(sourceRole: nil, context: nil),
+             attribution("input", nil)),
+            ("source role without a context",
+             turn(sourceRole: .techLead, context: nil, author: "Claude Code"),
+             attribution("consultation", nil)),
+            ("plain assistant turn",
+             turn(role: .assistant, sourceRole: nil, context: nil),
+             .none),
+        ]
+        for (name, message, expected) in rows {
+            XCTAssertEqual(message.sourceAttribution, expected, name)
+        }
+    }
+
+    /// `conversation_log.md` reads the halves joined. Pinned to the literal strings the merged
+    /// label produced before the split, so moving the rules into `sourceAttribution` cannot shift
+    /// a byte of any transcript.
+    func testSourceContextDisplayLabel_isTheJoinedAttribution_byteForByte() {
+        let rows: [(LLMMessage, String?)] = [
+            (turn(context: .supervisorFeedback, author: "Claude Code", automated: true), "Claude Code"),
+            (turn(context: .supervisorMessage, automated: true), "auto"),
+            (turn(context: .supervisorMessage, automated: false), nil),
+            (turn(context: .supervisorAnswer, author: "Claude Code", automated: true),
+             "supervisor answer · Claude Code"),
+            (turn(context: .supervisorAnswer, automated: true), "supervisor answer · auto"),
+            (turn(context: .supervisorAnswer), "supervisor answer"),
+            (turn(sourceRole: .techLead, context: .consultation), "consultation"),
+            (turn(role: .assistant, sourceRole: nil, context: .serverError, author: "Claude Code"), nil),
+            (turn(sourceRole: nil, context: nil, author: "Claude Code"), "Claude Code"),
+            (turn(sourceRole: nil, context: nil), "input"),
+            (turn(sourceRole: .techLead, context: nil, author: "Claude Code"), "consultation"),
+            (turn(role: .assistant, sourceRole: nil, context: nil, author: "Claude Code"), "Claude Code"),
+            (turn(role: .assistant, sourceRole: nil, context: nil), nil),
+        ]
+        for (message, expected) in rows {
+            XCTAssertEqual(message.sourceContextDisplayLabel, expected)
+            XCTAssertEqual(message.sourceContextDisplayLabel, message.sourceAttribution.merged)
+        }
+    }
+
+    func testSourceAttribution_merged_joinsWhatIsPresent() {
+        XCTAssertNil(LLMMessage.SourceAttribution.none.merged)
+        XCTAssertEqual(attribution("consultation", nil).merged, "consultation")
+        XCTAssertEqual(attribution(nil, "Claude Code").merged, "Claude Code")
+        XCTAssertEqual(attribution("supervisor answer", "auto").merged, "supervisor answer · auto")
+    }
 }

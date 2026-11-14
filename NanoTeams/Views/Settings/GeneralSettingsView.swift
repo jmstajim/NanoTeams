@@ -46,8 +46,7 @@ struct GeneralSettingsView: View {
     private var inputCard: some View {
         @Bindable var config = config
         return SettingsCard(
-            header: "Input",
-            systemImage: "keyboard"
+            header: "Input"
         ) {
             VStack(spacing: 0) {
                 settingsToggleRow("Enter sends message", icon: "return", isOn: $config.enterSendsMessage)
@@ -133,8 +132,12 @@ struct SettingsToggleRow: View {
                         .font(Typography.caption)
                         .foregroundStyle(Colors.textSecondary)
                 )
+            // First claim on the row's width: an HStack offers its flexible children equal
+            // shares, and a title a little longer than its share wrapped beside a wide empty
+            // Spacer ("Allowed in this / work folder" under an indented row, 2026-09-24).
             Text(title)
                 .font(Typography.subheadline)
+                .layoutPriority(1)
             Spacer()
             // Terminal toggle propagates through the environment, but a leftover
             // `.toggleStyle(.switch)` here would override that and re-introduce

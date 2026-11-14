@@ -4,19 +4,15 @@ import UniformTypeIdentifiers
 
 struct WorkFolderSettingsView: View {
     @Environment(NTMSOrchestrator.self) var store
-    @State private var contextDraft: String = ""
+    /// The context editor's draft and its autosave, held by the app so a tab switch or a closed
+    /// Settings window keeps a choice the person has not made (`WorkFolderContextEditor`).
+    @Environment(WorkFolderContextEditor.self) private var contextEditor
     @State private var promptDraft: String = ""
     @State private var isShowingResetConfirmation = false
     @State private var isShowingCloseConfirmation = false
     @State private var isPromptExpanded = false
     @State private var isShowingContextEditor = false
     @State private var isShowingInstructionPicker = false
-    /// Last value the debounced autosave dispatched — lets the settings-echo
-    /// `onChange` distinguish OUR save landing (skip: overwriting the draft
-    /// would delete keystrokes typed during the await) from an external write
-    /// (Generate, Autovisor `set_work_folder_context` → adopt).
-    @State private var lastAutosavedContext: String?
-    @State private var saveTask: Task<Void, Never>?
     @State private var promptSaveTask: Task<Void, Never>?
     @State private var availableSchemes: [String] = []
     @State private var recentProjects: [URL] = []
@@ -63,7 +59,7 @@ struct WorkFolderSettingsView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This will restore the work folder context, teams, roles, and tools to their default values. Existing tasks and runs will be preserved but might reference missing configurations. This action cannot be undone.")
+            Text(Self.resetConfirmationMessage)
         }
         .confirmationDialog(
             "Close Work Folder?",
@@ -79,26 +75,18 @@ struct WorkFolderSettingsView: View {
         }
         .sheet(isPresented: $isShowingContextEditor) {
             WorkFolderContextEditorSheet(
-                contextDraft: $contextDraft,
-                isSaving: isContextSaving
+                contextDraft: contextDraftBinding,
+                isSaving: contextEditor.sync.hasUnsavedEdits,
+                replacedWhileEditing: contextEditor.sync.replacement != nil,
+                onUseNewText: contextEditor.useReplacement,
+                onKeepMine: contextEditor.keepMine
             )
         }
-        // Debounced autosave lives on the container (not the preview `Text`) so
-        // it fires whether the draft changes via the Edit sheet or via Generate.
-        .onChange(of: contextDraft) { _, newValue in
-            saveTask?.cancel()
-            saveTask = Task {
-                try? await Task.sleep(for: .milliseconds(500))
-                guard !Task.isCancelled else { return }
-                if store.workFolder?.settings.context != newValue {
-                    lastAutosavedContext = newValue
-                    await store.updateWorkFolderContext(newValue)
-                }
-            }
-        }
         .onAppear {
+            // Reported, not rebuilt: the editor keeps a draft the person left with a choice
+            // waiting, and measures what changed while the page was away.
+            contextEditor.show(folderID: store.workFolder?.id, stored: store.workFolder?.settings.context ?? "")
             if let p = store.workFolder {
-                contextDraft = p.settings.context
                 promptDraft = p.settings.contextPrompt
             }
             recentProjects = NSDocumentController.shared.recentDocumentURLs
@@ -108,18 +96,17 @@ struct WorkFolderSettingsView: View {
             Task { await store.refreshAgentInstructions() }
         }
         .onChange(of: store.workFolder?.id) { _, _ in
+            contextEditor.show(folderID: store.workFolder?.id, stored: store.workFolder?.settings.context ?? "")
             if let p = store.workFolder {
-                contextDraft = p.settings.context
                 promptDraft = p.settings.contextPrompt
             }
         }
         .onChange(of: store.workFolder?.settings.context) { _, newValue in
-            // Echo-clobber guard: when the change is OUR autosave landing, keep
-            // the draft — the user may have typed more during the await, and
-            // overwriting would delete those keystrokes mid-edit. External
-            // writes (Generate, Autovisor) still adopt.
-            guard let val = newValue, val != lastAutosavedContext else { return }
-            contextDraft = val
+            // The page's own save echoing back, or another writer — Generate, the Autovisor, an
+            // external agent. The editor tells them apart and keeps unsaved edits from being
+            // replaced under the caret.
+            guard let val = newValue else { return }
+            contextEditor.show(folderID: store.workFolder?.id, stored: val)
         }
         .onChange(of: store.workFolder?.settings.contextPrompt) { _, newValue in
             if let val = newValue { promptDraft = val }
@@ -202,8 +189,7 @@ struct WorkFolderSettingsView: View {
     private var bundledUpdateBlockedCard: some View {
         if let message = store.bundledUpdateReport?.durableMessage {
             SettingsCard(
-                header: "Prompt Updates Blocked",
-                systemImage: "exclamationmark.triangle"
+                header: "Prompt Updates Blocked"
             ) {
                 HStack(alignment: .top, spacing: Spacing.s) {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -229,20 +215,26 @@ struct WorkFolderSettingsView: View {
     private var descriptionCard: some View {
         SettingsCard(
             header: "Work Folder Context",
-            systemImage: "doc.text",
-            footer: "This context is sent to all AI roles. Use Generate to build it from your files, or write your own."
+            footer: "Roles read this context on every team whose prompt includes it. Use Generate to build it from your files, or write your own."
         ) {
+            // A choice left pending when the sheet closed is offered here too: the autosave
+            // waits for it, so a banner only the sheet showed would leave the edits unsaved.
+            if contextEditor.sync.replacement != nil {
+                WorkFolderContextReplacedBanner(
+                    onUseNewText: contextEditor.useReplacement, onKeepMine: contextEditor.keepMine)
+            }
+
             // Read-only preview (up to 7 lines). Editing happens in the sheet
             // opened by the Edit button — a plain `Text` (not `TextEditor`) so
             // there is no NSScrollView here (CLAUDE.md #50 moot).
             HStack(alignment: .top, spacing: Spacing.xs) {
                 PromptMarker()
                 Group {
-                    if contextDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    if contextEditor.sync.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         Text("No context yet — Generate from your files or Edit to write your own.")
                             .foregroundStyle(Colors.textTertiary)
                     } else {
-                        Text(contextDraft)
+                        Text(contextEditor.sync.draft)
                             .foregroundStyle(Colors.textPrimary)
                             .lineLimit(7)
                     }
@@ -318,9 +310,18 @@ struct WorkFolderSettingsView: View {
         }
     }
 
-    /// `true` while the debounced autosave hasn't caught up with the draft.
+    /// `true` while the debounced autosave hasn't caught up with the draft. A replacement
+    /// waiting for the person's choice is the banner's to say, not an endless spinner's.
     private var isContextSaving: Bool {
-        store.workFolder?.settings.context != contextDraft
+        contextEditor.sync.hasUnsavedEdits && contextEditor.sync.replacement == nil
+    }
+
+    /// The editor's text: every keystroke goes to the editor, which restarts its debounced
+    /// autosave (`WorkFolderContextEditor`).
+    private var contextDraftBinding: Binding<String> {
+        Binding(
+            get: { contextEditor.sync.draft },
+            set: { contextEditor.edit($0) })
     }
 
     /// Agent instruction files: auto-discovered (CLAUDE.md, AGENTS.md, …) plus
@@ -365,9 +366,9 @@ struct WorkFolderSettingsView: View {
     private func agentInstructionsHint(_ snap: AgentInstructionsSnapshot) -> String {
         let injected = snap.injectedFiles.map(\.relativePath)
         if injected.isEmpty {
-            return "Attach files to inject them into every role's system prompt (images are listed for on-demand reading)."
+            return "Attach files to inject them with the context above (images are listed for on-demand reading)."
         }
-        return "\(injected.joined(separator: ", ")) — injected into every role's system prompt; other files are listed for on-demand reading."
+        return "\(injected.joined(separator: ", ")) — injected with the context; other files are listed for on-demand reading."
     }
 
     // MARK: - Scheme Card
@@ -375,7 +376,6 @@ struct WorkFolderSettingsView: View {
     private var schemeCard: some View {
         SettingsCard(
             header: "Xcode Scheme",
-            systemImage: "hammer",
             footer: "The Xcode scheme used by run_xcodebuild and run_xcodetests tools."
         ) {
             SchemeSection(
@@ -391,6 +391,14 @@ struct WorkFolderSettingsView: View {
     }
 
     // MARK: - Danger Card
+
+    /// What a reset does (`NTMSRepository.resetWorkFolderSettings` removes `.nanoteams/` whole) —
+    /// one sentence for the caption and the dialog. Until 2026-10-28 the dialog promised
+    /// "Existing tasks and runs will be preserved" while the reset deleted them.
+    static let resetConsequences =
+        "Removes all tasks, runs, teams, and settings, then recreates defaults. Your files are not affected."
+
+    static let resetConfirmationMessage = resetConsequences + " This action cannot be undone."
 
     private var dangerCard: some View {
         VStack(alignment: .leading, spacing: Spacing.s) {
@@ -415,7 +423,7 @@ struct WorkFolderSettingsView: View {
                 }
                 .buttonStyle(.plain)
 
-                Text("Removes all tasks, runs, teams, and settings, then recreates defaults. Your files are not affected.")
+                Text(Self.resetConsequences)
                     .font(Typography.caption)
                     .foregroundStyle(Colors.textTertiary)
             }
@@ -569,6 +577,7 @@ private struct AgentInstructionsGrid: View {
 
                 Text("Add")
                     .font(Typography.term2xs)
+                    .lineLimit(1)
                     .foregroundStyle(Colors.textTertiary)
                     .frame(width: 64)
             }
@@ -616,6 +625,7 @@ private struct AgentInstructionsListCell: View {
 
                 Text("\(items.count)")
                     .font(Typography.term2xs.weight(.bold))
+                    .lineLimit(1)
                     .foregroundStyle(Colors.textOnAccent)
                     .padding(.horizontal, Spacing.xs)
                     .frame(minWidth: 16, minHeight: 16)
@@ -711,6 +721,7 @@ private struct AgentInstructionsListCell: View {
                     Text("INJECT")
                         .tracking(Typography.labelTracking)
                         .font(Typography.term2xs)
+                        .lineLimit(1)
                         .foregroundStyle(Colors.textSecondary)
                         .padding(.horizontal, Spacing.xs)
                         .padding(.vertical, Spacing.xxs)
@@ -719,7 +730,7 @@ private struct AgentInstructionsListCell: View {
                         )
                 }
                 .buttonStyle(.plain)
-                .help("Inject this file's content into every role's system prompt")
+                .help("Inject this file's content with the context")
                 .accessibilityLabel("Inject \(item.relativePath)")
             }
         }
@@ -802,7 +813,7 @@ private struct AgentInstructionCell: View {
             return "\(item.relativePath) — content not injected; still listed for on-demand reading"
         }
         if item.injectedContent != nil {
-            return "\(item.relativePath) — content injected into every role's system prompt"
+            return "\(item.relativePath) — content injected with the context"
         }
         return "\(item.relativePath) — listed in the prompt; roles read it on demand"
     }
@@ -812,8 +823,10 @@ private struct AgentInstructionCell: View {
 
 #Preview("Work Folder Settings - No Folder") {
     @Previewable @State var store = PreviewStore.make()
+    @Previewable @State var contextEditor = WorkFolderContextEditor(save: { _, _ in .noFolder }, openFolder: { nil })
     WorkFolderSettingsView()
         .environment(store)
+        .environment(contextEditor)
         .frame(width: 500, height: 400)
 }
 

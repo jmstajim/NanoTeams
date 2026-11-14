@@ -7,7 +7,10 @@ import Foundation
 /// Matching is segment-aware: a compound command (`a && b ; c | d`) is split on
 /// shell separators and the leading program of EACH segment is extracted, so a
 /// benign-looking `cat x && rm -rf /` cannot smuggle `rm` past a deny rule that
-/// only inspected the first word.
+/// only inspected the first word. The tiers read the segments in opposite ways: a deny or
+/// ask rule fires on ANY segment, while an allow rule (or the read-only bypass) must cover
+/// EVERY segment — or the rule must be the whole line verbatim — before the line runs
+/// unattended.
 nonisolated enum BashPermissionService {
 
     // MARK: - Public API
@@ -26,8 +29,11 @@ nonisolated enum BashPermissionService {
             return .deny(reason: "Empty command — nothing to run.")
         }
 
+        // `segments` is the redirect-aware split the ALLOW tier covers; deny and ask match
+        // against `ruleSegs`, which adds the legacy every-`&` split (see `splitSegments`).
         let segments = splitSegments(trimmed)
         let programs = segments.map { leadingProgram(of: $0) }.filter { !$0.isEmpty }
+        let ruleSegs = ruleSegments(trimmed, segments: segments)
 
         // 1. Deny rules win over everything — and they see THROUGH a command wrapper.
         //
@@ -43,9 +49,8 @@ nonisolated enum BashPermissionService {
         //    Deliberately deny-ONLY. Feeding the widened segments to the ask and allow
         //    tiers too would make `allow: ["rm"]` start vouching for `sudo rm` — a
         //    permissiveness regression wearing a fix's clothes.
-        let denySegs = denySegments(segments)
-        let denyProgs = denySegs.map { leadingProgram(of: $0) }.filter { !$0.isEmpty }
-        if let rule = firstMatch(rules: policy.denyRules, command: trimmed, segments: denySegs, programs: denyProgs) {
+        let denySegs = denySegments(ruleSegs)
+        if let rule = firstMatch(rules: policy.denyRules, command: trimmed, segments: denySegs) {
             return .deny(reason: "Blocked by deny rule “\(rule)”.")
         }
 
@@ -75,39 +80,35 @@ nonisolated enum BashPermissionService {
 
         // 2. Ask rules force review even if an allow rule or the read-only bypass
         //    would otherwise pass it.
-        let askMatched = firstMatch(rules: policy.askRules, command: trimmed, segments: segments, programs: programs) != nil
+        let askMatched = firstMatch(rules: policy.askRules, command: trimmed, segments: ruleSegs) != nil
         if askMatched {
             return .ask(reason: "Matched an ask rule — requires review.")
         }
 
-        // 3. Allow rules short-circuit to allow — EXCEPT a BARE-PROGRAM allow rule
-        //    does not vouch for a segment that smuggles command / process
-        //    substitution ($( ), backticks, <( )). The rule only names the outer
-        //    program (`echo`); it can't speak for the arbitrary code inside
-        //    `echo $(rm -rf ~)`, which the segment-level program extraction never
-        //    inspects. Glob / multi-word literal allow rules are more specific
-        //    (including the verbatim command persisted by an "always" approval)
-        //    and still short-circuit.
-        //    A bare-program rule cannot vouch for a WRAPPER's payload either, for the
-        //    same reason and by the same argument: `allow: ["sudo"]` names the outer
-        //    program, and the thing that actually runs is in the argv tail the rule
-        //    never saw. That is why `git`/`make`/`npm` are deliberately NOT in
-        //    `commandWrappers` — they can execute things, but not through their tail,
-        //    and admitting them would make this carve-out swallow ordinary workflows.
-        if let rule = firstMatch(rules: policy.allowRules, command: trimmed, segments: segments, programs: programs) {
-            let bareProgramRule = !rule.contains("*") && !rule.contains(" ")
-            if !(bareProgramRule && (hasCommandSubstitution(trimmed) || usesCommandWrapper(programs))) {
-                return .allow
-            }
-        }
-
-        // 4. Read-only bypass: every segment is a known read-only program, carries only
-        //    recognised flags, and there's no redirection / command substitution.
-        if isReadOnly(trimmed, programs: programs, segments: segments) {
+        // 3. The verbatim line. An "always" approval persists the command exactly as the
+        //    card showed it, and the person approved THAT line — so a rule equal to the
+        //    whole command (through `decisionKey`: trim + case + inner whitespace) allows
+        //    it even when no segment is covered on its own (`cd app && npm test`). Exact,
+        //    never a prefix: an appended `&& rm -rf ~` changes the key. Any rule shape —
+        //    `make;make` has neither a space nor a `*` and is still a verbatim line.
+        let commandKey = decisionKey(for: trimmed)
+        if policy.allowRules.contains(where: { decisionKey(for: $0) == commandKey && !commandKey.isEmpty }) {
             return .allow
         }
 
-        // 5. Default: unknown command → review (judge in Auto, human in Manual).
+        // 4. Every segment covered. Allow and read-only are judged PER SEGMENT and the
+        //    line runs unattended only when each one is covered (F6 L3, 2026-11-11): an
+        //    allow rule speaks for the segment it matches, never for its neighbours. Until
+        //    then one matching segment allowed the whole line, and a glob matched against
+        //    the whole line covered everything after its prefix — live, `touch probe/*`
+        //    ran `touch probe/a; touch smuggled.txt` with no human.
+        if segments.allSatisfy({
+            segmentIsCovered($0, command: trimmed, allowRules: policy.allowRules)
+        }) {
+            return .allow
+        }
+
+        // 5. Default: an uncovered segment → review (judge in Auto, human in Manual).
         //    Name the near-miss when there is one: a program that mutates with no `>`
         //    on the line looks read-only to a human reading the approval card, and the
         //    card is where that misreading turns into an approval.
@@ -131,6 +132,38 @@ nonisolated enum BashPermissionService {
             .lowercased()
             .split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "\n" })
             .joined(separator: " ")
+    }
+
+    // MARK: - Allow coverage
+
+    /// Whether ONE segment may run unattended: an allow rule matches it, or it is read-only.
+    ///
+    /// A BARE-PROGRAM rule (`echo`) names only the outer program, so it vouches for neither a
+    /// line that carries command / process substitution (`echo $(rm -rf ~)` — the nested code
+    /// is never inspected, and `splitSegments` does not even keep it in one segment) nor a
+    /// segment led by a WRAPPER (`allow: ["sudo"]` says nothing about the argv tail that
+    /// actually runs). That is why `git`/`make`/`npm` are deliberately NOT in
+    /// `commandWrappers` — they can execute things, but not through their tail. Glob and
+    /// multi-word rules are more specific intent and keep covering their segment.
+    ///
+    /// Read-only coverage requires the WHOLE line to be free of substitution, as the
+    /// line-level bypass did: a `$(` split across two segments must not let its tail pass as
+    /// a harmless `echo`.
+    static func segmentIsCovered(_ segment: String, command: String, allowRules: [String]) -> Bool {
+        let program = leadingProgram(of: segment)
+        let substituted = hasCommandSubstitution(command)
+        for rule in allowRules {
+            let trimmed = rule.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, segmentMatches(trimmed, segment: segment, program: program) else { continue }
+            let bareProgramRule = !trimmed.contains("*") && !trimmed.contains(" ")
+            if bareProgramRule,
+               substituted || BashConstants.commandWrappers.contains(program.lowercased()) {
+                continue
+            }
+            return true
+        }
+        guard !substituted, !program.isEmpty else { return false }
+        return isReadOnly(segment, programs: [program], segments: [segment])
     }
 
     // MARK: - Read-only classification
@@ -182,169 +215,28 @@ nonisolated enum BashPermissionService {
         command.contains("$(") || command.contains("`") || command.contains("<(")
     }
 
-    // MARK: - Segmenting & program extraction
-
-    /// Splits a command line into independently-evaluated segments on `;`, `&`,
-    /// `|`, and newlines (so `&&`, `||`, `|` all split). Quoted spans are
-    /// respected so a separator inside `'...'` / `"..."` doesn't split.
-    static func splitSegments(_ command: String) -> [String] {
-        var segments: [String] = []
-        var current = ""
-        var quote: Character?
-        var escaped = false
-        for ch in command {
-            if escaped {
-                current.append(ch)
-                escaped = false
-                continue
-            }
-            if ch == "\\" {
-                current.append(ch)
-                escaped = true
-                continue
-            }
-            if let q = quote {
-                current.append(ch)
-                if ch == q { quote = nil }
-                continue
-            }
-            if ch == "'" || ch == "\"" {
-                quote = ch
-                current.append(ch)
-                continue
-            }
-            if BashConstants.segmentSeparators.contains(ch) {
-                let t = current.trimmingCharacters(in: .whitespaces)
-                if !t.isEmpty { segments.append(t) }
-                current = ""
-                continue
-            }
-            current.append(ch)
-        }
-        let t = current.trimmingCharacters(in: .whitespaces)
-        if !t.isEmpty { segments.append(t) }
-        return segments.isEmpty ? [command.trimmingCharacters(in: .whitespaces)] : segments
-    }
-
-    /// True when any of these programs is a wrapper whose argv tail is a command line.
-    static func usesCommandWrapper(_ programs: [String]) -> Bool {
-        programs.contains { BashConstants.commandWrappers.contains($0.lowercased()) }
-    }
-
-    /// The segments a DENY rule must be matched against: every original segment, plus,
-    /// for a segment led by a command wrapper, the sub-command lines hiding in its tail.
-    ///
-    /// `"command rm -rf x"` → `["command rm -rf x", "rm -rf x", "x"]`
-    /// `"timeout 5 rm -rf x"` → `[…, "5 rm -rf x", "rm -rf x", "x"]`
-    ///
-    /// One tail per subsequent NON-FLAG, non-assignment token rather than "the tail
-    /// after the first one", because wrappers take operands (`timeout 5`, `nice -n 5`)
-    /// and the alternative is a per-program flag-arity table. Such a table is a text
-    /// heuristic that fails OPEN the first time a program grows a flag (CLAUDE.md #85),
-    /// and failing open is exactly the defect being closed. Emitting a few extra
-    /// candidate tails costs a deny rule nothing: a rule that matches none of them is
-    /// unchanged, and one that matches is a rule the user wrote about a program that
-    /// really is about to run.
-    ///
-    /// Capped at the first 8 tokens so a pathological argv cannot turn one rule check
-    /// into a quadratic scan.
-    static func denySegments(_ segments: [String]) -> [String] {
-        var out: [String] = []
-        for segment in segments {
-            out.append(segment)
-            guard BashConstants.commandWrappers.contains(leadingProgram(of: segment).lowercased())
-            else { continue }
-
-            let tokens = tokenize(segment)
-            for index in tokens.indices.dropFirst().prefix(8) {
-                let token = tokens[index]
-                guard !token.hasPrefix("-"), !isAssignment(token), !token.isEmpty else { continue }
-                let tail = tokens[index...].joined(separator: " ")
-                if !tail.isEmpty, tail != segment { out.append(tail) }
-            }
-        }
-        return out
-    }
-
-    /// Extracts the leading program (basename) of a segment, skipping leading
-    /// `VAR=value` environment assignments. Does NOT strip `sudo`/`env` — those
-    /// ARE the effective program for policy purposes (so a `sudo` deny rule
-    /// matches `sudo rm`, and `env FOO=x rm` resolves to `env`, which is not in
-    /// the read-only set). `BashConstants.commandWrappers` is the enumeration of
-    /// that class, and `denySegments` is what lets a deny rule see past it.
-    static func leadingProgram(of segment: String) -> String {
-        var tokens = tokenize(segment)
-        // Skip leading `KEY=value` assignments.
-        while let first = tokens.first, isAssignment(first) {
-            tokens.removeFirst()
-        }
-        guard let program = tokens.first, !program.isEmpty else { return "" }
-        let unquoted = stripQuotes(program)
-        if unquoted.contains("/") {
-            return String(unquoted.split(separator: "/").last ?? "")
-        }
-        return unquoted
-    }
-
-    private static func isAssignment(_ token: String) -> Bool {
-        guard let eq = token.firstIndex(of: "=") else { return false }
-        let name = token[token.startIndex..<eq]
-        return !name.isEmpty && name.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" }
-            && (name.first?.isNumber == false)
-    }
-
-    private static func stripQuotes(_ s: String) -> String {
-        guard s.count >= 2 else { return s }
-        let first = s.first!
-        let last = s.last!
-        if (first == "\"" && last == "\"") || (first == "'" && last == "'") {
-            return String(s.dropFirst().dropLast())
-        }
-        return s
-    }
-
-    /// Whitespace tokenizer that respects single/double quotes.
-    static func tokenize(_ s: String) -> [String] {
-        var tokens: [String] = []
-        var current = ""
-        var quote: Character?
-        var escaped = false
-        for ch in s {
-            if escaped { current.append(ch); escaped = false; continue }
-            if ch == "\\" { escaped = true; continue }
-            if let q = quote {
-                if ch == q { quote = nil } else { current.append(ch) }
-                continue
-            }
-            if ch == "'" || ch == "\"" { quote = ch; continue }
-            if ch == " " || ch == "\t" {
-                if !current.isEmpty { tokens.append(current); current = "" }
-                continue
-            }
-            current.append(ch)
-        }
-        if !current.isEmpty { tokens.append(current) }
-        return tokens
-    }
-
     // MARK: - Rule matching
 
-    private static func firstMatch(
-        rules: [String], command: String, segments: [String], programs: [String]
-    ) -> String? {
+    private static func firstMatch(rules: [String], command: String, segments: [String]) -> String? {
         for rule in rules {
             let trimmed = rule.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { continue }
-            if ruleMatches(trimmed, command: command, segments: segments, programs: programs) {
+            if ruleMatches(trimmed, command: command, segments: segments) {
                 return trimmed
             }
         }
         return nil
     }
 
-    static func ruleMatches(
-        _ rule: String, command: String, segments: [String], programs: [String]
-    ) -> Bool {
+    /// Whether a DENY or ASK rule fires on this command: ANY match is enough — the line as a
+    /// whole, or any one segment. That is the right reading for a rule that stops a command,
+    /// and the wrong one for a rule that lets it through: the allow tier does not come here
+    /// but asks `segmentIsCovered` of EVERY segment (F6 L3, 2026-11-11). Until then this
+    /// function served all three tiers, and its comment claimed that "an appended segment
+    /// changes the normalized key, so `<rule> && rm -rf ~` cannot smuggle past" — true of the
+    /// whole-line compare, while the per-segment prefix match two lines below matched the
+    /// rule's first segment and let the line through anyway.
+    static func ruleMatches(_ rule: String, command: String, segments: [String]) -> Bool {
         // All matching is case-insensitive: macOS's case-insensitive filesystem
         // resolves `RM` → /bin/rm, so a deny rule `rm` must still block `RM` rather
         // than silently downgrade it to a review.
@@ -355,27 +247,29 @@ nonisolated enum BashPermissionService {
             guard let re = compileGlob(rule) else { return false }
             return ([command] + segments).contains { globMatch(re, $0) }
         }
+        // The whole line, compared through `decisionKey` (trim + case + inner whitespace):
+        // a multi-segment rule (`cd app && rm -rf build`) equals no single segment.
+        if rule.contains(" "), decisionKey(for: command) == decisionKey(for: rule) { return true }
+        return segments.contains { seg in
+            segmentMatches(rule, segment: seg, program: leadingProgram(of: seg))
+        }
+    }
+
+    /// Whether `rule` matches ONE segment: a glob anchored at the segment's start, a
+    /// multi-word literal as a word-boundary prefix of the segment (`git push` matches
+    /// `git push origin main`, not `git pushx`), or a bare program name equal to the
+    /// segment's leading program (`ls` does not match `lsof`). Case-insensitive throughout.
+    static func segmentMatches(_ rule: String, segment: String, program: String) -> Bool {
+        if rule.contains("*") {
+            guard let re = compileGlob(rule) else { return false }
+            return globMatch(re, segment)
+        }
         if rule.contains(" ") {
             let lowerRule = rule.lowercased()
-            // Whole-command EXACT match: an "always allow" of a COMPOUND command
-            // (e.g. `cd app && npm test`) persists the verbatim line, which equals no
-            // single segment — so without this the command would re-prompt on every
-            // emission despite "always". Compared through `decisionKey` (trim +
-            // lowercase + collapse internal whitespace) so a cosmetic spacing change
-            // in the re-emission still matches. Still EXACT, never a prefix: an
-            // appended segment changes the normalized key, so `<rule> && rm -rf ~`
-            // cannot smuggle past.
-            if decisionKey(for: command) == decisionKey(for: rule) { return true }
-            // Multi-word literal: word-boundary prefix of a segment (a single-segment
-            // rule like `git push` vouches for `git push origin main`).
-            return segments.contains { seg in
-                let lower = seg.lowercased()
-                return lower == lowerRule || lower.hasPrefix(lowerRule + " ")
-            }
+            let lower = segment.lowercased()
+            return lower == lowerRule || lower.hasPrefix(lowerRule + " ")
         }
-        // Bare program name: match the leading program of any segment (word boundary,
-        // so `ls` does not match `lsof`).
-        return programs.contains { $0.caseInsensitiveCompare(rule) == .orderedSame }
+        return program.caseInsensitiveCompare(rule) == .orderedSame
     }
 
     /// Compiles a `*`-glob into an anchored, case-insensitive regex (every non-`*`

@@ -292,13 +292,6 @@ final class GPlatQueueStartWakeTests: NTMSOrchestratorTestBase, @unchecked Senda
         try await super.tearDown()
     }
 
-    private func waitUntil(_ predicate: () -> Bool, timeout: TimeInterval = 3.0) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline && !predicate() {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-    }
-
     /// Creates a chat-mode task and returns (id, run count before the wake).
     private func makeChatTask() async -> Int {
         await sut.openWorkFolder(tempDir)
@@ -359,7 +352,9 @@ final class GPlatQueueStartWakeTests: NTMSOrchestratorTestBase, @unchecked Senda
         )
 
         controller.tryFlushQueuedMessages()
-        await waitUntil { (self.sut.loadedTask(taskID)?.runs.count ?? -1) > before }
+        await waitUntil("performStartWake appends a run", timeoutSeconds: 3.0) {
+            (self.sut.loadedTask(taskID)?.runs.count ?? -1) > before
+        }
 
         XCTAssertEqual(sut.loadedTask(taskID)?.runs.count, before + 1,
                        "a chat task at `.done` is an ended turn, not a finished pipeline — "
@@ -395,13 +390,6 @@ final class GPlatBackstopFlushFailureTests: NTMSOrchestratorTestBase, @unchecked
         controller = nil
         QuickCaptureController.shared._testReset()
         try await super.tearDown()
-    }
-
-    private func waitUntil(_ predicate: () -> Bool, timeout: TimeInterval = 3.0) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline && !predicate() {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
     }
 
     /// RED: delete the `formState.prependQueuedMessages(popped, for: taskID)` line →
@@ -449,7 +437,9 @@ final class GPlatBackstopFlushFailureTests: NTMSOrchestratorTestBase, @unchecked
         controller.formState.appendQueuedMessage(queued, for: taskID)
 
         controller.tryFlushQueuedMessages()
-        await waitUntil { self.sut.lastErrorMessage?.contains("kept") == true }
+        await waitUntil("backstop flush surfaces kept banner", timeoutSeconds: 3.0) {
+            self.sut.lastErrorMessage?.contains("kept") == true
+        }
 
         let banner = sut.lastErrorMessage ?? ""
         XCTAssertTrue(banner.contains("1 queued message(s) kept"),
@@ -753,7 +743,7 @@ final class GPlatAppUpdateLastCheckedTests: XCTestCase {
                        "a check recorded after construction must be visible — the value is "
                            + "owned by the configuration, not snapshotted at init")
 
-        let second = Date(timeIntervalSince1970: 1_800_000_000)
+        let second = Date(timeIntervalSince1970: 1_799_971_200)
         config.lastAppUpdateCheckAt = second
         XCTAssertEqual(sut.lastCheckedAt, second,
                        "and every subsequent check must move it, or the Updates tab shows "
@@ -768,7 +758,7 @@ final class GPlatAppUpdateLastCheckedTests: XCTestCase {
     /// `didSet` → the rehydrated configuration reports nil and this fails.
     func testLastCheckedAt_survivesReconstructionOverTheSameStorage() async {
         let storage = InMemoryConfigurationStorage()
-        let stamp = Date(timeIntervalSince1970: 1_650_000_000)
+        let stamp = Date(timeIntervalSince1970: 1_649_982_000)
 
         let first = StoreConfiguration(storage: storage)
         first.lastAppUpdateCheckAt = stamp

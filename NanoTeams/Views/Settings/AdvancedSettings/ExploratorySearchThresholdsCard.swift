@@ -10,7 +10,6 @@ struct ExploratorySearchThresholdsCard: View {
     var body: some View {
         SettingsCard(
             header: "Query Thresholds",
-            systemImage: "slider.horizontal.3",
             footer: "Higher thresholds keep semantic expansion stricter — only very close neighbors surface. Lower thresholds widen the net at the cost of noise."
         ) {
             thresholdSlider(

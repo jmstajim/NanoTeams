@@ -1,10 +1,11 @@
 import Foundation
 
-/// Service-layer handlers for the 9 Autovisor management tools. Invoked from
-/// `appendCollaborationResult` when a manager tool's `ToolSignal` is dispatched.
-/// Reads (`list_tasks`, `task_status`) read the delegate's snapshot / load a task;
-/// writes translate to a `AutovisorAction` and apply it via the single
-/// `performAutovisorAction` hook. Each returns the JSON envelope the LLM sees.
+/// Service-layer handlers for the 10 Autovisor management tools. Invoked from
+/// `appendCollaborationResult` (via `AutovisorCommandExecutor`) when a manager
+/// tool's `ToolSignal` is dispatched. Reads (`list_tasks`, `task_status`) read
+/// the delegate's snapshot / load a task; writes translate to an `AutovisorAction`
+/// and apply it via the single `performAutovisorAction` hook. Each returns the
+/// JSON envelope the LLM sees.
 extension LLMExecutionService {
 
     // MARK: - Manager-step detection
@@ -35,16 +36,20 @@ extension LLMExecutionService {
 
     // MARK: - Reads
 
-    func handleListTasks() async -> String {
-        guard let delegate else {
-            return makeErrorEnvelope(code: .commandFailed, message: "Autovisor unavailable.")
-        }
-        let snap = delegate.snapshot
-        let managerID = snap?.workFolder.state.autovisorTaskID
-        let tasks = (snap?.tasksIndex.tasks ?? [])
-            .filter { $0.parentTaskID == nil && $0.id != managerID }
-            .sorted { $0.updatedAt > $1.updatedAt }
+    /// runtime-prompt
+    static let autovisorUnavailableMessage = "Autovisor unavailable."
 
+    /// runtime-prompt
+    nonisolated static func taskStatusNotFoundMessage(taskID: Int) -> String {
+        "Task #\(taskID) not found."
+    }
+
+    /// runtime-prompt
+    static let reviewReadyCloseReason =
+        "Task is in Review with no per-role gates; \(AutovisorStatus.closeAcceptsEverything) — or manage_role request_changes if the work falls short."
+
+    /// runtime-prompt
+    static func renderListTasksEnvelope(tasks: [TaskSummary], now: Date) -> String {
         struct TaskRow: Codable {
             var id: Int
             var title: String
@@ -64,6 +69,10 @@ extension LLMExecutionService {
             /// alone would send you to resume it (re-asking the question) instead of
             /// answering it with answer_task_question.
             var waiting_for_supervisor: Bool?
+            /// How many roles on this task are currently owed a Supervisor answer — present
+            /// only when `> 0`, so parallel parks (`pending_questions` in `task_status`) are
+            /// visible from the roster without inventing a `0` on non-waiting or legacy rows.
+            var pending_question_count: Int?
             /// Present (and `true`) only when a role on this task finished and the pipeline
             /// is parked on your acceptance decision — never `false`, same reason as above.
             /// Such a task reads `running` here because downstream work is still to come,
@@ -73,27 +82,46 @@ extension LLMExecutionService {
         }
         struct ListData: Codable { var tasks: [TaskRow] }
 
-        let now = MonotonicClock.shared.now()
         let rows = tasks.map {
             TaskRow(
                 id: $0.id, title: $0.title, status: $0.status.rawValue,
                 chat_mode: $0.isChatMode,
                 updated_seconds_ago: max(0, Int(now.timeIntervalSince($0.updatedAt))),
                 waiting_for_supervisor: $0.isWaitingForSupervisor ? true : nil,
+                pending_question_count: $0.pendingSupervisorQuestionCount.flatMap { $0 > 0 ? $0 : nil },
                 roles_awaiting_acceptance: $0.hasRoleAtAcceptanceGate ? true : nil
             )
         }
         return makeSuccessEnvelope(data: ListData(tasks: rows))
     }
 
-    func handleTaskStatus(taskID: Int) async -> String {
-        guard let delegate else {
-            return makeErrorEnvelope(code: .commandFailed, message: "Autovisor unavailable.")
-        }
-        guard let task = await delegate.autovisorLoadTask(taskID) else {
-            return makeErrorEnvelope(code: .commandFailed, message: "Task #\(taskID) not found.")
-        }
+    func handleListTasks() async -> String {
+        await handleListTasks(now: MonotonicClock.shared.now())
+    }
 
+    func handleListTasks(now: Date) async -> String {
+        guard let delegate else {
+            return makeErrorEnvelope(code: .commandFailed, message: Self.autovisorUnavailableMessage)
+        }
+        let snap = delegate.snapshot
+        let managerID = snap?.workFolder.state.autovisorTaskID
+        let tasks = (snap?.tasksIndex.tasks ?? [])
+            .filter { $0.parentTaskID == nil && $0.id != managerID }
+            .sorted { $0.updatedAt > $1.updatedAt }
+        return Self.renderListTasksEnvelope(tasks: tasks, now: now)
+    }
+
+    /// runtime-prompt
+    static func renderTaskStatusEnvelope(
+        task: NTMSTask,
+        team: Team?,
+        now: Date,
+        tuning: AutovisorTuning = .default,
+        lastError: String? = nil,
+        streamLastActivityAt: (String) -> Date? = { _ in nil },
+        streamLiveText: (String) -> String? = { _ in nil },
+        streamProcessingStatus: (String) -> PromptProcessingStatus? = { _ in nil }
+    ) -> String {
         /// A `{kind, detail}` row when a role is looping or hung; absent otherwise.
         struct StuckRow: Codable { var kind: String; var detail: String? }
         struct StepRow: Codable {
@@ -127,6 +155,10 @@ extension LLMExecutionService {
             var stuck: StuckRow?
         }
         struct ArtifactRow: Codable { var name: String; var path: String? }
+        struct PendingQuestionRow: Codable, Equatable {
+            var role_id: String
+            var question: String
+        }
         struct StatusData: Codable {
             var task_id: Int
             var title: String
@@ -144,6 +176,7 @@ extension LLMExecutionService {
             var steps: [StepRow]
             var artifacts: [ArtifactRow]
             var pending_question: String?
+            var pending_questions: [PendingQuestionRow]?
             var last_error: String?
             /// Role ids genuinely awaiting acceptance (`.needsAcceptance`). Omitted when none —
             /// a finished task whose roles are all `.done` needs `control_task close` (which
@@ -155,31 +188,31 @@ extension LLMExecutionService {
             var stuck: StuckRow?
         }
 
-        let now = MonotonicClock.shared.now()
-        // User-tunable stuck-detection thresholds (Settings → Autovisor → Stuck
-        // detection), defaulting to the constants when no snapshot is loaded.
-        let tuning = delegate.snapshot?.workFolder.settings.autovisorTuning ?? .default
         var steps: [StepRow] = []
         var artifacts: [ArtifactRow] = []
-        var pendingQuestion: String?
         var taskStuck: StuckRow?
         let run = task.runs.last
+        // `resumable` promises a resume that runs, and the person's Pause refuses the manager's
+        // (D-M18). No engine here: the two shapes that needs — a delegating task's Pause, the
+        // iteration limit — have no `.paused` step, so `isResumable` reads `false` for them anyway.
+        let pausedByThePerson = AutovisorPauseReason.isThePersons(
+            task: task, enginePaused: false, liveIterationLimitPause: false)
         // Role kind per role id, from the resolved team's definitions. Empty when the
         // team can't be resolved (nil snapshot / unpinnable team) → `role_kind` is then
         // omitted per row rather than asserting a kind the payload can't prove.
         // `uniquingKeysWith` (not `uniqueKeysWithValues:`) — role ids are name-derived, so a
         // team with two same-named roles has duplicate ids; the trapping initializer would
         // crash this hot read path. Last-wins matches `Run.stepsByRoleBaseID()`.
-        let roleKindByID: [String: String] = resolveTeam(task: task).map { team in
-            Dictionary(team.roles.map { ($0.id, $0.completionType.rawValue) }, uniquingKeysWith: { first, _ in first })
+        let roleKindByID: [String: String] = team.map { resolvedTeam in
+            Dictionary(resolvedTeam.roles.map { ($0.id, $0.completionType.rawValue) }, uniquingKeysWith: { first, _ in first })
         } ?? [:]
         if let run {
             for step in run.steps {
-                let live = delegate.streamLastActivityAt(stepID: step.id, taskID: task.id)
+                let live = streamLastActivityAt(step.id)
                 let verdict = AutovisorStuckEvaluator.evaluate(
                     step: step, now: now, lastStreamActivityAt: live,
-                    liveStreamText: delegate.streamLiveText(stepID: step.id, taskID: task.id),
-                    processingStatus: delegate.streamProcessingStatus(stepID: step.id, taskID: task.id),
+                    liveStreamText: streamLiveText(step.id),
+                    processingStatus: streamProcessingStatus(step.id),
                     hangSeconds: tuning.stuckHangSeconds,
                     prefillHangSeconds: tuning.stuckPrefillHangSeconds,
                     loopRecencySeconds: tuning.stuckLoopRecencySeconds
@@ -196,7 +229,8 @@ extension LLMExecutionService {
                     resumable: AutovisorStatus.isResumable(
                         step: step,
                         roleStatus: run.roleStatuses[step.effectiveRoleID],
-                        taskIsClosed: task.closedAt != nil
+                        taskIsClosed: task.closedAt != nil,
+                        pausedByThePerson: pausedByThePerson
                     ) ? true : nil,
                     role_kind: roleKindByID[step.effectiveRoleID],
                     elapsed_seconds: AutovisorStatus.roleElapsedSeconds(step: step, now: now),
@@ -208,15 +242,6 @@ extension LLMExecutionService {
                     running_tool: runningTool,
                     stuck: stuckRow
                 ))
-                if step.needsSupervisorInput, let q = step.supervisorQuestion, !q.isEmpty {
-                    // A questionnaire replaces the headline, contract and all. `answer` on
-                    // `answer_task_question` is a free string, so the only way the manager can
-                    // choose among the options the role wrote is to be shown them here — and
-                    // without that it answers the headline in prose, every choice comes back
-                    // unanswered, and the asking role is told to decide them all itself.
-                    pendingQuestion = step.supervisorInquiry
-                        .map(SupervisorInquiryReply.questionnaire(for:)) ?? q
-                }
                 for art in step.artifacts {
                     // `task_status` hands back a `read_file`-able path (not inlined content)
                     // so the manager pulls the FULL artifact on demand — no snippet cap, no
@@ -225,6 +250,17 @@ extension LLMExecutionService {
                 }
             }
         }
+
+        // Single deterministic selector shared with `answer_task_question`: `pending_question`
+        // shows the FIRST answerable step (where an untargeted `answer_task_question` lands),
+        // and `pending_questions` lists every answerable step in run order. Closed tasks
+        // always evaluate to empty via `task.answerableSupervisorSteps`.
+        let answerableQuestionRows: [PendingQuestionRow] = task.answerableSupervisorSteps.compactMap { step in
+            guard let question = step.formattedSupervisorQuestion else { return nil }
+            return PendingQuestionRow(role_id: step.effectiveRoleID, question: question)
+        }
+        let pendingQuestion = answerableQuestionRows.first?.question
+        let pendingQuestions: [PendingQuestionRow]? = answerableQuestionRows.isEmpty ? nil : answerableQuestionRows
 
         // Surface which roles actually await acceptance — RoleExecutionStatus is otherwise
         // invisible to the manager (steps only expose StepStatus). Sorted for a deterministic
@@ -240,17 +276,18 @@ extension LLMExecutionService {
 
         let derivedStatus = task.derivedStatusFromActiveRun()
         let data = StatusData(
-            task_id: taskID,
+            task_id: task.id,
             title: task.title,
             status: derivedStatus.rawValue,
             chat_mode: task.isChatMode,
-            elapsed_seconds: AutovisorStatus.taskElapsedSeconds(run: run, now: now),
+            elapsed_seconds: AutovisorStatus.taskElapsedSeconds(run: run, closedAt: task.closedAt, now: now),
             run_timeout_seconds: task.runTimeoutSeconds.map { Int($0) },
             timed_out: run?.timedOutAt != nil,
             steps: steps,
             artifacts: artifacts,
             pending_question: pendingQuestion,
-            last_error: delegate.lastErrorMessageForTask(taskID),
+            pending_questions: pendingQuestions,
+            last_error: lastError,
             roles_needing_acceptance: rolesNeedingAcceptance,
             stuck: taskStuck
         )
@@ -271,10 +308,36 @@ extension LLMExecutionService {
         // closed ones (they derive `.done`).
         let next: NextHint? = task.isReadyForFinalAcceptance
             ? AutovisorStatus.closeTaskHint(
-                taskID: taskID,
-                reason: "Task is in Review with no per-role gates; \(AutovisorStatus.closeAcceptsEverything) — or manage_role request_changes if the work falls short.")
+                taskID: task.id,
+                reason: Self.reviewReadyCloseReason)
             : nil
         return makeSuccessEnvelope(data: data, next: next)
+    }
+
+    func handleTaskStatus(taskID: Int) async -> String {
+        await handleTaskStatus(taskID: taskID, now: MonotonicClock.shared.now())
+    }
+
+    func handleTaskStatus(taskID: Int, now: Date) async -> String {
+        guard let delegate else {
+            return makeErrorEnvelope(code: .commandFailed, message: Self.autovisorUnavailableMessage)
+        }
+        guard let task = await delegate.autovisorLoadTask(taskID) else {
+            return makeErrorEnvelope(code: .commandFailed, message: Self.taskStatusNotFoundMessage(taskID: taskID))
+        }
+        // User-tunable stuck-detection thresholds (Settings → Autovisor → Stuck
+        // detection), defaulting to the constants when no snapshot is loaded.
+        let tuning = delegate.snapshot?.workFolder.settings.autovisorTuning ?? .default
+        return Self.renderTaskStatusEnvelope(
+            task: task,
+            team: resolveTeam(task: task),
+            now: now,
+            tuning: tuning,
+            lastError: delegate.lastErrorMessageForTask(taskID),
+            streamLastActivityAt: { delegate.streamLastActivityAt(stepID: $0, taskID: task.id) },
+            streamLiveText: { delegate.streamLiveText(stepID: $0, taskID: task.id) },
+            streamProcessingStatus: { delegate.streamProcessingStatus(stepID: $0, taskID: task.id) }
+        )
     }
 
     // MARK: - Writes (translate signal → AutovisorAction → single hook)
@@ -291,8 +354,8 @@ extension LLMExecutionService {
         await applyAutovisorAction(.manageRole(taskID: taskID, roleID: roleID, verb: verb))
     }
 
-    func handleAnswerTaskQuestion(taskID: Int, answer: String) async -> String {
-        await applyAutovisorAction(.answerTaskQuestion(taskID: taskID, answer: answer))
+    func handleAnswerTaskQuestion(taskID: Int, answer: String, roleID: String? = nil) async -> String {
+        await applyAutovisorAction(.answerTaskQuestion(taskID: taskID, answer: answer, roleID: roleID))
     }
 
     func handleMessageTask(taskID: Int, text: String, roleID: String?) async -> String {
@@ -364,11 +427,19 @@ extension LLMExecutionService {
 
     // MARK: - Private
 
-    private func applyAutovisorAction(_ action: AutovisorAction) async -> String {
+    func applyAutovisorAction(
+        _ action: AutovisorAction,
+        as actor: AutovisorActor = .builtInManager,
+        within capturedLifecycle: WorkFolderLifecycle? = nil
+    ) async -> String {
         guard let delegate else {
-            return makeErrorEnvelope(code: .commandFailed, message: "Autovisor unavailable.")
+            return makeErrorEnvelope(code: .commandFailed, message: Self.autovisorUnavailableMessage)
         }
-        let result = await delegate.performAutovisorAction(action)
+        // The manager pass's folder lifecycle: this runs synchronously from the dispatcher, past
+        // its cancellation gate, so the folder described now is the folder the pass runs in. The
+        // action carries it, and asks it before each write and after each of its suspensions.
+        let lifecycle = capturedLifecycle ?? delegate.currentFolderLifecycle
+        let result = await delegate.performAutovisorAction(action, as: actor, within: lifecycle)
         if result.ok {
             struct OKData: Codable { var status: String; var message: String; var task_id: Int? }
             return makeSuccessEnvelope(

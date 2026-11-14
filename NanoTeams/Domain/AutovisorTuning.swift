@@ -27,6 +27,12 @@ nonisolated struct AutovisorTuning: Codable, Hashable {
     /// Burst cap on NEW tasks one review pass may spawn (reset each manager run).
     /// Stops a single pass flooding the board with immediately-idle creations.
     var maxManagedTasksPerReview: Int
+    /// Sliding-window cap on tasks an external agent may create within `externalCreationWindowMinutes`.
+    var maxExternalCreationsPerWindow: Int
+    /// Length in minutes of the external agent task-creation sliding window.
+    var externalCreationWindowMinutes: Int
+    /// Hard cap on simultaneously open (`closedAt == nil`) tasks owned by one external agent.
+    var maxOpenExternalTasks: Int
 
     // MARK: Stuck detection
 
@@ -56,9 +62,34 @@ nonisolated struct AutovisorTuning: Codable, Hashable {
         stuckPrefillHangSeconds: TimeInterval = AutovisorConstants.stuckPrefillHangSeconds,
         stuckLoopRecencySeconds: TimeInterval = AutovisorConstants.stuckLoopRecencySeconds
     ) {
+        self.init(
+            maxConcurrentManagedTasks: maxConcurrentManagedTasks,
+            maxManagedTasksPerReview: maxManagedTasksPerReview,
+            maxExternalCreationsPerWindow: AutovisorConstants.maxExternalCreationsPerWindow,
+            externalCreationWindowMinutes: AutovisorConstants.externalCreationWindowMinutes,
+            maxOpenExternalTasks: AutovisorConstants.maxOpenExternalTasks,
+            stuckHangSeconds: stuckHangSeconds,
+            stuckPrefillHangSeconds: stuckPrefillHangSeconds,
+            stuckLoopRecencySeconds: stuckLoopRecencySeconds
+        )
+    }
+
+    init(
+        maxConcurrentManagedTasks: Int = AutovisorConstants.maxConcurrentManagedTasks,
+        maxManagedTasksPerReview: Int = AutovisorConstants.maxManagedTasksPerReview,
+        maxExternalCreationsPerWindow: Int,
+        externalCreationWindowMinutes: Int = AutovisorConstants.externalCreationWindowMinutes,
+        maxOpenExternalTasks: Int = AutovisorConstants.maxOpenExternalTasks,
+        stuckHangSeconds: TimeInterval = AutovisorConstants.stuckHangSeconds,
+        stuckPrefillHangSeconds: TimeInterval = AutovisorConstants.stuckPrefillHangSeconds,
+        stuckLoopRecencySeconds: TimeInterval = AutovisorConstants.stuckLoopRecencySeconds
+    ) {
         // Caps floored at 1 — a 0 cap means the manager could never create a task.
         self.maxConcurrentManagedTasks = max(1, maxConcurrentManagedTasks)
         self.maxManagedTasksPerReview = max(1, maxManagedTasksPerReview)
+        self.maxExternalCreationsPerWindow = max(1, maxExternalCreationsPerWindow)
+        self.externalCreationWindowMinutes = max(1, externalCreationWindowMinutes)
+        self.maxOpenExternalTasks = max(1, maxOpenExternalTasks)
         self.stuckHangSeconds = max(Self.minStuckSeconds, stuckHangSeconds)
         self.stuckLoopRecencySeconds = max(Self.minStuckSeconds, stuckLoopRecencySeconds)
         // Cross-field, and the only clamp here that is not a floor: a pre-token budget SMALLER
@@ -75,15 +106,21 @@ nonisolated struct AutovisorTuning: Codable, Hashable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.init(
-            maxConcurrentManagedTasks: try c.decodeIfPresent(Int.self, forKey: .maxConcurrentManagedTasks)
+            maxConcurrentManagedTasks: (try? c.decodeIfPresent(Int.self, forKey: .maxConcurrentManagedTasks))
                 ?? AutovisorConstants.maxConcurrentManagedTasks,
-            maxManagedTasksPerReview: try c.decodeIfPresent(Int.self, forKey: .maxManagedTasksPerReview)
+            maxManagedTasksPerReview: (try? c.decodeIfPresent(Int.self, forKey: .maxManagedTasksPerReview))
                 ?? AutovisorConstants.maxManagedTasksPerReview,
-            stuckHangSeconds: try c.decodeIfPresent(TimeInterval.self, forKey: .stuckHangSeconds)
+            maxExternalCreationsPerWindow: (try? c.decodeIfPresent(Int.self, forKey: .maxExternalCreationsPerWindow))
+                ?? AutovisorConstants.maxExternalCreationsPerWindow,
+            externalCreationWindowMinutes: (try? c.decodeIfPresent(Int.self, forKey: .externalCreationWindowMinutes))
+                ?? AutovisorConstants.externalCreationWindowMinutes,
+            maxOpenExternalTasks: (try? c.decodeIfPresent(Int.self, forKey: .maxOpenExternalTasks))
+                ?? AutovisorConstants.maxOpenExternalTasks,
+            stuckHangSeconds: (try? c.decodeIfPresent(TimeInterval.self, forKey: .stuckHangSeconds))
                 ?? AutovisorConstants.stuckHangSeconds,
-            stuckPrefillHangSeconds: try c.decodeIfPresent(TimeInterval.self, forKey: .stuckPrefillHangSeconds)
+            stuckPrefillHangSeconds: (try? c.decodeIfPresent(TimeInterval.self, forKey: .stuckPrefillHangSeconds))
                 ?? AutovisorConstants.stuckPrefillHangSeconds,
-            stuckLoopRecencySeconds: try c.decodeIfPresent(TimeInterval.self, forKey: .stuckLoopRecencySeconds)
+            stuckLoopRecencySeconds: (try? c.decodeIfPresent(TimeInterval.self, forKey: .stuckLoopRecencySeconds))
                 ?? AutovisorConstants.stuckLoopRecencySeconds
         )
     }
@@ -96,6 +133,9 @@ nonisolated struct AutovisorTuning: Codable, Hashable {
         AutovisorTuning(
             maxConcurrentManagedTasks: maxConcurrentManagedTasks,
             maxManagedTasksPerReview: maxManagedTasksPerReview,
+            maxExternalCreationsPerWindow: maxExternalCreationsPerWindow,
+            externalCreationWindowMinutes: externalCreationWindowMinutes,
+            maxOpenExternalTasks: maxOpenExternalTasks,
             stuckHangSeconds: stuckHangSeconds,
             stuckPrefillHangSeconds: stuckPrefillHangSeconds,
             stuckLoopRecencySeconds: stuckLoopRecencySeconds

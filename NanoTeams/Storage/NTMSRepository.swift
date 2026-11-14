@@ -37,10 +37,18 @@ enum NTMSRepositoryError: LocalizedError {
 nonisolated struct NTMSRepository: WorkFolderRepository, TaskRepository, ToolRepository, ArtifactRepository, AttachmentRepository, @unchecked Sendable {
     let store: AtomicJSONStore
     let fileManager: FileManager
+    /// Where each folder's lock lives (`WorkFolderInstanceLocking`) — read by the write gate in
+    /// `preparePaths`, so a write into a folder another NanoTeams process holds is refused.
+    let instanceLocking: WorkFolderInstanceLocking
 
-    init(fileManager: FileManager = .default, store: AtomicJSONStore = AtomicJSONStore()) {
+    init(
+        fileManager: FileManager = .default,
+        store: AtomicJSONStore = AtomicJSONStore(),
+        instanceLocking: WorkFolderInstanceLocking = .system
+    ) {
         self.fileManager = fileManager
         self.store = store
+        self.instanceLocking = instanceLocking
     }
 
     func openOrCreateWorkFolder(at workFolderRoot: URL) throws -> WorkFolderContext {
@@ -114,33 +122,6 @@ nonisolated struct NTMSRepository: WorkFolderRepository, TaskRepository, ToolRep
     }
 
     // MARK: - Narrow update methods (one file per method)
-
-    /// Update just the user-editable project settings. Writes **only** `settings.json`.
-    func updateWorkFolderContext(at workFolderRoot: URL, context: String,
-                                 activeTask: NTMSTask?) throws
-        -> WorkFolderContext
-    {
-        let paths = try preparePaths(at: workFolderRoot)
-
-        var settings = try store.read(ProjectSettings.self, from: paths.settingsJSON)
-        settings.context = context
-        try store.write(settings, to: paths.settingsJSON)
-
-        return try assembleContext(paths: paths, settings: settings,
-                                   activeTask: activeTask, activeTaskProvided: true)
-    }
-
-    func updateSelectedScheme(at workFolderRoot: URL, scheme: String?,
-                              activeTask: NTMSTask?) throws -> WorkFolderContext {
-        let paths = try preparePaths(at: workFolderRoot)
-
-        var settings = try store.read(ProjectSettings.self, from: paths.settingsJSON)
-        settings.selectedScheme = scheme
-        try store.write(settings, to: paths.settingsJSON)
-
-        return try assembleContext(paths: paths, settings: settings,
-                                   activeTask: activeTask, activeTaskProvided: true)
-    }
 
     /// Applies a mutation to `WorkFolderState` and writes **only** `workfolder.json`.
     @discardableResult
@@ -268,19 +249,50 @@ nonisolated struct NTMSRepository: WorkFolderRepository, TaskRepository, ToolRep
     }
 
     func resetWorkFolderSettings(at workFolderRoot: URL) throws -> WorkFolderContext {
-        let paths = NTMSPaths(workFolderRoot: workFolderRoot)
-
-        // Remove entire .nanoteams directory
-        if fileManager.fileExists(atPath: paths.nanoteamsDir.path) {
-            try fileManager.removeItem(at: paths.nanoteamsDir)
-        }
-
+        try removeWorkFolderData(at: workFolderRoot)
         // Reload/Bootstrap (will recreate .nanoteams with defaults)
         return try openOrCreateWorkFolder(at: workFolderRoot)
     }
 
+    /// Deletes everything the folder's `.nanoteams/` holds except its lock file.
+    ///
+    /// Gated first: a folder another process holds keeps its `.nanoteams/`. The lock file stays
+    /// because the lock is on it (`WorkFolderInstanceLock` — "the file is never deleted"): until
+    /// 2026-11-12 a reset removed it with the rest, so the lock this process held sat on a file no
+    /// other process could open, a second NanoTeams could create and lock a new one before this
+    /// one took it again, and this one's bootstrap then wrote into a folder that process held
+    /// (D-M18 R7). A lock file kept elsewhere (`WorkFolderInstanceLocking.isolatingDefaultStorage`)
+    /// is not in the tree, which then goes whole.
+    func removeWorkFolderData(at workFolderRoot: URL) throws {
+        try instanceLocking.refuseIfHeldByAnotherProcess(workFolderRoot)
+        let paths = NTMSPaths(workFolderRoot: workFolderRoot)
+        guard fileManager.fileExists(atPath: paths.nanoteamsDir.path) else { return }
+        let lockFile = instanceLocking.lockFile(workFolderRoot).standardizedFileURL
+        guard lockFile.deletingLastPathComponent() == paths.internalDir.standardizedFileURL,
+              fileManager.fileExists(atPath: lockFile.path)
+        else {
+            try fileManager.removeItem(at: paths.nanoteamsDir)
+            return
+        }
+        for name in try fileManager.contentsOfDirectory(atPath: paths.nanoteamsDir.path)
+        where name != paths.internalDir.lastPathComponent {
+            try fileManager.removeItem(at: paths.nanoteamsDir.appendingPathComponent(name))
+        }
+        for name in try fileManager.contentsOfDirectory(atPath: paths.internalDir.path)
+        where name != lockFile.lastPathComponent {
+            try fileManager.removeItem(at: paths.internalDir.appendingPathComponent(name))
+        }
+    }
+
+    /// The gate every writer passes. First: no write into a folder another NanoTeams process holds
+    /// (`WorkFolderInstanceLock`). A process whose open was refused keeps the folder's URL with
+    /// nothing loaded, and the writers that ask only for the URL — a create, a settings or tool
+    /// save, a reset — would otherwise still reach the folder (F6 C1, 2026-11-12). A lock this
+    /// process holds answers from memory; a folder nobody holds, or one never opened by a NanoTeams
+    /// with the lock, passes.
     @discardableResult
     func preparePaths(at workFolderRoot: URL) throws -> NTMSPaths {
+        try instanceLocking.refuseIfHeldByAnotherProcess(workFolderRoot)
         let paths = NTMSPaths(workFolderRoot: workFolderRoot)
         try ensureLayout(paths: paths)
         try bootstrapIfNeeded(paths: paths, workFolderRoot: workFolderRoot)

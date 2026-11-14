@@ -139,7 +139,7 @@ final class LoopWarningAdviceCoverageTests: XCTestCase {
         let calls = [
             Self.call(TN.listTasks, args: "{}"),
             Self.call(TN.messageTask, args: "{\"task_id\":1,\"message\":\"hi\"}"),
-            Self.call(TN.controlTask, args: "{\"task_id\":2,\"verb\":\"pause\"}"),
+            Self.call(TN.controlTask, args: "{\"task_id\":2,\"action\":\"pause\"}"),
             Self.call(TN.taskStatus, args: "{\"task_id\":1}"),
             Self.call(TN.taskStatus, args: "{\"task_id\":2}"),
             Self.call(TN.taskStatus, args: "{\"task_id\":3}"),
@@ -157,7 +157,7 @@ final class LoopWarningAdviceCoverageTests: XCTestCase {
         let calls = [
             Self.call(TN.listTasks, args: "{}"),
             Self.call(TN.messageTask, args: "{\"task_id\":1,\"message\":\"hi\"}"),
-            Self.call(TN.controlTask, args: "{\"task_id\":2,\"verb\":\"pause\"}"),
+            Self.call(TN.controlTask, args: "{\"task_id\":2,\"action\":\"pause\"}"),
             Self.call(TN.taskStatus, args: "{\"task_id\":7}"),
             Self.call(TN.taskStatus, args: "{\"task_id\":7}"),
             Self.call(TN.taskStatus, args: "{\"task_id\":7}"),
@@ -173,35 +173,35 @@ final class LoopWarningAdviceCoverageTests: XCTestCase {
     /// must still count as the same call.
     func testKeyOrder_doesNotChangeIdentity() {
         XCTAssertEqual(
-            ToolCallTracker.argumentsIdentity(forJSON: "{\"a\":1,\"b\":2}"),
-            ToolCallTracker.argumentsIdentity(forJSON: "{\"b\":2,\"a\":1}"))
+            ToolCallTracker.argumentsIdentity(toolName: ToolNames.readLines, forJSON: "{\"path\":\"a.txt\",\"start_line\":2}"),
+            ToolCallTracker.argumentsIdentity(toolName: ToolNames.readLines, forJSON: "{\"start_line\":2,\"path\":\"a.txt\"}"))
     }
 
     /// Quoted numbers fold, because `ToolArgumentHelpers` accepts them wherever it accepts
     /// the bare number — the two calls DO the same thing.
     func testQuotedNumber_foldsWithItsBareSpelling() {
         XCTAssertEqual(
-            ToolCallTracker.argumentsIdentity(forJSON: "{\"start_line\":501}"),
-            ToolCallTracker.argumentsIdentity(forJSON: "{\"start_line\":\"501\"}"))
+            ToolCallTracker.argumentsIdentity(toolName: ToolNames.readLines, forJSON: "{\"start_line\":501}"),
+            ToolCallTracker.argumentsIdentity(toolName: ToolNames.readLines, forJSON: "{\"start_line\":\"501\"}"))
     }
 
     /// …but only on an exact round-trip. `"0501"` is not a spelling of `501`, and merging
     /// values that merely look alike is how a false "you are looping" gets manufactured.
     func testNonCanonicalNumericString_staysDistinct() {
         XCTAssertNotEqual(
-            ToolCallTracker.argumentsIdentity(forJSON: "{\"start_line\":501}"),
-            ToolCallTracker.argumentsIdentity(forJSON: "{\"start_line\":\"0501\"}"))
+            ToolCallTracker.argumentsIdentity(toolName: ToolNames.readLines, forJSON: "{\"start_line\":501}"),
+            ToolCallTracker.argumentsIdentity(toolName: ToolNames.readLines, forJSON: "{\"start_line\":\"0501\"}"))
     }
 
     /// Unparseable payloads still have an identity — their own bytes — so a model repeating
     /// one malformed call verbatim is still caught.
     func testMalformedArguments_areIdenticalToThemselves_andNotToOthers() {
         XCTAssertEqual(
-            ToolCallTracker.argumentsIdentity(forJSON: "{not json"),
-            ToolCallTracker.argumentsIdentity(forJSON: "  {not json  "))
+            ToolCallTracker.argumentsIdentity(toolName: ToolNames.readLines, forJSON: "{not json"),
+            ToolCallTracker.argumentsIdentity(toolName: ToolNames.readLines, forJSON: "  {not json  "))
         XCTAssertNotEqual(
-            ToolCallTracker.argumentsIdentity(forJSON: "{not json"),
-            ToolCallTracker.argumentsIdentity(forJSON: "{also not json"))
+            ToolCallTracker.argumentsIdentity(toolName: ToolNames.readLines, forJSON: "{not json"),
+            ToolCallTracker.argumentsIdentity(toolName: ToolNames.readLines, forJSON: "{also not json"))
     }
 
     // MARK: - Helpers
@@ -212,7 +212,7 @@ final class LoopWarningAdviceCoverageTests: XCTestCase {
         ToolCallTracker.TrackedCall(
             toolName: tool,
             argumentsSummary: "",
-            argumentsIdentity: ToolCallTracker.argumentsIdentity(forJSON: args),
+            argumentsIdentity: ToolCallTracker.argumentsIdentity(toolName: tool, forJSON: args),
             resultSummary: "",
             resultJSON: "{}",
             wasSuccessful: successful,

@@ -799,6 +799,148 @@ final class ToolErrorNotePolicyTests: XCTestCase {
     /// Real handler rather than a literal: the shapes under test (typed diagnosis, legacy
     /// hint composition) are decided inside `FileWriteHandlers`, and a hand-rolled fixture
     /// that separates message from hint is not a shape production emits — pinning against
+    // MARK: - MCP
+
+    private func mcpEnvelope(code: ToolErrorCode, message: String = "m") -> ToolExecutionResult {
+        ToolExecutionResult(
+            toolName: "mcp__folio__get_metadata",
+            argumentsJSON: "{}",
+            outputJSON: makeErrorEnvelope(code: code, message: message),
+            isError: true)
+    }
+
+    /// Nothing ran, so no argument is at fault — and unlike `approval_unavailable`, the
+    /// escalation channel can genuinely help here: a person can start the server or fix its
+    /// address.
+    func testServerUnavailable_saysNoArgumentReachesItAndOffersTheChannel() throws {
+        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(
+            for: mcpEnvelope(code: .mcpServerUnavailable),
+            allowedToolNames: [ToolNames.askSupervisor]))
+        XCTAssertTrue(direction.contains("Do not retry"), direction)
+        XCTAssertTrue(direction.contains("unknown"), direction)
+        XCTAssertTrue(direction.contains(ToolNames.askSupervisor), direction)
+    }
+
+    func testServerUnavailable_offersNoChannelWhenTheRoleHoldsNone() throws {
+        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(
+            for: mcpEnvelope(code: .mcpServerUnavailable), allowedToolNames: []))
+        XCTAssertFalse(direction.contains("If the step cannot proceed"), direction)
+        XCTAssertFalse(direction.contains(ToolNames.askSupervisor), direction)
+    }
+
+    private var needsAttentionEnvelope: ToolExecutionResult {
+        LLMExecutionService.makeUnavailableToolResult(
+            call: StepToolCall(name: "mcp__folio__get_metadata", argumentsJSON: "{}"),
+            canonicalName: "mcp__folio__get_metadata", scope: "for this role",
+            reason: .mcpServerNeedsAttention)
+    }
+
+    /// A server that waits for a person — a rejected credential, a refused address. No call
+    /// reaches that blocker, and unlike `approval_unavailable` the channel can genuinely help:
+    /// a person can change the server's settings. Worded for this cause — the server is not
+    /// "not answering", it was never allowed to be asked.
+    ///
+    /// RED until 2026-09-23 (A2 verification): the code did not exist; such a call read as
+    /// `mcp_server_not_connected`, which appends nothing and invites a later call.
+    func testServerNeedsAttention_saysDoNotRetryAndOffersTheChannel() throws {
+        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(
+            for: needsAttentionEnvelope, allowedToolNames: [ToolNames.askSupervisor]))
+        XCTAssertTrue(direction.contains("Do not retry"), direction)
+        XCTAssertTrue(direction.contains("its settings"), direction)
+        XCTAssertTrue(direction.contains("unknown"), direction)
+        XCTAssertTrue(direction.contains(ToolNames.askSupervisor), direction)
+        XCTAssertFalse(direction.contains("not answering"), direction)
+    }
+
+    func testServerNeedsAttention_offersNoChannelWhenTheRoleHoldsNone() throws {
+        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(
+            for: needsAttentionEnvelope, allowedToolNames: []))
+        XCTAssertTrue(direction.contains("Do not retry"), direction)
+        XCTAssertFalse(direction.contains("If the step cannot proceed"), direction)
+        XCTAssertFalse(direction.contains(ToolNames.askSupervisor), direction)
+    }
+
+    /// A decision, like `bash_denied`: the block is not in the arguments, and a decision can
+    /// be revisited by whoever holds the channel.
+    func testDenied_namesTheDecisionAndKeepsTheChannel() throws {
+        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(
+            for: mcpEnvelope(code: .mcpDenied),
+            allowedToolNames: [ToolNames.askSupervisor]))
+        XCTAssertTrue(direction.contains("declined"), direction)
+        XCTAssertTrue(direction.contains(ToolNames.askSupervisor), direction)
+
+        let noChannel = try XCTUnwrap(ToolErrorNotePolicy.direction(
+            for: mcpEnvelope(code: .mcpDenied),
+            allowedToolNames: []))
+        XCTAssertTrue(noChannel.contains("declined"), noChannel)
+        XCTAssertFalse(noChannel.contains(ToolNames.askSupervisor), noChannel)
+    }
+
+    /// When the Auto judge itself fails closed (transport failure, unparseable reply, or
+    /// oversized prompt), `mcp_judge_unavailable` tells the model the Auto judge could not
+    /// verify the call rather than claiming the call was reviewed and declined.
+    func testJudgeUnavailable_distinguishesJudgeFailureFromModelDenial() throws {
+        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(
+            for: mcpEnvelope(code: .mcpJudgeUnavailable),
+            allowedToolNames: [ToolNames.askSupervisor]))
+        XCTAssertTrue(direction.contains("Auto judge could not verify"), direction)
+        XCTAssertFalse(direction.contains("declined"), direction)
+        XCTAssertTrue(direction.contains(ToolNames.askSupervisor), direction)
+
+        let noChannel = try XCTUnwrap(ToolErrorNotePolicy.direction(
+            for: mcpEnvelope(code: .mcpJudgeUnavailable),
+            allowedToolNames: []))
+        XCTAssertTrue(noChannel.contains("Auto judge could not verify"), noChannel)
+        XCTAssertFalse(noChannel.contains(ToolNames.askSupervisor), noChannel)
+    }
+
+    /// The `_TIMED_OUT` suffix is what routes this to the retry arm, and it is the whole
+    /// reason the code is spelled that way.
+    func testTimedOut_reachesTheTransientArmThroughItsSuffix() throws {
+        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(
+            for: mcpEnvelope(code: .mcpTimedOut), allowedToolNames: []))
+        XCTAssertTrue(direction.contains("transient"), direction)
+    }
+
+    /// The generic arm is CORRECT here and the absence of a bespoke one is deliberate: the
+    /// server ran the tool and reported why it failed, so "if the message indicates bad
+    /// arguments, fix them" is true, and a second sentence of this app's own would compete
+    /// with the server's diagnosis.
+    func testToolError_keepsTheGenericArmAndNamesTheCode() throws {
+        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(
+            for: mcpEnvelope(code: .mcpToolError), allowedToolNames: []))
+        XCTAssertTrue(direction.contains("[MCP_TOOL_ERROR]"), direction)
+    }
+
+    /// `ToolHandlerRegistry` has never heard of an MCP tool, so without the step's own
+    /// schemas a failed MCP call is the one failure whose note cannot say what it requires.
+    func testInvalidArgs_namesTheRequiredArgumentsOfAnExternalTool() throws {
+        let schema = ToolSchema(
+            name: "mcp__folio__get_metadata", description: "External.",
+            parameters: JSONSchema.object(
+                properties: ["node": JSONSchema.string()], required: ["node"]))
+        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(
+            for: mcpEnvelope(code: .invalidArgs), allowedToolNames: [], dynamicSchemas: [schema]))
+        XCTAssertTrue(direction.contains("requires: node"), direction)
+    }
+
+    func testInvalidArgs_saysNothingAboutRequirementsItCannotSee() throws {
+        let direction = try XCTUnwrap(ToolErrorNotePolicy.direction(
+            for: mcpEnvelope(code: .invalidArgs), allowedToolNames: []))
+        XCTAssertFalse(direction.contains("requires:"), direction)
+    }
+
+    /// The static table wins where it has an answer, so a dynamic schema cannot shadow a
+    /// built-in tool's contract.
+    func testAStaticToolIsNotShadowedByADynamicSchemaOfTheSameName() {
+        let impostor = ToolSchema(
+            name: ToolNames.readFile, description: "Impostor.",
+            parameters: JSONSchema.object(properties: ["x": JSONSchema.string()], required: ["x"]))
+        let hint = ToolErrorNotePolicy.requiredArgumentsHint(
+            toolName: ToolNames.readFile, argumentsJSON: "{}", dynamicSchemas: [impostor])
+        XCTAssertFalse(hint.contains("requires: x"), hint)
+    }
+
     /// one is how the hint duplication stayed invisible.
     @discardableResult
     private func runEdit(

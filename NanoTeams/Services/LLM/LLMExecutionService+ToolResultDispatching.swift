@@ -44,9 +44,15 @@ extension LLMExecutionService {
     ///
     /// Durability: the card reflect, the persisted tool message, and the
     /// attribution bubble are committed in ONE atomic `mutateTask`
-    /// (`commitCollaborationOutcome`) gated by a single `isExecutionLive` check,
-    /// so a teardown can't leave the answer half-written. `toolCallID` is the
-    /// persisted row id (NOT `result.providerID`, the OpenAI tool_call_id).
+    /// (`commitCollaborationOutcome`) gated by a single write barrier, so a teardown can't leave
+    /// the answer half-written. `toolCallID` is the persisted row id (NOT `result.providerID`,
+    /// the OpenAI tool_call_id).
+    ///
+    /// The barrier is the step's registration AND the folder lifecycle read here, before the
+    /// handler runs: this is entered synchronously from `processToolResults`, past its
+    /// cancellation gate, so the step is live and the lifecycle is the one it runs in. A handler
+    /// that was running when a folder transition began commits nothing — the registration alone
+    /// would let the next folder's step of the same task and role id answer for it.
     func appendCollaborationResult(
         result: ToolExecutionResult,
         toolCallID: UUID,
@@ -60,6 +66,7 @@ extension LLMExecutionService {
         networkLogger: NetworkLogger?,
         conversationMessages: inout [ChatMessage]
     ) async -> Bool {
+        let lifecycle = delegate?.currentFolderLifecycle
         // The single `{"ok":…}` envelope shown to the LLM and (when reflected)
         // the card. `cardJSON == nil` leaves the `pending` placeholder untouched
         // (delegation success → graph layers). Attribution-bearing tools also
@@ -197,26 +204,32 @@ extension LLMExecutionService {
 
         // MARK: Autovisor management tools (no attribution turn — the manager's
         // own activity feed renders these; the result is a plain JSON envelope).
-        case .listTasks:
-            reflectEnvelope(await handleListTasks())
-        case .taskStatus(let taskID):
-            reflectEnvelope(await handleTaskStatus(taskID: taskID))
-        case .createManagedTask(let title, let brief, let teamID):
-            reflectEnvelope(await handleCreateManagedTask(title: title, brief: brief, teamID: teamID))
-        case .controlTask(let taskID, let verb):
-            reflectEnvelope(await handleControlTask(taskID: taskID, verb: verb))
-        case .manageRole(let taskID, let roleID, let verb):
-            reflectEnvelope(await handleManageRole(taskID: taskID, roleID: roleID, verb: verb))
-        case .answerTaskQuestion(let taskID, let answer):
-            reflectEnvelope(await handleAnswerTaskQuestion(taskID: taskID, answer: answer))
-        case .messageTask(let taskID, let text, let roleID):
-            reflectEnvelope(await handleMessageTask(taskID: taskID, text: text, roleID: roleID))
-        case .scheduleTask(let taskID, let intervalMinutes):
-            reflectEnvelope(await handleScheduleTask(taskID: taskID, intervalMinutes: intervalMinutes))
-        case .setWorkFolderContext(let content):
-            reflectEnvelope(await handleSetWorkFolderContext(content: content))
-        case .waitForEvents:
-            reflectEnvelope(await handleWaitForEvents(stepID: stepID, taskID: task.id))
+        case .listTasks,
+             .taskStatus,
+             .createManagedTask,
+             .controlTask,
+             .manageRole,
+             .answerTaskQuestion,
+             .messageTask,
+             .scheduleTask,
+             .setWorkFolderContext,
+             .waitForEvents:
+            if let command = AutovisorCommand(signal: result.signal) {
+                let executor = AutovisorCommandExecutor(executionService: self, delegate: delegate)
+                reflectEnvelope(await executor.execute(
+                    command,
+                    as: .builtInManager,
+                    stepID: stepID,
+                    taskID: task.id,
+                    within: lifecycle
+                ))
+            } else {
+                // `AutovisorCommand(signal:)` maps every signal this arm lists; nil means the two
+                // drifted. Same answer as the `default:` arm below — never a blank tool result.
+                assertionFailure("AutovisorCommand(signal:) has no command for \(String(describing: result.signal))")
+                reflectEnvelope(buildCollaborationErrorResult(
+                    toolName: result.toolName, message: "Unhandled collaboration signal."))
+            }
 
         default:
             // Unhandled collaboration signal — `processToolResults` routed it
@@ -230,6 +243,12 @@ extension LLMExecutionService {
                 toolName: result.toolName, message: "Unhandled collaboration signal."))
         }
 
+        // The handler's placeholder warnings — an argument the runtime renamed or ignored
+        // (`ToolArgumentVocabulary`) — ride the reply that replaces it, on the wire and in the
+        // persisted message alike.
+        llmEnvelope = Self.appendingRepairNote(
+            result.argumentRepairNote, to: carryingWarnings(from: result.outputJSON, into: llmEnvelope))
+
         // In-memory tool result for THIS live iteration — unconditional so the
         // assistant tool_call always has a matching tool result (chain protocol).
         conversationMessages.append(ChatMessage(
@@ -237,10 +256,11 @@ extension LLMExecutionService {
         ))
 
         // Durable persistence: card reflect + persisted tool message + attribution
-        // bubble in one atomic mutateTask, gated by a single isExecutionLive check.
+        // bubble in one atomic mutateTask, gated by the step's registration and its lifecycle.
         await commitCollaborationOutcome(
             stepID: stepID,
             taskID: task.id,
+            lifecycle: lifecycle,
             toolCallID: toolCallID,
             toolName: result.toolName,
             argumentsJSON: result.argumentsJSON,
@@ -257,12 +277,19 @@ extension LLMExecutionService {
     /// Commits a collaboration outcome's three feed surfaces — the reflected card
     /// (`StepToolCall.resultJSON`/`isError`), the persisted `[CALL]…[RESULT]` tool
     /// message, and the optional role-attributed bubble — in ONE atomic
-    /// `mutateTask`, gated by a single `isExecutionLive` check. Coalescing avoids a
+    /// `mutateTask`, gated by a single barrier. Coalescing avoids a
     /// partial-persist window where a teardown lands between separate writes (the
-    /// answer half-shown). It does NOT change the `isExecutionLive` barrier itself.
+    /// answer half-shown).
+    ///
+    /// The barrier is `isExecutionLive` — the step still registered — AND `lifecycle`, the
+    /// folder lifecycle the handler was dispatched in, still current. Pause unregisters the step
+    /// (`cancelStepExecution`), so an outcome that arrives after it lands nowhere, as before; a
+    /// folder transition also ends the lifecycle, so the next folder's step registered under the
+    /// same key cannot take the outcome either.
     private func commitCollaborationOutcome(
         stepID: String,
         taskID: Int,
+        lifecycle: WorkFolderLifecycle?,
         toolCallID: UUID,
         toolName: String,
         argumentsJSON: String,
@@ -273,7 +300,9 @@ extension LLMExecutionService {
         attributionContext: MessageSourceContext?,
         bubbleText: String?
     ) async {
-        guard let delegate, isExecutionLive(stepID: stepID, taskID: taskID) else { return }
+        guard let delegate, let lifecycle, delegate.isCurrentFolderLifecycle(lifecycle),
+              isExecutionLive(stepID: stepID, taskID: taskID)
+        else { return }
 
         // Build cleaned/guarded messages outside the closure (same Harmony-token
         // cleaning + non-empty guard as `appendLLMMessage`).
@@ -365,6 +394,7 @@ extension LLMExecutionService {
         memoryStore: MemoryTagStore,
         wireIsMidPlanning: Bool,
         allowedToolNames: Set<String>,
+        dynamicSchemas: [ToolSchema] = [],
         conversationMessages: inout [ChatMessage],
         outcome: inout ToolResultsOutcome
     ) async -> Bool {
@@ -381,7 +411,8 @@ extension LLMExecutionService {
         // same turn, so a direction that only restates it costs context and teaches
         // nothing (`ToolErrorNotePolicy`).
         let direction: String? = result.isError
-            ? ToolErrorNotePolicy.direction(for: result, allowedToolNames: allowedToolNames)
+            ? ToolErrorNotePolicy.direction(
+                for: result, allowedToolNames: allowedToolNames, dynamicSchemas: dynamicSchemas)
             : nil
 
         // The direction rides the FAILED CALL'S OWN TURN — envelope, blank line, direction —

@@ -1,16 +1,19 @@
+import SwiftUI
 import XCTest
 @testable import NanoTeams
 
 /// Persistence smoke tests for the Role Editor Save flow against a real
-/// `NTMSOrchestrator` + temp work folder. Scope: from the orchestrator's
-/// `mutateWorkFolder` boundary down through disk and back, NOT the
-/// SwiftUI observer chain above it. They GREEN on both the buggy and
-/// fixed code for the user-reported "uncheck in same session" symptom
-/// (the bug was a SwiftUI ForEach diff problem upstream of
-/// `mutateWorkFolder`, and `mutateWorkFolder` itself uses a JSON-encoded
-/// teams diff that bypasses `Team.==`). The observer-chain regression
-/// is pinned separately at the pure-helper level by
-/// `RoleEditorMutationsTests.testApplyEdit_bumpsTeamUpdatedAt_…`.
+/// `NTMSOrchestrator` + temp work folder. Scope: from the Role Editor's Save —
+/// `RoleEditorSheet.save`, the session the click captured, the Team Editor's
+/// binding, `teamEdits.commit` → `commitEditedTeam` — down through disk and
+/// back, NOT the SwiftUI observer chain above it. (Until 2026-11-08 they
+/// persisted through a hand-written `mutateWorkFolder`, which mirrored the
+/// Team Editor's old binding setter; that is no longer the path a Save takes.)
+/// They GREEN on both the buggy and fixed code for the user-reported "uncheck
+/// in same session" symptom (the bug was a SwiftUI ForEach diff problem upstream
+/// of the write path, and the write diffs teams JSON-encoded, bypassing
+/// `Team.==`). The observer-chain regression is pinned separately at the
+/// pure-helper level by `RoleEditorMutationsTests.testApplyEdit_bumpsTeamUpdatedAt_…`.
 ///
 /// What these tests DO catch: a regression where the in-memory snapshot
 /// goes out of sync with disk, or where a load-time normalizer silently
@@ -20,17 +23,13 @@ import XCTest
 @MainActor
 final class RoleEditorSavePersistenceTests: NTMSOrchestratorTestBase, @unchecked Sendable {
 
-    /// Simulates the full Delegation-tab Save flow against the real
-    /// orchestrator:
+    /// The full Delegation-tab Save flow against the real orchestrator:
     ///  1. Open a work folder, locate the seeded Coding Agent role.
     ///  2. Build a fresh `editorState`, `load(from: role)`, then drop one
     ///     team from `selectedDelegationTeamIDs`.
-    ///  3. Read the current team out of the orchestrator (mirrors
-    ///     `RoleEditorSheet`'s `var newTeam = team`), apply the edit through
-    ///     the pure helper, persist via `mutateWorkFolder` (mirrors the
-    ///     captured-getter-binding setter in `TeamEditorView.binding(for:)`).
+    ///  3. Save it the way the sheet does (`saveThroughTheEditor`).
     ///  4. Re-read the team and assert the whitelist shrunk by exactly one.
-    func testUncheckTeamFromWhitelist_persistsThroughMutateWorkFolder() async {
+    func testUncheckTeamFromWhitelist_persistsThroughTheEditorsSave() async {
         await sut.openWorkFolder(tempDir)
 
         // Find the Coding Agent team + its delegating role.
@@ -50,24 +49,8 @@ final class RoleEditorSavePersistenceTests: NTMSOrchestratorTestBase, @unchecked
         editorState.load(from: originalRole)
         editorState.selectedDelegationTeamIDs.remove(secondID)
 
-        // Simulate saveRole: read team, apply edit on a local copy, persist.
-        guard let team = sut.snapshot?.projection.teams[teamIdx] else {
-            XCTFail("Snapshot disappeared mid-test.")
-            return
-        }
-        var newTeam = team
-        let didApply = RoleEditorMutations.applyEdit(
-            to: &newTeam,
-            editorState: editorState,
-            existingRoleID: originalRole.id
-        )
-        XCTAssertTrue(didApply)
-
-        await sut.mutateWorkFolder { projection in
-            if let idx = projection.teams.firstIndex(where: { $0.id == newTeam.id }) {
-                projection.teams[idx] = newTeam
-            }
-        }
+        let failure = await saveThroughTheEditor(editorState, editing: originalRole, inTeamAt: teamIdx)
+        XCTAssertNil(failure)
 
         // Re-read from the orchestrator's snapshot.
         let savedRole = sut.snapshot!.projection.teams[teamIdx].roles[roleIdx]
@@ -95,17 +78,8 @@ final class RoleEditorSavePersistenceTests: NTMSOrchestratorTestBase, @unchecked
         editorState.load(from: originalRole)
         editorState.selectedDelegationTeamIDs.remove(secondID)
 
-        var newTeam = sut.snapshot!.projection.teams[teamIdx]
-        _ = RoleEditorMutations.applyEdit(
-            to: &newTeam,
-            editorState: editorState,
-            existingRoleID: originalRole.id
-        )
-        await sut.mutateWorkFolder { projection in
-            if let idx = projection.teams.firstIndex(where: { $0.id == newTeam.id }) {
-                projection.teams[idx] = newTeam
-            }
-        }
+        let failure = await saveThroughTheEditor(editorState, editing: originalRole, inTeamAt: teamIdx)
+        XCTAssertNil(failure)
 
         // Close, then reopen the same work folder. Forces a disk round-trip.
         await sut.closeProject()
@@ -124,14 +98,14 @@ final class RoleEditorSavePersistenceTests: NTMSOrchestratorTestBase, @unchecked
     /// SwiftUI `ForEach` over `team.roles` uses that equality to diff old
     /// vs new — when the user mutates the whitelist, the role's id stays
     /// the same, so SwiftUI considers the role "unchanged" and keeps the
-    /// OLD value inside the row's closure captures. The tap handler
-    /// `showingEditRole = role` then stamps the OLD role into state, and
+    /// OLD value inside the row's closure captures. The tap handler (then
+    /// `showingEditRole = role`, now `openRoleEditor(.edit(role))`) stamps the OLD role into state, and
     /// the reopened sheet renders the pre-save whitelist.
     ///
     /// The fix is to never trust a ForEach iteration value for actions
     /// that fire later — always re-resolve by id from the current team.
     /// This test pins the invariant the fix relies on: after a save lands
-    /// in `mutateWorkFolder`, an id-based lookup in `team.roles` returns
+    /// through the Role Editor's write path, an id-based lookup in `team.roles` returns
     /// the POST-save role, even when the caller still holds a copy of the
     /// PRE-save role value.
     func testStaleRoleReference_lookupByID_returnsPostSaveRole() async {
@@ -153,17 +127,8 @@ final class RoleEditorSavePersistenceTests: NTMSOrchestratorTestBase, @unchecked
         editorState.load(from: originalRole)
         editorState.selectedDelegationTeamIDs.remove(secondID)
 
-        var newTeam = sut.snapshot!.projection.teams[teamIdx]
-        _ = RoleEditorMutations.applyEdit(
-            to: &newTeam,
-            editorState: editorState,
-            existingRoleID: originalRole.id
-        )
-        await sut.mutateWorkFolder { projection in
-            if let idx = projection.teams.firstIndex(where: { $0.id == newTeam.id }) {
-                projection.teams[idx] = newTeam
-            }
-        }
+        let failure = await saveThroughTheEditor(editorState, editing: originalRole, inTeamAt: teamIdx)
+        XCTAssertNil(failure)
 
         // Sanity: structurally, the stale reference and the persisted role
         // are equal per the id-only `==`. This is the trap the fix avoids.
@@ -187,7 +152,7 @@ final class RoleEditorSavePersistenceTests: NTMSOrchestratorTestBase, @unchecked
 
     /// Re-checking a previously-unchecked team must also persist. Twin of
     /// the uncheck case to catch any asymmetric bug.
-    func testCheckTeamIntoWhitelist_persistsThroughMutateWorkFolder() async {
+    func testCheckTeamIntoWhitelist_persistsThroughTheEditorsSave() async {
         await sut.openWorkFolder(tempDir)
         guard let (teamIdx, roleIdx, originalRole) = locateCodingAgentRole() else {
             XCTFail("Could not locate the seeded Coding Agent role.")
@@ -204,21 +169,13 @@ final class RoleEditorSavePersistenceTests: NTMSOrchestratorTestBase, @unchecked
 
         // Now simulate the user adding the first team back.
         let toAdd = originalRole.allowedDelegationTeamIDs[0]
+        let baseline = sut.snapshot!.projection.teams[teamIdx].roles[roleIdx]
         var editorState = RoleEditorState()
-        editorState.load(from: sut.snapshot!.projection.teams[teamIdx].roles[roleIdx])
+        editorState.load(from: baseline)
         editorState.selectedDelegationTeamIDs.insert(toAdd)
 
-        var newTeam = sut.snapshot!.projection.teams[teamIdx]
-        _ = RoleEditorMutations.applyEdit(
-            to: &newTeam,
-            editorState: editorState,
-            existingRoleID: originalRole.id
-        )
-        await sut.mutateWorkFolder { projection in
-            if let idx = projection.teams.firstIndex(where: { $0.id == newTeam.id }) {
-                projection.teams[idx] = newTeam
-            }
-        }
+        let failure = await saveThroughTheEditor(editorState, editing: baseline, inTeamAt: teamIdx)
+        XCTAssertNil(failure)
 
         let savedRole = sut.snapshot!.projection.teams[teamIdx].roles[roleIdx]
         XCTAssertEqual(
@@ -228,6 +185,20 @@ final class RoleEditorSavePersistenceTests: NTMSOrchestratorTestBase, @unchecked
     }
 
     // MARK: - Helpers
+
+    /// The Role Editor's Save as the sheet makes it: `session` captured by the click that opened
+    /// it, the role composed on the team the Team Editor's binding reads, committed through
+    /// `teamEdits` and the write awaited. `nil` when the role is stored.
+    private func saveThroughTheEditor(
+        _ editorState: RoleEditorState, editing role: TeamRoleDefinition, inTeamAt teamIdx: Int
+    ) async -> String? {
+        let team = sut.snapshot!.projection.teams[teamIdx]
+        let lifecycle = sut.currentFolderLifecycle
+        let binding = sut.teamEdits.binding(for: team, editedIn: lifecycle)
+        return await RoleEditorSheet.save(
+            editorState, mode: .edit(role), session: TeamEditCommitQueue.Session(team: team, lifecycle: lifecycle),
+            onto: binding.wrappedValue, through: sut.teamEdits)
+    }
 
     /// Locate the seeded Coding Agent role (delegating, whitelist ≥ 2 teams).
     /// Returns the team index, role index, and the role definition.

@@ -100,7 +100,7 @@ struct GenerateTeamSheet: View {
 
     private func errorBanner(_ message: String) -> some View {
         Text(message)
-            .font(Typography.term2xs)
+            .font(Typography.caption)
             .foregroundStyle(Colors.error)
     }
 

@@ -831,6 +831,9 @@ final class AskSupervisorFormToolTests: XCTestCase {
             return XCTFail("expected a form signal")
         }
         XCTAssertEqual(inquiry.questions.map(\.prompt), ["From form"])
+        XCTAssertTrue(
+            metaWarnings(in: result.outputJSON).contains(SupervisorFormPayload.strayQuestionsNote),
+            "the stray copy is said to be ignored, not dropped in silence: \(result.outputJSON)")
     }
 
     /// A top-level `questions` that is not an array is not the lift's shape — it falls through

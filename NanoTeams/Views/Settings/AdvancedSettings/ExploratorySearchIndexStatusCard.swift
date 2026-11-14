@@ -12,7 +12,6 @@ struct ExploratorySearchIndexStatusCard: View {
     var body: some View {
         SettingsCard(
             header: "Index Status",
-            systemImage: "text.magnifyingglass",
             footer: "Indexing watches the work folder and auto-rebuilds when files change."
         ) {
             if let coordinator {

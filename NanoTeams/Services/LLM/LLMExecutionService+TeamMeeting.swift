@@ -22,7 +22,8 @@ extension LLMExecutionService {
     ) async -> CollaborationReply {
         guard let delegate else { return .failed("Unable to conduct meeting — delegate not available.") }
         let tid = task.id
-        guard isExecutionLive(stepID: stepID, taskID: tid) else {
+        let lifecycle = delegate.currentFolderLifecycle
+        guard delegate.isCurrentFolderLifecycle(lifecycle), isExecutionLive(stepID: stepID, taskID: tid) else {
             return .failed("Unable to conduct meeting — no task context.")
         }
         guard let workFolderRoot = delegate.workFolderURL else { return .failed("Unable to conduct meeting — no work folder.") }
@@ -135,6 +136,7 @@ extension LLMExecutionService {
 
         defer {
             Task { @MainActor in
+                guard delegate.isCurrentFolderLifecycle(lifecycle) else { return }
                 delegate.clearActiveMeetingParticipants(for: tid)
             }
         }
@@ -414,17 +416,17 @@ extension LLMExecutionService {
                 meeting.conclusionKind = .turnLimitFallback
             }
 
-            await recordMeeting(stepID: stepID, taskID: tid, meeting: meeting)
+            await recordMeeting(stepID: stepID, taskID: tid, meeting: meeting, within: lifecycle)
             return .ok(TeamMeetingService.generateMeetingResultForConversation(
                 meeting: meeting, context: meetingContext))
 
         } catch is CancellationError {
             meeting.cancel()
-            await recordMeeting(stepID: stepID, taskID: tid, meeting: meeting)
+            await recordMeeting(stepID: stepID, taskID: tid, meeting: meeting, within: lifecycle)
             return .failed("Meeting cancelled.")
         } catch {
             meeting.cancel()
-            await recordMeeting(stepID: stepID, taskID: tid, meeting: meeting)
+            await recordMeeting(stepID: stepID, taskID: tid, meeting: meeting, within: lifecycle)
             // The initiator reads this as its tool result — classified, never localized (R1.8.2).
             return .failed("Meeting failed: \(ToolErrorHandler.classify(error).message)")
         }
@@ -432,8 +434,15 @@ extension LLMExecutionService {
 
     // MARK: - Meeting Record
 
-    func recordMeeting(stepID: String, taskID: Int, meeting: TeamMeeting) async {
-        guard let delegate, isExecutionLive(stepID: stepID, taskID: taskID) else { return }
+    func recordMeeting(
+        stepID: String,
+        taskID: Int,
+        meeting: TeamMeeting,
+        within callerLifecycle: WorkFolderLifecycle? = nil
+    ) async {
+        guard let delegate else { return }
+        let lifecycle = callerLifecycle ?? delegate.currentFolderLifecycle
+        guard delegate.isCurrentFolderLifecycle(lifecycle), isExecutionLive(stepID: stepID, taskID: taskID) else { return }
 
         await delegate.mutateTask(taskID: taskID) { task in
             guard let runIndex = task.runs.indices.last else { return }

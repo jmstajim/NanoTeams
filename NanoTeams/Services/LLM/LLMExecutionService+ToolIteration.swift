@@ -25,6 +25,9 @@ extension LLMExecutionService {
         config: LLMConfig,
         tools: [ToolSchema],
         runtime: ToolRuntime,
+        /// The catalogue this STEP froze at entry — what `tools` and the registry were
+        /// built from. Compared against the live one each iteration to detect drift.
+        mcpTools: MCPResolvedTools = .empty,
         task: NTMSTask,
         runIndex: Int,
         stepIndex: Int,
@@ -69,7 +72,27 @@ extension LLMExecutionService {
             Self.isWorkSuperseded(run: task.runs[runIndex], roleID: step.effectiveRoleID)
                 ? Set(tools.map(\.name)).intersection(Self.supersededRunners)
                 : []
-        let allowedToolNames = authorization.allowed.subtracting(supersededToolNames)
+        // 2-quater. MCP drift, per iteration and by the same mechanism as the two above: an
+        // AUTHORIZATION narrowed at the executor, never a narrowed wire. The catalogue can
+        // change under a running step — a server reconnects, a `list_changed` arrives, a
+        // TTL expires — and the frozen copy the step resolved against is what the prompt
+        // promised. Re-resolving the schema here would rewrite a prompt the server has
+        // already cached, so the promise is kept honest one call at a time instead.
+        //
+        // This check runs BEFORE the generation, the gate's held cards and the batch's earlier
+        // calls, so it cannot be the last word: the gate re-reads the live catalogue per call
+        // (`gateMCPCalls`), and the invoker refuses a call made against a text its server no
+        // longer publishes as approved (`MCPClientRegistry.callTool`).
+        let liveMCPTools = delegate.mcpTools ?? .empty
+        let mcpDrift = mcpTools.drift(against: liveMCPTools)
+        let allowedToolNames = authorization.allowed
+            .subtracting(supersededToolNames)
+            .subtracting(mcpDrift.names)
+        // What IS a tool on this step, as opposed to what the step may dispatch. The union
+        // with `tools` is the only channel by which an `mcp__…` name reaches a parser:
+        // `ToolNames.allNames` is a compile-time list, and an external server's catalogue
+        // is not.
+        let stepKnownNames = HarmonyToolCallParser.knownNames(advertising: tools)
 
         // 2-bis. Consume a compaction epoch this step owes.
         //
@@ -248,6 +271,7 @@ extension LLMExecutionService {
                 // during the planning phase), so a nudge can only name a tool this
                 // iteration would actually accept.
                 allowedToolNames: allowedToolNames,
+                knownNames: stepKnownNames,
                 // Computed once by `applyPlanningPhase` from the scans it already paid for;
                 // the two later consumers must not rescan the wire (CLAUDE.md #106).
                 wireIsMidPlanning: authorization.wireIsMidPlanning,
@@ -323,6 +347,25 @@ extension LLMExecutionService {
             networkLogger: networkLogger
         )
         gateResults.merge(computerUseGateResults) { _, cu in cu }
+        // 5a-ter. MCP gate (third pre-pass): decide, per CALL, whether it may leave the
+        // machine — `MCPPermissionService`'s answer under the policy as it stands NOW (the gate
+        // reads the live catalogue, not `mcpTools`, for everything but the text the model
+        // called against) and, where that is "ask", a person's. Disjoint indices from the other
+        // two (an `mcp__…` name is neither `bash` nor a computer-use tool), so the merge is
+        // collision-free.
+        let mcpGateResults = await gateMCPCalls(
+            resolvedToolCalls: streamResult.resolvedToolCalls,
+            allowedToolNames: allowedToolNames,
+            mcpTools: mcpTools,
+            isPlanningPhase: authorization.isPlanningPhase,
+            stepID: stepID,
+            taskID: task.id,
+            supervisorMode: supervisorMode,
+            task: task,
+            client: client,
+            config: config,
+            networkLogger: networkLogger)
+        gateResults.merge(mcpGateResults) { _, mcp in mcp }
         let callsToExecute = streamResult.resolvedToolCalls.enumerated()
             .filter { gateResults[$0.offset] == nil }
             .map(\.element)
@@ -337,6 +380,11 @@ extension LLMExecutionService {
             allowedToolNames: allowedToolNames,
             phaseWithheldToolNames: authorization.withheldByPhase,
             supersededToolNames: supersededToolNames,
+            mcpDrift: mcpDrift,
+            mcpWithheldToolNames: mcpTools.withheldNames,
+            // The LIVE catalogue, not the step's frozen copy: this set answers "is this
+            // string a tool at all", and a tool another role holds is one.
+            mcpKnownToolNames: liveMCPTools.modelFacingNames,
             isPlanningPhase: authorization.isPlanningPhase,
             runtime: runtime,
             tracker: tracker,
@@ -376,6 +424,10 @@ extension LLMExecutionService {
             memoryStore: memoryStore,
             wireIsMidPlanning: authorization.wireIsMidPlanning,
             allowedToolNames: allowedToolNames,
+            // From the step's OWN advertised array, not from a live catalogue read: the
+            // note describes the call that just failed, and that call was made against
+            // what this step shipped.
+            dynamicSchemas: tools.filter { MCPToolNaming.isMCPName($0.name) },
             conversationMessages: &conversationMessages,
             networkLogger: networkLogger
         )

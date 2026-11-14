@@ -67,16 +67,27 @@ final class LLMExecutionService {
     /// registers one per held command; a button tap (via the orchestrator) or a
     /// Pause cancellation resolves it. The decision goes straight to the gate — the
     /// model is never asked to re-issue. See `LLMExecutionService+BashApproval`.
-    var bashApprovalWaiters: [TaskStepKey: [String: BashApprovalWaiter]] = [:]
+    var bashApprovalWaiters = ApprovalHoldTable<BashApprovalDecision>()
 
     /// The command a step is currently holding for approval — read by the on-demand
     /// "Ask AI" advisor (`requestBashJudgeAdvice`) so it can judge the exact held
     /// command. Populated only for the duration of `awaitBashApproval`.
     var pendingBashApprovals: [TaskStepKey: PendingBashApproval] = [:]
 
+    /// Held MCP calls awaiting a person's in-loop decision, keyed by (taskID, stepID) →
+    /// call key → waiter. The third of three tables of the same shape; the decision goes
+    /// straight to the gate, and the model is never asked to re-issue.
+    /// See `LLMExecutionService+MCPApproval`.
+    var mcpApprovalWaiters = ApprovalHoldTable<MCPApprovalDecision>()
+
+    /// Fallback per-step contacted MCP server map for gate calls made when no `executionStates`
+    /// entry is registered (e.g., direct gate unit tests). When `executionStates[stepKey]` exists,
+    /// `StepExecutionState.mcpServersContactedInStep` is authoritative.
+    var mcpServersContactedByStep: [TaskStepKey: [UUID: String]] = [:]
+
     /// Held computer-use actions awaiting the human's in-loop Allow / Deny / Always decision,
     /// keyed by (taskID, stepID) → action key → waiter. Mirror of `bashApprovalWaiters`.
-    var computerUseApprovalWaiters: [TaskStepKey: [String: ComputerUseApprovalWaiter]] = [:]
+    var computerUseApprovalWaiters = ApprovalHoldTable<ComputerUseApprovalDecision>()
 
     /// Per-run "always allow in this app" grants for computer-use, keyed by taskID → set of
     /// lowercased bundle ids / app names. Runtime only — never persisted (user chose per-run
@@ -161,6 +172,10 @@ final class LLMExecutionService {
         // per-TASK — cleared by `clearComputerUseTaskState`, NOT here (clearing them per-step
         // wiped an "always allow for the rest of the run" grant the moment any step finished).
         failPendingComputerUseApprovals(stepID: stepID, taskID: taskID)
+        // And the third: a held MCP call resolves `.cancelled` on the same paths, so a paused
+        // step never leaves a waiter hung on a call that will be re-held on resume.
+        failPendingMCPApprovals(stepID: stepID, taskID: taskID)
+        mcpServersContactedByStep[TaskStepKey(taskID: taskID, stepID: stepID)] = nil
     }
 
     /// Drops the per-TASK computer-use session state (the "always allow in app" grants and the
@@ -321,6 +336,13 @@ final class LLMExecutionService {
         self.delegate = delegate
     }
 
+    #if DEBUG
+    /// Deterministic test seam for `WorkFolderLifecycleSeamTests` (`StepCancelHold`): holds
+    /// `cancelStepExecution` at the cancellation-handler wait so a test can commit the next
+    /// work folder while a verb is suspended inside step cancellation.
+    var stepCancelHold: (@Sendable (_ stepID: String, _ taskID: Int) async -> Void)?
+    #endif
+
     // MARK: - Public API
 
     /// Cancels execution for a specific step of a specific task. Async because we wait
@@ -335,6 +357,7 @@ final class LLMExecutionService {
     /// the `isExecutionLive` barrier (its executionStates entry is gone), so partial
     /// content from a timed-out cancel is lost rather than mis-targeted.
     func cancelStepExecution(stepID: String, taskID: Int) async {
+        let lifecycle = delegate?.currentFolderLifecycle
         let key = TaskStepKey(taskID: taskID, stepID: stepID)
         let runningTask = executionStates[key]?.runningTask
         // The DETACHED tool batch too, and before the state entry is cleared below — that entry
@@ -346,12 +369,17 @@ final class LLMExecutionService {
         if let runningTask {
             let finished = await Self.awaitTaskWithTimeout(
                 runningTask, seconds: LLMConstants.cancelHandlerTimeoutSeconds)
+            if let lifecycle, delegate?.isCurrentFolderLifecycle(lifecycle) == false { return }
             if !finished {
                 delegate?.setLastErrorMessageForUI(
                     "Pause: cancellation handler timed out after \(Int(LLMConstants.cancelHandlerTimeoutSeconds))s — partial content may not be persisted."
                 )
             }
         }
+        #if DEBUG
+        if let hold = stepCancelHold { await hold(stepID, taskID) }
+        #endif
+        if let lifecycle, delegate?.isCurrentFolderLifecycle(lifecycle) == false { return }
         executionStates[key] = nil
         clearBashState(stepID: stepID, taskID: taskID)
         delegate?.clearStreamingPreview(stepID: stepID, taskID: taskID)
@@ -390,24 +418,28 @@ final class LLMExecutionService {
             delegate?.clearStreamingPreview(stepID: key.stepID, taskID: key.taskID)
         }
         executionStates.removeAll()
-        bashApprovalWaiters.values.forEach { $0.values.forEach { $0.resolve(.cancelled) } }
-        bashApprovalWaiters.removeAll()
+        bashApprovalWaiters.failAll(with: .cancelled)
         pendingBashApprovals.removeAll()
         // Same teardown for computer-use: resolve every held waiter with `.cancelled` (fail safe),
         // drop the per-run app grants + capture counts, and clear the published cards directly —
         // `executionStates.removeAll()` above bypasses the per-key `clearBashState`, so without
         // this a held action leaks a stale card into a newly-opened folder and an "always allow
         // in app" grant survives into a same-numbered task there.
-        computerUseApprovalWaiters.values.forEach { $0.values.forEach { $0.resolve(.cancelled) } }
-        computerUseApprovalWaiters.removeAll()
+        computerUseApprovalWaiters.failAll(with: .cancelled)
         computerUseSessionAllowedApps.removeAll()
         computerUseCaptureCountByTask.removeAll()
+        // The third table, for the same reason: `executionStates.removeAll()` above bypasses
+        // the per-key `clearBashState`, so a held MCP call would otherwise leak a stale card
+        // into a newly-opened folder — where task ids repeat and it would be mis-attributed.
+        mcpApprovalWaiters.failAll(with: .cancelled)
+        mcpServersContactedByStep.removeAll()
         // Drop the orchestrator's published cards too — resolving the waiters above
         // resumes the orphaned awaits which will each call `bashApprovalDidEnd`, but
         // that may run AFTER a newly-opened folder has rendered; clear directly so no
         // stale card can show (and, with task-ID reuse, be mis-attributed).
         delegate?.clearAllBashApprovalRequests()
         delegate?.clearAllComputerUseApprovalRequests()
+        delegate?.clearAllMCPApprovalRequests()
     }
 
     /// Request graceful finish for an advisory role's step. At the next iteration
@@ -485,7 +517,7 @@ final class LLMExecutionService {
     func buildCollaborationToolResult(toolName: String, response: String) -> String {
         let dict: [String: Any] = ["ok": true, "tool": toolName, "response": response]
         if let data = try? JSONSerialization.data(
-            withJSONObject: dict, options: Self.collaborationEnvelopeOptions),
+               withJSONObject: dict, options: Self.collaborationEnvelopeOptions),
             let json = String(data: data, encoding: .utf8)
         {
             return json
@@ -500,7 +532,7 @@ final class LLMExecutionService {
     func buildCollaborationErrorResult(toolName: String, message: String) -> String {
         let dict: [String: Any] = ["ok": false, "tool": toolName, "error": ["message": message]]
         if let data = try? JSONSerialization.data(
-            withJSONObject: dict, options: Self.collaborationEnvelopeOptions),
+               withJSONObject: dict, options: Self.collaborationEnvelopeOptions),
             let json = String(data: data, encoding: .utf8)
         {
             return json

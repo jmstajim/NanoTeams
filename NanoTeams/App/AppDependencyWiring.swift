@@ -1,4 +1,4 @@
-import Foundation
+import SwiftUI
 
 // MARK: - App Dependency Wiring
 
@@ -48,6 +48,33 @@ enum AppDependencyWiring {
         { (store.configuration.llmBaseURLString, store.configuration.llmProvider) }
     }
 
+    /// The reachability reader handed to the store for `folder_status` (§8.1, §4.6).
+    ///
+    /// `nil` until the monitor has probed once: before that `isReachable` is its initial `false`,
+    /// which would tell an external agent the server is down when nobody has asked yet.
+    /// When cache is older than ~30s, triggers an asynchronous `checkNow()` (2s timeout).
+    /// Weak on the monitor — the App owns it.
+    static func llmReachabilityProvider(
+        monitor: LLMStatusMonitor,
+        now: @escaping @MainActor () -> Date = { Date() }
+    ) -> @MainActor () async -> LLMReachabilityStatus {
+        { [weak monitor] in
+            guard let monitor else { return LLMReachabilityStatus() }
+            let now = now()
+            if let last = monitor.lastCheckedAt {
+                if now.timeIntervalSince(last) > 30 {
+                    _ = await monitor.checkNow()
+                }
+            } else {
+                _ = await monitor.checkNow()
+            }
+            return LLMReachabilityStatus(
+                reachable: monitor.lastCheckedAt != nil ? monitor.isReachable : nil,
+                checkedAt: monitor.lastCheckedAt
+            )
+        }
+    }
+
     /// Installs every hand-off the main window used to perform inline.
     ///
     /// `quickCapture` is a parameter rather than `QuickCaptureController.shared` so a
@@ -65,5 +92,6 @@ enum AppDependencyWiring {
         store.quickCaptureFormState = quickCapture.formState
         dictation.userSelectedLocalesProvider = dictationLocaleProvider(store: store)
         statusMonitor.startMonitoring(endpointProvider: llmEndpointProvider(store: store))
+        store.llmReachability = llmReachabilityProvider(monitor: statusMonitor)
     }
 }

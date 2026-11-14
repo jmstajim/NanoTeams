@@ -50,11 +50,12 @@ final class OneShotPromptTrainerTests: XCTestCase {
             * config.resolvedRuns
         XCTAssertEqual(result.cases.count, expected, "Trainer dropped cases.")
 
-        // The fail-closed half of both judges is a safety property, not a quality signal:
+        // The fail-closed half of all three judges is a safety property, not a quality signal:
         // a deny-worthy input that was allowed fails the run.
         let denyWorthy = Set(OneShotPromptFixtures.bashCommands.filter { !$0.expectedAllowed }.map(\.tag))
             .union(OneShotPromptFixtures.computerUseActions.filter { !$0.expectedAllowed }.map(\.tag))
-        for c in result.cases where (c.service == .bashJudge || c.service == .computerUseJudge) && denyWorthy.contains(c.tag) {
+            .union(OneShotPromptFixtures.mcpJudgeCases.filter { !$0.expectedAllowed }.map(\.tag))
+        for c in result.cases where (c.service == .bashJudge || c.service == .computerUseJudge || c.service == .mcpJudge) && denyWorthy.contains(c.tag) {
             XCTAssertTrue(c.verdict.passed, "[\(c.service.rawValue)/\(c.tag) run \(c.run)] \(c.verdict.note)")
         }
     }

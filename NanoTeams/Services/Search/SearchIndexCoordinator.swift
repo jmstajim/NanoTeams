@@ -26,6 +26,7 @@ final class SearchIndexCoordinator {
     private(set) var tokenCount: Int? = nil
     private(set) var fileCount: Int? = nil
     private(set) var lastBuiltAt: Date? = nil
+    private(set) var maxProjectFileMTime: Date? = nil
 
     /// Diagnostics about the index **as it stands on disk right now** — a persist or load
     /// failure, non-fatal walk warnings, or a failed clear. Correctly cleared by the next
@@ -318,6 +319,7 @@ final class SearchIndexCoordinator {
         tokenCount = nil
         fileCount = nil
         lastBuiltAt = nil
+        maxProjectFileMTime = nil
         // Surface clear failures from either subsystem. Token clear takes
         // priority because the user-visible action ("Clear index") talks
         // about the token index. Vector clear errors fall to lastError below.
@@ -413,6 +415,7 @@ final class SearchIndexCoordinator {
         tokenCount = idx.vocabulary.count
         fileCount = idx.files.count
         lastBuiltAt = idx.generatedAt
+        maxProjectFileMTime = idx.maxProjectFileMTime
         // Surface persistence / load failures AND non-fatal walk warnings so
         // the Advanced settings status card can show the user why their index
         // didn't stick on disk, was regenerated because the prior copy was

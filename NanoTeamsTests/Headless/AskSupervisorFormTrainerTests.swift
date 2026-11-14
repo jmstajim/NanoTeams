@@ -57,7 +57,7 @@ final class AskSupervisorFormTrainerTests: XCTestCase {
 
         // Structural only — the quality is recorded, never asserted, exactly as in the three
         // trainers that came before. A pass/fail on a rate would make the suite red for a
-        // model's bad afternoon.
+        // model's bad day.
         XCTAssertEqual(result.cases.count, config.resolvedRuns, "Trainer dropped runs.")
         for row in result.cases {
             XCTAssertTrue(row.errors.isEmpty, "[run \(row.run)] \(row.errors.joined(separator: "; "))")

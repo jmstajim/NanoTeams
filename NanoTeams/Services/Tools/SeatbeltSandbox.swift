@@ -20,6 +20,312 @@ import Foundation
 /// those root-level symlinks — see `canonical(_:)` for the measurements.
 nonisolated enum SeatbeltSandbox {
 
+    /// The external agents' configuration folders (§10.2.3): where their agent tokens
+    /// live and, for most of these clients, their own account credentials. A credential store
+    /// like `~/.ssh`, in every profile, External Agents on or off — until 2026-11-08 they joined
+    /// the list only while External Agents was on, but a token outlives the switch, and a step
+    /// started with the switch off keeps that profile, background commands included (#375). Like
+    /// every credential store they follow Settings → Bash → Credential stores: a person who grants
+    /// those reads grants these; the token locations inside them do not
+    /// (`externalAgentTokenLocations`).
+    ///
+    /// What no clause here can deny: another process's ENVIRONMENT. `sysctl` `KERN_PROCARGS2`
+    /// reads the exec-time arguments and environment of any process of the same user, and
+    /// neither `process-info*` narrowed to the sandbox nor `sysctl-read` denied (by name, or
+    /// entirely) stops it — measured 2026-11-08 from inside this profile, against a running
+    /// Claude Code. So a token must never reach a client as an environment variable or an
+    /// argument; `SeatbeltSandboxTests` pins the limit.
+    static func externalAgentCredentialSubpaths(home: String) -> [String] {
+        [
+            "\(home)/.claude.json",
+            "\(home)/.claude",
+            "\(home)/.codex",
+            "\(home)/Library/Application Support/Claude",
+            "\(home)/.cursor",
+            "\(home)/.gemini",
+            "\(home)/Library/Application Support/Code/User",
+            "\(home)/.vscode",
+        ]
+    }
+
+    /// Every credential store a role is kept from: the user's own (`~/.ssh`, cloud CLIs, the
+    /// Keychains) and the agent clients' configuration folders. The profile denies them unless
+    /// Settings → Bash grants credential reads; `SandboxPathResolver` hides the ones inside a work
+    /// folder from the file tools, which have no such grant.
+    static func credentialStoreSubpaths(home: String) -> [String] {
+        bothSpellings([
+            "\(home)/.ssh", "\(home)/.aws", "\(home)/.gnupg", "\(home)/.config/gh",
+            "\(home)/.config/gcloud", "\(home)/.kube", "\(home)/.docker",
+            "\(home)/Library/Keychains", "/Library/Keychains",
+        ] + externalAgentCredentialSubpaths(home: home))
+    }
+
+    /// The credential stores that are single files.
+    static func credentialStoreLiterals(home: String) -> [String] {
+        bothSpellings(["\(home)/.netrc"])
+    }
+
+    /// Internal application state and machine storage subpaths that must be completely denied
+    /// from sandboxed bash for both reading and writing (Features 1 & 2 / V1).
+    static func privateStateSubpaths(work: String, home: String) -> [String] {
+        // Both from `NTMSPaths` (F6 S9): the deny list and the stores read one table, so a new
+        // store cannot exist without being denied here.
+        var subpaths: [String] = [
+            (work as NSString).appendingPathComponent(NTMSPaths.internalRelativePath)
+        ]
+        let defaultStoragePath = canonical(
+            NTMSPaths.defaultStorageURL(home: URL(fileURLWithPath: home, isDirectory: true)))
+        let storeNames = NTMSPaths.MachineStore.allCases.map(\.directoryName)
+        if work == defaultStoragePath || SandboxPathResolver.isWithin(realPath: work, realContainer: defaultStoragePath) {
+            subpaths.append(contentsOf: storeNames.map {
+                (work as NSString).appendingPathComponent($0)
+            })
+        }
+        // Deny machine stores under home whenever home could be reached
+        subpaths.append(contentsOf: storeNames.map {
+            (defaultStoragePath as NSString).appendingPathComponent($0)
+        })
+        return bothSpellings(Array(Set(subpaths)).sorted())
+    }
+
+    /// Literal nodes protected from rename and unlink, because Seatbelt matches PATHS, not
+    /// inodes — a node moved to another name leaves every rule that names it behind:
+    /// - `.nanoteams` and `.git` in the work folder (Feature 2 / V1);
+    /// - the work folder ITSELF and each of its ancestors up to `/` (F6 S3, D-M19, 2026-11-12):
+    ///   `mv "$PWD" "$PWD-x"` moved the folder out from under every `(subpath <work> …)` deny —
+    ///   `.nanoteams/internal`, `.git/hooks` — and recreating an empty folder at the old name
+    ///   handed the next step a tree the app never wrote. A role has no reason to rename or
+    ///   remove the folder it works in, or anything above it.
+    static func ancestorLockLiterals(work: String) -> [String] {
+        var nodes = [
+            (work as NSString).appendingPathComponent(NTMSPaths.nanoteamsDirName),
+            (work as NSString).appendingPathComponent(".git"),
+        ]
+        var node = (work as NSString).standardizingPath
+        while true {
+            nodes.append(node)
+            let parent = (node as NSString).deletingLastPathComponent
+            guard !parent.isEmpty, parent != node else { break }
+            node = parent
+        }
+        return bothSpellings(nodes)
+    }
+
+    /// Where git, in the work folder's own repository, reads a command to run or another
+    /// repository to use — writable by nothing a role runs (F6 S2, D-M19, 2026-11-12).
+    ///
+    /// `.git/hooks` and `.git/config` were the first two (2026-11-08: `core.fsmonitor` is a shell
+    /// command the NEXT `git status` runs, in the app's process, outside this sandbox). The live
+    /// probe of the F6 acceptance found the rest open: `config.worktree` (read on top of
+    /// `config` once `extensions.worktreeConfig` is set — another `core.fsmonitor`),
+    /// `commondir` and `worktrees/` (redirect the repository's objects and refs elsewhere),
+    /// `modules/` (a submodule's own config and hooks), the four `info/` files git reads as
+    /// rules (`exclude`, `attributes` — whose `filter` / `diff` drivers name commands —,
+    /// `sparse-checkout`, `grafts`) and `objects/info/{alternates,http-alternates}` (borrow
+    /// objects from another store). And the `.git` NODE: created by a role, as a directory or as
+    /// a gitfile `gitdir: <elsewhere>`, it points every later git in this folder — the person's
+    /// own, the app's git tools — at a repository the role chose. So `git init` in the work
+    /// folder's root is refused to a role; everything else under `.git` stays writable, or
+    /// `git commit` / `merge` / `rebase` / `gc` (which write 25+ other entries there) would fail.
+    /// A deny list of channels, not an allow list of git's own writes, for that reason.
+    static func repositoryChannelDeny(work: String) -> (subpaths: [String], literals: [String]) {
+        let git = (work as NSString).appendingPathComponent(".git")
+        func inGit(_ relative: String) -> String { (git as NSString).appendingPathComponent(relative) }
+        return (
+            subpaths: bothSpellings(["hooks", "modules", "worktrees"].map(inGit)),
+            literals: bothSpellings([git] + [
+                "config", "config.worktree", "commondir",
+                "info/exclude", "info/attributes", "info/sparse-checkout", "info/grafts",
+                "objects/info/alternates", "objects/info/http-alternates",
+            ].map(inGit)))
+    }
+
+    /// Each path as written AND, when it differs, where it really is.
+    ///
+    /// Seatbelt matches the path the KERNEL resolved, so a deny written on a link protects the
+    /// link and nothing else — and a dotfiles manager (stow, dotbot, rcm, Mackup) links exactly
+    /// these: `~/.claude` to `~/dotfiles/claude`, or `~/.codex/config.toml` file by file. Both
+    /// spellings are emitted, so neither route reaches a store or a token (#376).
+    static func bothSpellings(_ paths: [String]) -> [String] {
+        var seen: Set<String> = []
+        var result: [String] = []
+        for path in paths {
+            for candidate in [path, SandboxPathResolver.canonicalPath(path)]
+            where seen.insert(candidate).inserted {
+                result.append(candidate)
+            }
+        }
+        return result
+    }
+
+    /// The user-level files where the MCP clients people run keep their servers — and so where
+    /// a bearer pasted into one by hand would sit in cleartext. Defence in depth beside the token
+    /// folder, not a promise: NanoTeams generates no configuration for any of these clients
+    /// (2026-11-09 — it hands out the connection facts and lets the person or their assistant
+    /// write the client's own format), so a client not on this list simply keeps its file under
+    /// the credential-store rule of its folder, where the folder is one. A plain list, kept
+    /// short on purpose: nothing in the app reads it but the profile and the file tools.
+    static func externalAgentUserConfigurationFiles(home: String) -> [String] {
+        [
+            "\(home)/.claude.json",
+            "\(home)/.codex/config.toml",
+            "\(home)/.cursor/mcp.json",
+            "\(home)/.gemini/settings.json",
+            "\(home)/Library/Application Support/Code/User/mcp.json",
+        ]
+    }
+
+    /// Where an agent token sits on disk: the one folder NanoTeams writes token files into
+    /// (`HostedMCPClientTokenFile.folder`), and the user-level client files a pasted bearer would
+    /// sit in (`externalAgentUserConfigurationFiles`). Denied to every role's `bash` in EVERY
+    /// profile — reads and writes, whatever Settings → Bash grants, the credential-store toggle
+    /// included — and kept from the file tools by `SandboxPathResolver` (#375). One source for
+    /// the folder: the token file type says where it is, so a moved folder cannot leave this
+    /// list behind.
+    static func externalAgentTokenLocations(home: String) -> (subpaths: [String], literals: [String]) {
+        let homeURL = URL(fileURLWithPath: home, isDirectory: true)
+        return (
+            subpaths: bothSpellings([HostedMCPClientTokenFile.folder(home: homeURL).path]),
+            literals: bothSpellings(externalAgentUserConfigurationFiles(home: home)))
+    }
+
+    /// The External Agents ports a role may neither connect to nor listen on: the port the server
+    /// uses or would use, and the default one every client configuration starts from. Guarded
+    /// whether or not External Agents is on — a role listening there while the server is off would
+    /// receive the bearer of every client that connects over HTTP; only the `--mcp-stdio` bridge
+    /// checks `/identify` before it sends one (#375).
+    static func guardedExternalAgentsPorts(_ port: UInt16?) -> [UInt16] {
+        Array(Set([port, HostedMCPConstants.defaultPort].compactMap { $0 }.filter { $0 > 0 })).sorted()
+    }
+
+    /// Every loopback port a role may neither connect to nor listen on: the External Agents ports
+    /// above, the port of every configured MCP server on this machine (`mcpServerPorts(of:)`) and
+    /// of every LLM server on it (`llmServerPorts(of:)`). Sorted, each port once; 0 names no port.
+    static func guardedLoopbackPorts(
+        externalAgentsPort: UInt16?, mcpServerPorts: [UInt16], llmServerPorts: [UInt16]
+    ) -> [UInt16] {
+        effectiveGuardedPorts(guardedExternalAgentsPorts(externalAgentsPort) + mcpServerPorts + llmServerPorts)
+    }
+
+    /// `ports` with the default External Agents port added — the floor no profile goes below,
+    /// whoever assembled the list — sorted, each once, 0 dropped. What `profile` writes clauses
+    /// for, and what a background command records it was launched under
+    /// (`LoopbackPortReservations.reserve`).
+    static func effectiveGuardedPorts(_ ports: [UInt16]) -> [UInt16] {
+        Array(Set((ports + [HostedMCPConstants.defaultPort]).filter { $0 > 0 })).sorted()
+    }
+
+    /// The host part of a reserved port's outbound deny: `*`, every address. `localhost` covers
+    /// 127.0.0.1, ::1, `0.0.0.0`, `::`, `::ffff:127.0.0.1` and this Mac's own addresses, but NOT the
+    /// IPv4-mapped unspecified address: `connect([::ffff:0.0.0.0]:P)` reached a server listening on
+    /// 127.0.0.1:P from inside a profile that denied `localhost:P`, stock curl included (measured
+    /// 2026-11-08, review of this change). A role is therefore kept off P on every host — its
+    /// `curl https://host:P/` to some remote service included, which is the price. Except the web's
+    /// own ports, 80 and 443: there `*` would cut a role off HTTP and HTTPS everywhere, so a server
+    /// on this machine on one of those keeps the `localhost` clause and the mapped-address route
+    /// stays open (DEBTS.md D-M16). The bind deny is on every address for every port.
+    static func outboundDenyHost(for port: UInt16) -> String {
+        port == 80 || port == 443 ? "localhost" : "*"
+    }
+
+    /// The ports of the configured MCP servers that listen on THIS machine, sorted, each once.
+    ///
+    /// Why a role's `bash` must neither reach nor stand in for such a server: NanoTeams puts the
+    /// server's stored bearer on every request (`MCPAuthorizer`) and redials a server that is
+    /// down every 30 s, forever (`MCPConstants.reconnectBackoff`). A role listening on the port
+    /// would receive that bearer — while the server is down, or beside it on the other address
+    /// family, since a `localhost` URL reaches `::1` first (measured 2026-11-08 with a listener on
+    /// each) — the class #375 closed for the External Agents port; and a role that can connect
+    /// could call the server's tools directly, past the approval gate and the tool pins, with a
+    /// token read from a `security`-made Keychain item (D-M16).
+    ///
+    /// Every configured server counts, switched on or off: switching one on dials it with its
+    /// bearer at once, and a command a role started earlier keeps the profile it was launched
+    /// with. The list is read per tool batch (`NTMSOrchestrator.seatbeltGuardedLoopbackPorts`),
+    /// and a background command launched before a port joined it is stopped before that port is
+    /// dialled (`LoopbackPortReservations.reserve`).
+    static func mcpServerPorts(
+        of configs: [MCPServerConfig],
+        interfaceAddresses: Set<[UInt8]> = LoopbackHost.interfaceAddresses()
+    ) -> [UInt16] {
+        Array(Set(configs.compactMap { mcpServerPort(of: $0, interfaceAddresses: interfaceAddresses) })).sorted()
+    }
+
+    /// The port `config` is dialled on when that lands on this machine, or `nil` — for a remote
+    /// host, a transport this build cannot run, and an address the transport would refuse: the
+    /// URL is the one `MCPEndpointPolicy.validate` hands the transport (`StreamableHTTPTransport`),
+    /// so what is guarded is what is dialled, and a refused URL, dialled by nobody, guards nothing.
+    static func mcpServerPort(
+        of config: MCPServerConfig,
+        interfaceAddresses: Set<[UInt8]> = LoopbackHost.interfaceAddresses()
+    ) -> UInt16? {
+        guard case .http(let http) = config.transport,
+              let dialled = try? MCPEndpointPolicy.validate(http.urlString)
+        else { return nil }
+        return loopbackPort(of: dialled, interfaceAddresses: interfaceAddresses)
+    }
+
+    /// The ports of the LLM servers on THIS machine among `baseURLStrings`, sorted, each once.
+    ///
+    /// Why: NanoTeams sends every prompt of every task to that server — with the LM Studio token
+    /// from the Keychain — and the replies drive every role's tool calls, the Supervisor
+    /// auto-answer and the Auto judges. A role listening on the port while the server is down —
+    /// for its own reasons; until 2026-11-08 a role could also stop it, since `(allow signal)`
+    /// reached any process of the user — would read all of it and answer as the model, the judge
+    /// that approves its own next command included. Which URLs count:
+    /// `NTMSOrchestrator.seatbeltLLMServerPorts`.
+    static func llmServerPorts(
+        of baseURLStrings: [String],
+        interfaceAddresses: Set<[UInt8]> = LoopbackHost.interfaceAddresses()
+    ) -> [UInt16] {
+        Array(Set(baseURLStrings.compactMap { baseURLString -> UInt16? in
+            let trimmed = baseURLString.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, let url = URL(string: trimmed) else { return nil }
+            return loopbackPort(of: url, interfaceAddresses: interfaceAddresses)
+        })).sorted()
+    }
+
+    /// The port a connection to `url` uses when it lands on this machine
+    /// (`LoopbackHost.reachesThisMachine`: loopback in any spelling, the unspecified addresses,
+    /// and the Mac's own interface addresses) — the scheme's default when the address names none
+    /// — or `nil`: for any other host, a scheme other than HTTP(S) or WebSocket, a port outside
+    /// 1…65535, and a port written that `URL` could not read (`:99999999999999999999` parses with
+    /// no port at all, measured 2026-11-08; reading that as the default would guard port 80 for a
+    /// server nobody can dial).
+    ///
+    /// The clauses written for the port are on every host (`outboundDenyHost(for:)`), so neither a
+    /// spelling of this machine nor the IPv4-mapped unspecified address reaches such a server from a
+    /// role's `bash`, and no role can stand in for it on any address.
+    static func loopbackPort(
+        of url: URL,
+        interfaceAddresses: Set<[UInt8]> = LoopbackHost.interfaceAddresses()
+    ) -> UInt16? {
+        guard let scheme = url.scheme?.lowercased(), let host = url.host, !host.isEmpty,
+              LoopbackHost.reachesThisMachine(host, interfaceAddresses: interfaceAddresses)
+        else { return nil }
+        let defaultPort: Int
+        switch scheme {
+        case "http", "ws": defaultPort = 80
+        case "https", "wss": defaultPort = 443
+        default: return nil
+        }
+        let port: Int
+        if let written = url.port {
+            port = written
+        } else if URLComponents(url: url, resolvingAgainstBaseURL: false)?.rangeOfPort != nil {
+            // A port was written that `URL` could not read — too large for a port, say — and
+            // that is not the scheme's default: nothing dials `:80` for it. `rangeOfPort` is
+            // where the written port stands, read or not (`nil` for `host:` with nothing after
+            // the colon, which `URL` reads as no port) — Foundation's own parse of the
+            // authority, in place of a second one here.
+            return nil
+        } else {
+            port = defaultPort
+        }
+        guard (1...Int(UInt16.max)).contains(port) else { return nil }
+        return UInt16(port)
+    }
+
     /// Builds the SBPL profile text honoring the per-scope read/write grants in
     /// `permissions`. The default `permissions` reproduces the original profile:
     /// writes confined to the work folder + temp dirs, broad reads, credential
@@ -28,9 +334,23 @@ nonisolated enum SeatbeltSandbox {
         workFolderRoot: URL,
         permissions: BashSandboxPermissions = BashSandboxPermissions()
     ) -> String {
+        profile(workFolderRoot: workFolderRoot, permissions: permissions, guardedLoopbackPorts: [])
+    }
+
+    /// `guardedLoopbackPorts` are the loopback ports no command may connect to or listen on
+    /// (`guardedLoopbackPorts(externalAgentsPort:mcpServerPorts:llmServerPorts:)`); the default
+    /// External Agents port is added whatever the list holds (`effectiveGuardedPorts`). `home` is
+    /// the home folder whose stores and token locations are denied — `nil`, this process's own,
+    /// everywhere but a test that builds a fake one to run the profile against.
+    static func profile(
+        workFolderRoot: URL,
+        permissions: BashSandboxPermissions = BashSandboxPermissions(),
+        guardedLoopbackPorts: [UInt16],
+        home homeFolder: URL? = nil
+    ) -> String {
         let work = canonical(workFolderRoot)
         let tmp = canonical(URL(fileURLWithPath: NSTemporaryDirectory()))
-        let home = canonical(URL(fileURLWithPath: NSHomeDirectory()))
+        let home = canonical(homeFolder ?? URL(fileURLWithPath: NSHomeDirectory()))
         // The app's own session temp ($TMPDIR — a subpath of /private/var/folders
         // that the sandboxed shell inherits) plus the de-facto /tmp. We deliberately
         // do NOT grant the broad /private/var/folders or /private/var/tmp: the precise
@@ -41,12 +361,8 @@ nonisolated enum SeatbeltSandbox {
         // Credential stores — denied for reads (unless credential reads are allowed)
         // and ALWAYS denied for writes. They live under $HOME, so they must also be
         // carved out whenever the home folder itself is granted.
-        let credentialSubpaths = [
-            "\(home)/.ssh", "\(home)/.aws", "\(home)/.gnupg", "\(home)/.config/gh",
-            "\(home)/.config/gcloud", "\(home)/.kube", "\(home)/.docker",
-            "\(home)/Library/Keychains", "/Library/Keychains",
-        ]
-        let credentialLiterals = ["\(home)/.netrc"]
+        let credentialSubpaths = credentialStoreSubpaths(home: home)
+        let credentialLiterals = credentialStoreLiterals(home: home)
 
         // Does the work folder contain (or equal) any credential path? Only then can a
         // work grant / work re-allow re-expose a credential store — the canonical case
@@ -69,6 +385,23 @@ nonisolated enum SeatbeltSandbox {
             SandboxPathResolver.isWithin(candidate: workURL, container: URL(fileURLWithPath: $0))
         }
 
+        // The other direction again: a work folder INSIDE a credential store — a Claude skill
+        // being written at `~/.claude/skills/<name>`. The credential read deny below would take
+        // the whole project with it; the project is re-allowed after it, the stores that sit
+        // inside the project re-denied, and the token locations, denied dead last, stay out of
+        // reach whichever way the folders nest (#375). A work folder that IS a store stays
+        // denied (`workIsCredentialDir` pins).
+        let tokenLocations = externalAgentTokenLocations(home: home)
+        let workInsideCredential = credentialSubpaths.contains {
+            $0 != work && SandboxPathResolver.isWithin(candidate: workURL, container: URL(fileURLWithPath: $0))
+        }
+        let credentialInsideWork = credentialSubpaths.filter {
+            SandboxPathResolver.isWithin(candidate: URL(fileURLWithPath: $0), container: workURL)
+        }
+        let credentialLiteralsInsideWork = credentialLiterals.filter {
+            SandboxPathResolver.isWithin(candidate: URL(fileURLWithPath: $0), container: workURL)
+        }
+
         // Scope nesting — SBPL is last-match-wins, so clauses are emitted in ASCENDING
         // specificity (broadest first, MOST SPECIFIC LAST):
         //   system ("everything else")  ⊃  home (~)  ⊃  work folder  ⊃  credentials
@@ -81,12 +414,59 @@ nonisolated enum SeatbeltSandbox {
             "(version 1)",
             "(deny default)",
             "(allow process*)",
-            "(allow signal)",
+            // Only processes of THIS sandbox — the command and what it started. A role that can
+            // signal any process of the user can do more than stop it: SIGUSR1 opens a running
+            // `node`'s inspector on an unguarded loopback port, and a JVM answers SIGQUIT plus an
+            // attach file by loading an agent — code outside this sandbox either way (review
+            // 2026-11-08). Every `sandbox-exec` is its own sandbox (measured: a second instance with
+            // this very profile cannot signal the first), so a later `bash` call cannot `kill` a
+            // command an earlier one started; `bash_output` stops a background command instead,
+            // and kills its whole process group (`BackgroundBashRegistry`).
+            "(allow signal (target same-sandbox))",
             "(allow sysctl-read)",
             "(allow mach-lookup)",
             "(allow ipc-posix-shm)",
             "(allow network*)",
         ]
+
+        // See `workInsideCredential`: after a credential deny, give the project back, then take
+        // back the stores inside it. Both operations, because a project inside a client folder
+        // became READ-ONLY the moment the client folders entered every profile — `git commit`
+        // could not write `.git/index.lock` while Settings showed the work-folder write grant
+        // ON (#376). The token deny runs after this, so a re-allowed work folder still cannot
+        // reach a token file.
+        func appendWorkReallowInsideCredential(_ operation: String, granted: Bool) {
+            guard granted, workInsideCredential, let wc = subpathClause([work]) else { return }
+            clauses.append("(allow \(operation)\n\(wc))")
+            if let inner = optionalDenyClause(
+                operation, subpaths: credentialInsideWork, literals: credentialLiteralsInsideWork) {
+                clauses.append(inner)
+            }
+        }
+
+        // The global skill and command folders NanoTeams itself reads and injects into role
+        // prompts (`AgentSkillsScanner.sources`) live inside the client folders, which are
+        // credential stores. Their CONTENT already reaches the model through `{roleSkills}`, so
+        // a role asked to open one by hand must not be refused — while the rest of the folder,
+        // credentials included, stays denied. Re-allowed only where a broader read grant would
+        // otherwise have covered them.
+        func appendGlobalSkillRootReallow(granted: Bool) {
+            guard granted else { return }
+            // As WRITTEN only. `bothSpellings` belongs on a deny, where the second spelling
+            // narrows an escape; on an ALLOW it widens the grant — a skills root kept in a
+            // dotfiles repo (`~/.claude/skills -> ~/dotfiles`) re-allowed the whole repo, and
+            // `~/.ssh` stowed from it became readable with the default grants (review
+            // 2026-11-08).
+            let roots = AgentSkillsScanner.sources.compactMap(\.globalSubpath)
+                .map { "\(home)/\($0)" }
+            guard let allow = subpathClause(roots) else { return }
+            clauses.append("(allow file-read*\n\(allow))")
+            // No re-deny beneath it, and that is a property of the list rather than an
+            // omission: every root is a literal `$HOME/<subpath>` of a client folder, and every
+            // credential store is `$HOME/.ssh`-like or absolute — none can lie INSIDE a root.
+            // The spellings are what made it possible before (a linked root resolved to a whole
+            // dotfiles repository); they are gone from this allow.
+        }
 
         // ---- file-read* allow ----
         // Broad when system read is on (the default — the shell needs system reads to
@@ -168,6 +548,10 @@ nonisolated enum SeatbeltSandbox {
                 if let credDeny = optionalDenyClause("file-read*", subpaths: credentialSubpaths, literals: credentialLiterals) {
                     clauses.append(credDeny)
                 }
+                // The justification is "a broader read grant would otherwise have covered
+                // them" — with Home: Read off, no grant does (review 2026-11-08).
+                appendGlobalSkillRootReallow(granted: permissions.homeRead)
+                appendWorkReallowInsideCredential("file-read*", granted: permissions.workFolderRead)
             } else if !permissions.homeRead, let credAllow = subpathClause(credentialSubpaths, literals: credentialLiterals) {
                 clauses.append("(allow file-read*\n\(credAllow))")
             }
@@ -186,12 +570,18 @@ nonisolated enum SeatbeltSandbox {
                permissions.homeRead || (permissions.tempRead && workCoveredByTemp) {
                 denySubpaths.append(work)
             }
-            if !permissions.credentialRead, permissions.homeRead || (permissions.workFolderRead && workCoversCredential) {
+            let credentialsDenied = !permissions.credentialRead
+                && (permissions.homeRead || (permissions.workFolderRead && workCoversCredential))
+            if credentialsDenied {
                 denySubpaths.append(contentsOf: credentialSubpaths)
                 denyLiterals.append(contentsOf: credentialLiterals)
             }
             if let readDeny = optionalDenyClause("file-read*", subpaths: denySubpaths, literals: denyLiterals) {
                 clauses.append(readDeny)
+            }
+            if credentialsDenied {
+                appendGlobalSkillRootReallow(granted: permissions.homeRead)
+                appendWorkReallowInsideCredential("file-read*", granted: permissions.workFolderRead)
             }
         }
 
@@ -216,6 +606,7 @@ nonisolated enum SeatbeltSandbox {
             if let credDeny = optionalDenyClause("file-write*", subpaths: credentialSubpaths, literals: credentialLiterals) {
                 clauses.append(credDeny)
             }
+            appendWorkReallowInsideCredential("file-write*", granted: permissions.workFolderWrite)
         } else {
             // Narrow write: allow-list is exact. Carve a disabled work folder out of an
             // allowed home, then deny credentials whenever an allowed write scope (home,
@@ -230,13 +621,78 @@ nonisolated enum SeatbeltSandbox {
                permissions.homeWrite || (permissions.tempWrite && workCoveredByTemp) {
                 denySubpaths.append(work)
             }
-            if permissions.homeWrite || (permissions.workFolderWrite && workCoversCredential) {
+            let credentialWritesDenied = permissions.homeWrite
+                || (permissions.workFolderWrite && workCoversCredential)
+            if credentialWritesDenied {
                 denySubpaths.append(contentsOf: credentialSubpaths)
                 denyLiterals.append(contentsOf: credentialLiterals)
             }
             if let writeDeny = optionalDenyClause("file-write*", subpaths: denySubpaths, literals: denyLiterals) {
                 clauses.append(writeDeny)
             }
+            if credentialWritesDenied {
+                appendWorkReallowInsideCredential(
+                    "file-write*", granted: permissions.workFolderWrite)
+            }
+        }
+
+        // ---- Agent token locations & private internal state: denied whatever the grants say (#375, #V1) ----
+        // After every read and write clause, so no grant — the credential-store toggle, a home
+        // or `/` grant, the work re-allow above — reaches a token file or a configuration that
+        // carries one, `.nanoteams/internal`, or machine stores (mcp, agent-access, skills, benchmarks).
+        let privateSubpaths = privateStateSubpaths(work: work, home: home)
+        if let tokenAndPrivateDeny = optionalDenyClause(
+            "file-read* file-write*",
+            subpaths: tokenLocations.subpaths + privateSubpaths,
+            literals: tokenLocations.literals
+        ) {
+            clauses.append(tokenAndPrivateDeny)
+        }
+
+        // ---- Ancestor bypass lock: moving/unlinking .nanoteams and .git denied (#V1) ----
+        // Seatbelt matches on paths, not inodes: moving .nanoteams or .git to a temporary
+        // name would bypass subpath/literal denies. Locking unlink/rename on literal root
+        // nodes blocks the bypass while leaving inner git files writable.
+        let ancestorLiterals = ancestorLockLiterals(work: work)
+        if let ancestorDeny = optionalDenyClause("file-write-unlink", subpaths: [], literals: ancestorLiterals) {
+            clauses.append(ancestorDeny)
+        }
+
+        // ---- The work folder's own agent configurations: readable, never writable (#376) ----
+        // A role that rewrites `.mcp.json` — or `.claude/settings.json`, or `.vscode/mcp.json` —
+        // hands itself a proxy that is not in this sandbox at all: the next time the person runs
+        // that client in this folder, it fetches the agent token the role's own tools may
+        // not read, or dials a port the role is listening on. The file tools refuse the same
+        // names (`SandboxPathResolver.isAgentConfiguration`), and reads stay allowed.
+        // The repository's own exec and redirect channels (`repositoryChannelDeny`) ride the same
+        // clause. The REST of `.git` stays writable, or `bash`'s own `git commit` could not write
+        // the index (#382).
+        let repositoryChannels = repositoryChannelDeny(work: work)
+        if let configDeny = optionalDenyClause(
+            "file-write*",
+            subpaths: repositoryChannels.subpaths,
+            literals: bothSpellings(
+                SandboxPathResolver.projectAgentConfigurationPaths.map {
+                    (work as NSString).appendingPathComponent($0)
+                }) + repositoryChannels.literals
+        ) {
+            clauses.append(configDeny)
+        }
+
+        // ---- Reserved loopback ports: no connect, no listen (DEAD LAST, §10.2.3, #375) ----
+        // SBPL is last-match-wins, and `(allow network*)` appears at the top of the profile.
+        // The External Agents ports: the outbound deny keeps sandboxed bash off NanoTeams's own
+        // listener; the bind deny keeps it from standing in for that listener — on every address,
+        // the wildcards and both families included — while the server is off or moving, when a
+        // client connecting over HTTP would hand it its bearer. The ports of the MCP and LLM servers
+        // on this machine get the same two clauses for the same reason in the other direction:
+        // NanoTeams is the client there, and every request it sends carries that server's bearer,
+        // every prompt, or both (`mcpServerPorts(of:)`, `llmServerPorts(of:)`). The outbound
+        // clause names every host (`outboundDenyHost(for:)`): `localhost` alone left the
+        // IPv4-mapped unspecified address open to the server on 127.0.0.1.
+        for port in effectiveGuardedPorts(guardedLoopbackPorts) {
+            clauses.append("(deny network-outbound (remote tcp \"\(outboundDenyHost(for: port)):\(port)\"))")
+            clauses.append("(deny network-bind (local tcp \"*:\(port)\"))")
         }
 
         return clauses.joined(separator: "\n")
@@ -426,11 +882,12 @@ nonisolated enum SeatbeltSandbox {
     /// security boundary must not depend on a hand-maintained list of symlinks, and the
     /// same defect reaches any symlinked ancestor (`/Volumes/…`, a relocated `$HOME`).
     ///
-    /// `realpath` requires every component to exist. Nothing this file embeds is
-    /// hypothetical — the work folder is open, `$TMPDIR` and `$HOME` exist, `/private/tmp`
-    /// is a literal, and the credential paths are interpolated from an already-canonical
-    /// `home` — so the fallback is only for a folder deleted underneath us, where the
-    /// grant describes a path no access can reach anyway.
+    /// `realpath` requires every component to exist, and the fallback keeps the path as
+    /// written — which is the right answer for a path that does not exist (no access can reach
+    /// it) but was the WRONG premise about the credential paths: being interpolated from a
+    /// canonical `home` does not make `$HOME/.claude` canonical, because `.claude` itself may be
+    /// a link, and a deny written on a link protects the link. Those paths now go through
+    /// `bothSpellings`, which canonicalizes each one in addition to keeping it (#376).
     private static func canonical(_ url: URL) -> String {
         let standardized = url.standardizedFileURL.path
         if let resolved = realpath(standardized, nil) {

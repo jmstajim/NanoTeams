@@ -543,6 +543,140 @@ final class ToolCallSummarizerTests: XCTestCase {
         XCTAssertEqual(ToolCallSummarizer.summarizeResult(toolName: TN.readFile, json: "broken"), "parse error")
     }
 
+    // MARK: - Outcomes: a command, a test run, a build (W3 of the MCP contract, 2026-11-09)
+    //
+    // A command's own failure is a SUCCESS envelope — the tool ran, the command did not pass —
+    // so until these summaries existed `task_log` read a failing `swift test` exactly like a
+    // passing one.
+
+    private static func bashResult(
+        exit: Int?, stdout: String = "", stderr: String = "", timedOut: Bool = false
+    ) -> String {
+        let payload: [String: Any] = [
+            "ok": true,
+            "data": [
+                "exit_code": exit.map { $0 as Any } ?? NSNull(),
+                "stdout": stdout, "stderr": stderr,
+                "timed_out": timedOut, "sandboxed": true,
+            ] as [String: Any],
+        ]
+        let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+        return data.flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+    }
+
+    private func bash(_ json: String) -> String? {
+        ToolCallSummarizer.outcomeSummary(toolName: TN.bash, resultJSON: json)
+    }
+
+    func testBashOutcome_exit0() {
+        XCTAssertEqual(bash(Self.bashResult(exit: 0, stdout: "Build complete!\n")), "exit 0")
+    }
+
+    /// The verdict a failing test runner or compiler prints comes last — on stderr when there
+    /// is any, else on stdout.
+    func testBashOutcome_nonZero_namesTheExitCodeAndTheLastLineOnStderr() {
+        XCTAssertEqual(
+            bash(Self.bashResult(exit: 1, stdout: "Compiling\n", stderr: "error: a\nerror: 2 tests failed\n")),
+            "failed: exit 1: error: 2 tests failed")
+    }
+
+    func testBashOutcome_nonZero_fallsBackToStdout_whenStderrIsBlank() {
+        XCTAssertEqual(
+            bash(Self.bashResult(exit: 2, stdout: "FAIL: CalcTests\n", stderr: "  \n\n")),
+            "failed: exit 2: FAIL: CalcTests")
+    }
+
+    /// Trailing blank lines and the indentation around the last line are not the line.
+    func testBashOutcome_lastLine_skipsTrailingBlankLinesAndTrims() {
+        XCTAssertEqual(
+            bash(Self.bashResult(exit: 1, stderr: "first\n   last one   \n\n \n")),
+            "failed: exit 1: last one")
+        XCTAssertEqual(
+            bash(Self.bashResult(exit: 1, stderr: "windows\r\nline\r\n")),
+            "failed: exit 1: line")
+    }
+
+    func testBashOutcome_nonZeroWithNoOutput_namesTheExitCodeAlone() {
+        XCTAssertEqual(bash(Self.bashResult(exit: 127)), "failed: exit 127")
+    }
+
+    func testBashOutcome_timedOut_winsOverTheExitCode() {
+        XCTAssertEqual(bash(Self.bashResult(exit: nil, stdout: "partial\n", timedOut: true)), "failed: timed out")
+        XCTAssertEqual(bash(Self.bashResult(exit: 0, timedOut: true)), "failed: timed out")
+    }
+
+    /// No exit code and no timeout is a result this summary cannot judge — it says nothing worse
+    /// than the envelope did.
+    func testBashOutcome_noExitCode_isOK() {
+        XCTAssertEqual(bash(Self.bashResult(exit: nil)), "ok")
+        XCTAssertEqual(bash(#"{"ok":true}"#), "ok")
+    }
+
+    /// A refused call has its own line (`withFailureOutcome`); an outcome on top would say it twice.
+    func testOutcome_ofAnErrorEnvelope_isNil() {
+        XCTAssertNil(bash(#"{"ok":false,"error":{"code":"BASH_DENIED","message":"no"},"data":{"exit_code":1}}"#))
+        XCTAssertNil(bash(#"{"ok":false,"error":"tool_not_authorized","message":"no"}"#))
+    }
+
+    func testOutcome_ofANonEnvelope_isNil() {
+        XCTAssertNil(bash("not json"))
+        XCTAssertNil(bash("[1,2]"))
+    }
+
+    /// Every other tool's arguments already say what happened; `→ ok` on each row is noise.
+    func testOutcome_ofAToolWithoutOne_isNil() {
+        XCTAssertNil(ToolCallSummarizer.outcomeSummary(
+            toolName: TN.readFile, resultJSON: #"{"ok":true,"data":{"end_line":5,"total_lines":5}}"#))
+        XCTAssertNil(ToolCallSummarizer.outcomeSummary(toolName: TN.gitStatus, resultJSON: #"{"data":{"clean":true}}"#))
+        XCTAssertEqual(ToolCallSummarizer.toolsWithOutcomeSummary, [TN.bash, TN.runXcodetests, TN.runXcodebuild])
+    }
+
+    func testTestRunOutcome_passed() {
+        XCTAssertEqual(
+            ToolCallSummarizer.outcomeSummary(
+                toolName: TN.runXcodetests,
+                resultJSON: #"{"ok":true,"data":{"success":true,"exit_code":0,"passed":12,"failed":0}}"#),
+            "12 passed")
+    }
+
+    func testTestRunOutcome_failures() {
+        XCTAssertEqual(
+            ToolCallSummarizer.outcomeSummary(
+                toolName: TN.runXcodetests,
+                resultJSON: #"{"ok":true,"data":{"success":false,"exit_code":65,"passed":10,"failed":2}}"#),
+            "failed: 2 failed, 10 passed")
+    }
+
+    /// A run that failed before any test did — the build broke, the scheme has no tests — has no
+    /// failure count to name; its exit code is what is left.
+    func testTestRunOutcome_failedWithNoFailedTest_namesTheExitCode() {
+        XCTAssertEqual(
+            ToolCallSummarizer.outcomeSummary(
+                toolName: TN.runXcodetests,
+                resultJSON: #"{"ok":true,"data":{"success":false,"exit_code":65,"passed":0,"failed":0}}"#),
+            "failed: exit 65")
+        XCTAssertEqual(
+            ToolCallSummarizer.outcomeSummary(toolName: TN.runXcodetests, resultJSON: #"{"ok":true,"data":{}}"#),
+            "failed")
+        XCTAssertEqual(
+            ToolCallSummarizer.outcomeSummary(toolName: TN.runXcodetests, resultJSON: #"{"ok":true}"#),
+            "ok")
+    }
+
+    func testBuildOutcome_isTheBuildSummary() {
+        XCTAssertEqual(
+            ToolCallSummarizer.outcomeSummary(
+                toolName: TN.runXcodebuild, resultJSON: #"{"ok":true,"data":{"success":false,"error_count":3}}"#),
+            "failed (3 errors)")
+    }
+
+    /// `summarizeResult` reads the same table, so a tracked bash call records its outcome too.
+    func testSummarizeResult_bash_isTheOutcome() {
+        XCTAssertEqual(
+            ToolCallSummarizer.summarizeResult(toolName: TN.bash, json: Self.bashResult(exit: 1, stderr: "boom\n")),
+            "failed: exit 1: boom")
+    }
+
     // MARK: - Computer-use arguments (identity keys for loop detection)
 
     /// These summaries double as `ToolCallTracker`'s identity key — with no entry they were
@@ -622,5 +756,50 @@ final class ToolCallSummarizerTests: XCTestCase {
             ToolCallSummarizer.summarizeArguments(
                 toolName: TN.screenCapture, json: #"{"target": "Safari", "window_title": "LinkedIn"}"#),
             "Safari · LinkedIn")
+    }
+
+    func testSummarizeArguments_additionalBranches() {
+        XCTAssertEqual(
+            ToolCallSummarizer.summarizeArguments(
+                toolName: TN.gitBranch,
+                json: #"{"action":"rename","name":"old","new_name":"new"}"#
+            ),
+            "rename old → new"
+        )
+        XCTAssertEqual(
+            ToolCallSummarizer.summarizeArguments(
+                toolName: TN.requestChanges,
+                json: #"{"target_role":"custom_role_xyz"}"#
+            ),
+            "custom_role_xyz"
+        )
+        XCTAssertEqual(
+            ToolCallSummarizer.summarizeArguments(
+                toolName: TN.requestTeamMeeting,
+                json: #"{"participants":["a","b"]}"#
+            ),
+            "2 participants"
+        )
+        XCTAssertEqual(
+            ToolCallSummarizer.summarizeArguments(
+                toolName: TN.uiScroll,
+                json: #"{"x":100,"y":200}"#
+            ),
+            "(100, 200) d(0, 0)"
+        )
+        XCTAssertEqual(
+            ToolCallSummarizer.summarizeArguments(
+                toolName: TN.scheduleTask,
+                json: #"{"task_id":5,"interval_minutes":0}"#
+            ),
+            "#5 off"
+        )
+        XCTAssertEqual(
+            ToolCallSummarizer.summarizeArguments(
+                toolName: TN.scheduleTask,
+                json: #"{"task_id":5}"#
+            ),
+            "#5"
+        )
     }
 }

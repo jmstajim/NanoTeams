@@ -176,6 +176,7 @@ nonisolated struct RequestTeamMeetingTool: ToolHandler {
         )
     )
     static let category: ToolCategory = .collaboration
+    static let undeclaredArguments = ToolArgumentVocabulary.aliases(["members"], of: "participants")
     static let excludedInMeetings = true
 
     
@@ -192,7 +193,7 @@ nonisolated struct RequestTeamMeetingTool: ToolHandler {
             // The participants list already refuses to be empty a few lines down;
             // this is the same rule for the other half of the same call.
             let topic = try requiredNonEmptyString(args, "topic")
-            let participants = try requiredStringArray(args, aliases: ["participants", "members"])
+            let participants = try requiredStringArray(args, "participants")
             let ctx = optionalString(args, "context")
 
             if participants.isEmpty {

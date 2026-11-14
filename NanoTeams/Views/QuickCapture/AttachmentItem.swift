@@ -50,6 +50,7 @@ struct ClipPopoverContent: View {
                     if let agent = skill.agentLabel {
                         Text(agent)
                             .font(Typography.caption2)
+                            .lineLimit(1)
                             .foregroundStyle(Colors.textSecondary)
                     }
                     Text(skill.body)

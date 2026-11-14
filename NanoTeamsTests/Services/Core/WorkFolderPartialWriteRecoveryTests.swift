@@ -215,16 +215,60 @@ final class WorkFolderPartialWriteRecoveryTests: XCTestCase, @unchecked Sendable
     /// indistinguishable from success.
     func testUpdateWorkFolderContext_diskRefusal_surfacesTheError() async {
         await sut.openWorkFolder(tempDir)
-        repo.failUpdateWorkFolderContext = true
+        repo.failUpdateSettings = true
 
         await sut.updateWorkFolderContext("nope")
 
         XCTAssertNotNil(sut.lastErrorMessage)
     }
 
+    /// The refusal is the writer's answer too, not only a banner: until 2026-11-13 it answered
+    /// `.written`, and the Settings page records its own save on that answer — it would have
+    /// taken unsaved edits for stored ones.
+    func testUpdateWorkFolderContext_diskRefusal_answersFailed_andMemoryKeepsTheStoredText() async {
+        await sut.openWorkFolder(tempDir)
+        await sut.updateWorkFolderContext("kept")
+        repo.failUpdateSettings = true
+
+        let write = await sut.updateWorkFolderContext("nope")
+
+        guard case .failed(let reason) = write else {
+            return XCTFail("a refused settings.json write answers .failed, got \(write)")
+        }
+        XCTAssertFalse(reason.isEmpty)
+        XCTAssertEqual(sut.workFolder?.settings.context, "kept", "memory holds what is on disk")
+    }
+
+    /// An external agent whose write cannot reach `settings.json` is told it failed, with the
+    /// reason the person's banner shows — never `ok` — and the stored text stays.
+    func testSetWorkFolderContext_diskRefusal_isAFailedCall_andTheStoredTextStays() async throws {
+        await sut.openWorkFolder(tempDir)
+        await sut.setAutovisorDriver(.externalAgent)
+        await sut.setAutovisorEnabled(true)
+        await sut.updateWorkFolderContext("kept")
+        let agent = try sut.hostedMCPAgentStore.createAgent(label: "Claude Code").record.identity
+        try sut.setHostedMCPAgentMayReplaceWorkFolderContext(true, agentID: agent.id)
+        let folderID = try XCTUnwrap(sut.snapshot?.projection.id.uuidString)
+        let revision = try XCTUnwrap(sut.workFolder?.settings.contextRevision)
+        repo.failUpdateSettings = true
+
+        let result = await sut.executeExternalAutovisorTool(
+            name: ExternalAutovisorToolNames.setWorkFolderContext,
+            args: ["folder_id": folderID, "content": "lost", NTMSOrchestrator.expectedRevisionKey: revision],
+            agent: agent)
+
+        XCTAssertTrue(result.isError, result.outputJSON)
+        let envelope = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(result.outputJSON.utf8)) as? [String: Any])
+        let error = try XCTUnwrap(envelope["error"] as? [String: Any])
+        XCTAssertEqual(error["code"] as? String, ToolErrorCode.commandFailed.rawValue)
+        XCTAssertTrue((error["message"] as? String ?? "").contains("settings.json"), "\(error)")
+        XCTAssertEqual(sut.workFolder?.settings.context, "kept")
+    }
+
     func testUpdateSelectedScheme_diskRefusal_surfacesTheError() async {
         await sut.openWorkFolder(tempDir)
-        repo.failUpdateSelectedScheme = true
+        repo.failUpdateSettings = true
 
         await sut.updateSelectedScheme("MyScheme")
 
@@ -257,11 +301,52 @@ final class WorkFolderPartialWriteRecoveryTests: XCTestCase, @unchecked Sendable
 
     // MARK: - Guard arms
 
-    func testMutateWorkFolder_withNoFolderOpen_isASilentNoOp() async {
-        await sut.mutateWorkFolder { $0.settings.context = "x" }
+    /// Nothing is written with no folder open — and the caller hears why. Until 2026-11-08 this
+    /// arm returned in silence, so a Team Editor Save in that state looked exactly like a save
+    /// that landed (`mutateTask`'s own guard has always said so).
+    ///
+    /// RED: restore the bare `return` → `outcome` is not `.failed` and nothing surfaces.
+    func testMutateWorkFolder_withNoFolderOpen_writesNothingAndSaysWhy() async {
+        let errorsBefore = sut.errorSurfaceCount
 
-        XCTAssertNil(sut.lastErrorMessage)
+        let outcome = await sut.mutateWorkFolder { $0.settings.context = "x" }
+
+        let reason = outcome.failureReason
+        XCTAssertNotNil(reason)
+        XCTAssertTrue(reason?.contains("no work folder is open") == true, reason ?? "nil")
+        XCTAssertEqual(sut.errorSurfaced(since: errorsBefore), reason)
         XCTAssertNil(sut.workFolder)
+        XCTAssertEqual(repo.updateSettingsCalls, 0)
+    }
+
+    /// The second guard: a folder whose open failed has a URL but no contents to diff against
+    /// (`discardWorkFolderState`). Writing nothing is right; saying nothing was not.
+    func testMutateWorkFolder_afterAFailedOpen_writesNothingAndSaysWhy() async {
+        repo.failOpenOrCreate = true
+        await sut.openWorkFolder(tempDir)
+        XCTAssertNotNil(sut.workFolderURL, "precondition: the failed open commits its URL")
+        XCTAssertNil(sut.snapshot, "precondition: and holds no contents")
+        let errorsBefore = sut.errorSurfaceCount
+
+        let outcome = await sut.mutateWorkFolder { $0.settings.context = "x" }
+
+        let reason = outcome.failureReason
+        XCTAssertTrue(reason?.contains("not loaded") == true, reason ?? "nil")
+        XCTAssertEqual(sut.errorSurfaced(since: errorsBefore), reason)
+        XCTAssertEqual(repo.updateSettingsCalls, 0)
+    }
+
+    /// A refused write answers with the very message the person was shown — the caller that
+    /// waited needs no counter to find it.
+    func testMutateWorkFolder_refusedWrite_returnsTheSurfacedReason() async {
+        await sut.openWorkFolder(tempDir)
+        repo.failUpdateTeams = true
+        let errorsBefore = sut.errorSurfaceCount
+
+        let outcome = await sut.mutateWorkFolder { $0.teams.append(TeamTemplateFactory.empty(name: "Extra")) }
+
+        XCTAssertNotNil(outcome.failureReason)
+        XCTAssertEqual(outcome.failureReason, sut.errorSurfaced(since: errorsBefore))
     }
 }
 
@@ -287,8 +372,6 @@ final class SelectivelyFailingRepository: NTMSRepositoryProtocol, @unchecked Sen
     var failUpdateWorkFolderState = false
     var failUpdateSettings = false
     var failUpdateTeams = false
-    var failUpdateWorkFolderContext = false
-    var failUpdateSelectedScheme = false
     var failResetWorkFolderSettings = false
     var failUpdateTools = false
     var failCreateTask = false
@@ -306,13 +389,31 @@ final class SelectivelyFailingRepository: NTMSRepositoryProtocol, @unchecked Sen
         updateTeamsCalls = 0
     }
 
-    /// Seconds an `openOrCreateWorkFolder` of that folder path blocks before reading. The open
-    /// runs off the main actor (`WorkFolderManagementService`), so this makes one read finish
-    /// after a later open's — the overlap `WorkFolderOpenSupersessionTests` needs. Set before
-    /// the open starts; read from the detached task.
-    var openDelays: [String: TimeInterval] = [:]
+    /// The hold an `openOrCreateWorkFolder` of that folder path waits on before reading, until the
+    /// test releases it (`OpenReadHold`). The open runs off the main actor
+    /// (`WorkFolderManagementService`), so this makes one read finish after a later open's — the
+    /// overlap the folder-lifecycle suites need — at the moment the test chooses rather
+    /// than after a delay it guessed. Set before the open starts; read from the detached task.
+    var openReadHolds: [String: OpenReadHold] {
+        get { openReadHoldsLock.withLock { _openReadHolds } }
+        set { openReadHoldsLock.withLock { _openReadHolds = newValue } }
+    }
+    private let openReadHoldsLock = NSLock()
+    private var _openReadHolds: [String: OpenReadHold] = [:]
+
+    /// Releases every read hold, and hands them back by folder path — what a `tearDown` calls
+    /// first, since a held reader never returns on its own before its cap.
+    func releaseAllOpenReads() -> [String: OpenReadHold] {
+        let holds = openReadHolds
+        for hold in holds.values { hold.release() }
+        return holds
+    }
+
     /// Folder paths whose open is refused, where `failOpenOrCreate` refuses every folder.
     var openFailurePaths: Set<String> = []
+    /// Folder paths whose read hands back this bundled-update report, as a folder whose prompt
+    /// update was blocked or deferred does — what a test needs to see an open's banner.
+    var openedBundledUpdates: [String: BundledUpdateReport] = [:]
     /// Folder paths whose `openOrCreateWorkFolder` has STARTED, in call order — how a test knows
     /// an open is inside its read. Appended on the detached task, read on the main actor.
     var openStarts: [String] { openStartsLock.withLock { _openStarts } }
@@ -323,23 +424,13 @@ final class SelectivelyFailingRepository: NTMSRepositoryProtocol, @unchecked Sen
 
     func openOrCreateWorkFolder(at workFolderRoot: URL) throws -> WorkFolderContext {
         openStartsLock.withLock { _openStarts.append(workFolderRoot.path) }
-        if let delay = openDelays[workFolderRoot.path] {
-            Thread.sleep(forTimeInterval: delay)
-        }
+        openReadHolds[workFolderRoot.path]?.holdRead()
         if failOpenOrCreate || openFailurePaths.contains(workFolderRoot.path) {
             throw Refused(what: "openOrCreateWorkFolder")
         }
-        return try inner.openOrCreateWorkFolder(at: workFolderRoot)
-    }
-
-    func updateWorkFolderContext(at workFolderRoot: URL, context: String, activeTask: NTMSTask?) throws -> WorkFolderContext {
-        if failUpdateWorkFolderContext { throw Refused(what: "updateWorkFolderContext") }
-        return try inner.updateWorkFolderContext(at: workFolderRoot, context: context, activeTask: activeTask)
-    }
-
-    func updateSelectedScheme(at workFolderRoot: URL, scheme: String?, activeTask: NTMSTask?) throws -> WorkFolderContext {
-        if failUpdateSelectedScheme { throw Refused(what: "updateSelectedScheme") }
-        return try inner.updateSelectedScheme(at: workFolderRoot, scheme: scheme, activeTask: activeTask)
+        var context = try inner.openOrCreateWorkFolder(at: workFolderRoot)
+        if let report = openedBundledUpdates[workFolderRoot.path] { context.bundledUpdate = report }
+        return context
     }
 
     func updateWorkFolderState(
@@ -371,18 +462,23 @@ final class SelectivelyFailingRepository: NTMSRepositoryProtocol, @unchecked Sen
         return try inner.resetWorkFolderSettings(at: workFolderRoot)
     }
 
+    func removeWorkFolderData(at workFolderRoot: URL) throws {
+        try inner.removeWorkFolderData(at: workFolderRoot)
+    }
+
     // MARK: TaskRepository
 
     func createTask(
         at workFolderRoot: URL, title: String, supervisorTask: String,
         preferredTeamID: NTMSID?, parentTaskID: Int?, parentRoleID: String?,
-        delegationDepth: Int, makeActive: Bool
+        delegationDepth: Int, makeActive: Bool, origin: TaskOrigin? = nil, requestKey: String? = nil
     ) throws -> (snapshot: WorkFolderContext, taskID: Int) {
         if failCreateTask { throw Refused(what: "createTask") }
         return try inner.createTask(
             at: workFolderRoot, title: title, supervisorTask: supervisorTask,
             preferredTeamID: preferredTeamID, parentTaskID: parentTaskID,
-            parentRoleID: parentRoleID, delegationDepth: delegationDepth, makeActive: makeActive)
+            parentRoleID: parentRoleID, delegationDepth: delegationDepth,
+            makeActive: makeActive, origin: origin, requestKey: requestKey)
     }
 
     func setActiveTask(at workFolderRoot: URL, taskID: Int?) throws -> WorkFolderContext {
@@ -401,7 +497,14 @@ final class SelectivelyFailingRepository: NTMSRepositoryProtocol, @unchecked Sen
         try inner.loadTask(at: workFolderRoot, taskID: taskID)
     }
 
+    /// Holds ONE task write — the first `updateTaskOnly` the hold matches — on its writer until the
+    /// test releases it: how a test begins a later open while an earlier lifecycle is suspended
+    /// INSIDE a task write, after every check before that write has answered. Set before the
+    /// write can start; read on the writer's (detached) thread.
+    var taskWriteHold: TaskWriteHold?
+
     func updateTaskOnly(at workFolderRoot: URL, task: NTMSTask) throws {
+        taskWriteHold?.holdIfMatching(folder: workFolderRoot, task: task)
         try inner.updateTaskOnly(at: workFolderRoot, task: task)
     }
 
@@ -464,5 +567,187 @@ final class SelectivelyFailingRepository: NTMSRepositoryProtocol, @unchecked Sen
 
     func cleanupAllStagedDrafts(at workFolderRoot: URL) throws {
         try inner.cleanupAllStagedDrafts(at: workFolderRoot)
+    }
+}
+
+/// One held task write (`SelectivelyFailingRepository.taskWriteHold`): the first `updateTaskOnly`
+/// whose folder and task `matches` blocks its writer until `release()`. The writer is the
+/// detached task `mutateTask` hands its disk write to — never the main actor — and it is blocked
+/// on a condition, not slept: the repository's writers are synchronous, so a thread is the only
+/// thing there is to hold. One write, released by the test (and by its `tearDown`, since a held
+/// writer never returns).
+final class TaskWriteHold: @unchecked Sendable {
+    private let matches: @Sendable (URL, NTMSTask) -> Bool
+    private let condition = NSCondition()
+    private var used = false
+    private var held = false
+    private var released = false
+
+    init(matching matches: @escaping @Sendable (_ folder: URL, _ task: NTMSTask) -> Bool) {
+        self.matches = matches
+    }
+
+    /// A matching write is blocked right now.
+    var isHeld: Bool { condition.withLock { held } }
+
+    func holdIfMatching(folder: URL, task: NTMSTask) {
+        condition.lock()
+        defer { condition.unlock() }
+        guard !used, !released, matches(folder, task) else { return }
+        used = true
+        held = true
+        while !released { condition.wait() }
+        held = false
+    }
+
+    func release() {
+        condition.lock()
+        released = true
+        condition.broadcast()
+        condition.unlock()
+    }
+}
+
+/// One held folder read (`SelectivelyFailingRepository.openReadHolds`): every
+/// `openOrCreateWorkFolder` of the held path blocks its reader until `release()`, and a released
+/// hold lets every read through. Modelled on `TaskWriteHold`: the reader is the detached task
+/// `WorkFolderManagementService` hands the read to — never the main actor — and it is blocked on
+/// a condition, because the repository's reads are synchronous and a thread is the only thing
+/// there is to hold.
+///
+/// Until 2026-10-28 the repository SLEPT the read (`openDelays`, 0.3–2 s by the test's guess of
+/// how long the rest would take), and the suites waited out ~36 s of it. A hold ends exactly where
+/// the test releases it, so the read finishes after everything before the release, every time.
+///
+/// The wait is capped (`cap`): a test that awaits an open it never released does not hang the
+/// run — the read goes on at the cap, `timedOut` says so, and the fixture's `tearDown` records
+/// the failure.
+final class OpenReadHold: @unchecked Sendable {
+    /// Far above any honest hold (the longest test holds a read for well under a second).
+    static let defaultCap: TimeInterval = 30
+
+    private let cap: TimeInterval
+    private let condition = NSCondition()
+    private var holding = 0
+    private var released = false
+    private var expired = false
+
+    init(cap: TimeInterval = OpenReadHold.defaultCap) {
+        self.cap = cap
+    }
+
+    /// A read of the held path is blocked right now.
+    var isHeld: Bool { condition.withLock { holding > 0 } }
+
+    /// A read waited out the cap: the test never released it.
+    var timedOut: Bool { condition.withLock { expired } }
+
+    func holdRead() {
+        condition.lock()
+        defer { condition.unlock() }
+        guard !released else { return }
+        holding += 1
+        let deadline = Date().addingTimeInterval(cap)
+        while !released {
+            guard condition.wait(until: deadline) else {
+                // Released by the cap: every later read passes too, so one forgotten release
+                // costs one cap, not one per read.
+                expired = true
+                released = true
+                break
+            }
+        }
+        holding -= 1
+    }
+
+    func release() {
+        condition.lock()
+        released = true
+        condition.broadcast()
+        condition.unlock()
+    }
+}
+
+/// The read hold the lifecycle suites stage their overlaps with: it holds exactly until the test
+/// releases it, lets every read through once released, and lets a read it was never told to
+/// release go at its cap — saying so — instead of hanging the run.
+final class OpenReadHoldTests: XCTestCase {
+
+    /// A reader on its own thread, the way the repository's detached read runs.
+    private func read(_ hold: OpenReadHold, returned: XCTestExpectation) {
+        Thread.detachNewThread {
+            hold.holdRead()
+            returned.fulfill()
+        }
+    }
+
+    private func waitHeld(_ hold: OpenReadHold) -> Bool {
+        let deadline = Date().addingTimeInterval(5)
+        while !hold.isHeld, Date() < deadline { usleep(1000) }
+        return hold.isHeld
+    }
+
+    func testAHeldReadWaitsForItsReleaseAndThenGoes() {
+        let hold = OpenReadHold()
+        let returned = expectation(description: "the held read returned")
+        read(hold, returned: returned)
+        // Held means blocked inside `holdRead`: the reader is waiting on the condition and has
+        // not returned — a state, not a window.
+        XCTAssertTrue(waitHeld(hold), "the read never reached its hold")
+        hold.release()
+        wait(for: [returned], timeout: 5)
+        XCTAssertFalse(hold.isHeld)
+        XCTAssertFalse(hold.timedOut)
+    }
+
+    func testAReleasedHoldLetsEveryReadThrough() {
+        let hold = OpenReadHold()
+        hold.release()
+        let returned = expectation(description: "the read returned")
+        returned.expectedFulfillmentCount = 2
+        read(hold, returned: returned)
+        read(hold, returned: returned)
+        wait(for: [returned], timeout: 5)
+        XCTAssertFalse(hold.timedOut)
+    }
+
+    /// RED: wait on the condition with no deadline → this test never returns (the run's own
+    /// timeout ends it); drop the `expired` mark → the fixture's `tearDown` has nothing to report.
+    func testAReadNobodyReleasesGoesAtTheCapAndSaysSo() {
+        let hold = OpenReadHold(cap: 0.05)
+        let returned = expectation(description: "the read went at its cap")
+        read(hold, returned: returned)
+        wait(for: [returned], timeout: 5)
+        XCTAssertTrue(hold.timedOut, "a read let go by the cap must say so")
+        let again = expectation(description: "a later read passes")
+        read(hold, returned: again)
+        wait(for: [again], timeout: 5)
+    }
+
+    /// Through the repository: a held path's open blocks before the read, every other path's
+    /// open does not, and `releaseAllOpenReads` lets it go and hands the hold back.
+    func testTheRepositoryHoldsTheHeldPathsReadOnly() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("open-read-hold-\(UUID().uuidString)", isDirectory: true)
+        let held = root.appendingPathComponent("held", isDirectory: true)
+        let free = root.appendingPathComponent("free", isDirectory: true)
+        for folder in [held, free] { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repository = SelectivelyFailingRepository(wrapping: NTMSRepository())
+        let hold = OpenReadHold()
+        repository.openReadHolds[held.path] = hold
+
+        XCTAssertNoThrow(try repository.openOrCreateWorkFolder(at: free), "an unheld path's read was held")
+        let returned = expectation(description: "the held open returned")
+        Thread.detachNewThread {
+            _ = try? repository.openOrCreateWorkFolder(at: held)
+            returned.fulfill()
+        }
+        XCTAssertTrue(waitHeld(hold), "the held path's read never reached its hold")
+        XCTAssertEqual(repository.openStarts.last, held.path, "the open is counted as started while held")
+        let released = repository.releaseAllOpenReads()
+        wait(for: [returned], timeout: 5)
+        XCTAssertTrue(released[held.path] === hold)
+        XCTAssertFalse(hold.timedOut)
     }
 }

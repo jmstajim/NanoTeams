@@ -349,6 +349,7 @@ struct GraphPanelView: View {
             )
             Text(label.uppercased())
                 .font(Typography.caption2.weight(.medium))
+                .lineLimit(1)
                 .tracking(Typography.labelTracking)
                 .foregroundStyle(foreground)
         }

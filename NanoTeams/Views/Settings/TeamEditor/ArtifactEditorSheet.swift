@@ -3,30 +3,78 @@ import SwiftUI
 // MARK: - Artifact Editor Sheet
 
 /// Sheet for creating/editing team artifacts.
+///
+/// The same Save and close as `RoleEditorSheet`: `team` is the Team Editor's binding, rebuilt on
+/// every render; `session` is what the click that opened the sheet captured
+/// (`TeamEditSheetRequest`). Save composes the artifact on `team`, commits it as `session` and
+/// closes only once that write landed; a refusal keeps the sheet open with the reason, and
+/// `onSave` — which `RoleEditorDependenciesTab` answers by adding the artifact to the role's
+/// draft — is called only for an artifact that is stored. Cancel and Escape ask before throwing
+/// away edits (`EditorSheetClosePolicy`). Previews: `ArtifactEditorSheet+Previews.swift`.
 struct ArtifactEditorSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(NTMSOrchestrator.self) private var store
     @Binding var team: Team
+    /// The team and folder this sheet saves into, or nowhere.
+    let session: TeamEditCommitQueue.Session
     let mode: EditorMode<TeamArtifact>
     /// Carries the stored artifact so callers never have to diff the `team`
     /// Binding to discover what changed. `RoleEditorDependenciesTab` used to do
-    /// exactly that, and it could not work: `onSave` runs in the same
-    /// synchronous turn as the Binding write, whose setter is async, so the
-    /// diff always came back empty and the auto-assign never fired.
+    /// exactly that, and it could not work while the Binding's setter was an
+    /// async `Task` fired in the same turn as `onSave`: the diff always came
+    /// back empty and the auto-assign never fired. Called only once the
+    /// artifact's write landed.
     let onSave: (TeamArtifact) -> Void
 
-    @State private var artifactName: String = ""
-    @State private var artifactDescription: String = ""
-    @State private var artifactIcon: String = "doc.text"
-    @State private var artifactMimeType: String = "text/markdown"
+    /// Seeded at init (CLAUDE.md #26): the `.onAppear` load this replaced left the first render
+    /// on the empty form, which the unsaved-changes check would have read as an edit.
+    @State private var draft: ArtifactEditorMutations.Draft
+    /// A Save is waiting for its write: Save and Cancel are off, so Escape does nothing.
+    @State private var isSaving = false
+    /// Why the last Save did not land — shown in the sheet, which stayed open.
+    @State private var saveError: String?
+    @State private var isConfirmingDiscard = false
 
     private let mimeTypes = ArtifactConstants.supportedMimeTypes
+
+    /// What the static Save answers: the stored artifact, or why there is none.
+    enum SaveOutcome: Equatable {
+        case saved(TeamArtifact)
+        case refused(String)
+    }
+
+    /// `saveError` is the line the sheet opens with — `nil` wherever a person opens it; the
+    /// previews pass one, as `RoleEditorSheet`'s do.
+    init(
+        team: Binding<Team>,
+        session: TeamEditCommitQueue.Session,
+        mode: EditorMode<TeamArtifact>,
+        onSave: @escaping (TeamArtifact) -> Void,
+        saveError: String? = nil
+    ) {
+        self._team = team
+        self.session = session
+        self.mode = mode
+        self.onSave = onSave
+        self._draft = State(initialValue: ArtifactEditorMutations.openingDraft(for: mode))
+        self._saveError = State(initialValue: saveError)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             headerBar
 
             TerminalDivider()
+
+            if let saveError {
+                // On the content's own fill, so the banner reads as the top of the form rather
+                // than a band of the header.
+                EditorSheetSaveErrorBanner(message: saveError)
+                    .padding(.horizontal, Spacing.standard)
+                    .padding(.top, Spacing.s)
+                    .frame(maxWidth: .infinity)
+                    .background(Colors.surfacePrimary)
+            }
 
             ScrollView {
                 VStack(spacing: Spacing.xl) {
@@ -40,11 +88,10 @@ struct ArtifactEditorSheet: View {
             .background(Colors.surfacePrimary)
         }
         .frame(minWidth: 600, minHeight: 500)
-        .onAppear {
-            if case .edit(let artifact) = mode {
-                loadArtifact(artifact)
-            }
-        }
+        // Escape is taken by Cancel's `.cancelAction`; this keeps the sheet's own dismissal
+        // out of it while there is something to lose or a write to wait for.
+        .interactiveDismissDisabled(isSaving || ArtifactEditorMutations.hasUnsavedChanges(draft, mode: mode))
+        .discardChangesConfirmation(of: "artifact", isPresented: $isConfirmingDiscard) { dismiss() }
     }
 
     // MARK: - Header
@@ -55,21 +102,23 @@ struct ArtifactEditorSheet: View {
 
             Spacer()
 
+            if isSaving {
+                SavingIndicator()
+            }
+
             Button("Cancel") {
-                dismiss()
+                requestClose()
             }
             .keyboardShortcut(.cancelAction)
             .buttonStyle(.terminalSecondary)
+            .disabled(isSaving)
 
             Button("Save") {
-                // Mirrors `RoleEditorSheet`: a failed save keeps the sheet open
-                // so the user can copy their work out or cancel explicitly,
-                // instead of dismissing as if the edit had landed.
-                if saveArtifact() { dismiss() }
+                Task { await save() }
             }
             .keyboardShortcut(.defaultAction)
             .buttonStyle(.terminalPrimary)
-            .disabled(!isValid)
+            .disabled(!isValid || isSaving)
         }
         .padding(.horizontal, Spacing.standard)
         .padding(.vertical, Spacing.m)
@@ -78,12 +127,12 @@ struct ArtifactEditorSheet: View {
     // MARK: - Sections
 
     private var basicInfoSection: some View {
-        SettingsCard(header: "Basic Information", systemImage: "doc.text") {
+        SettingsCard(header: "Basic Information") {
             VStack(alignment: .leading, spacing: Spacing.m) {
                 HStack(spacing: 8) {
-                    IconPickerButton(selectedIcon: $artifactIcon)
+                    IconPickerButton(selectedIcon: $draft.icon)
 
-                    TextField("Artifact Name", text: $artifactName)
+                    TextField("Artifact Name", text: $draft.name)
                         .textFieldStyle(.plain)
                         .terminalField()
                         .disabled(nameEditingBlocker != nil)
@@ -104,7 +153,7 @@ struct ArtifactEditorSheet: View {
                         .font(Typography.subheadline)
                         .foregroundStyle(Colors.textSecondary)
 
-                    TextEditor(text: $artifactDescription)
+                    TextEditor(text: $draft.description)
                         .font(Typography.termBase)
                         .frame(minHeight: 200)
                         .inputSurface(.editor)
@@ -114,12 +163,12 @@ struct ArtifactEditorSheet: View {
     }
 
     private var technicalSection: some View {
-        SettingsCard(header: "Technical", systemImage: "wrench.and.screwdriver") {
+        SettingsCard(header: "Technical") {
             HStack {
                 Text("MIME Type")
                 Spacer()
                 TerminalPicker(
-                    selection: $artifactMimeType,
+                    selection: $draft.mimeType,
                     options: mimeTypes.map { (value: $0, label: "\(mimeTypeLabel(for: $0))  ·  \($0)") }
                 )
             }
@@ -127,14 +176,14 @@ struct ArtifactEditorSheet: View {
     }
 
     private var usagePreviewSection: some View {
-        SettingsCard(header: "Usage in Team", systemImage: "arrow.triangle.swap") {
+        SettingsCard(header: "Usage in Team") {
             VStack(alignment: .leading, spacing: 12) {
                 if case .edit = mode {
                     // Keyed on the LIVE edited name, not the captured
                     // `mode` payload: mid-rename the payload still holds the
                     // old name, so the panel would report usage for a name the
                     // user is in the middle of replacing.
-                    usageInfo(forArtifactNamed: ArtifactEditorMutations.canonicalName(artifactName))
+                    usageInfo(forArtifactNamed: ArtifactEditorMutations.canonicalName(draft.name))
                 } else {
                     Text("Save the artifact to see usage information")
                         .font(Typography.caption)
@@ -243,7 +292,7 @@ struct ArtifactEditorSheet: View {
     /// team that already contains two slug-colliding artifacts, locking the user
     /// out of editing the description of either.
     private var nameConflictMessage: String? {
-        let trimmed = ArtifactEditorMutations.canonicalName(artifactName)
+        let trimmed = ArtifactEditorMutations.canonicalName(draft.name)
         guard !trimmed.isEmpty else { return nil }
         guard trimmed != originalArtifactName else { return nil }
         guard !ArtifactEditorMutations.isNameAvailable(
@@ -270,69 +319,74 @@ struct ArtifactEditorSheet: View {
     /// `ArtifactEditorMutations`' `nil` return is reserved for "the row
     /// vanished", mirroring `RoleEditorMutations.applyEdit`.
     private var isValid: Bool {
-        !ArtifactEditorMutations.canonicalName(artifactName).isEmpty
+        !ArtifactEditorMutations.canonicalName(draft.name).isEmpty
             && nameConflictMessage == nil
     }
 
     // MARK: - Actions
 
-    private func loadArtifact(_ artifact: TeamArtifact) {
-        artifactName = artifact.name
-        artifactDescription = artifact.description
-        artifactIcon = artifact.icon
-        artifactMimeType = artifact.mimeType
+    /// Save, then close — only once the write landed, and only then is `onSave` told which
+    /// artifact is stored. Until 2026-11-08 this sheet closed on the Binding assignment, whose
+    /// setter merely started a write, and Cancel and Escape closed without asking: an artifact
+    /// created from the Role Editor's Dependencies tab was added to the role's draft even when its
+    /// write was refused, and the role then saved depending on an artifact that did not exist.
+    private func save() async {
+        guard !isSaving else { return }
+        isSaving = true
+        saveError = nil
+        let outcome = await Self.save(draft, mode: mode, session: session, onto: team, through: store.teamEdits)
+        isSaving = false
+        switch outcome {
+        case .refused(let reason):
+            saveError = reason
+        case .saved(let artifact):
+            onSave(artifact)
+            dismiss()
+        }
     }
 
-    /// Returns `true` when the save actually landed.
-    ///
-    /// Compose every mutation on a local copy and ship it through the `team`
-    /// Binding via a SINGLE assignment. Multiple consecutive writes to the
-    /// Binding race because `TeamEditorView.binding(for:)` has a captured-value
-    /// getter and an async setter — each write re-reads the same pre-edit
-    /// snapshot and the last one wins. This method previously issued five, so
-    /// only its final `updatedAt` write survived and the rename (plus
-    /// description, icon and MIME type) was silently discarded. See
-    /// `ArtifactEditorMutations` doc.
-    private func saveArtifact() -> Bool {
-        var newTeam = team
-        let draft = ArtifactEditorMutations.Draft(
-            name: artifactName,
-            description: artifactDescription,
-            icon: artifactIcon,
-            mimeType: artifactMimeType
-        )
+    /// Cancel and Escape: close at once only when nothing would be lost.
+    private func requestClose() {
+        switch EditorSheetClosePolicy.onCancel(
+            hasUnsavedChanges: ArtifactEditorMutations.hasUnsavedChanges(draft, mode: mode), isSaving: isSaving
+        ) {
+        case .close: dismiss()
+        case .confirmDiscard: isConfirmingDiscard = true
+        case .ignore: break
+        }
+    }
 
+    /// The Save apart from the view, as `RoleEditorSheet.save`: `session` asked first, the
+    /// artifact composed on `team` — the team the sheet's binding reads now — and committed as
+    /// `session`, the write that carries it awaited.
+    ///
+    /// Compose every mutation on a local copy and ship it via a SINGLE commit. This Save once
+    /// issued five writes through a binding whose getter returned the captured pre-edit team, so
+    /// only its final `updatedAt` write survived and the rename (plus description, icon and MIME
+    /// type) was silently discarded. See `ArtifactEditorMutations` doc.
+    static func save(
+        _ draft: ArtifactEditorMutations.Draft,
+        mode: EditorMode<TeamArtifact>,
+        session: TeamEditCommitQueue.Session,
+        onto team: Team,
+        through queue: TeamEditCommitQueue
+    ) async -> SaveOutcome {
+        if let refusal = queue.refusal(toSave: session, into: team) { return .refused(refusal) }
+        var newTeam = team
         let saved: TeamArtifact?
         switch mode {
         case .create:
             saved = ArtifactEditorMutations.applyCreate(to: &newTeam, draft: draft)
         case .edit(let artifact):
-            saved = ArtifactEditorMutations.applyEdit(
-                to: &newTeam,
-                existingArtifactID: artifact.id,
-                draft: draft
-            )
+            saved = ArtifactEditorMutations.applyEdit(to: &newTeam, existingArtifactID: artifact.id, draft: draft)
         }
-
         guard let saved else {
-            store.lastErrorMessage =
-                "Could not save artifact — “\(ArtifactEditorMutations.canonicalName(artifactName))” could not be applied to this team. It may have been deleted or renamed in another view."
-            return false
+            return .refused(
+                "Could not save artifact — “\(ArtifactEditorMutations.canonicalName(draft.name))” could not be "
+                    + "applied to this team. It may have been deleted or renamed in another view.")
         }
-
-        team = newTeam
-        onSave(saved)
-        return true
+        if let reason = await queue.commit(newTeam, as: session).failureReason { return .refused(reason) }
+        return .saved(saved)
     }
 
-}
-
-#Preview {
-    @Previewable @State var store = PreviewStore.make()
-    ArtifactEditorSheet(
-        team: .constant(.default),
-        mode: .create,
-        onSave: { _ in }
-    )
-    .environment(store)
 }

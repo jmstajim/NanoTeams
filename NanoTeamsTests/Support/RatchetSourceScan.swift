@@ -267,3 +267,114 @@ enum RatchetSourceScan {
         return !(previous.isLetter || previous.isNumber || previous == "_" || previous == ".")
     }
 }
+
+// MARK: - One read of the tree per process
+
+/// The tree as the pins read it, read ONCE per test process, plus the memo a pin class keeps its
+/// own scan in.
+///
+/// Every source-scan pin used to walk and read its roots in every test that needed them — the
+/// rule, its anti-vacuity twin and the reachability check each paid the same read, and most the
+/// same scan, again — and a dozen pins read the same `NanoTeams/` tree on their own. Measured
+/// 2026-10-28, each class alone: `InputSurfacePinTests` ran its one scan five times (3.5 s),
+/// `NativeControlStylePinTests` three times (3.5 s), `DesignTokenPinTests` twice (30.7 s, most of
+/// it in the per-line walk the pin now gates).
+///
+/// The cache is sound because nothing under a scanned root changes while the tests run — a test
+/// that wrote a `.swift` file into the tree would already make every pin that scans it flaky. It
+/// changes no answer: `sources(under:)` walks in `swiftFiles(under:)` order and keeps each read's
+/// outcome — the text, or the error `String(contentsOf:encoding:)` threw — so a caller that
+/// `try`s or skips decides exactly what it decided before.
+extension RatchetSourceScan {
+
+    /// One `.swift` file: where it is, its repo-relative path, and what reading it gave.
+    final class SourceFile: @unchecked Sendable {
+        let url: URL
+        let relativePath: String
+        private let read: Result<String, any Error>
+        private let lock = NSLock()
+        private var stripped: Result<String, any Error>?
+
+        init(url: URL) {
+            self.url = url
+            relativePath = RatchetSourceScan.relativePath(of: url)
+            read = Result { try String(contentsOf: url, encoding: .utf8) }
+        }
+
+        /// The file's text, or the error its read threw — the same one, every time.
+        func text() throws -> String { try read.get() }
+
+        /// `strippingLineComments(text())`, computed on first use and kept: most pins strip the
+        /// same files the same way.
+        func commentStrippedText() throws -> String {
+            lock.lock()
+            defer { lock.unlock() }
+            if let stripped { return try stripped.get() }
+            let result = read.map(RatchetSourceScan.strippingLineComments)
+            stripped = result
+            return try result.get()
+        }
+    }
+
+    private static let sourcesLock = NSLock()
+    nonisolated(unsafe) private static var sourcesByRoot: [String: [SourceFile]] = [:]
+
+    /// Every `.swift` file under `root` with its text, in `swiftFiles(under:)` order — read the
+    /// first time any pin in this process asks for `root`, and handed out from memory after that.
+    /// A missing root is `[]`, as for `swiftFiles(under:)`, and is not remembered: an empty answer
+    /// must stay as cheap to re-derive as it is to trust.
+    static func sources(under root: URL) -> [SourceFile] {
+        let key = root.standardizedFileURL.path
+        sourcesLock.lock()
+        defer { sourcesLock.unlock() }
+        if let cached = sourcesByRoot[key] { return cached }
+        let files = swiftFiles(under: root).map(SourceFile.init(url:))
+        if !files.isEmpty { sourcesByRoot[key] = files }
+        return files
+    }
+
+    /// `(relativePath, text)` for every `.swift` file under `roots`, sorted by path, read through
+    /// `sources(under:)` — the walk the target-wide pins (indentation, test lifecycle, default
+    /// arguments) each spelled as a private `swiftFiles()` plus a `String(contentsOf:)` per test.
+    /// The first unreadable file throws its read's error, as their `try` did.
+    static func sortedSources(under roots: [URL]) throws -> [(relativePath: String, text: String)] {
+        try roots.flatMap { sources(under: $0) }
+            .sorted { $0.relativePath < $1.relativePath }
+            .map { ($0.relativePath, try $0.text()) }
+    }
+
+    /// Whether `needle`'s bytes occur in `text`'s UTF-8: a plain byte search (`memmem`) — no
+    /// Character walk, no tokenizing. Two pins lean on it, for two different reasons:
+    /// `DesignTokenPinTests` GATES its Character walk with it (a byte match is a necessary
+    /// condition there, never a sufficient one), and `NewFileHasATestPinTests` uses it as the
+    /// raw-scan ORACLE its identifier index is checked against. `memmem` because both run it
+    /// thousands of times, in a test build no optimiser touches.
+    static func utf8(_ text: String, contains needle: [UInt8]) -> Bool {
+        guard !needle.isEmpty else { return true }
+        var text = text
+        return text.withUTF8 { haystack in
+            needle.withUnsafeBytes { little in
+                memmem(haystack.baseAddress, haystack.count, little.baseAddress, little.count) != nil
+            }
+        }
+    }
+
+    /// A value a pin class computes once per process — the scan its rule, its anti-vacuity twin
+    /// and its reachability check all read. A thrown error is kept too, so every test of the class
+    /// fails the way the first one did instead of re-running a scan that cannot succeed.
+    final class Memo<Value: Sendable>: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: Result<Value, any Error>?
+
+        init() {}
+
+        func value(_ compute: () throws -> Value) throws -> Value {
+            lock.lock()
+            defer { lock.unlock() }
+            if let stored { return try stored.get() }
+            let result = Result(catching: compute)
+            stored = result
+            return try result.get()
+        }
+    }
+}

@@ -36,7 +36,7 @@ struct ComputerUseSettingsView: View {
     // MARK: - Intro
 
     private var introCard: some View {
-        SettingsCard(header: "Screen control", systemImage: "cursorarrow.rays") {
+        SettingsCard(header: "Screen control") {
             Text("These tools let a role take a screenshot and then click, type, and scroll to operate other apps. The **Assistant, Coding Assistant, and Autovisor** roles have them by default; grant other roles in the Team Editor (Tools → Computer Use). By default every action asks for **your approval**. The app detects whether your main model can see screenshots — when it can't, the **Vision model** (Settings → Vision) describes them instead. macOS will ask for Screen Recording and Accessibility permission the first time.")
                 .font(Typography.caption)
                 .foregroundStyle(Colors.textTertiary)
@@ -49,7 +49,7 @@ struct ComputerUseSettingsView: View {
 
     private var executionCard: some View {
         @Bindable var config = config
-        return SettingsCard(header: "Approval", systemImage: "hand.raised") {
+        return SettingsCard(header: "Approval") {
             VStack(alignment: .leading, spacing: Spacing.m) {
                 TerminalSegmentedPicker(
                     selection: $config.computerUseMode,
@@ -69,7 +69,7 @@ struct ComputerUseSettingsView: View {
     /// each action. Off disables review entirely.
     private var judgeCard: some View {
         @Bindable var config = config
-        return SettingsCard(header: "Judge", systemImage: "shield.lefthalf.filled") {
+        return SettingsCard(header: "Judge") {
             VStack(alignment: .leading, spacing: Spacing.m) {
                 TerminalSegmentedPicker(
                     selection: $config.computerUseRestrictionLevel,
@@ -94,7 +94,7 @@ struct ComputerUseSettingsView: View {
     /// tier), so it's shown only there rather than as a silent no-op.
     private var behaviorCard: some View {
         @Bindable var config = config
-        return SettingsCard(header: "Behavior", systemImage: "gearshape") {
+        return SettingsCard(header: "Behavior") {
             VStack(alignment: .leading, spacing: Spacing.m) {
                 SettingsToggleRow(
                     title: "Raise the target window before acting",
@@ -114,7 +114,7 @@ struct ComputerUseSettingsView: View {
     // MARK: - Advanced
 
     private var advancedCard: some View {
-        SettingsCard(header: "Restrictions", systemImage: "slider.horizontal.3") {
+        SettingsCard(header: "Restrictions") {
             SettingsDisclosureRow(title: "Advanced restrictions", icon: "hand.raised", isExpanded: $showAdvanced) {
                 VStack(alignment: .leading, spacing: Spacing.m) {
                     listField(

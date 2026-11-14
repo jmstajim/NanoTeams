@@ -54,7 +54,6 @@ struct BenchmarkSweepCard: View {
     var body: some View {
         SettingsCard(
             header: "All models",
-            systemImage: "square.stack.3d.up",
             footer: Self.footer(blockedBy: blockReason)
         ) {
             if let modePicker { modePicker }
@@ -124,7 +123,7 @@ struct BenchmarkSweepCard: View {
                     isEnabled: !isMeasuring)
                 if let note = Self.addressNote(for: server) {
                     Text(note)
-                        .font(Typography.caption2)
+                        .font(Typography.caption)
                         .foregroundStyle(Colors.textTertiary)
                 }
             }
@@ -219,6 +218,7 @@ struct BenchmarkSweepCard: View {
                 .truncationMode(.middle)
             Text(entry.target.provider.displayName)
                 .font(Typography.caption2)
+                .lineLimit(1)
                 .foregroundStyle(Colors.textTertiary)
 
             // What this exact server says about this exact model, RIGHT NOW — the scan that built

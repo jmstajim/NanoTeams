@@ -26,9 +26,9 @@ import XCTest
 /// keep the model's own indentation. A refusal survives only where the evidence
 /// genuinely conflicts.
 ///
-/// Clock times below are `EditFileTask28Fixtures`' rebased ones (+5 h off the run
-/// log, for the test target's 20:00–02:00 band) — subtract 5 h to read them against
-/// the log. Durations are unaffected: only the hour field moved.
+/// Clock times below are `EditFileTask28Fixtures`' normalised ones (the start of the
+/// capture day plus each call's offset from the run's first failure). Durations are
+/// the run's own.
 final class EditFileInsertionReindentTests: XCTestCase {
     private let fileManager = FileManager.default
     private var tempDir: URL!
@@ -107,20 +107,20 @@ final class EditFileInsertionReindentTests: XCTestCase {
 
     // MARK: - The run
 
-    /// 22:29:12.726 — the anchor the model then repeated twice more verbatim.
+    /// 00:00:32.045 — the anchor the model then repeated twice more verbatim.
     ///
     /// `old_text` is three lines at depths 9, 5, 0 where the file has 8, 4, 0 — a
     /// clean map. `new_text` reproduces those three lines and appends a 25-line
     /// `LibraryCategoryEmptyState` at depths 4/8/12/18.
     ///
     /// The recorded failure these three replays are about — the SECOND attempt of task 28
-    /// (22:29:12.726), the one that shortened its anchor after two `read_lines` calls.
+    /// (00:00:32.045), the one that shortened its anchor after two `read_lines` calls.
     /// Asserted on `note`, not only found: `failure(at:)` resolves ANY recorded timestamp, and
     /// the four fixtures differ only in `appendedBlock(bodyDepth:)`, which no assertion reads —
     /// so a selector retargeted to a sibling key left every test here green (DEBTS D-B4, the
     /// open tail measured on 2026-09-05). "Resolves" is not "resolves to this one".
     private func selectedFailure(file: StaticString = #filePath, line: UInt = #line) throws -> EditFileTask28Fixtures.FailedEdit {
-        let failure = EditFileTask28Fixtures.failure(at: "2026-08-15T22:29:12.726")
+        let failure = EditFileTask28Fixtures.failure(at: "2026-08-15T00:00:32.045")
         XCTAssertEqual(failure.note, "shortened the anchor after two read_lines calls",
                        "the selector must resolve to the attempt these replays describe", file: file, line: line)
         return failure

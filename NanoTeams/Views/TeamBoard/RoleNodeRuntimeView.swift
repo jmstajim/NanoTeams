@@ -100,6 +100,7 @@ struct RoleNodeRuntimeView: View {
                     )
                     Text(statusDisplayName)
                         .font(Typography.caption2)
+                        .lineLimit(1)
                         .foregroundStyle(statusDisplayColor)
                 }
             }

@@ -281,8 +281,10 @@ final class ToolsMemoryTests: XCTestCase {
         let results = await runtime.executeAll(context: context, toolCalls: [call])
 
         XCTAssertEqual(results.count, 1)
-        // Number is not a string, so this should fail
-        XCTAssertTrue(results[0].isError)
+        // A number sent as the text is read as its spelling and the model is told (2026-11-09):
+        // dropping it failed the call for a "missing" content the model had sent.
+        XCTAssertFalse(results[0].isError, results[0].outputJSON)
+        XCTAssertTrue(metaWarnings(in: results[0].outputJSON).contains("`content` was read as text."), results[0].outputJSON)
     }
 
     // MARK: - Multiple Calls

@@ -43,6 +43,8 @@ final class LLMTokenFieldErrorPropagationTests: XCTestCase {
         func loadToken(forKey key: String) throws -> String? {
             existingToken
         }
+
+        func accountNames(withPrefix prefix: String) throws -> [String] { [] }
     }
 
     // MARK: - Instance method propagates the error

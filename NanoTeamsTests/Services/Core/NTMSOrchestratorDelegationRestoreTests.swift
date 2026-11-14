@@ -62,6 +62,8 @@ final class NTMSOrchestratorDelegationRestoreTests: XCTestCase {
         guard let childID else { return XCTFail("child creation failed") }
 
         // Rebuild — same disk, fresh in-memory state.
+        // The first process exits, and its hold on the folder with it (`WorkFolderInstanceLock`).
+        firstStore.releaseWorkFolderInstanceLock()
         let secondStore = makeOrchestrator()
         await secondStore.openWorkFolder(workFolderRoot)
 
@@ -97,6 +99,8 @@ final class NTMSOrchestratorDelegationRestoreTests: XCTestCase {
         )
         guard let grandchildID else { return XCTFail("grandchild creation failed") }
 
+        // The first process exits, and its hold on the folder with it (`WorkFolderInstanceLock`).
+        firstStore.releaseWorkFolderInstanceLock()
         let secondStore = makeOrchestrator()
         await secondStore.openWorkFolder(workFolderRoot)
 
@@ -164,6 +168,8 @@ final class NTMSOrchestratorDelegationRestoreTests: XCTestCase {
         guard let bID else { return XCTFail("B creation failed") }
         // B becomes the active top-level task here (createTask updates activeTaskID).
 
+        // The first process exits, and its hold on the folder with it (`WorkFolderInstanceLock`).
+        firstStore.releaseWorkFolderInstanceLock()
         let secondStore = makeOrchestrator()
         await secondStore.openWorkFolder(workFolderRoot)
         XCTAssertEqual(secondStore.activeTaskID, bID,

@@ -23,6 +23,18 @@ struct WatchtowerAutovisorCard: View {
     @State private var isImprovingGoal = false
 
     private var isEnabled: Bool { store.workFolder?.settings.autovisorEnabled ?? false }
+    private var driver: AutovisorDriver { store.workFolder?.settings.autovisorDriver ?? .builtInModel }
+
+    private var presentation: WatchtowerAutovisorCardPresentation {
+        _ = store.hostedMCPAgentsRevision
+        _ = store.lastExternalAutovisorActivityAt
+        return WatchtowerAutovisorCardPresentation.build(
+            driver: driver,
+            isEnabled: isEnabled,
+            agents: store.hostedMCPAgentStore.agents,
+            latestActivityAgentLabel: store.externalActivityLog.entries.last?.agentLabel
+        )
+    }
 
     private var canSubmit: Bool {
         !messageDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -31,7 +43,7 @@ struct WatchtowerAutovisorCard: View {
     }
 
     var body: some View {
-        if store.hasRealWorkFolder && isEnabled {
+        if store.hasRealWorkFolder && (isEnabled || driver == .externalAgent) {
             VStack(alignment: .leading, spacing: Spacing.m) {
                 MonoLabel(text: "Autovisor", rule: true)
                 card
@@ -54,10 +66,20 @@ struct WatchtowerAutovisorCard: View {
     }
 
     private var card: some View {
-        VStack(alignment: .leading, spacing: Spacing.m) {
-            goalSection
-            memorySection
-            composer
+        let current = presentation
+        return VStack(alignment: .leading, spacing: Spacing.m) {
+            if current.showsExternalDriverRow {
+                externalDriverRow(current)
+            }
+            if current.showsGoalSection {
+                goalSection
+            }
+            if current.showsMemorySection {
+                memorySection
+            }
+            if current.showsMessageComposer {
+                composer
+            }
         }
         .padding(Spacing.standard)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -65,6 +87,34 @@ struct WatchtowerAutovisorCard: View {
             RoundedRectangle.squircle(CornerRadius.medium)
                 .fill(Colors.surfaceCard)
         )
+    }
+
+    private func externalDriverRow(_ current: WatchtowerAutovisorCardPresentation) -> some View {
+        HStack(alignment: .center, spacing: Spacing.m) {
+            VStack(alignment: .leading, spacing: Spacing.xxs) {
+                Text(current.driverHeadline)
+                    .font(Typography.subheadlineMedium)
+                    .foregroundStyle(Colors.textPrimary)
+                Button {
+                    NotificationCenter.default.post(name: .navigateToAutovisor, object: nil)
+                } label: {
+                    Text("Open External Autovisor →")
+                        .font(Typography.caption)
+                        .foregroundStyle(Colors.accent)
+                }
+                .buttonStyle(.plain)
+            }
+            Spacer()
+            if current.showsPowerToggle {
+                AutovisorPowerToggle(
+                    isOn: current.isEnabled,
+                    isRunning: false
+                ) {
+                    let next = !current.isEnabled
+                    Task { await store.setAutovisorEnabled(next) }
+                }
+            }
+        }
     }
 
     private var goalSection: some View {

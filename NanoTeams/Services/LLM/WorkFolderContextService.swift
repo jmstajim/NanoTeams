@@ -97,7 +97,7 @@ nonisolated final class WorkFolderContextService: @unchecked Sendable {
 
         // Cleaned, and cleaned HERE, because nothing downstream does it: the return value
         // travels `WorkFolderManagementService` → `generateWorkFolderContext` →
-        // `updateWorkFolderContext` → `repository`, which only trims, and lands in
+        // `updateWorkFolderContext`, which only trims, → `mutateWorkFolder`, and lands in
         // `settings.context` — which `PromptBuilder.buildWorkFolderContextMessage` renders
         // into the system prompt of EVERY role on EVERY request. A leaked `<|channel|>final`
         // would sit in segment 0 for the life of the work folder, invalidating nothing and

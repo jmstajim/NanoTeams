@@ -144,6 +144,34 @@ final class ChangeRequestIntegrationTests: XCTestCase {
                        "revisionComment must stay raw — the prefix is applied once at send time")
     }
 
+    /// The amendment REPLACES a pending revision, its author included. RED before 2026-11-07
+    /// (DEBTS D-M15): an agent's earlier `request_changes` left its label on the step, and the
+    /// team vote's notice re-entered the role signed with that agent's name.
+    func testExecuteAmendment_overAnAgentsPendingRevision_dropsItsAuthor() async {
+        let (seed, team) = makeTaskWithDoneStep()
+        var task = seed
+        task.runs[0].steps[0].revisionComment = "Use SQLite"
+        task.runs[0].steps[0].revisionCommentAuthor = "Claude Code"
+        task.runs[0].steps[0].revisionCommentIsFromAutomatedSupervisor = true
+        mockDelegate.taskToMutate = task
+        service._testRegisterStepTask(stepID: task.runs[0].steps[0].id, taskID: task.id)
+
+        _ = await service._testExecuteAmendment(
+            taskID: task.id,
+            targetRoleID: "engineer",
+            changes: "Add error handling",
+            reasoning: "Missing null checks",
+            requestingRoleID: "code_reviewer",
+            meetingID: nil,
+            team: team
+        )
+
+        let step = mockDelegate.taskToMutate!.runs[0].steps[0]
+        XCTAssertTrue(step.revisionComment?.contains("AMENDMENT REQUEST") ?? false)
+        XCTAssertNil(step.revisionCommentAuthor)
+        XCTAssertNil(step.revisionCommentIsFromAutomatedSupervisor, "the team's vote is no Supervisor's words")
+    }
+
     func testExecuteAmendment_snapshotsArtifacts() async {
         let (task, team) = makeTaskWithDoneStep()
         let targetRoleID = "engineer"

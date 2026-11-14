@@ -47,42 +47,97 @@ final class NTMSOrchestrator {
     var lastErrorMessage: String? {
         didSet {
             guard let lastErrorMessage else { return }
-            errorSurfaceCount &+= 1
-            lastSurfacedError = lastErrorMessage
+            let scope = SurfacedErrorScope.current
+            if !isRestoringBanner {
+                errorSurfaceCount &+= 1
+                lastSurfacedError = lastErrorMessage
+                scope?.record(lastErrorMessage)
+            }
+            if scope?.suppressesBannersNow == true {
+                self.lastErrorMessage = nil
+            }
         }
     }
-    var lastInfoMessage: String?
+    var lastInfoMessage: String? {
+        didSet {
+            guard lastInfoMessage != nil, SurfacedErrorScope.current?.suppressesBannersNow == true else { return }
+            self.lastInfoMessage = nil
+        }
+    }
 
-    /// Monotonic count of errors SURFACED, bumped on every non-nil assignment to
-    /// `lastErrorMessage`, and the message that came with the latest one.
+    /// Set only by `restoreBanner(_:)`: putting back a banner that was already on screen is
+    /// not an error surfacing, so it is neither counted nor recorded in any scope.
+    @ObservationIgnored private var isRestoringBanner = false
+
+    /// Where `revealTaskAttachments` shows files: `nil` is Finder (`NSWorkspace`). A test sets it
+    /// to record the URLs instead of raising Finder on the developer's desktop on every run, which
+    /// is what the coverage test of 2026-11-11 did with no assertion at all (F6 T7).
+    @ObservationIgnored var revealInFileViewer: (@MainActor ([URL]) -> Void)?
+
+    /// Monotonic count of errors SURFACED anywhere in the process, bumped on every non-nil
+    /// assignment to `lastErrorMessage`, and the message that came with the latest one.
     ///
     /// `lastErrorMessage` is a single-shot slot that the error banner CONSUMES (writes nil)
     /// on any render, so "did that operation fail?" cannot be answered by comparing the slot
     /// across an `await`: a real failure reads back as nil the moment SwiftUI renders during
     /// the suspension, and a REPEATED identical error never differs from the snapshot even
-    /// when nothing consumed it. Both failure modes report success for a failed operation.
-    /// This pair is never cleared and never compared for equality, so it survives both.
+    /// when nothing consumed it. This pair is never cleared and never compared for equality,
+    /// so it survives both.
     ///
-    /// `@ObservationIgnored` deliberately — it is bookkeeping for callers that need an
-    /// outcome, not state any view renders; the banner still observes `lastErrorMessage`.
+    /// It is the PROCESS's record, not an operation's: sampled before an `await` and compared
+    /// after it, it attributes to the operation every error any task surfaced meanwhile (D-M18,
+    /// 2026-11-13). An operation asks `surfacingError(_:)`, whose scope sees only its own task
+    /// tree; production code reads this pair nowhere else (`ErrorOutcomeAttributionTests` scans
+    /// for it). Tests read it to say "nothing surfaced anywhere".
+    ///
+    /// `@ObservationIgnored` deliberately — it is bookkeeping, not state any view renders; the
+    /// banner still observes `lastErrorMessage`.
     @ObservationIgnored private(set) var errorSurfaceCount: Int = 0
     @ObservationIgnored private(set) var lastSurfacedError: String?
 
-    /// The error surfaced since `baseline` (a `errorSurfaceCount` sample taken before
-    /// the `await`), or `nil` when the operation surfaced none.
+    /// Runs `operation` and answers with its value and the error IT surfaced — by itself, by a
+    /// callee it awaits, or by a child task it spawned — or `nil` when it surfaced none.
     ///
-    /// This is the ONLY correct way to ask "did what I just awaited fail, and why?".
-    /// Reading `lastErrorMessage` after an `await` answers a different question — "what
-    /// should the user see right now" — and gets both directions wrong: the banner nils
-    /// the slot on any render during the suspension, so a real failure reads back as
-    /// nil; and a FOREIGN message parked there by an unrelated operation reads back as
-    /// this one's reason, which is how a failed close came to be reported to the
-    /// Autovisor with an unrelated disk error as its diagnosis.
+    /// This is the ONLY correct way to ask "did what I just awaited fail, and why?". Reading
+    /// `lastErrorMessage` after an `await` answers a different question — "what should the user
+    /// see right now" — and gets both directions wrong: the banner nils the slot on any render
+    /// during the suspension, and a FOREIGN message parked there reads back as this operation's
+    /// reason. Sampling `errorSurfaceCount` around the `await` fixed the first and kept the
+    /// second for every error surfaced during the suspension (`SurfacedErrorScope`).
     ///
-    /// Callers that only need the Bool ("did it fail?") compare the count themselves;
-    /// this returns the message so a failure can be reported with its own reason.
+    /// A pass-through, NOT a `/// runtime-prompt` builder: it composes zero characters of its
+    /// own, forwarding whatever string the operation surfaced into `AutovisorReply(..., reason:)`
+    /// (whose `nil` and non-nil `reason` arms are sampled in
+    /// `RuntimePromptRegistry.autovisorReplySamples`) or into the caller's failure result.
+    func surfacingError<T>(_ operation: () async -> T) async -> (value: T, error: String?) {
+        let (value, scope) = await SurfacedErrorScope.run(suppressingBanners: false, operation)
+        return (value, scope.surfacedError)
+    }
+
+    /// Runs an external agent's `operation` with the person's banners kept clear of what IT
+    /// surfaces — its refusals are delivered through its tool envelope (§8.1, Ш13). Errors any
+    /// other task surfaces meanwhile still reach the banner, and every error is still counted.
+    func suppressingBanners<T>(_ operation: () async -> T) async -> T {
+        await SurfacedErrorScope.run(suppressingBanners: true, operation).value
+    }
+
+    #if DEBUG
+    /// Test probe: the error surfaced ANYWHERE in the process since `baseline` (an
+    /// `errorSurfaceCount` sample), or `nil` for none. A test that owns every task in play reads
+    /// it to say what surfaced; production code never may — it attributes to an operation
+    /// whatever other tasks surfaced meanwhile. Production asks `surfacingError(_:)`.
     func errorSurfaced(since baseline: Int) -> String? {
         errorSurfaceCount != baseline ? lastSurfacedError : nil
+    }
+    #endif
+
+    /// Puts `banner` back on the banner slot without surfacing it: a banner restored after a
+    /// loop that overwrote it is not a new error, and recording it would hand an enclosing
+    /// operation an unrelated message as its reason.
+    func restoreBanner(_ banner: String?) {
+        isRestoringBanner = true
+        defer { isRestoringBanner = false }
+        lastErrorMessage = banner
     }
     /// Latched copy of the open-time bundled-update report.
     ///
@@ -109,6 +164,12 @@ final class NTMSOrchestrator {
     /// it is environment-dependent, and adding one would put another optional in the
     /// constructor `TestOrchestrator.make` exists to keep honest.
     let contextFill = ContextFillProjection()
+    /// The Team Editor's write path — every edit of a team's content, written one at a time,
+    /// latest first, and awaitable by a sheet's Save. Own object for the reason `taskFacts` is:
+    /// the editor reads its drafts back on every keystroke and must not observe the orchestrator
+    /// to do it. This orchestrator is its `Folder`, wired in `init` (`commitEditedTeam` writes).
+    /// See the type.
+    let teamEdits = TeamEditCommitQueue()
     /// Prompt-prefix (KV) cache-miss aggregate. Drives the always-on status-bar count and
     /// decides which misses earn the single-slot banner. Injected like the other observables so
     /// tests get a fresh one.
@@ -170,6 +231,13 @@ final class NTMSOrchestrator {
     /// activity feed renders the approval buttons. Mutated only via the
     /// `LLMStateDelegate` bash-approval hooks (see `NTMSOrchestrator+BashAdvice`).
     var bashApprovalRequests: [TaskStepKey: BashApprovalRequest] = [:]
+
+    /// MCP calls currently HELD awaiting a person's decision, keyed by (taskID, stepID).
+    /// Mirrors the gate's await state so the activity feed renders the approval card — with
+    /// the whole arguments document, the one fact a decider about an outbound call must be
+    /// able to read in full. Mutated only via the `LLMStateDelegate` MCP approval hooks
+    /// (see `NTMSOrchestrator+MCPApproval`).
+    var mcpApprovalRequests: [TaskStepKey: MCPApprovalRequest] = [:]
 
     /// Computer-use actions currently HELD awaiting the human's Allow/Deny/Always decision,
     /// keyed by (taskID, stepID). Mirrors the gate's await state so the activity feed renders
@@ -235,14 +303,16 @@ final class NTMSOrchestrator {
         configuration.visionLLMConfig
     }
 
-    // periphery:ignore - protocol conformance (LLMStateDelegate)
     var bashPolicy: BashPolicy {
         configuration.bashPolicy
     }
 
-    // periphery:ignore - protocol conformance (LLMStateDelegate)
     var computerUsePolicy: ComputerUsePolicy {
         configuration.computerUsePolicy
+    }
+
+    var mcpJudgeOverride: LLMOverride? {
+        configuration.mcpJudgeLLMOverride
     }
 
     var loggingEnabled: Bool {
@@ -309,6 +379,22 @@ final class NTMSOrchestrator {
     /// `@ObservationIgnored` would freeze the cards at their initial nil
     /// snapshot so enabling the toggle would not refresh them.
     var searchIndexCoordinator: SearchIndexCoordinator?
+
+    /// Every configured MCP server and the tool snapshot a step freezes at entry. Built on
+    /// the first work-folder open (`setUpMCPServerManager`); `nil` before that, which reads
+    /// as "no MCP tools" everywhere downstream.
+    ///
+    /// Observed, like `searchIndexCoordinator`: Settings → MCP Servers renders the connection
+    /// rows off it, so `@ObservationIgnored` would freeze them at their initial nil snapshot.
+    var mcpServerManager: MCPServerManager?
+
+    /// The DI seam. `.live` is named once, in `NanoTeamsApp`; every test and preview
+    /// passes `.inert`, which cannot open a socket or reach the Keychain.
+    @ObservationIgnored let mcpEnvironment: MCPEnvironment
+
+    /// Where `servers.json` lives. Injected so a test gets a temp directory rather than the
+    /// developer's own configured servers.
+    @ObservationIgnored let mcpCatalogueStore: MCPServerCatalogueStore
 
     /// Why the index files are still on disk after the user turned Exploratory Search OFF.
     ///
@@ -392,7 +478,22 @@ final class NTMSOrchestrator {
     /// CLAUDE.md #38 generation counter for `openWorkFolder`. The folder is read off the
     /// main actor, so two opens can overlap; only the latest one may apply its snapshot,
     /// report its error, or run the rest of the open.
-    @ObservationIgnored var workFolderOpenGeneration: Int = 0
+    @ObservationIgnored var workFolderOpenGeneration: Int = 0 {
+        didSet {
+            updateHostedMCPTransitionGate()
+        }
+    }
+
+    /// The generation of the open that COMMITTED the folder the process describes now
+    /// (`workFolderURL`, `snapshot`) — `workFolderOpenGeneration` once the latest open commits,
+    /// and older while a later open is between its first line and its commit (its read). What
+    /// `currentFolderLifecycle` answers: an action beginning in that stretch acts on the folder
+    /// still described, whose lifecycle has already ended, so its first check stops it.
+    @ObservationIgnored var committedWorkFolderGeneration: Int = 0 {
+        didSet {
+            updateHostedMCPTransitionGate()
+        }
+    }
 
     /// The attachment set a catalogue rescan has already been attempted for.
     ///
@@ -415,9 +516,9 @@ final class NTMSOrchestrator {
 
     /// Which start each in-flight launch belongs to, keyed by task ID.
     ///
-    /// Bumped by `claimRunStart` and by `abortRunStart`. `launchRun` captures the value
-    /// at entry and re-checks it after every suspension, so a start the Supervisor has
-    /// since aborted refuses to write — and a `releaseRunStart` arriving late from that
+    /// Bumped by `claimRunStart` and by `abortRunStart`. The claim carries the value
+    /// (`RunStartClaim.generation`) and `launchRun` re-checks it after every suspension, so a
+    /// start that was since aborted refuses to write — and a `releaseRunStart` arriving late from that
     /// aborted launch cannot drop the claim of the start that replaced it (CLAUDE.md
     /// #74: a key that outlives what it identifies makes "still mine" indistinguishable
     /// from "someone else's").
@@ -427,12 +528,29 @@ final class NTMSOrchestrator {
     /// could refuse the start that follows it. Same idiom as
     /// `agentInstructionsScanGeneration` (CLAUDE.md #38).
     ///
-    /// It is what makes Pause work on the INLINE start path (Play, Autovisor,
+    /// It is what makes a stop verb work on the INLINE start path (Play, Autovisor,
     /// recurrence), where `backgroundRunLaunches` is legitimately empty and there is no
-    /// `Task` to cancel. Cancellation still runs for the background path — it only
-    /// unwinds sooner; the refusal itself is this counter's (CLAUDE.md #51: a guard on
-    /// one of two paths is a coincidence).
+    /// `Task` to cancel. A background launch is cancelled too, which puts its own
+    /// cancellation in step with the abort but refuses nothing sooner — the scans it is
+    /// parked in do not inherit cancellation. The refusal is this counter's, at the launch's
+    /// next re-check, for every stop verb (`abortRunStart`: Pause, `stopEngine`, the folder
+    /// boundary), beside the claim's folder lifecycle (`RunStartClaim`), which every folder
+    /// transition ends (CLAUDE.md #51: a guard on one of two paths is a coincidence).
     @ObservationIgnored var runStartGeneration: [Int: Int] = [:]
+
+    /// How many Pauses that stopped something each task has had in this process, keyed by task
+    /// ID: bumped by `pauseRun` before its first suspension — for a delegated child too, when the
+    /// Pause stopped something above it — and read by a Resume after each of its own
+    /// (`resumeIsStillWanted`), which restarts nothing past a Pause that landed meanwhile.
+    /// A counter for the reason `runStartGeneration` is one: a Resume compares against the
+    /// value it began with, so nothing has to be cleared, and a folder transition — whose task
+    /// ids collide — is refused by the lifecycle the same check asks first.
+    @ObservationIgnored var pauseEpochs: [Int: Int] = [:]
+
+    /// How many Resumes that lifted a pause are under way on each task, keyed by task ID: counted
+    /// by `resumeRun` from the moment it decides it lifts one until it returns, and read by
+    /// `pauseRun` (`interruptsAResume`) — a Pause in that window stops the Resume, so it stands.
+    @ObservationIgnored var resumesLiftingAPause: [Int: Int] = [:]
 
     /// Join handles for run launches that were spawned in the BACKGROUND rather
     /// than awaited inline — today only the Quick Capture create path, which
@@ -509,13 +627,25 @@ final class NTMSOrchestrator {
         TeamBusyScan.hasInFlightRun(teamID: teamID, tasks: allLoadedTasksIncludingChildren)
     }
 
+    /// The repository the orchestrator and every service it builds write through: the one it was
+    /// given, wrapped so that a write reaches only the folder this orchestrator holds
+    /// (`HeldWorkFolderRepository`, D-M18 R2).
     @ObservationIgnored let repository: any NTMSRepositoryProtocol
     /// Engine instances keyed by task ID.
     @ObservationIgnored var taskEngines: [Int: TeamEngine] = [:]
     /// Background poll loop that fires due task recurrences and enforces per-run
     /// timeouts. Owned here (extensions can't add stored properties); started on
-    /// `openWorkFolder`, cancelled on the next open. See `NTMSOrchestrator+Scheduling`.
+    /// `openWorkFolder`, cancelled at every folder boundary (`beginFolderTransition`)
+    /// and on the next scheduler start. See `NTMSOrchestrator+Scheduling`.
     @ObservationIgnored var automationPollTask: Task<Void, Never>?
+    #if DEBUG
+    /// Poll loops started minus poll loops that have exited: the documented test seam
+    /// `WorkFolderOpenStraddleTests` counts live loops by. `startAutomationScheduler` adds one
+    /// as it spawns a loop, and the loop's own `defer` takes it away — so a loop whose handle was
+    /// overwritten without a cancel, which nothing can reach again, stays counted for good.
+    /// DEBUG-only; production reads nothing of it.
+    @ObservationIgnored var _testLiveAutomationLoops = 0
+    #endif
     /// Fixed delay between automation poll ticks, or `nil` for the production
     /// cadence (phase-aligned wall-clock minute boundaries). Injectable because the
     /// production cadence makes the loop a NONDETERMINISM source under test: every
@@ -541,12 +671,13 @@ final class NTMSOrchestrator {
     /// holds a weak ref back to the orchestrator (resolved via `bind` after
     /// init since `self` isn't available in the property initializer).
     @ObservationIgnored let delegationLoopWatcher: DelegationLoopWatcher = DelegationLoopWatcher()
-    /// Atomic reserve flag for generated-team creation. Inserted by
-    /// `beginTeamGeneration` before the detached Task is spawned so concurrent
-    /// `startRun` / `retryTeamGeneration` callers see the slot as taken even
-    /// during the brief window before `registerTeamGenerationTask` installs
-    /// the cancellation handle.
-    @ObservationIgnored var teamGenerationInFlight: Set<Int> = []
+    /// Atomic reserve flag for generated-team creation, scoped to the folder lifecycle in which
+    /// the generation was begun. Inserted by `beginTeamGeneration` before the detached Task is
+    /// spawned so concurrent `startRun` / `retryTeamGeneration` callers see the slot as taken
+    /// even during the brief window before `registerTeamGenerationTask` installs the cancellation
+    /// handle, while a stale generation from a prior folder lifecycle cannot block or clear the
+    /// next folder's same-numbered task.
+    @ObservationIgnored var teamGenerationInFlight: [Int: WorkFolderLifecycle] = [:]
     /// Cancellation handles for detached team-generation Tasks, keyed by taskID.
     /// `pauseRun` cancels these so an in-flight `TeamGenerationService.generate`
     /// stream stops before it can transition the engine.
@@ -575,11 +706,34 @@ final class NTMSOrchestrator {
     @ObservationIgnored let workFolderManagementService: WorkFolderManagementService
     @ObservationIgnored let engineFactory: @MainActor () -> TeamEngine
     @ObservationIgnored let fileManager: FileManager
+    /// Set once, at construction: a test passes its double through `TestOrchestrator.make`, so the
+    /// service cannot change under a capture already in flight (N20).
+    @ObservationIgnored let taskSnapshotService: any TaskSnapshotProtocol
+    /// How long a lifecycle verb waits for its snapshots — `TaskSnapshotConstants.captureWaitBudget`
+    /// unless a test gives a shorter one at construction.
+    @ObservationIgnored let taskSnapshotWaitBudget: Duration
+
+    /// Gate for filesystem snapshot operations: only top-level external agent tasks are eligible.
+    /// In-app user runs, built-in Autovisor passes, and child subtasks bypass snapshots.
+    func shouldCaptureTaskSnapshots(taskID: Int) -> Bool {
+        if let task = loadedTask(taskID) {
+            return task.parentTaskID == nil && task.origin?.isExternalAgent == true
+        }
+        if let summary = snapshot?.tasksIndex.tasks.first(where: { $0.id == taskID }) {
+            return summary.parentTaskID == nil && summary.origin?.isExternalAgent == true
+        }
+        return false
+    }
+    /// Orchestrator-owned Supervisor message queue control plane and default queue storage.
+    @ObservationIgnored let messageQueue = SupervisorMessageQueueService()
     /// Source of queued Supervisor messages delivered on a role's next LLM iteration.
-    /// Wired by `NanoTeamsApp` after `QuickCaptureController.shared.setup(...)`. Weak
-    /// because `QuickCaptureController` already owns the strong reference to the
-    /// shared form state.
-    @ObservationIgnored weak var quickCaptureFormState: QuickCaptureFormState?
+    /// Wired by `NanoTeamsApp` after `QuickCaptureController.shared.setup(...)` so the panel
+    /// and the orchestrator share the same queue storage; when unset (headless / unit tests),
+    /// `messageQueue.activeFormState` uses `messageQueue.ownedFormState`.
+    var quickCaptureFormState: QuickCaptureFormState? {
+        get { messageQueue.bridgedFormState }
+        set { messageQueue.setBridgedFormState(newValue) }
+    }
 
     /// Timestamp of the manager's last review pass start (any path: event-wake,
     /// recurrence, Run-now, open-time). A "last reviewed" diagnostic signal, NOT a
@@ -651,11 +805,18 @@ final class NTMSOrchestrator {
     /// the one free re-delivery for the next episode.
     @ObservationIgnored var autovisorLoopParkRedelivered: Set<AutovisorAttentionKey> = []
 
+    /// Per-actor task creation budgets and synchronous in-flight slot reservations
+    /// across the built-in Autovisor manager and external agents.
+    @ObservationIgnored var autovisorCreationLedger = AutovisorCreationLedger()
+
     /// Tasks the Autovisor created during the CURRENT review pass. Reset to 0
     /// on each manager run start (in `startRun`); bounded in `createManagedTask` by
     /// `settings.autovisorTuning.maxManagedTasksPerReview` (default
     /// `AutovisorConstants.maxManagedTasksPerReview`).
-    @ObservationIgnored var autovisorCreationsThisReview: Int = 0
+    var autovisorCreationsThisReview: Int {
+        get { autovisorCreationLedger.builtInCreatedThisReview }
+        set { autovisorCreationLedger.setBuiltInCreatedThisReview(newValue) }
+    }
 
     /// In-memory auto-off deadline (sleep timer). Armed by `rearmAutovisorAutoDisable`
     /// on enable / duration edit / folder open; consumed by `evaluateAutovisorAutoDisable`
@@ -664,11 +825,83 @@ final class NTMSOrchestrator {
     /// the off time; it changes rarely, so no hot-path cost.
     var autovisorAutoDisableAt: Date?
 
+    /// Timestamp of the last authenticated external-agent activity in the current folder: a call
+    /// starting, a call ending, or the minute tick finding a wait in progress
+    /// (`noteExternalAutovisorActivity`) — moved up, when it is earlier, to the moment the
+    /// Autovisor was turned on or handed to the external agent, since nothing waited on the agent
+    /// before that (`restartExternalInactivityCount`). Drives the sleep-timer countdown when
+    /// `autovisorDriver == .externalAgent`: the agent's inactivity is counted from here.
+    var lastExternalAutovisorActivityAt: Date?
+
+    /// Readiness signal woken whenever folder transition, Autovisor enable state, or driver changes.
+    @ObservationIgnored let externalAutovisorReadinessSignal = ExternalAutovisorReadinessSignal()
+
+    /// How this process takes a folder's lock (`WorkFolderInstanceLocking`) — the real `flock`
+    /// unless a factory isolated default storage.
+    @ObservationIgnored let workFolderLocking: WorkFolderInstanceLocking
+
+    /// This orchestrator's hold on a work folder: taken by `openWorkFolder` before the folder's
+    /// first read, given up when another folder's open takes its lock or an open fails. Holds
+    /// nothing after a refused or failed open (F6 C1, 2026-11-12). Every write of this
+    /// orchestrator asks it first (`HeldWorkFolderRepository`, D-M18 R2).
+    @ObservationIgnored let workFolderHold: WorkFolderHold
+
+    /// The process that holds the folder this one last tried to open, read off the lock — `nil`
+    /// unless that open was refused for it. Observable: the readiness badge and `folder_status`
+    /// report it (`ExternalAutovisorReadiness.State.folderInUse`) for as long as it stands, where
+    /// `lastErrorMessage` is shown once.
+    var workFolderHeldByAnotherProcess: WorkFolderInstanceLock.Holder?
+
+    /// Event feed and wait coordinator for external MCP agents (§9).
+    @ObservationIgnored let autovisorEventFeed = AutovisorEventFeed()
+
+    /// Summary-only activity log for external MCP agents (§11, Ш14).
+    let externalActivityLog = ExternalAutovisorActivityLog()
+
+    /// Outward-reaching DI seam for the hosted External Agents MCP server (`.inert` in
+    /// tests/previews, `.live` in `NanoTeamsApp`, §6, §7.1).
+    @ObservationIgnored let hostedMCPEnvironment: HostedMCPEnvironment
+
+    /// Agent registry and token verifier store (`agents.json` + `SecureTokenStorage`, §6).
+    @ObservationIgnored let hostedMCPAgentStore: HostedMCPAgentStore
+
+    /// Bounded in-memory ring buffer (`200` frames) and optional rotated JSONL log for hosted MCP (§7.1).
+    @ObservationIgnored let hostedMCPFrameLog: HostedMCPFrameLog
+
+    /// Active dual-stack loopback HTTP listener when External Agents is running (§7.1).
+    @ObservationIgnored var hostedMCPListener: HostedMCPListener?
+
+    /// Observable state of the hosted loopback MCP listener for Settings UI (§7.1).
+    var hostedMCPListenerState: HostedMCPListenerState = .stopped
+
+    /// Observable revision counter incremented whenever the hosted MCP agent registry,
+    /// `lastSeenAt` timestamps, or active `wait_for_events` waiter set changes — and when an
+    /// agent's last wait in progress ends, which presence reads (`AutovisorEventFeed.waitsInProgress`).
+    var hostedMCPAgentsRevision: UInt64 = 0
+
+    /// Last error surfaced when starting the hosted loopback MCP listener (e.g. «Порт занят»).
+    var hostedMCPLastErrorMessage: String?
+
+    /// Serializes start/stop transitions triggered by `configuration.externalAgentsEnabled` / `externalAgentsPort`.
+    @ObservationIgnored var pendingHostedMCPLifecycleTask: Task<Void, Never>?
+
+    /// Thread-safe folder-transition gate consulted by `HostedMCPListener` on its background queue
+    /// to return `503 Retry-After: 1` while switching folders over an existing generation (§7.1).
+    @ObservationIgnored let hostedMCPTransitionGate = HostedMCPTransitionGate()
+
+    /// Whether the configured LLM server answered the status monitor's last probe — `nil` until
+    /// the monitor has probed once, and always in tests, where nothing probes. Installed by
+    /// `AppDependencyWiring.wire`; `folder_status` reports it so an external agent can tell a dead
+    /// LLM server from a slow team (§8.1). Probed asynchronously when cache is older than 30s.
+    @ObservationIgnored var llmReachability: @MainActor () async -> LLMReachabilityStatus = { LLMReachabilityStatus() }
+
+    /// Coalesces startup work-folder restoration between orchestrator launch and `MainLayoutView` (§11, Ш24).
+    @ObservationIgnored var bootstrapDefaultStorageTask: Task<Void, Never>?
+
     /// Default internal storage used when no real work folder is selected.
     /// Teams like Quest Party and Discussion Club work without a real folder.
     static var defaultStorageURL: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("NanoTeams", isDirectory: true)
+        NTMSPaths.defaultStorageURL
     }
 
     /// Whether a real user-chosen work folder is set (vs default internal storage).
@@ -696,23 +929,53 @@ final class NTMSOrchestrator {
         chatModelEnsurer: ChatModelEnsurer = .shared,
         downloadedModelStore: (any DownloadedModelStore)? = nil,
         skillsCatalogueStore: AgentSkillsCatalogueStore? = nil,
-        automationTickInterval: TimeInterval? = nil
+        automationTickInterval: TimeInterval? = nil,
+        mcpEnvironment: MCPEnvironment = .inert,
+        mcpCatalogueStore: MCPServerCatalogueStore? = nil,
+        hostedMCPEnvironment: HostedMCPEnvironment = .inert,
+        hostedMCPAgentStore: HostedMCPAgentStore? = nil,
+        hostedMCPFrameLog: HostedMCPFrameLog? = nil,
+        taskSnapshotService: (any TaskSnapshotProtocol)? = nil,
+        taskSnapshotWaitBudget: Duration? = nil,
+        workFolderLocking: WorkFolderInstanceLocking = .system
     ) {
+        self.workFolderLocking = workFolderLocking
+        self.taskSnapshotService = taskSnapshotService ?? TaskSnapshotService()
+        self.taskSnapshotWaitBudget = taskSnapshotWaitBudget ?? TaskSnapshotConstants.captureWaitBudget
         self.skillsCatalogueStore = skillsCatalogueStore ?? .shared
         self.automationTickInterval = automationTickInterval
+        // `.inert` is the DEFAULT here, unlike every other seam in this initializer: an
+        // omitted MCP environment must not resolve outward to the user's real servers and
+        // Keychain (CLAUDE.md #49 is about the other direction, and this is the reason it
+        // cost 93 sites). `.live` is named once, in `NanoTeamsApp`.
+        self.mcpEnvironment = mcpEnvironment
+        self.mcpCatalogueStore = mcpCatalogueStore
+            ?? MCPServerCatalogueStore(directory: mcpEnvironment.trustDirectory)
+        self.hostedMCPEnvironment = hostedMCPEnvironment
+        self.hostedMCPFrameLog = hostedMCPFrameLog ?? HostedMCPFrameLog(
+            directoryURL: hostedMCPEnvironment.allowAutoStart ? hostedMCPEnvironment.directoryURL() : nil
+        )
+        self.hostedMCPAgentStore = hostedMCPAgentStore ?? HostedMCPAgentStore(
+            directoryURL: hostedMCPEnvironment.directoryURL(),
+            secretStorage: hostedMCPEnvironment.secretStorage()
+        )
         self.chatLifecycleClient = chatLifecycleClient
         self.teamGenerationClient = teamGenerationClient
         self.chatModelEnsurer = chatModelEnsurer
         self.downloadedModelStore = downloadedModelStore ?? DownloadedModelStoreRouter()
-        self.repository = repository
+        let workFolderHold = WorkFolderHold(locking: workFolderLocking)
+        self.workFolderHold = workFolderHold
+        let heldRepository = HeldWorkFolderRepository(inner: repository, hold: workFolderHold)
+        self.repository = heldRepository
         // `computerUse: .system` is named HERE and nowhere else: the seam defaults to `.inert` so a
         // test that omits it cannot synthesize input, which makes this the one line that hands the
         // finalizer the real screenshot / AX / CGEvent adapters.
         self.llmExecutionService = llmExecutionService
-            ?? LLMExecutionService(repository: repository, computerUse: .system)
-        self.settingsService = settingsService ?? SettingsService(repository: repository)
-        self.taskService = taskService ?? TaskService(repository: repository)
-        self.workFolderManagementService = workFolderManagementService ?? WorkFolderManagementService(repository: repository)
+            ?? LLMExecutionService(repository: heldRepository, computerUse: .system)
+        self.settingsService = settingsService ?? SettingsService(repository: heldRepository)
+        self.taskService = taskService ?? TaskService(repository: heldRepository)
+        self.workFolderManagementService = workFolderManagementService
+            ?? WorkFolderManagementService(repository: heldRepository)
         self.engineFactory = engineFactory
         self.engineState = engineState ?? OrchestratorEngineState()
         self.prefixCacheReporter = prefixCacheReporter ?? PrefixCacheReporter()
@@ -722,6 +985,46 @@ final class NTMSOrchestrator {
         self.embeddingLifecycle = embeddingLifecycle ?? EmbeddingModelLifecycleService()
         self.searchEmbeddingClient = searchEmbeddingClient ?? LMStudioEmbeddingClient()
         self.llmExecutionService.attach(delegate: self)
+        self.messageQueue.store = self
+        self.autovisorEventFeed.store = self
+        self.taskFacts.onRowUpdated = { [weak self] previous, current in
+            self?.autovisorEventFeed.handleRowUpdated(from: previous, to: current)
+        }
+        self.teamEdits.folder = self
+        self.externalAutovisorReadinessSignal.onWakeAll = { [weak self] reason in
+            self?.autovisorEventFeed.handleReadinessWake(reason)
+        }
+        self.hostedMCPAgentStore.addInvalidationHandler { [weak self] agentID in
+            if Thread.isMainThread {
+                MainActor.assumeIsolated {
+                    self?.handleHostedMCPAgentInvalidated(agentID)
+                }
+            } else {
+                Task { @MainActor [weak self] in
+                    self?.handleHostedMCPAgentInvalidated(agentID)
+                }
+            }
+        }
+        self.hostedMCPAgentStore.addChangeHandler { [weak self] in
+            if Thread.isMainThread {
+                MainActor.assumeIsolated {
+                    self?.hostedMCPAgentsRevision &+= 1
+                }
+            } else {
+                Task { @MainActor [weak self] in
+                    self?.hostedMCPAgentsRevision &+= 1
+                }
+            }
+        }
+        self.configuration.onExternalAgentsSettingsChanged = { [weak self] in
+            self?.reconcileHostedMCPServerFromConfiguration()
+        }
+        if self.hostedMCPEnvironment.allowAutoStart {
+            self.startStartupBootstrapIfNeeded()
+            if self.configuration.externalAgentsEnabled {
+                self.reconcileHostedMCPServerFromConfiguration()
+            }
+        }
         // Bind the delegation loop watcher AFTER `self` is fully initialized
         // — its weak orchestrator ref can't be set in the property
         // initializer. Watcher's hooks fire from streaming/commit paths and
@@ -885,7 +1188,13 @@ final class NTMSOrchestrator {
 
     // MARK: - Private
 
-    func apply(_ snapshot: WorkFolderContext) {
+    /// `settings` says whose `ProjectSettings` the context carries, and every call site says it —
+    /// there is no default (`AppliedSettings`). A repository writer that does not own
+    /// `settings.json` still reads it back to build the context it returns, and on 8 November
+    /// that copy was another NanoTeams process's: `createTask` handed `apply` an
+    /// `autovisorEnabled = false` that process's auto-off timer had just written, and the agent's
+    /// task went to its step with `bash` (F6 C1).
+    func apply(_ snapshot: WorkFolderContext, settings: AppliedSettings) {
         // Whole-index replacement (folder open/switch, task delete, any path that
         // rebuilds rather than upserts). O(T) once, on a path already O(T).
         taskFacts.replaceAll(with: snapshot.tasksIndex.tasks)
@@ -893,6 +1202,7 @@ final class NTMSOrchestrator {
         let previousFolderID = self.snapshot?.projection.id
         let previousActiveRunID = activeTask?.runs.last?.id
         let previousSelectedRunID = selectedRunID
+        let previousSettings = self.snapshot?.projection.settings
 
         // Preserve loadedTasks from the old snapshot — but ONLY within the same
         // work folder. Task IDs are sequential ints per folder, so collisions
@@ -902,6 +1212,11 @@ final class NTMSOrchestrator {
         // ghost and persist folder A's content into folder B's task.json.
         var newSnapshot = snapshot
         let sameFolder = previousFolderID == newSnapshot.projection.id
+        // A context from a different folder — or the first one — has no settings in memory to
+        // keep: it is the folder's settings, whoever built it.
+        if settings == .keepInMemory, sameFolder, let previousSettings {
+            newSnapshot.projection.settings = previousSettings
+        }
         if sameFolder, let oldLoaded = self.snapshot?.loadedTasks {
             newSnapshot.loadedTasks = oldLoaded
         } else if !sameFolder {
@@ -911,7 +1226,8 @@ final class NTMSOrchestrator {
             // behind, a Supervisor message typed for folder A's task #3 is delivered to
             // folder B's unrelated task #3 — and `tryFlushQueuedMessages` iterates the
             // surviving keys, so merely OPENING a folder woke runs on tasks nobody touched.
-            quickCaptureFormState?.discardFolderScopedState()
+            messageQueue.discardFolderScopedState()
+            autovisorCreationLedger.resetForFolderTransition()
         }
 
         // When the active task changes (within the same folder), preserve the
@@ -928,6 +1244,19 @@ final class NTMSOrchestrator {
         // entry would show folder A's occupancy against folder B's task of the same number.
         if !sameFolder { contextFill.clear() }
 
+        // The same argument for the runtime the folder being left could still have put in place
+        // during the transition's read, after its boundary had emptied it: a load seeding a
+        // paused task's engine state, an engine a person's action created. Every engine
+        // registered at a different folder's commit was started after that boundary, by a
+        // lifecycle that has ended — stop it — and every projection left with no live engine
+        // names a task of the folder being left, which would answer for this folder's task of the
+        // same number (Resume offered on a task with no run, a wake for a question it never
+        // asked).
+        if !sameFolder {
+            if !taskEngines.isEmpty { stopAllEngines() }
+            engineState.retainProjections(forTaskIDs: Set(taskEngines.keys))
+        }
+
         self.snapshot = newSnapshot
         self.activeTaskID = newSnapshot.activeTaskID
         self.activeTask = newSnapshot.activeTask
@@ -939,6 +1268,9 @@ final class NTMSOrchestrator {
         for task in newSnapshot.loadedTasks.values { contextFill.seed(from: task) }
         self.toolDefinitions = newSnapshot.toolDefinitions
         ToolDefinitionRegistry.shared.update(newSnapshot.toolDefinitions)
+        if settings == .resyncFromDisk, sameFolder {
+            adoptAutovisorSettingsResynced(from: previousSettings)
+        }
 
         // The preserve logic in syncSelectedRunID only makes sense within ONE
         // task. Run IDs are sequential ints per task (0, 1, 2…) AND task IDs are
@@ -973,15 +1305,35 @@ final class NTMSOrchestrator {
     /// `apply(_:)` guards against above — through a hole `apply` cannot cover, because on this
     /// path it never runs.
     ///
-    /// Clearing rather than reverting is the honest half: lines 42-56 of `openWorkFolder` have
-    /// already stopped the previous folder's engines, scheduler and search index, so "the old
-    /// folder is still open" would be a claim about a folder nothing is running against. With
+    /// Clearing rather than reverting is the honest half: `openWorkFolder`'s first stretch — its
+    /// folder-transition boundary (`beginFolderTransition`) and the search-index and MCP teardowns
+    /// after it — has already stopped the previous folder's engines, executions, scheduler, search
+    /// index and server connections, so "the old folder is still open" would be a claim about a
+    /// folder nothing is running against. With
     /// the fields nil, both `mutateWorkFolder` and `mutateTask` short-circuit on their own
     /// guards and no write can be misdirected.
     ///
     /// Lives here, not in the extension, because `activeTaskID` is `private(set)` — its setter
     /// is file-scoped, so the inverse of `apply` has to sit beside `apply`.
     func discardWorkFolderState() {
+        // Nothing of a folder keeps running once its state is gone: the poll loop reads that
+        // state on every tick. The failed open that calls this stopped the scheduler at its
+        // own first line, a superseded open starts no loop after it (`startAutomationScheduler`
+        // asks its lifecycle before it does), and a tick still unwinding in a loop the boundary
+        // cancelled stops at its next check (the tick asks its lifecycle before every
+        // evaluator). This stop makes "no loop" the discard's own contract, not an argument over
+        // every path that might start one.
+        stopAutomationScheduler()
+        // Nothing of the folder is loaded, so nothing here may write to it, and holding its lock
+        // would keep out the next process that could open it. A refused open holds none already.
+        releaseWorkFolderInstanceLock()
+        autovisorCreationLedger.resetForFolderTransition()
+        autovisorEventFeed.disarmForFolderTransition()
+        externalActivityLog.disarmForFolderTransition()
+        // The engines and their mirror, for the reason `apply(_:)` gives at a different folder's
+        // commit: anything registered now was put in place during the failed open's read, after
+        // its boundary had emptied them, by a lifecycle that has ended.
+        stopAllEngines()
         // Folder-scoped ids: keeping them would let one folder's task 3 answer
         // for another's, the same class as the QuickCapture cleanup below.
         taskFacts.clear()
@@ -1006,7 +1358,7 @@ final class NTMSOrchestrator {
         // Same reason as `apply`'s `!sameFolder` branch, and the same hole: the
         // folder-local task ids the QuickCapture queue and answer drafts are keyed by
         // belong to a folder that is no longer described by anything here.
-        quickCaptureFormState?.discardFolderScopedState()
+        messageQueue.discardFolderScopedState()
     }
 
     /// Update the in-memory snapshot with a modified active task without rebuilding from disk.
@@ -1093,7 +1445,12 @@ final class NTMSOrchestrator {
         engineState.clearMeetingParticipants(for: taskID)
     }
 
-    nonisolated deinit {}
+    /// The folder goes with the orchestrator, as it did while the orchestrator owned its lock: the
+    /// hold is shared with the repository it wraps, and a copy of that repository a detached write
+    /// or a service still holds must not keep the folder from the next NanoTeams.
+    nonisolated deinit {
+        workFolderHold.release()
+    }
 }
 
 // MARK: - LLMExecutionDelegate Conformance
@@ -1112,6 +1469,26 @@ extension NTMSOrchestrator {
     /// quickly and hope" would pass against the very ordering it is meant to pin.
     /// Cleared in the test's `tearDown` — a leaked gate would hang every later suite.
     static var _testRunLaunchGate: (@Sendable () async -> Void)?
+
+    /// Held open by `WorkFolderOpenSupersessionTests` at one step of a folder lifecycle — awaited
+    /// by `folderLifecycleStillCurrent` before it answers, standing for a suspension right before
+    /// the check, which reads its lifecycle argument only after this returns — so a test can
+    /// start a second open while the first is suspended there. It is handed the lifecycle asking
+    /// (a test tells two opens apart by it: each open's generation is the one before it plus one)
+    /// and the step's name (`WorkFolderOpenStep`, which production never reads). Deterministic for
+    /// the same reason as `_testRunLaunchGate`: the post-read stretch of an open has no disk read
+    /// a delay could stretch. Cleared in the test's `tearDown`.
+    static var _testWorkFolderOpenGate: (@Sendable (WorkFolderLifecycle, WorkFolderOpenStep) async -> Void)?
+
+    /// Held open by `WorkFolderLifecycleSeamTests` inside `tearDownSearchIndexCoordinator` —
+    /// the first suspension of `openWorkFolder` — so a test can verify that `beginFolderTransition`
+    /// already stopped the outgoing folder's engines before the teardown suspends.
+    static var _testSearchIndexTeardownGate: (@Sendable () async -> Void)?
+
+    /// Held open by `WorkFolderLifecycleSeamTests` inside `reconcileChatModelResidency` so a
+    /// test can commit the next work folder while `deleteAutovisor` is suspended in its
+    /// post-removal residency reconcile.
+    static var _testResidencyReconcileGate: (@Sendable () async -> Void)?
 
     func _testRegisterStepTask(stepID: String, taskID: Int) {
         llmExecutionService._testRegisterStepTask(stepID: stepID, taskID: taskID)

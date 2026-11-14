@@ -35,6 +35,7 @@ struct PrefixCacheStatusIndicator: View {
                     .accessibilityHidden(true)
                 Text("CACHE ×\(reporter.missCount)")
                     .font(Typography.term2xs)
+                    .lineLimit(1)
                     .tracking(Typography.labelTracking)
                     .foregroundStyle(Colors.warning)
             }
@@ -56,6 +57,7 @@ struct PrefixCacheStatusIndicator: View {
         VStack(alignment: .leading, spacing: Spacing.s) {
             Text("PROMPT CACHE MISSES")
                 .font(Typography.term2xs)
+                .lineLimit(1)
                 .tracking(Typography.labelTracking)
                 .foregroundStyle(Colors.textTertiary)
 
@@ -79,6 +81,7 @@ struct PrefixCacheStatusIndicator: View {
                 TerminalDivider()
                 Text("BY CALLER")
                     .font(Typography.term2xs)
+                    .lineLimit(1)
                     .tracking(Typography.labelTracking)
                     .foregroundStyle(Colors.textTertiary)
                 ForEach(Self.sortedOwners(reporter.countsByOwner), id: \.0) { owner, count in

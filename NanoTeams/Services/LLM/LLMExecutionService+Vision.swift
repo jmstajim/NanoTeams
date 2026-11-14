@@ -122,7 +122,8 @@ extension LLMExecutionService {
         let internalDir = NTMSPaths(workFolderRoot: workFolderRoot).internalDir
         let resolver = SandboxPathResolver(workFolderRoot: workFolderRoot, internalDir: internalDir)
         let fileURL = try resolver.resolveFileURL(relativePath: imagePath)
-        guard let imageData = FileManager.default.contents(atPath: fileURL.path) else {
+        // Read through a verified descriptor, like every other file tool (#376).
+        guard let imageData = try? VerifiedFile.readData(fileURL, resolver: resolver) else {
             throw VisionError.fileNotFound(imagePath)
         }
         guard imageData.count <= VisionConstants.maxImageBytes else {

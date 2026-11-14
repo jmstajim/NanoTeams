@@ -17,8 +17,10 @@ extension LLMExecutionService {
         conversationMessages: inout [ChatMessage]
     ) async {
         guard result.toolName == ToolNames.updateScratchpad, !result.isError else { return }
+        // `result.argumentsJSON` is what the handler received — renamed already — so the
+        // declared key is the whole story, with `requiredString`'s recovery of a prose call.
         guard let dict = JSONUtilities.parseJSONDictionary(result.argumentsJSON),
-              let content = resolveContentString(dict) else { return }
+              let content = try? requiredString(dict, "content") else { return }
 
         await updateScratchpad(stepID: stepID, taskID: taskID, content: content)
 
@@ -191,6 +193,8 @@ extension LLMExecutionService {
             // so checkArtifactCompleteness can resume normal operation.
             if task.runs[ri].steps[si].revisionComment != nil {
                 task.runs[ri].steps[si].revisionComment = nil
+                task.runs[ri].steps[si].revisionCommentAuthor = nil
+                task.runs[ri].steps[si].revisionCommentIsFromAutomatedSupervisor = nil
             }
         }
     }

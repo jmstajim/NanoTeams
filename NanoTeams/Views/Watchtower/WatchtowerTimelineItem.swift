@@ -153,6 +153,7 @@ struct WatchtowerTimelineItem: View {
                 // Timestamp
                 Text(event.timestamp.formatted(.relative(presentation: .named)))
                     .font(Typography.term2xs)
+                    .lineLimit(1)
                     .foregroundStyle(Colors.textTertiary)
                     .padding(.top, 1)
             }

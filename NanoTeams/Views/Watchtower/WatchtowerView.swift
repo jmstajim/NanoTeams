@@ -163,6 +163,7 @@ struct WatchtowerView: View {
         // above never fires for it — observe the approval map directly so the banner
         // surfaces (and clears) as commands are held/resolved across any task.
         .onChange(of: store.bashApprovalRequests) { _, _ in refreshNotifications() }
+        .onChange(of: store.mcpApprovalRequests) { _, _ in refreshNotifications() }
     }
 
     // MARK: - Activity Timeline
@@ -207,7 +208,8 @@ struct WatchtowerView: View {
             loaded.map {
                 WatchtowerInboxBuilder.TaskInput(task: $0, teamRoles: store.resolvedTeam(for: $0).roles)
             },
-            bashApprovals: Array(store.bashApprovalRequests.values)
+            bashApprovals: Array(store.bashApprovalRequests.values),
+            mcpApprovals: Array(store.mcpApprovalRequests.values)
         )
 
         // Expire dismissals whose notification is genuinely gone (the step was

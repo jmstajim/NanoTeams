@@ -45,7 +45,6 @@ struct LLMModelDetailsCard: View {
     var body: some View {
         SettingsCard(
             header: "Model Details",
-            systemImage: "cpu",
             footer: footerText
         ) {
             VStack(alignment: .leading, spacing: Spacing.s) {

@@ -144,18 +144,19 @@ nonisolated enum SearchExecutor {
             contextAfter: input.contextAfter,
             perQueryCap: perQueryCap,
             collectBudget: collectBudget,
-            asciiFoldMatchesLocale: asciiFoldMatchesLocale
+            asciiFoldMatchesLocale: asciiFoldMatchesLocale,
+            resolver: input.resolver
         )
 
         // MARK: - Walk scope
 
         let fm = input.fileManager
         let workFolderRoot = input.workFolderRoot
-        // Canonical root for the symlink-containment check in the walk. Resolved ONCE, and
-        // resolved on BOTH sides of that comparison: `resolvingSymlinksInPath()` normalises
-        // `/private/var` back to `/var` for paths that exist, so comparing a resolved target
-        // against an unresolved root would reject legitimate in-folder links on macOS temp dirs.
-        let canonicalRoot = workFolderRoot.resolvingSymlinksInPath().standardizedFileURL
+        // The root's REAL path for the symlink-containment check in the walk. Resolved ONCE, as a
+        // string, because the comparison is a text compare on both sides: URL normalisation
+        // strips `/private` from a path that exists and keeps it on one that does not, so a root
+        // and a target normalised that way disagree exactly when the link dangles (#384).
+        let canonicalRootReal = SandboxPathResolver.canonicalPath(workFolderRoot.path)
         let internalDir = input.internalDir
         // The internal dir expressed as a work-folder-relative prefix, computed ONCE. The walk
         // then excludes it with a string compare instead of calling
@@ -166,7 +167,7 @@ nonisolated enum SearchExecutor {
         // nothing the walk enumerates can be inside it, so "no prefix" is the correct answer.
         // Canonical internal dir, for the symlink check in the walk. The relative-prefix
         // exclusion below cannot see a link that reaches it under another name.
-        let internalCanonical = internalDir?.resolvingSymlinksInPath().standardizedFileURL
+        let internalCanonicalReal = internalDir.map { SandboxPathResolver.canonicalPath($0.path) }
         let internalRelPrefix: String? = internalDir.flatMap { dir -> String? in
             let rootComponents = workFolderRoot.standardizedFileURL.pathComponents
             let dirComponents = dir.standardizedFileURL.pathComponents
@@ -206,9 +207,10 @@ nonisolated enum SearchExecutor {
         var walker = SearchDirectoryWalker(
             fileManager: fm,
             workFolderRoot: workFolderRoot,
-            canonicalRoot: canonicalRoot,
-            internalCanonical: internalCanonical,
+            canonicalRootReal: canonicalRootReal,
+            internalCanonicalReal: internalCanonicalReal,
             internalRelPrefix: internalRelPrefix,
+            hidden: SearchDirectoryWalker.Hidden(resolver: input.resolver),
             compiledGlob: compiledGlob,
             listMode: listMode,
             collectTarget: collectTarget,

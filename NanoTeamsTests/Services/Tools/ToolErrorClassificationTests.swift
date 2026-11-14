@@ -29,7 +29,11 @@ final class ToolErrorClassificationTests: XCTestCase {
             (NSCocoaErrorDomain, 257, .permissionDenied, "Permission denied."),
             (NSCocoaErrorDomain, 513, .permissionDenied, "Permission denied."),
             (NSPOSIXErrorDomain, 13, .permissionDenied, "Permission denied."),
-            (NSCocoaErrorDomain, 512, .invalidArgs, "The path is not a valid file name."),
+            // 514 is `fileWriteInvalidFileName`; 512 is `fileWriteUnknown`, which the table
+            // claimed was the invalid NAME until 2026-11-08 — so a write that failed for an
+            // unclassified reason told the model to fix its path (review #382).
+            (NSCocoaErrorDomain, 514, .invalidArgs, "The path is not a valid file name."),
+            (NSCocoaErrorDomain, 512, .commandFailed, "The file could not be written."),
             (NSCocoaErrorDomain, 516, .conflict, "A file already exists at that path."),
             (NSCocoaErrorDomain, 640, .commandFailed, "No space left on the volume."),
             (NSPOSIXErrorDomain, 28, .commandFailed, "No space left on the volume."),

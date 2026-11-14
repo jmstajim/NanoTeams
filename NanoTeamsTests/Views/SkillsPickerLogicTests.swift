@@ -222,4 +222,75 @@ final class SkillsPickerLogicTests: XCTestCase {
         }
         XCTAssertEqual(body, "just text")
     }
+
+    // MARK: - MCP prompts in the `/` picker (D-M3)
+
+    func testMCPPromptProjectsIntoPickerItemAndStagesSkillClipThroughRegistry() async throws {
+        let slug = try XCTUnwrap(MCPServerSlug("folio"))
+        let serverID = UUID()
+        let outcome = MCPToolDescriptorFactory.buildPrompts(
+            rawPrompts: [
+                .object([
+                    "name": .string("code_review"),
+                    "description": .string("Reviews the staged diff."),
+                    "arguments": .array([
+                        .object(["name": .string("branch"), "description": .string("Branch"), "required": .bool(false)]),
+                    ]),
+                ]),
+            ],
+            slug: slug)
+        let promptDesc = try XCTUnwrap(outcome.prompts.first)
+        let entry = MCPPromptsSnapshot.Entry(
+            serverID: serverID,
+            slug: slug,
+            serverDisplayName: "Folio Desktop",
+            descriptor: promptDesc)
+        let item = SkillsPickerLogic.mcpPromptItem(from: entry)
+
+        XCTAssertEqual(item.name, "folio:code_review")
+        XCTAssertEqual(item.description, "Reviews the staged diff.")
+        XCTAssertEqual(item.agentLabel, "Folio Desktop")
+        XCTAssertEqual(item.kindLabel, "MCP Prompt")
+        XCTAssertEqual(SkillsPickerLogic.grouped([item]).map(\.section), ["Folio Desktop — MCP Prompts"])
+        XCTAssertEqual(SkillsPickerLogic.filter([item], query: "code_review").count, 1)
+
+        let transport = ScriptedTransport()
+        transport.script(MCPWire.discoverMethod, [.result(.object([:]))])
+        transport.script(MCPWire.promptsGetMethod, [.result(.object([
+            "description": .string("Reviews the staged diff."),
+            "messages": .array([
+                .object([
+                    "role": .string("user"),
+                    "content": .object(["type": .string("text"), "text": .string("Check all security invariants.")]),
+                ]),
+            ]),
+        ]))])
+        let client = MCPClient(
+            transport: transport, log: nil,
+            timeouts: MCPTimeouts(connect: 1, requestInactivity: 3, requestAbsolute: 5),
+            clientVersion: "1.0")
+        _ = try await client.connect(cachedEra: nil)
+        let registry = MCPClientRegistry()
+        registry.publish(client, approvedHashes: [promptDesc.pinKey: promptDesc.pinHash], era: .modern, for: serverID)
+
+        var clips: [String] = []
+        try await SkillsPickerLogic.stageMCPPrompt(item, into: &clips, registry: registry)
+        XCTAssertEqual(clips.count, 1)
+        XCTAssertTrue(SkillsPickerLogic.isStaged(item, in: clips))
+        let parsed = try XCTUnwrap(SkillClip.parse(clips[0]))
+        XCTAssertEqual(parsed.name, "folio:code_review")
+        XCTAssertEqual(parsed.agentLabel, "Folio Desktop")
+        XCTAssertEqual(parsed.body, "Check all security invariants.")
+
+        do {
+            _ = try await registry.getPrompt(
+                serverID: serverID,
+                promptName: "code_review",
+                expectedHash: "wrong-hash")
+            XCTFail("expected toolChanged refusal")
+        } catch let error as MCPDispatchRefusal {
+            XCTAssertEqual(error, .toolChanged)
+        }
+        await client.close(budget: 0)
+    }
 }

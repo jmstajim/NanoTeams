@@ -27,9 +27,10 @@ final class AutovisorHandlersTests: XCTestCase {
         return try await invokeRaw(runtime, name, argsJSON)
     }
 
-    /// Drives a verbatim arguments string through `ToolRuntime` — exercises the
-    /// real `parseAndNormalizeArguments` path (JSON `null` → NSNull, non-JSON
-    /// plain text → `__raw_input__` wrap) instead of a pre-built dictionary.
+    /// Drives a verbatim arguments string through `ToolRuntime` — exercises the runtime's real
+    /// reading of the document (`ToolRuntime.dispatchedArguments`: a `null` VALUE → NSNull, a
+    /// top-level `null` → no arguments, non-JSON plain text → the `__raw_input__` wrap) instead
+    /// of a pre-built dictionary.
     private func invokeRaw(_ runtime: ToolRuntime, _ name: String, _ argsJSON: String) async throws -> ToolExecutionResult {
         let call = StepToolCall(name: name, argumentsJSON: argsJSON)
         let results = await runtime.executeAll(
@@ -98,7 +99,22 @@ final class AutovisorHandlersTests: XCTestCase {
     func testAnswerTaskQuestion_valid_emitsSignal() async throws {
         let r = try await invoke(makeRuntime(), ToolNames.answerTaskQuestion, ["task_id": 2, "answer": "yes"])
         XCTAssertFalse(r.isError)
-        guard case .answerTaskQuestion(let id, let a)? = r.signal, id == 2, a == "yes" else { return XCTFail() }
+        guard case .answerTaskQuestion(let id, let a, .none)? = r.signal, id == 2, a == "yes" else { return XCTFail() }
+    }
+
+    /// The in-app manager names WHICH waiting role it answers, as the external agent always
+    /// could. Until 2026-11-09 the in-app schema had no `role_id`, and the key was dropped: the
+    /// answer went to the first waiting role, whoever the manager had meant.
+    func testAnswerTaskQuestion_roleID_reachesTheSignalAndTheAction() async throws {
+        let r = try await invoke(
+            makeRuntime(), ToolNames.answerTaskQuestion, ["task_id": 2, "answer": "yes", "role_id": "pm"])
+        XCTAssertFalse(r.isError, r.outputJSON)
+        guard case .answerTaskQuestion(2, "yes", let role)? = r.signal else { return XCTFail(r.outputJSON) }
+        XCTAssertEqual(role, "pm")
+        guard let signal = r.signal, case .answerTaskQuestion(_, _, let actionRole)? =
+            AutovisorCommand(signal: signal)?.autovisorAction
+        else { return XCTFail("the signal maps to an action") }
+        XCTAssertEqual(actionRole, "pm", "the action the orchestrator applies names the same role")
     }
 
     func testMessageTask_valid_emitsSignal() async throws {
@@ -178,14 +194,18 @@ final class AutovisorHandlersTests: XCTestCase {
     }
 
     /// Non-string title (number) falls to derivation rather than stringifying "42".
-    func testCreateManagedTask_numericTitle_derivesFromBrief() async throws {
+    /// A number sent as the title is read as its text (2026-11-09) — what the model sent, and
+    /// said so — rather than discarded for a title derived from the brief. A `null` or empty title
+    /// still derives (`testCreateManagedTask_*Title_*`).
+    func testCreateManagedTask_numericTitle_isReadAsText() async throws {
         let r = try await invokeRaw(makeRuntime(), ToolNames.createManagedTask,
                                     #"{"title": 42, "brief": "B"}"#)
         XCTAssertFalse(r.isError)
         guard case .createManagedTask(let t, _, _)? = r.signal else {
             return XCTFail("got \(String(describing: r.signal))")
         }
-        XCTAssertEqual(t, "B")
+        XCTAssertEqual(t, "42")
+        XCTAssertTrue(metaWarnings(in: r.outputJSON).contains("`title` was read as text."), r.outputJSON)
     }
 
     /// Multi-line brief with a SHORT first line — pins the first-line split

@@ -1,29 +1,24 @@
 import SwiftUI
 
-/// The Autovisor's start page — goal + **Enable**. Shown by
-/// `MainLayoutView.autovisorDetail` whenever `autovisorShowsSetupPane` is true,
-/// which covers BOTH entry points:
+/// What the Autovisor's start page draws: who drives, what that means, the goal and Enable.
+/// Every fact comes in as `AutovisorSetupPresentation`, every action goes out through
+/// `Actions`; the goal composer is the one part that reads the store itself (its attachments
+/// and clips persist to the folder's goal store).
 ///
-/// • **First run** — the manager was never created (`autovisorTaskID == nil`).
-/// • **Re-enable** — it exists but is switched off. Disabling keeps the task, so
-///   this pane replaces the chat for the whole off period; the conversation is
-///   untouched and comes back on the next enable.
-///
-/// Flow: the user edits the goal (`seedGoalDraft` pre-fills the persisted one, or
-/// `AutovisorConstants.defaultGoal` so the field is never blank — the default is an
-/// "explore & wait" directive that keeps the manager safe until a real goal is set),
-/// then taps **Enable**:
-///
-/// 1. `updateAutovisorGoal` persists the edited goal.
-/// 2. `setAutovisorEnabled(true)` flips the settings flag and `ensureAutovisorTask`
-///    creates the manager team-then-task on first run, or re-arms the review
-///    recurrence for an existing one.
-/// 3. The parent `autovisorDetail` re-evaluates: `autovisorShowsSetupPane` is now
-///    false → routes to the loader/`switchTask` branch → lands on the chat view.
-///
-/// No explicit navigation push needed — the body re-render IS the route.
-struct AutovisorSetupView: View {
-    @Environment(NTMSOrchestrator.self) private var store
+/// The driver sits above the goal because it decides what the goal is for: the built-in
+/// manager's system prompt, or what an external agent reads from the folder's status.
+struct AutovisorSetupContent: View {
+    let presentation: AutovisorSetupPresentation
+    let actions: Actions
+
+    struct Actions {
+        let selectDriver: @MainActor (AutovisorDriver) -> Void
+        let openExternalAgents: @MainActor () -> Void
+        /// Persists the goal, then turns the Autovisor on.
+        let enable: @MainActor (String) async -> Void
+
+        static let inert = Actions(selectDriver: { _ in }, openExternalAgents: {}, enable: { _ in })
+    }
 
     @State private var goalDraft: String = ""
     @State private var isEnabling = false
@@ -37,6 +32,7 @@ struct AutovisorSetupView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: Spacing.l) {
                 header
+                driverSection
                 presetSection
                 goalSection
                 enableButton
@@ -49,7 +45,10 @@ struct AutovisorSetupView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(NTMSBackground())
         .navigationTitle("")
-        .onAppear { seedGoalDraft() }
+        .onAppear {
+            guard goalDraft.isEmpty else { return }
+            goalDraft = AutovisorSetupPresentation.initialGoalDraft(persisted: presentation.persistedGoal)
+        }
     }
 
     // MARK: - Sections
@@ -66,11 +65,57 @@ struct AutovisorSetupView: View {
                     .font(Typography.termXl)
                     .foregroundStyle(Colors.textPrimary)
             }
-            Text("An automated Supervisor that watches this folder — creates and runs tasks, answers questions, and maintains its own memory between sessions.")
+            // Says what both drivers do; the driver's caption says what differs.
+            Text("An automated Supervisor that watches this folder — creates and runs tasks, answers their questions and reviews the results.")
                 .font(Typography.termBase)
                 .foregroundStyle(Colors.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    private var driverSection: some View {
+        VStack(alignment: .leading, spacing: Spacing.s) {
+            MonoLabel(text: "Driver", marker: true)
+
+            AutovisorDriverPicker(
+                selection: presentation.driver,
+                isDisabled: isEnabling || isImprovingGoal,
+                onSelect: actions.selectDriver
+            )
+
+            Text(presentation.driverCaption)
+                .font(Typography.caption)
+                .foregroundStyle(Colors.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let line = presentation.externalAgents {
+                externalAgentsRow(line)
+            }
+        }
+    }
+
+    /// Whether an agent can connect yet, and the way to Settings → External Agents, where agents
+    /// are added and their tokens issued.
+    private func externalAgentsRow(_ line: AutovisorSetupPresentation.ExternalAgentsLine) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: Spacing.s) {
+            StatusGlyph(
+                glyph: TerminalGlyph.bullet,
+                color: line.isReady ? Colors.success : Colors.warning,
+                font: Typography.term2xs)
+            Text(line.text)
+                .font(Typography.caption)
+                .foregroundStyle(Colors.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: Spacing.s)
+            // Caption-sized, as on the agent's pane: a way out of the line, not a third driver
+            // button — at the picker's size it squeezed the line onto two.
+            Button(action: actions.openExternalAgents) {
+                Text("External Agents…")
+                    .font(Typography.caption)
+            }
+            .buttonStyle(.terminalSecondary)
+        }
+        .padding(.top, Spacing.xxs)
     }
 
     private var presetSection: some View {
@@ -107,7 +152,7 @@ struct AutovisorSetupView: View {
                 autofocus: true
             )
 
-            Text("Injected into the manager's system prompt. You can edit this any time from the chat or Settings → Autovisor.")
+            Text(presentation.goalCaption)
                 .font(Typography.caption)
                 .foregroundStyle(Colors.textTertiary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -140,7 +185,7 @@ struct AutovisorSetupView: View {
             .buttonStyle(.plain)
             .disabled(isEnabling || isImprovingGoal)
             .keyboardShortcut(.return, modifiers: .command)
-            .help("Enable Autovisor and open its chat (⌘↩)")
+            .help("Enable Autovisor (⌘↩)")
 
             Spacer()
         }
@@ -148,42 +193,11 @@ struct AutovisorSetupView: View {
 
     // MARK: - Actions
 
-    /// Seeds the draft from persisted settings if present, otherwise from the
-    /// default goal so the field is never blank. The default is a safe "explore
-    /// and wait" directive — letting the user enable without editing yields
-    /// well-defined behavior, not an inert manager.
-    private func seedGoalDraft() {
-        guard goalDraft.isEmpty else { return }
-        let persisted = store.workFolder?.settings.autovisorGoal ?? ""
-        goalDraft = persisted.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? AutovisorConstants.defaultGoal
-            : persisted
-    }
-
-    /// Persist the edited goal, then flip the enable flag. Ordering matters:
-    /// `setAutovisorEnabled(true)` → `ensureAutovisorTask` reads the persisted
-    /// goal when seeding the new manager's brief, so writing the goal FIRST
-    /// guarantees the brief and the goal start in lock-step instead of the
-    /// brief carrying the prior default until the next `updateAutovisorGoal`.
     private func enable() {
         isEnabling = true
         Task {
-            await store.updateAutovisorGoal(goalDraft)
-            await store.setAutovisorEnabled(true)
+            await actions.enable(goalDraft)
             isEnabling = false
         }
     }
-}
-
-// MARK: - Previews
-
-#Preview("Autovisor Setup — Fresh") {
-    @Previewable @State var store = PreviewStore.make()
-    AutovisorSetupView()
-        .environment(store)
-        .environment(store.engineState)
-        .environment(store.configuration)
-        .environment(store.streamingPreviewManager)
-        .environment(DictationService())
-        .frame(width: 800, height: 600)
 }

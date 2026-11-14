@@ -6,11 +6,14 @@ import UniformTypeIdentifiers
 /// List of artifacts in a team with search, add/edit/delete, and double-click to edit.
 struct ArtifactListView: View {
     @Binding var team: Team
+    /// What an artifact sheet opened from here saves into — handed to it by the click that opens it.
+    let session: TeamEditCommitQueue.Session
     let onSave: () -> Void
 
     @State var selectedArtifactID: String? = nil
-    @State private var showingAddArtifact = false
-    @State private var showingEditArtifact: TeamArtifact? = nil
+    /// The artifact sheet a click asked for, with the session that click captured
+    /// (`TeamEditSheetRequest`).
+    @State private var artifactSheet: TeamEditSheetRequest<TeamArtifact>? = nil
     @State var showingDeleteConfirmation: TeamArtifact? = nil
     @State var importError: ImportExportError? = nil
     @State private var searchText: String = ""
@@ -34,7 +37,7 @@ struct ArtifactListView: View {
 
                 // Add artifact button
                 Button {
-                    showingAddArtifact = true
+                    openArtifactEditor(.create)
                 } label: {
                     Image(systemName: "plus")
                         .font(Typography.termBase.weight(.bold))
@@ -50,7 +53,7 @@ struct ArtifactListView: View {
                 // More actions menu
                 Menu {
                     Button {
-                        showingAddArtifact = true
+                        openArtifactEditor(.create)
                     } label: {
                         Label("New Artifact", systemImage: "plus")
                     }
@@ -84,17 +87,11 @@ struct ArtifactListView: View {
                 artifactList
             }
         }
-        .sheet(isPresented: $showingAddArtifact) {
+        .sheet(item: $artifactSheet) { request in
             ArtifactEditorSheet(
                 team: $team,
-                mode: .create,
-                onSave: { _ in handleSaveArtifact() }
-            )
-        }
-        .sheet(item: $showingEditArtifact) { artifact in
-            ArtifactEditorSheet(
-                team: $team,
-                mode: .edit(artifact),
+                session: request.session,
+                mode: request.mode,
                 onSave: { _ in handleSaveArtifact() }
             )
         }
@@ -129,6 +126,12 @@ struct ArtifactListView: View {
         }
     }
 
+    /// Opens the artifact sheet as the click that called this saw the team: its session is this
+    /// render's, never the one presenting the sheet (`TeamEditSheetRequest`).
+    private func openArtifactEditor(_ mode: EditorMode<TeamArtifact>) {
+        artifactSheet = TeamEditSheetRequest(mode: mode, session: session)
+    }
+
     // MARK: - Empty State
 
     private var emptyState: some View {
@@ -137,7 +140,7 @@ struct ArtifactListView: View {
             icon: "doc.text",
             description: "Add artifacts to define the deliverables produced by roles",
             actionTitle: "Add First Artifact",
-            onAction: { showingAddArtifact = true }
+            onAction: { openArtifactEditor(.create) }
         )
     }
 
@@ -161,14 +164,14 @@ struct ArtifactListView: View {
                         team: team,
                         isSelected: selectedArtifactID == artifact.id,
                         onSelect: { selectedArtifactID = artifact.id },
-                        onEdit: { showingEditArtifact = artifact }
+                        onEdit: { openArtifactEditor(.edit(artifact)) }
                     )
                     .accessibilityAction(named: "Edit") {
-                        showingEditArtifact = artifact
+                        openArtifactEditor(.edit(artifact))
                     }
                     .contextMenu {
                         Button {
-                            showingEditArtifact = artifact
+                            openArtifactEditor(.edit(artifact))
                         } label: {
                             Label("Edit...", systemImage: "pencil")
                         }
@@ -274,6 +277,7 @@ private struct ArtifactListItemView: View {
             // MIME type label
             Text(artifact.mimeType)
                 .font(Typography.term2xs)
+                .lineLimit(1)
                 .foregroundStyle(Colors.textTertiary)
         }
         .padding(.vertical, Spacing.xs)
@@ -299,8 +303,13 @@ private struct ArtifactListItemView: View {
 }
 
 #Preview {
+    // A store only for the folder lifecycle a session needs: the list itself reads none.
+    @Previewable @State var store = PreviewStore.make()
+    let team = Team.default
+    let lifecycle = store.currentFolderLifecycle
     ArtifactListView(
-        team: .constant(.default),
+        team: .constant(team),
+        session: TeamEditCommitQueue.Session(team: team, lifecycle: lifecycle),
         onSave: {}
     )
     .frame(width: 600, height: 800)

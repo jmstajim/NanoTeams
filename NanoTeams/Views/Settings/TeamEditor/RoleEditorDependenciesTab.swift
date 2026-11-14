@@ -6,6 +6,9 @@ struct RoleEditorDependenciesTab: View {
     @Binding var editorState: RoleEditorState
     let isEditingSupervisor: Bool
     @Binding var team: Team
+    /// The role sheet's own session: an artifact created here is saved into the team and folder
+    /// the role sheet was opened on, or nowhere.
+    let session: TeamEditCommitQueue.Session
 
     @State private var showingNewArtifact = false
     @State private var newArtifactTargetIsProduced = false
@@ -43,7 +46,9 @@ struct RoleEditorDependenciesTab: View {
             }
         }
         .sheet(isPresented: $showingNewArtifact) {
-            ArtifactEditorSheet(team: $team, mode: .create) { artifact in
+            // `onSave` comes only once the artifact's write landed (`ArtifactEditorSheet.save`):
+            // a refused one stays in that sheet, and the role's draft never names it.
+            ArtifactEditorSheet(team: $team, session: session, mode: .create) { artifact in
                 autoAssignNewArtifact(artifact)
             }
         }
@@ -61,11 +66,11 @@ struct RoleEditorDependenciesTab: View {
     ///
     /// Takes the artifact from the callback rather than diffing
     /// `team.artifactNames` against a pre-sheet snapshot, which could never
-    /// work: `onSave` fires in the same synchronous turn as the sheet's `team`
-    /// Binding write, and that setter is async (`Task { await
-    /// store.mutateWorkFolder … }`), so `team` here is still the pre-write
-    /// snapshot and the diff was always empty — the auto-assign silently never
-    /// fired.
+    /// work while the sheet's `team` Binding write was an async
+    /// `Task { await store.mutateWorkFolder … }` fired in the same turn as
+    /// `onSave`: `team` here was still the pre-write snapshot and the diff was
+    /// always empty — the auto-assign silently never fired. The callback says
+    /// which artifact was stored without anyone diffing anything.
     private func autoAssignNewArtifact(_ artifact: TeamArtifact) {
         let name = artifact.name
         if newArtifactTargetIsProduced {
@@ -158,32 +163,38 @@ struct RoleEditorDependenciesTab: View {
 }
 
 #Preview("Producing Role") {
+    @Previewable @State var store = PreviewStore.make()
     @Previewable @State var state = RoleEditorState(
         roleName: "Software Engineer",
         requiredArtifacts: ["Implementation Plan", "Design Spec"],
         producedArtifacts: ["Engineering Notes"]
     )
     @Previewable @State var team = Team.default
+    let lifecycle = store.currentFolderLifecycle
     RoleEditorDependenciesTab(
         editorState: $state,
         isEditingSupervisor: false,
-        team: $team
+        team: $team,
+        session: TeamEditCommitQueue.Session(team: team, lifecycle: lifecycle)
     )
     .frame(width: 500, height: 400)
     .background(Colors.surfacePrimary)
 }
 
 #Preview("Supervisor") {
+    @Previewable @State var store = PreviewStore.make()
     @Previewable @State var state = RoleEditorState(
         roleName: "Supervisor",
         requiredArtifacts: ["Release Notes"],
         producedArtifacts: ["Supervisor Task"]
     )
     @Previewable @State var team = Team.default
+    let lifecycle = store.currentFolderLifecycle
     RoleEditorDependenciesTab(
         editorState: $state,
         isEditingSupervisor: true,
-        team: $team
+        team: $team,
+        session: TeamEditCommitQueue.Session(team: team, lifecycle: lifecycle)
     )
     .frame(width: 500, height: 400)
     .background(Colors.surfacePrimary)

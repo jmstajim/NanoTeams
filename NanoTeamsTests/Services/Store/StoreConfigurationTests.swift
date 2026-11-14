@@ -252,4 +252,29 @@ final class StoreConfigurationTests: XCTestCase {
 
         XCTAssertFalse(config.embedFilesInPrompt)
     }
+
+    // MARK: - MCP Judge LLM Override Tests
+
+    func testMCPJudgeLLMOverride_persistsReloadsAndResets() {
+        XCTAssertNil(config.mcpJudgeLLMOverride)
+
+        let override = LLMOverride(
+            baseURLString: "http://127.0.0.1:1234",
+            modelName: "mcp-judge-model",
+            provider: .lmStudio)
+        config.mcpJudgeLLMOverride = override
+        XCTAssertNotNil(storage.data(forKey: UserDefaultsKeys.mcpJudgeLLMOverride))
+
+        let reloaded = StoreConfiguration(storage: storage)
+        XCTAssertEqual(reloaded.mcpJudgeLLMOverride, override)
+
+        config.mcpJudgeLLMOverride = LLMOverride()
+        XCTAssertNil(storage.data(forKey: UserDefaultsKeys.mcpJudgeLLMOverride))
+        XCTAssertNil(StoreConfiguration(storage: storage).mcpJudgeLLMOverride)
+
+        config.mcpJudgeLLMOverride = override
+        config.resetToDefaults()
+        XCTAssertNil(config.mcpJudgeLLMOverride)
+        XCTAssertNil(storage.data(forKey: UserDefaultsKeys.mcpJudgeLLMOverride))
+    }
 }

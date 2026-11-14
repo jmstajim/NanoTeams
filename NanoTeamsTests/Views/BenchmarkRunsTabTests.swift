@@ -102,7 +102,7 @@ final class BenchmarkRunsTabTests: XCTestCase {
 
     // MARK: - Timestamps
 
-    private static let reference = Date(timeIntervalSince1970: 1_755_000_000)
+    private static let reference = Date(timeIntervalSince1970: 1_754_956_800)
 
     /// RED: always include the year → five rows repeat it down the column and the widest
     /// single-line cell in the table gets wider. RED (second): never include it → two runs a year

@@ -27,22 +27,16 @@ nonisolated enum SupervisorAskPayload {
         // under: a well-formed `{headline, form}` payload sent as `ask_supervisor` is the live
         // shape of 2026-09-10, and the same routing that makes it reach the form's handler
         // makes it read as a form here.
-        let resolved = SupervisorAskRouting.correctedName(
-            for: call.name, argumentKeys: argumentKeys(in: call.argumentsJSON)) ?? call.name
+        // The tool the runtime would route this call to — read the runtime's way
+        // (`ToolCallArguments`), so a padded `"\nform"` key, a reentrant envelope or a raw
+        // control character cannot park a questionnaire here while this answers a headline.
+        let resolved = ToolCallArguments.prepare(rawJSON: call.argumentsJSON, emittedName: call.name)
+            .read?.toolName ?? call.name
         if resolved == ToolNames.askSupervisorForm,
            case .read(let read)? = SupervisorFormPayload.read(argumentsJSON: call.argumentsJSON)
         {
             return SupervisorInquiryReply.questionnaire(for: read.inquiry)
         }
         return call.parsedSupervisorQuestion
-    }
-
-    /// The top-level argument names, or an empty set when the blob is not a JSON object —
-    /// under which `correctedName` corrects nothing and the emitted name stands.
-    private static func argumentKeys(in argumentsJSON: String) -> Set<String> {
-        guard let data = argumentsJSON.data(using: .utf8),
-              let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return [] }
-        return Set(parsed.keys)
     }
 }

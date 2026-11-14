@@ -476,4 +476,464 @@ final class ProcessRunnerTests: XCTestCase {
         XCTAssertTrue(result.success)
         XCTAssertTrue(result.stdout.contains("normal-completion-marker"))
     }
+
+    // MARK: - Wave F2: Async Execution & Raw Byte Handling (Feature 12 / §3.2)
+
+    func testRunAsync_echoCommand_returnsRawBytesAndString() async throws {
+        let result = try await ProcessRunner.runAsync(
+            executable: "/bin/echo",
+            arguments: ["Hello, Async World!"],
+            currentDirectory: tempDir
+        )
+
+        XCTAssertTrue(result.success)
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines), "Hello, Async World!")
+        XCTAssertFalse(result.stdoutData.isEmpty)
+        XCTAssertEqual(result.stdoutData, Data("Hello, Async World!\n".utf8))
+        XCTAssertTrue(result.stderr.isEmpty)
+    }
+
+    func testRunAsync_largeOutput_returnsEveryByteOfEachConcurrentRun() async throws {
+        let count = 5
+        try await withThrowingTaskGroup(of: ProcessRunner.RawResult.self) { group in
+            for i in 0..<count {
+                group.addTask {
+                    try await ProcessRunner.runAsync(
+                        executable: "/bin/sh",
+                        arguments: ["-c", "for j in $(seq 1 1000); do echo \"line $j for task \(i)\"; done"],
+                        currentDirectory: nil
+                    )
+                }
+            }
+
+            var finished = 0
+            for try await res in group {
+                XCTAssertTrue(res.success)
+                XCTAssertGreaterThan(res.stdoutData.count, 10_000)
+                finished += 1
+            }
+            XCTAssertEqual(finished, count)
+        }
+    }
+
+    /// The child's lifetime is not a cooperative thread's: twice as many one-second children as
+    /// the pool has threads finish together, and a task on the pool runs meanwhile. A runner
+    /// that blocked a pool thread per child would take `⌈n / width⌉` seconds and starve the
+    /// probe (N10 of the F6 acceptance — the test this replaces only counted results).
+    func testRunAsync_concurrentChildren_holdNoCooperativeThread() async throws {
+        let width = ProcessInfo.processInfo.activeProcessorCount
+        let count = width * 2 + 2
+        let clock = ContinuousClock()
+        let started = clock.now
+        let probe = Task.detached { () -> Duration in
+            try? await Task.sleep(for: .milliseconds(200))
+            let probeStart = clock.now
+            await Task.yield()
+            return clock.now - probeStart
+        }
+        try await withThrowingTaskGroup(of: Int32.self) { group in
+            for _ in 0..<count {
+                group.addTask {
+                    try await ProcessRunner.runAsync(
+                        executable: "/bin/sleep", arguments: ["1"], currentDirectory: nil
+                    ).exitCode
+                }
+            }
+            for try await status in group { XCTAssertEqual(status, 0) }
+        }
+        let elapsed = clock.now - started
+        let probeLatency = await probe.value
+        XCTAssertLessThan(elapsed, .milliseconds(2500), "\(count) one-second children took \(elapsed)")
+        XCTAssertLessThan(probeLatency, .milliseconds(500), "a pool task waited \(probeLatency)")
+    }
+
+    /// A spawn that fails comes back as `.launchFailed` at once. Until 2026-11-12 the pipe
+    /// readers started BEFORE `run()`, and when it threw nothing closed the pipes' write ends:
+    /// the readers never saw EOF, the implicit await of the `async let` readers never returned,
+    /// and the throw — and the snapshot store's folder lock above it — stayed held for good
+    /// (N6 of the F6 acceptance).
+    func testRunAsync_missingWorkingDirectory_throwsLaunchFailedPromptly() async throws {
+        let missing = tempDir.appendingPathComponent("gone-\(UUID().uuidString)", isDirectory: true)
+        let returned = expectation(description: "runAsync returned")
+        let outcome = OutcomeBox()
+        Task.detached {
+            do {
+                _ = try await ProcessRunner.runAsync(
+                    executable: "/bin/echo", arguments: ["x"], currentDirectory: missing, timeout: 30)
+                outcome.set("succeeded")
+            } catch let error as ProcessRunnerError {
+                if case .launchFailed = error { outcome.set("launchFailed") } else { outcome.set("\(error)") }
+            } catch {
+                outcome.set("\(error)")
+            }
+            returned.fulfill()
+        }
+        await fulfillment(of: [returned], timeout: 5)
+        XCTAssertEqual(outcome.value, "launchFailed")
+    }
+
+    /// The pipes are drained within a bound after the child exits, as the synchronous `run`
+    /// drains them: a grandchild that inherited them — `repack` after `gc` was stopped, a
+    /// command's own `&` — no longer holds the call until it exits (N6 of the F6 acceptance).
+    func testRunAsync_grandchildHoldingThePipes_returnsWithinTheDrainBound() async throws {
+        let clock = ContinuousClock()
+        let started = clock.now
+        let result = try await ProcessRunner.runAsync(
+            executable: "/bin/sh",
+            arguments: ["-c", "/bin/sleep 20 & echo started"],
+            currentDirectory: tempDir,
+            timeout: 60)
+        let elapsed = clock.now - started
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertTrue(result.stdout.contains("started"), result.stdout)
+        XCTAssertLessThan(elapsed, .seconds(9), "the call waited \(elapsed) for a grandchild")
+    }
+
+    func testRunAsync_cancellation_escalatesSIGTERMtoSIGKILL() async throws {
+        let pythonPath = "/usr/bin/python3"
+        guard fileManager.isExecutableFile(atPath: pythonPath) else {
+            throw XCTSkip("Python3 is not available at \(pythonPath)")
+        }
+
+        let trapScript = """
+        import signal, sys, time
+        def handler(sig, frame):
+            sys.stdout.write("CAUGHT_SIGTERM\\n")
+            sys.stdout.flush()
+        signal.signal(signal.SIGTERM, handler)
+        sys.stdout.write("READY\\n")
+        sys.stdout.flush()
+        time.sleep(60)
+        """
+
+        let started = Date()
+        let task = Task.detached { () throws -> ProcessRunner.RawResult in
+            return try await ProcessRunner.runAsync(
+                executable: pythonPath,
+                arguments: ["-c", trapScript],
+                currentDirectory: nil,
+                timeout: 120
+            )
+        }
+
+        try await Task.sleep(for: .milliseconds(400))
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            XCTFail("Expected cancellation, got normal completion")
+        } catch let err as ProcessRunnerError {
+            guard case .cancelled = err else {
+                XCTFail("Expected ProcessRunnerError.cancelled, got \(err)")
+                return
+            }
+        } catch {
+            XCTFail("Expected ProcessRunnerError.cancelled, got \(error)")
+            return
+        }
+
+        let elapsed = Date().timeIntervalSince(started)
+        XCTAssertLessThan(
+            elapsed, 4.0,
+            "SIGTERM-ignoring child must be SIGKILLed within 2 s grace; took \(elapsed)s."
+        )
+    }
+
+    /// `stdoutData` is the lossless channel — every byte as written; `stdout` is a convenience
+    /// that decodes with U+FFFD and must only not come back EMPTY. A reader that needs the
+    /// bytes (the `task_changes` page diff, N8) reads `stdoutData`.
+    func testRunAsync_nonUTF8Bytes_stdoutDataKeepsEveryByte_stdoutIsNotEmptied() async throws {
+        let pythonPath = "/usr/bin/python3"
+        guard fileManager.isExecutableFile(atPath: pythonPath) else {
+            throw XCTSkip("Python3 is not available at \(pythonPath)")
+        }
+
+        let binaryScript = """
+        import sys
+        sys.stdout.buffer.write(b"header\\xff\\xfe\\x00trailer\\n")
+        sys.stdout.buffer.flush()
+        """
+
+        let res = try await ProcessRunner.runAsync(
+            executable: pythonPath,
+            arguments: ["-c", binaryScript],
+            currentDirectory: nil
+        )
+
+        XCTAssertTrue(res.success)
+        XCTAssertEqual(res.stdoutData, Data("header".utf8) + Data([0xFF, 0xFE, 0x00]) + Data("trailer\n".utf8))
+        XCTAssertFalse(res.stdout.isEmpty, "RawResult.stdout must not be emptied by invalid UTF-8 bytes")
+        XCTAssertTrue(res.stdout.contains("header"))
+        XCTAssertTrue(res.stdout.contains("trailer"))
+    }
+
+    /// `inheritsEnvironment: false`: the child sees the given variables and nothing of the
+    /// app's own (S10, F6 2026-11-12) — the snapshot store's git runs this way.
+    func testRunAsync_withoutInheritance_childSeesOnlyTheGivenEnvironment() async throws {
+        setenv("NANOTEAMS_PROCESS_RUNNER_PROBE", "inherited", 1)
+        defer { unsetenv("NANOTEAMS_PROCESS_RUNNER_PROBE") }
+
+        let exact = try await ProcessRunner.runAsync(
+            executable: "/usr/bin/env", arguments: [], currentDirectory: tempDir,
+            environment: ["ONLY": "this"], inheritsEnvironment: false)
+        XCTAssertEqual(exact.stdout, "ONLY=this\n")
+
+        let empty = try await ProcessRunner.runAsync(
+            executable: "/usr/bin/env", arguments: [], currentDirectory: tempDir,
+            environment: nil, inheritsEnvironment: false)
+        XCTAssertEqual(empty.stdout, "")
+
+        // The default still inherits — every other caller is unchanged.
+        let inherited = try await ProcessRunner.runAsync(
+            executable: "/usr/bin/env", arguments: [], currentDirectory: tempDir, environment: ["ONLY": "this"])
+        XCTAssertTrue(inherited.stdout.contains("NANOTEAMS_PROCESS_RUNNER_PROBE=inherited"))
+        XCTAssertTrue(inherited.stdout.contains("ONLY=this"))
+    }
+
+    func testRunGitAsync_executesSuccessfully() async throws {
+        let result = try await ProcessRunner.runGitAsync(["version"], in: tempDir)
+        XCTAssertTrue(result.success)
+        XCTAssertTrue(result.stdout.contains("git version"))
+    }
+
+    // MARK: - Wave Final Coverage Hardening: Async Timeout & Escalation (M6.1)
+
+    func testRunAsync_timeoutFires_throwsTimeoutErrorWithCapturedOutput() async throws {
+        do {
+            _ = try await ProcessRunner.runAsync(
+                executable: "/bin/sh",
+                arguments: ["-c", "echo 'starting'; sleep 2; echo 'finished'"],
+                currentDirectory: tempDir,
+                timeout: 0.2
+            )
+            XCTFail("Expected ProcessRunnerError.timeout")
+        } catch let err as ProcessRunnerError {
+            guard case let .timeout(limit, stdout, _) = err else {
+                XCTFail("Expected ProcessRunnerError.timeout, got \(err)")
+                return
+            }
+            XCTAssertEqual(limit, 0.2)
+            XCTAssertTrue(stdout.contains("starting"))
+        }
+    }
+
+    func testRunAsync_timeoutWithSIGTERMIgnoringChild_escalatesToSIGKILL() async throws {
+        let pythonPath = "/usr/bin/python3"
+        guard fileManager.isExecutableFile(atPath: pythonPath) else {
+            throw XCTSkip("Python3 not available")
+        }
+
+        let trapScript = """
+        import signal, sys, time
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        sys.stdout.write("READY\\n")
+        sys.stdout.flush()
+        time.sleep(60)
+        """
+
+        let started = Date()
+        do {
+            _ = try await ProcessRunner.runAsync(
+                executable: pythonPath,
+                arguments: ["-c", trapScript],
+                currentDirectory: tempDir,
+                timeout: 0.3
+            )
+            XCTFail("Expected timeout")
+        } catch let err as ProcessRunnerError {
+            guard case .timeout = err else {
+                XCTFail("Expected ProcessRunnerError.timeout, got \(err)")
+                return
+            }
+        }
+
+        let elapsed = Date().timeIntervalSince(started)
+        XCTAssertLessThan(
+            elapsed, 4.0,
+            "SIGTERM-ignoring child must be SIGKILLed within 2 s grace period; took \(elapsed)s."
+        )
+    }
+
+    func testProbeSandboxLaunch_nonExistentDirectory_returnsChildRan() {
+        let invalidDir = URL(fileURLWithPath: "/nonexistent/invalid/dir/\(UUID().uuidString)")
+        let verdict = ProcessRunner.probeSandboxLaunch(profile: "(version 1)", in: invalidDir, timeout: 5)
+        XCTAssertEqual(verdict, .childRan)
+    }
+
+    func testRunAsync_earlyProcessTermination_resumesContinuationsCorrectly() async throws {
+        // Child exits while onLaunch sleeps, so isTerminated is true when waitForExit is called
+        let res = try await ProcessRunner.runAsync(
+            executable: "/bin/echo",
+            arguments: ["done"],
+            currentDirectory: tempDir,
+            timeout: 5.0,
+            onLaunch: { _, _ in
+                usleep(50000)
+            }
+        )
+        XCTAssertEqual(res.exitCode, 0)
+        XCTAssertTrue(res.stdout.contains("done"))
+    }
+
+    func testRunAsync_cancelledPriorToExit_throwsCancelled() async throws {
+        let runTask = Task {
+            try await ProcessRunner.runAsync(
+                executable: "/bin/sleep",
+                arguments: ["10"],
+                currentDirectory: nil,
+                timeout: 10.0,
+                onLaunch: { _, _ in
+                    usleep(20000)
+                }
+            )
+        }
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        runTask.cancel()
+        do {
+            _ = try await runTask.value
+            XCTFail("Expected cancellation")
+        } catch {
+            XCTAssertTrue(error is ProcessRunnerError || error is CancellationError)
+        }
+    }
+
+    func testRunAsync_timeoutWithProcessGroup_stopsProcessGroup() async throws {
+        do {
+            _ = try await ProcessRunner.runAsync(
+                executable: "/bin/sleep",
+                arguments: ["10"],
+                currentDirectory: tempDir,
+                timeout: 0.2,
+                reapsProcessGroup: true
+            )
+            XCTFail("Expected ProcessRunnerError.timeout")
+        } catch let err as ProcessRunnerError {
+            guard case .timeout = err else {
+                XCTFail("Expected ProcessRunnerError.timeout, got \(err)")
+                return
+            }
+        }
+    }
+
+    func testRunAsync_timeoutWithSIGTERMIgnoringChildAndProcessGroup_escalatesToSIGKILL() async throws {
+        let pythonPath = "/usr/bin/python3"
+        guard fileManager.isExecutableFile(atPath: pythonPath) else {
+            throw XCTSkip("Python3 not available")
+        }
+
+        let trapScript = """
+        import signal, sys, time
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        sys.stdout.write("READY\\n")
+        sys.stdout.flush()
+        time.sleep(60)
+        """
+
+        let started = Date()
+        do {
+            _ = try await ProcessRunner.runAsync(
+                executable: pythonPath,
+                arguments: ["-c", trapScript],
+                currentDirectory: tempDir,
+                timeout: 0.3,
+                reapsProcessGroup: true
+            )
+            XCTFail("Expected timeout")
+        } catch let err as ProcessRunnerError {
+            guard case .timeout = err else {
+                XCTFail("Expected ProcessRunnerError.timeout, got \(err)")
+                return
+            }
+        }
+
+        let elapsed = Date().timeIntervalSince(started)
+        XCTAssertLessThan(
+            elapsed, 4.0,
+            "SIGTERM-ignoring child in process group must be SIGKILLed within grace period; took \(elapsed)s."
+        )
+    }
+
+    func testRunAsync_timeoutFiresDuringLaunch_waitForExitHandlesAlreadyTimedOut() async throws {
+        do {
+            _ = try await ProcessRunner.runAsync(
+                executable: "/bin/sleep",
+                arguments: ["10"],
+                currentDirectory: nil,
+                timeout: 0.05,
+                onLaunch: { @Sendable _, _ in
+                    usleep(100_000)
+                }
+            )
+            XCTFail("Expected timeout")
+        } catch let err as ProcessRunnerError {
+            guard case .timeout = err else {
+                XCTFail("Expected timeout, got \(err)")
+                return
+            }
+        }
+    }
+
+    func testRunAsync_cancelledDuringLaunchAfterTermination_waitForExitHandlesAlreadyCancelled() async throws {
+        let runTask = Task {
+            try await ProcessRunner.runAsync(
+                executable: "/bin/echo",
+                arguments: ["fast"],
+                currentDirectory: nil,
+                timeout: 10.0,
+                onLaunch: { @Sendable proc, _ in
+                    usleep(50_000)
+                }
+            )
+        }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+        runTask.cancel()
+        do {
+            _ = try await runTask.value
+        } catch {
+            XCTAssertTrue(error is ProcessRunnerError || error is CancellationError)
+        }
+    }
+
+    func testRun_nonUTF8Output_replacesWithEmptyString() throws {
+        let res = try ProcessRunner.run(
+            executable: "/bin/sh",
+            arguments: ["-c", "printf '\\xff\\xfe\\xfd' >&2; printf '\\xff\\xfe\\xfd'"],
+            currentDirectory: nil
+        )
+        XCTAssertEqual(res.stdout, "")
+        XCTAssertEqual(res.stderr, "")
+    }
+
+    func testProbeSandboxLaunch_deniedProfile_returnsConfinedBeforeStartOrWrapperRejected() {
+        let verdict = ProcessRunner.probeSandboxLaunch(profile: "(version 1) (deny default)", in: tempDir, timeout: 5)
+        XCTAssertTrue(verdict == .confinedBeforeStart || verdict == .wrapperRejected)
+    }
+
+    func testProbeSandboxLaunch_nonexistentDirectory_returnsChildRan() {
+        let nonexistent = URL(fileURLWithPath: "/nonexistent_sandbox_probe_path_\(UUID().uuidString)")
+        let verdict = ProcessRunner.probeSandboxLaunch(profile: "(version 1)", in: nonexistent, timeout: 5)
+        XCTAssertEqual(verdict, .childRan)
+    }
+
+    func testRunAsync_timeoutAfterProcessTerminated() async throws {
+        let res = try await ProcessRunner.runAsync(
+            executable: "/bin/echo",
+            arguments: ["done"],
+            currentDirectory: nil,
+            timeout: 0.05,
+            onLaunch: { _, _ in
+                usleep(70_000)
+            }
+        )
+        XCTAssertEqual(res.exitCode, 0)
+    }
+}
+
+/// What a detached run reported, read after its expectation is fulfilled.
+private final class OutcomeBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: String?
+    var value: String? { lock.lock(); defer { lock.unlock() }; return stored }
+    func set(_ value: String) { lock.lock(); stored = value; lock.unlock() }
 }

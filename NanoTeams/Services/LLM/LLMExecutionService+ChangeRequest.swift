@@ -21,8 +21,12 @@ extension LLMExecutionService {
     ) async -> CollaborationReply {
         guard let delegate else { return .failed("Unable to process change request — delegate not available.") }
         let tid = task.id
-        guard isExecutionLive(stepID: stepID, taskID: tid) else {
+        let lifecycle = delegate.currentFolderLifecycle
+        guard delegate.isCurrentFolderLifecycle(lifecycle), isExecutionLive(stepID: stepID, taskID: tid) else {
             return .failed("Unable to process change request — no task context.")
+        }
+        func stillLive() -> Bool {
+            delegate.isCurrentFolderLifecycle(lifecycle) && isExecutionLive(stepID: stepID, taskID: tid)
         }
 
         let team = resolveTeam(task: task)
@@ -69,6 +73,7 @@ extension LLMExecutionService {
             reasoning: reasoning,
             status: .pending
         )
+        await recordChangeRequest(taskID: tid, changeRequest: changeRequest, within: lifecycle)
 
         // Determine meeting participants: target + downstream consumers of target's artifacts
         let targetArtifacts = Set(targetRoleDef.dependencies.producesArtifacts)
@@ -98,7 +103,8 @@ extension LLMExecutionService {
             seat: seat, targetRoleID: resolvedTargetID)
         else {
             changeRequest.status = .rejected
-            await recordChangeRequest(taskID: tid, changeRequest: changeRequest)
+            changeRequest.resolvedAt = MonotonicClock.shared.now()
+            await recordChangeRequest(taskID: tid, changeRequest: changeRequest, within: lifecycle)
             return .failed(
                 "A change-request vote needs a chair who is neither the requester nor the "
                     + "target; this team has none. Raise the point with \(targetRoleDef.name) "
@@ -147,9 +153,30 @@ extension LLMExecutionService {
             config: config,
             networkLogger: networkLogger
         )
+        // The step was stopped while its vote ran — Pause, Stop, the run-timeout watchdog, a folder
+        // transition — and a stopped step decides nothing: the vote is closed `.failed`, which spends
+        // none of the run's change requests, rather than tallied or read as a meeting that did not
+        // run (`.rejected`, a decision the team never took). The sign is the cancellation of the
+        // step's OWN task, the identity the dispatcher reads (`processToolResults`): Pause cancels
+        // that task and WAITS for it (`cancelStepExecution`) before it clears the step's execution
+        // state, so `isExecutionLive` still answers true here and alone missed every real Pause
+        // (F6 C5, review R1, 2026-11-12). `stillLive()` stays for the state torn down under a
+        // handler that outlived the bounded cancel wait, and for the folder.
+        guard stillLive(), !Task.isCancelled else {
+            // Only in the folder it belongs to; a vote a folder switch overtook is closed by the
+            // next open's recovery (`StatusRecoveryService`).
+            guard delegate.isCurrentFolderLifecycle(lifecycle) else {
+                return .failed(DeferredCallReplies.folderChanged)
+            }
+            changeRequest.status = .failed
+            changeRequest.resolvedAt = MonotonicClock.shared.now()
+            await recordChangeRequest(taskID: tid, changeRequest: changeRequest, within: lifecycle)
+            return .failed(DeferredCallReplies.voteInterrupted)
+        }
         guard meetingReply.succeeded else {
             changeRequest.status = .rejected
-            await recordChangeRequest(taskID: tid, changeRequest: changeRequest)
+            changeRequest.resolvedAt = MonotonicClock.shared.now()
+            await recordChangeRequest(taskID: tid, changeRequest: changeRequest, within: lifecycle)
             return .failed("Change request could not be voted on — the voting meeting did not run: \(meetingReply.text)")
         }
 
@@ -173,7 +200,9 @@ extension LLMExecutionService {
         switch voteResult {
         case .approved:
             changeRequest.status = .approved
-            await recordChangeRequest(taskID: tid, changeRequest: changeRequest)
+            changeRequest.resolvedAt = MonotonicClock.shared.now()
+            await recordChangeRequest(taskID: tid, changeRequest: changeRequest, within: lifecycle)
+            guard stillLive() else { return .failed(DeferredCallReplies.folderChanged) }
 
             let amendmentResult = await executeAmendment(
                 taskID: tid,
@@ -183,8 +212,10 @@ extension LLMExecutionService {
                 requestingRoleID: requestingRole.baseID,
                 requesterStepID: stepID,
                 meetingID: meeting?.id,
-                team: team
+                team: team,
+                within: lifecycle
             )
+            guard stillLive() else { return .failed(DeferredCallReplies.folderChanged) }
 
             if case .failed = amendmentResult {
                 return .failed("Change request APPROVED by team vote, but \(amendmentResult.text)")
@@ -202,7 +233,9 @@ extension LLMExecutionService {
 
         case .rejected:
             changeRequest.status = .rejected
-            await recordChangeRequest(taskID: tid, changeRequest: changeRequest)
+            changeRequest.resolvedAt = MonotonicClock.shared.now()
+            await recordChangeRequest(taskID: tid, changeRequest: changeRequest, within: lifecycle)
+            guard stillLive() else { return .failed(DeferredCallReplies.folderChanged) }
             return .ok("Change request REJECTED by team vote. The existing work stands.")
 
         case .noVotes:
@@ -211,7 +244,9 @@ extension LLMExecutionService {
             // reset the target role and cascade a revision downstream on the strength of zero
             // votes. The existing work stands and the requester is told why.
             changeRequest.status = .rejected
-            await recordChangeRequest(taskID: tid, changeRequest: changeRequest)
+            changeRequest.resolvedAt = MonotonicClock.shared.now()
+            await recordChangeRequest(taskID: tid, changeRequest: changeRequest, within: lifecycle)
+            guard stillLive() else { return .failed(DeferredCallReplies.folderChanged) }
             return .ok(
                 "Change request NOT carried — the voting meeting produced no votes. "
                     + "Participants must reply with `VOTE: APPROVE` or `VOTE: REJECT`. "
@@ -222,7 +257,9 @@ extension LLMExecutionService {
             // V1: auto-approve on a genuine deadlock (Supervisor escalation in V2). Reachable
             // only with at least one vote on each side — 0-0 is `.noVotes` above.
             changeRequest.status = .approved
-            await recordChangeRequest(taskID: tid, changeRequest: changeRequest)
+            changeRequest.resolvedAt = MonotonicClock.shared.now()
+            await recordChangeRequest(taskID: tid, changeRequest: changeRequest, within: lifecycle)
+            guard stillLive() else { return .failed(DeferredCallReplies.folderChanged) }
 
             let amendmentResult = await executeAmendment(
                 taskID: tid,
@@ -232,8 +269,10 @@ extension LLMExecutionService {
                 requestingRoleID: requestingRole.baseID,
                 requesterStepID: stepID,
                 meetingID: meeting?.id,
-                team: team
+                team: team,
+                within: lifecycle
             )
+            guard stillLive() else { return .failed(DeferredCallReplies.folderChanged) }
 
             if case .failed = amendmentResult {
                 return .failed("Change request had a TIED VOTE — auto-approved, but \(amendmentResult.text)")
@@ -265,13 +304,16 @@ extension LLMExecutionService {
         requestingRoleID: String,
         requesterStepID: String,
         meetingID: UUID?,
-        team: Team?
+        team: Team?,
+        within callerLifecycle: WorkFolderLifecycle? = nil
     ) async -> AmendmentOutcome {
         // The `roleStatuses` key, which the engine seeds from `role.id`
         // (`RunService.initialRoleStatuses`) — deliberately NOT the step's id, which
         // may be the system role id on the runs `targetStep(in:for:)` exists for.
         let targetRoleID = targetRole.id
         guard let delegate else { return .failed("Amendment failed: no delegate.") }
+        let lifecycle = callerLifecycle ?? delegate.currentFolderLifecycle
+        guard delegate.isCurrentFolderLifecycle(lifecycle) else { return .failed(DeferredCallReplies.folderChanged) }
 
         // Read current task state to get step info. Resolved through the SAME predicate
         // validation used — see `ChangeRequestService.targetStep(in:for:)`.
@@ -324,11 +366,17 @@ extension LLMExecutionService {
             // there). The "Supervisor Feedback: " attribution is applied once at send
             // time, same as the requestRevision path.
             task.runs[runIndex].steps[stepIndex].revisionComment = amendmentContext
+            // The amendment replaces whatever revision was pending, and so does its author: the
+            // team's vote is no Supervisor's words, and a label left by an earlier
+            // `request_changes` would sign this notice with that agent's name (DEBTS D-M15).
+            task.runs[runIndex].steps[stepIndex].revisionCommentAuthor = nil
+            task.runs[runIndex].steps[stepIndex].revisionCommentIsFromAutomatedSupervisor = nil
             task.runs[runIndex].steps[stepIndex].updatedAt = MonotonicClock.shared.now()
 
             // Set role to revisionRequested — engine picks this up via startRevisionRoles()
             task.runs[runIndex].roleStatuses[targetRoleID] = .revisionRequested
         }
+        guard delegate.isCurrentFolderLifecycle(lifecycle) else { return .failed(DeferredCallReplies.folderChanged) }
 
         // Propagate to downstream roles (done AND running). Running roles are then
         // held (cancelled + queued for revision) so they don't keep working on the
@@ -338,14 +386,18 @@ extension LLMExecutionService {
             taskID: taskID,
             sourceRoleID: targetRoleID,
             changes: changes,
-            team: team
+            team: team,
+            within: lifecycle
         )
+        guard delegate.isCurrentFolderLifecycle(lifecycle) else { return .failed(DeferredCallReplies.folderChanged) }
         if !propagation.runningRoleIDs.isEmpty {
             await delegate.holdDownstreamForRevision(
                 taskID: taskID,
                 runningRoleIDs: propagation.runningRoleIDs,
-                requesterRoleID: requesterStepID
+                requesterRoleID: requesterStepID,
+                within: lifecycle
             )
+            guard delegate.isCurrentFolderLifecycle(lifecycle) else { return .failed(DeferredCallReplies.folderChanged) }
         }
 
         return .initiated("Amendment initiated for \(targetRoleID). \(propagation.summary)")
@@ -364,9 +416,12 @@ extension LLMExecutionService {
         taskID: Int,
         sourceRoleID: String,
         changes: String,
-        team: Team?
+        team: Team?,
+        within callerLifecycle: WorkFolderLifecycle? = nil
     ) async -> PropagationResult {
         guard let delegate else { return PropagationResult(summary: "", runningRoleIDs: []) }
+        let lifecycle = callerLifecycle ?? delegate.currentFolderLifecycle
+        guard delegate.isCurrentFolderLifecycle(lifecycle) else { return PropagationResult(summary: "", runningRoleIDs: []) }
         let roles = team?.roles ?? []
 
         let downstreamRoleIDs = ArtifactDependencyResolver.getDownstreamRoles(
@@ -409,6 +464,9 @@ extension LLMExecutionService {
                 )
                 // Raw revision payload — same invariant as executeAmendment above.
                 task.runs[runIndex].steps[stepIndex].revisionComment = contextMsg
+                // Same as `executeAmendment`: the notice has no Supervisor author.
+                task.runs[runIndex].steps[stepIndex].revisionCommentAuthor = nil
+                task.runs[runIndex].steps[stepIndex].revisionCommentIsFromAutomatedSupervisor = nil
                 task.runs[runIndex].steps[stepIndex].updatedAt = MonotonicClock.shared.now()
 
                 if isDone {
@@ -423,6 +481,7 @@ extension LLMExecutionService {
                 }
             }
         }
+        guard delegate.isCurrentFolderLifecycle(lifecycle) else { return PropagationResult(summary: "", runningRoleIDs: []) }
 
         var result = ""
         if !amendedRoles.isEmpty {
@@ -437,8 +496,14 @@ extension LLMExecutionService {
         return PropagationResult(summary: result, runningRoleIDs: runningRoleIDs)
     }
 
-    func recordChangeRequest(taskID: Int, changeRequest: ChangeRequest) async {
+    func recordChangeRequest(
+        taskID: Int,
+        changeRequest: ChangeRequest,
+        within callerLifecycle: WorkFolderLifecycle? = nil
+    ) async {
         guard let delegate else { return }
+        let lifecycle = callerLifecycle ?? delegate.currentFolderLifecycle
+        guard delegate.isCurrentFolderLifecycle(lifecycle) else { return }
         await delegate.mutateTask(taskID: taskID) { task in
             guard let runIndex = task.runs.indices.last else { return }
             // Upsert: replace existing or append new

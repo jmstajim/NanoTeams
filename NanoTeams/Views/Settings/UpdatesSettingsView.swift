@@ -29,7 +29,7 @@ struct UpdatesSettingsView: View {
     // MARK: - Version Status Card
 
     private var versionStatusCard: some View {
-        SettingsCard(header: "Version", systemImage: "info.circle") {
+        SettingsCard(header: "Version") {
             HStack {
                 Text("Installed")
                     .font(Typography.subheadline)
@@ -177,7 +177,6 @@ struct UpdatesSettingsView: View {
     private func backgroundCheckCard(interval: Binding<AppUpdateCheckInterval>) -> some View {
         SettingsCard(
             header: "Background Check",
-            systemImage: "clock",
             footer: "The \"Check for Updates\" button always queries GitHub regardless of this setting."
         ) {
             HStack {

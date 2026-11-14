@@ -54,12 +54,12 @@ final class ToolResultSideEffectsCornerTests: XCTestCase {
         var conversation: [ChatMessage] = []
 
         await service.processScratchpadResult(
-            result: scratchpadResult(content: "Watching task #3; next check at 14:00."),
+            result: scratchpadResult(content: "Watching task #3; next check at 02:00."),
             stepID: stepID, taskID: taskID, wireIsMidPlanning: false,
             conversationMessages: &conversation)
 
         XCTAssertEqual(mockDelegate.persistedAutovisorMemory,
-                       ["Watching task #3; next check at 14:00."],
+                       ["Watching task #3; next check at 02:00."],
                        "the manager's scratchpad must be persisted as standing memory")
         XCTAssertFalse(conversation.contains { ($0.content ?? "").contains("Memory write to disk failed") },
                        "a SUCCESSFUL write must not warn; got: \(conversation.map { $0.content ?? "" })")

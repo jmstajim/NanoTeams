@@ -254,6 +254,7 @@ struct MessageComposer<SettingsMenu: View>: View {
                 if !isEditorField && effectiveCanSubmit && !isSubmitting {
                     Text(config.enterSendsMessage ? "⏎" : "⌘⏎")
                         .font(Typography.term2xs)
+                        .lineLimit(1)
                         .foregroundStyle(Colors.textQuaternary)
                         .padding(.trailing, Spacing.xs)
                         .accessibilityHidden(true)

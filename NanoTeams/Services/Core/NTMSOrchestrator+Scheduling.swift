@@ -45,23 +45,59 @@ extension NTMSOrchestrator {
     }
 
     /// Sets (or clears, when `nil`) the task's per-run timeout in seconds.
+    /// Preserves `Run.timedOutAt` as a durable historical timestamp (§5.1, C2).
+    /// When timeout increases past `timedOutAtLimit`, the watchdog re-arms automatically.
+    ///
+    /// A run that timed out before F4 recorded `timedOutAtLimit` carries the stamp alone, and the
+    /// watchdog's `isArmed` never re-armed it — a raised limit and a resume ran it with no limit
+    /// at all (F6 C11). The limit it crossed is recorded here, before the new value replaces it:
+    /// the task's previous limit, or, when that was cleared since, how long the run had gone when
+    /// the watchdog fired — the limit was at most that.
     func setTaskRunTimeout(taskID: Int, seconds: TimeInterval?) async {
         await ensureTaskLoaded(taskID)
         guard loadedTask(taskID) != nil else { return }
-        await mutateTask(taskID: taskID) { $0.runTimeoutSeconds = seconds }
+        let now = MonotonicClock.shared.now()
+        await mutateTask(taskID: taskID) { task in
+            if let lastIdx = task.runs.indices.last {
+                let run = task.runs[lastIdx]
+                if let timedOutAt = run.timedOutAt, run.timedOutAtLimit == nil {
+                    task.runs[lastIdx].timedOutAtLimit = task.runTimeoutSeconds
+                        ?? timedOutAt.timeIntervalSince(run.createdAt).rounded(.down)
+                }
+                task.runs[lastIdx].updatedAt = now
+            }
+            task.runTimeoutSeconds = seconds
+        }
     }
 
     // MARK: - Lifecycle
 
     /// Runs the skip-missed reconcile once, then starts the once-a-minute poll
-    /// loop. Idempotent — cancels any prior loop first. Called from `openWorkFolder`.
-    func startAutomationScheduler() async {
+    /// loop. Idempotent — cancels any prior loop first. Called from `openWorkFolder`, with the
+    /// open's own lifecycle; a caller outside an open captures its own
+    /// (`currentFolderLifecycle`) at its entry.
+    ///
+    /// The reconcile suspends (its writes), so the lifecycle is asked again after it, before the
+    /// loop starts: a superseded open starts no loop for the folder it left. And the assignment
+    /// below cancels whatever loop it replaces, so no path can leave a loop running that nothing
+    /// holds a handle to. The loop then BELONGS to that lifecycle: each tick runs in it, so a tick
+    /// that was suspended inside an evaluator when the next open began does no further work in
+    /// either folder, and the loop ends.
+    func startAutomationScheduler(lifecycle: WorkFolderLifecycle) async {
         stopAutomationScheduler()
-        await reconcileMissedRecurrences()
+        await reconcileMissedRecurrences(lifecycle: lifecycle)
+        guard await folderLifecycleStillCurrent(lifecycle, into: .automationLoop) else { return }
         // Captured OUTSIDE the loop task: the tick delay must not require `self`
         // (which the loop only holds weakly, and only after the sleep).
         let tickInterval = automationTickInterval
+        automationPollTask?.cancel()
+        #if DEBUG
+        _testLiveAutomationLoops += 1
+        #endif
         automationPollTask = Task { @MainActor [weak self] in
+            #if DEBUG
+            defer { self?._testLiveAutomationLoops -= 1 }
+            #endif
             while !Task.isCancelled {
                 // Sleep until the next minute boundary so wakes are aligned to
                 // the wall clock (the trigger fires on the boundary regardless of
@@ -70,20 +106,31 @@ extension NTMSOrchestrator {
                 // cadence wholesale — see its doc on `NTMSOrchestrator`.
                 try? await Task.sleep(for: .seconds(
                     tickInterval ?? NTMSOrchestrator.secondsUntilNextMinuteBoundary()))
-                // Honor cancellation that fired while we slept (work-folder
-                // switch / close) before touching any state.
-                guard !Task.isCancelled, let self else { return }
+                // One tick, in the lifecycle of the open that started the loop. Each of its four
+                // evaluators suspends — a write, a fire's launch, the watchdog's pause — and the
+                // next folder transition can begin inside any of them, ending this lifecycle and
+                // cancelling this task: so the tick asks both before EACH evaluator, and hands
+                // the lifecycle to each to ask after its own suspensions. A tick that only checked
+                // cancellation when it woke ran its remaining evaluators against the folder that
+                // had opened since: B's missed slot fired from A's loop (a run appended,
+                // `lastFiredAt` stamped), A's auto-off announced in B. Written in the loop body
+                // rather than as a helper so the scans its evaluators run stay in loop context
+                // for `coverage/tools/algorithmic_complexity.py`, which follows two call hops.
+                guard let self, !Task.isCancelled, self.isCurrentFolderLifecycle(lifecycle) else { return }
                 // Auto-off FIRST: an expired manager must neither fire one final
                 // recurrence pass (below) nor get woken once more by the backstop.
-                await self.evaluateAutovisorAutoDisable()
-                await self.evaluateDueRecurrences()
-                await self.evaluateRunTimeouts()
+                await self.evaluateAutovisorAutoDisable(within: lifecycle)
+                guard !Task.isCancelled, self.isCurrentFolderLifecycle(lifecycle) else { return }
+                await self.evaluateDueRecurrences(within: lifecycle)
+                guard !Task.isCancelled, self.isCurrentFolderLifecycle(lifecycle) else { return }
+                await self.evaluateRunTimeouts(within: lifecycle)
+                guard !Task.isCancelled, self.isCurrentFolderLifecycle(lifecycle) else { return }
                 // Level-triggered backstop: wake the Autovisor for any matching
                 // task (catches event-wakes the observer debounced; a mid-review
                 // manager gets the event injected into its LIVE conversation
                 // instead of a fresh pass). `includeStuck: true` runs the
                 // loop/hang detector here (poll path only — never on the hot observer).
-                await self.wakeAutovisorForEvents(includeStuck: true)
+                await self.wakeAutovisorForEvents(includeStuck: true, within: lifecycle)
             }
         }
     }
@@ -99,26 +146,33 @@ extension NTMSOrchestrator {
     /// while the app was closed is advanced to the next future slot WITHOUT
     /// firing. Runs before the loop ticks, so anything due at open is treated as
     /// "missed" (skip), and only slots that arrive while the app is live fire.
-    func reconcileMissedRecurrences(now: Date = Date()) async {
-        guard let folderURL = workFolderURL else { return }
+    ///
+    /// `lifecycle` is the open's (`startAutomationScheduler`), asked after every suspension
+    /// before the next step: task ids are per-folder sequential ints, so an id sampled from this
+    /// folder must not resolve against — or be written, loaded or evicted in — another. The
+    /// lifecycle, not the folder's URL: the next open ends it at its first line, and moves the
+    /// URL only after its read, so a URL check let a pass superseded while the next folder was
+    /// read go on writing into the folder being left. The evict asks it itself
+    /// (`evictIfReclaimable(_:within:)`), and the next iteration's first check ends the pass.
+    func reconcileMissedRecurrences(now: Date = Date(), lifecycle: WorkFolderLifecycle) async {
+        guard workFolderURL != nil else { return }
         for taskID in recurringTaskIDsDue(now: now) {
-            // Folder-switch guard: scheduler cancellation is cooperative, so an
-            // in-flight pass can resume after `openWorkFolder` swapped folders.
-            // Task IDs are per-folder sequential ints — bail before a stale ID
-            // resolves against (and persists into) the new folder.
-            guard workFolderURL == folderURL else { return }
+            guard isCurrentFolderLifecycle(lifecycle) else { return }
             await ensureTaskLoaded(taskID)
             guard loadedTask(taskID) != nil else { continue }
-            guard workFolderURL == folderURL else { return }
+            guard isCurrentFolderLifecycle(lifecycle) else { return }
             await mutateTask(taskID: taskID) { $0.recurrence?.reschedule(after: now) }
-            evictIfReclaimable(taskID)
+            evictIfReclaimable(taskID, within: lifecycle)
         }
     }
 
-    /// Steady-state pass: fire every recurrence whose slot has arrived.
-    func evaluateDueRecurrences(now: Date = Date()) async {
+    /// Steady-state pass: fire every recurrence whose slot has arrived — all of them in the
+    /// folder whose lifecycle the pass runs in (the poll loop's), and none once a folder
+    /// transition has begun since.
+    func evaluateDueRecurrences(now: Date = Date(), within lifecycle: WorkFolderLifecycle) async {
         for taskID in recurringTaskIDsDue(now: now) {
-            await fireRecurrence(taskID: taskID, now: now)
+            guard isCurrentFolderLifecycle(lifecycle) else { return }
+            await fireRecurrence(taskID: taskID, now: now, lifecycle: lifecycle)
         }
     }
 
@@ -132,17 +186,19 @@ extension NTMSOrchestrator {
             .map(\.id)
     }
 
-    private func fireRecurrence(taskID: Int, now: Date) async {
-        // Folder identity captured at entry; re-checked after every suspension
-        // before the next persist-capable call. Scheduler cancellation is
-        // cooperative — a fire suspended in `ensureTaskLoaded`/`startRun`/
-        // `mutateTask` resumes after a folder switch, where the same numeric
-        // taskID resolves against the NEW folder's tasks (IDs are per-folder
-        // sequential ints). Without these guards a resumed fire could start a
-        // spurious run on an unrelated task in the new folder.
-        guard let folderURL = workFolderURL else { return }
+    private func fireRecurrence(taskID: Int, now: Date, lifecycle: WorkFolderLifecycle) async {
+        // The pass's lifecycle, re-asked after every suspension before the next
+        // persist-capable call. Scheduler cancellation is cooperative — a fire suspended in
+        // `ensureTaskLoaded`/`startRun`/`mutateTask` resumes after a folder switch, where the
+        // same numeric taskID resolves against the NEW folder's tasks (IDs are per-folder
+        // sequential ints). Without these guards a resumed fire could start a spurious run on an
+        // unrelated task in the new folder. The lifecycle, not the URL: a fire whose start the
+        // next open abandoned while that open still read (`abortRunStart`) went on past a URL
+        // check — the URL was still this folder's — and reported "could not start its scheduled
+        // run" into the session being opened.
+        guard workFolderURL != nil else { return }
         await ensureTaskLoaded(taskID)
-        guard workFolderURL == folderURL else { return }
+        guard isCurrentFolderLifecycle(lifecycle) else { return }
         // Zombie guard: the manager's recurrence must never fire while the feature
         // is off. Normally `setAutovisorEnabled(false)` disables the recurrence
         // alongside the flag, but those are TWO writes (settings.json, then the
@@ -152,15 +208,16 @@ extension NTMSOrchestrator {
         // an OFF Autovisor would keep running scheduled review passes forever.
         // Self-heal durably instead of firing.
         if taskID == autovisorTaskID,
-           snapshot?.workFolder.settings.autovisorEnabled != true {
+           (snapshot?.workFolder.settings.autovisorEnabled != true
+            || snapshot?.workFolder.settings.autovisorDriver == .externalAgent) {
             await mutateTask(taskID: taskID) { $0.recurrence?.isEnabled = false }
-            evictIfReclaimable(taskID)
+            evictIfReclaimable(taskID, within: lifecycle)
             return
         }
         // Re-read + re-check against the loaded task: the recurrence may have
         // been disabled between the index scan and now (fire-vs-disable race).
         guard let recurrence = loadedTask(taskID)?.recurrence, recurrence.isDue(now: now) else {
-            evictIfReclaimable(taskID)
+            evictIfReclaimable(taskID, within: lifecycle)
             return
         }
 
@@ -184,11 +241,11 @@ extension NTMSOrchestrator {
             || (taskID == autovisorTaskID && state == .needsSupervisorInput
                 && autovisorHasPendingHumanContinuation(taskID)) {
             await mutateTask(taskID: taskID) { $0.recurrence?.reschedule(after: now) }
-            evictIfReclaimable(taskID)
+            evictIfReclaimable(taskID, within: lifecycle)
             return
         }
 
-        guard workFolderURL == folderURL else { return }
+        guard isCurrentFolderLifecycle(lifecycle) else { return }
 
         // Tear down the previous occurrence so the fresh run starts clean and
         // `startRun`'s own re-entry guard (which bails on .needsAcceptance /
@@ -207,7 +264,7 @@ extension NTMSOrchestrator {
             // accumulate. Clearing here would silently drop the human's message if a
             // minute-boundary tick beat its delivery.
             if taskID != autovisorTaskID {
-                quickCaptureFormState?.clearQueuedMessages(for: taskID)
+                messageQueue.discardQueuedChatMessage(taskID: taskID)
             }
             stopEngineForTask(taskID)
         }
@@ -216,7 +273,7 @@ extension NTMSOrchestrator {
         // closedAt) and starts the engine in the background.
         let runsBefore = loadedTask(taskID)?.runs.count ?? 0
         await startRun(taskID: taskID)
-        guard workFolderURL == folderURL else { return }
+        guard isCurrentFolderLifecycle(lifecycle) else { return }
 
         // Stamp `lastFiredAt` ONLY if a run actually started. `startRun` is
         // fire-and-forget with several silent early-returns (no work folder,
@@ -231,9 +288,10 @@ extension NTMSOrchestrator {
             if didStart { task.recurrence?.lastFiredAt = now }
             task.recurrence?.reschedule(after: now)
         }
+        guard isCurrentFolderLifecycle(lifecycle) else { return }
         guard didStart else {
             lastErrorMessage = "Recurring task '\(loadedTask(taskID)?.title ?? "#\(taskID)")' could not start its scheduled run."
-            evictIfReclaimable(taskID)
+            evictIfReclaimable(taskID, within: lifecycle)
             return
         }
         // Now running — keep it loaded (no evict).
@@ -255,40 +313,53 @@ extension NTMSOrchestrator {
     /// Defaulted so callers cannot get it wrong, exactly as
     /// `AutovisorStatus.idleSeconds` / `.roleElapsedSeconds` / `.taskElapsedSeconds` are;
     /// pinned by `RunTimeoutClockCoverageTests`.
-    func evaluateRunTimeouts(now: Date = MonotonicClock.shared.now()) async {
-        // Folder identity captured at entry and re-checked after every suspension, for the
-        // same reason `fireRecurrence` and `reconcileMissedRecurrences` do it: scheduler
-        // cancellation is cooperative, so a pass suspended in `mutateTask` / `pauseRun`
-        // resumes after a work-folder switch. `activeIDs` was sampled from the OLD folder's
-        // engines and task ids are per-folder sequential ints, so from the second iteration
-        // on, `loadedTask(taskID)` resolves against the NEW folder — and any task there
-        // with a timeout configured and a run older than it (an ordinary steady state for
-        // anything finished yesterday) would be stamped `timedOutAt` and paused. That mark
-        // is durable: it shows as "(timed out)" in the run-history picker forever and is
-        // reported to the Autovisor as fact.
-        guard let folderURL = workFolderURL else { return }
+    func evaluateRunTimeouts(now: Date = MonotonicClock.shared.now(), within lifecycle: WorkFolderLifecycle) async {
+        // The pass's lifecycle — the poll loop's — asked before every id and after every
+        // suspension, for the same reason `fireRecurrence` and `reconcileMissedRecurrences` ask
+        // theirs: a pass suspended in `mutateTask` / `pauseRun` resumes after a folder transition
+        // began. `activeIDs` is sampled from THIS folder's engine mirror and task ids are
+        // per-folder sequential ints, so once the next open has committed, `loadedTask(taskID)`
+        // resolves against the next folder — and any task there with a timeout configured and a
+        // run older than it (an ordinary steady state for anything finished yesterday) would be
+        // stamped `timedOutAt` and paused. That mark is durable: it shows as "(timed out)" in the
+        // run-history picker forever and is reported to the Autovisor as fact. While the next
+        // folder is still read, the ids resolve against the folder being left, which nothing may
+        // stamp or pause any longer. The lifecycle rather than the folder's URL: the next open
+        // ends it at its first line and moves the URL only at its commit.
+        guard workFolderURL != nil else { return }
         let activeIDs = taskEngineStates
             .filter { $0.value == .running || $0.value == .needsSupervisorInput }
             .map(\.key)
         var timedOutTitles: [String] = []
         for taskID in activeIDs {
-            guard workFolderURL == folderURL else { return }
+            guard isCurrentFolderLifecycle(lifecycle) else { return }
             guard let task = loadedTask(taskID),
                   let timeout = task.runTimeoutSeconds,
-                  let run = task.runs.last,
-                  run.timedOutAt == nil,
-                  now.timeIntervalSince(run.createdAt) > timeout
+                  let run = task.runs.last
             else { continue }
+
+            let isArmed = run.timedOutAt == nil || (run.timedOutAtLimit.map { timeout > $0 } ?? false)
+            let elapsed = now.timeIntervalSince(run.createdAt)
+            guard isArmed && elapsed > timeout else { continue }
 
             await mutateTask(taskID: taskID) { task in
                 guard let i = task.runs.indices.last else { return }
                 task.runs[i].timedOutAt = now
+                task.runs[i].timedOutAtLimit = timeout
                 task.runs[i].updatedAt = MonotonicClock.shared.now()
             }
-            guard workFolderURL == folderURL else { return }
-            await pauseRun(taskID: taskID)
+            guard isCurrentFolderLifecycle(lifecycle) else { return }
+            let didPause = await pauseRun(taskID: taskID, cause: .runTimedOut)
+            if didPause {
+                completionAwaiter.deliver(
+                    taskID: taskID,
+                    outcome: .paused(.runTimedOut(seconds: Int(timeout)))
+                )
+            }
             timedOutTitles.append(task.title)
         }
+        // The banner is this folder's, and the last pause suspended.
+        guard isCurrentFolderLifecycle(lifecycle) else { return }
         // One combined banner. Multiple parallel runs can exceed budget in the
         // same tick (CLAUDE.md #45) and `lastInfoMessage` is a single slot — a
         // per-task assignment would clobber all but the last, so only one timeout
@@ -324,10 +395,17 @@ extension NTMSOrchestrator {
     ///
     /// Internal (not `private`) — also called by the startup status sweep
     /// (`recoverStaleStatusesAcrossIndex`).
+    ///
+    /// `lifecycle` is the caller's, asked here at the one seam an id sampled before a suspension
+    /// drops a task from memory: every caller evicts after a write, and a folder transition that
+    /// committed inside that write leaves the id naming the next folder's task of the same number
+    /// — which each caller used to refuse with a check of its own, and one forgotten check was an
+    /// evicted task of the next folder.
     @discardableResult
     func evictIfReclaimable(
-        _ taskID: Int, protectedDescendants: Set<Int>? = nil
+        _ taskID: Int, protectedDescendants: Set<Int>? = nil, within lifecycle: WorkFolderLifecycle
     ) -> Task<Void, Never>? {
+        guard isCurrentFolderLifecycle(lifecycle) else { return nil }
         guard taskID != activeTaskID else { return nil }
         // Only sweep if this call ACTUALLY evicted something. `evictLoadedTask`
         // is an unconditional `removeValue`, so a call for a task not in
@@ -357,3 +435,26 @@ extension NTMSOrchestrator {
         }
     }
 }
+
+#if DEBUG
+extension NTMSOrchestrator {
+    /// Test seams: an evaluation begun NOW, in the folder the process describes — what a suite
+    /// that stages a pass by hand means by calling an evaluator. Production runs each one only
+    /// inside the poll loop, in the lifecycle of the open that started the loop
+    /// (`startAutomationScheduler`).
+    func evaluateAutovisorAutoDisable(now: Date = Date()) async {
+        let lifecycle = currentFolderLifecycle
+        await evaluateAutovisorAutoDisable(now: now, within: lifecycle)
+    }
+
+    func evaluateDueRecurrences(now: Date = Date()) async {
+        let lifecycle = currentFolderLifecycle
+        await evaluateDueRecurrences(now: now, within: lifecycle)
+    }
+
+    func evaluateRunTimeouts(now: Date = MonotonicClock.shared.now()) async {
+        let lifecycle = currentFolderLifecycle
+        await evaluateRunTimeouts(now: now, within: lifecycle)
+    }
+}
+#endif

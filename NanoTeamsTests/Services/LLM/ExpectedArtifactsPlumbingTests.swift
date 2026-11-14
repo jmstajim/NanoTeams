@@ -101,6 +101,90 @@ final class ExpectedArtifactsPlumbingTests: XCTestCase {
         )
     }
 
+    /// The loopback ports a role's `bash` may not reach ride the same channel, read from the
+    /// delegate per BATCH (review 2026-11-08). Dropping `guardedLoopbackPorts:` from the
+    /// initializer in `executeToolCalls` compiles, and every handler-level test still passes —
+    /// the default is the bare floor — so the wiring is pinned here, twice: a later batch reads
+    /// the delegate again, never a value fixed at step entry. A spy registered as `bash` sees the
+    /// context the real handler would.
+    func testExecuteToolCalls_readsTheGuardedPortsIntoEveryBashBatchContext() async {
+        let seen = SeenPorts()
+        let spyRuntime = spyRuntime(recordingInto: seen)
+        mockDelegate.seatbeltGuardedLoopbackPortsValue = [1234, 3845, 47321]
+        await batch(calling: ToolNames.bash, on: spyRuntime)
+        XCTAssertEqual(seen.last, [1234, 3845, 47321])
+
+        mockDelegate.seatbeltGuardedLoopbackPortsValue = [8765, 47321]
+        await batch(calling: ToolNames.bash, on: spyRuntime)
+        XCTAssertEqual(seen.last, [8765, 47321], "the second batch read the delegate again")
+        XCTAssertEqual(seen.count, 2)
+    }
+
+    /// Only a batch that runs `bash` reads the list: it costs a read of the MCP catalogue and of
+    /// the interface addresses, and nothing else looks at it. Another tool gets the bare floor.
+    func testExecuteToolCalls_aBatchWithoutBashDoesNotReadTheGuardedPorts() async {
+        let seen = SeenPorts()
+        let spyRuntime = spyRuntime(recordingInto: seen, as: "spy_tool")
+        mockDelegate.seatbeltGuardedLoopbackPortsValue = [1234, 3845, 47321]
+        let readsBefore = mockDelegate.seatbeltGuardedLoopbackPortsReads
+        await batch(calling: "spy_tool", on: spyRuntime)
+        XCTAssertEqual(mockDelegate.seatbeltGuardedLoopbackPortsReads, readsBefore)
+        XCTAssertEqual(seen.last, SeatbeltSandbox.effectiveGuardedPorts([]))
+    }
+
+    /// The `bash` sandbox settings ride the same channel and are read from the delegate per
+    /// BATCH too (review 2026-11-08): a switch flipped since the step began governs the next
+    /// command. A handler field baked at step entry carried the old setting to the task's close
+    /// in chat mode. Pinned the same way as the ports: a later batch reads the delegate again.
+    func testExecuteToolCalls_readsTheLiveSandboxSettingsIntoEveryBashBatchContext() async {
+        let seen = SeenPorts()
+        let spyRuntime = spyRuntime(recordingInto: seen)
+        mockDelegate.bashPolicyValue.sandboxEnabled = false
+        await batch(calling: ToolNames.bash, on: spyRuntime)
+        XCTAssertEqual(seen.lastSandbox?.enabled, false)
+
+        mockDelegate.bashPolicyValue.sandboxEnabled = true
+        mockDelegate.bashPolicyValue.allowUnsandboxedFallback = true
+        await batch(calling: ToolNames.bash, on: spyRuntime)
+        XCTAssertEqual(seen.lastSandbox, mockDelegate.bashPolicyValue.sandbox, "the second batch read the delegate again")
+        XCTAssertEqual(seen.count, 2)
+    }
+
+    /// A batch without `bash` carries the fresh-install sandbox (confined, no fallback) whatever
+    /// the live policy says — nothing in such a batch looks at it, and the live value is copied
+    /// in for `bash` batches alone. The policy itself is cheap and read by the gate for every
+    /// batch, so only the COPY is pinned, not the read.
+    func testExecuteToolCalls_aBatchWithoutBashCarriesTheDefaultSandbox() async {
+        let seen = SeenPorts()
+        let spyRuntime = spyRuntime(recordingInto: seen, as: "spy_tool")
+        mockDelegate.bashPolicyValue.sandboxEnabled = false
+        await batch(calling: "spy_tool", on: spyRuntime)
+        XCTAssertEqual(seen.lastSandbox, BashPolicy.Sandbox())
+    }
+
+    private func spyRuntime(recordingInto seen: SeenPorts, as name: String = ToolNames.bash) -> ToolRuntime {
+        let registry = ToolRegistry()
+        registry.register(name: name) { context, args in
+            seen.record(context.guardedLoopbackPorts, sandbox: context.bashSandbox)
+            return makeSuccessResult(toolName: name, args: args, data: ["ok": true])
+        }
+        return ToolRuntime(registry: registry, logger: nil)
+    }
+
+    private func batch(calling name: String, on runtime: ToolRuntime) async {
+        let step = StepExecution(id: "eng", role: .softwareEngineer, title: "Engineer", status: .running)
+        let task = NTMSTask(id: 9, title: "T", supervisorTask: "x", runs: [Run(id: 0, steps: [step])])
+        _ = await service.executeToolCalls(
+            resolvedToolCalls: [StepToolCall(name: name, argumentsJSON: #"{"command":"true"}"#)],
+            gateRefusals: [],
+            allowedToolNames: [name],
+            runtime: runtime,
+            tracker: ToolCallTracker(),
+            task: task,
+            runIndex: 0,
+            roleID: "eng")
+    }
+
     /// Symmetric coverage: a step with no declared deliverables (e.g. config bug
     /// where create_artifact is manually authorized for a role with empty
     /// producesArtifacts) routes through the empty-expectedArtifacts branch
@@ -143,4 +227,17 @@ final class ExpectedArtifactsPlumbingTests: XCTestCase {
             "Empty expectedArtifacts must surface the config bug, not render an empty list. Got: \(out)"
         )
     }
+}
+
+/// What the spy tool saw, across the detached batch task the runtime runs it on.
+private final class SeenPorts: @unchecked Sendable {
+    private let lock = NSLock()
+    private var all: [[UInt16]] = []
+    private var sandboxes: [BashPolicy.Sandbox] = []
+    func record(_ ports: [UInt16], sandbox: BashPolicy.Sandbox) {
+        lock.withLock { all.append(ports); sandboxes.append(sandbox) }
+    }
+    var last: [UInt16]? { lock.withLock { all.last } }
+    var lastSandbox: BashPolicy.Sandbox? { lock.withLock { sandboxes.last } }
+    var count: Int { lock.withLock { all.count } }
 }

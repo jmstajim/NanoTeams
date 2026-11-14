@@ -143,6 +143,9 @@ extension LLMExecutionService {
                 toolCallingMode: config.toolCallingMode)
         }
 
+        // Every name a parser may resolve this call. `tools` is what this step advertised,
+        // so it is the only place an `mcp__…` name can enter the parse at all.
+        let knownNames = HarmonyToolCallParser.knownNames(advertising: tools)
         let streamingMessageID = UUID()
         var assistantCollected = ""
         var thinkingCollected = ""
@@ -404,7 +407,7 @@ extension LLMExecutionService {
                         if delta.contains(HarmonyToolCallParser.callMarker) || delta.contains("<|end|>") {
                             harmonyProbeGate.noteUnit()
                             if harmonyProbeGate.probeIsDue() {
-                                let extracted = harmonyParser.extractAllToolCalls(from: harmonyBuffer)
+                                let extracted = harmonyParser.extractAllToolCalls(from: harmonyBuffer, knownNames: knownNames)
                                 if Self.containsDuplicateToolCalls(extracted) {
                                     break
                                 }
@@ -422,7 +425,7 @@ extension LLMExecutionService {
                         // range(of:) below run at most once per stream, on detection.
                         if StreamMarkerWindow.harmonyNeedleArrived(
                             buffer: uiBuffer, newDeltaCount: delta.count) {
-                            let normalizedBuffer = HarmonySentinelNormalizer.normalize(uiBuffer)
+                            let normalizedBuffer = HarmonySentinelNormalizer.normalize(uiBuffer, knownNames: knownNames)
                             // Adopt the normalized buffer WHOLESALE rather than keeping it
                             // local. Everything below indexes into `uiBuffer`
                             // (`range(of: marker)`, `uiBuffer[..<lower]`, `uiBuffer[lower...]`)
@@ -458,7 +461,7 @@ extension LLMExecutionService {
                                 units: Self.closeMarkerCount(in: harmonyBuffer))
                             if harmonyProbeGate.probeIsDue(),
                                Self.containsDuplicateToolCalls(
-                                   harmonyParser.extractAllToolCalls(from: harmonyBuffer)) {
+                                   harmonyParser.extractAllToolCalls(from: harmonyBuffer, knownNames: knownNames)) {
                                 break
                             }
                             // Truncate to content before the earliest marker.
@@ -599,7 +602,7 @@ extension LLMExecutionService {
             resolvedToolCalls = toolAccumulator.finalize()
             // 2. Harmony envelope in the content channel.
             if resolvedToolCalls.isEmpty, sawHarmonyMarker {
-                resolvedToolCalls = harmonyParser.extractAllToolCalls(from: harmonyBuffer)
+                resolvedToolCalls = harmonyParser.extractAllToolCalls(from: harmonyBuffer, knownNames: knownNames)
             }
             //
             // There is NO route out of `thinkingCollected`. A reasoning channel carrying

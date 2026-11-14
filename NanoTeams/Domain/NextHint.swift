@@ -28,6 +28,15 @@ nonisolated struct NextHint: Codable, Hashable {
     var suggested_cmd: String?
     var suggested_args: [String: String]?
     var reason: String?
+
+    /// The wire names, spelled out rather than synthesized (a synthesized `CodingKeys` is private)
+    /// so `HostedMCPNextHintCompletion`, which rewrites a hint's arguments as JSON without
+    /// decoding it as this type, reads the same names this type writes.
+    enum CodingKeys: String, CodingKey {
+        case suggested_cmd
+        case suggested_args
+        case reason
+    }
 }
 
 // MARK: - The two repairs every path-taking tool hands back

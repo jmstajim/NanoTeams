@@ -515,13 +515,12 @@ final class CreateArtifactFormatValidationTests: XCTestCase {
         XCTAssertFalse(results[0].isError, "got: \(results[0].outputJSON)")
     }
 
-    /// A non-String `content` (null, or an array of lines) is skipped by step 3's
-    /// `value is String` test, so `format` used to become the single survivor even when
-    /// the model DID send the key. Same guard, same root.
-    ///
-    /// RED: revert the `format` exclusion → both return ok:true with the format as body.
+    /// A non-String `content` beside a `format` once made `format` the body: the handler's
+    /// last-resort read took the one remaining string. That read is gone (2026-11-09); now an
+    /// array of lines is refused by name before the handler runs (`readingDeclaredText`), and
+    /// `null` is a `content` not sent, which the empty-content guard refuses.
     func testCreateArtifact_nonStringContentBesideAFormat_isRejected() async throws {
-        for body in ["null", "[\"a\",\"b\"]"] {
+        for (body, says) in [("null", "has no content"), ("[\"a\",\"b\"]", "`content` must be text")] {
             let ctx = ToolExecutionContext(
                 workFolderRoot: tempDir, taskID: 0, runID: 0, roleID: "test_role",
                 expectedArtifacts: ["Release Notes"]
@@ -536,6 +535,8 @@ final class CreateArtifactFormatValidationTests: XCTestCase {
 
             XCTAssertTrue(results[0].isError,
                           "content=\(body): \(results[0].outputJSON)")
+            XCTAssertTrue(results[0].outputJSON.contains(says), "content=\(body): \(results[0].outputJSON)")
+            XCTAssertFalse(results[0].outputJSON.contains("pdf"), "the format never became the body")
         }
     }
 

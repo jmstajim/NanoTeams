@@ -235,7 +235,7 @@ nonisolated enum GeneratedTeamBuilder {
     /// the ten Autovisor management tools, which define the manager and whose signals only
     /// its step loop interprets. Until 2026-09-06 the whole registry was valid, so a
     /// generated role could be handed `control_task` or `set_work_folder_context` — the
-    /// latter rewrites the context every role of every task in the folder reads.
+    /// latter rewrites the context every role reads on a team whose prompt carries it.
     static let roleEligibleToolNames: Set<String> = Set(
         ToolHandlerRegistry.allTypes.filter { $0.availableToRoles }.map { $0.name })
         .subtracting(ToolHandlerRegistry.delegationToolsExcludedFromToolIDs)

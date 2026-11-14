@@ -27,7 +27,8 @@ struct ChangeRequestItemView: View {
                     statusBadge(request.status)
                     Spacer()
                     Text(request.createdAt.formatted(date: .omitted, time: .shortened))
-                        .font(Typography.term2xs).foregroundStyle(Colors.textTertiary)
+                        .font(Typography.term2xs)
+                        .lineLimit(1).foregroundStyle(Colors.textTertiary)
                 }
 
                 contentCard
@@ -69,6 +70,7 @@ struct ChangeRequestItemView: View {
     private func statusBadge(_ status: ChangeRequestStatus) -> some View {
         Text(status.displayName)
             .font(Typography.term2xs.weight(.medium))
+            .lineLimit(1)
             .foregroundStyle(status.statusColor)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)

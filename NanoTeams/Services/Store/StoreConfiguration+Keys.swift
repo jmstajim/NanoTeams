@@ -73,5 +73,9 @@ extension StoreConfiguration {
         static let computerUseRaiseTargetWindowBeforeClick = UserDefaultsKeys.computerUseRaiseTargetWindowBeforeClick
         static let computerUseGateFirstCaptureOnly = UserDefaultsKeys.computerUseGateFirstCaptureOnly
         static let computerUseJudgeLLMOverride = UserDefaultsKeys.computerUseJudgeLLMOverride
+        static let mcpJudgeLLMOverride = UserDefaultsKeys.mcpJudgeLLMOverride
+        static let externalAgentsEnabled = UserDefaultsKeys.externalAgentsEnabled
+        static let externalAgentsPort = UserDefaultsKeys.externalAgentsPort
+        static let acknowledgedBetaFeatures = UserDefaultsKeys.acknowledgedBetaFeatures
     }
 }

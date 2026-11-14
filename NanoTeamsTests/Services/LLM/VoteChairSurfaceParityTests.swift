@@ -110,7 +110,7 @@ final class VoteChairSurfaceParityTests: XCTestCase {
     }
 
     /// RED: restore `isCoordinator: inputs.team?.meetingCoordinatorID == inputs.role.id` at
-    /// `PromptBuilder+WirePreview.swift:270` → the stand-in's preview loses `conclude_meeting`
+    /// `PromptBuilder+WirePreview.swift:291` → the stand-in's preview loses `conclude_meeting`
     /// and the coordinator's keeps it regardless of the flag.
     ///
     /// The preview never has a vote in hand, and it does not need one: `WirePreviewInputs`
@@ -166,7 +166,7 @@ final class VoteChairSurfaceParityTests: XCTestCase {
             selectedScheme: nil,
             isVisionConfigured: false,
             approval: ToolApprovalAvailability(
-                bash: .available, computerUse: .withheld(.switchedOff)),
+                bash: .available, computerUse: .withheld(.switchedOff), humanPresent: true),
             autovisorTeamPolicy: .unrestricted
         )
     }
@@ -183,7 +183,7 @@ final class VoteChairSurfaceParityTests: XCTestCase {
             selectedScheme: nil,
             isVisionConfigured: false,
             approval: ToolApprovalAvailability(
-                bash: .available, computerUse: .withheld(.switchedOff)),
+                bash: .available, computerUse: .withheld(.switchedOff), humanPresent: true),
             globalContext: AppDefaults.globalContext,
             isCoordinator: isCoordinator,
             agentInstructions: nil

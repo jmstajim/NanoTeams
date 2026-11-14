@@ -7,9 +7,37 @@ nonisolated struct JSONSchemaLeaf: Codable, Hashable {
     let type: String
     let description: String?
     let enumValues: [String]?
+    let minimum: Int?
+    let maximum: Int?
+
+    init(
+        type: String,
+        description: String? = nil,
+        enumValues: [String]? = nil
+    ) {
+        self.type = type
+        self.description = description
+        self.enumValues = enumValues
+        self.minimum = nil
+        self.maximum = nil
+    }
+
+    init(
+        type: String,
+        description: String? = nil,
+        enumValues: [String]? = nil,
+        minimum: Int?,
+        maximum: Int? = nil
+    ) {
+        self.type = type
+        self.description = description
+        self.enumValues = enumValues
+        self.minimum = minimum
+        self.maximum = maximum
+    }
 
     enum CodingKeys: String, CodingKey {
-        case type, description
+        case type, description, minimum, maximum
         case enumValues = "enum"
     }
 
@@ -36,9 +64,49 @@ nonisolated struct JSONSchemaProperty: Codable, Hashable {
     let required: [String]?
     let items: JSONSchemaLeaf?
     let enumValues: [String]?
+    let minimum: Int?
+    let maximum: Int?
+
+    init(
+        type: String,
+        description: String? = nil,
+        properties: [String: JSONSchemaLeaf]? = nil,
+        required: [String]? = nil,
+        items: JSONSchemaLeaf? = nil,
+        enumValues: [String]? = nil
+    ) {
+        self.type = type
+        self.description = description
+        self.properties = properties
+        self.required = required
+        self.items = items
+        self.enumValues = enumValues
+        self.minimum = nil
+        self.maximum = nil
+    }
+
+    init(
+        type: String,
+        description: String? = nil,
+        properties: [String: JSONSchemaLeaf]? = nil,
+        required: [String]? = nil,
+        items: JSONSchemaLeaf? = nil,
+        enumValues: [String]? = nil,
+        minimum: Int?,
+        maximum: Int? = nil
+    ) {
+        self.type = type
+        self.description = description
+        self.properties = properties
+        self.required = required
+        self.items = items
+        self.enumValues = enumValues
+        self.minimum = minimum
+        self.maximum = maximum
+    }
 
     enum CodingKeys: String, CodingKey {
-        case type, description, properties, required, items
+        case type, description, properties, required, items, minimum, maximum
         case enumValues = "enum"
     }
 }
@@ -75,6 +143,14 @@ nonisolated struct JSONSchema: Codable, Hashable {
         case enumValues = "enum"
     }
 
+    /// The argument names this schema declares; empty when it has no `properties`. What every
+    /// check of a call's keys against its schema reads — the in-app tools' vocabulary
+    /// (`ToolArgumentVocabulary`) and the external agent's refusal (`HostedMCPCatalog`).
+    var declaredArgumentNames: Set<String> {
+        guard let properties else { return [] }
+        return Set(properties.keys)
+    }
+
     // MARK: - Convenience Constructors
 
     static func string(_ description: String? = nil, enumValues: [String]? = nil)
@@ -91,6 +167,12 @@ nonisolated struct JSONSchema: Codable, Hashable {
             items: nil, enumValues: nil)
     }
 
+    static func integer(_ description: String? = nil, minimum: Int?, maximum: Int? = nil) -> JSONSchemaProperty {
+        JSONSchemaProperty(
+            type: "integer", description: description, properties: nil, required: nil,
+            items: nil, enumValues: nil, minimum: minimum, maximum: maximum)
+    }
+
     static func boolean(_ description: String? = nil) -> JSONSchemaProperty {
         JSONSchemaProperty(
             type: "boolean", description: description, properties: nil, required: nil,
@@ -101,7 +183,8 @@ nonisolated struct JSONSchema: Codable, Hashable {
         -> JSONSchemaProperty
     {
         let leafItems = JSONSchemaLeaf(
-            type: items.type, description: items.description, enumValues: items.enumValues)
+            type: items.type, description: items.description, enumValues: items.enumValues,
+            minimum: items.minimum, maximum: items.maximum)
         return JSONSchemaProperty(
             type: "array", description: description, properties: nil, required: nil,
             items: leafItems, enumValues: nil)

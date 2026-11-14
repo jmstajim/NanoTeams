@@ -16,15 +16,23 @@ nonisolated struct GitStatusTool: ToolHandler {
     static let blockedInDefaultStorage = true
 
     let workFolderRoot: URL
+    let resolver: SandboxPathResolver
 
-    
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self {
-        Self(workFolderRoot: dependencies.workFolderRoot)
+        Self(workFolderRoot: dependencies.workFolderRoot, resolver: dependencies.resolver)
     }
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
         await ToolErrorHandler.execute(toolName: Self.name, args: args) {
-            let result = try ProcessRunner.runGit(["status", "--porcelain=v1", "-b"], in: workFolderRoot)
+            // A work folder that IS a credential store (`~/.ssh`, `~/.claude` opened as a
+            // project) is no more git's to touch than the file tools' — asked by every git tool,
+            // not only by the five that take paths (#382).
+            if resolver.hidesRoot { throw SandboxPathError.protectedWorkFolder }
+            // Scoped like every other git read: the repository may enclose the work folder, and
+            // a hidden location inside it is no more this tool's to name than to read (#376).
+            let result = try ProcessRunner.runRoleGit(
+                ["status", "--porcelain=v1", "-b", "--"] + resolver.gitPathspecs(forPaths: nil),
+                in: workFolderRoot)
 
             guard result.success else {
                 if GitErrorClassifier.isNotARepository(stderr: result.stderr) {
@@ -128,14 +136,18 @@ nonisolated struct GitBranchListTool: ToolHandler {
     static let blockedInDefaultStorage = true
 
     let workFolderRoot: URL
+    let resolver: SandboxPathResolver
 
-    
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self {
-        Self(workFolderRoot: dependencies.workFolderRoot)
+        Self(workFolderRoot: dependencies.workFolderRoot, resolver: dependencies.resolver)
     }
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
         await ToolErrorHandler.execute(toolName: Self.name, args: args) {
+            // A work folder that IS a credential store (`~/.ssh`, `~/.claude` opened as a
+            // project) is no more git's to touch than the file tools' — asked by every git tool,
+            // not only by the five that take paths (#382).
+            if resolver.hidesRoot { throw SandboxPathError.protectedWorkFolder }
             let all = optionalBool(args, "all", default: false)
 
             var gitArgs = ["branch", "-v"]
@@ -143,7 +155,7 @@ nonisolated struct GitBranchListTool: ToolHandler {
                 gitArgs.append("-a")
             }
 
-            let result = try ProcessRunner.runGit(gitArgs, in: workFolderRoot)
+            let result = try ProcessRunner.runRoleGit(gitArgs, in: workFolderRoot)
 
             guard result.success else {
                 if GitErrorClassifier.isNotARepository(stderr: result.stderr) {
@@ -234,6 +246,12 @@ nonisolated struct GitLogTool: ToolHandler {
         )
     )
     static let category: ToolCategory = .gitRead
+    /// The singular `path` every file tool takes; `limit` for the count, which is what a
+    /// test of this tool sent for a year while the default 20 hid that it was dropped.
+    static let undeclaredArguments: [String: UndeclaredArgument] = [
+        "path": .alias(of: "paths"),
+        "limit": .alias(of: "max"),
+    ]
     static let blockedInDefaultStorage = true
 
     let workFolderRoot: URL
@@ -245,9 +263,16 @@ nonisolated struct GitLogTool: ToolHandler {
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
         await ToolErrorHandler.execute(toolName: Self.name, args: args) {
+            // A work folder that IS a credential store (`~/.ssh`, `~/.claude` opened as a
+            // project) is no more git's to touch than the file tools' — asked by every git tool,
+            // not only by the five that take paths (#382).
+            if resolver.hidesRoot { throw SandboxPathError.protectedWorkFolder }
             let maxCount = optionalInt(args, "max") ?? 20
             let oneline = optionalBool(args, "oneline", default: true)
-            let paths = optionalStringArray(args, "paths")?.map { resolver.relativizePathspec($0) }
+            // Judged, not guessed, and always scoped: `git log` with no pathspec reports the
+            // whole REPOSITORY, which encloses the work folder whenever the person opened a
+            // subdirectory of one (#376).
+            let paths = try resolver.gitPathspecs(forPaths: optionalStringArray(args, "paths"))
 
             var gitArgs = ["log", "-\(maxCount)"]
 
@@ -260,12 +285,10 @@ nonisolated struct GitLogTool: ToolHandler {
                 gitArgs.append("--format=%H%x1f%s%x1f%an%x1f%ai")
             }
 
-            if let paths = paths, !paths.isEmpty {
-                gitArgs.append("--")
-                gitArgs.append(contentsOf: paths)
-            }
+            gitArgs.append("--")
+            gitArgs.append(contentsOf: paths)
 
-            let result = try ProcessRunner.runGit(gitArgs, in: workFolderRoot)
+            let result = try ProcessRunner.runRoleGit(gitArgs, in: workFolderRoot)
 
             guard result.success else {
                 if GitErrorClassifier.isNotARepository(stderr: result.stderr) {
@@ -331,6 +354,8 @@ nonisolated struct GitDiffTool: ToolHandler {
         )
     )
     static let category: ToolCategory = .gitRead
+    /// The singular `path` every file tool takes — without it the diff widened to the repo.
+    static let undeclaredArguments = ToolArgumentVocabulary.aliases(["path"], of: "paths")
     static let blockedInDefaultStorage = true
 
     let workFolderRoot: URL
@@ -342,8 +367,15 @@ nonisolated struct GitDiffTool: ToolHandler {
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
         await ToolErrorHandler.execute(toolName: Self.name, args: args) {
+            // A work folder that IS a credential store (`~/.ssh`, `~/.claude` opened as a
+            // project) is no more git's to touch than the file tools' — asked by every git tool,
+            // not only by the five that take paths (#382).
+            if resolver.hidesRoot { throw SandboxPathError.protectedWorkFolder }
             let cached = optionalBool(args, "cached", default: false)
-            let paths = optionalStringArray(args, "paths")?.map { resolver.relativizePathspec($0) }
+            // Scoped to the work folder and away from every hidden location: a `git diff` with
+            // no pathspec printed the enclosing repository's changes, and a tracked token file
+            // its whole content (#376).
+            let paths = try resolver.gitPathspecs(forPaths: optionalStringArray(args, "paths"))
             let maxLines = optionalInt(args, "max_lines") ?? 400
 
             var gitArgs = ["diff"]
@@ -351,10 +383,8 @@ nonisolated struct GitDiffTool: ToolHandler {
                 gitArgs.append("--cached")
             }
 
-            if let paths = paths, !paths.isEmpty {
-                gitArgs.append("--")
-                gitArgs.append(contentsOf: paths)
-            }
+            gitArgs.append("--")
+            gitArgs.append(contentsOf: paths)
 
             // The two reads are independent processes over the same repository, so they run
             // concurrently. `git diff` is the slow one on a large working tree; the untracked
@@ -376,7 +406,8 @@ nonisolated struct GitDiffTool: ToolHandler {
             let probe = await untrackedTask
 
             guard result.success else {
-                if GitErrorClassifier.isNotARepository(stderr: result.stderr) {
+                if GitErrorClassifier.isNotARepository(stderr: result.stderr)
+                    || GitErrorClassifier.hasNoRepository(in: root) {
                     return GitErrorClassifier.notARepositoryError(toolName: Self.name, args: args)
                 }
                 return makeErrorResult(
@@ -419,7 +450,7 @@ nonisolated struct GitDiffTool: ToolHandler {
     private static func git(_ arguments: [String], in root: URL) async throws
         -> ProcessRunner.Result
     {
-        try ProcessRunner.runGit(arguments, in: root)
+        try ProcessRunner.runRoleGit(arguments, in: root)
     }
 
     /// `git diff` reports tracked changes only; list untracked working-tree files so reviewers
@@ -429,16 +460,14 @@ nonisolated struct GitDiffTool: ToolHandler {
     /// `paths` when provided so the field still reflects the caller's query.
     @concurrent
     private static func untrackedFiles(
-        paths: [String]?, cached: Bool, in root: URL
+        paths: [String], cached: Bool, in root: URL
     ) async -> (files: [String], warnings: [String]) {
         guard !cached else { return ([], []) }
         var probeArgs = ["ls-files", "--others", "--exclude-standard"]
-        if let paths, !paths.isEmpty {
-            probeArgs.append("--")
-            probeArgs.append(contentsOf: paths)
-        }
+        probeArgs.append("--")
+        probeArgs.append(contentsOf: paths)
         do {
-            let others = try ProcessRunner.runGit(probeArgs, in: root)
+            let others = try ProcessRunner.runRoleGit(probeArgs, in: root)
             guard others.success else {
                 let detail = others.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
                 return ([], ["untracked_files probe failed: "

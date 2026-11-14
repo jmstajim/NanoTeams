@@ -49,6 +49,21 @@ final class NativeToolWireTests: XCTestCase {
             #"{"function":{"description":"Read a file.","name":"read_file","parameters":{"properties":{"path":{"description":"Relative path","type":"string"}},"required":["path"],"type":"object"}},"type":"function"}"#)
     }
 
+    /// An MCP tool with zero parameters (`MCPSchemaProjection.emptyObject` or `project({"type":"object"})`)
+    /// carries `properties: nil` on `JSONSchema`, whereas LM Studio's `/v1/chat/completions` Zod validator
+    /// requires `tools[i].function.parameters.properties` to be an object (`{}`).
+    func testDeclaration_objectWithoutProperties_encodesEmptyPropertiesObject() throws {
+        let schema = ToolSchema(
+            name: "mcp__sdk__check_status",
+            description: "Checks status.",
+            parameters: MCPSchemaProjection.emptyObject)
+        let data = try JSONCoderFactory.makeWireEncoder().encode(NativeToolDeclaration(schema))
+        let json = String(decoding: data, as: UTF8.self)
+        XCTAssertEqual(
+            json,
+            #"{"function":{"description":"Checks status.","name":"mcp__sdk__check_status","parameters":{"properties":{},"type":"object"}},"type":"function"}"#)
+    }
+
     /// `nativeToolsText` is what the ledger prices and fingerprints for a native request —
     /// the same encoder, the same array, so it cannot drift from what either builder sends.
     func testNativeToolsText_isTheEncodedDeclarationArray() throws {
@@ -140,7 +155,8 @@ final class NativeToolWireTests: XCTestCase {
             guard case DecodingError.dataCorrupted(let context)? = error as? DecodingError else {
                 return XCTFail("\(error)")
             }
-            XCTAssertEqual(context.debugDescription, "not a JSON value")
+            XCTAssertEqual(context.debugDescription,
+                           "Value is not JSON — expected null, a boolean, a number, a string, an array or an object.")
             XCTAssertEqual(context.codingPath.map(\.stringValue), ["when"])
         }
     }

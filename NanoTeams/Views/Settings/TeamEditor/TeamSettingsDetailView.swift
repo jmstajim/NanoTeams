@@ -35,11 +35,11 @@ struct TeamSettingsDetailView: View {
     /// already does.
     ///
     /// They used to bind straight to `$team.name` / `$team.description`. That
-    /// Binding is `TeamEditorView.binding(for:)`, whose setter spawns
+    /// Binding is `TeamEditorView.binding(for:)`, whose setter then spawned
     /// `Task { await store.mutateWorkFolder … }` — so every KEYSTROKE queued a
     /// full `teams.json` write, each one carrying the same captured pre-edit
-    /// snapshot (the same stale-getter hazard documented on
-    /// `ArtifactEditorMutations` / `RoleEditorMutations`).
+    /// snapshot. The binding now stages into `TeamEditCommitQueue`, which writes
+    /// the latest value in order; a keystroke would still be a write.
     @State private var draftName: String = ""
     @State private var draftDescription: String = ""
     @FocusState private var focusedField: Field?
@@ -113,7 +113,7 @@ struct TeamSettingsDetailView: View {
     // MARK: - General
 
     private var generalSection: some View {
-        SettingsCard(header: "General", systemImage: "info.circle") {
+        SettingsCard(header: "General") {
             VStack(alignment: .leading, spacing: Spacing.m) {
                 TextField("Team Name", text: $draftName)
                     .textFieldStyle(.plain)
@@ -140,7 +140,6 @@ struct TeamSettingsDetailView: View {
     private var acceptanceSection: some View {
         SettingsCard(
             header: "Acceptance & Review",
-            systemImage: "checkmark.seal",
             footer: "Controls when the Supervisor reviews and approves team output."
         ) {
             VStack(alignment: .leading, spacing: Spacing.s) {
@@ -187,7 +186,6 @@ struct TeamSettingsDetailView: View {
     private var supervisorModeSection: some View {
         SettingsCard(
             header: "Ask Supervisor",
-            systemImage: "person.fill.questionmark",
             footer: "Controls how the team handles questions to the Supervisor."
         ) {
             VStack(alignment: .leading, spacing: Spacing.s) {

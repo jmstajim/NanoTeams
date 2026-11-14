@@ -54,7 +54,24 @@ extension LLMExecutionService {
             let canonical = ToolRegistry.resolveToolName(call.name)
             guard computerUseNames.contains(canonical), allowedToolNames.contains(canonical) else { continue }
 
-            guard let action = parseComputerUseAction(name: canonical, argsJSON: call.argumentsJSON) else {
+            // A call that cannot become an action holds no card: the runtime refuses its
+            // document (`ToolCallArguments`), or the handler refuses its arguments with the
+            // missing one named — through the SAME resolver this gate reads, so nothing runs
+            // either way. A denial here would tell the model "do not retry" about a call it
+            // only has to complete.
+            guard let dispatched = ToolCallArguments.prepare(
+                rawJSON: call.argumentsJSON, emittedName: call.name).dispatched
+            else { continue }
+            let parsed: ComputerUseAction?
+            do {
+                parsed = try ComputerUseArguments.action(
+                    canonicalName: dispatched.toolName, args: dispatched.args)
+            } catch {
+                continue
+            }
+            guard let action = parsed else {
+                // Unreachable while the caller's `computerUseNames` guard and the resolver's
+                // switch agree; fail closed if they ever drift.
                 synthetic[idx] = makeComputerUseDeniedResult(
                     call: call, reason: "Could not parse the action arguments.")
                 continue
@@ -73,12 +90,23 @@ extension LLMExecutionService {
                     // for auto+off before emitting `.ask`. If you add another judge
                     // call site (e.g. a manual-unattended fallback), re-check that
                     // contract — the off-switch lives in the evaluator.
-                    await noteInterleavingCall(label: "computer-use judge", config: config)
-                    let verdict = await ComputerUseJudgeService.judge(
-                        action: action, context: judgeContext(action: action, key: key),
-                        policy: policy, config: config, client: client, logger: networkLogger)
-                    if verdict.allowed { continue }
-                    synthetic[idx] = makeComputerUseDeniedResult(call: call, reason: verdict.reason)
+                    let context = judgeContext(action: action, key: key)
+                    let ruling = await askApprovalJudge(label: "computer-use judge", config: config) {
+                        await ComputerUseJudgeService.judge(
+                            action: action, context: context,
+                            policy: policy, config: config, client: client, logger: networkLogger)
+                    }
+                    switch ruling {
+                    case .decided(let verdict) where verdict.allowed:
+                        continue
+                    case .decided(let verdict):
+                        synthetic[idx] = makeComputerUseDeniedResult(call: call, reason: verdict.reason)
+                    case .cancelled:
+                        // Paused while the judge was being asked, or before it could be — no
+                        // refusal. Twin of the `bash` gate's judge arm and of this gate's own
+                        // human-hold arm.
+                        synthetic[idx] = makeCancelledResult(for: call)
+                    }
                 } else if humanPresent {
                     let request = approvalRequest(action: action, call: call, stepID: stepID, taskID: taskID, key: key)
                     switch await awaitComputerUseApproval(request: request) {
@@ -253,74 +281,17 @@ extension LLMExecutionService {
 
     // MARK: - Parsing
 
-    /// String-valued computer-use arguments that describe WHERE an action goes,
-    /// never WHAT is typed.
-    ///
-    /// `resolveContentString` exists for the file tools and ends in a "the one
-    /// remaining String argument must be the content" fallback; its
-    /// `nonContentKeys` list therefore knows about `path`/`query`/`patch` and
-    /// nothing about this feature. Passing these in keeps that fallback from
-    /// mistaking a routing argument for text to type. Numeric keys (`x`, `y`,
-    /// `dx`, `dy`) need no entry — the fallback only considers `String` values.
-    nonisolated static let computerUseStructuralKeys: Set<String> = [
-        "target", "window_title", "keys", "key", "button", "double",
-    ]
-
+    /// The action the gate judges: the HANDLER's own resolver (`ComputerUseArguments`) over the
+    /// runtime's own reading of the arguments (`ToolCallArguments`), so the card shows exactly
+    /// what the handler emits. `nil` when the runtime would refuse the document, when the tool
+    /// is not a computer-use tool, or when an argument the action needs is missing.
     func parseComputerUseAction(name: String, argsJSON: String) -> ComputerUseAction? {
-        let canonical = ToolRegistry.resolveToolName(name)
-        let dict: [String: Any] = {
-            guard let data = argsJSON.data(using: .utf8),
-                  let parsed = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-            else { return [:] }
-            return parsed
-        }()
+        ToolCallArguments.prepare(rawJSON: argsJSON, emittedName: name).dispatched
+            .flatMap(Self.computerUseAction)
+    }
 
-        func target(_ d: [String: Any]) -> String? {
-            ComputerUseAction.normalizedTargetSpec(optionalString(d, "target"))
-        }
-
-        /// `optionalString` is a bare `as? String`, so an EMPTY value is non-nil
-        /// and short-circuits `??` — a present-but-blank `keys` would swallow a
-        /// perfectly good `key`. The `screen_capture` arm below already guards
-        /// this way; these helpers just stop the two spellings from diverging.
-        func nonEmpty(_ s: String?) -> String? {
-            guard let s, !s.isEmpty else { return nil }
-            return s
-        }
-
-        switch canonical {
-        case ToolNames.screenCapture:
-            let t = optionalString(dict, "target").flatMap { $0.isEmpty ? nil : $0 } ?? "screen"
-            return .capture(target: t, windowTitle: optionalString(dict, "window_title").flatMap { $0.isEmpty ? nil : $0 })
-        case ToolNames.uiClick:
-            guard let x = optionalInt(dict, "x"), let y = optionalInt(dict, "y") else { return nil }
-            let button = ComputerUseAction.normalizedButton(optionalString(dict, "button"))
-            return .click(x: x, y: y, button: button, double: optionalBool(dict, "double"), target: target(dict))
-        case ToolNames.uiType:
-            // `resolveContentString`'s last resort is "the single remaining
-            // String argument", and `nonContentKeys` — written for the file
-            // tools — does not list the computer-use keys. So `ui_type` with a
-            // target and no text resolved its text to the TARGET and typed the
-            // app's own name into it. Excluding the structural keys makes that
-            // call return nil (rejected) instead of silently typing something
-            // the model never asked for.
-            let text = nonEmpty(optionalString(dict, "text"))
-                ?? resolveContentString(dict, excludeKeys: Self.computerUseStructuralKeys)
-                ?? ""
-            guard !text.isEmpty else { return nil }
-            return .typeText(text: text, target: target(dict))
-        case ToolNames.uiKey:
-            let keys = nonEmpty(optionalString(dict, "keys"))
-                ?? nonEmpty(optionalString(dict, "key"))
-                ?? ""
-            guard !keys.isEmpty else { return nil }
-            return .pressKey(keys: keys, target: target(dict))
-        case ToolNames.uiScroll:
-            guard let x = optionalInt(dict, "x"), let y = optionalInt(dict, "y") else { return nil }
-            return .scroll(x: x, y: y, dx: optionalInt(dict, "dx") ?? 0, dy: optionalInt(dict, "dy") ?? 0, target: target(dict))
-        default:
-            return nil
-        }
+    private nonisolated static func computerUseAction(_ dispatched: ToolCallArguments.Dispatch) -> ComputerUseAction? {
+        (try? ComputerUseArguments.action(canonicalName: dispatched.toolName, args: dispatched.args)) ?? nil
     }
 
     // MARK: - Synthetic result

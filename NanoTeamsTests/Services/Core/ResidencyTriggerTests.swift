@@ -203,7 +203,7 @@ final class ResidencyTriggerTests: NTMSOrchestratorTestBase, @unchecked Sendable
     /// unconditional removeValue, so the membership guard is what makes it true).
     func testEvictIfReclaimable_taskNotLoaded_returnsNilNoSweep() async {
         await sut.openWorkFolder(tempDir)
-        let sweep = sut.evictIfReclaimable(999_999)
+        let sweep = sut.evictIfReclaimable(999_999, within: sut.currentFolderLifecycle)
         XCTAssertNil(sweep, "Nothing was loaded to evict — no reconcile should be spawned")
     }
 
@@ -283,7 +283,7 @@ final class ResidencyTriggerTests: NTMSOrchestratorTestBase, @unchecked Sendable
         XCTAssertEqual(unloadedIDs(), [],
                        "Still loaded in the background — still referenced")
 
-        await sut.evictIfReclaimable(bgID)?.value
+        await sut.evictIfReclaimable(bgID, within: sut.currentFolderLifecycle)?.value
 
         XCTAssertEqual(unloadedIDs(), ["gen-model"],
                        "Scheduler eviction is a de-reference — it must sweep")
@@ -296,7 +296,7 @@ final class ResidencyTriggerTests: NTMSOrchestratorTestBase, @unchecked Sendable
             return
         }
 
-        XCTAssertNil(sut.evictIfReclaimable(taskID),
+        XCTAssertNil(sut.evictIfReclaimable(taskID, within: sut.currentFolderLifecycle),
                      "The active task is never evicted, so nothing de-references")
         XCTAssertNotNil(sut.loadedTask(taskID))
     }

@@ -109,7 +109,15 @@ nonisolated struct AutovisorTeamPolicy: Hashable, Sendable {
 // synthesized `Hashable` on a bare nested enum becomes main-actor-isolated — which makes
 // `XCTAssertEqual(resolution, .teamBlocked("X"))` from a nonisolated `XCTestCase` fail to
 // COMPILE. Same trap as `AcceptanceService.AcceptRoute`.
+/// Which surface is rendering or enforcing the Autovisor tool contract.
+nonisolated enum AutovisorSurface: String, Codable, Hashable, Sendable, CaseIterable {
+    case inApp
+    case externalMCP
+}
+
 nonisolated extension AutovisorTeamPolicy {
+
+    typealias Surface = AutovisorSurface
 
     /// Outcome of classifying a `create_managed_task` `team_id`.
     nonisolated enum ManagedTeamResolution: Hashable {
@@ -164,6 +172,8 @@ nonisolated extension AutovisorTeamPolicy {
         return blocks(id: team.id) ? .teamBlocked(team.name) : .team(team.id)
     }
 
+    /// runtime-prompt
+    ///
     /// The model-read refusal for a failing resolution, or `nil` when the resolution succeeds.
     ///
     /// Lives here rather than in the orchestrator's dispatch so every one of these strings is a
@@ -174,39 +184,50 @@ nonisolated extension AutovisorTeamPolicy {
     func failureMessage(
         for resolution: ManagedTeamResolution,
         allTeams: [Team],
-        omitPathIsViable: Bool
+        omitPathIsViable: Bool,
+        surface: Surface = .inApp
     ) -> String? {
         switch resolution {
         case .useActiveTeam, .team, .generated:
             return nil
         case .generationDisabled:
-            return "Team generation is disabled for the Autovisor in this folder. " + remedy(allTeams, omitPathIsViable)
+            return "Team generation is disabled for the Autovisor in this folder. " + remedy(allTeams, omitPathIsViable, surface: surface)
         case .teamBlocked(let name):
-            return "Team \"\(name)\" is not one the Autovisor may create tasks on in this folder. " + remedy(allTeams, omitPathIsViable)
+            return "Team \"\(name)\" is not one the Autovisor may create tasks on in this folder. " + remedy(allTeams, omitPathIsViable, surface: surface)
         case .activeTeamBlocked(let name):
-            return "The folder's active team \"\(name)\" is not one the Autovisor may create tasks on, so omitting team_id is not an option here. " + remedy(allTeams, omitPathIsViable)
+            return "The folder's active team \"\(name)\" is not one the Autovisor may create tasks on, so omitting team_id is not an option here. " + remedy(allTeams, omitPathIsViable, surface: surface)
         case .activeTeamIsChat(let name):
-            return "The folder's active team \"\(name)\" is a chat team — a managed task on it never finishes on its own. " + remedy(allTeams, omitPathIsViable)
+            return "The folder's active team \"\(name)\" is a chat team — a managed task on it never finishes on its own. " + remedy(allTeams, omitPathIsViable, surface: surface)
         case .activeTeamNotUsable:
-            return "The folder's active team is not one tasks can be created on. " + remedy(allTeams, omitPathIsViable)
+            return "The folder's active team is not one tasks can be created on. " + remedy(allTeams, omitPathIsViable, surface: surface)
         case .unknown(let raw):
             // "no-such-team"-style echo first: the pins assert the offending id appears, and
             // the word "disabled" must NOT (that is the sentinel case's signature).
-            return "Unknown team_id '\(raw)'. " + remedy(allTeams, omitPathIsViable)
+            return "Unknown team_id '\(raw)'. " + remedy(allTeams, omitPathIsViable, surface: surface)
         }
     }
 
     /// What the manager can actually do next, given this folder's state. Never advertises a
     /// path that is currently closed.
-    private func remedy(_ allTeams: [Team], _ omitPathIsViable: Bool) -> String {
+    private func remedy(_ allTeams: [Team], _ omitPathIsViable: Bool, surface: Surface) -> String {
         var options: [String] = []
         if !hasNoSelectableTeam(in: allTeams) {
-            options.append("pick a team id from the catalog in create_managed_task's description")
+            switch surface {
+            case .inApp:
+                options.append("pick a team id from the catalog in create_managed_task's description")
+            case .externalMCP:
+                options.append("pick a team id returned by list_teams")
+            }
         }
         if omitPathIsViable { options.append("omit team_id to use the folder's active team") }
         if allowGeneration { options.append("use 'generated' to assemble a new team") }
         guard !options.isEmpty else {
-            return "No team is available for new tasks in this folder — report that to your Supervisor and carry on with the rest of the pass."
+            switch surface {
+            case .inApp:
+                return "No team is available for new tasks in this folder — report that to your Supervisor and carry on with the rest of the pass."
+            case .externalMCP:
+                return "No team is available for new tasks in this folder — ask the user to enable a team or team generation for the Autovisor."
+            }
         }
         return options.count == 1
             ? "Instead, \(options[0])."

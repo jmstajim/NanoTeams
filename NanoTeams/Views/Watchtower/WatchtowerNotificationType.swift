@@ -28,6 +28,14 @@ nonisolated enum WatchtowerNotificationType {
     /// Allow/Deny/Always/Ask-AI card lives in the task's activity feed; the banner's
     /// open affordance navigates there.
     case bashApprovalNeeded(stepID: String, taskID: Int, command: String, role: Role, createdAt: Date)
+    /// An MCP tool call is HELD awaiting Allow/Deny. Same shape and same reason as the
+    /// bash case: the hold keeps the step `.running`, so for a BACKGROUND task this banner
+    /// is the only Watchtower signal. Informational pointer — the card in the task's feed
+    /// carries the whole arguments document, which is the thing that must be READ, and a
+    /// banner is not where anything is read.
+    case mcpApprovalNeeded(
+        stepID: String, taskID: Int, toolName: String, serverName: String, role: Role,
+        createdAt: Date)
 
     func icon(isChatMode: Bool) -> String {
         switch self {
@@ -37,6 +45,7 @@ nonisolated enum WatchtowerNotificationType {
         case .taskDone: return "checkmark.circle"
         case .timedOut: return "clock.badge.exclamationmark"
         case .bashApprovalNeeded: return "terminal"
+        case .mcpApprovalNeeded: return "server.rack"
         }
     }
 
@@ -47,7 +56,7 @@ nonisolated enum WatchtowerNotificationType {
         case .failed: return Colors.error
         case .taskDone: return Colors.success
         case .timedOut: return Colors.warning
-        case .bashApprovalNeeded: return Colors.warning
+        case .bashApprovalNeeded, .mcpApprovalNeeded: return Colors.warning
         }
     }
 
@@ -65,6 +74,8 @@ nonisolated enum WatchtowerNotificationType {
             return "\(taskTitle) timed out"
         case .bashApprovalNeeded(_, _, _, let role, _):
             return "\(role.displayName) wants to run a command"
+        case .mcpApprovalNeeded(_, _, let toolName, let serverName, let role, _):
+            return "\(role.displayName) wants to call \(toolName) on \(serverName)"
         }
     }
 
@@ -75,7 +86,7 @@ nonisolated enum WatchtowerNotificationType {
     var requiresAction: Bool {
         switch self {
         case .supervisorInput, .acceptance, .taskDone: return true
-        case .failed, .timedOut, .bashApprovalNeeded: return false
+        case .failed, .timedOut, .bashApprovalNeeded, .mcpApprovalNeeded: return false
         }
     }
 
@@ -88,7 +99,8 @@ nonisolated enum WatchtowerNotificationType {
     /// added later.
     var needsAttention: Bool {
         switch self {
-        case .supervisorInput, .acceptance, .taskDone, .failed, .timedOut, .bashApprovalNeeded: return true
+        case .supervisorInput, .acceptance, .taskDone, .failed, .timedOut,
+             .bashApprovalNeeded, .mcpApprovalNeeded: return true
         }
     }
 
@@ -118,6 +130,9 @@ nonisolated enum WatchtowerNotificationType {
         // identity the in-loop gate keys on.
         case .bashApprovalNeeded(let stepID, let taskID, _, _, let createdAt):
             return "bash::\(taskID)::\(stepID)::\(createdAt.timeIntervalSince1970)"
+        // Never the call key: it carries the raw arguments document and a \u{1}.
+        case .mcpApprovalNeeded(let stepID, let taskID, _, _, _, let createdAt):
+            return "mcp::\(taskID)::\(stepID)::\(createdAt.timeIntervalSince1970)"
         }
     }
 }
@@ -158,7 +173,8 @@ nonisolated extension Run {
     func allWatchtowerNotifications(
         task: NTMSTask,
         teamRoles: [TeamRoleDefinition],
-        bashApprovals: [BashApprovalRequest] = []
+        bashApprovals: [BashApprovalRequest] = [],
+        mcpApprovals: [MCPApprovalRequest] = []
     ) -> [WatchtowerNotificationType] {
         var notifications: [WatchtowerNotificationType] = []
         var seenStepIDs: Set<String> = []
@@ -173,6 +189,14 @@ nonisolated extension Run {
             notifications.append(.bashApprovalNeeded(
                 stepID: req.stepID, taskID: req.taskID, command: req.command,
                 role: role, createdAt: req.createdAt))
+        }
+
+        // Held MCP calls, for the same reason and by the same rule.
+        for req in mcpApprovals where req.taskID == task.id {
+            let role = steps.first(where: { $0.id == req.stepID })?.role ?? Role.fromID(req.stepID)
+            notifications.append(.mcpApprovalNeeded(
+                stepID: req.stepID, taskID: req.taskID, toolName: req.toolTitle,
+                serverName: req.serverDisplayName, role: role, createdAt: req.createdAt))
         }
 
         // One producer for all three surfaces, so the banner, the composer chip and the
@@ -230,8 +254,10 @@ nonisolated extension Run {
 
         // Run paused by the run-timeout watchdog. Shows only while the run is
         // actually paused-by-timeout; clears once the Supervisor resumes (the
-        // task leaves `.paused`) so it doesn't linger as historical noise.
-        if timedOutAt != nil && task.derivedStatusFromActiveRun() == .paused {
+        // task leaves `.paused`) so it doesn't linger as historical noise — and
+        // does not come back when the resumed run is paused again by someone
+        // else (`latestPauseIsItsTimeout`; `timedOutAt` stays set for good).
+        if latestPauseIsItsTimeout && task.derivedStatusFromActiveRun() == .paused {
             notifications.append(.timedOut(taskID: task.id, taskTitle: task.title))
         }
 

@@ -36,6 +36,7 @@ struct MeetingMessageItemView: View {
                         Spacer()
                         Text(message.createdAt.formatted(date: .omitted, time: .shortened))
                             .font(Typography.term2xs)
+                            .lineLimit(1)
                             .foregroundStyle(Colors.textTertiary)
                     }
                 }
@@ -154,9 +155,11 @@ struct MeetingMessageItemView: View {
             HStack(spacing: Spacing.xxs) {
                 Text(TerminalGlyph.meeting)
                     .font(Typography.term2xs)
+                    .lineLimit(1)
                     .foregroundStyle(Colors.purple)
                 Text(type.rawValue.uppercased())
                     .font(Typography.term2xs.weight(.medium))
+                    .lineLimit(1)
                     .tracking(Typography.labelTracking)
                     .foregroundStyle(Colors.purple)
             }

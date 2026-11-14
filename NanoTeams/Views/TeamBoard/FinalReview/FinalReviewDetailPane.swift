@@ -87,6 +87,7 @@ struct FinalReviewDetailPane: View {
                 .foregroundStyle(color)
             Text(label.uppercased())
                 .font(Typography.term2xs)
+                .lineLimit(1)
                 .tracking(Typography.labelTracking)
                 .foregroundStyle(color)
         }

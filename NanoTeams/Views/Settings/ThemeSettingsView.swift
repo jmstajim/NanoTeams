@@ -45,7 +45,6 @@ struct ThemeSettingsView: View {
     private var pickerCard: some View {
         SettingsCard(
             header: "Theme",
-            systemImage: "paintbrush.pointed",
             footer: "System follows your macOS appearance setting."
         ) {
             LazyVGrid(
@@ -71,8 +70,7 @@ struct ThemeSettingsView: View {
 
     private var effectsCard: some View {
         SettingsCard(
-            header: "Effects",
-            systemImage: "sparkles"
+            header: "Effects"
         ) {
             VStack(spacing: 0) {
                 HStack(spacing: Spacing.m) {

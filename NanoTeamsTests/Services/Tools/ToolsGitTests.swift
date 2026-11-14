@@ -247,13 +247,23 @@ final class ToolsGitTests: XCTestCase {
     }
 
     /// A glob pathspec passes through untouched so git itself expands it.
-    func testGitAdd_globPathspec_passesThroughAndStagesMatches() async throws {
+    /// A wildcard is refused rather than passed through, because it cannot be SERVED beside the
+    /// `:(exclude)` list every git call carries: measured on git 2.54, a wildcard positive next
+    /// to any exclude stages NOTHING and exits 0 (#378). The refusal names the repair, and `.`
+    /// or the files themselves still work.
+    func testGitAdd_globPathspec_isRefusedAndNamesTheRepair() async throws {
         try "A".write(to: tempDir.appendingPathComponent("g1.txt"), atomically: true, encoding: .utf8)
         try "B".write(to: tempDir.appendingPathComponent("g2.txt"), atomically: true, encoding: .utf8)
         let call = StepToolCall(name: "git_add", argumentsJSON: "{\"paths\": [\"*.txt\"]}")
         let results = await runtime.executeAll(context: context, toolCalls: [call])
 
-        XCTAssertFalse(results[0].isError, "got: \(results[0].outputJSON)")
+        XCTAssertTrue(results[0].isError, "got: \(results[0].outputJSON)")
+        XCTAssertTrue(results[0].outputJSON.contains("patterns are not accepted"), results[0].outputJSON)
+        XCTAssertEqual(try runGitCommand(["diff", "--cached", "--name-only"]), "")
+
+        let named = StepToolCall(name: "git_add", argumentsJSON: "{\"paths\": [\"g1.txt\", \"g2.txt\"]}")
+        let staged = await runtime.executeAll(context: context, toolCalls: [named])
+        XCTAssertFalse(staged[0].isError, "got: \(staged[0].outputJSON)")
         let status = try runGitCommand(["status", "--porcelain"])
         XCTAssertTrue(status.contains("g1.txt"), "got: \(status)")
         XCTAssertTrue(status.contains("g2.txt"), "got: \(status)")
@@ -304,16 +314,12 @@ final class ToolsGitTests: XCTestCase {
 
         XCTAssertTrue(results[0].isError)
         XCTAssertTrue(results[0].outputJSON.contains("INVALID_ARGS"))
-        // I4: error must surface every accepted alias so a model emitting
-        // {"foos": [...]} sees what shape is actually accepted instead of
-        // a single misleading "paths" key.
+        // The error names the tool's own argument only (R1.8.3): `files` / `path` / `file`
+        // are taught by the rename note when the model sends them, never advertised here.
         XCTAssertTrue(
-            results[0].outputJSON.contains("paths")
-                && results[0].outputJSON.contains("files")
-                && results[0].outputJSON.contains("path")
-                && results[0].outputJSON.contains("file"),
-            "Error message must list all accepted aliases (paths/files/path/file). Got: \(results[0].outputJSON)"
-        )
+            results[0].outputJSON.contains("Missing required argument: paths"),
+            "Got: \(results[0].outputJSON)")
+        XCTAssertFalse(results[0].outputJSON.contains("files"), "Got: \(results[0].outputJSON)")
     }
 
     // MARK: - git_commit Tests

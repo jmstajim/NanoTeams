@@ -676,26 +676,34 @@ final class ComputerUseGateResolutionTests: XCTestCase {
             "nobody declined, got: \(denyMessage(results[0]))")
     }
 
-    /// An unparseable action fails CLOSED: the map is sparse-by-omission, so skipping it
-    /// would have run the OS action ungated.
-    func testGate_unparseableAction_isDeniedRatherThanPassedThrough() async {
+    /// An action missing an argument it needs holds no card and is not denied: the handler
+    /// refuses it through the SAME resolver the gate reads (`ComputerUseArguments`), naming the
+    /// argument — so nothing runs, and the model is told to complete the call rather than "do
+    /// not retry", which a `COMPUTER_USE_DENIED` would have said (2026-11-09).
+    func testGate_actionMissingAnArgument_holdsNoCard_andTheHandlerNamesIt() async {
         let results = await gate(
             [call(ToolNames.uiClick, #"{"y":10}"#)],
             policy: ComputerUsePolicy(mode: .auto, restrictionLevel: .off))
+        XCTAssertNil(results[0], "no card and no denial for a call the handler refuses itself")
 
-        assertIsComputerUseDeny(results[0])
-        XCTAssertTrue(
-            denyMessage(results[0]).contains("parse"),
-            "the deny must name the parse failure, got: \(denyMessage(results[0]))")
+        let handled = await UIClickTool().handle(
+            context: ToolExecutionContext(workFolderRoot: URL(fileURLWithPath: "/tmp"), taskID: 1, runID: 0, roleID: "r"),
+            args: ["y": 10])
+        XCTAssertTrue(handled.isError)
+        XCTAssertNil(handled.signal, "no action is emitted, so nothing runs")
+        XCTAssertTrue(handled.outputJSON.contains("INVALID_ARGS"), handled.outputJSON)
+        XCTAssertTrue(handled.outputJSON.contains("x"), handled.outputJSON)
     }
 
     // MARK: - parseComputerUseAction
 
-    /// Malformed / non-object arguments collapse to an empty dictionary. A capture then
-    /// degrades to the whole screen (its only argument is optional), while every action that
-    /// REQUIRES arguments returns nil so the gate denies rather than inventing coordinates.
+    /// Malformed arguments are read the way the runtime reads them (`ToolCallArguments`):
+    /// prose is wrapped under `__raw_input__`, which no computer-use action reads, and an empty
+    /// or `null` document is no arguments. A capture then degrades to the whole screen (its only
+    /// argument is optional), while every action that REQUIRES arguments returns nil — nothing
+    /// invents coordinates, or text.
     func testParse_malformedArguments_captureDegradesToScreen_pointerActionsReturnNil() async {
-        for bad in ["not json at all", "", "[1,2,3]", "{", "null", "\"a string\""] {
+        for bad in ["not json at all", "", "{", "null", "\"a string\""] {
             XCTAssertEqual(
                 service.parseComputerUseAction(name: ToolNames.screenCapture, argsJSON: bad),
                 ComputerUseAction.capture(target: "screen", windowTitle: nil),
@@ -713,6 +721,18 @@ final class ComputerUseGateResolutionTests: XCTestCase {
                 service.parseComputerUseAction(name: ToolNames.uiKey, argsJSON: bad),
                 "a key press must not resolve without keys: \(bad)")
         }
+    }
+
+    /// A document the runtime refuses outright (a list is not arguments) parses to nothing,
+    /// and the gate holds no card for it: the runtime answers the call with that refusal.
+    func testParse_aDocumentTheRuntimeRefuses_isNotAnAction_andHoldsNoCard() async {
+        for tool in [ToolNames.screenCapture, ToolNames.uiClick, ToolNames.uiType] {
+            XCTAssertNil(service.parseComputerUseAction(name: tool, argsJSON: "[1,2,3]"), tool)
+        }
+        let results = await gate(
+            [call(ToolNames.uiClick, "[1,2,3]")],
+            policy: ComputerUsePolicy(mode: .auto, restrictionLevel: .off))
+        XCTAssertNil(results[0], "no card and no denial for a call the runtime refuses itself")
     }
 
     /// A tool the gate does not own resolves to nil. Combined with the caller's
@@ -851,11 +871,11 @@ final class ComputerUseGateResolutionTests: XCTestCase {
         ] {
             XCTAssertNil(
                 service.parseComputerUseAction(name: ToolNames.uiType, argsJSON: json),
-                "no routing argument may become typed text: \(json)")
+                "another tool's argument is refused by name, never typed: \(json)")
         }
 
-        // The genuine content aliases must still work — the exclusion list must
-        // not be so wide that it breaks the recovery path it sits next to.
+        // The genuine content aliases must still work — `target` is ui_type's own argument,
+        // and the alias beside it still becomes the text.
         XCTAssertEqual(
             service.parseComputerUseAction(
                 name: ToolNames.uiType, argsJSON: #"{"target":"Safari","text":"hello"}"#),
@@ -883,11 +903,12 @@ final class ComputerUseGateResolutionTests: XCTestCase {
                 name: ToolNames.uiKey, argsJSON: #"{"keys":"","key":""}"#),
             "both blank is still nothing to press")
 
-        XCTAssertEqual(
+        // Two spellings that both carry a value are refused (2026-11-09) — there is no
+        // precedence for the gate and the handler to disagree over.
+        XCTAssertNil(
             service.parseComputerUseAction(
                 name: ToolNames.uiKey, argsJSON: #"{"keys":"cmd+s","key":"Return"}"#),
-            ComputerUseAction.pressKey(keys: "cmd+s", target: nil),
-            "a non-empty plural still wins — precedence is unchanged")
+            "two non-empty spellings are refused, never resolved")
     }
 
     /// Same short-circuit, other spelling: an empty `text` must fall through to

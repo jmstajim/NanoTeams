@@ -69,7 +69,6 @@ struct TeamSettingsCollaborationSection: View {
     var body: some View {
         SettingsCard(
             header: "Collaboration",
-            systemImage: "person.2",
             footer: MeetingsSwitchPresentation.footer(for: availability)
         ) {
             VStack(alignment: .leading, spacing: Spacing.m) {

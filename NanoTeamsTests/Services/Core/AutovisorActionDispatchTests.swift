@@ -245,6 +245,64 @@ final class AutovisorActionDispatchTests: NTMSOrchestratorTestBase, @unchecked S
                        "the pending-question flag must be cleared by the delivery")
     }
 
+    func testAnswerTaskQuestion_closedTaskWithStaleFlag_failsLoudly() async {
+        _ = await pinManager()
+        guard let id = await makeWorkerTask() else { return }
+        await injectRun(
+            taskID: id,
+            steps: [StepExecution(
+                id: "r", role: .softwareEngineer, title: "Engineer",
+                status: .needsSupervisorInput,
+                needsSupervisorInput: true,
+                supervisorQuestion: "Stale question?")],
+            statuses: ["r": .working])
+        await sut.mutateTask(taskID: id) { $0.closedAt = Date() }
+
+        let r = await sut.performAutovisorAction(
+            .answerTaskQuestion(taskID: id, answer: "Should not land"))
+
+        XCTAssertFalse(r.ok, "a closed task with a stale waiting flag must not accept an answer")
+        XCTAssertEqual(r.message, AutovisorReply.notWaitingForInput(taskID: id).text)
+        XCTAssertNil(latestRun(id)?.steps.first?.supervisorAnswer)
+    }
+
+    func testAnswerTaskQuestion_withRoleID_targetsThatRole_andRefusesNonWaitingRoleWithWaitingList() async {
+        _ = await pinManager()
+        guard let id = await makeWorkerTask() else { return }
+        await injectRun(
+            taskID: id,
+            steps: [
+                StepExecution(
+                    id: "swe", role: .softwareEngineer, title: "SWE",
+                    status: .needsSupervisorInput,
+                    needsSupervisorInput: true,
+                    supervisorQuestion: "SWE question?"),
+                StepExecution(
+                    id: "qa", role: .techLead, title: "QA",
+                    status: .needsSupervisorInput,
+                    needsSupervisorInput: true,
+                    supervisorQuestion: "QA question?")
+            ],
+            statuses: ["swe": .working, "qa": .working])
+
+        // Refuses a role that is not waiting and lists waiting roles.
+        let refused = await sut.performAutovisorAction(
+            .answerTaskQuestion(taskID: id, answer: "Nope", roleID: "pm"))
+        XCTAssertFalse(refused.ok)
+        XCTAssertEqual(
+            refused.message,
+            AutovisorReply.roleNotWaiting(taskID: id, roleID: "pm", waitingRoleIDs: ["swe", "qa"]).text)
+
+        // Targets the second waiting role when roleID == "qa".
+        let targeted = await sut.performAutovisorAction(
+            .answerTaskQuestion(taskID: id, answer: "Run UI tests.", roleID: "qa"))
+        XCTAssertTrue(targeted.ok, targeted.message)
+        XCTAssertNil(latestRun(id)?.steps.first(where: { $0.id == "swe" })?.supervisorAnswer,
+                     "SWE must remain untouched when roleID == qa")
+        XCTAssertEqual(latestRun(id)?.steps.first(where: { $0.id == "qa" })?.supervisorAnswer,
+                       "Run UI tests.")
+    }
+
     // MARK: - message_task
 
     /// Without a form state there is nowhere to queue — the action must say so instead of
@@ -314,6 +372,143 @@ final class AutovisorActionDispatchTests: NTMSOrchestratorTestBase, @unchecked S
         XCTAssertTrue(r.ok, r.message)
         XCTAssertEqual(formState.queuedMessages(for: id).count, 1)
         XCTAssertEqual(runCount(id), 1, "an idle task must be woken so it drains the queue")
+    }
+
+    func testMessageTask_onPausedTask_resumesSameRunInsteadOfStartingNewRun() async {
+        _ = await pinManager()
+        guard let id = await makeEngineFreeStartableTask() else { return }
+        await sut.mutateTask(taskID: id) { task in
+            task.status = .paused
+            task.runs = [Run(
+                id: 0,
+                steps: [StepExecution(id: "r", role: .softwareEngineer, title: "Engineer", status: .paused)],
+                roleStatuses: ["r": .working]
+            )]
+        }
+        sut.engineState[id] = .paused
+        XCTAssertEqual(runCount(id), 1, "premise: one paused run exists")
+
+        let r = await sut.performAutovisorAction(
+            .messageTask(taskID: id, text: "keep going", roleID: nil))
+
+        XCTAssertTrue(r.ok, r.message)
+        XCTAssertEqual(r.message, AutovisorReply.messageQueuedAndResumed(taskID: id).text)
+        XCTAssertEqual(runCount(id), 1,
+                       "message_task on a paused task must resume the SAME run rather than starting run #2")
+        XCTAssertNotEqual(sut.loadedTask(id)?.status, .paused,
+                          "resumeRun must have executed and cleared the recovery pause latch")
+        XCTAssertEqual(formState.queuedMessages(for: id).first?.text, "keep going")
+    }
+
+    func testMessageTask_onReviewOrClosedTask_refusesWithoutNewRunOrBanner() async {
+        _ = await pinManager()
+
+        // (a) Non-chat task in Review (all steps done, awaiting supervisor close)
+        guard let reviewID = await makeWorkerTask(title: "In Review") else { return }
+        await sut.mutateTask(taskID: reviewID) { $0.setStoredChatMode(false) }
+        await injectRun(
+            taskID: reviewID,
+            steps: [StepExecution(id: "r", role: .softwareEngineer, title: "Engineer", status: .done)],
+            statuses: ["r": .done])
+        sut.engineState[reviewID] = .needsAcceptance
+        sut.lastInfoMessage = nil
+        sut.lastErrorMessage = nil
+
+        let reviewResult = await sut.performAutovisorAction(
+            .messageTask(taskID: reviewID, text: "too late", roleID: nil))
+        XCTAssertFalse(reviewResult.ok, "message_task on a finished Review task must be refused")
+        XCTAssertEqual(reviewResult.message, AutovisorReply.messageDiscardedTaskFinished(taskID: reviewID).text)
+        XCTAssertEqual(runCount(reviewID), 1, "must not start a second run")
+        XCTAssertTrue(formState.queuedMessages(for: reviewID).isEmpty, "must not leave an orphan entry in the queue")
+        XCTAssertNil(sut.lastInfoMessage, "must not raise a user-facing discard banner")
+        XCTAssertNil(sut.lastErrorMessage)
+
+        // (b) Closed task
+        guard let closedID = await makeWorkerTask(title: "Closed") else { return }
+        await injectRun(
+            taskID: closedID,
+            steps: [StepExecution(id: "r", role: .softwareEngineer, title: "Engineer", status: .done)],
+            statuses: ["r": .done])
+        await sut.mutateTask(taskID: closedID) { $0.closedAt = MonotonicClock.shared.now() }
+        sut.engineState[closedID] = .done
+        sut.lastInfoMessage = nil
+        sut.lastErrorMessage = nil
+
+        let closedResult = await sut.performAutovisorAction(
+            .messageTask(taskID: closedID, text: "reopen?", roleID: nil))
+        XCTAssertFalse(closedResult.ok, "message_task on a closed task must be refused")
+        XCTAssertEqual(closedResult.message, AutovisorReply.messageDiscardedTaskFinished(taskID: closedID).text)
+        XCTAssertEqual(runCount(closedID), 1, "must not start a new run")
+        XCTAssertNotNil(sut.loadedTask(closedID)?.closedAt, "closedAt must stay intact")
+        XCTAssertTrue(formState.queuedMessages(for: closedID).isEmpty)
+        XCTAssertNil(sut.lastInfoMessage)
+        XCTAssertNil(sut.lastErrorMessage)
+    }
+
+    func testMessageTask_onParkedTaskWithoutView_deliversAnswerImmediately() async {
+        _ = await pinManager()
+        guard let id = await makeWorkerTask() else { return }
+        await injectRun(
+            taskID: id,
+            steps: [StepExecution(
+                id: "r", role: .softwareEngineer, title: "Engineer",
+                status: .needsSupervisorInput,
+                needsSupervisorInput: true,
+                supervisorQuestion: "Which database should I use?")],
+            statuses: ["r": .working])
+        sut.engineState[id] = .needsSupervisorInput
+
+        let r = await sut.performAutovisorAction(
+            .messageTask(taskID: id, text: "Use SQLite.", roleID: nil))
+
+        XCTAssertTrue(r.ok, r.message)
+        XCTAssertEqual(r.message, AutovisorReply.messageQueued(taskID: id).text)
+        XCTAssertEqual(runCount(id), 1, "delivering an answer must not start a new run")
+        let step = latestRun(id)?.steps.first
+        XCTAssertEqual(step?.supervisorAnswer, "Use SQLite.",
+                       "message_task on a parked step must flush immediately into supervisorAnswer without a view")
+        XCTAssertEqual(step?.supervisorAnswerWasAuto, true)
+        // DEBTS D-M15: and its own turn says so, which is what its card and `task_log` read.
+        XCTAssertEqual(step?.llmConversation.last { $0.sourceContext == .supervisorAnswer }?
+            .isFromAutomatedSupervisor, true)
+        XCTAssertTrue(formState.queuedMessages(for: id).isEmpty)
+    }
+
+    func testMessageTask_delegationInterruptFastPath_deliversViaInterruptWithoutLeavingQueueEntry() async {
+        _ = await pinManager()
+        guard let parentID = await makeWorkerTask(title: "Parent") else { return }
+        let childID = 777
+        let leadStep = StepExecution(
+            id: "lead", role: .techLead, title: "Tech Lead",
+            status: .running, activeDelegationChildID: childID)
+        await injectRun(
+            taskID: parentID,
+            steps: [leadStep],
+            statuses: ["lead": .working])
+        sut.engineState[parentID] = .running
+
+        let waitTask = Task { @MainActor in
+            await sut.completionAwaiter.register(taskID: childID)
+        }
+        // Yield so the waiter registers before message_task runs.
+        await Task.yield()
+        XCTAssertTrue(sut.completionAwaiter.hasWaiters(for: childID), "premise: delegation waiter registered")
+
+        let r = await sut.performAutovisorAction(
+            .messageTask(taskID: parentID, text: "abort delegation and pivot", roleID: "lead"))
+
+        XCTAssertTrue(r.ok, r.message)
+        XCTAssertEqual(r.message, AutovisorReply.messageQueued(taskID: parentID).text)
+        XCTAssertTrue(formState.queuedMessages(for: parentID).isEmpty,
+                      "delegation interrupt fast-path must not leave a duplicate entry in the queue")
+        if sut.completionAwaiter.hasWaiters(for: childID) {
+            sut.completionAwaiter.cancelAll(taskID: childID)
+            _ = await waitTask.value
+            XCTFail("message_task must resolve the delegation waiter via notifyDelegationInterrupt")
+        } else {
+            let outcome = await waitTask.value
+            XCTAssertEqual(outcome, TaskCompletionAwaiter.WaitOutcome.parentMessageQueued(text: "abort delegation and pivot"))
+        }
     }
 
     // MARK: - schedule_task
@@ -467,6 +662,52 @@ final class AutovisorActionDispatchTests: NTMSOrchestratorTestBase, @unchecked S
                        "the step must be drained, not merely reported paused")
     }
 
+    func testControlTaskPause_onTaskWithNoRunOrEngine_reportsFailureWithReason() async {
+        _ = await pinManager()
+
+        // (a) No run at all
+        guard let noRunID = await makeWorkerTask(title: "No Run") else { return }
+        await sut.mutateTask(taskID: noRunID) { $0.runs = [] }
+        let noRunResult = await sut.performAutovisorAction(.controlTask(taskID: noRunID, verb: .pause))
+        XCTAssertFalse(noRunResult.ok, "pause on a task with no run must fail")
+        XCTAssertTrue(noRunResult.message.contains("Could not pause task #\(noRunID)"), noRunResult.message)
+        XCTAssertTrue(noRunResult.message.contains("no active run"), noRunResult.message)
+
+        // (b) Already paused with no active engine
+        guard let pausedID = await makeWorkerTask(title: "Already Paused") else { return }
+        await injectRun(
+            taskID: pausedID,
+            steps: [StepExecution(id: "r", role: .softwareEngineer, title: "Engineer", status: .paused)],
+            statuses: ["r": .working])
+        sut.engineState[pausedID] = .paused
+        let alreadyPausedResult = await sut.performAutovisorAction(.controlTask(taskID: pausedID, verb: .pause))
+        XCTAssertFalse(alreadyPausedResult.ok, "pause on an already-paused task must fail")
+        XCTAssertTrue(alreadyPausedResult.message.contains("already paused"), alreadyPausedResult.message)
+
+        // (c) Closed task
+        guard let closedID = await makeWorkerTask(title: "Closed") else { return }
+        await injectRun(
+            taskID: closedID,
+            steps: [StepExecution(id: "r", role: .softwareEngineer, title: "Engineer", status: .done)],
+            statuses: ["r": .done])
+        await sut.mutateTask(taskID: closedID) { $0.closedAt = MonotonicClock.shared.now() }
+        let closedResult = await sut.performAutovisorAction(.controlTask(taskID: closedID, verb: .pause))
+        XCTAssertFalse(closedResult.ok, "pause on a closed task must fail")
+        XCTAssertTrue(closedResult.message.contains("already closed"), closedResult.message)
+
+        // (d) In Review (all steps done, no running engine)
+        guard let reviewID = await makeWorkerTask(title: "In Review") else { return }
+        await sut.mutateTask(taskID: reviewID) { $0.setStoredChatMode(false) }
+        await injectRun(
+            taskID: reviewID,
+            steps: [StepExecution(id: "r", role: .softwareEngineer, title: "Engineer", status: .done)],
+            statuses: ["r": .done])
+        sut.engineState[reviewID] = .needsAcceptance
+        let reviewResult = await sut.performAutovisorAction(.controlTask(taskID: reviewID, verb: .pause))
+        XCTAssertFalse(reviewResult.ok, "pause on a task in Review with no running step must fail")
+        XCTAssertTrue(reviewResult.message.contains("not running"), reviewResult.message)
+    }
+
     /// `stop` drops the engine registration, which is also the documented escape hatch that
     /// lifts the paused-restart guard.
     func testControlTaskStop_dropsTheEngineState() async {
@@ -495,6 +736,24 @@ final class AutovisorActionDispatchTests: NTMSOrchestratorTestBase, @unchecked S
         XCTAssertTrue(r.ok, r.message)
         XCTAssertTrue(r.message.contains("Closed task #\(id)"), r.message)
         XCTAssertNotNil(sut.loadedTask(id)?.closedAt, "close must actually terminate the task")
+    }
+
+    func testControlTaskClose_onAlreadyClosedTask_reportsAlreadyClosedWithoutRestamping() async {
+        _ = await pinManager()
+        guard let id = await makeWorkerTask() else { return }
+        await injectRun(
+            taskID: id,
+            steps: [StepExecution(id: "r", role: .softwareEngineer, title: "Engineer", status: .done)],
+            statuses: ["r": .done])
+        let originalClosedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        await sut.mutateTask(taskID: id) { $0.closedAt = originalClosedAt }
+
+        let r = await sut.performAutovisorAction(.controlTask(taskID: id, verb: .close))
+
+        XCTAssertFalse(r.ok, "closing an already-closed task must fail rather than report a second close")
+        XCTAssertEqual(r.message, AutovisorReply.alreadyClosed(taskID: id).text)
+        XCTAssertEqual(sut.loadedTask(id)?.closedAt, originalClosedAt,
+                       "closedAt must not be re-stamped on a repeated close")
     }
 
     /// `delete` is the verb whose false `ok:true` was most expensive — a task still on disk
@@ -564,6 +823,139 @@ final class AutovisorActionDispatchTests: NTMSOrchestratorTestBase, @unchecked S
         XCTAssertEqual(latestRun(id)?.roleStatuses["r"], .revisionRequested)
         XCTAssertEqual(latestRun(id)?.steps.first?.revisionComment, "add tests",
                        "the feedback must be recorded as the artifact-completion gate")
+    }
+
+    // MARK: - D-M15: the built-in manager's Supervisor turns record that a model wrote them
+
+    /// RED before 2026-11-07: only an external agent's label reached the revision, so the
+    /// built-in manager's `request_changes` was stored — and later shown — as the person's words.
+    func testManageRoleRequestChanges_byTheBuiltInManager_isRecordedAsAutomated() async {
+        _ = await pinManager()
+        guard let id = await makeWorkerTask() else { return }
+        await injectRun(
+            taskID: id,
+            steps: [StepExecution(id: "r", role: .softwareEngineer, title: "Engineer", status: .done)],
+            statuses: ["r": .done])
+
+        let r = await sut.performAutovisorAction(
+            .manageRole(taskID: id, roleID: "r", verb: .requestChanges(comment: "add tests")))
+
+        XCTAssertTrue(r.ok, r.message)
+        let step = latestRun(id)?.steps.first
+        XCTAssertEqual(step?.revisionCommentIsFromAutomatedSupervisor, true)
+        XCTAssertNil(step?.revisionCommentAuthor, "the built-in manager signs nothing")
+        let feedback = step?.messages.last { $0.role == .supervisor }
+        XCTAssertEqual(feedback?.isFromAutomatedSupervisor, true, "the step message records it too")
+    }
+
+    func testRequestRevision_byThePerson_isRecordedAsThePersons() async {
+        _ = await pinManager()
+        guard let id = await makeWorkerTask() else { return }
+        await injectRun(
+            taskID: id,
+            steps: [StepExecution(id: "r", role: .softwareEngineer, title: "Engineer", status: .done)],
+            statuses: ["r": .done])
+
+        await sut.requestRevision(taskID: id, roleID: "r", comment: "add tests")
+
+        let step = latestRun(id)?.steps.first
+        XCTAssertEqual(step?.revisionComment, "add tests")
+        XCTAssertEqual(step?.revisionCommentIsFromAutomatedSupervisor, false)
+        XCTAssertEqual(step?.messages.last { $0.role == .supervisor }?.isFromAutomatedSupervisor, false)
+    }
+
+    /// A correction of a PARKED step goes out as the answer. RED before 2026-11-07: with no
+    /// label the built-in manager's correction took the person's origin, so its answer turn —
+    /// and the step's flag — said the person answered.
+    func testManageRoleCorrect_ofAParkedStep_byTheBuiltInManager_isAnAutomatedAnswer() async {
+        _ = await pinManager()
+        guard let id = await makeWorkerTask() else { return }
+        await injectRun(
+            taskID: id,
+            steps: [StepExecution(
+                id: "r", role: .softwareEngineer, title: "Engineer", status: .paused,
+                needsSupervisorInput: true, supervisorQuestion: "Which database?")],
+            statuses: ["r": .working])
+        // The manager's own Pause: a pause with no recorded cause reads as the person's, and the
+        // person's Pause is refused to every automated `correct` (D-M18, `PersonsPauseGateTests`).
+        await sut.mutateTask(taskID: id) { task in
+            task.runs[task.runs.count - 1].pauseCause = .requested
+            task.runs[task.runs.count - 1].pauseRequestedBy = .builtInAutovisor
+        }
+        sut.engineState[id] = .paused
+
+        let r = await sut.performAutovisorAction(
+            .manageRole(taskID: id, roleID: "r", verb: .correct(comment: "prefer SQLite")))
+
+        XCTAssertTrue(r.ok, r.message)
+        let step = latestRun(id)?.steps.first
+        let answer = step?.llmConversation.last { $0.sourceContext == .supervisorAnswer }
+        XCTAssertEqual(answer?.isFromAutomatedSupervisor, true)
+        XCTAssertNil(answer?.authorLabel)
+    }
+
+    /// A restart comment survives the reset only as the step message that carries it, so that
+    /// message records who left it. RED before 2026-11-07: nothing did, and `task_log` listed
+    /// every restart comment as the person's.
+    func testManageRoleRestart_withAComment_byTheBuiltInManager_recordsItOnTheComment() async {
+        _ = await pinManager()
+        guard let id = await makeWorkerTask() else { return }
+        await injectRun(
+            taskID: id,
+            steps: [StepExecution(id: "r", role: .softwareEngineer, title: "Engineer", status: .done)],
+            statuses: ["r": .done])
+
+        let r = await sut.performAutovisorAction(
+            .manageRole(taskID: id, roleID: "r", verb: .restart(comment: "retry with SQLite")))
+
+        XCTAssertTrue(r.ok, r.message)
+        let comment = latestRun(id)?.steps.first?.messages.first { $0.role == .supervisor }
+        XCTAssertEqual(comment?.content, MessageSourceContext.supervisorMessagePrefix + "retry with SQLite")
+        XCTAssertEqual(comment?.isFromAutomatedSupervisor, true)
+        XCTAssertNil(comment?.authorLabel)
+    }
+
+    /// A role parked on `delegate_to_team` emits nothing for as long as the child task runs, so
+    /// to any supervisor it looks stalled — and `AutovisorStuckEvaluator` returns `.notStuck` for
+    /// it deliberately, removing the one verdict that would have explained the silence. The
+    /// triage vocabulary for a quiet task is restart or stop, and `restartRole` cascades to
+    /// downstream ROLES only, never to child TASKS: the child would keep running with nobody left
+    /// to take its result. The evaluator's comment has named that harm since delegation shipped;
+    /// nothing enforced it until 2026-11-08. The control is the test above — the same restart on
+    /// a step with no child succeeds.
+    func testRestartRole_onARoleWaitingOnADelegatedTask_isRefusedAndNamesTheChild() async {
+        _ = await pinManager()
+        guard let id = await makeWorkerTask() else { return }
+        await injectRun(
+            taskID: id,
+            steps: [StepExecution(
+                id: "r", role: .softwareEngineer, title: "Engineer", status: .running,
+                activeDelegationChildID: 7)],
+            statuses: ["r": .working])
+
+        let r = await sut.performAutovisorAction(
+            .manageRole(taskID: id, roleID: "r", verb: .restart(comment: "it looks stuck")))
+
+        XCTAssertFalse(r.ok, "restarting the parent orphans the child: \(r.message)")
+        XCTAssertTrue(r.message.contains("#7"), "the child must be nameable: \(r.message)")
+        XCTAssertTrue(
+            r.message.contains("not stalled"),
+            "the refusal exists because the role LOOKS stalled: \(r.message)")
+        XCTAssertEqual(latestRun(id)?.steps.first?.status, .running, "nothing may have been reset")
+    }
+
+    func testRestartRole_byThePerson_recordsThePersonOnTheComment() async {
+        _ = await pinManager()
+        guard let id = await makeWorkerTask() else { return }
+        await injectRun(
+            taskID: id,
+            steps: [StepExecution(id: "r", role: .softwareEngineer, title: "Engineer", status: .done)],
+            statuses: ["r": .done])
+
+        await sut.restartRole(taskID: id, roleID: "r", comment: "retry")
+
+        let comment = latestRun(id)?.steps.first?.messages.first { $0.role == .supervisor }
+        XCTAssertEqual(comment?.isFromAutomatedSupervisor, false)
     }
 
     /// `requestRevision` refuses a role with no completed work and reports it via

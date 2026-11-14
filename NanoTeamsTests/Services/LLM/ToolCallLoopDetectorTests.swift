@@ -23,7 +23,7 @@ final class ToolCallLoopDetectorTests: XCTestCase {
         ToolCallTracker.TrackedCall(
             toolName: toolName,
             argumentsSummary: args,
-            argumentsIdentity: ToolCallTracker.argumentsIdentity(forJSON: args),
+            argumentsIdentity: ToolCallTracker.argumentsIdentity(toolName: toolName, forJSON: args),
             resultSummary: "result",
             resultJSON: "{}",
             wasSuccessful: successful,

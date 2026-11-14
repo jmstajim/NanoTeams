@@ -51,14 +51,6 @@ final class AOrchFailingRepository: NTMSRepositoryProtocol, @unchecked Sendable 
         try inner.openOrCreateWorkFolder(at: workFolderRoot)
     }
 
-    func updateWorkFolderContext(at workFolderRoot: URL, context: String, activeTask: NTMSTask?) throws -> WorkFolderContext {
-        try inner.updateWorkFolderContext(at: workFolderRoot, context: context, activeTask: activeTask)
-    }
-
-    func updateSelectedScheme(at workFolderRoot: URL, scheme: String?, activeTask: NTMSTask?) throws -> WorkFolderContext {
-        try inner.updateSelectedScheme(at: workFolderRoot, scheme: scheme, activeTask: activeTask)
-    }
-
     func updateWorkFolderState(
         at workFolderRoot: URL, activeTask: NTMSTask?, mutate: (inout WorkFolderState) -> Void
     ) throws -> WorkFolderContext {
@@ -83,18 +75,23 @@ final class AOrchFailingRepository: NTMSRepositoryProtocol, @unchecked Sendable 
         try inner.resetWorkFolderSettings(at: workFolderRoot)
     }
 
+    func removeWorkFolderData(at workFolderRoot: URL) throws {
+        try inner.removeWorkFolderData(at: workFolderRoot)
+    }
+
     // MARK: TaskRepository
 
     func createTask(
         at workFolderRoot: URL, title: String, supervisorTask: String,
         preferredTeamID: NTMSID?, parentTaskID: Int?, parentRoleID: String?,
-        delegationDepth: Int, makeActive: Bool
+        delegationDepth: Int, makeActive: Bool, origin: TaskOrigin? = nil, requestKey: String? = nil
     ) throws -> (snapshot: WorkFolderContext, taskID: Int) {
         if failCreateTask { throw Refused(what: "createTask") }
         return try inner.createTask(
             at: workFolderRoot, title: title, supervisorTask: supervisorTask,
             preferredTeamID: preferredTeamID, parentTaskID: parentTaskID,
-            parentRoleID: parentRoleID, delegationDepth: delegationDepth, makeActive: makeActive)
+            parentRoleID: parentRoleID, delegationDepth: delegationDepth,
+            makeActive: makeActive, origin: origin, requestKey: requestKey)
     }
 
     func setActiveTask(at workFolderRoot: URL, taskID: Int?) throws -> WorkFolderContext {
@@ -415,7 +412,7 @@ final class AOrchStreamingTailTests: NTMSOrchestratorTestBase, @unchecked Sendab
 
         let orchestrator = sut!
         let setup = Task { @MainActor in
-            await orchestrator.setUpSearchIndexCoordinatorIfEnabled()
+            await orchestrator.setUpSearchIndexCoordinatorIfEnabled(lifecycle: orchestrator.currentFolderLifecycle)
         }
         // Exactly one yield: it hands the main actor to the setup task, which runs
         // until its FIRST suspension — `await vectorIndex.load()` inside `start()`,
@@ -549,7 +546,8 @@ final class AOrchPersistRefusalTailTests: XCTestCase, @unchecked Sendable {
 
     override func tearDown() async throws {
         // Same reason as `NTMSOrchestratorTestBase.tearDown`: a task created here leaves the
-        // run's LAUNCH phase in the background, and `stopAllEngines` only CANCELS it.
+        // run's LAUNCH phase in the background, and `stopAllEngines` abandons it without
+        // waiting for it.
         await sut?.drainRunStartLaunches()
         sut?.stopAllEngines()
         sut = nil
@@ -921,7 +919,8 @@ final class AOrchBundledUpdateSeverityTests: XCTestCase, @unchecked Sendable {
 
     override func tearDown() async throws {
         // Same reason as `NTMSOrchestratorTestBase.tearDown`: a task created here leaves the
-        // run's LAUNCH phase in the background, and `stopAllEngines` only CANCELS it.
+        // run's LAUNCH phase in the background, and `stopAllEngines` abandons it without
+        // waiting for it.
         await sut?.drainRunStartLaunches()
         sut?.stopAllEngines()
         sut = nil
@@ -1018,7 +1017,8 @@ final class AOrchTaskCreationBootstrapTests: XCTestCase, @unchecked Sendable {
 
     override func tearDown() async throws {
         // Same reason as `NTMSOrchestratorTestBase.tearDown`: a task created here leaves the
-        // run's LAUNCH phase in the background, and `stopAllEngines` only CANCELS it.
+        // run's LAUNCH phase in the background, and `stopAllEngines` abandons it without
+        // waiting for it.
         await sut?.drainRunStartLaunches()
         sut?.stopAllEngines()
         sut = nil
@@ -1170,7 +1170,8 @@ final class AOrchQueuedMessageBackstopTests: XCTestCase, @unchecked Sendable {
     override func tearDown() async throws {
         QuickCaptureController.shared._testReset()
         // Same reason as `NTMSOrchestratorTestBase.tearDown`: a task created here leaves the
-        // run's LAUNCH phase in the background, and `stopAllEngines` only CANCELS it.
+        // run's LAUNCH phase in the background, and `stopAllEngines` abandons it without
+        // waiting for it.
         await sut?.drainRunStartLaunches()
         sut?.stopAllEngines()
         sut = nil

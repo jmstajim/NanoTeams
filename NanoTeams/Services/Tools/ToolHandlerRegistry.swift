@@ -127,6 +127,15 @@ nonisolated enum ToolHandlerRegistry {
         schemasByName[name]
     }
 
+    /// The undeclared spellings one tool accepts (`ToolHandler.undeclaredArguments`), by
+    /// canonical name; empty for a tool that accepts none and for a name no built-in carries.
+    static func undeclaredArguments(named name: String) -> [String: UndeclaredArgument] {
+        undeclaredArgumentsByName[name] ?? [:]
+    }
+
+    private static let undeclaredArgumentsByName: [String: [String: UndeclaredArgument]] =
+        Dictionary(uniqueKeysWithValues: allTypes.map { ($0.name, $0.undeclaredArguments) })
+
     /// `uniqueKeysWithValues` on purpose: two handlers claiming one name is a programming
     /// error (`DefaultToolSchemasTests` pins the names unique), and a keep-first merge
     /// would hide it behind whichever schema `allTypes` lists first.
@@ -256,13 +265,14 @@ nonisolated enum ToolHandlerRegistry {
         searchMaxResults: Int = AppDefaults.searchMaxResults,
         searchContextBefore: Int = AppDefaults.searchContextBefore,
         searchContextAfter: Int = AppDefaults.searchContextAfter,
-        bashSandboxEnabled: Bool = BashConstants.defaultSandboxEnabled,
-        bashSandboxPermissions: BashSandboxPermissions = BashSandboxPermissions(),
-        bashAllowUnsandboxedFallback: Bool = false,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        home: URL? = nil
     ) -> [any ToolHandler] {
         let internalDir = NTMSPaths(workFolderRoot: workFolderRoot).internalDir
-        let resolver = SandboxPathResolver(workFolderRoot: workFolderRoot, internalDir: internalDir)
+        // `home` is whose credential stores and agent token files the resolver hides —
+        // `nil`, this process's own, everywhere but a test that builds a fake one (#376).
+        let resolver = SandboxPathResolver(
+            workFolderRoot: workFolderRoot, internalDir: internalDir, home: home)
         let deps = ToolHandlerDependencies(
             workFolderRoot: workFolderRoot,
             resolver: resolver,
@@ -272,10 +282,7 @@ nonisolated enum ToolHandlerRegistry {
             readFileMaxLines: readFileMaxLines,
             searchMaxResults: searchMaxResults,
             searchContextBefore: searchContextBefore,
-            searchContextAfter: searchContextAfter,
-            bashSandboxEnabled: bashSandboxEnabled,
-            bashSandboxPermissions: bashSandboxPermissions,
-            bashAllowUnsandboxedFallback: bashAllowUnsandboxedFallback
+            searchContextAfter: searchContextAfter
         )
 
         return allTypes.compactMap { type -> (any ToolHandler)? in

@@ -10,15 +10,65 @@ import UniformTypeIdentifiers
 nonisolated enum TeamEditorValidation {
 
     /// One banner row — structural (missing role / empty name) or delegation
-    /// policy. `isError` drives the row icon + color and the banner's overall
-    /// tint (any error → error styling, else warning). `id` is assigned at
-    /// construction so two issues that resolve to the same text (duplicate role
-    /// display names, repeated whitelist ids) stay distinct rows in `ForEach`
-    /// instead of colliding under `id: \.self` (CLAUDE.md #22/#23).
+    /// policy, or a write that did not land. `isError` drives the row icon + color
+    /// and the banner's overall tint (any error → error styling, else warning).
     struct Issue: Identifiable {
-        let id = UUID()
+
+        /// A row's identity, by what it reports.
+        enum ID: Hashable {
+            /// A validator's row. Fresh per validation pass — the editor keeps the pass in
+            /// `@State`, so the row keeps it until the next pass — so two issues that resolve to
+            /// the same text (duplicate role display names, repeated whitelist ids) stay distinct
+            /// rows in `ForEach` instead of colliding under `id: \.self` (CLAUDE.md #22/#23).
+            case validation(UUID)
+            /// The edited team's newest write failed. Derived from what it reports, because the
+            /// row is rebuilt on every body pass: a fresh id each time made `ForEach` rebuild it on
+            /// every render (CLAUDE.md #22).
+            case writeFailure(teamID: NTMSID, reason: String)
+            /// A refused Team Editor action that writes the folder (`TeamEditCommitQueue.perform`).
+            case actionFailure(reason: String)
+        }
+
+        let id: ID
         let isError: Bool
         let message: String
+
+        init(isError: Bool, message: String) {
+            self.init(id: .validation(UUID()), isError: isError, message: message)
+        }
+
+        private init(id: ID, isError: Bool, message: String) {
+            self.id = id
+            self.isError = isError
+            self.message = message
+        }
+
+        static func writeFailure(teamID: NTMSID, reason: String) -> Issue {
+            Issue(id: .writeFailure(teamID: teamID, reason: reason), isError: true, message: reason)
+        }
+
+        static func actionFailure(reason: String) -> Issue {
+            Issue(id: .actionFailure(reason: reason), isError: true, message: reason)
+        }
+    }
+
+    /// The banner's rows, in order: the edited team's failed write — whether its last change
+    /// reached the disk, which no validator can see — then a refused editor action, then
+    /// validation. Writes that did not land are otherwise only a banner in the MAIN window,
+    /// behind the Settings window they were made in.
+    static func bannerIssues(
+        writeFailure: (teamID: NTMSID, reason: String)?,
+        actionFailure: String?,
+        validation: [Issue]
+    ) -> [Issue] {
+        var rows: [Issue] = []
+        if let writeFailure {
+            rows.append(.writeFailure(teamID: writeFailure.teamID, reason: writeFailure.reason))
+        }
+        if let actionFailure {
+            rows.append(.actionFailure(reason: actionFailure))
+        }
+        return rows + validation
     }
 
     /// Combines structural validation (`TeamManagementService.validate` — always
@@ -27,17 +77,21 @@ nonisolated enum TeamEditorValidation {
     /// (`validateAttachedSkills`), the meeting-coordinator heal warning
     /// (`validateMeetingCoordinator`), the Off-in-chat-mode error
     /// (`validateSupervisorMode`) and the lone-questionnaire warning
-    /// (`validateSupervisorAskTools`), each rendered via `displayMessage(in:)`. These
+    /// (`validateSupervisorAskTools`) and the dangling-MCP-grant warning
+    /// (`validateMCPTools`), each rendered via `displayMessage(in:)`. These
     /// are the ONLY `TeamValidationService` members the banner calls — pinned
     /// by `TeamEditorValidationTests.testBannerCallsExactlyTheLiveValidators`.
     /// - Parameter knownSkillIDs: ids the agent-skill scanner discovered. Empty
     ///   means "no catalogue yet" and skips the attached-skill check entirely —
     ///   see `TeamValidationService.validateAttachedSkills`. Defaults to empty so
     ///   existing call sites keep compiling with the check inert.
+    /// - Parameter knownMCPToolIDs: `MCPGrantCatalogue.grantableToolIDs`. Empty means
+    ///   "no server configured" and skips the MCP check the same way.
     static func issues(
         team: Team,
         allTeams: [Team],
-        knownSkillIDs: Set<String> = []
+        knownSkillIDs: Set<String> = [],
+        knownMCPToolIDs: Set<String> = []
     ) -> [Issue] {
         var issues = TeamManagementService.validate(team).map {
             Issue(isError: true, message: $0.localizedDescription)
@@ -57,6 +111,11 @@ nonisolated enum TeamEditorValidation {
             Issue(isError: $0.isError, message: $0.displayMessage(in: team))
         }
         issues += TeamValidationService.validateSupervisorAskTools(team: team).map {
+            Issue(isError: $0.isError, message: $0.displayMessage(in: team))
+        }
+        issues += TeamValidationService.validateMCPTools(
+            team: team, knownMCPToolIDs: knownMCPToolIDs
+        ).map {
             Issue(isError: $0.isError, message: $0.displayMessage(in: team))
         }
         return issues
@@ -89,15 +148,17 @@ struct TeamEditorView: View {
     @State var editorSelectedTeamID: NTMSID? = nil
 
     var body: some View {
+        // Once per pass: the top bar's count and the banner read the same rows.
+        let issues = bannerIssues
         VStack(spacing: 0) {
             // Terminal-style sub-toolbar — replaces the native `.toolbar` block
             // (Pass 29, mirrors the TeamBoard Pass 28 pattern). Per the JSX spec:
             // `▌ TEAM EDITOR  <selector>  ··  <validation>  ⋯`.
-            teamEditorTopBar
+            teamEditorTopBar(issues)
 
-            // Validation Banner
-            if !validationIssues.isEmpty {
-                validationBanner
+            // Validation Banner — and the writes that did not land, above the validation rows.
+            if !issues.isEmpty {
+                validationBanner(issues)
             }
 
             // Main content: graph left (center), settings right
@@ -106,6 +167,7 @@ struct TeamEditorView: View {
                     // Left: always-visible graph (main area)
                     TeamGraphEditorView(
                         team: binding(for: team),
+                        session: editSession(for: team),
                         selectedRoleID: $selectedRoleID,
                         onSave: handleSaveTeam
                     )
@@ -277,8 +339,8 @@ struct TeamEditorView: View {
     /// (Pass 29). Replaces the native macOS `.toolbar` block; layout per
     /// `DesignSystemByClaude/ui_kits/desktop/TeamEditor.jsx` lines 408–420.
     @ViewBuilder
-    private var teamEditorTopBar: some View {
-        TeamEditorTopBar(issues: validationIssues) {
+    private func teamEditorTopBar(_ issues: [TeamEditorValidation.Issue]) -> some View {
+        TeamEditorTopBar(issues: issues) {
             if let snapshot = store.snapshot {
                 // Hide only the Generated Team placeholder from the config list.
                 // The Autovisor team IS shown here (protected: non-deletable,
@@ -343,10 +405,10 @@ struct TeamEditorView: View {
 
     // MARK: - Validation Banner
 
-    private var validationBanner: some View {
-        let hasError = validationIssues.contains(where: \.isError)
+    private func validationBanner(_ issues: [TeamEditorValidation.Issue]) -> some View {
+        let hasError = issues.contains(where: \.isError)
         return VStack(alignment: .leading, spacing: Spacing.s) {
-            ForEach(validationIssues) { issue in
+            ForEach(issues) { issue in
                 HStack(spacing: Spacing.s) {
                     StatusGlyph(
                         glyph: issue.isError ? TerminalGlyph.failed : TerminalGlyph.review,
@@ -387,7 +449,8 @@ struct TeamEditorView: View {
                 team: activeTeam,
                 workFolderSettings: store.snapshot?.workFolder.settings),
             autovisorTeamPolicy: store.snapshot.map { AutovisorTeamPolicy(settings: $0.workFolder.settings) }
-                ?? .unrestricted
+                ?? .unrestricted,
+            mcpGrants: store.mcpServerManager?.grantCatalogue ?? .empty
         )
     }
 
@@ -401,11 +464,12 @@ struct TeamEditorView: View {
         case .roles:
             RoleListView(
                 team: binding(for: team),
+                session: editSession(for: team),
                 onSave: handleSaveTeam,
                 badgeInputs: roleRowBadgeInputs
             )
         case .artifacts:
-            ArtifactListView(team: binding(for: team), onSave: handleSaveTeam)
+            ArtifactListView(team: binding(for: team), session: editSession(for: team), onSave: handleSaveTeam)
         }
     }
 
@@ -443,20 +507,37 @@ struct TeamEditorView: View {
         return selectable.first { $0.id == preferredID } ?? selectable.first
     }
 
+    /// The binding every tab and sheet edits `team` through — staged into `store.teamEdits`, which
+    /// writes it, in order and latest first, and lets a sheet's Save wait for it. Until 2026-11-08
+    /// this setter was a fire-and-forget `Task { await store.mutateWorkFolder … }`: a Save closed
+    /// before anything was written, and a refused write was never heard. See `TeamEditCommitQueue`.
+    ///
+    /// Rebuilt on every render, for the folder this render describes — which is why a sheet does
+    /// not take its folder from it (`editSession(for:)`).
     func binding(for team: Team) -> Binding<Team> {
-        let teamID = team.id  // capture id once — avoids stale reference in set closure
-        return Binding(
-            get: { team },
-            set: { newValue in
-                Task {
-                    await store.mutateWorkFolder { project in
-                        if let index = project.teams.firstIndex(where: { $0.id == teamID }) {
-                            project.teams[index] = newValue
-                        }
-                    }
-                }
-            }
-        )
+        let lifecycle = store.currentFolderLifecycle
+        return store.teamEdits.binding(for: team, editedIn: lifecycle)
+    }
+
+    /// What a sheet opened from this render saves into: `team` in the folder this render
+    /// describes. The presenter hands it to the sheet from the CLICK that opens it
+    /// (`TeamEditSheetRequest`), so the sheet keeps it however often the editor re-renders.
+    func editSession(for team: Team) -> TeamEditCommitQueue.Session {
+        let lifecycle = store.currentFolderLifecycle
+        return TeamEditCommitQueue.Session(team: team, lifecycle: lifecycle)
+    }
+
+    /// The banner's rows (`TeamEditorValidation.bannerIssues`): the edited team's failed write,
+    /// a refused editor action, then validation — each failure in the folder it happened in.
+    var bannerIssues: [TeamEditorValidation.Issue] {
+        let lifecycle = store.currentFolderLifecycle
+        let writeFailure = activeTeam.flatMap { team in
+            store.teamEdits.failure(for: team.id, editedIn: lifecycle).map { (teamID: team.id, reason: $0) }
+        }
+        return TeamEditorValidation.bannerIssues(
+            writeFailure: writeFailure,
+            actionFailure: store.teamEdits.actionFailure(editedIn: lifecycle),
+            validation: validationIssues)
     }
 
     func validateCurrentTeam() {
@@ -467,7 +548,8 @@ struct TeamEditorView: View {
         validationIssues = TeamEditorValidation.issues(
             team: team,
             allTeams: store.snapshot?.workFolder.teams ?? [],
-            knownSkillIDs: Set(store.roleSkills?.items.map(\.id) ?? [])
+            knownSkillIDs: Set(store.roleSkills?.items.map(\.id) ?? []),
+            knownMCPToolIDs: store.mcpServerManager?.grantCatalogue.grantableToolIDs ?? []
         )
     }
 

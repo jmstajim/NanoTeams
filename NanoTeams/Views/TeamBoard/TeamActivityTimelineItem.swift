@@ -28,25 +28,39 @@ nonisolated enum ActivityNotificationType: Hashable {
     /// - toolCallID: The originating StepToolCall.id for unique identification
     /// - thinking: The LLM's reasoning that led to this question (nil if none)
     /// - wasAutoAnswered: Whether `answer` came from an automated path (auto-answer
-    ///   service / delegating parent role / Autovisor) — from
-    ///   `StepExecution.supervisorAnswerWasAuto`, NOT inferred from the team's
+    ///   service / delegating parent role / Autovisor), NOT inferred from the team's
     ///   supervisor mode (a human answer in an autonomous team must show the
-    ///   checkmark, not the "Auto-answered" badge). Step-latest flag — the builder
-    ///   stamps it onto every resolved Q&A card on the step, so a step whose
-    ///   history mixes auto and human answers shows the latest attribution on all
-    ///   of them (per-question fidelity is not stored)
+    ///   checkmark, not the "Auto-answered" badge). Per card: read off this park's own
+    ///   answer turn (`StepExecution.supervisorTurnWasAutomated`, DEBTS D-M15), so a step
+    ///   whose history mixes auto and human answers shows each one's answerer. Only a
+    ///   turn persisted before 2026-11-07, which recorded no author, falls back to the
+    ///   step-latest `StepExecution.supervisorAnswerWasAuto` — as every card read until then
     /// - inquiry: the questionnaire this call asked plus what was decided, when it asked one.
     ///   Nil for a plain `ask_supervisor`, and nil for every card on the step but the one whose
     ///   call IS the form — the step stores one questionnaire (the latest), so stamping it onto
-    ///   the step's older cards the way `wasAutoAnswered` is stamped would show a role asking a
-    ///   form it never asked. `answer` above stays the prose the model was sent either way.
-    case supervisorInput(question: String, answer: String?, answerAttachmentPaths: [String], answerClippedTexts: [String], toolCallID: UUID, thinking: String?, wasAutoAnswered: Bool, inquiry: AnsweredInquiry? = nil)
+    ///   the step's older cards would show a role asking a form it never asked. `answer` above
+    ///   stays the prose the model was sent either way.
+    case supervisorInput(
+        question: String,
+        answer: String?,
+        answerAttachmentPaths: [String],
+        answerClippedTexts: [String],
+        toolCallID: UUID,
+        thinking: String?,
+        wasAutoAnswered: Bool,
+        inquiry: AnsweredInquiry? = nil,
+        answerAuthor: String? = nil
+    )
     case failed(errorMessage: String?)
+    case supervisorEvent(event: SupervisorTimelineEvent, roleName: String? = nil)
 
     func icon(isChatMode: Bool) -> String {
         switch self {
         case .supervisorInput: return isChatMode ? "bubble.left.and.bubble.right" : "questionmark.bubble"
         case .failed: return "exclamationmark.triangle"
+        // A card avatar's symbol. An event draws no avatar — `SupervisorEventRow` puts a
+        // `TerminalGlyph` in the gutter — so this arm only completes the switch.
+        case .supervisorEvent: return "checkmark.circle"
         }
     }
 
@@ -54,6 +68,8 @@ nonisolated enum ActivityNotificationType: Hashable {
         switch self {
         case .supervisorInput: return isChatMode ? Colors.textTertiary : Colors.warning
         case .failed: return Colors.error
+        // A Pause is the one action that stops the work, and wears the colour a paused role does.
+        case .supervisorEvent(let event, _): return event.kind == .runPaused ? Colors.warning : Colors.success
         }
     }
 
@@ -68,18 +84,25 @@ nonisolated enum ActivityNotificationType: Hashable {
         switch self {
         case .supervisorInput: return isChatMode ? Colors.neutralTint : Colors.warningTint
         case .failed: return Colors.errorTint
+        // A card's block. An event is no card (`SupervisorEventRow`), so this arm only
+        // completes the switch.
+        case .supervisorEvent: return Colors.successTint
         }
     }
 
     func title(for role: Role, isChatMode: Bool = false) -> String {
         switch self {
-        case .supervisorInput(_, let answer, _, _, _, _, _, _):
+        case .supervisorInput(_, let answer, _, _, _, _, _, _, _):
             if answer != nil {
                 return "\(role.displayName) asked"
             }
             return isChatMode ? "\(role.displayName) replied" : "\(role.displayName) needs your input"
         case .failed:
             return "\(role.displayName) encountered an error"
+        // A card's title. An event is no card — `SupervisorEventRow` inks the author and the
+        // action apart — so this arm only completes the switch, with the transcript's sentence.
+        case .supervisorEvent(let event, let roleName):
+            return event.summaryText(roleName: roleName)
         }
     }
 }
@@ -108,7 +131,8 @@ nonisolated enum TeamActivityTimelineItem: Identifiable {
         clippedTexts: [String],
         attachmentPaths: [String],
         workFolderURL: URL?,
-        originTaskID: Int
+        originTaskID: Int,
+        authorLabel: String? = nil
     )
 
     var id: String {
@@ -138,7 +162,7 @@ nonisolated enum TeamActivityTimelineItem: Identifiable {
         case .notification(let stepID, _, let type, let createdAt, let taskID):
             let typeKey: String
             switch type {
-            case .supervisorInput(_, _, _, _, let tcID, _, _, _): typeKey = "input-\(tcID.uuidString)"
+            case .supervisorInput(_, _, _, _, let tcID, _, _, _, _): typeKey = "input-\(tcID.uuidString)"
             // Fold the failure timestamp into the id so it stays stable-unique if the
             // same task ever renders multiple runs' `.failed` steps together (they
             // share `stepID` = roleID). A bare "fail" key would collide and trip
@@ -146,9 +170,10 @@ nonisolated enum TeamActivityTimelineItem: Identifiable {
             // (set atomically on failure; falls back to `updatedAt` only if unset), so
             // it's stable per failed-step instance.
             case .failed: typeKey = "fail-\(createdAt.timeIntervalSinceReferenceDate)"
+            case .supervisorEvent(let event, _): typeKey = "sup-event-\(event.id.uuidString)"
             }
             return "notif-\(taskID)-\(stepID)-\(typeKey)"
-        case .supervisorTask(_, _, _, _, _, _, let taskID):
+        case .supervisorTask(_, _, _, _, _, _, let taskID, _):
             return "supervisor-task-\(taskID)"
         }
     }
@@ -206,7 +231,7 @@ nonisolated enum TeamActivityTimelineItem: Identifiable {
         case .meetingMessage(_, _, let id): return id
         case .changeRequest(_, _, let id): return id
         case .notification(_, _, _, _, let id): return id
-        case .supervisorTask(_, _, _, _, _, _, let id): return id
+        case .supervisorTask(_, _, _, _, _, _, let id, _): return id
         }
     }
 
@@ -224,7 +249,7 @@ nonisolated enum TeamActivityTimelineItem: Identifiable {
             return request.createdAt
         case .notification(_, _, _, let date, _):
             return date
-        case .supervisorTask(_, let date, _, _, _, _, _):
+        case .supervisorTask(_, let date, _, _, _, _, _, _):
             return date
         }
     }

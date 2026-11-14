@@ -173,6 +173,8 @@ final class DocumentTextExtractorTests: XCTestCase {
     /// stale content and the LLM would act on old data. The cache key is
     /// `(path, mtime, size)`; this test rewrites the same RTF path with
     /// different content (different size) for an unambiguous miss signal.
+    /// It moves BOTH halves of the key, so it would pass with either comparison
+    /// dropped; the two tests after it move one half each.
     /// RTF is used over PDF because it's a single-shot text write (no PDFKit
     /// rendering pipeline), so the test isn't sensitive to PDF authoring
     /// quirks.
@@ -185,13 +187,17 @@ final class DocumentTextExtractorTests: XCTestCase {
         XCTAssertTrue(first!.contains("Original RTF body content"),
                       "First read must extract original content; got: \(first ?? "nil")")
 
-        // Sleep > 1 s so the file-system mtime (1-second precision on HFS+ /
-        // some APFS configurations) is guaranteed to advance — otherwise the
-        // rewrite can land in the same mtime second and the cache correctly
-        // reports a hit on the previous bytes.
-        Thread.sleep(forTimeInterval: 1.1)
+        // The replacement is longer, so the SIZE alone forces the miss; the mtime is moved too,
+        // two seconds past the first file's, so the state is that of a later edit. Setting it
+        // replaces a `Thread.sleep(1.1)` past the one-second timestamp boundary of HFS+ / some
+        // APFS configurations — the same state, with no wait (the sleep was the whole of this
+        // test's 1.1 s).
+        let firstMtime = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: rtfURL.path)[.modificationDate] as? Date)
         let replacementContent = #"{\rtf1\ansi Replaced RTF body — must invalidate cache}"#
         try replacementContent.write(to: rtfURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: firstMtime.addingTimeInterval(2)], ofItemAtPath: rtfURL.path)
 
         let afterReplace = DocumentTextExtractor.extract(from: rtfURL)?.extractedText
         XCTAssertNotNil(afterReplace)
@@ -203,6 +209,55 @@ final class DocumentTextExtractorTests: XCTestCase {
             afterReplace!.contains("Original RTF body content"),
             "Stale-cache regression: the replaced read still contains pre-replacement text. Got: \(afterReplace!)"
         )
+    }
+
+    /// The MTIME half of the cache key on its own: a rewrite to the same number of bytes must
+    /// still miss once the mtime moved. Both mtimes are SET, to whole seconds, so the only
+    /// thing that tells the two files apart is the half under test.
+    ///
+    /// RED: drop `cached.mtime == stat.mtime` from the cache hit → the stale extraction comes back.
+    func testExtractText_rtf_sameSizeRewrite_missesCacheOnTheMtime() throws {
+        let rtfURL = tempDir.appendingPathComponent("same-size.rtf")
+        let firstMtime = Date(timeIntervalSince1970: 1_700_000_000)
+        try #"{\rtf1\ansi Original RTF body content}"#.write(to: rtfURL, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.modificationDate: firstMtime], ofItemAtPath: rtfURL.path)
+        let firstSize = try XCTUnwrap(fm.attributesOfItem(atPath: rtfURL.path)[.size] as? NSNumber)
+        XCTAssertEqual(DocumentTextExtractor.extract(from: rtfURL)?.extractedText?.contains("Original"), true)
+
+        try #"{\rtf1\ansi Replaced RTF body content}"#.write(to: rtfURL, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.modificationDate: firstMtime.addingTimeInterval(2)], ofItemAtPath: rtfURL.path)
+        let attributes = try fm.attributesOfItem(atPath: rtfURL.path)
+        XCTAssertEqual(attributes[.size] as? NSNumber, firstSize, "precondition: the size did not move")
+        XCTAssertEqual(attributes[.modificationDate] as? Date, firstMtime.addingTimeInterval(2),
+                       "precondition: the mtime moved")
+
+        let afterRewrite = DocumentTextExtractor.extract(from: rtfURL)?.extractedText
+        XCTAssertEqual(afterRewrite?.contains("Replaced"), true,
+                       "a moved mtime must miss the cache even at the same size; got: \(afterRewrite ?? "nil")")
+    }
+
+    /// The SIZE half of the cache key on its own: a rewrite that lands on the same mtime — a fast
+    /// second write on a one-second-timestamp volume — must still miss once the size changed.
+    ///
+    /// RED: drop `cached.size == stat.size` from the cache hit → the stale extraction comes back.
+    func testExtractText_rtf_sameMtimeRewrite_missesCacheOnTheSize() throws {
+        let rtfURL = tempDir.appendingPathComponent("same-mtime.rtf")
+        let mtime = Date(timeIntervalSince1970: 1_700_000_000)
+        try #"{\rtf1\ansi Original RTF body content}"#.write(to: rtfURL, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.modificationDate: mtime], ofItemAtPath: rtfURL.path)
+        let firstSize = try XCTUnwrap(fm.attributesOfItem(atPath: rtfURL.path)[.size] as? NSNumber)
+        XCTAssertEqual(DocumentTextExtractor.extract(from: rtfURL)?.extractedText?.contains("Original"), true)
+
+        try #"{\rtf1\ansi Replaced RTF body content, and a longer one}"#
+            .write(to: rtfURL, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.modificationDate: mtime], ofItemAtPath: rtfURL.path)
+        let attributes = try fm.attributesOfItem(atPath: rtfURL.path)
+        XCTAssertNotEqual(attributes[.size] as? NSNumber, firstSize, "precondition: the size moved")
+        XCTAssertEqual(attributes[.modificationDate] as? Date, mtime, "precondition: the mtime did not move")
+
+        let afterRewrite = DocumentTextExtractor.extract(from: rtfURL)?.extractedText
+        XCTAssertEqual(afterRewrite?.contains("Replaced"), true,
+                       "a changed size must miss the cache even at the same mtime; got: \(afterRewrite ?? "nil")")
     }
 
     // MARK: - RTF Extraction

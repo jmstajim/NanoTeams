@@ -12,7 +12,6 @@ struct GenerateTeamDefaultsCard: View {
     var body: some View {
         SettingsCard(
             header: "Generation Defaults",
-            systemImage: "slider.horizontal.3",
             footer: "Auto = keep whatever the LLM chose for this team."
         ) {
             HStack {

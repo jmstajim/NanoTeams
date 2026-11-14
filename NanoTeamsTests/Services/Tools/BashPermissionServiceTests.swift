@@ -299,7 +299,7 @@ final class BashPermissionServiceTests: XCTestCase {
         }
     }
 
-    /// RED: drop `usesCommandWrapper` from the step-3 carve-out → the `sudo` assertion
+    /// RED: drop the wrapper check from `segmentIsCovered`'s bare-rule carve-out → the `sudo` assertion
     /// fails while the `echo` control below stays green, which is what distinguishes
     /// "does not vouch for wrappers" from "stopped honouring allow rules".
     func testBareAllowRule_doesNotVouchForAWrappedProgram() {

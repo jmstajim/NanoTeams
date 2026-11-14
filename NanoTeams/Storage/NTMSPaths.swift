@@ -1,12 +1,70 @@
 import Foundation
 
 nonisolated struct NTMSPaths: Hashable {
+    /// The per-work-folder metadata directory, `.nanoteams/`.
+    static let nanoteamsDirName = ".nanoteams"
+
     /// Name of the internal subdirectory within `.nanoteams/` hidden from LLM file tools.
     private static let internalDirName = "internal"
 
+    /// `.nanoteams/internal`, relative to a work folder — for the consumers that build path
+    /// STRINGS (the Seatbelt profile). URL consumers read `internalDir`.
+    static let internalRelativePath = nanoteamsDirName + "/" + internalDirName
+
+    /// NanoTeams' own folder under Application Support.
+    static let applicationSupportFolderName = "NanoTeams"
+
+    /// Default internal storage used when no real work folder is selected.
+    static var defaultStorageURL: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent(applicationSupportFolderName, isDirectory: true)
+    }
+
+    /// Where `defaultStorageURL` lies for the user whose home folder is `home` — the
+    /// spelling the Seatbelt profile denies, which is handed the home it confines (a test's
+    /// fake one included) rather than asking `FileManager`.
+    static func defaultStorageURL(home: URL) -> URL {
+        home.appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("Application Support", isDirectory: true)
+            .appendingPathComponent(applicationSupportFolderName, isDirectory: true)
+    }
+
+    /// The machine-scoped stores that reside directly under `defaultStorageURL`, beside
+    /// `.nanoteams/` — never inside it: that folder is itself the default WORK FOLDER, and a
+    /// machine-scoped fact filed under one folder's tree would be tied to that folder.
+    ///
+    /// The ONE table (F6 S9, 2026-11-12): every store takes its directory from
+    /// `machineStorageURL(_:)`, and the bash sandbox denies every case — so a new store is a
+    /// new case, and it cannot be created without also being denied.
+    enum MachineStore: CaseIterable, Sendable {
+        /// `MCPServerCatalogueStore` — the configured MCP servers.
+        case mcp
+        /// `HostedMCPEnvironment.live` — the external agents' records.
+        case externalAgents
+        /// `AgentSkillsCatalogueStore` — the agent-skill catalogue cache.
+        case skills
+        /// `BenchmarkHistoryStore` — generation-speed benchmark history.
+        case benchmarks
+
+        var directoryName: String {
+            switch self {
+            case .mcp: "mcp"
+            // The tab's former name, kept so what it already stored is still found.
+            case .externalAgents: HostedMCPConstants.externalAgentsSubdirectory
+            case .skills: "skills"
+            case .benchmarks: "benchmarks"
+            }
+        }
+    }
+
+    /// The directory of one machine store under `storage` (by default the app's own).
+    static func machineStorageURL(_ store: MachineStore, under storage: URL = defaultStorageURL) -> URL {
+        storage.appendingPathComponent(store.directoryName, isDirectory: true)
+    }
+
     let workFolderRoot: URL
 
-    var nanoteamsDir: URL { workFolderRoot.appendingPathComponent(".nanoteams", isDirectory: true) }
+    var nanoteamsDir: URL { workFolderRoot.appendingPathComponent(Self.nanoteamsDirName, isDirectory: true) }
 
     // MARK: - Internal Directory (hidden from LLM tools)
 
@@ -15,6 +73,13 @@ nonisolated struct NTMSPaths: Hashable {
     }
 
     var internalTasksDir: URL { internalDir.appendingPathComponent("tasks", isDirectory: true) }
+
+    /// The bare git repository task snapshots are kept in (`TaskSnapshotService`).
+    var snapshotsGitDir: URL { internalDir.appendingPathComponent("snapshots.git", isDirectory: true) }
+
+    /// The file whose exclusive `flock` makes one NanoTeams process the folder's only one
+    /// (`WorkFolderInstanceLock`). It holds the holder's PID and since-when, for the refusal.
+    var instanceLockFile: URL { internalDir.appendingPathComponent("instance.lock", isDirectory: false) }
 
     // MARK: - Internal Service Files
 
@@ -25,6 +90,63 @@ nonisolated struct NTMSPaths: Hashable {
     var tasksIndexJSON: URL { internalDir.appendingPathComponent("tasks_index.json", isDirectory: false) }
     var stagedAttachmentsDir: URL { internalDir.appendingPathComponent("staged", isDirectory: true) }
     var headlessResultJSON: URL { internalDir.appendingPathComponent("headless_result.json", isDirectory: false) }
+
+    // MARK: - Autovisor (internal per work folder)
+
+    /// Per-folder internal Autovisor directory (`.nanoteams/internal/autovisor/`), hidden from
+    /// role file tools and created with `NTMSRepository.internalDirAttributes` (`0o700`).
+    var internalAutovisorDir: URL {
+        internalDir.appendingPathComponent("autovisor", isDirectory: true)
+    }
+
+    /// Summary-only JSONL log of external Autovisor agent tool calls (§11, Ш14). The calls in
+    /// full sit beside it in `external_calls/`, a directory the log derives from this URL
+    /// (`ExternalAutovisorActivityLog.callsDirectoryURL(for:)`).
+    var externalActivityLogJSONL: URL {
+        internalAutovisorDir.appendingPathComponent("external_activity.jsonl", isDirectory: false)
+    }
+
+    /// When each external agent's task creations were committed, kept so the creation window
+    /// outlives the process (`ExternalCreationWindowStore`, F6 L4).
+    var externalCreationsJSON: URL {
+        internalAutovisorDir.appendingPathComponent("external_creations.json", isDirectory: false)
+    }
+
+    // MARK: - MCP (per work folder)
+
+    /// Per-folder MCP state. The server CATALOGUE is machine-scoped and lives beside
+    /// `.nanoteams/` (`MCPServerCatalogueStore`) — what belongs to a folder is which of
+    /// those servers it switches off, and the frame log of the ones it talked to.
+    var mcpDir: URL { internalDir.appendingPathComponent("mcp", isDirectory: true) }
+
+    /// `{ disabledServerIDs }` — the folder's opt-outs. Per-folder sets are the mitigation
+    /// for cross-server shadowing: a folder that needs a design server does not also carry
+    /// a brokerage one.
+    var mcpFolderJSON: URL { mcpDir.appendingPathComponent("mcp_folder.json", isDirectory: false) }
+
+    func mcpServerDir(slug: MCPServerSlug) -> URL {
+        mcpDir.appendingPathComponent(slug.rawValue, isDirectory: true)
+    }
+
+    /// Redacted JSON-RPC frame log for one server — the audit trail for what was asked and
+    /// answered, beside the existing tool and network logs.
+    func mcpRPCLogJSONL(slug: MCPServerSlug) -> URL {
+        mcpServerDir(slug: slug).appendingPathComponent("rpc_log.jsonl", isDirectory: false)
+    }
+
+    /// Where a binary block of an MCP result is written: an image, audio, or an opaque
+    /// blob. Under the task's ATTACHMENTS rather than under `internal/`, because the point
+    /// of writing it is that a later tool call can read it back — `analyze_image` takes the
+    /// project-relative path this yields.
+    func mcpAttachmentsDir(taskID: Int, ancestors: [Int] = []) -> URL {
+        taskAttachmentsDir(taskID: taskID, ancestors: ancestors)
+            .appendingPathComponent("mcp", isDirectory: true)
+    }
+
+    func mcpAttachmentsDir(taskID: Int, ancestors: [Int] = [], slug: MCPServerSlug) -> URL {
+        mcpAttachmentsDir(taskID: taskID, ancestors: ancestors)
+            .appendingPathComponent(slug.rawValue, isDirectory: true)
+    }
 
     // MARK: - Ancestor-Aware Path Construction
     //

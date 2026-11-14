@@ -14,8 +14,14 @@ struct BashSettingsView: View {
     @Environment(NTMSOrchestrator.self) private var store
 
     @State private var showJudgePreview = false
-    @State private var showCustomRules = false
+    @State private var showCustomRules: Bool
     @State private var showSandboxAdvanced = false
+
+    /// `customRulesExpanded` opens the custom-rules disclosure on first show — for a test that
+    /// reads what the Rules card draws (E1 review R6).
+    init(customRulesExpanded: Bool = false) {
+        _showCustomRules = State(initialValue: customRulesExpanded)
+    }
 
     private var mode: BashExecutionMode { config.bashMode }
 
@@ -45,7 +51,7 @@ struct BashSettingsView: View {
     // MARK: - Intro
 
     private var introCard: some View {
-        SettingsCard(header: "Shell command execution", systemImage: "terminal") {
+        SettingsCard(header: "Shell command execution") {
             Text("The `bash` tool lets a role run shell commands through your login shell. It is **off for every role by default** — grant it per-role in the Team Editor (Tools → Shell). Every command is then checked against the policy below before it runs.")
                 .font(Typography.caption)
                 .foregroundStyle(Colors.textTertiary)
@@ -58,7 +64,7 @@ struct BashSettingsView: View {
 
     private var executionCard: some View {
         @Bindable var config = config
-        return SettingsCard(header: "Execution", systemImage: "play.circle") {
+        return SettingsCard(header: "Execution") {
             VStack(alignment: .leading, spacing: Spacing.m) {
                 TerminalSegmentedPicker(
                     selection: $config.bashMode,
@@ -80,7 +86,7 @@ struct BashSettingsView: View {
     /// in exactly one place for both.
     private var judgeSandboxCard: some View {
         @Bindable var config = config
-        return SettingsCard(header: "Judge & Sandbox", systemImage: "shield.lefthalf.filled") {
+        return SettingsCard(header: "Judge & Sandbox") {
             VStack(alignment: .leading, spacing: Spacing.m) {
                 // — Judge strictness —
                 TerminalSegmentedPicker(
@@ -155,7 +161,7 @@ struct BashSettingsView: View {
                             Text("Judge model override")
                                 .font(Typography.caption.weight(.medium))
                                 .foregroundStyle(Colors.textSecondary)
-                            Text("Use a different model only for the command judge. Empty fields fall back to the global LLM configuration.")
+                            Text(Self.judgeModelOverrideHelpText)
                                 .font(Typography.caption)
                                 .foregroundStyle(Colors.textTertiary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -173,12 +179,26 @@ struct BashSettingsView: View {
 
     // MARK: - Rules
 
+    static let judgeModelOverrideHelpText =
+        "Use a different model only for the command judge. Empty fields fall back to the model of the role executing the command."
+
+    static let rulesHelpText = "Each rule is a command pattern and what to do with it. A bare word matches a command's program (`rm` matches `rm -rf x`, not `rmdir`); add `*` for a prefix glob (`git push*`); a phrase matches by prefix (`npm run build`); for commands outside PATH, specify the full path (like with `jsc`). Precedence: **deny → ask → allow**. In a command joined with `;`, `&&`, `||`, `|` or `&`, deny and ask fire on any part, but allow needs every part covered by a rule or read-only — or the whole line saved as one rule."
+
+    /// The help as it is shown: its Markdown parsed here, once, with the inline syntax a
+    /// `LocalizedStringKey` reads — so what the card draws is what a test can read. Until
+    /// 2026-11-12 (F6 T12) the card built the key inline and its test searched the source text.
+    static let rulesHelp: AttributedString =
+        (try? AttributedString(
+            markdown: rulesHelpText,
+            options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
+        ?? AttributedString(rulesHelpText)
+
     private var rulesCard: some View {
         @Bindable var config = config
-        return SettingsCard(header: "Rules", systemImage: "list.bullet.rectangle") {
+        return SettingsCard(header: "Rules") {
             SettingsDisclosureRow(title: "Custom command rules", icon: "slider.horizontal.3", isExpanded: $showCustomRules) {
                 VStack(alignment: .leading, spacing: Spacing.m) {
-                    Text("Each rule is a command pattern and what to do with it. A bare word matches a command's program (`rm` matches `rm -rf x`, not `rmdir`); add `*` for a prefix glob (`git push*`); include a space for a literal phrase (`npm run build`). Precedence: **deny → ask → allow**.")
+                    Text(Self.rulesHelp)
                         .font(Typography.caption)
                         .foregroundStyle(Colors.textTertiary)
                         .frame(maxWidth: .infinity, alignment: .leading)

@@ -204,7 +204,7 @@ import Foundation
         // Drop any queued chat message before the task is gone — prevents leaking
         // into a reincarnated task ID (sequential IDs don't reuse today, but the
         // queue is task-scoped either way).
-        QuickCaptureController.shared.discardQueuedChatMessage(taskID: pending.taskID)
+        store.messageQueue.discardQueuedChatMessage(taskID: pending.taskID)
         await store.removeTask(pending.taskID)
         forgetTask(taskID: pending.taskID)
     }

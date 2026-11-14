@@ -36,6 +36,13 @@ struct TerminalStatusBadge: View {
     /// `nil` draws no hairline. A tag always has one: `neutralTint` on `surfaceElevated` is
     /// 1.11:1, so without the border the tag's cell is invisible on its most common host.
     let border: Color?
+    /// The whole name an agent mark stands for, uncapped and in its own case — shown on hover.
+    /// `nil` for a status badge and a plain tag, which name nobody.
+    let tooltip: String?
+    /// `true` lets the label truncate when the host offers less than its width; every other
+    /// badge is `.fixedSize()` and never does. Opt-in, because a host that relies on the badge
+    /// keeping its width (a row whose title truncates first) would otherwise see it shrink.
+    let truncatesWhenNarrow: Bool
 
     /// A STATUS badge: one colour, tinted into the fill and the optional hairline.
     init(glyph: String, label: String, color: Color, bordered: Bool = true) {
@@ -44,14 +51,27 @@ struct TerminalStatusBadge: View {
         self.foreground = color
         self.fill = color.opacity(DynamicTintOpacity.background)
         self.border = bordered ? color.opacity(DynamicTintOpacity.stroke) : nil
+        self.tooltip = nil
+        self.truncatesWhenNarrow = false
     }
 
-    private init(glyph: String?, label: String, foreground: Color, fill: Color, border: Color?) {
+    private init(
+        glyph: String?, label: String, foreground: Color, fill: Color, border: Color?,
+        tooltip: String? = nil, truncatesWhenNarrow: Bool = false
+    ) {
         self.glyph = glyph
         self.label = label
         self.foreground = foreground
         self.fill = fill
         self.border = border
+        self.tooltip = tooltip
+        self.truncatesWhenNarrow = truncatesWhenNarrow
+    }
+
+    /// What VoiceOver reads for an agent mark — `by Claude Code` — in place of the uppercased,
+    /// possibly capped label. `nil` when the badge names nobody.
+    var accessibilityText: String? {
+        tooltip.map { "by \($0)" }
     }
 
     /// A neutral TAG — a standing mark on the thing beside it, in no status colour.
@@ -68,7 +88,50 @@ struct TerminalStatusBadge: View {
             border: Colors.neutralBorder)
     }
 
+    /// The mark of who wrote a Supervisor turn, or created a task, when it was not the person:
+    /// an external agent's label (`CLAUDE CODE`), or `auto` for an automated Supervisor no agent
+    /// signed (``LLMMessage/automatedSupervisorLabel``). It stands beside a speaker's name — the
+    /// feed header (`MessageBubbleHeader`, which the task card shares) and the Autovisor pane's
+    /// task row; inside a sentence (`answered by Claude Code`, `Claude Code closed task`) the
+    /// author stays a plain word.
+    ///
+    /// A tag, because "this came from Claude Code" is a standing fact about the thing, not a
+    /// state it is in. Until 2026-11-07 every surface drew its own: a `›` status badge in
+    /// `Colors.info` beside a `PromptMarker` that was already a `›`, and a hand-rolled pill in
+    /// the Autovisor pane; until 2026-11-08 a message bubble still printed the author in
+    /// parentheses. One factory so the mark cannot drift again.
+    ///
+    /// `truncatesWhenNarrow` — see the property; only a host that has nowhere else to put the
+    /// mark passes `true`.
+    static func agent(label: String, truncatesWhenNarrow: Bool = false) -> TerminalStatusBadge {
+        // A tag is `.fixedSize()` — it never truncates — and an agent's label may run to 80
+        // characters (`MCPRedaction.excerpt`): capped here so a long name cannot push the time
+        // off a feed header's line. The cap is visual only — the tooltip and VoiceOver keep the
+        // whole name.
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        let shown = trimmed.count > agentLabelCap ? String(trimmed.prefix(agentLabelCap)) + "…" : trimmed
+        return TerminalStatusBadge(
+            glyph: nil, label: shown,
+            foreground: Colors.textSecondary, fill: Colors.neutralTint,
+            border: Colors.neutralBorder,
+            tooltip: trimmed, truncatesWhenNarrow: truncatesWhenNarrow)
+    }
+
+    /// Characters of an agent's label the tag shows before an ellipsis.
+    static let agentLabelCap = 24
+
     var body: some View {
+        if let tooltip, let accessibilityText {
+            chrome
+                .help(tooltip)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(accessibilityText)
+        } else {
+            chrome
+        }
+    }
+
+    private var chrome: some View {
         HStack(spacing: Spacing.xxs) {
             if let glyph {
                 Text(glyph)
@@ -77,6 +140,7 @@ struct TerminalStatusBadge: View {
             }
             Text(label.uppercased())
                 .font(Typography.term2xs)
+                .lineLimit(1)
                 .tracking(Typography.labelTracking)
                 .foregroundStyle(foreground)
         }
@@ -93,7 +157,7 @@ struct TerminalStatusBadge: View {
                     .strokeBorder(border, lineWidth: 1)
             }
         }
-        .fixedSize()
+        .fixedSize(horizontal: !truncatesWhenNarrow, vertical: true)
     }
 }
 
@@ -110,6 +174,12 @@ struct TerminalStatusBadge: View {
                 .font(Typography.choiceMark)
                 .foregroundStyle(Colors.accent)
             TerminalStatusBadge.tag(label: "recommended")
+        }
+        // The agent mark: a short name, the unsigned automated Supervisor, and a name past the cap.
+        HStack(spacing: Spacing.s) {
+            TerminalStatusBadge.agent(label: "Claude Code")
+            TerminalStatusBadge.agent(label: LLMMessage.automatedSupervisorLabel)
+            TerminalStatusBadge.agent(label: "An agent whose label runs far longer than any header")
         }
     }
     .padding(Spacing.l)

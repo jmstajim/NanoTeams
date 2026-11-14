@@ -42,7 +42,7 @@ final class PromptBuilderWirePreviewTests: XCTestCase {
         isVisionConfigured: Bool = false,
         // Helper default, not the runtime's: computer-use Off, bash available — the reading
         // every existing case was written against when the parameter was a Bool.
-        approval: ToolApprovalAvailability = ToolApprovalAvailability(bash: .available, computerUse: .withheld(.switchedOff)),
+        approval: ToolApprovalAvailability = ToolApprovalAvailability(bash: .available, computerUse: .withheld(.switchedOff), humanPresent: true),
         // The live default, not a fixture of its own: "One tool call per response." was
         // neither the shipped text nor the retired V1, so the wire-preview pins measured a
         // body production never sends.

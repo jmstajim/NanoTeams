@@ -695,13 +695,17 @@ final class SearchIndexCoordinatorTests: XCTestCase {
     /// returns the moment state flips to `.ready`, so a healthy build pays
     /// no extra time.
     private func waitUntilVectorReady(
-        _ c: SearchIndexCoordinator, timeoutSeconds: Double = 10.0
+        _ c: SearchIndexCoordinator, timeoutSeconds: Double = 10.0,
+        file: StaticString = #filePath, line: UInt = #line
     ) async {
-        let deadline = Date().addingTimeInterval(timeoutSeconds)
-        while Date() < deadline {
-            if case .ready = c.vectorIndexState { return }
-            try? await Task.sleep(for: .milliseconds(50))
+        await waitUntil(
+            "vectorIndexState == .ready", timeoutSeconds: timeoutSeconds, file: file, line: line
+        ) {
+            if case .ready = c.vectorIndexState { return true }
+            return false
         }
+        if case .ready = c.vectorIndexState { return }
+        XCTFail("vectorIndexState did not reach .ready within \(timeoutSeconds)s", file: file, line: line)
     }
 
     // MARK: - Closing the folder writes the index

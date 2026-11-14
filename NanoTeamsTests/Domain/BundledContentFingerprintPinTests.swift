@@ -309,7 +309,25 @@ final class BundledContentFingerprintPinTests: XCTestCase {
     //   The half that cannot be vacuous is this test: `compute` folds `Team.defaultTeams`, the
     //   Autovisor, `templateConfigs` and `ToolDefinitionRecord.defaultDefinitions()`, and the
     //   value below still matches on the release tree.
-    private static let expectedFingerprint = "32337af25e41c6eb"
+    // 2.0.0, 2026-10-30 — bumped WITHOUT moving this value. Over `8ba2c389..8ec617a1`, the MCP client
+    // wave registers external tools dynamically per step (`ToolRegistry.register(name:schema:handler:)`)
+    // and never touches `ToolHandlerRegistry.allTypes`, `ToolDefinitionRecord.defaultDefinitions()`,
+    // or any bundled role template or prompt.
+    //   Проверка — the full input set, spelled from the root, over the whole span:
+    //     git diff --stat 8ba2c389..8ec617a1 -- 'NanoTeams/Domain/SystemTemplates*.swift' \
+    //       NanoTeams/Domain/Team.swift NanoTeams/Domain/TeamRoleDefinition.swift \
+    //       NanoTeams/Domain/TeamTemplateFactory.swift NanoTeams/Domain/ToolDefinitionRecord.swift \
+    //       NanoTeams/Services/Tools/Handlers → EMPTY, and `compute` below still matches.
+    // 2.0.0 (unreleased), 2026-11-09 — `32337af25e41c6eb` → `6427949dce43f1c7` WITHOUT a version
+    // bump, by the Supervisor's decision: 2.0.0 has not shipped, so the change rides it — every
+    // work folder on 1.9.x reconciles when 2.0.0 lands. What moved: `answer_task_question`'s
+    // in-app schema declares `role_id` (`AnswerTaskQuestionTool`), so the built-in manager can
+    // name which waiting role it answers; until now the key was dropped and the answer went to
+    // the first waiting role. A DEV folder already stamped 2.0.0 does not reconcile this
+    // `tools.json` row until the next bump — the cost of not bumping an unreleased version.
+    //   Проверка: `git diff a2cad350 -- NanoTeams/Services/Tools/Handlers/AutovisorHandlers.swift`
+    //   shows the `role_id` property; `compute` below matches.
+    private static let expectedFingerprint = "6427949dce43f1c7"
 
     func testBundledContent_hasNotChangedWithoutAVersionBump() {
         let actual = BundledContentFingerprint.current

@@ -116,33 +116,34 @@ nonisolated enum StatusRecoveryService {
                 if status == .running || status == .needsSupervisorInput {
                     task.runs[runIndex].steps[stepIndex].status = .paused
                     task.runs[runIndex].steps[stepIndex].updatedAt = MonotonicClock.shared.now()
+                    // This run's latest pause is the recovery's own — even one whose timeout fired
+                    // earlier and was resumed (`Run.latestPauseIsItsTimeout`).
+                    task.runs[runIndex].pauseCause = .recovered
                     runChanged = true
                     parked = true
-                    continue
-                }
-                // A DESTROYED team-generation record. `runTeamGeneration` drives its
-                // synthetic step `.running` → `.done` / `.failed` / `.paused`, and
-                // `retryTeamGeneration` deletes rather than resets — so `.pending` there
-                // has exactly one writer, `StepExecution.reset()` via `restartRole`. It
-                // means the record was destroyed and nothing will ever advance it, while
-                // `Run.derivedTaskStatus()` reads it as work still to come and pins the
-                // task at `.running` forever: invisible to the Autovisor's triage, which
-                // has no `running` bullet.
-                //
-                // Park it like any other interrupted work rather than failing it.
-                // `resumeRun` re-enters generation for a task that still needs one, so
-                // `.paused` is TRUE here and both remedies the manager is told about
-                // (`control_task resume`, the pane's Retry) do the same thing. `.failed`
-                // would instead hide the toolbar control entirely
-                // (`TeamBoardRunControl.select` returns nil for it), split this shape from
-                // the cancelled/parked one that is already `.paused`, and steer the
-                // manager to a bullet that offers `control_task delete`. A retry that
-                // fails again writes `.failed` on its own.
-                //
-                // With a team already adopted there is nothing left to generate, so the
-                // record settles `.done` — otherwise `allDone` can never be true and the
-                // task never reaches Review.
-                if status == .pending, task.runs[runIndex].steps[stepIndex].isTeamGenerationStep {
+                } else if status == .pending, task.runs[runIndex].steps[stepIndex].isTeamGenerationStep {
+                    // A DESTROYED team-generation record. `runTeamGeneration` drives its
+                    // synthetic step `.running` → `.done` / `.failed` / `.paused`, and
+                    // `retryTeamGeneration` deletes rather than resets — so `.pending` there
+                    // has exactly one writer, `StepExecution.reset()` via `restartRole`. It
+                    // means the record was destroyed and nothing will ever advance it, while
+                    // `Run.derivedTaskStatus()` reads it as work still to come and pins the
+                    // task at `.running` forever: invisible to the Autovisor's triage, which
+                    // has no `running` bullet.
+                    //
+                    // Park it like any other interrupted work rather than failing it.
+                    // `resumeRun` re-enters generation for a task that still needs one, so
+                    // `.paused` is TRUE here and both remedies the manager is told about
+                    // (`control_task resume`, the pane's Retry) do the same thing. `.failed`
+                    // would instead hide the toolbar control entirely
+                    // (`TeamBoardRunControl.select` returns nil for it), split this shape from
+                    // the cancelled/parked one that is already `.paused`, and steer the
+                    // manager to a bullet that offers `control_task delete`. A retry that
+                    // fails again writes `.failed` on its own.
+                    //
+                    // With a team already adopted there is nothing left to generate, so the
+                    // record settles `.done` — otherwise `allDone` can never be true and the
+                    // task never reaches Review.
                     task.runs[runIndex].steps[stepIndex].status =
                         task.generatedTeam == nil ? .paused : .done
                     task.runs[runIndex].steps[stepIndex].completedAt = MonotonicClock.shared.now()
@@ -152,6 +153,36 @@ nonisolated enum StatusRecoveryService {
                     // mid-flight", and nothing was interrupted here. The step's own
                     // `.paused` already drives the derived status.
                 }
+                // Any `create_team` placeholder still marked `"status":"generating"` on a step
+                // that has no live engine is orphaned (e.g. app quit or folder switch mid-
+                // `delegate_to_team` generation). Close it so the activity feed does not spin
+                // forever after recovery.
+                for callIndex in task.runs[runIndex].steps[stepIndex].toolCalls.indices
+                    where task.runs[runIndex].steps[stepIndex].toolCalls[callIndex].isGeneratingTeam
+                {
+                    task.runs[runIndex].steps[stepIndex].toolCalls[callIndex].recordResult(
+                        TeamGenerationEnvelopes.makeErrorEnvelope(
+                            message: "Team generation was interrupted before it completed."
+                        ),
+                        isError: true,
+                        at: MonotonicClock.shared.now()
+                    )
+                    task.runs[runIndex].steps[stepIndex].updatedAt = MonotonicClock.shared.now()
+                    runChanged = true
+                }
+            }
+
+            // A change request is written `.pending` before its vote runs, and only the vote
+            // closes it. With no engine running no vote is in flight, so a `.pending` here is a
+            // vote the quit or a folder switch interrupted — closed as a vote that ended without
+            // a decision, which is what the voting handler writes when a Pause or Stop overtakes
+            // it in the same folder (F6 C5). Left pending it read as a vote still under way.
+            for crIndex in task.runs[runIndex].changeRequests.indices
+                where task.runs[runIndex].changeRequests[crIndex].status == .pending
+            {
+                task.runs[runIndex].changeRequests[crIndex].status = .failed
+                task.runs[runIndex].changeRequests[crIndex].resolvedAt = MonotonicClock.shared.now()
+                runChanged = true
             }
 
             // Close any delegation that was in flight when the process ended.
@@ -202,9 +233,11 @@ nonisolated enum StatusRecoveryService {
                     delegationTools.contains($0.name)
                         && ($0.resultJSON?.contains("\"status\"") ?? true)
                 }) {
-                    task.runs[runIndex].steps[stepIndex].toolCalls[callIndex].resultJSON =
-                        DelegationInterruptionEnvelope.envelope(childTaskID: childID)
-                    task.runs[runIndex].steps[stepIndex].toolCalls[callIndex].isError = true
+                    task.runs[runIndex].steps[stepIndex].toolCalls[callIndex].recordResult(
+                        DelegationInterruptionEnvelope.envelope(childTaskID: childID),
+                        isError: true,
+                        at: MonotonicClock.shared.now()
+                    )
                 }
 
                 // 4. Finally the marker, preserving `delegation.history` so the graph keeps

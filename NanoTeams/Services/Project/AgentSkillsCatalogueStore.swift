@@ -61,11 +61,7 @@ nonisolated final class AgentSkillsCatalogueStore: @unchecked Sendable {
     /// Beside `.nanoteams/`, not inside it — `~/Library/Application Support/NanoTeams/`
     /// is itself the default WORK FOLDER, and filing a machine-scoped fact under one
     /// folder's tree is the coupling this store exists to avoid.
-    static var defaultDirectory: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("NanoTeams", isDirectory: true)
-            .appendingPathComponent("skills", isDirectory: true)
-    }
+    static var defaultDirectory: URL { NTMSPaths.machineStorageURL(.skills) }
 
     /// Shared instance for the surfaces that are deliberately orchestrator-free
     /// (`SkillsPickerButton` is a leaf taking only a root and a clips binding).

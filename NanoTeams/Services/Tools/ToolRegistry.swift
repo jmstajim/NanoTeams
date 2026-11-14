@@ -50,11 +50,33 @@ nonisolated struct ToolExecutionContext: Hashable {
     /// fact and this context is the only channel that carries one down to a handler.
     var questionnaireAvailable: Bool = false
 
+    /// The loopback ports this batch's `bash` commands may neither connect to nor listen on
+    /// (`SeatbeltSandbox.guardedLoopbackPorts(externalAgentsPort:mcpServerPorts:llmServerPorts:)`).
+    ///
+    /// Per batch for the reason `isPlanningPhase` is: a server added, switched on or re-pointed
+    /// mid-step is dialled at once, and until 2026-11-08 the list was read at step ENTRY and
+    /// baked into `BashTool` — so every later command of the step, and every background command
+    /// it started, could stand in for a server configured after the step began. Read by `BashTool`
+    /// alone. The default is the floor every profile keeps anyway (the default External Agents
+    /// port, `SeatbeltSandbox.effectiveGuardedPorts`): a handler test, or a meeting turn — where
+    /// `bash` is excluded — guards no less than that; the step path passes the full list for every
+    /// batch that runs `bash` (`LLMExecutionDelegate.seatbeltGuardedLoopbackPorts`), and `BashTool`
+    /// adds what was reserved since (`LoopbackPortReservations.ports`).
+    var guardedLoopbackPorts: [UInt16] = SeatbeltSandbox.effectiveGuardedPorts([])
+
+    /// The `bash` sandbox settings of THIS batch (`BashPolicy.Sandbox`), read off the live policy
+    /// per batch like the ports above: a switch, a grant or the fallback a person changes
+    /// mid-step governs the next command, where a handler field baked at step entry carried the
+    /// old setting to the task's close in chat mode (review 2026-11-08).
+    var bashSandbox: BashPolicy.Sandbox = BashPolicy.Sandbox()
+
     /// `stepID` defaults to `roleID` — the step shape, and what every handler test builds.
     init(
         workFolderRoot: URL, taskID: Int, runID: Int, roleID: String, stepID: String? = nil,
         expectedArtifacts: [String] = [], isPlanningPhase: Bool = false,
-        questionnaireAvailable: Bool = false
+        questionnaireAvailable: Bool = false,
+        guardedLoopbackPorts: [UInt16] = SeatbeltSandbox.effectiveGuardedPorts([]),
+        bashSandbox: BashPolicy.Sandbox = BashPolicy.Sandbox()
     ) {
         self.workFolderRoot = workFolderRoot
         self.taskID = taskID
@@ -64,6 +86,8 @@ nonisolated struct ToolExecutionContext: Hashable {
         self.expectedArtifacts = expectedArtifacts
         self.isPlanningPhase = isPlanningPhase
         self.questionnaireAvailable = questionnaireAvailable
+        self.guardedLoopbackPorts = guardedLoopbackPorts
+        self.bashSandbox = bashSandbox
     }
 }
 
@@ -117,7 +141,8 @@ nonisolated enum ToolSignal: Hashable {
     case createManagedTask(title: String, brief: String, teamID: String?)
     case controlTask(taskID: Int, verb: ControlVerb)
     case manageRole(taskID: Int, roleID: String, verb: RoleVerb)
-    case answerTaskQuestion(taskID: Int, answer: String)
+    /// `roleID` picks one of several roles waiting on the same task; `nil` answers the first.
+    case answerTaskQuestion(taskID: Int, answer: String, roleID: String? = nil)
     case messageTask(taskID: Int, text: String, roleID: String?)
     case scheduleTask(taskID: Int, intervalMinutes: Int)
     case setWorkFolderContext(content: String)
@@ -210,7 +235,10 @@ nonisolated struct ExploratorySearchPayload: Hashable {
     }
 }
 
-nonisolated struct ToolExecutionResult: Hashable {
+/// `Error` so the external surface's guards can return a finished refusal as a `Result`'s
+/// failure. Declared here, with the type: `Error` refines `Sendable`, and a `Sendable`
+/// conformance written in another file is a retroactive one the compiler warns about.
+nonisolated struct ToolExecutionResult: Hashable, Error {
     var providerID: String?     // OpenAI tool_call_id for conversation continuity
     var toolName: String
     var argumentsJSON: String
@@ -225,6 +253,13 @@ nonisolated struct ToolExecutionResult: Hashable {
     /// `durationMS` is suspend-INCLUSIVE, so without it an audit of
     /// `jq 'select(.durationMS > 500)'` bills a build queue to the compiler.
     var queuedMS: Double?
+    /// The parser's note on how it had to read the call (`StepToolCall.argumentRepairNote`,
+    /// prompt-taught only), carried onto the result so EVERY branch that builds the model's
+    /// tool turn can splice it — until 2026-11-09 only the regular branch did, and a spilled
+    /// argument on an exploratory search, a computer-use action or a collaboration call was
+    /// recovered without the model ever being told (train-app KNOWN_ISSUES). Runtime-only, never
+    /// persisted on its own: it reaches the conversation inside the tool turn.
+    var argumentRepairNote: String?
 
     init(
         toolName: String,
@@ -281,6 +316,12 @@ nonisolated final class ToolRegistry: @unchecked Sendable {
 
     private var handlers: [String: ToolHandler] = [:]
     private var aliases: [String: String] = [:]
+    /// Schemas for tools that have no type in `ToolHandlerRegistry` — today, exactly the
+    /// MCP tools an external server publishes. Per REGISTRY rather than static, because a
+    /// registry is built per step and the catalogue a step was resolved against is frozen
+    /// for its whole life: a process-wide table would let one step's runtime type-check a
+    /// call against another step's catalogue.
+    private var dynamicSchemas: [String: ToolSchema] = [:]
 
     /// Common tool name aliases that LLMs hallucinate.
     /// Maps alternate name → canonical registered name.
@@ -357,6 +398,36 @@ nonisolated final class ToolRegistry: @unchecked Sendable {
 
     func register(name: String, handler: @escaping ToolHandler) {
         handlers[name.lowercased()] = handler
+    }
+
+    /// Registers a handler together with the schema its arguments are checked against.
+    ///
+    /// The schema half is what the runtime's argument type gate reads
+    /// (`ToolRuntime.executeOne` → `schema(for:)`). Registering a handler WITHOUT one is
+    /// still legal and is what every built-in tool does — their schemas live on the type in
+    /// `ToolHandlerRegistry`, which is the authority for them.
+    func register(name: String, schema: ToolSchema, handler: @escaping ToolHandler) {
+        let key = name.lowercased()
+        handlers[key] = handler
+        dynamicSchemas[key] = schema
+    }
+
+    /// The schema for a tool name — the app's own where there is one, else a schema
+    /// registered alongside a dynamic handler.
+    ///
+    /// The two tables cannot collide: a dynamic name is `mcp__<slug>__<tool>` and
+    /// `MCPToolNaming.prefix` is in no built-in name. The static side is read first anyway,
+    /// because the app's own tools are the answer wherever it has one.
+    func schema(for name: String) -> ToolSchema? {
+        let canonical = canonicalName(for: name)
+        return ToolHandlerRegistry.schema(named: canonical) ?? dynamicSchemas[canonical]
+    }
+
+    /// Every dynamically-registered schema, for the seams that must describe tools the
+    /// static registry has never heard of — the required-argument hint a failed call
+    /// carries back to the model.
+    var dynamicToolSchemas: [ToolSchema] {
+        dynamicSchemas.keys.sorted().compactMap { dynamicSchemas[$0] }
     }
 
     /// Register an alias so that `alias` resolves to the handler for `canonicalName`.

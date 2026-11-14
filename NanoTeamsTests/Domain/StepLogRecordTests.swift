@@ -17,7 +17,7 @@ final class StepLogRecordTests: XCTestCase {
         // fractional seconds to ms — the same precision task.json has always
         // had — and an unaligned Date would differ in sub-ms bits after decode.
         let msg = LLMMessage(
-            createdAt: Date(timeIntervalSince1970: 1_755_800_000.123),
+            createdAt: Date(timeIntervalSince1970: 1_755_814_400.123),
             role: .assistant, content: "hello", thinking: "think")
         let back = try roundTrip(StepLogEntry(seq: 3, record: .conversation(msg)))
         XCTAssertEqual(back.seq, 3)

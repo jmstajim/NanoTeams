@@ -9,7 +9,8 @@ nonisolated extension MemoryTagStore {
 
         let summary = extractBuildSummary(from: result.outputJSON)
         let tag = nextTag(.build)
-        let taggedContent = "{\"tag\":\"\(tag)\",\"summary\":\(jsonEscape(summary))}"
+        let taggedContent = "{\"tag\":\"\(tag)\",\"summary\":\(jsonEscape(summary))"
+            + warningsMember(of: result.outputJSON) + "}"
         return .tagged(content: taggedContent, tag: tag)
     }
 
@@ -18,6 +19,8 @@ nonisolated extension MemoryTagStore {
 
         let summary = extractTestSummary(from: result.outputJSON)
         let tag = nextTag(.build)  // same B tag type
-        return .tagged(content: "{\"tag\":\"\(tag)\",\"summary\":\(jsonEscape(summary))}", tag: tag)
+        return .tagged(
+            content: "{\"tag\":\"\(tag)\",\"summary\":\(jsonEscape(summary))" + warningsMember(of: result.outputJSON) + "}",
+            tag: tag)
     }
 }

@@ -83,4 +83,11 @@ final class ErrorMessageCoverageTests: XCTestCase {
                       "the underlying cause is the actionable half; swallowing it leaves the user "
                           + "with 'unable to write' and nothing to do about it")
     }
+
+    func testAppUpdateCheckerError_messages() {
+        XCTAssertEqual(AppUpdateChecker.CheckerError.badStatus(404).errorDescription,
+                       "No releases published for this repository yet.")
+        XCTAssertEqual(AppUpdateChecker.CheckerError.unexpectedContentType("text/html").errorDescription,
+                       "Update check got an unexpected response type (text/html). A captive portal or proxy may be intercepting requests.")
+    }
 }

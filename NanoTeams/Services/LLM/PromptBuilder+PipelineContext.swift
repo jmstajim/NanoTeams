@@ -159,8 +159,10 @@ nonisolated extension PromptBuilder {
     ///
     /// Body = bold folder name, then sections joined with a blank line, each
     /// omitted when its source is empty:
-    /// 1. the user-written `settings.context` (trimmed, capped at
-    ///    `ArtifactConstants.maxDescriptionChars`);
+    /// 1. `settings.context`, whole: sanitized (`MCPTextSanitizer.sanitizeDisplayedData`) and trimmed.
+    ///    Capped at 2000 characters until 2026-11-13 — a January literal nobody had justified,
+    ///    while the instruction files below went in uncapped — and nothing told a writer, so
+    ///    Generate's 6000–9000 characters on a real repository reached a role as their first 2000;
     /// 2. one `### Agent instructions (<path>)` section per content-injected
     ///    file (auto-discovered main first, then user-attached text files),
     ///    **uncapped** — content is pre-trimmed at scan time;
@@ -190,17 +192,18 @@ nonisolated extension PromptBuilder {
 
         var sections: [String] = []
 
-        var context = wf.settings.context.trimmingCharacters(in: .whitespacesAndNewlines)
-        if context.count > ArtifactConstants.maxDescriptionChars {
-            context =
-                String(context.prefix(ArtifactConstants.maxDescriptionChars)) + "..."
-        }
-        // Re-levelled AFTER the cap, never before: the cap cuts by character, so a body
-        // truncated mid-`##` would otherwise keep an un-demoted fragment.
-        //
-        // This value is written by a HUMAN in Settings and by a MODEL through
-        // `set_work_folder_context` (Autovisor), it persists for the folder, and it lands
-        // in `## Work folder` — the section immediately before `## Guidance`, which for the
+        // Whoever stored it, no character that makes a renderer lie reaches a role: the person
+        // reads this text in Settings and the role reads it here, and the two must be one text —
+        // directional marks included, which reorder the words a person sees
+        // (`sanitizeDisplayedData`). Text without such characters comes through byte-identical,
+        // trimmed.
+        let context = MCPTextSanitizer.sanitizeDisplayedData(wf.settings.context)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        // Re-levelled before it lands. This value is written by a HUMAN in Settings, by
+        // Generate, and by a MODEL through `set_work_folder_context` — the built-in Autovisor,
+        // and an external agent the person has allowed to
+        // (`HostedMCPAgentRecord.mayReplaceWorkFolderContext`). It persists for the folder, and
+        // it lands in `## Work folder` — the section immediately before `## Guidance`, which for the
         // default Coding Assistant team carries "A `## Attached Files` section lists paths.
         // Open each before doing anything else … do NOT skip one as unrelated". An
         // unre-levelled `## Attached Files` here therefore FABRICATED a section that the

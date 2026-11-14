@@ -58,7 +58,7 @@ extension NTMSOrchestrator {
         roleID: String,
         stepID: String
     ) async -> String? {
-        guard let formState = quickCaptureFormState else { return nil }
+        guard let formState = messageQueue.activeFormState else { return nil }
 
         // Collect ids in priority order. Tier 1: role-targeted (FIFO within tier).
         // Tier 2: untargeted (Team) — FIFO within tier. Both tiers drain into a
@@ -145,7 +145,11 @@ extension NTMSOrchestrator {
         let delivery = Self.composeQueuedDelivery(
             zip(popped, bodies).map { message, body in
                 QueuedDeliveryEntry(
-                    kind: message.kind, body: body, isRedelivery: message.isRedelivery
+                    kind: message.kind,
+                    body: body,
+                    isRedelivery: message.isRedelivery,
+                    authorLabel: message.authorLabel,
+                    isFromAutomatedSupervisor: message.isFromAutomatedSupervisor
                 )
             }
         )
@@ -175,7 +179,9 @@ extension NTMSOrchestrator {
                 role: .user,
                 content: turn.content,
                 sourceRole: turn.sourceRole,
-                sourceContext: turn.sourceContext
+                sourceContext: turn.sourceContext,
+                authorLabel: turn.authorLabel,
+                isFromAutomatedSupervisor: turn.isFromAutomatedSupervisor
             )
         }
         var didPersist = false
@@ -215,6 +221,23 @@ extension NTMSOrchestrator {
         /// The body AFTER attachment finalization, clip inlining and embedding.
         let body: String
         let isRedelivery: Bool
+        let authorLabel: String?
+        /// `QueuedChatMessage.isFromAutomatedSupervisor`: the Autovisor queued it, not the person.
+        let isFromAutomatedSupervisor: Bool
+
+        init(
+            kind: QuickCaptureFormState.QueuedChatMessage.Kind,
+            body: String,
+            isRedelivery: Bool,
+            authorLabel: String? = nil,
+            isFromAutomatedSupervisor: Bool = false
+        ) {
+            self.kind = kind
+            self.body = body
+            self.isRedelivery = isRedelivery
+            self.authorLabel = authorLabel
+            self.isFromAutomatedSupervisor = isFromAutomatedSupervisor
+        }
     }
 
     /// One turn to persist: a run of consecutive same-kind entries that has something the
@@ -223,6 +246,24 @@ extension NTMSOrchestrator {
         let content: String
         let sourceContext: MessageSourceContext
         let sourceRole: Role?
+        let authorLabel: String?
+        /// Who wrote a Supervisor turn (`LLMMessage.isFromAutomatedSupervisor`); `nil` on the
+        /// app's notices, which are nobody's words.
+        let isFromAutomatedSupervisor: Bool?
+
+        init(
+            content: String,
+            sourceContext: MessageSourceContext,
+            sourceRole: Role?,
+            authorLabel: String? = nil,
+            isFromAutomatedSupervisor: Bool? = nil
+        ) {
+            self.content = content
+            self.sourceContext = sourceContext
+            self.sourceRole = sourceRole
+            self.authorLabel = authorLabel
+            self.isFromAutomatedSupervisor = isFromAutomatedSupervisor
+        }
     }
 
     nonisolated struct QueuedDelivery: Equatable {
@@ -267,10 +308,23 @@ extension NTMSOrchestrator {
             var allParts: [String] = []
             var freshParts: [String] = []
             var hasFresh = false
+            // The fresh entries again, as consecutive runs of ONE author — what the feed gets
+            // for Supervisor speech. A turn records who wrote it (DEBTS D-M15), and a turn
+            // holding the person's sentence and the Autovisor's has no one author to record:
+            // until 2026-11-07 such a turn dropped the label and read as the person's. The
+            // WIRE keeps the whole run as one section; only the record splits.
+            var authorRuns: [(label: String?, automated: Bool, bodies: [String])] = []
             for entry in run {
                 allParts.append(entry.body)
                 guard !entry.isRedelivery else { continue }
                 freshParts.append(entry.body)
+                if let last = authorRuns.indices.last,
+                   authorRuns[last].label == entry.authorLabel,
+                   authorRuns[last].automated == entry.isFromAutomatedSupervisor {
+                    authorRuns[last].bodies.append(entry.body)
+                } else {
+                    authorRuns.append((entry.authorLabel, entry.isFromAutomatedSupervisor, [entry.body]))
+                }
                 // Tracked separately from `freshParts.isEmpty`: an entry carrying only an
                 // attachment can compose an empty body, and it is still something the user
                 // has not seen.
@@ -283,11 +337,13 @@ extension NTMSOrchestrator {
             case .supervisorSpeech:
                 let prefix = MessageSourceContext.supervisorMessagePrefix
                 wireSections.append(prefix + allBodies)
-                if hasFresh {
+                for authorRun in authorRuns {
                     displayTurns.append(QueuedDeliveryTurn(
-                        content: prefix + freshBodies,
+                        content: prefix + authorRun.bodies.joined(separator: "\n"),
                         sourceContext: .supervisorMessage,
-                        sourceRole: .supervisor
+                        sourceRole: .supervisor,
+                        authorLabel: authorRun.label,
+                        isFromAutomatedSupervisor: authorRun.automated
                     ))
                 }
             case .autovisorEventNotice:
@@ -331,10 +387,7 @@ extension NTMSOrchestrator {
 
     /// `LLMStateDelegate.notifyQueuedMessageBackstop` witness — bridges the
     /// step-mutation side of the LLM pipeline to the queued-message backstop
-    /// owned by `QuickCaptureController`. The orchestrator has no DI handle for
-    /// the controller (the controller holds a weak `store` reference back; the
-    /// reverse direction would create the cycle), so the witness reaches the
-    /// process-wide singleton directly.
+    /// owned by `SupervisorMessageQueueService` (`messageQueue`).
     ///
     /// `taskID` is unused for now — `tryFlushQueuedMessages` iterates every
     /// task with a non-empty queue regardless of the trigger source. The
@@ -346,7 +399,7 @@ extension NTMSOrchestrator {
     /// intended scope.
     // periphery:ignore - protocol conformance (LLMStateDelegate)
     func notifyQueuedMessageBackstop(taskID _: Int) {
-        QuickCaptureController.shared.tryFlushQueuedMessages()
+        messageQueue.tryFlushQueuedMessages()
     }
 
     /// `LLMStateDelegate.requeueSupervisorMessageAtHead` witness — the planning-phase boundary's
@@ -370,7 +423,7 @@ extension NTMSOrchestrator {
     /// condition re-notifies on the next fresh-pass wake regardless.
     // periphery:ignore - protocol conformance (LLMStateDelegate)
     func requeueSupervisorMessageAtHead(taskID: Int, roleID: String, text: String) {
-        guard let formState = quickCaptureFormState,
+        guard let formState = messageQueue.activeFormState,
               let message = QuickCaptureFormState.QueuedChatMessage(
                   text: text, attachments: [], clippedTexts: [], targetRoleID: roleID,
                   isRedelivery: true)

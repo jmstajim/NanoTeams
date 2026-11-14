@@ -27,20 +27,28 @@ final class GitHandlerTailTests: XCTestCase {
     private var runtime: ToolRuntime!
     private var context: ToolExecutionContext!
 
+    /// The seeded repository every test starts from — `git init`, the pinned config and the `base`
+    /// commit — built by the first test of the class and COPIED for each one after. Building it per
+    /// test was 55 % of the class (2.4 of 4.4 s alone, measured 2026-10-28: eight git spawns per
+    /// test). A copy carries the same `.git` byte for byte; what git sees differently is only the
+    /// index's stat data for `base.txt` (a new inode), which `seededRepository(at:)` refreshes, so
+    /// every test still starts on a repository whose index matches its tree.
+    nonisolated(unsafe) private static var seededTemplate: URL?
+
+    override class func tearDown() {
+        if let seededTemplate { try? FileManager.default.removeItem(at: seededTemplate) }
+        seededTemplate = nil
+        super.tearDown()
+    }
+
     override func setUpWithError() throws {
         try super.setUpWithError()
         scratchDirs = []
         tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
             .standardizedFileURL
-        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-
+        try seededRepository(at: tempDir)
         let paths = NTMSPaths(workFolderRoot: tempDir)
-        try FileManager.default.createDirectory(
-            at: paths.nanoteamsDir, withIntermediateDirectories: true)
-
-        try initRepo(at: tempDir)
-        try seedCommit(named: "base.txt", contents: "base\n", message: "base")
 
         let (_, run) = ToolRegistry.defaultRegistry(
             workFolderRoot: tempDir,
@@ -963,6 +971,36 @@ final class GitHandlerTailTests: XCTestCase {
         // test into asserting nothing — the `fileExists` check would still pass, because
         // it proves the pull happened, not that the marker word reached the handler.
         try git(["config", "merge.stat", "true"], in: directory)
+    }
+
+    /// `directory` as a fresh fixture would leave it — its `.nanoteams/`, then `git init`, the pinned
+    /// config and the `base` commit — copied from the class's template, which the first call builds
+    /// exactly that way. A build during which any fixture `git` failed is thrown away and rebuilt by
+    /// the next test, so a broken fixture still fails every test, as it did when each built its own.
+    private func seededRepository(at directory: URL) throws {
+        let fileManager = FileManager.default
+        if Self.seededTemplate == nil {
+            let template = fileManager.temporaryDirectory
+                .appendingPathComponent("git-template-\(UUID().uuidString)", isDirectory: true)
+                .standardizedFileURL
+            try fileManager.createDirectory(
+                at: NTMSPaths(workFolderRoot: template).nanoteamsDir, withIntermediateDirectories: true)
+            let failuresBefore = testRun?.totalFailureCount ?? 0
+            let testDirectory = tempDir
+            tempDir = template
+            defer { tempDir = testDirectory }
+            try initRepo(at: template)
+            try seedCommit(named: "base.txt", contents: "base\n", message: "base")
+            guard (testRun?.totalFailureCount ?? 0) == failuresBefore else {
+                try? fileManager.removeItem(at: template)
+                throw CocoaError(.fileWriteUnknown, userInfo: [
+                    NSLocalizedDescriptionKey: "the seeded git template failed to build"])
+            }
+            Self.seededTemplate = template
+        }
+        try fileManager.copyItem(at: try XCTUnwrap(Self.seededTemplate), to: directory)
+        // A copy is a new inode, so the index's stat data no longer matches `base.txt`.
+        try git(["update-index", "--refresh"], in: directory)
     }
 
     private func makeScratchRepo(initializeGit: Bool) throws

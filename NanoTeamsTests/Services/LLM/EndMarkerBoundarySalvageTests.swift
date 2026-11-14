@@ -125,11 +125,21 @@ final class EndMarkerBoundarySalvageTests: XCTestCase {
     /// tells the model what it mis-emitted.
     func testBoundary_spilledSiblingSurvivesAndIsReported() {
         let call = ToolCallParsingHelpers.parseToolCallFromJSON(
-            walk(#"{"name":"read_file","arguments":{"path":"a.md"},"encoding":"utf-8"<|end|>"#) ?? "")
-        XCTAssertEqual(call?.name, ToolNames.readFile)
-        XCTAssertEqual(call?.argumentsJSON.contains("\"encoding\":\"utf-8\""), true)
+            walk(#"{"name":"read_lines","arguments":{"path":"a.md"},"start_line":3<|end|>"#) ?? "")
+        XCTAssertEqual(call?.name, ToolNames.readLines)
+        XCTAssertEqual(call?.argumentsJSON.contains("\"start_line\":3"), true)
         XCTAssertEqual(call?.argumentsJSON.contains("\"path\":\"a.md\""), true)
         XCTAssertNotNil(call?.argumentRepairNote)
+    }
+
+    /// A key beside the call that the tool does not read is NOT merged — it would only get the
+    /// call refused for an argument the model never put in `arguments` — and it is reported.
+    func testBoundary_aSiblingTheToolDoesNotRead_isLeftOut_andReported() {
+        let call = ToolCallParsingHelpers.parseToolCallFromJSON(
+            walk(#"{"name":"read_file","arguments":{"path":"a.md"},"encoding":"utf-8"<|end|>"#) ?? "")
+        XCTAssertEqual(call?.argumentsJSON, #"{"path":"a.md"}"#)
+        XCTAssertTrue(call?.argumentRepairNote?.contains("`encoding` stood outside `arguments`") ?? false,
+                      call?.argumentRepairNote ?? "nil")
     }
 
     func testBoundary_cursorStopsAtTheMarker_soALaterEnvelopeStillParses() {

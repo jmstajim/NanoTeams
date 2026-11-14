@@ -24,11 +24,33 @@ import Foundation
 /// the logger's stream task once, through `RuntimePromptFingerprint.prime()`.
 enum RuntimePromptRegistry {
 
+    /// Who reads a registered runtime text: the in-app local model (`.localModel`) or an
+    /// external MCP agent driving the folder (`.externalAgent`). Keeping the two audiences
+    /// apart on the same registry lets `RuntimePromptCensusPinTests` enforce registration
+    /// across the whole tree while `RuntimePromptFingerprint.current` (provenance for local
+    /// model runs) and `PromptFormatConventionsTests` (local-model house style) filter to
+    /// `.localModel`.
+    nonisolated enum Audience: String, Sendable, Hashable, CaseIterable {
+        case localModel
+        case externalAgent
+    }
+
     /// `nonisolated` so the rows can be built from a nested helper; the renderer itself
     /// is main-actor code, which the closure type says.
     nonisolated struct Entry {
         let name: String
+        let audience: Audience
         let render: @MainActor () -> String
+
+        init(
+            name: String,
+            audience: Audience = .localModel,
+            render: @escaping @MainActor () -> String
+        ) {
+            self.name = name
+            self.audience = audience
+            self.render = render
+        }
     }
 
     /// A one-shot service's system prompt: `file` is the source the census scan matches,
@@ -74,9 +96,106 @@ enum RuntimePromptRegistry {
         name: "sample_tool",
         description: "A sample tool.",
         parameters: JSONSchema(type: "object", properties: ["path": JSONSchema.string("A path.")], required: ["path"]))
+    /// One external tool, so the marker and the second boundary both render. The slug is
+    /// short and the description plain: what the row pins is this app's own two texts, not
+    /// a server's.
+    private static let sampleMCPSchema = ToolSchema(
+        name: "mcp__design__get_metadata",
+        description: "Reads a node's metadata.",
+        parameters: JSONSchema(type: "object", properties: ["node": JSONSchema.string("A node id.")], required: ["node"]))
     private static let sampleRole = TeamRoleDefinition(
         id: "swe", name: "Software Engineer", prompt: "", toolIDs: [], usePlanningPhase: false,
         dependencies: RoleDependencies(requiredArtifacts: [], producesArtifacts: sampleArtifacts))
+
+    /// One sample per `AutovisorReply` case — the builder of every text the Autovisor's manager
+    /// is told about its own actions and its folder. A case with no sample here would ship its
+    /// wording under a fingerprint that never covered it; `AutovisorReplyTests` checks that every
+    /// case is sampled. The optional-reason cases are sampled both ways, since the fallback
+    /// wording is the builder's own.
+    static let autovisorReplySamples: [(name: String, reply: AutovisorReply)] = {
+        let triggers = NTMSOrchestrator.AutovisorAttentionTrigger.allCases
+        let items = triggers.map { NTMSOrchestrator.AutovisorAttentionItem(taskID: 3, title: "Fix login", trigger: $0) }
+        var rows: [(name: String, reply: AutovisorReply)] = []
+        rows.append(("drivenByExternalAgent", .drivenByExternalAgent))
+        rows.append(("ownTask", .ownTask(taskID: 1)))
+        rows.append(("taskNotFound", .taskNotFound(taskID: 9)))
+        rows.append(("tooManyRunning", .tooManyRunning(count: 3)))
+        rows.append(("creationLimitReached", .creationLimitReached(limit: 2)))
+        rows.append(("openTaskLimitReached", .openTaskLimitReached(count: 3, limit: 3)))
+        rows.append(("creationWindowLimitReached", .creationWindowLimitReached(limit: 5, windowMinutes: 15)))
+        rows.append(("creationFailed", .creationFailed))
+        rows.append(("createdNotStarted", .createdNotStarted(taskID: 3, title: "Fix login", reason: nil)))
+        rows.append(("createdNotStarted/reason", .createdNotStarted(taskID: 3, title: "Fix login", reason: "The model is not loaded.")))
+        rows.append(("createdAndStarted", .createdAndStarted(taskID: 3, title: "Fix login")))
+        rows.append(("createdScheduled", .createdScheduled(taskID: 3, title: "Fix login", runAt: Date(timeIntervalSince1970: 1700000000))))
+        rows.append(("notWaitingForInput", .notWaitingForInput(taskID: 3)))
+        rows.append(("notWaitingForInputExternal", .notWaitingForInputExternal(taskID: 3)))
+        rows.append(("roleNotWaiting", .roleNotWaiting(taskID: 3, roleID: "qa", waitingRoleIDs: ["swe"])))
+        rows.append(("roleNotWaiting/none", .roleNotWaiting(taskID: 3, roleID: "qa", waitingRoleIDs: [])))
+        rows.append(("answered", .answered(taskID: 3)))
+        rows.append(("answeredWhilePausedInTheApp", .answeredWhilePausedInTheApp(taskID: 3)))
+        rows.append(("answerNotDelivered", .answerNotDelivered(taskID: 3)))
+        rows.append(("messageNotQueued", .messageNotQueued(taskID: 3)))
+        rows.append(("messageDiscardedTaskFinished", .messageDiscardedTaskFinished(taskID: 3)))
+        rows.append(("messageQueued", .messageQueued(taskID: 3)))
+        rows.append(("messageQueuedAndResumed", .messageQueuedAndResumed(taskID: 3)))
+        rows.append(("messageQueuedWhilePausedInTheApp", .messageQueuedWhilePausedInTheApp(taskID: 3)))
+        rows.append(("decisionWaitsForThePersonsResume", .decisionWaitsForThePersonsResume(taskID: 3)))
+        rows.append(("scheduleNotCleared", .scheduleNotCleared(taskID: 3)))
+        rows.append(("scheduleCleared", .scheduleCleared(taskID: 3)))
+        rows.append(("scheduleNotStored", .scheduleNotStored(taskID: 3)))
+        rows.append(("scheduled", .scheduled(taskID: 3, minutes: 30)))
+        rows.append(("workFolderContextUpdated", .workFolderContextUpdated))
+        rows.append(("workFolderContextChangedSinceRead", .workFolderContextChangedSinceRead))
+        rows.append(("alreadyRunning", .alreadyRunning(taskID: 3)))
+        rows.append(("started", .started(taskID: 3)))
+        rows.append(("couldNotStart", .couldNotStart(taskID: 3)))
+        rows.append(("paused", .paused(taskID: 3)))
+        for reason in AutovisorReply.PauseFailureReason.allCases {
+            rows.append(("couldNotPause/\(reason)", .couldNotPause(taskID: 3, reason: reason.rawValue)))
+        }
+        rows.append(("closedNotResumable", .closedNotResumable(taskID: 3)))
+        rows.append(("noRunToResume", .noRunToResume(taskID: 3)))
+        rows.append(("pausedByThePerson", .pausedByThePerson(taskID: 3)))
+        rows.append(("resumed", .resumed(taskID: 3)))
+        rows.append(("stopped", .stopped(taskID: 3)))
+        rows.append(("closed", .closed(taskID: 3)))
+        rows.append(("closeFailed", .closeFailed(taskID: 3)))
+        rows.append(("deleted", .deleted(taskID: 3)))
+        rows.append(("renamed", .renamed(taskID: 3, title: "Fix login")))
+        rows.append(("timeoutCleared", .timeoutCleared(taskID: 3)))
+        rows.append(("timeoutSet", .timeoutSet(taskID: 3)))
+        rows.append(("noSuchRole", .noSuchRole(taskID: 3, roleID: "swe")))
+        rows.append(("generationIsNotARole", .generationIsNotARole(roleID: "team_generation_1", verb: "accept")))
+        rows.append(("restartWouldDiscard", .restartWouldDiscard(taskID: 3, roleID: "swe", toolCalls: 4)))
+        rows.append(("restartWouldOrphanChild", .restartWouldOrphanChild(taskID: 3, roleID: "swe", childTaskID: 7)))
+        rows.append(("restarted", .restarted(taskID: 3, roleID: "swe")))
+        rows.append(("changesRequested", .changesRequested(taskID: 3, roleID: "swe")))
+        rows.append(("correctNeedsPause", .correctNeedsPause(taskID: 3)))
+        rows.append(("corrected", .corrected(taskID: 3, roleID: "swe")))
+        rows.append(("alreadyClosed", .alreadyClosed(taskID: 3)))
+        rows.append(("finishAdvisoryOnProducingRole", .finishAdvisoryOnProducingRole(taskID: 3, roleID: "swe")))
+        rows.append(("noActiveRun", .noActiveRun(taskID: 3)))
+        rows.append(("accepted", .accepted(taskID: 3, roleID: "swe")))
+        rows.append(("acceptFailed", .acceptFailed(roleID: "swe")))
+        rows.append(("acceptRejected", .acceptRejected(reason: "Role already completed", remedy: nil)))
+        rows.append(("acceptRejected/remedy", .acceptRejected(reason: "Role already completed", remedy: "call task_status")))
+        rows.append(("finishFailed", .finishFailed(taskID: 3, roleID: "swe")))
+        rows.append(("advisoryFinished", .advisoryFinished(taskID: 3, roleID: "swe")))
+        rows.append(("chatRoleFinished", .chatRoleFinished(taskID: 3, roleID: "swe", stillActive: ["Reviewer", "Writer"])))
+        rows.append(("chatRoleFinishedAndClosed", .chatRoleFinishedAndClosed(taskID: 3, roleID: "swe")))
+        rows.append(("chatRoleFinishedCloseFailed", .chatRoleFinishedCloseFailed(taskID: 3, roleID: "swe", reason: nil)))
+        rows.append(("chatRoleFinishedCloseFailed/reason", .chatRoleFinishedCloseFailed(taskID: 3, roleID: "swe", reason: "The disk is full.")))
+        rows.append(("noPendingGeneration", .noPendingGeneration(taskID: 3)))
+        rows.append(("noLongerLoaded", .noLongerLoaded(taskID: 3)))
+        rows.append(("generationRerun", .generationRerun(taskID: 3)))
+        rows.append(("generationInProgress", .generationInProgress(taskID: 3)))
+        rows.append(("generationFailedAgain", .generationFailedAgain(taskID: 3, reason: nil)))
+        rows.append(("generationFailedAgain/reason", .generationFailedAgain(taskID: 3, reason: "The model returned no team.")))
+        rows.append(("generationDidNotRestart", .generationDidNotRestart(taskID: 3)))
+        rows.append(("eventNotice", .eventNotice(items)))
+        return rows
+    }()
 
     // MARK: - One-shot system prompts
 
@@ -94,6 +213,9 @@ enum RuntimePromptRegistry {
         })
         rows.append(OneShotPrompt(file: "ComputerUseJudgeService.swift", label: "ComputerUseJudgeService.systemPrompt") {
             ComputerUseJudgeService.systemPrompt(policy: ComputerUsePolicy())
+        })
+        rows.append(OneShotPrompt(file: "MCPJudgeService.swift", label: "MCPJudgeService.systemPrompt") {
+            MCPJudgeService.systemPrompt(strictness: .standard)
         })
         rows.append(OneShotPrompt(file: "VisionAnalysisService.swift", label: "VisionAnalysisService.systemPrompt") {
             VisionAnalysisService.systemPrompt
@@ -114,8 +236,12 @@ enum RuntimePromptRegistry {
 
     static let entries: [Entry] = {
         var e: [Entry] = []
-        func add(_ name: String, _ render: @escaping @MainActor () -> String) {
-            e.append(Entry(name: name, render: render))
+        func add(
+            _ name: String,
+            audience: Audience = .localModel,
+            _ render: @escaping @MainActor () -> String
+        ) {
+            e.append(Entry(name: name, audience: audience, render: render))
         }
 
         for row in oneShotSystemPrompts { add(row.label, row.render) }
@@ -126,6 +252,45 @@ enum RuntimePromptRegistry {
         }
         // The native chip: the catalog rides the provider's `tools` field, so the body is
         // the one-tool rule and the injection boundary alone (2026-09-13).
+        // The MCP gate's two authored refusals. Neither rides a `ToolErrorCode` row above:
+        // `MCP_DENIED`'s row renders the POLICY's reason text, and these are the gate's own
+        // — the sentence a person's decline produces, and the one a run with nobody to ask
+        // produces. The `approval_unavailable` arm composes a policy reason into its
+        // sentence, so the sample carries a real one.
+        add("LLMExecutionService.gateMCPCalls/declined") {
+            let service = LLMExecutionService(repository: NTMSRepository())
+            return service.makeMCPDeniedResult(
+                call: StepToolCall(name: "mcp__design__get_metadata", argumentsJSON: "{}"),
+                reason: "The Supervisor declined this call.").outputJSON
+        }
+        add("LLMExecutionService.gateMCPCalls/approvalUnavailable") {
+            let service = LLMExecutionService(repository: NTMSRepository())
+            return service.makeApprovalUnavailableResult(
+                call: StepToolCall(name: "mcp__design__get_metadata", argumentsJSON: "{}"),
+                reason: LLMExecutionService.mcpNoApproverMessage(
+                    reason: MCPPermissionService.reasonForAsking(.writesStated))
+            ).outputJSON
+        }
+        // The policy's reasons that sentence composes in — step 1's, and every arm of the
+        // nearest-miss ladder. Until 2026-10-28 none was a row: the sample above spelled one
+        // arm out as a literal, so an edit to any reason moved nothing.
+        add("MCPPermissionService.manualModeReason") { MCPPermissionService.manualModeReason }
+        add("MCPPermissionService.crossServerTransferReason") {
+            MCPPermissionService.crossServerTransferReason(from: ["Folio Desktop"], to: "GitHub")
+        }
+        for reason in MCPPermissionService.AskReason.allCases {
+            add("MCPPermissionService.reasonForAsking/\(reason)") { MCPPermissionService.reasonForAsking(reason) }
+        }
+        // The two texts an MCP tool adds: the `(MCP server <slug>)` marker on its own line,
+        // and the second injection boundary — which renders ONLY when a call carries one, so
+        // a sample without it leaves both covered by no row at all.
+        add("NativeLMStudioClient.buildToolSchemaBody/mcpTool") {
+            NativeLMStudioClient.buildToolSchemaBody(tools: [sampleSchema, sampleMCPSchema])
+        }
+        add("NativeLMStudioClient.buildToolSchemaBody/mcpToolNative") {
+            NativeLMStudioClient.buildToolSchemaBody(
+                tools: [sampleSchema, sampleMCPSchema], mode: .native)
+        }
         add("NativeLMStudioClient.buildToolSchemaBody/native") {
             NativeLMStudioClient.buildToolSchemaBody(tools: [sampleSchema], mode: .native)
         }
@@ -377,6 +542,9 @@ enum RuntimePromptRegistry {
             ToolCallParsingHelpers.spilledArgumentsNote(
                 recoveredKeys: ["path", "old_text"])!
         }
+        add("ToolCallParsingHelpers.strandedArgumentsNote") {
+            ToolCallParsingHelpers.strandedArgumentsNote(keys: ["reasoning", "thought"], tool: ToolNames.readFile)!
+        }
         add("ToolCallParsingHelpers.transposedQuoteRepairNote") {
             ToolCallParsingHelpers.transposedQuoteRepairNote
         }
@@ -432,6 +600,81 @@ enum RuntimePromptRegistry {
         }
         add("ToolRuntimeError.argumentsNotObject") {
             ToolRuntimeError.argumentsNotObject.errorDescription ?? ""
+        }
+        add("ToolRuntimeError.duplicateArgumentKey") {
+            ToolRuntimeError.duplicateArgumentKey("command").errorDescription ?? ""
+        }
+
+        // The argument vocabulary (2026-11-09). The refusals and the rename sentence over
+        // sample inputs; every alias DETAIL and every IGNORE reason from the handlers' own
+        // tables, so a reworded reason moves this fingerprint like any other text.
+        add("ToolArgumentVocabulary.unknownArgumentsMessage/one") {
+            ToolArgumentVocabulary.unknownArgumentsMessage(
+                tool: ToolNames.search, keys: ["foo"], accepted: ["mode", "paths", "query"])
+        }
+        add("ToolArgumentVocabulary.unknownArgumentsMessage/many") {
+            ToolArgumentVocabulary.unknownArgumentsMessage(
+                tool: ToolNames.search, keys: ["bar", "foo"], accepted: ["mode", "paths", "query"])
+        }
+        add("ToolArgumentVocabulary.unknownArgumentsMessage/none") {
+            ToolArgumentVocabulary.unknownArgumentsMessage(tool: ToolNames.gitStatus, keys: ["path"], accepted: [])
+        }
+        add("ToolArgumentVocabulary.unknownArgumentsMessage/externalMCP", audience: .externalAgent) {
+            ToolArgumentVocabulary.unknownArgumentsMessage(
+                tool: ExternalAutovisorToolNames.messageTask, keys: ["priority"],
+                accepted: ["folder_id", "message", "role_id", "task_id"])
+        }
+        add("ToolArgumentVocabulary.twoSpellingsMessage/two") {
+            ToolArgumentVocabulary.twoSpellingsMessage(
+                tool: ToolNames.search, argument: "paths", spellings: ["path", "paths"])
+        }
+        add("ToolArgumentVocabulary.twoSpellingsMessage/three") {
+            ToolArgumentVocabulary.twoSpellingsMessage(
+                tool: ToolNames.bash, argument: "command", spellings: ["cmd", "command", "script"])
+        }
+        add("SupervisorFormPayload.strayQuestionsNote") { SupervisorFormPayload.strayQuestionsNote }
+        add("ToolArgumentVocabulary.notTextMessage") {
+            ToolArgumentVocabulary.notTextMessage(key: "working_directory", received: "array")
+        }
+        add("ToolArgumentVocabulary.readAsTextNote") { ToolArgumentVocabulary.readAsTextNote(key: "query") }
+        add("ToolArgumentVocabulary.renameNote/one") {
+            ToolArgumentVocabulary.renameNote(tool: ToolNames.readFile, renames: [("file_path", "path", nil)])
+        }
+        // One flat, once-sorted list of (tool, key, kind): the registry order is stable across
+        // launches, and nothing sorts inside a loop.
+        let vocabularyRows = ToolHandlerRegistry.allTypes
+            .flatMap { type in type.undeclaredArguments.map { (tool: type.name, key: $0.key, kind: $0.value) } }
+            .sorted { ($0.tool, $0.key) < ($1.tool, $1.key) }
+        for row in vocabularyRows {
+            switch row.kind {
+            case .alias(let argument, let detail?, _):
+                add("ToolArgumentVocabulary.renameNote/\(row.tool)/\(row.key)") {
+                    ToolArgumentVocabulary.renameNote(tool: row.tool, renames: [(row.key, argument, detail)])
+                }
+            case .ignored(let reason):
+                add("ToolArgumentVocabulary.ignoredNote/\(row.tool)/\(row.key)") {
+                    ToolArgumentVocabulary.ignoredNote(key: row.key, reason: reason)
+                }
+            case .alias, .readByHandler:
+                continue
+            }
+        }
+        // The type gate's sentences, model-facing since 2026-09-07 and unregistered until now.
+        add("argumentTypeViolations/each") {
+            argumentTypeViolations(
+                args: ["flag": "on", "count": "many", "paths": 5],
+                schema: JSONSchema.object(properties: [
+                    "flag": JSONSchema.boolean(), "count": JSONSchema.integer(),
+                    "paths": JSONSchema.array(items: JSONSchema.string()),
+                ])
+            ).joined(separator: " ") + " Fix the value, or omit the argument."
+        }
+        // `set_work_folder_context`'s empty-text refusal, read by the built-in manager and by an
+        // external agent alike — a shared text, so `.localModel` like the other shared replies.
+        // Shipped unregistered from 2026-09-07; registered 2026-11-13, when an external agent
+        // began to receive it too.
+        add("AutovisorToolDecoding.emptyContextDetail") {
+            AutovisorToolDecoding.emptyContextDetail
         }
 
         let loopDetections: [(String, LoopDetection)] = [
@@ -513,6 +756,41 @@ enum RuntimePromptRegistry {
                     call: StepToolCall(name: ToolNames.writeFile, argumentsJSON: "{}")),
                 allowedToolNames: sampleTools) ?? "(none)"
         }
+        // The two sentences the MCP result mapper writes. Everything else in a tool result
+        // from an external server is the SERVER's text, which no fingerprint of this app's
+        // code could or should cover.
+        add("MCPToolResultMapper.serverFailureMessage") {
+            MCPToolResultMapper.serverFailureMessage("the ticker was not recognised")
+        }
+        add("MCPToolResultMapper.serverFailureMessage/silent") {
+            MCPToolResultMapper.serverFailureMessage(nil)
+        }
+        add("MCPToolResultMapper.unknownBlockWarning") {
+            MCPToolResultMapper.unknownBlockWarning(kinds: ["video"])
+        }
+        add("MCPToolResultMapper.injectionWarning") {
+            MCPToolResultMapper.injectionWarning(signals: ["instruction_override"])
+        }
+        // The coercion's refusals of an MCP call whose header parameter has no header spelling,
+        // or whose argument violates a declared enum or numeric bound, each naming the property:
+        // the `INVALID_ARGS` message the model reads (`ToolErrorHandler`). Rows since 2026-10-28; no row for a
+        // value the 2026-07-28 revision says to SEND through its Base64 sentinel — a control
+        // character, a line or paragraph separator — and added the spec's own refusal of an
+        // integer outside the safe range.
+        let coercionFailures: [(String, MCPArgumentCoercion.Failure)] = [
+            ("headerValueNotAScalar", .headerValueNotAScalar(argument: "account")),
+            ("headerValueOutsideSafeIntegerRange", .headerValueOutsideSafeIntegerRange(argument: "account")),
+            ("valueOutsideEnum", .valueOutsideEnum(argument: "format", value: "bmp", allowed: ["png", "jpg"])),
+            ("valueOutOfRange", .valueOutOfRange(argument: "scale", value: "5", requirement: "between 1 and 4")),
+        ]
+        for (name, failure) in coercionFailures {
+            add("MCPArgumentCoercion.message/\(name)") { failure.message }
+        }
+        // The two refusals of a 2026-07-28 call whose result is not a finished answer
+        // (basic/index, "ResultType"): the message of its `MCP_TOOL_ERROR` / `MCP_SERVER_UNAVAILABLE`
+        // envelope (`ToolErrorHandler`).
+        add("MCPClientError.inputRequiredMessage") { MCPClientError.inputRequiredMessage }
+        add("MCPClientError.unknownResultTypeMessage/streaming") { MCPClientError.unknownResultTypeMessage("streaming") }
         add("ToolErrorNotePolicy.requiredArgumentsHint") {
             ToolErrorNotePolicy.requiredArgumentsHint(toolName: ToolNames.readFile, argumentsJSON: "{}")
         }
@@ -586,9 +864,384 @@ enum RuntimePromptRegistry {
             DelegatedSupervisorAnswerService.questionTurn(
                 targetTeamName: "Engineering", question: "Which scheme should I build?")
         }
+        add("LLMExecutionService.renderChildPausedEnvelope/runTimedOut") {
+            LLMExecutionService.renderChildPausedEnvelope(
+                childTID: 7,
+                targetTeamName: "Engineering Team",
+                reason: .runTimedOut(seconds: 600))
+        }
+        add("LLMExecutionService.renderChildPausedEnvelope/iterationLimitReached") {
+            LLMExecutionService.renderChildPausedEnvelope(
+                childTID: 7,
+                targetTeamName: "Engineering Team",
+                reason: .iterationLimitReached(limit: 50))
+        }
         add("JudgeReplyChannelPolicy.retryInstruction") { JudgeReplyChannelPolicy.retryInstruction }
         add("BashJudgeService.judgeUserPrompt") { BashJudgeService.judgeUserPrompt(command: "ls", workingDirectory: nil) }
+        // The computer-use judge's user turn, twice: a bare click renders the fence alone, and
+        // the screen-context lines — the stale note among them — render only with a context.
+        add("ComputerUseJudgeService.userPrompt") {
+            ComputerUseJudgeService.userPrompt(action: .click(x: 834, y: 250, button: "left", double: false, target: nil))
+        }
+        add("ComputerUseJudgeService.userPrompt/staleContext") {
+            ComputerUseJudgeService.userPrompt(
+                action: .click(x: 834, y: 250, button: "left", double: false, target: "Safari"),
+                context: ComputerUseJudgeContext(
+                    appName: "Safari", windowTitle: "Feed", elementUnderPoint: "AXButton “Post”",
+                    actionsSinceCapture: 2))
+        }
+        for strictness in [MCPJudgeStrictness.permissive, .strict] {
+            add("MCPJudgeService.systemPrompt/\(strictness.rawValue)") {
+                MCPJudgeService.systemPrompt(strictness: strictness)
+            }
+        }
+        add("MCPJudgeService.userPrompt") {
+            MCPJudgeService.userPrompt(call: MCPJudgeCall(
+                serverDisplayName: "Folio Desktop",
+                toolName: "mcp__folio__place_order",
+                toolTitle: "Place order",
+                toolDescription: "Places an order on the desk.",
+                outgoing: MCPDynamicTool.OutgoingCall(
+                    arguments: .object(["id": .string("1")]),
+                    headerParameters: [:]),
+                annotations: MCPToolAnnotations(
+                    raw: .object(["readOnlyHint": .bool(false), "destructiveHint": .bool(true)])),
+                priorServerNames: []))
+        }
+        add("MCPJudgeService.deniedEnvelopeMessage") {
+            MCPJudgeService.deniedEnvelopeMessage(reason: "Deletes records.")
+        }
+        // What a judge's deny envelope carries when the RUNTIME wrote the reason: a transport
+        // failure, an unparseable reply, an allow that stayed in the reasoning channel.
+        add("JudgeFailClosedReason.bashNoVerdict") { JudgeFailClosedReason.bashNoVerdict }
+        add("JudgeFailClosedReason.bashNotSingleObject") { JudgeFailClosedReason.bashNotSingleObject }
+        add("JudgeFailClosedReason.bashConflicting") { JudgeFailClosedReason.bashConflicting }
+        add("JudgeFailClosedReason.bashMalformed") { JudgeFailClosedReason.bashMalformed }
+        add("JudgeFailClosedReason.actionNoVerdict") { JudgeFailClosedReason.actionNoVerdict }
+        add("JudgeFailClosedReason.actionUnparseable") { JudgeFailClosedReason.actionUnparseable }
+        add("JudgeFailClosedReason.mcpNoVerdict") { JudgeFailClosedReason.mcpNoVerdict }
+        add("JudgeFailClosedReason.mcpUnparseable") { JudgeFailClosedReason.mcpUnparseable }
+        add("JudgeFailClosedReason.mcpPromptTooLarge") { JudgeFailClosedReason.mcpPromptTooLarge }
+        for subject in JudgeFailClosedReason.Subject.allCases {
+            add("JudgeFailClosedReason.callFailed/\(subject.rawValue)") {
+                JudgeFailClosedReason.callFailed(subject: subject, message: "The request timed out.")
+            }
+        }
+        add("JudgeReplyChannelPolicy.reasoningOnlyAllowReason") { JudgeReplyChannelPolicy.reasoningOnlyAllowReason }
+        // A DENY the model gave without a `reason` still reaches the envelope — as each judge's
+        // own default sentence, rendered through the parser that substitutes it.
+        add("BashJudgeService.parse/denyWithoutReason") { BashJudgeService.parse(#"{"decision":"DENY"}"#).reason }
+        add("ComputerUseJudgeService.parse/denyWithoutReason") {
+            ComputerUseJudgeService.parse(#"{"decision":"DENY"}"#).reason
+        }
+        add("MCPJudgeService.parse/denyWithoutReason") {
+            MCPJudgeService.parse(#"{"decision":"DENY"}"#).reason
+        }
         add("BashExplainService.explainUserPrompt") { BashExplainService.explainUserPrompt(command: "ls", workingDirectory: nil) }
+
+        // A deferred tool call that does not finish: the dispatcher's answer for a call its
+        // stopped step never reached, the change-request vote a stopped step interrupted, and a
+        // deferred action's when the folder changed under it.
+        add("DeferredCallReplies.notRun") { DeferredCallReplies.notRun }
+        add("DeferredCallReplies.voteInterrupted") { DeferredCallReplies.voteInterrupted }
+        add("DeferredCallReplies.folderChanged") { DeferredCallReplies.folderChanged }
+        // The Autovisor's manager: the reply to each of its actions and the mid-review event
+        // notice, one row per case of the builder.
+        for (name, reply) in autovisorReplySamples {
+            add("AutovisorReply.text/\(name)", audience: reply.audience) { reply.text }
+        }
+        // The Autovisor's read-tool envelopes (`list_tasks`, `task_status`) and their fallback
+        // error messages / close-hint reason — every string `LLMExecutionService+Autovisor`
+        // returns to the manager's tool-result channel.
+        let sampleClock = Date(timeIntervalSince1970: 1_700_000_000)
+        add("LLMExecutionService.autovisorUnavailableMessage") {
+            LLMExecutionService.autovisorUnavailableMessage
+        }
+        add("LLMExecutionService.taskStatusNotFoundMessage") {
+            LLMExecutionService.taskStatusNotFoundMessage(taskID: 9)
+        }
+        add("LLMExecutionService.reviewReadyCloseReason") {
+            LLMExecutionService.reviewReadyCloseReason
+        }
+        add("LLMExecutionService.renderListTasksEnvelope") {
+            let summaries = [
+                TaskSummary(
+                    id: 3, title: "Fix login", status: .running,
+                    updatedAt: sampleClock.addingTimeInterval(-45),
+                    isChatMode: false, hasPendingSupervisorInput: true,
+                    pendingSupervisorQuestionCount: 1, hasRolesAwaitingAcceptance: true),
+            ]
+            return LLMExecutionService.renderListTasksEnvelope(tasks: summaries, now: sampleClock)
+        }
+        let sampleTeam: Team = {
+            var team = Team(name: "Engineering")
+            team.roles = [sampleRole]
+            return team
+        }()
+        add("LLMExecutionService.renderTaskStatusEnvelope/running") {
+            let step = StepExecution(
+                id: "swe", role: .softwareEngineer, title: "Software Engineer",
+                status: .running,
+                createdAt: sampleClock.addingTimeInterval(-180),
+                updatedAt: sampleClock.addingTimeInterval(-120),
+                artifacts: [
+                    Artifact(
+                        name: "Engineering Notes",
+                        createdAt: sampleClock, updatedAt: sampleClock,
+                        relativePath: "tasks/3/roles/swe/Engineering_Notes.md"),
+                ],
+                toolCalls: [
+                    StepToolCall(
+                        name: ToolNames.readFile,
+                        argumentsJSON: #"{"path":"README.md"}"#),
+                ])
+            let waitingStep = StepExecution(
+                id: "tl", role: .techLead, title: "Tech Lead",
+                status: .needsSupervisorInput,
+                createdAt: sampleClock.addingTimeInterval(-180),
+                updatedAt: sampleClock.addingTimeInterval(-120),
+                needsSupervisorInput: true,
+                supervisorQuestion: "Which scheme should I build?")
+            let run = Run(
+                id: 0,
+                createdAt: sampleClock.addingTimeInterval(-180),
+                updatedAt: sampleClock.addingTimeInterval(-120),
+                steps: [step, waitingStep],
+                roleStatuses: ["swe": .needsAcceptance])
+            let task = NTMSTask(
+                id: 3, title: "Fix login", supervisorTask: "Investigate login timeout.",
+                status: .running,
+                createdAt: sampleClock.addingTimeInterval(-180),
+                updatedAt: sampleClock.addingTimeInterval(-120),
+                runs: [run],
+                runTimeoutSeconds: 600)
+            return LLMExecutionService.renderTaskStatusEnvelope(
+                task: task, team: sampleTeam, now: sampleClock,
+                lastError: "Connection timed out.")
+        }
+        add("LLMExecutionService.renderTaskStatusEnvelope/reviewReadyToClose") {
+            let step = StepExecution(
+                id: "swe", role: .softwareEngineer, title: "Software Engineer",
+                status: .done,
+                createdAt: sampleClock.addingTimeInterval(-180),
+                updatedAt: sampleClock.addingTimeInterval(-30),
+                completedAt: sampleClock.addingTimeInterval(-30))
+            let run = Run(
+                id: 0,
+                createdAt: sampleClock.addingTimeInterval(-180),
+                updatedAt: sampleClock.addingTimeInterval(-30),
+                steps: [step],
+                roleStatuses: ["swe": .done])
+            let task = NTMSTask(
+                id: 3, title: "Fix login", supervisorTask: "Investigate login timeout.",
+                status: .needsSupervisorAcceptance,
+                createdAt: sampleClock.addingTimeInterval(-180),
+                updatedAt: sampleClock.addingTimeInterval(-30),
+                runs: [run])
+            return LLMExecutionService.renderTaskStatusEnvelope(
+                task: task, team: sampleTeam, now: sampleClock)
+        }
+        // `create_managed_task`'s team refusal, per failing resolution — and the remedy's three
+        // arms between them: several options, one option, and none left.
+        let engineering = Team(name: "Engineering")
+        let refusals: [(String, AutovisorTeamPolicy, AutovisorTeamPolicy.ManagedTeamResolution, [Team], Bool)] = [
+            ("generationDisabled", AutovisorTeamPolicy(allowGeneration: false), .generationDisabled, [engineering], true),
+            ("teamBlocked", .unrestricted, .teamBlocked("Engineering"), [engineering], true),
+            ("activeTeamBlocked", .unrestricted, .activeTeamBlocked("Engineering"), [engineering], false),
+            ("activeTeamIsChat", AutovisorTeamPolicy(allowGeneration: false), .activeTeamIsChat("Coding Assistant"), [engineering], false),
+            ("activeTeamNotUsable", .unrestricted, .activeTeamNotUsable, [engineering], false),
+            ("unknown", AutovisorTeamPolicy(allowGeneration: false), .unknown("no-such-team"), [], false),
+        ]
+        for (name, policy, resolution, teams, omitPathIsViable) in refusals {
+            add("AutovisorTeamPolicy.failureMessage/\(name)") {
+                Self.orNone(policy.failureMessage(for: resolution, allTeams: teams, omitPathIsViable: omitPathIsViable))
+            }
+            add("AutovisorTeamPolicy.failureMessage/externalMCP/\(name)", audience: .externalAgent) {
+                Self.orNone(policy.failureMessage(
+                    for: resolution, allTeams: teams, omitPathIsViable: omitPathIsViable, surface: .externalMCP
+                ))
+            }
+        }
+        // `manage_role accept` refused: the fact, per status and for a role with no status
+        // entry, and the way out — the remedy's prose and the reason its `next` hint carries
+        // (`AutovisorReply.acceptRejected` joins the first two). `(none)` where a status is no
+        // refusal: the absence is versioned too.
+        add("AcceptanceService.validateAcceptance/unknownRole") {
+            Self.orNone(AcceptanceService.validateAcceptance(roleID: "swe", roleStatuses: [:]))
+        }
+        for status in RoleExecutionStatus.allCases {
+            add("AcceptanceService.validateAcceptance/\(status.rawValue)") {
+                Self.orNone(AcceptanceService.validateAcceptance(roleID: "swe", roleStatuses: ["swe": status]))
+            }
+        }
+        var adviceCases: [(String, RoleExecutionStatus?, Bool, Bool)] = [("noStatus", nil, false, false)]
+        for status in RoleExecutionStatus.allCases { adviceCases.append((status.rawValue, status, false, false)) }
+        adviceCases.append(("done/readyToClose", .done, false, true))
+        adviceCases.append(("done/chat", .done, true, false))
+        for (name, status, isChat, readyToClose) in adviceCases {
+            add("AutovisorStatus.acceptRejectionAdvice/\(name)") {
+                guard let advice = AutovisorStatus.acceptRejectionAdvice(
+                    roleStatus: status, isChatModeTask: isChat, taskReadyToClose: readyToClose,
+                    taskID: 3, roleID: "swe")
+                else { return "(none)" }
+                return advice.prose + "\n" + (advice.next.reason ?? "")
+            }
+        }
+        for state in ExternalAutovisorReadiness.State.allCases {
+            add("ExternalAutovisorReadiness.reason/\(state.rawValue)", audience: .externalAgent) {
+                Self.orNone(ExternalAutovisorReadiness.reason(for: state))
+            }
+            add("ExternalAutovisorReadiness.whatThePersonMustDo/\(state.rawValue)", audience: .externalAgent) {
+                Self.orNone(ExternalAutovisorReadiness.whatThePersonMustDo(for: state))
+            }
+        }
+        add("LLMRetryNotice.text", audience: .externalAgent) {
+            LLMRetryNotice.text(
+                attempt: 2, maxRetries: 3, errorDescription: "Could not connect to the server.", delaySeconds: 10)
+        }
+        add("NTMSOrchestrator.timeoutNotPastElapsedMessage", audience: .externalAgent) {
+            NTMSOrchestrator.timeoutNotPastElapsedMessage(elapsedSeconds: 7_200)
+        }
+        add("NTMSOrchestrator.foreignTaskRefusalMessage", audience: .externalAgent) {
+            NTMSOrchestrator.foreignTaskRefusalMessage(taskID: 3)
+        }
+        // `set_work_folder_context`'s refusals of an external agent (2026-11-13): the person's
+        // switch, the characters that change how text displays, a stamp that is none.
+        add("NTMSOrchestrator.contextReplacementNotAllowedMessage", audience: .externalAgent) {
+            NTMSOrchestrator.contextReplacementNotAllowedMessage
+        }
+        add("NTMSOrchestrator.contextReplacementNotAllowedRemedy", audience: .externalAgent) {
+            NTMSOrchestrator.contextReplacementNotAllowedRemedy
+        }
+        add("NTMSOrchestrator.contextHiddenCharactersDetail", audience: .externalAgent) {
+            NTMSOrchestrator.contextHiddenCharactersDetail(count: 2, first: "\u{202E}", position: 41)
+        }
+        add("NTMSOrchestrator.contextRevisionNotARevisionDetail", audience: .externalAgent) {
+            NTMSOrchestrator.contextRevisionNotARevisionDetail
+        }
+        add("NTMSOrchestrator.alreadyCreatedIdempotentMessage", audience: .externalAgent) {
+            NTMSOrchestrator.alreadyCreatedIdempotentMessage(taskID: 3, requestKey: "req-1")
+        }
+        add("NTMSOrchestrator.createdBeforeFolderChangedMessage", audience: .externalAgent) {
+            NTMSOrchestrator.createdBeforeFolderChangedMessage(taskID: 3)
+        }
+        add("NTMSOrchestrator.requestInProgressMessage", audience: .externalAgent) {
+            NTMSOrchestrator.requestInProgressMessage(requestKey: "req-1")
+        }
+        add("NTMSOrchestrator.changedFilesBashNote", audience: .externalAgent) {
+            NTMSOrchestrator.changedFilesBashNote
+        }
+        add("HostedMCPStdioRelay.serverNotAnsweringMessage", audience: .externalAgent) {
+            HostedMCPStdioRelay.serverNotAnsweringMessage(port: 47321)
+        }
+        add("HostedMCPInstructions.text", audience: .externalAgent) {
+            HostedMCPInstructions.text
+        }
+        for toolName in HostedMCPCatalog.toolNames {
+            add("HostedMCPCatalog.toolDescription/\(toolName)", audience: .externalAgent) {
+                HostedMCPCatalog.toolDescription(for: toolName)
+            }
+        }
+        // The input schemas the agent reads beside each description. Unregistered until
+        // 2026-11-07, so a property's wording could change without moving `agentTextVersion`.
+        for toolName in HostedMCPCatalog.toolNames {
+            add("HostedMCPCatalog.inputSchemaText/\(toolName)", audience: .externalAgent) {
+                HostedMCPCatalog.inputSchemaText(for: toolName)
+            }
+        }
+        // A refused `folder_id`, per case: the message and the call it points at. Until
+        // 2026-11-08 a stale id and a call with no folder open borrowed the race reply.
+        for refusal in ExternalFolderRefusal.allCases {
+            add("ExternalFolderRefusal.message/\(refusal)", audience: .externalAgent) {
+                refusal.message
+            }
+            add("ExternalFolderRefusal.next/\(refusal)", audience: .externalAgent) {
+                [refusal.next.suggested_cmd, refusal.next.reason].compactMap { $0 }.joined(separator: "\n")
+            }
+        }
+        add("AutovisorReply.createdScheduled/withDate", audience: .externalAgent) {
+            AutovisorReply.createdScheduled(for: 1, title: "Task", runAt: Date(timeIntervalSince1970: 1700000000))
+        }
+        add("AutovisorReply.createdScheduled/withoutDate", audience: .externalAgent) {
+            AutovisorReply.createdScheduled(for: 1, title: "Task", runAt: nil)
+        }
+        add("ExternalAutovisorOperations.llmUnreachableWarning", audience: .externalAgent) {
+            ExternalAutovisorOperations.llmUnreachableWarning
+        }
+        for reason in [ApprovalGatedAvailability.Reason.switchedOff, .noApprover] {
+            let key = reason == .switchedOff ? "switched_off" : "no_approver"
+            add("ExternalAutovisorApprovals.bashWhatThePersonMustDo/\(key)", audience: .externalAgent) {
+                ExternalAutovisorApprovals.bashWhatThePersonMustDo(for: reason)
+            }
+            add("ExternalAutovisorApprovals.computerUseWhatThePersonMustDo/\(key)", audience: .externalAgent) {
+                ExternalAutovisorApprovals.computerUseWhatThePersonMustDo(for: reason)
+            }
+        }
+        add("ExternalAutovisorOperations.continuationPausesAtOnceWarning", audience: .externalAgent) {
+            ExternalAutovisorOperations.continuationPausesAtOnceWarning
+        }
+        // The refusals production writes, rendered through the builders it calls (F6 T3: hand-
+        // written copies until 2026-11-12).
+        for sample in ControlVerb.TimeoutRefusal.registrySamples {
+            add("ControlVerb.refusalMessage/\(sample.name)", audience: .externalAgent) {
+                ControlVerb.refusalMessage(sample.refusal)
+            }
+        }
+        add("TaskChangesRefusal.invalidFilePath", audience: .externalAgent) {
+            TaskChangesRefusal.invalidFilePath("foo/../bar")
+        }
+        add("TaskChangesRefusal.invalidPage", audience: .externalAgent) { TaskChangesRefusal.invalidPage }
+        add("TaskChangesRefusal.invalidPageSize", audience: .externalAgent) { TaskChangesRefusal.invalidPageSize }
+        add("TaskChangesRefusal.invalidRoundArgument", audience: .externalAgent) {
+            TaskChangesRefusal.invalidRoundArgument
+        }
+        add("TaskChangesRefusal.invalidPageArgument", audience: .externalAgent) {
+            TaskChangesRefusal.invalidPageArgument
+        }
+        add("TaskChangesRefusal.protectedWorkFolder", audience: .externalAgent) {
+            TaskChangesRefusal.protectedWorkFolder("/System")
+        }
+        add("TaskChangesRefusal.snapshotsUnavailable", audience: .externalAgent) {
+            TaskChangesRefusal.snapshotsUnavailable(taskID: 1)
+        }
+        add("TaskChangesRefusal.roundDoesNotExist", audience: .externalAgent) {
+            TaskChangesRefusal.roundDoesNotExist(round: 99, taskID: 1)
+        }
+        // The call every refusal names next, and why (F6 L1/T4: about thirty inline reasons until
+        // 2026-11-12, none of them in the fingerprint).
+        for call in ExternalNextCall.allCases {
+            add("ExternalNextCall.reason/\(call.rawValue)", audience: .externalAgent) {
+                (call.command ?? "(the refused tool)") + "\n" + call.reason
+            }
+        }
+        add("TaskChangesWarnings.hiddenCharactersInName", audience: .externalAgent) {
+            TaskChangesWarnings.hiddenCharactersInName("src/a<U+202E>b.swift")
+        }
+        add("TaskChangesWarnings.hiddenCharactersInDiff", audience: .externalAgent) {
+            TaskChangesWarnings.hiddenCharactersInDiff("src/a.swift")
+        }
+        add("TaskChangesWarnings.notUTF8", audience: .externalAgent) {
+            TaskChangesWarnings.notUTF8("legacy.txt")
+        }
+        add("TaskChangesWarnings.storeRestored", audience: .externalAgent) {
+            TaskChangesWarnings.storeRestored(["config", "hooks"])
+        }
+        add("TaskChangesWarnings.lateStartSnapshot", audience: .externalAgent) {
+            TaskChangesWarnings.lateStartSnapshot(round: 2)
+        }
+        add("TaskChangesWarnings.endSnapshotMissing/timedOut", audience: .externalAgent) {
+            TaskChangesWarnings.endSnapshotMissing(round: 2, reason: .timedOut)
+        }
+        add("TaskChangesWarnings.endSnapshotMissing/failed", audience: .externalAgent) {
+            TaskChangesWarnings.endSnapshotMissing(round: 2, reason: .failed)
+        }
+        add("TaskChangesWarnings.endSnapshotMissing/completedLate", audience: .externalAgent) {
+            TaskChangesWarnings.endSnapshotMissing(round: 2, reason: .completedLate)
+        }
         return e
     }()
+
+    nonisolated private static func orNone(_ value: String?) -> String {
+        value ?? "(none)"
+    }
 }

@@ -10,11 +10,11 @@ import SwiftUI
 /// answering surface is never duplicated.
 ///
 /// Two distinct flags: `wasAutoAnswered` (from `StepExecution.supervisorAnswerWasAuto`)
-/// decides how a RESOLVED answer is attributed — "Auto-answered" badge vs the
-/// human checkmark. `isAutoAnswering` (team is autonomous) only drives the
-/// in-progress loader for an unresolved question. Keying the resolved badge on
-/// the team mode mislabeled human answers in autonomous teams (e.g. a reply to
-/// the Autovisor's idle park).
+/// and `answerAuthor` decide how a RESOLVED answer is attributed — the byline over it
+/// (`answerAttribution`), absent for the person's own answer. `isAutoAnswering` (team is
+/// autonomous) only drives the in-progress loader for an unresolved question. Keying the
+/// resolved byline on the team mode mislabeled human answers in autonomous teams (e.g. a
+/// reply to the Autovisor's idle park).
 struct SupervisorInputCard: View {
     let question: String
     let answer: String?
@@ -31,6 +31,7 @@ struct SupervisorInputCard: View {
     let roleName: String
     let isAutoAnswering: Bool
     var wasAutoAnswered: Bool = false
+    var answerAuthor: String? = nil
 
     @Environment(\.openWindow) private var openWindow
 
@@ -52,18 +53,25 @@ struct SupervisorInputCard: View {
                 // Asked as a form, so it is shown as one whether or not it was answered: a
                 // questionnaire left open on a closed run used to render as its headline and
                 // nothing else, which reads as a question with no content.
-                if isResolved, wasAutoAnswered { autoAnsweredLabel }
+                if isResolved, let attribution = answerAttribution { attributionLine(attribution) }
                 SupervisorInquiryTranscript(
                     inquiry: inquiry.inquiry,
                     answer: inquiry.answer ?? SupervisorInquiryAnswer(),
                     note: inquiry.answer?.note)
-            } else if isResolved, let answer {
-                if wasAutoAnswered {
-                    autoAnsweredResult(answer: answer)
-                } else if !answer.isEmpty {
+            } else if isResolved, let answer, !answer.isEmpty {
+                // One shape for every answer — `✓ text` — with a line above it saying who
+                // answered when it was not the person. Three shapes (the person's bare `✓`, an
+                // agent's `✓ ANSWERED BY …` badge, the auto-answer's `▸ AUTO-ANSWERED` badge)
+                // made the same event look like three (design review 2026-11-07).
+                VStack(alignment: .leading, spacing: Spacing.xs) {
+                    if let attribution = answerAttribution { attributionLine(attribution) }
                     HStack(alignment: .firstTextBaseline, spacing: Spacing.xs) {
                         StatusGlyph(glyph: TerminalGlyph.done, color: Colors.success)
-                        Text(answer).font(Typography.termBase).foregroundStyle(Colors.textSecondary)
+                        Text(answer)
+                            .font(Typography.termBase)
+                            .foregroundStyle(Colors.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
                     }
                 }
             }
@@ -105,27 +113,23 @@ struct SupervisorInputCard: View {
         )
     }
 
-    /// The "Auto-answered" attribution, on its own so the questionnaire transcript can wear it
-    /// without the prose body underneath that `autoAnsweredResult` pairs it with.
-    /// The design system's badge, not a hand-built SF-symbol row: this label stands directly
-    /// above the questionnaire transcript's own rows, and two attributions about the same
-    /// answer were drawn in two different chromes. (Until 2026-09-12 the rows it sat above
-    /// carried ASSUMED tags of their own, which is what made the clash visible.)
-    private var autoAnsweredLabel: some View {
-        TerminalStatusBadge(
-            glyph: TerminalGlyph.working, label: "auto-answered",
-            color: Colors.info, bordered: false)
+    /// Who answered, when it was not the person: the agent by its label, the team's auto-answer
+    /// as `auto` — the word the header's agent mark (`MessageBubbleHeader`) shows for an
+    /// unsigned automated turn. A plain word, not the mark: the mark stands beside a speaker's
+    /// name, and this byline is a sentence with no name beside it.
+    /// `nil` for the person's own answer, which needs no byline.
+    var answerAttribution: String? {
+        if let author = answerAuthor?.trimmingCharacters(in: .whitespacesAndNewlines), !author.isEmpty {
+            return "answered by \(author)"
+        }
+        return wasAutoAnswered ? "answered by \(LLMMessage.automatedSupervisorLabel)" : nil
     }
 
-    private func autoAnsweredResult(answer: String) -> some View {
-        VStack(alignment: .leading, spacing: Spacing.xs) {
-            autoAnsweredLabel
-            Text(answer)
-                .font(Typography.termBase)
-                .foregroundStyle(Colors.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
-        }
+    /// A caption, not a badge: a byline is not a status.
+    private func attributionLine(_ text: String) -> some View {
+        Text(text)
+            .font(Typography.caption)
+            .foregroundStyle(Colors.textTertiary)
     }
 
     // MARK: - Thinking row

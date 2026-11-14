@@ -13,6 +13,7 @@ struct SupervisorTaskItemView: View {
     /// `ActivityFeedRoleAvatar` "person" fallback. `nil` (roster lookup
     /// missed) keeps the fallback.
     let roleDefinition: TeamRoleDefinition?
+    var authorLabel: String? = nil
     var onAvatarTap: (() -> Void)? = nil
 
     private var hasAttachments: Bool {
@@ -30,16 +31,16 @@ struct SupervisorTaskItemView: View {
             ActivityFeedRoleAvatar(role: .supervisor, roleDefinition: roleDefinition, onTap: onAvatarTap)
 
             VStack(alignment: .leading, spacing: Spacing.xs) {
-                HStack(spacing: Spacing.s) {
-                    PromptMarker()
-                    Text(roleDefinition?.name ?? Role.supervisor.displayName)
-                        .font(Typography.captionSemibold)
-                        .foregroundStyle(roleDefinition?.resolvedTintColor ?? Role.supervisor.tintColor)
-                    Spacer()
-                    Text(createdAt.formatted(date: .omitted, time: .shortened))
-                        .font(Typography.term2xs)
-                        .foregroundStyle(Colors.textTertiary)
-                }
+                // The same header a Supervisor message bubble wears, so the task card and the
+                // turns after it name their author one way (the agent mark).
+                MessageBubbleHeader(
+                    roleName: roleDefinition?.name ?? Role.supervisor.displayName,
+                    tintColor: roleDefinition?.resolvedTintColor ?? Role.supervisor.tintColor,
+                    authorLabel: authorLabel,
+                    timestamp: createdAt,
+                    isStreaming: false,
+                    showsPromptMarker: true
+                )
 
                 if !trimmedTask.isEmpty {
                     // NSTextView-backed body for stable height + bounded layout
@@ -86,6 +87,7 @@ extension SupervisorTaskItemView: Equatable {
             && lhs.attachmentPaths == rhs.attachmentPaths
             && lhs.workFolderURL == rhs.workFolderURL
             && lhs.roleDefinition?.renderIdentity == rhs.roleDefinition?.renderIdentity
+            && lhs.authorLabel == rhs.authorLabel
     }
 }
 
@@ -97,6 +99,21 @@ extension SupervisorTaskItemView: Equatable {
         attachmentPaths: [],
         workFolderURL: nil,
         roleDefinition: nil
+    )
+    .padding()
+    .frame(width: 500)
+    .background(Colors.surfacePrimary)
+}
+
+#Preview("Created by an external agent") {
+    SupervisorTaskItemView(
+        createdAt: Date(),
+        supervisorTask: "Write linecount.py: count non-blank lines of the file given as the first argument.",
+        clippedTexts: [],
+        attachmentPaths: [],
+        workFolderURL: nil,
+        roleDefinition: nil,
+        authorLabel: "Claude Code live"
     )
     .padding()
     .frame(width: 500)

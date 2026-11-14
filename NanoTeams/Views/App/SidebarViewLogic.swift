@@ -78,7 +78,8 @@ enum SidebarViewLogic {
                 // `seenSupervisorInputTaskIDs` — "seen" is about the dot, which asks whether
                 // the user has looked; a count of what is still owed stays true after they have.
                 waitingQuestionCount:
-                SupervisorAnswerFocus.waitingBadgeCount(task.pendingSupervisorQuestionCount)
+                SupervisorAnswerFocus.waitingBadgeCount(task.pendingSupervisorQuestionCount),
+                origin: task.origin
             )
         }
     }

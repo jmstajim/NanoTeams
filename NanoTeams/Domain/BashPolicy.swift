@@ -139,6 +139,35 @@ nonisolated enum BashPermissionDecision: Hashable {
 /// the Keychain (see `SecureTokenStorage`); the judge resolves it at request
 /// time. No new leak vector here.
 nonisolated struct BashPolicy: Codable, Hashable, Sendable {
+
+    /// The sandbox half of the policy — whether `bash` confines a command, where it may write,
+    /// whether a wrapper failure may run it unconfined. Read PER TOOL BATCH
+    /// (`ToolExecutionContext.bashSandbox`), never baked into the handler at step entry: a step
+    /// in chat mode lasts until its task closes, and until 2026-11-08 a sandbox switched on
+    /// mid-step confined nothing that step ran afterwards. The default is the fresh-install
+    /// policy: confined, no unconfined fallback.
+    nonisolated struct Sandbox: Hashable, Sendable {
+        var enabled: Bool
+        var permissions: BashSandboxPermissions
+        var allowUnsandboxedFallback: Bool
+
+        init(
+            enabled: Bool = BashConstants.defaultSandboxEnabled,
+            permissions: BashSandboxPermissions = BashSandboxPermissions(),
+            allowUnsandboxedFallback: Bool = false
+        ) {
+            self.enabled = enabled
+            self.permissions = permissions
+            self.allowUnsandboxedFallback = allowUnsandboxedFallback
+        }
+    }
+
+    /// The sandbox settings as a batch reads them.
+    var sandbox: Sandbox {
+        Sandbox(enabled: sandboxEnabled, permissions: sandboxPermissions,
+                allowUnsandboxedFallback: allowUnsandboxedFallback)
+    }
+
     var mode: BashExecutionMode
     var restrictionLevel: BashRestrictionLevel
     /// Patterns that force `.allow` (highest-priority short-circuit AFTER deny).
@@ -230,3 +259,59 @@ nonisolated struct BashPolicy: Codable, Hashable, Sendable {
         return narrowed
     }
 }
+
+/// Pure domain warning surfaced on the External Agents settings tab, the Autovisor driver card,
+/// and Bash settings when the Seatbelt sandbox is disabled or unsandboxed fallback is enabled (§10.2 A8).
+nonisolated enum BashSecurityWarning: Hashable, Sendable {
+    case sandboxDisabled(externalAgentActive: Bool)
+    case unsandboxedFallbackEnabled(externalAgentActive: Bool)
+
+    /// Drawn under the warning's title (External Agents, Autovisor), so it does not open by
+    /// restating it: the consequence, in the reader's terms.
+    var message: String {
+        switch self {
+        case .sandboxDisabled(let externalAgentActive):
+            if externalAgentActive {
+                return "Role shell scripts run unconfined: they can reach the port external agents connect to and read agent configuration files."
+            }
+            return "Role shell scripts run unconfined: they can reach local ports, the one external agents connect to among them, and read credential files."
+        case .unsandboxedFallbackEnabled(let externalAgentActive):
+            if externalAgentActive {
+                return "If the sandbox fails to start, role shell scripts run unconfined and can reach the port external agents connect to."
+            }
+            return "If the sandbox fails to start, role shell scripts run unconfined and can reach local ports, the one external agents connect to among them."
+        }
+    }
+
+    static func evaluate(
+        policy: BashPolicy,
+        driver: AutovisorDriver = .builtInModel,
+        externalAgentsEnabled: Bool = false
+    ) -> [BashSecurityWarning] {
+        guard policy.mode != .off else { return [] }
+        let externalAgentActive = driver == .externalAgent || externalAgentsEnabled
+        var warnings: [BashSecurityWarning] = []
+        if !policy.sandboxEnabled {
+            warnings.append(.sandboxDisabled(externalAgentActive: externalAgentActive))
+        }
+        if policy.allowUnsandboxedFallback {
+            warnings.append(.unsandboxedFallbackEnabled(externalAgentActive: externalAgentActive))
+        }
+        return warnings
+    }
+
+    static func warningMessage(
+        policy: BashPolicy,
+        driver: AutovisorDriver = .builtInModel,
+        externalAgentsEnabled: Bool = false
+    ) -> String? {
+        let warnings = evaluate(
+            policy: policy,
+            driver: driver,
+            externalAgentsEnabled: externalAgentsEnabled
+        )
+        guard !warnings.isEmpty else { return nil }
+        return warnings.map(\.message).joined(separator: " ")
+    }
+}
+

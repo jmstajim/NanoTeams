@@ -57,6 +57,7 @@ nonisolated enum EffectiveToolset {
         isVisionConfigured: Bool,
         approval: ToolApprovalAvailability,
         autovisorTeamPolicy: AutovisorTeamPolicy,
+        mcpTools: MCPResolvedTools = .empty,
         fileManager: FileManager = .default
     ) -> [ToolSchema] {
         let stage1 = LLMExecutionService.resolveToolSchemas(
@@ -66,7 +67,8 @@ nonisolated enum EffectiveToolset {
             selectedScheme: selectedScheme,
             isVisionConfigured: isVisionConfigured,
             approval: approval,
-            autovisorTeamPolicy: autovisorTeamPolicy
+            autovisorTeamPolicy: autovisorTeamPolicy,
+            mcpTools: mcpTools
         )
         return applyStorageFilters(stage1, storage: storage, fileManager: fileManager)
     }
@@ -75,6 +77,11 @@ nonisolated enum EffectiveToolset {
     /// — the runtime goes through the *instance* `toolSchemas(…)` shim because
     /// that one also reports orphan meeting coordinators, a side effect the pure
     /// static deliberately doesn't carry.
+    ///
+    /// MCP tools pass both filters untouched, and by construction rather than by exemption:
+    /// each filter removes NAMES from a registry set, and no `mcp__…` name is in one. That is
+    /// the right answer too — an external server is not the work folder's git repository and
+    /// does not become unavailable because the folder has none.
     static func applyStorageFilters(
         _ tools: [ToolSchema],
         storage: Storage,

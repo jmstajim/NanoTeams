@@ -69,6 +69,24 @@ nonisolated enum KeychainQuery {
     static func delete(service: String, account: String) -> [String: Any] {
         identity(service: service, account: account)
     }
+
+    /// Listing query: every item of `service` — class, service and the no-sync scope of
+    /// `identity`, no account — returning each one's ATTRIBUTES, never its bytes. What a caller
+    /// that needs the accounts' names reads — a re-point, a removal, the MCP launch sweep — so
+    /// learning which accounts exist pulls no secret into memory and a corrupt entry is listed
+    /// like any other. Scoped to `service`: one service's listing never names another's items.
+    ///
+    /// `kSecMatchLimitAll` hands back a `CFArray` of attribute dictionaries — the shape
+    /// `KeychainSecureTokenStorage.accountNames(in:status:withPrefix:)` expects.
+    static func list(service: String) -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrSynchronizable as String: kCFBooleanFalse as Any,
+            kSecReturnAttributes as String: kCFBooleanTrue as Any,
+            kSecMatchLimit as String: kSecMatchLimitAll,
+        ]
+    }
 }
 
 // MARK: - Status Classification

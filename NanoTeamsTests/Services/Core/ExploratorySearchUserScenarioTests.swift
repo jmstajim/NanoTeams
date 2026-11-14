@@ -252,11 +252,11 @@ final class ExploratorySearchUserScenarioTests: NTMSOrchestratorTestBase, @unche
     func testSetUp_calledTwice_doesNotReplaceExistingCoordinator() async {
         await sut.openWorkFolder(tempDir)
         sut.configuration.exploratorySearchEnabled = true
-        await sut.setUpSearchIndexCoordinatorIfEnabled()
+        await sut.setUpSearchIndexCoordinatorIfEnabled(lifecycle: sut.currentFolderLifecycle)
         let first = sut.searchIndexCoordinator
         XCTAssertNotNil(first)
 
-        await sut.setUpSearchIndexCoordinatorIfEnabled()
+        await sut.setUpSearchIndexCoordinatorIfEnabled(lifecycle: sut.currentFolderLifecycle)
         XCTAssertTrue(sut.searchIndexCoordinator === first,
                       "Second setUp must not install a second coordinator.")
     }

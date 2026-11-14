@@ -17,7 +17,7 @@ struct WatchtowerFeatureTipCard: View {
     // Deliberately NOT @ScaledMetric: on macOS 26.5 (SwiftUICore 7.5.3) the wrapper's
     // compiler-generated initializeWithCopy crashes with EXC_BAD_ACCESS (swift_retain on a
     // garbage pointer) the moment this view value is copied inside WatchtowerSetupSection's
-    // ViewBuilder — the app dies at launch. Crash report 2026-07-02 19:09; see the CLAUDE.md
+    // ViewBuilder — the app dies at launch. Crash report 2026-07-02; see the CLAUDE.md
     // gotcha before re-adding Dynamic-Type scaling here.
     private static let glyphSize: CGFloat = 15
 

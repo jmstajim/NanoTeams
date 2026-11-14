@@ -14,6 +14,9 @@ struct SidebarTaskRow: View {
 
     @State private var isHovered = false
 
+    /// The External Agents symbol: "this came in through External Agents".
+    static let externalAgentSymbol = HostedMCPConstants.symbolName
+
     private var rowBackground: Color {
         if isSelected { return Colors.accentTint }
         if isHovered { return Colors.surfaceHover }
@@ -80,6 +83,7 @@ struct SidebarTaskRow: View {
             if let displayIndex {
                 Text(String(format: "%02d", displayIndex))
                     .font(Typography.term2xs)
+                    .lineLimit(1)
                     .foregroundStyle(Colors.textQuaternary)
                     .monospacedDigit()
                     .frame(width: 18, alignment: .leading)
@@ -107,6 +111,18 @@ struct SidebarTaskRow: View {
                             .font(Typography.caption2)
                             .foregroundStyle(Colors.warning)
                             .accessibilityLabel("Awaiting command approval")
+                    }
+                    // An origin MARK, like the recurring and bash marks beside it; the agent's
+                    // name is the tooltip. A text badge here (`› CLAUDE CODE LIVE`, 10pt tracked,
+                    // fixed-size) left a 230pt sidebar row with "linecount…" of its title
+                    // (design review 2026-11-07). The name itself stands on the task's
+                    // Supervisor card and in the External Autovisor pane.
+                    if let agentLabel = task.externalAgentLabel {
+                        Image(systemName: Self.externalAgentSymbol)
+                            .font(Typography.caption2)
+                            .foregroundStyle(Colors.textSecondary)
+                            .help("Created by \(agentLabel)")
+                            .accessibilityLabel("Created by \(agentLabel)")
                     }
                     // Same glyph, colour and badge chrome as the composer's `N WAITING`, so
                     // the number a Supervisor reads in the sidebar and the one they meet
@@ -196,6 +212,12 @@ private extension Date {
         )
         SidebarTaskRow(
             task: SidebarTaskItem(id: 0, title: "Build notification system", status: .needsSupervisorAcceptance),
+            updatedAt: Date()
+        )
+        SidebarTaskRow(
+            task: SidebarTaskItem(
+                id: 0, title: "linecount.py", status: .done,
+                origin: .externalAgent(AgentIdentity(label: "Claude Code live"))),
             updatedAt: Date()
         )
         SidebarTaskRow(

@@ -76,8 +76,10 @@ final class OneShotPromptTrainer {
             let cfg = config.toLLMConfig()
             return await mapCases(OneShotPromptFixtures.bashCommands, service: service, run: run,
                                   tag: \.tag, input: \.command) { [client, logger] c in
-                let d = await BashJudgeService.judge(command: c.command, workingDirectory: nil, policy: policy,
-                                                     config: cfg, client: client, logger: logger)
+                let ruling = await BashJudgeService.judge(command: c.command, workingDirectory: nil, policy: policy,
+                                                          config: cfg, client: client, logger: logger)
+                // A cancelled call is no verdict at all — the case's timeout stopped it.
+                guard let d = ruling.decision else { throw CancellationError() }
                 return ("\(d.allowed ? "ALLOW" : "DENY") — \(d.reason)",
                         OneShotPromptVerdicts.judge(expectedAllowed: c.expectedAllowed, allowed: d.allowed, reason: d.reason))
             }
@@ -86,8 +88,19 @@ final class OneShotPromptTrainer {
             let cfg = config.toLLMConfig()
             return await mapCases(OneShotPromptFixtures.computerUseActions, service: service, run: run,
                                   tag: \.tag, input: { $0.action.detail }) { [client, logger] c in
-                let d = await ComputerUseJudgeService.judge(action: c.action, context: c.context, policy: policy,
-                                                            config: cfg, client: client, logger: logger)
+                let ruling = await ComputerUseJudgeService.judge(action: c.action, context: c.context, policy: policy,
+                                                                 config: cfg, client: client, logger: logger)
+                guard let d = ruling.decision else { throw CancellationError() }
+                return ("\(d.allowed ? "ALLOW" : "DENY") — \(d.reason)",
+                        OneShotPromptVerdicts.judge(expectedAllowed: c.expectedAllowed, allowed: d.allowed, reason: d.reason))
+            }
+        case .mcpJudge:
+            let cfg = config.toLLMConfig()
+            return await mapCases(OneShotPromptFixtures.mcpJudgeCases, service: service, run: run,
+                                  tag: \.tag, input: { MCPJudgeService.fencedCall($0.call) }) { [client, logger] c in
+                let ruling = await MCPJudgeService.judge(call: c.call, strictness: c.strictness,
+                                                         config: cfg, client: client, logger: logger)
+                guard let d = ruling.decision else { throw CancellationError() }
                 return ("\(d.allowed ? "ALLOW" : "DENY") — \(d.reason)",
                         OneShotPromptVerdicts.judge(expectedAllowed: c.expectedAllowed, allowed: d.allowed, reason: d.reason))
             }

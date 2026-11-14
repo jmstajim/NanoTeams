@@ -121,14 +121,14 @@ nonisolated enum TaskMutationService {
             print("[TaskMutation] updateToolCallResult: tool call \(toolCallID) not found in step \(stepID)")
             return
         }
-        task.runs[location.runIndex].steps[location.stepIndex].toolCalls[callIndex].resultJSON =
-            resultJSON
-        task.runs[location.runIndex].steps[location.stepIndex].toolCalls[callIndex].isError = isError
-        if let argumentsJSON {
-            task.runs[location.runIndex].steps[location.stepIndex].toolCalls[callIndex].argumentsJSON =
-                argumentsJSON
-        }
-        task.runs[location.runIndex].steps[location.stepIndex].updatedAt = MonotonicClock.shared.now()
+        let now = MonotonicClock.shared.now()
+        task.runs[location.runIndex].steps[location.stepIndex].toolCalls[callIndex].recordResult(
+            resultJSON,
+            isError: isError,
+            argumentsJSON: argumentsJSON,
+            at: now
+        )
+        task.runs[location.runIndex].steps[location.stepIndex].updatedAt = now
     }
 
     /// Updates the status of a step.
@@ -244,10 +244,7 @@ nonisolated enum TaskMutationService {
     /// separated so it can be exercised without building a whole `NTMSTask`, and so the
     /// in-place `inout` chain above has exactly one place to go wrong.
     static func applyRetryNotice(_ content: String, now: Date, to conv: inout [LLMMessage]) {
-        if let last = conv.indices.last,
-           conv[last].role == .assistant,
-           conv[last].content.isEmpty,
-           conv[last].thinking?.isEmpty ?? true {
+        if conv.last?.isStreamingPlaceholder == true {
             conv.removeLast()
         }
 

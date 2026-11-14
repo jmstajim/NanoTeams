@@ -83,7 +83,7 @@ final class ApprovalGatedAvailabilityTests: XCTestCase {
 
     func testAvailable_isAHumanWithBothFamiliesOn() {
         XCTAssertEqual(ToolApprovalAvailability.available,
-                       ToolApprovalAvailability(bash: .available, computerUse: .available))
+                       ToolApprovalAvailability(bash: .available, computerUse: .available, humanPresent: true))
     }
 
     // MARK: - forTeam: the folder-level reading
@@ -128,6 +128,33 @@ final class ApprovalGatedAvailabilityTests: XCTestCase {
             bashMode: .manual, computerUseMode: .semiAutomatic,
             team: team(supervisorMode: .manual), workFolderSettings: settings(autovisorEnabled: true, onTaskNeedsSupervisor: false))
         XCTAssertEqual(enabledButNotArmed, .available, "enabled without the trigger supervises nothing")
+    }
+
+    /// The presence answer itself rides along, because the MCP catalogue is split on it tool by
+    /// tool and no family's reading can stand in for it: with both families on Auto an
+    /// Autonomous team reads `.available` for both, and a Manual MCP server's tools are still
+    /// withheld at run time. Until F46 the role editor asked the catalogue with `true`.
+    func testForTeam_carriesTheRunsPresence_evenWhenBothFamiliesAreAvailable() {
+        let autonomous = ToolApprovalAvailability.forTeam(
+            bashMode: .auto, computerUseMode: .auto,
+            team: team(supervisorMode: .autonomous), workFolderSettings: nil)
+        XCTAssertEqual(autonomous.bash, .available)
+        XCTAssertEqual(autonomous.computerUse, .available)
+        XCTAssertFalse(autonomous.humanPresent)
+        XCTAssertNotEqual(autonomous, .available, "no human is not the same reading as a human")
+
+        let supervised = ToolApprovalAvailability.forTeam(
+            bashMode: .auto, computerUseMode: .auto,
+            team: team(supervisorMode: .manual),
+            workFolderSettings: settings(autovisorEnabled: true, onTaskNeedsSupervisor: true))
+        XCTAssertFalse(supervised.humanPresent, "the Autovisor answers nothing a person must approve")
+
+        let attended = ToolApprovalAvailability.forTeam(
+            bashMode: .off, computerUseMode: .off,
+            team: team(supervisorMode: .manual), workFolderSettings: nil)
+        XCTAssertTrue(attended.humanPresent, "a family switched Off says nothing about who is there")
+        XCTAssertTrue(ToolApprovalAvailability.available.humanPresent)
+        XCTAssertFalse(ToolApprovalAvailability(bashMode: .auto, computerUseMode: .auto, humanPresent: false).humanPresent)
     }
 
     /// No team reads as the fresh-team default (`.manual` Supervisor); no settings as no Autovisor.

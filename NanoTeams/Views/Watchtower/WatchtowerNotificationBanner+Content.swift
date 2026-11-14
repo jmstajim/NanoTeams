@@ -25,6 +25,9 @@ extension WatchtowerNotificationBanner {
 
         case .bashApprovalNeeded(_, _, let command, _, _):
             bashApprovalContent(command: command)
+
+        case .mcpApprovalNeeded(_, _, let toolName, let serverName, _, _):
+            mcpApprovalContent(toolName: toolName, serverName: serverName)
         }
     }
 
@@ -197,6 +200,33 @@ extension WatchtowerNotificationBanner {
                 onViewDetails()
             } label: {
                 Label("Open Task to Approve", systemImage: "arrow.right.circle")
+                    .font(Typography.subheadlineMedium)
+            }
+            .buttonStyle(.terminalSecondary)
+            .controlSize(.small)
+        }
+    }
+
+    /// Informational pointer, and deliberately WITHOUT the arguments: the whole document is
+    /// the thing that has to be read before allowing an outbound call, and a two-line banner
+    /// is not where anything is read. It names the tool and the server, and opens the task.
+    func mcpApprovalContent(toolName: String, serverName: String) -> some View {
+        VStack(alignment: .leading, spacing: Spacing.s) {
+            Text("\(toolName) — \(serverName)")
+                .font(Typography.monoCaption)
+                .foregroundStyle(Colors.textPrimary)
+                .textSelection(.enabled)
+                .lineLimit(2)
+                .truncationMode(.middle)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(Spacing.xs)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle.squircle(CornerRadius.micro).fill(Colors.surfaceOverlay))
+
+            Button {
+                onViewDetails()
+            } label: {
+                Label("Open Task to Review", systemImage: "arrow.right.circle")
                     .font(Typography.subheadlineMedium)
             }
             .buttonStyle(.terminalSecondary)

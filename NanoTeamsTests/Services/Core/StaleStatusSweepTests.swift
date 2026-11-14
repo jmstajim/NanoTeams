@@ -580,7 +580,7 @@ final class StaleStatusSweepTests: NTMSOrchestratorTestBase, @unchecked Sendable
         _ = await sut.createTask(title: "B", supervisorTask: "b")!
         sut.taskEngines[a] = TeamEngine()
 
-        await sut.recoverStaleStatusesAcrossIndex(folderURL: tempDir)
+        await sut.recoverStaleStatusesAcrossIndex(folderURL: tempDir, lifecycle: sut.currentFolderLifecycle)
 
         XCTAssertEqual(sut.loadedTask(a)?.runs.last?.steps.last?.status, .running,
                        "a task with a live engine must never be touched by the sweep")
@@ -629,19 +629,22 @@ final class StaleStatusSweepTests: NTMSOrchestratorTestBase, @unchecked Sendable
                       "aggregate banner must name the failed task; got: \(sut.lastErrorMessage ?? "nil")")
     }
 
-    func testSweep_folderURLMismatch_bailsImmediately() async {
+    /// A sweep handed a lifecycle that has ended — the one a sweep superseded by the next open
+    /// holds — writes nothing: it asks that lifecycle before every persist-capable call, where it
+    /// used to ask whether `workFolderURL` was still its folder (a check the next open passes
+    /// until its commit, and a reopen of the same folder passes for good).
+    func testSweep_endedLifecycle_bailsBeforeAnyWrite() async {
         await sut.openWorkFolder(tempDir)
         let a = await sut.createTask(title: "A", supervisorTask: "a")!
         await plantStaleSteps(taskID: a)
         _ = await sut.createTask(title: "B", supervisorTask: "b")!
-        let otherDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: otherDir) }
+        let ended = WorkFolderLifecycle(generation: sut.workFolderOpenGeneration - 1)
+        XCTAssertFalse(sut.isCurrentFolderLifecycle(ended), "premise: the lifecycle has ended")
 
-        await sut.recoverStaleStatusesAcrossIndex(folderURL: otherDir)
+        await sut.recoverStaleStatusesAcrossIndex(folderURL: tempDir, lifecycle: ended)
 
         XCTAssertEqual(sut.loadedTask(a)?.runs.last?.steps.last?.status, .running,
-                       "mismatched folderURL must bail before any write")
+                       "a sweep whose lifecycle has ended must bail before any write")
         XCTAssertEqual(diskIndexStatus(a), .running)
     }
 
@@ -652,7 +655,7 @@ final class StaleStatusSweepTests: NTMSOrchestratorTestBase, @unchecked Sendable
         let errorBefore = sut.lastErrorMessage
         let loadedBefore = sut.snapshot?.loadedTasks.keys.sorted()
 
-        await sut.recoverStaleStatusesAcrossIndex(folderURL: tempDir)
+        await sut.recoverStaleStatusesAcrossIndex(folderURL: tempDir, lifecycle: sut.currentFolderLifecycle)
 
         XCTAssertEqual(sut.lastErrorMessage, errorBefore)
         XCTAssertEqual(sut.snapshot?.loadedTasks.keys.sorted(), loadedBefore,
@@ -786,7 +789,7 @@ final class StaleStatusSweepTests: NTMSOrchestratorTestBase, @unchecked Sendable
         setReadOnly(dir, true)
         defer { setReadOnly(dir, false) }
 
-        await sut.recoverStaleStatusesAcrossIndex(folderURL: tempDir)
+        await sut.recoverStaleStatusesAcrossIndex(folderURL: tempDir, lifecycle: sut.currentFolderLifecycle)
 
         let banner = sut.lastErrorMessage ?? ""
         XCTAssertTrue(banner.contains("Could not recover status for 1 task(s): #\(a)"),
@@ -809,7 +812,7 @@ final class StaleStatusSweepTests: NTMSOrchestratorTestBase, @unchecked Sendable
         setReadOnly(dir, true)
         defer { setReadOnly(dir, false) }
 
-        await sut.recoverStaleStatusesAcrossIndex(folderURL: tempDir)
+        await sut.recoverStaleStatusesAcrossIndex(folderURL: tempDir, lifecycle: sut.currentFolderLifecycle)
 
         XCTAssertTrue(sut.lastErrorMessage?.contains("#\(a)") ?? false,
                       "loaded-branch persist failure must reach the aggregate banner; got: \(sut.lastErrorMessage ?? "nil")")
@@ -877,7 +880,7 @@ final class StaleStatusSweepTests: NTMSOrchestratorTestBase, @unchecked Sendable
         setReadOnly(dir, true)
         defer { setReadOnly(dir, false) }
 
-        await sut.recoverStaleStatusesAcrossIndex(folderURL: tempDir)
+        await sut.recoverStaleStatusesAcrossIndex(folderURL: tempDir, lifecycle: sut.currentFolderLifecycle)
 
         let banner = sut.lastErrorMessage ?? ""
         XCTAssertTrue(banner.contains("1 task(s): #\(broken)"),
@@ -899,7 +902,7 @@ final class StaleStatusSweepTests: NTMSOrchestratorTestBase, @unchecked Sendable
         sut.evictLoadedTask(a)
         sut.lastErrorMessage = "pre-existing banner from another path"
 
-        await sut.recoverStaleStatusesAcrossIndex(folderURL: tempDir)
+        await sut.recoverStaleStatusesAcrossIndex(folderURL: tempDir, lifecycle: sut.currentFolderLifecycle)
 
         XCTAssertEqual(memIndexStatus(a), .paused, "task recovered")
         XCTAssertEqual(sut.lastErrorMessage, "pre-existing banner from another path",
@@ -952,9 +955,9 @@ final class StaleStatusSweepTests: NTMSOrchestratorTestBase, @unchecked Sendable
     }
 
     func testScheduler_reconcileWithoutOpenFolder_noOpNoCrash() async {
-        // Pins the new `guard let folderURL = workFolderURL` entry guard:
+        // Pins the `guard workFolderURL != nil` entry guard:
         // calling the reconcile pass before any folder is open must be inert.
-        await sut.reconcileMissedRecurrences()
+        await sut.reconcileMissedRecurrences(lifecycle: sut.currentFolderLifecycle)
 
         XCTAssertNil(sut.lastErrorMessage)
         XCTAssertNil(sut.snapshot)
@@ -1078,11 +1081,11 @@ final class StaleStatusSweepTests: NTMSOrchestratorTestBase, @unchecked Sendable
         await plantStaleSteps(taskID: a)
         _ = await sut.createTask(title: "B", supervisorTask: "b")!
 
-        await sut.recoverStaleStatusesAcrossIndex(folderURL: tempDir)
+        await sut.recoverStaleStatusesAcrossIndex(folderURL: tempDir, lifecycle: sut.currentFolderLifecycle)
         XCTAssertEqual(memIndexStatus(a), .paused, "first pass recovers")
         let updatedAtAfterFirst = diskTask(a)?.updatedAt
 
-        await sut.recoverStaleStatusesAcrossIndex(folderURL: tempDir)
+        await sut.recoverStaleStatusesAcrossIndex(folderURL: tempDir, lifecycle: sut.currentFolderLifecycle)
 
         XCTAssertEqual(diskTask(a)?.updatedAt, updatedAtAfterFirst,
                        "second pass must find nothing stale — no churn")

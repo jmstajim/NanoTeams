@@ -280,7 +280,7 @@ final class TeamPinGuardCornerTests: XCTestCase {
         guard activeID != nil else { return XCTFail("active create failed") }
 
         // Evict the background task (no active engine → reclaimable).
-        store.evictIfReclaimable(bgID)
+        store.evictIfReclaimable(bgID, within: store.currentFolderLifecycle)
         XCTAssertNil(store.loadedTask(bgID),
                      "Precondition: the background task must be evicted from loadedTasks")
 

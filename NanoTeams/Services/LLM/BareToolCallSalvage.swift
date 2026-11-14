@@ -60,7 +60,12 @@ nonisolated enum BareToolCallSalvage {
         let cleaned = unwrappingFence(
             ModelTokenCleaner.clean(text).trimmingCharacters(in: .whitespacesAndNewlines))
         guard !cleaned.isEmpty else { return nil }
-        return jsonEnvelopeCall(in: cleaned)
+        // The union, not the registry alone: an `mcp__…` name is real on this call and on
+        // no other, so Rule A has to read what the step advertised or it drops an external
+        // tool's payload as "not a tool" — silently, which is the one outcome the rule
+        // exists to avoid.
+        let knownNames = ToolNames.allNames.union(advertised.lazy.map(\.name))
+        return jsonEnvelopeCall(in: cleaned, knownNames: knownNames)
             ?? bareIdentifierCall(in: cleaned, advertised: advertised)
     }
 
@@ -83,11 +88,13 @@ nonisolated enum BareToolCallSalvage {
     /// reserved name, a different resolver, an added shape rejection) then applies to both
     /// at once — a divergence here would either make the planning nudge fire for payloads
     /// route 3 dispatches, or leave a dispatched call unrecognised as an attempt.
-    static func looksLikeToolCallAttempt(_ text: String) -> Bool {
+    static func looksLikeToolCallAttempt(
+        _ text: String, knownNames: Set<String> = ToolNames.allNames
+    ) -> Bool {
         let cleaned = unwrappingFence(
             ModelTokenCleaner.clean(text).trimmingCharacters(in: .whitespacesAndNewlines))
         guard !cleaned.isEmpty else { return false }
-        return jsonEnvelopeCall(in: cleaned, requireCleanTail: false) != nil
+        return jsonEnvelopeCall(in: cleaned, knownNames: knownNames, requireCleanTail: false) != nil
     }
 
     // MARK: - Rule A — the whole reply is one JSON object
@@ -96,7 +103,8 @@ nonisolated enum BareToolCallSalvage {
     ///   whitespace or sentinel debris. `true` for dispatch (see `isSentinelDebris`);
     ///   `false` only for `looksLikeToolCallAttempt`, which dispatches nothing.
     private static func jsonEnvelopeCall(
-        in cleaned: String, requireCleanTail: Bool = true
+        in cleaned: String, knownNames: Set<String> = ToolNames.allNames,
+        requireCleanTail: Bool = true
     ) -> StepToolCall? {
         // The object must span the ENTIRE reply. Prose around a JSON object means the
         // model was writing about a call, not making one — and this is deliberately not
@@ -133,7 +141,7 @@ nonisolated enum BareToolCallSalvage {
         // without a marker there is no evidence this object was a call attempt, and
         // `{"name":"my-app","version":"1.0"}` is an ordinary thing to paste into a chat.
         let resolved = ToolRegistry.resolveToolName(rawName)
-        guard ToolNames.allNames.contains(resolved) else { return nil }
+        guard knownNames.contains(resolved) else { return nil }
 
         return StepToolCall(
             providerID: nil, name: resolved, argumentsJSON: arguments(in: dict))

@@ -23,7 +23,9 @@ extension LLMExecutionService {
         executionStates[stepKey] = StepExecutionState()
         guard let delegate else { return }
         guard let workFolderRoot = delegate.workFolderURL else { return }
-        guard task.runs[runIndex].steps[stepIndex].status == .running else { return }
+        guard task.runs.indices.contains(runIndex),
+              task.runs[runIndex].steps.indices.contains(stepIndex),
+              task.runs[runIndex].steps[stepIndex].status == .running else { return }
 
         let step = task.runs[runIndex].steps[stepIndex]
         let stepRuntime = resolveStepRuntime(
@@ -197,7 +199,9 @@ extension LLMExecutionService {
                         stepID: stepID, taskID: taskID, role: .user,
                         content: outbound,
                         sourceRole: .supervisor,
-                        sourceContext: .supervisorFeedback)
+                        sourceContext: .supervisorFeedback,
+                        authorLabel: step.revisionCommentAuthor,
+                        isFromAutomatedSupervisor: step.revisionCommentIsFromAutomatedSupervisor)
                 } else if let resume = resumeConversation {
                     // A step that suspended WITHOUT a Supervisor answer or a
                     // revision — an ordinary pause, or a stop/resume — still has
@@ -229,7 +233,9 @@ extension LLMExecutionService {
                             content: MessageSourceContext.supervisorFeedbackPrefix
                                 + MessageSourceContext.rawFeedback(feedback),
                             sourceRole: .supervisor,
-                            sourceContext: .supervisorFeedback)
+                            sourceContext: .supervisorFeedback,
+                            authorLabel: step.revisionCommentAuthor,
+                            isFromAutomatedSupervisor: step.revisionCommentIsFromAutomatedSupervisor)
                     }
                 }
 
@@ -297,6 +303,7 @@ extension LLMExecutionService {
                             config: config,
                             tools: tools,
                             runtime: runtime,
+                            mcpTools: stepRuntime.mcpTools,
                             task: task,
                             runIndex: runIndex,
                             stepIndex: stepIndex,
@@ -346,9 +353,10 @@ extension LLMExecutionService {
                         let maxRetries = delegate.maxLLMRetries
                         if maxRetries > 0, llmErrorCount > maxRetries { throw error }
                         let msg = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                        let limitLabel = maxRetries > 0 ? "/\(maxRetries)" : ""
                         let retryDelay = retryDelaySeconds
-                        let retryNote = "\(LLMConstants.llmServerErrorRetryNotePrefix) \(llmErrorCount)\(limitLabel)): \(msg). Retrying in \(retryDelay)s…"
+                        let retryNote = LLMRetryNotice.text(
+                            attempt: llmErrorCount, maxRetries: maxRetries,
+                            errorDescription: msg, delaySeconds: retryDelay)
                         // Collapse a burst of retries into ONE live-updating bubble
                         // instead of appending a fresh message per attempt.
                         await appendOrReplaceRetryNotice(stepID: stepID, taskID: taskID, content: retryNote)
@@ -472,6 +480,11 @@ extension LLMExecutionService {
         let networkLogger: NetworkLogger?
         let supervisorMode: SupervisorMode
         let roleForMessage: Role
+        /// The external catalogue this step froze at entry — the same value `tools` and the
+        /// registry were built from. Kept so every iteration can ask whether the live
+        /// catalogue has moved since, which is the only way a mid-step change is detectable
+        /// at all: the schema goes on saying what it said at entry, deliberately.
+        let mcpTools: MCPResolvedTools
     }
 
     func resolveStepRuntime(
@@ -514,11 +527,16 @@ extension LLMExecutionService {
         // true the role must not build: the amendment target is rewriting the same tree.
         let workSuperseded = RunService.runIndex(in: task, runID: runID)
             .map { Self.isWorkSuperseded(run: task.runs[$0], roleID: step.effectiveRoleID) } ?? false
+        // ONE read of the external catalogue, used twice below — for the schema the model is
+        // shown and for the handlers the runtime registers. The manager can rebuild the
+        // snapshot at any moment, so two reads could ship a tool the registry has no handler
+        // for, or register one the prompt never named.
+        let mcpTools = resolvedMCPTools(humanPresent: humanPresent)
         let stage1 = roleDefinition.map {
             toolSchemas(forDefinition: $0, team: resolvedTeam, humanPresent: humanPresent,
-                        workSuperseded: workSuperseded)
+                        workSuperseded: workSuperseded, mcpTools: mcpTools)
         } ?? toolSchemas(for: roleForMessage, team: resolvedTeam, humanPresent: humanPresent,
-                         workSuperseded: workSuperseded)
+                         workSuperseded: workSuperseded, mcpTools: mcpTools)
         let tools = EffectiveToolset.applyStorageFilters(
             stage1,
             storage: isDefaultStorage ? .defaultStorage : .realFolder(root: workFolderRoot)
@@ -537,7 +555,6 @@ extension LLMExecutionService {
         // (`NetworkLogger.noteProvenanceIfNeeded`) — per (log, server, model), which is
         // what makes a `roleOverride` pointing one run at several models visible.
 
-        let bashPolicy = delegate.bashPolicy
         let (_, runtime) = ToolRegistry.defaultRegistry(
             workFolderRoot: workFolderRoot, toolCallsLogURL: toolCallsLogURL,
             networkLogger: networkLogger,
@@ -547,9 +564,11 @@ extension LLMExecutionService {
             searchMaxResults: delegate.searchMaxResults,
             searchContextBefore: delegate.searchContextBefore,
             searchContextAfter: delegate.searchContextAfter,
-            bashSandboxEnabled: bashPolicy.sandboxEnabled,
-            bashSandboxPermissions: bashPolicy.sandboxPermissions,
-            bashAllowUnsandboxedFallback: bashPolicy.allowUnsandboxedFallback
+            mcpTools: mcpTools,
+            // Under the task's ATTACHMENTS, not under `internal/`: the point of writing a
+            // screenshot out is that a later call can read it back, and `analyze_image`
+            // takes the project-relative path this yields.
+            mcpAttachmentsDir: paths.mcpAttachmentsDir(taskID: task.id, ancestors: ancestors)
         )
         return StepRuntime(
             globalConfig: globalConfig,
@@ -559,6 +578,7 @@ extension LLMExecutionService {
             runtime: runtime,
             networkLogger: networkLogger,
             supervisorMode: supervisorMode,
-            roleForMessage: roleForMessage)
+            roleForMessage: roleForMessage,
+            mcpTools: mcpTools)
     }
 }

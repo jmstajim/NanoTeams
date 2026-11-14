@@ -6,10 +6,15 @@ import Foundation
 /// reads incremental output and can stop the process.
 ///
 /// Thread-safe (`NSLock`), NOT `@MainActor` — `bash` handlers execute inside the
-/// detached tool batch (`executeToolCalls`), off the main actor. Lifecycle is
-/// best-effort: `terminate(taskID:)` / `terminateAll()` are called on task
-/// close / work-folder switch so a long-running background process doesn't
-/// outlive its task.
+/// detached tool batch (`executeToolCalls`), off the main actor. `terminate(taskID:)` /
+/// `terminateAll()` are called on task close / work-folder switch so a long-running background
+/// process doesn't outlive its task.
+///
+/// A command is its PROCESS GROUP (`CommandProcessGroup`): every stop signals the group, so what
+/// the command started stops with it, and when the command's shell exits whatever it left
+/// running (`server &`) is killed — a process outlives its command only by leaving the group
+/// itself (DEBTS.md D-M16). Which of its commands a reserved loopback port stops is
+/// `LoopbackPortReservations`'s call (`stopConfinedCommands(lacking:reason:)`).
 nonisolated final class BackgroundBashRegistry: @unchecked Sendable {
 
     static let shared = BackgroundBashRegistry()
@@ -27,17 +32,37 @@ nonisolated final class BackgroundBashRegistry: @unchecked Sendable {
         /// Monotonic creation order — used to evict the OLDEST finished entries
         /// when the retained-entry cap is exceeded.
         let seq: Int
+        /// The loopback ports the command's profile reserves, for its whole life; `nil` when it
+        /// runs unconfined (sandbox off), which no reservation is about.
+        let guardedPorts: Set<UInt16>?
         var running: Bool = true
         var exitCode: Int32?
         var readOffset: UInt64 = 0
-        init(id: String, command: String, outputURL: URL, process: Process, taskID: Int, seq: Int) {
+        /// Why NanoTeams stopped the command itself (`LoopbackPortReservations`,
+        /// `stopUnconfinedCommands`), for `bash_output`.
+        var stopReason: String?
+        /// The command's process group, recorded right after the spawn — what every stop signals.
+        var group: CommandProcessGroup?
+        init(
+            id: String, command: String, outputURL: URL, process: Process, taskID: Int, seq: Int,
+            guardedPorts: Set<UInt16>?
+        ) {
             self.id = id
             self.command = command
             self.outputURL = outputURL
             self.process = process
             self.taskID = taskID
             self.seq = seq
+            self.guardedPorts = guardedPorts
         }
+    }
+
+    /// How a background command is confined: the Seatbelt profile it runs under for its whole
+    /// life, and the loopback ports that profile reserves. One value, so no command can be
+    /// launched under a profile whose ports the registry does not know.
+    struct Confinement: Sendable, Equatable {
+        let profile: String
+        let guardedPorts: Set<UInt16>
     }
 
     struct ReadResult {
@@ -45,18 +70,35 @@ nonisolated final class BackgroundBashRegistry: @unchecked Sendable {
         let newOutput: String
         let running: Bool
         let exitCode: Int32?
+        /// Set when NanoTeams stopped the command itself, saying why.
+        let stopReason: String?
     }
 
     private let lock = NSLock()
     private var entries: [String: Entry] = [:]
     private var counter = 0
 
-    private init() {}
+    /// The app's registry is `shared`, for the life of the process. A test may hold one of its
+    /// own — to drop it while a command still runs, say — and nothing else builds one.
+    init() {}
 
-    /// Directory holding background command logs.
-    private static var logDir: URL {
+    /// A background command is still running — a role's process, alive between its step's turns
+    /// and after them. What the Add agent sheet asks before a token goes to the clipboard (#375).
+    var hasRunningCommands: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return entries.values.contains { $0.running }
+    }
+
+    /// Directory holding background command logs — one per PROCESS. A log is named by this
+    /// registry's counter, which restarts at 1 in every process, while the temporary directory is
+    /// the user's, shared by every process they run: two processes both writing `bg_1.log`
+    /// replaced each other's file, and a command that printed and exited 0 read back as having
+    /// printed nothing (parallel test processes, 2026-11-08).
+    static var logDir: URL {
         URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             .appendingPathComponent("nanoteams-bg", isDirectory: true)
+            .appendingPathComponent(String(ProcessInfo.processInfo.processIdentifier), isDirectory: true)
     }
 
     // MARK: - Start
@@ -66,14 +108,15 @@ nonisolated final class BackgroundBashRegistry: @unchecked Sendable {
     func start(
         command: String,
         directory: URL,
-        sandboxProfile: String?,
+        confinement: Confinement?,
         taskID: Int
     ) throws -> String {
         let shell = ProcessRunner.loginShell()
         let executable: String
         let arguments: [String]
-        if let profile = sandboxProfile {
-            (executable, arguments) = SeatbeltSandbox.wrap(profile: profile, shell: shell, command: command)
+        if let confinement {
+            (executable, arguments) = SeatbeltSandbox.wrap(
+                profile: confinement.profile, shell: shell, command: command)
         } else {
             executable = shell
             arguments = ["-lc", command]
@@ -91,26 +134,65 @@ nonisolated final class BackgroundBashRegistry: @unchecked Sendable {
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
         process.currentDirectoryURL = directory
+        process.environment = HostedMCPEnvironment.scrubbingHostedMCPVariables(
+            from: ProcessInfo.processInfo.environment
+        )
         process.standardOutput = writeHandle
         process.standardError = writeHandle
 
         let entry = Entry(
             id: id, command: command, outputURL: outputURL,
-            process: process, taskID: taskID, seq: seq)
+            process: process, taskID: taskID, seq: seq, guardedPorts: confinement?.guardedPorts)
 
         // Mark finished + close the write handle when the child exits. The handler
         // for `terminationHandler` runs on an arbitrary queue — guard with the lock.
+        // What the command left running in its group dies with it: a process that outlived its
+        // shell would keep this command's profile — and any port it holds — with nothing here
+        // tracking it. That signal is the command's, not the registry's: a registry gone by then
+        // (none in the app; a test's) has long returned from this `start`, the one writer of
+        // `entry.group`, so the group is read without it. A command with no recorded group — one
+        // whose leader was not leading its own group at the spawn — has nothing to signal here:
+        // the group numbered by its pid is somebody else's.
         process.terminationHandler = { [weak self] proc in
             try? writeHandle.close()
-            guard let self else { return }
-            self.lock.withLock {
-                entry.running = false
-                entry.exitCode = proc.terminationStatus
+            let group: CommandProcessGroup?
+            if let self {
+                group = self.lock.withLock {
+                    entry.running = false
+                    entry.exitCode = proc.terminationStatus
+                    return entry.group
+                }
+            } else {
+                group = entry.group
             }
+            group?.signal(SIGKILL)
         }
 
+        // Spawned AND inserted under the lock: a reservation's scan (`stopConfinedCommands`)
+        // either runs before this spawn — and `enforce`, right after the start, sees the port it
+        // reserved — or after the insert, and sees the entry. Until 2026-11-08 the insert
+        // followed the spawn outside the lock, and a reservation landing between the two
+        // returned past a child it never saw. A spawn is milliseconds, and nothing else is
+        // awaited here; a termination handler for a child that exits at once waits for this
+        // lock and runs after it.
+        //
+        // Insert, then evict the oldest FINISHED entries of THIS TASK beyond the
+        // per-task cap so a long-lived task running many background commands can't
+        // accumulate unbounded Entry objects + log files. Running entries are never
+        // evicted; one task's activity never evicts another task's output.
+        let evicted: [Entry]
         do {
-            try process.run()
+            evicted = try lock.withLock {
+                try process.run()
+                entry.group = CommandProcessGroup(leading: process)
+                entries[id] = entry
+            let snapshot = entries.values.map { (id: $0.id, running: $0.running, seq: $0.seq, taskID: $0.taskID) }
+            let ids = Self.overflowFinishedIDs(
+                entries: snapshot, cap: BashConstants.maxRetainedBackgroundCommands, taskID: taskID)
+                let victims = ids.compactMap { entries[$0] }
+                for id in ids { entries[id] = nil }
+                return victims
+            }
         } catch {
             try? writeHandle.close()
             try? fm.removeItem(at: outputURL)
@@ -121,20 +203,6 @@ nonisolated final class BackgroundBashRegistry: @unchecked Sendable {
             // that as "Executable not found: /bin/zsh" is a false statement about
             // the one thing that is definitely fine.
             throw ProcessRunner.launchError(executable: executable, underlying: error)
-        }
-
-        // Insert, then evict the oldest FINISHED entries of THIS TASK beyond the
-        // per-task cap so a long-lived task running many background commands can't
-        // accumulate unbounded Entry objects + log files. Running entries are never
-        // evicted; one task's activity never evicts another task's output.
-        let evicted: [Entry] = lock.withLock {
-            entries[id] = entry
-            let snapshot = entries.values.map { (id: $0.id, running: $0.running, seq: $0.seq, taskID: $0.taskID) }
-            let ids = Self.overflowFinishedIDs(
-                entries: snapshot, cap: BashConstants.maxRetainedBackgroundCommands, taskID: taskID)
-            let victims = ids.compactMap { entries[$0] }
-            for id in ids { entries[id] = nil }
-            return victims
         }
         reap(evicted)
         return id
@@ -258,20 +326,112 @@ nonisolated final class BackgroundBashRegistry: @unchecked Sendable {
                 command: entry.command,
                 newOutput: newOutput,
                 running: entry.running,
-                exitCode: entry.exitCode)
+                exitCode: entry.exitCode,
+                stopReason: entry.stopReason)
         }
     }
 
     // MARK: - Stop
 
-    /// Terminates a background command (SIGTERM). Returns `false` for unknown IDs.
+    /// Stops a background command: SIGTERM to its whole process group, then SIGKILL if it is
+    /// still running two seconds later. Returns `false` for unknown IDs.
+    ///
+    /// The recorded group, not `Process.terminate()`. That one does signal the group — measured
+    /// 2026-11-08, as NSTask documents ("the receiver and all of its subtasks") — but only while
+    /// the shell runs, and it never escalates: until 2026-11-08 a server that ignored SIGTERM, or
+    /// one whose shell had already returned, survived `stop`. This is now the only way a role can
+    /// stop its own background command, since a later `bash` call may not signal it
+    /// (`(allow signal (target same-sandbox))`).
     @discardableResult
     func stop(commandID: String) -> Bool {
         let entry: Entry? = lock.withLock { entries[commandID] }
         guard let entry else { return false }
-        if entry.process.isRunning { entry.process.terminate() }
+        Self.stopGracefully(entry.group, process: entry.process)
         return true
     }
+
+    // MARK: - Stops a reservation decides
+
+    /// Stops every running CONFINED command whose profile lacks one of `ports`, saying why
+    /// (`reason` of the missing ports), with `SIGKILL` to its whole process group — the stop
+    /// `LoopbackPortReservations.reserve(_:)` decides. An unconfined command is not one: with the
+    /// sandbox off nothing is reserved for any command (`stopUnconfinedCommands`). Returns the ids
+    /// it stopped; a command that had already ended keeps no stop reason.
+    func stopConfinedCommands(lacking ports: Set<UInt16>, reason: (Set<UInt16>) -> String) -> [String] {
+        let stale: [Entry] = lock.withLock {
+            entries.values.filter { entry in
+                guard entry.running, entry.stopReason == nil, let guarded = entry.guardedPorts else { return false }
+                let missing = ports.subtracting(guarded)
+                guard !missing.isEmpty else { return false }
+                entry.stopReason = reason(missing)
+                return true
+            }
+        }
+        return kill(stale)
+    }
+
+    /// The commands with these ids — each process with its group — what a caller that just
+    /// stopped them waits on (`CommandProcessGroup.awaitExit`).
+    func commands(of commandIDs: [String]) -> [(process: Process, group: CommandProcessGroup?)] {
+        lock.withLock { commandIDs.compactMap { entries[$0].map { (process: $0.process, group: $0.group) } } }
+    }
+
+    /// Stops one confined command with `reason` — the one `LoopbackPortReservations.enforce`
+    /// found launched under a profile older than a reservation.
+    func stopConfinedCommand(_ commandID: String, reason: String) {
+        let entry: Entry? = lock.withLock {
+            guard let entry = entries[commandID], entry.running, entry.stopReason == nil,
+                  entry.guardedPorts != nil else { return nil }
+            entry.stopReason = reason
+            return entry
+        }
+        if let entry { _ = kill([entry]) }
+    }
+
+    /// Stops every background command that runs unconfined — started while the bash sandbox was
+    /// off — once it is switched back on (`StoreConfiguration.bashSandboxEnabled`): nothing confines
+    /// such a command, so it could hold any port and write anywhere, under a setting that now says
+    /// otherwise. Returns the ids it stopped.
+    @discardableResult
+    func stopUnconfinedCommands() -> [String] {
+        let unconfined: [Entry] = lock.withLock {
+            entries.values.filter { entry in
+                guard entry.running, entry.stopReason == nil, entry.guardedPorts == nil else { return false }
+                entry.stopReason = Self.sandboxSwitchedOnStopReason
+                return true
+            }
+        }
+        return kill(unconfined)
+    }
+
+    static let sandboxSwitchedOnStopReason =
+        "NanoTeams stopped this command: it was started while the bash sandbox was off, and the "
+        + "sandbox is on now. Start it again to run it inside the sandbox."
+
+    /// `SIGKILL` to each entry's group; the ids that received it, sorted. An entry nothing received
+    /// it for had already ended on its own — between the scan that claimed it and this signal —
+    /// and loses the stop reason set for it: nothing was stopped.
+    private func kill(_ stale: [Entry]) -> [String] {
+        var stopped: [String] = []
+        for entry in stale {
+            if CommandProcessGroup.kill(entry.group, process: entry.process) {
+                stopped.append(entry.id)
+            } else {
+                lock.withLock { entry.stopReason = nil }
+            }
+        }
+        return stopped.sorted()
+    }
+
+    #if DEBUG
+    /// Puts a finished command back into the state between its exit and this registry's
+    /// observation of it — `running` as a scan reads it, the process gone as the signal finds it.
+    /// That is the window `kill(_:)` compensates for by dropping the reason the scan set, and it
+    /// is microseconds wide: a test cannot land in it by timing, so it is put there.
+    func _testSimulateExitNotYetObserved(_ commandID: String) {
+        lock.withLock { entries[commandID]?.running = true }
+    }
+    #endif
 
     // MARK: - Lifecycle cleanup
 
@@ -298,11 +458,26 @@ nonisolated final class BackgroundBashRegistry: @unchecked Sendable {
         reap(toKill)
     }
 
-    /// SIGTERM each still-running process and delete its log file.
+    /// Stops each command's whole group (`stopGracefully`) and deletes its log file.
     private func reap(_ entries: [Entry]) {
         for e in entries {
-            if e.process.isRunning { e.process.terminate() }
+            Self.stopGracefully(e.group, process: e.process)
             try? FileManager.default.removeItem(at: e.outputURL)
+        }
+    }
+
+    /// SIGTERM to the command — its group and its leader (`CommandProcessGroup.stop`; with no
+    /// recorded group, the leader alone) — then SIGKILL two seconds later if it is still running.
+    ///
+    /// A command that has already finished is not signalled: its leftovers went down in the
+    /// termination handler as it exited, and by any later moment its pid, and its empty group's
+    /// id, may belong to something else — pids on this Mac are handed out sequentially and wrap
+    /// in hours (measured 2026-11-08). Until then a finished command's group was signalled on
+    /// `stop`, on task close and on folder switch, hours after it ended.
+    private static func stopGracefully(_ group: CommandProcessGroup?, process: Process) {
+        guard CommandProcessGroup.stop(SIGTERM, group: group, process: process) else { return }
+        DispatchQueue.global().asyncAfter(deadline: .now() + .seconds(2)) {
+            CommandProcessGroup.kill(group, process: process)
         }
     }
 

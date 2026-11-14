@@ -20,20 +20,64 @@ nonisolated enum ControlVerb: Hashable {
     /// `action` enum values surfaced to the LLM in the tool schema (display order).
     static let actionNames = ["start", "pause", "resume", "stop", "close", "delete", "rename", "set_timeout"]
 
+    /// The refusals of a `timeout_seconds` value — one builder, read by `parse` and rendered by
+    /// `RuntimePromptRegistry`. Until 2026-11-12 (F6 T3) the registry rendered an enum of sample
+    /// texts and `parse` wrote the invalid-value refusal inline, so its wording could change under
+    /// an unchanged fingerprint.
+    enum TimeoutRefusal: Hashable, Sendable {
+        case actionNotSetTimeout
+        case argWithSetTimeout
+        case negativeTimeout
+        case invalidValue(String)
+        case missingValue
+
+        /// One of each, as the registry renders them.
+        static let registrySamples: [(name: String, refusal: TimeoutRefusal)] = [
+            ("actionNotSetTimeout", .actionNotSetTimeout),
+            ("argWithSetTimeout", .argWithSetTimeout),
+            ("negativeTimeout", .negativeTimeout),
+            ("invalidValue", .invalidValue("abc")),
+            ("missingValue", .missingValue),
+        ]
+    }
+
+    /// runtime-prompt
+    static func refusalMessage(_ refusal: TimeoutRefusal) -> String {
+        switch refusal {
+        case .actionNotSetTimeout:
+            "timeout_seconds applies only with action: \"set_timeout\"."
+        case .argWithSetTimeout:
+            "`arg` applies only with `action: \"rename\"`. It was ignored here, so `set_timeout` would not have done what this call asked for — drop `arg` or pick the verb it belongs to."
+        case .negativeTimeout:
+            "set_timeout requires an integer >= 0 for `timeout_seconds`."
+        case .invalidValue(let raw):
+            "set_timeout accepts integer `timeout_seconds` (0 to clear). Got invalid value '\(raw)'."
+        case .missingValue:
+            "set_timeout requires integer `timeout_seconds` (0 to clear)."
+        }
+    }
+
     /// Decode a tool `action` + optional `arg` into a verb. `.failure` carries a
     /// human-readable reason (unknown action, or `rename` with an empty title).
-    static func parse(action: String, arg: String?) -> Result<ControlVerb, AutovisorVerbError> {
-        // An argument accepted and ignored is the mirror of advertise-then-reject: the
-        // call reports ok:true for something other than what it asked (R3.5.2) — the
-        // same rule `git_stash` and `git_branch` apply through `rejectInapplicable`.
-        // Until 2026-09-06 the schema said "Ignored otherwise." and meant it.
+    static func parse(
+        action: String,
+        arg: String?,
+        timeoutSeconds: Int? = nil,
+        rawTimeout: Any? = nil,
+        surface: AutovisorSurface = .inApp
+    ) -> Result<ControlVerb, AutovisorVerbError> {
         let stray = (arg ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasTimeoutArg = timeoutSeconds != nil || (rawTimeout != nil && !(rawTimeout is NSNull))
+        if action.lowercased() != "set_timeout", hasTimeoutArg {
+            return .failure(.init(message: refusalMessage(.actionNotSetTimeout)))
+        }
         func withoutArg(_ verb: ControlVerb, _ name: String) -> Result<ControlVerb, AutovisorVerbError> {
             guard stray.isEmpty else {
+                let allowed = surface == .externalMCP
+                    ? "`arg` applies only with `action: \"rename\"`"
+                    : "`arg` applies only with `action: \"rename\"` or `action: \"set_timeout\"`"
                 return .failure(.init(
-                    message: "`arg` applies only with `action: \"rename\"` or `action: \"set_timeout\"`. "
-                        + "It was ignored here, so `\(name)` would not have done what this call asked for — "
-                        + "drop `arg` or pick the verb it belongs to."))
+                    message: "\(allowed). It was ignored here, so `\(name)` would not have done what this call asked for — drop `arg` or pick the verb it belongs to."))
             }
             return .success(verb)
         }
@@ -51,12 +95,23 @@ nonisolated enum ControlVerb: Hashable {
             }
             return .success(.rename(title: title))
         case "set_timeout":
-            // Absent or "0" CLEARS the timeout — that is the documented way to remove it.
-            // A present-but-unparseable `arg` ("600s", "10 minutes") must be REJECTED, not
-            // silently treated as a clear: that did the opposite of what the manager asked
-            // and reported ok:true, leaving it no signal to act on. `rename` above already
-            // rejects an unusable `arg`; this is the same rule.
-            let raw = (arg ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if surface == .externalMCP && !stray.isEmpty {
+                return .failure(.init(message: refusalMessage(.argWithSetTimeout)))
+            }
+            if let seconds = timeoutSeconds {
+                guard seconds >= 0 else {
+                    return .failure(.init(message: refusalMessage(.negativeTimeout)))
+                }
+                return .success(.setTimeout(seconds: seconds > 0 ? TimeInterval(seconds) : nil))
+            }
+            if let raw = rawTimeout, !(raw is NSNull) {
+                let rawStr = String(describing: raw)
+                return .failure(.init(message: refusalMessage(.invalidValue(rawStr))))
+            }
+            if surface == .externalMCP {
+                return .failure(.init(message: refusalMessage(.missingValue)))
+            }
+            let raw = stray
             guard !raw.isEmpty else { return .success(.setTimeout(seconds: nil)) }
             guard let seconds = Double(raw), seconds.isFinite, seconds >= 0 else {
                 return .failure(.init(
@@ -146,14 +201,20 @@ nonisolated enum AutovisorAction: Hashable {
     /// Role-level verb (`RoleVerb` carries the feedback where the verb needs it).
     case manageRole(taskID: Int, roleID: String, verb: RoleVerb)
     /// Answer a task's pending `ask_supervisor` as the folder's Supervisor.
-    case answerTaskQuestion(taskID: Int, answer: String)
+    /// `roleID` is optional: omitted by the built-in manager (answers the first waiting
+    /// step), optionally specified by an external agent when multiple roles are waiting.
+    case answerTaskQuestion(taskID: Int, answer: String, roleID: String? = nil)
     /// Queue a steering message to a (running) task, optionally targeting a role.
     case messageTask(taskID: Int, text: String, roleID: String?)
     /// Set a task's review recurrence to a fixed interval. `intervalMinutes == 0`
     /// clears the recurrence.
     case scheduleTask(taskID: Int, intervalMinutes: Int)
-    /// Replace the folder-wide Work Folder Context (injected into every role's prompt).
-    case setWorkFolderContext(content: String)
+    /// Replace the folder-wide Work Folder Context (the `{workFolderContext}` of every team whose
+    /// prompt carries it). `expectedRevision` is the revision the writer read (`folder_status`,
+    /// `ProjectSettings.contextRevision`): when given and the stored text's is another one,
+    /// nothing is written — someone replaced the text after it was read. An external agent's
+    /// precondition, required of it; the built-in manager writes unconditionally (`nil`).
+    case setWorkFolderContext(content: String, expectedRevision: String? = nil)
 
     /// The task this action targets, if any. `nil` for folder-level actions
     /// (`createManagedTask`, `setWorkFolderContext`). Used by the orchestrator's
@@ -162,7 +223,7 @@ nonisolated enum AutovisorAction: Hashable {
         switch self {
         case .controlTask(let id, _),
              .manageRole(let id, _, _),
-             .answerTaskQuestion(let id, _),
+             .answerTaskQuestion(let id, _, _),
              .messageTask(let id, _, _),
              .scheduleTask(let id, _):
             return id
@@ -183,6 +244,13 @@ nonisolated struct AutovisorActionResult: Hashable {
     /// slot, which the collaboration path left permanently empty until `NextHint` moved
     /// into `Domain/` — see that type's doc comment for the incident.
     var next: NextHint?
+    /// What a success that is not a plain `ok` came to — an external call reports it as its
+    /// `status` (`AutovisorReply.outcome`).
+    var outcome: AutovisorActionOutcome?
+    /// Which refusal a failure is, when it is one an external agent branches on — its error code
+    /// on that surface (`AutovisorReply.failureKind`). `nil` for a success and for every other
+    /// failure.
+    var failure: AutovisorActionFailure?
 
     init(ok: Bool, message: String, createdTaskID: Int? = nil, next: NextHint? = nil) {
         self.ok = ok
@@ -199,6 +267,32 @@ nonisolated struct AutovisorActionResult: Hashable {
     static func failure(_ message: String, next: NextHint? = nil) -> AutovisorActionResult {
         .init(ok: false, message: message, next: next)
     }
+}
+
+/// A failure an external agent branches on, by cause — each is its own error code on the hosted
+/// MCP surface. The built-in manager reads only the message.
+nonisolated enum AutovisorActionFailure: Hashable, Sendable {
+    case taskNotFound
+    case roleNotFound
+    case notWaiting
+    case limitReached
+    /// A verb that would lift the person's Pause (`AutovisorReply.pausedByThePerson`).
+    case pausedByPerson
+    /// The Work Folder Context was replaced after the writer read it, so its write was refused
+    /// (`AutovisorReply.workFolderContextChangedSinceRead`).
+    case contextChanged
+}
+
+/// A success that is not a plain `ok`: the action landed, and left something standing that the
+/// caller should know about without reading the message.
+nonisolated enum AutovisorActionOutcome: String, Hashable, Sendable {
+    /// A message waits in a task the person paused in the app, which stays paused.
+    case queuedPausedByPerson = "queued_paused_by_person"
+    /// An answer landed in a task the person paused in the app, which stays paused.
+    case answeredPausedByPerson = "answered_paused_by_person"
+    /// A role decision — accept, request changes, restart, finish — is recorded in a task the
+    /// person paused in the app, which stays paused: the team acts on it once they resume it.
+    case recordedPausedByPerson = "recorded_paused_by_person"
 }
 
 /// Pure derivations of a task's *own* status for the manager's `task_status` tool.
@@ -289,9 +383,31 @@ nonisolated enum AutovisorStatus {
     /// drift and `max(0, ...)` clamps the shortfall to a flat 0. It was the one member of this
     /// trio without the default — inert only because its single caller happens to pass the
     /// right clock, which is precisely the state a second caller would end.
-    static func taskElapsedSeconds(run: Run?, now: Date = MonotonicClock.shared.now()) -> Int? {
+    ///
+    /// It stops when the run's work does: at the task's close, else — when every step has
+    /// finished (done, failed, or done and awaiting acceptance) — at the last step's completion.
+    /// Until 2026-11-09 it counted to `now` forever: a task closed yesterday reported a day of
+    /// work, and one in Review kept growing while nobody worked on it. A paused, waiting or
+    /// unstarted step keeps it counting — the run timeout counts those too.
+    static func taskElapsedSeconds(run: Run?, closedAt: Date? = nil, now: Date = MonotonicClock.shared.now()) -> Int? {
         guard let run else { return nil }
-        return max(0, Int(now.timeIntervalSince(run.createdAt)))
+        let end = closedAt ?? finishedAt(run) ?? now
+        return max(0, Int(end.timeIntervalSince(run.createdAt)))
+    }
+
+    /// When the last step of `run` finished, if every step has — `nil` while any is still to do.
+    private static func finishedAt(_ run: Run) -> Date? {
+        var latest: Date?
+        for step in run.steps {
+            switch step.status {
+            case .done, .failed, .needsApproval:
+                guard let completedAt = step.completedAt else { return nil }
+                latest = max(latest ?? completedAt, completedAt)
+            case .pending, .running, .paused, .needsSupervisorInput:
+                return nil
+            }
+        }
+        return latest
     }
 
     /// True while the step's most recent tool call is still executing (result not
@@ -321,12 +437,16 @@ nonisolated enum AutovisorStatus {
     /// `.idle` alongside a `.paused` step). **Keep in lock-step with
     /// `NTMSOrchestrator.resumeRun`**: drift here promises the manager a resume the
     /// runtime would silently drop.
+    ///
+    /// `pausedByThePerson`: the task stands in the person's Pause, which `control_task resume`
+    /// is refused (D-M18, 2026-11-12) — so nothing is resumable by the reader of this flag.
     static func isResumable(
         step: StepExecution,
         roleStatus: RoleExecutionStatus?,
-        taskIsClosed: Bool
+        taskIsClosed: Bool,
+        pausedByThePerson: Bool = false
     ) -> Bool {
-        guard !taskIsClosed, step.status == .paused else { return false }
+        guard !taskIsClosed, !pausedByThePerson, step.status == .paused else { return false }
         // The synthetic generation step belongs to no roster, so it has no `roleStatuses`
         // entry and neither arm below could ever fire — but `resumeRun` short-circuits to
         // `spawnTeamGeneration` for it, ahead of branch 3, so `.paused` IS resumable.
@@ -368,6 +488,8 @@ nonisolated enum AutovisorStatus {
         var next: NextHint
     }
 
+    /// runtime-prompt
+    ///
     /// Manager-facing remedy appended (never substituted) to a `manage_role accept`
     /// rejection in `applyAcceptRole`'s `.reject` arm. The raw `acceptanceErrors`
     /// string names the fact ("Role already completed") but not the way out, and the

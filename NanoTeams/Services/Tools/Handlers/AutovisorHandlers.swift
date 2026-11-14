@@ -9,18 +9,12 @@ private typealias JS = JSONSchema
 // team (gated by that role's `toolIDs`). All are category `.collaboration` so they
 // route through the deferred-handler path (`appendCollaborationResult`) — sandbox
 // tool handlers can't reach the orchestrator, so even the read tools emit a signal.
-// All `excludedInMeetings`. Each handler validates args and emits a `pending`
-// envelope + a `ToolSignal`.
+// All `excludedInMeetings`. Each handler validates args via `AutovisorToolDecoding`
+// and emits a `pending` envelope + a `ToolSignal`.
 //
-// NINE of the ten do their real work in `LLMExecutionService+Autovisor.swift`, which
-// is why that file's header says nine and this one says ten — the two counts are
-// different sets, not a contradiction. `wait_for_events` is the tenth: it has no
-// service-layer handler, because it asks for a STATE CHANGE rather than an action.
-// Its signal is dispatched in `+ToolResultDispatching` and flips the step's
-// `parkForEventsRequested`, which the tool loop reads at the top of the next
-// iteration to park the pass. Count these from the struct declarations below, never
-// from this sentence — it said "Nine" from the day `wait_for_events` landed until
-// 2026-08-10.
+// All ten tools are decoded by `AutovisorToolDecoding` and executed by
+// `AutovisorCommandExecutor` (`LLMExecutionService+Autovisor.swift` holds the read
+// renderers and the `wait_for_events` step-park flag mutation).
 
 /// `list_tasks` — enumerate every task in the folder with status.
 nonisolated struct ListTasksTool: ToolHandler {
@@ -36,15 +30,7 @@ nonisolated struct ListTasksTool: ToolHandler {
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self { Self() }
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
-        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
-            ToolExecutionResult(
-                toolName: Self.name,
-                argumentsJSON: encodeArgsToJSON(args),
-                outputJSON: makeSuccessEnvelope(data: ["status": "pending"]),
-                isError: false,
-                signal: .listTasks
-            )
-        }
+        AutovisorToolDecoding.decodeToToolResult(tool: Self.name, args: args, surface: .inApp)
     }
 }
 
@@ -66,16 +52,7 @@ nonisolated struct TaskStatusTool: ToolHandler {
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self { Self() }
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
-        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
-            let taskID = try requiredInt(args, "task_id")
-            return ToolExecutionResult(
-                toolName: Self.name,
-                argumentsJSON: encodeArgsToJSON(args),
-                outputJSON: makeSuccessEnvelope(data: ["status": "pending"]),
-                isError: false,
-                signal: .taskStatus(taskID: taskID)
-            )
-        }
+        AutovisorToolDecoding.decodeToToolResult(tool: Self.name, args: args, surface: .inApp)
     }
 }
 
@@ -178,30 +155,7 @@ nonisolated struct CreateManagedTaskTool: ToolHandler {
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self { Self() }
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
-        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
-            let brief = try requiredNonEmptyString(args, "brief")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            // Missing/empty/non-string title is a known small-model emission quirk —
-            // recover by deriving one from the brief instead of failing the whole
-            // creation. Strict String read: `extractString`'s String(describing:)
-            // coercion would turn JSON `null` into a literal "<null>" task title.
-            let title: String = {
-                if let explicit = (args["title"] as? String)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines),
-                    !explicit.isEmpty { return explicit }
-                let firstLine = brief.components(separatedBy: .newlines).first ?? brief
-                let truncated = firstLine.prefix(30)
-                return truncated.count < firstLine.count ? String(truncated) + "…" : String(truncated)
-            }()
-            let teamID = extractString(args, "team_id")
-            return ToolExecutionResult(
-                toolName: Self.name,
-                argumentsJSON: encodeArgsToJSON(args),
-                outputJSON: makeSuccessEnvelope(data: ["status": "pending"]),
-                isError: false,
-                signal: .createManagedTask(title: title, brief: brief, teamID: teamID)
-            )
-        }
+        AutovisorToolDecoding.decodeToToolResult(tool: Self.name, args: args, surface: .inApp)
     }
 }
 
@@ -240,22 +194,7 @@ nonisolated struct ControlTaskTool: ToolHandler {
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self { Self() }
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
-        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
-            let taskID = try requiredInt(args, "task_id")
-            // Single decode boundary: string `action` (+ `arg`) → typed `ControlVerb`.
-            switch ControlVerb.parse(action: extractString(args, "action") ?? "", arg: extractString(args, "arg")) {
-            case .failure(let error):
-                return makeErrorResult(toolName: Self.name, args: args, code: .invalidArgs, message: error.message)
-            case .success(let verb):
-                return ToolExecutionResult(
-                    toolName: Self.name,
-                    argumentsJSON: encodeArgsToJSON(args),
-                    outputJSON: makeSuccessEnvelope(data: ["status": "pending"]),
-                    isError: false,
-                    signal: .controlTask(taskID: taskID, verb: verb)
-                )
-            }
-        }
+        AutovisorToolDecoding.decodeToToolResult(tool: Self.name, args: args, surface: .inApp)
     }
 }
 
@@ -290,24 +229,7 @@ nonisolated struct ManageRoleTool: ToolHandler {
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self { Self() }
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
-        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
-            let taskID = try requiredInt(args, "task_id")
-            let roleID = try requiredNonEmptyString(args, "role_id")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            // Single decode boundary: string `action` (+ `comment`) → typed `RoleVerb`.
-            switch RoleVerb.parse(action: extractString(args, "action") ?? "", comment: extractString(args, "comment")) {
-            case .failure(let error):
-                return makeErrorResult(toolName: Self.name, args: args, code: .invalidArgs, message: error.message)
-            case .success(let verb):
-                return ToolExecutionResult(
-                    toolName: Self.name,
-                    argumentsJSON: encodeArgsToJSON(args),
-                    outputJSON: makeSuccessEnvelope(data: ["status": "pending"]),
-                    isError: false,
-                    signal: .manageRole(taskID: taskID, roleID: roleID, verb: verb)
-                )
-            }
-        }
+        AutovisorToolDecoding.decodeToToolResult(tool: Self.name, args: args, surface: .inApp)
     }
 }
 
@@ -321,6 +243,7 @@ nonisolated struct AnswerTaskQuestionTool: ToolHandler {
             properties: [
                 "task_id": JS.integer("The waiting task's id."),
                 "answer": JS.string("Your answer to the task's supervisor question."),
+                "role_id": JS.string("The waiting role's id, when more than one role of the task is waiting."),
             ],
             required: ["task_id", "answer"]
         )
@@ -331,18 +254,7 @@ nonisolated struct AnswerTaskQuestionTool: ToolHandler {
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self { Self() }
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
-        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
-            let taskID = try requiredInt(args, "task_id")
-            let answer = try requiredNonEmptyString(args, "answer")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            return ToolExecutionResult(
-                toolName: Self.name,
-                argumentsJSON: encodeArgsToJSON(args),
-                outputJSON: makeSuccessEnvelope(data: ["status": "pending"]),
-                isError: false,
-                signal: .answerTaskQuestion(taskID: taskID, answer: answer)
-            )
-        }
+        AutovisorToolDecoding.decodeToToolResult(tool: Self.name, args: args, surface: .inApp)
     }
 }
 
@@ -367,18 +279,7 @@ nonisolated struct MessageTaskTool: ToolHandler {
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self { Self() }
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
-        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
-            let taskID = try requiredInt(args, "task_id")
-            let message = try requiredNonEmptyString(args, "message")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            return ToolExecutionResult(
-                toolName: Self.name,
-                argumentsJSON: encodeArgsToJSON(args),
-                outputJSON: makeSuccessEnvelope(data: ["status": "pending"]),
-                isError: false,
-                signal: .messageTask(taskID: taskID, text: message, roleID: extractString(args, "role_id"))
-            )
-        }
+        AutovisorToolDecoding.decodeToToolResult(tool: Self.name, args: args, surface: .inApp)
     }
 }
 
@@ -402,22 +303,7 @@ nonisolated struct ScheduleTaskTool: ToolHandler {
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self { Self() }
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
-        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
-            let taskID = try requiredInt(args, "task_id")
-            let minutes = try requiredInt(args, "interval_minutes")
-            guard minutes >= 0 else {
-                throw ToolArgumentError.invalidValue(
-                    key: "interval_minutes",
-                    detail: "must be >= 0 minutes; pass 0 to clear the interval.")
-            }
-            return ToolExecutionResult(
-                toolName: Self.name,
-                argumentsJSON: encodeArgsToJSON(args),
-                outputJSON: makeSuccessEnvelope(data: ["status": "pending"]),
-                isError: false,
-                signal: .scheduleTask(taskID: taskID, intervalMinutes: minutes)
-            )
-        }
+        AutovisorToolDecoding.decodeToToolResult(tool: Self.name, args: args, surface: .inApp)
     }
 }
 
@@ -438,30 +324,7 @@ nonisolated struct SetWorkFolderContextTool: ToolHandler {
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self { Self() }
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
-        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
-            // Every sibling text field (`brief`, `answer`, `message`, `role_id`) trims and
-            // rejects empty. This one did not — and what it writes is injected into every
-            // role's prompt on every task in the folder, so an accidental empty emission
-            // silently wiped it.
-            // Validated on the trimmed value, CARRIED verbatim: the folder context is
-            // prose whose leading and trailing structure is the author's.
-            let content = try requiredString(args, "content")
-            guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                // Routed through the shared argument error so the wording matches every
-                // other empty-argument rejection; the tail is the part no shared helper
-                // can know — what this particular emptiness would DO.
-                throw ToolArgumentError.invalidValue(
-                    key: "content",
-                    detail: "must not be empty — it replaces the work-folder context for every role.")
-            }
-            return ToolExecutionResult(
-                toolName: Self.name,
-                argumentsJSON: encodeArgsToJSON(args),
-                outputJSON: makeSuccessEnvelope(data: ["status": "pending"]),
-                isError: false,
-                signal: .setWorkFolderContext(content: content)
-            )
-        }
+        AutovisorToolDecoding.decodeToToolResult(tool: Self.name, args: args, surface: .inApp)
     }
 }
 
@@ -476,19 +339,16 @@ nonisolated struct WaitForEventsTool: ToolHandler {
         parameters: JS.object(properties: [:], required: [])
     )
     static let category: ToolCategory = .collaboration
+    /// The external surface's `wait_for_events` takes a timeout; this one ends the review pass,
+    /// and the next event starts the next — there is nothing for a timeout to bound.
+    static let undeclaredArguments: [String: UndeclaredArgument] = [
+        "timeout_seconds": .ignored(reason: "this wait ends the review pass, and the next event starts the next one"),
+    ]
     static let excludedInMeetings = true
 
     static func makeInstance(dependencies: ToolHandlerDependencies) -> Self { Self() }
 
     func handle(context _: ToolExecutionContext, args: [String: Any]) async -> ToolExecutionResult {
-        await ToolErrorHandler.execute(toolName: Self.name, args: args) {
-            ToolExecutionResult(
-                toolName: Self.name,
-                argumentsJSON: encodeArgsToJSON(args),
-                outputJSON: makeSuccessEnvelope(data: ["status": "pending"]),
-                isError: false,
-                signal: .waitForEvents
-            )
-        }
+        AutovisorToolDecoding.decodeToToolResult(tool: Self.name, args: args, surface: .inApp)
     }
 }

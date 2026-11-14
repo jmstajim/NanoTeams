@@ -41,6 +41,7 @@ struct WatchtowerNotificationBanner: View {
         case .taskDone:        return (TerminalGlyph.done, "done", color)
         case .timedOut:        return (TerminalGlyph.paused, "timed out", color)
         case .bashApprovalNeeded: return (TerminalGlyph.prompt, "command", color)
+        case .mcpApprovalNeeded:  return (TerminalGlyph.prompt, "tool call", color)
         }
     }
 
@@ -78,7 +79,7 @@ struct WatchtowerNotificationBanner: View {
                     .buttonStyle(.plain)
                     .foregroundStyle(Colors.textTertiary)
                     .help(isChatMode ? "Open Chat" : "Open Task")
-                case .bashApprovalNeeded:
+                case .bashApprovalNeeded, .mcpApprovalNeeded:
                     Button(action: onViewDetails) {
                         Image(systemName: "arrow.right.circle").font(Typography.termBase)
                     }
@@ -105,6 +106,7 @@ struct WatchtowerNotificationBanner: View {
         .overlay(alignment: .topLeading) {
             Text("┤ \(inboxStyle.glyph) \(inboxStyle.label.uppercased()) ├")
                 .font(Typography.term2xs)
+                .lineLimit(1)
                 .fontWeight(.medium)
                 .tracking(Typography.labelTracking)
                 .foregroundStyle(inboxStyle.color)
