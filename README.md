@@ -9,7 +9,6 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/jmstajim/NanoTeams/actions/workflows/ios.yml"><img src="https://github.com/jmstajim/NanoTeams/actions/workflows/ios.yml/badge.svg" alt="Build&amp;Test"></a>
   <a href="https://github.com/jmstajim/NanoTeams/releases/latest"><img src="https://img.shields.io/github/v/release/jmstajim/NanoTeams?label=version" alt="Latest version"></a>
   <a href="https://github.com/jmstajim/NanoTeams/releases"><img src="https://img.shields.io/github/downloads/jmstajim/NanoTeams/total?label=downloads" alt="Total downloads"></a>
   <img src="https://img.shields.io/badge/macOS-15%2B-black?logo=apple" alt="macOS 15 or later">
