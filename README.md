@@ -1,17 +1,28 @@
-<div align="center">
+<p align="center">
+  <img src="readme-assets/icon.png" alt="" width="128" height="128">
+</p>
 
-# **NanoTeams**
+<h1 align="center">NanoTeams</h1>
 
-### Free, open-source AI coding agent & multi-agent teams for macOS<br>— 100% local via Ollama or LM Studio, with an autonomous supervisor
+<p align="center">
+  <b>Free, open-source AI coding agent &amp; multi-agent teams for macOS<br>— 100% local via Ollama or LM Studio, with an autonomous supervisor</b>
+</p>
 
-<!-- [![Build&Test](https://github.com/jmstajim/NanoTeams/actions/workflows/ios.yml/badge.svg)](https://github.com/jmstajim/NanoTeams/actions/workflows/ios.yml) -->
-[![Version](https://img.shields.io/github/v/release/jmstajim/NanoTeams?label=version&color=5F87D9&style=flat-square)](https://github.com/jmstajim/NanoTeams/releases/latest)
-[![License: MIT](https://img.shields.io/badge/license-MIT-5F87D9?style=flat-square)](https://github.com/jmstajim/NanoTeams/blob/main/LICENSE)
-[![Downloads](https://img.shields.io/github/downloads/jmstajim/NanoTeams/total?label=downloads&color=5F87D9&style=flat-square)](https://github.com/jmstajim/NanoTeams/releases/latest)
-[![macOS](https://img.shields.io/badge/macOS_15.0+-5F87D9?logo=apple&style=flat-square)](https://github.com/jmstajim/NanoTeams/releases/latest)
-[![Download](https://img.shields.io/badge/Download-NanoTeams.app.zip-35BE81?style=flat-square)](https://github.com/jmstajim/NanoTeams/releases/latest/download/NanoTeams.app.zip)
+<p align="center">
+  <a href="https://github.com/jmstajim/NanoTeams/actions/workflows/ios.yml"><img src="https://github.com/jmstajim/NanoTeams/actions/workflows/ios.yml/badge.svg" alt="Build&amp;Test"></a>
+  <a href="https://github.com/jmstajim/NanoTeams/releases/latest"><img src="https://img.shields.io/github/v/release/jmstajim/NanoTeams?label=version" alt="Latest version"></a>
+  <a href="https://github.com/jmstajim/NanoTeams/releases"><img src="https://img.shields.io/github/downloads/jmstajim/NanoTeams/total?label=downloads" alt="Total downloads"></a>
+  <img src="https://img.shields.io/badge/macOS-15%2B-black?logo=apple" alt="macOS 15 or later">
+  <a href="https://github.com/jmstajim/NanoTeams/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
+</p>
 
-</div>
+<p align="center">
+  <a href="https://github.com/jmstajim/NanoTeams/releases/latest/download/NanoTeams.app.zip"><img src="https://img.shields.io/badge/Download_for_macOS-0A84FF?style=for-the-badge&logo=apple&logoColor=white" alt="Download for macOS"></a>
+</p>
+
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/124d259d-3e5b-4fbd-b4b2-39dd8458a5ba" alt="NanoTeams: AI coding assistant and multi-agent AI teams for macOS" width="760">
+</p>
 
 **NanoTeams is a free, open-source, local-first AI coding agent and multi-agent AI team app for macOS.** It runs 100% on-device through [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai) — no cloud, no API keys, no subscription, no telemetry — so the local models you already run can read and edit your files, run git and Xcode, control the screen, and coordinate specialized AI roles inside a sandboxed work folder.
 
@@ -20,8 +31,6 @@ Chat with the **Coding Assistant** to read and edit your files, or let the **Cod
 *Built for Mac developers who run local models in Ollama or LM Studio and anyone whose code can't leave the machine — privacy-first, NDA, or air-gapped work.*
 
 **[Download for macOS](https://github.com/jmstajim/NanoTeams/releases/latest/download/NanoTeams.app.zip)** · free & open-source (MIT) · [Get started](#getting-started) · [All releases](https://github.com/jmstajim/NanoTeams/releases)
-
-<img width="1280" height="1112" alt="NanoTeams: AI coding assistant and multi-agent AI teams for macOS" src="https://github.com/user-attachments/assets/124d259d-3e5b-4fbd-b4b2-39dd8458a5ba" />
 
 ## Why NanoTeams?
 
